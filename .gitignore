@@ -1,0 +1,29 @@
+# deps
+node_modules/
+
+# expo / react native
+mobile/.expo/
+mobile/dist/
+mobile/android/
+mobile/ios/
+mobile/*.jks
+mobile/*.keystore
+mobile/web-build/
+
+# server
+server/dist/
+server/coverage/
+
+# env & secrets (never commit)
+.env
+.env.*
+!.env.example
+
+# logs & os junk
+*.log
+.DS_Store
+Thumbs.db
+
+# editor
+.vscode/
+.idea/
