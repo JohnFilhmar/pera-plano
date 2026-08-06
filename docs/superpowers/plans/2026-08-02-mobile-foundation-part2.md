@@ -931,3 +931,310 @@ These apply to EVERY task. The interface contract at `docs/superpowers/plans/202
   ```
 
 ---
+
+> **Density note for the executor.** Tasks 9–11 above spell out every line of test and
+> implementation code. Tasks 12 onward use a compact form: exact files, exact interfaces,
+> the logic rules that matter, and each test named with what it asserts — but you write the
+> test body and the implementation yourself. The TDD order is unchanged and non-negotiable:
+> write the named failing test first, run it and watch it fail, implement the minimum, run
+> it green, commit. Where a rule below is ambiguous, the interface contract wins, then the
+> feature spec named in the task.
+
+---
+
+### Task 12: `categories_repo.ts` + PH default category seed
+
+**Files:**
+- Create: `mobile/lib/db/repos/categories_repo.ts`
+- Test: `mobile/lib/db/repos/__tests__/categories_repo.test.ts`
+
+**Interfaces:**
+- Consumes: `freshDb()` (Task 7), mappers (Task 8), `newId()` (Task 8).
+- Produces:
+  ```ts
+  listCategories(opts?: { includeHidden?: boolean }): Promise<Category[]>
+  getCategory(id: string): Promise<Category | null>
+  createCategory(input: NewCategory): Promise<Category>
+  updateCategory(id: string, patch: Partial<Pick<Category, "name" | "icon" | "parentId">>): Promise<Category>
+  hideCategory(id: string): Promise<void>          // system rows: hide, never delete
+  deleteCategory(id: string): Promise<void>        // throws on isSystem
+  seedDefaultCategories(): Promise<void>           // idempotent
+  UNCATEGORIZED_ID: string                         // stable, referenced by the categorizer
+  ```
+
+**Rules:**
+1. Tree via `parent_id`; `listCategories` returns parents before their children, each group name-ascending.
+2. `seedDefaultCategories()` is idempotent — keyed on a stable id per default row, so running it twice leaves the same rows and never duplicates.
+3. System rows (`is_system = 1`) cannot be deleted; `deleteCategory` throws `Error("cannot delete a system category")`. `hideCategory` is the supported path.
+4. Deleting a non-system parent reassigns its children to that parent's `parentId` (or null) — never orphans a row.
+5. Seed set (top level, all `is_system = 1`), from `docs/02-domain-model.md` §5: Food & Dining · Groceries/Palengke · Transport · Load & Data · Bills & Utilities · Rent & Housing · Utang & Loan Payments · Padala/Remittance · Shopping · Health & Pharmacy · Education & Tuition · Entertainment & Subscriptions · Savings & Investments · Fees & Charges · Uncategorized. Uncategorized uses the exported `UNCATEGORIZED_ID`.
+
+- [ ] **Step 1: Write the failing tests** in `categories_repo.test.ts`:
+  - `seedDefaultCategories inserts the 15 PH default categories` — count is 15, all `isSystem`.
+  - `seedDefaultCategories is idempotent` — run twice, count still 15, ids unchanged.
+  - `UNCATEGORIZED_ID resolves to a seeded system category` — `getCategory(UNCATEGORIZED_ID)` is non-null and named "Uncategorized".
+  - `createCategory nests under a parent and listCategories orders parents before children`.
+  - `deleteCategory throws for a system category`.
+  - `hideCategory removes the row from listCategories but includeHidden returns it`.
+  - `deleting a parent reparents its children instead of orphaning them`.
+- [ ] **Step 2:** Run `npx jest --ci lib/db/repos/__tests__/categories_repo.test.ts` — expected FAIL (module not found).
+- [ ] **Step 3:** Implement `categories_repo.ts` to satisfy the rules above.
+- [ ] **Step 4:** Run the same command — expected PASS (7 tests). Run `npx tsc --noEmit` — clean.
+- [ ] **Step 5: Commit**
+  ```
+  git add lib/db/repos
+  git commit -m "feat(mobile): add categories repository with PH default category seed"
+  ```
+
+---
+
+### Task 13: `review_queue_repo.ts`
+
+**Files:**
+- Create: `mobile/lib/db/repos/review_queue_repo.ts`
+- Test: `mobile/lib/db/repos/__tests__/review_queue_repo.test.ts`
+
+**Interfaces:**
+- Produces (contract §3 signatures are LAW — do not rename):
+  ```ts
+  enqueue(item: NewReviewItem): Promise<ReviewQueueItem>
+  listOpen(): Promise<ReviewQueueItem[]>
+  resolve(id: string, resolution: ReviewResolution): Promise<void>
+  countOpen(): Promise<number>                     // drives the tab badge
+  purgeExpired(now: number): Promise<number>       // returns rows removed
+  ```
+  ```ts
+  type ReviewKind = "low_confidence" | "unknown_provider" | "possible_transfer" | "possible_duplicate";
+  type ReviewResolution =
+    | { kind: "confirmed"; transactionId: string }
+    | { kind: "corrected"; transactionId: string; userRuleId?: string }
+    | { kind: "linked"; transferLinkId: string }
+    | { kind: "merged"; keptTransactionId: string }
+    | { kind: "dismissed" };
+  ```
+
+**Rules:**
+1. `payload_json` stores the stage output verbatim (parsed event, candidate pair, or raw capture ref) — the repo serializes/deserializes, it does not interpret.
+2. `listOpen` = `resolved_at IS NULL AND expires_at > now`, oldest first (FIFO triage).
+3. `resolve` sets `resolved_at`; resolving an already-resolved id is a no-op, not an error (double-tap safety).
+4. `expires_at` defaults to `created_at + 30 days` per the Review Queue hygiene rule in `docs/04-features/08-review-queue.md`.
+5. `purgeExpired` deletes rows past `expires_at` that are still unresolved, and returns the count.
+
+- [ ] **Step 1: Write the failing tests:**
+  - `enqueue round-trips payload_json through listOpen` (object in, deep-equal object out).
+  - `listOpen returns oldest first and excludes resolved rows`.
+  - `resolve is idempotent` — calling twice does not throw and leaves one resolved row.
+  - `countOpen matches listOpen length`.
+  - `expired unresolved items are excluded from listOpen and removed by purgeExpired`.
+  - `each ReviewKind round-trips` (parametrized over the four kinds).
+- [ ] **Step 2:** Run `npx jest --ci lib/db/repos/__tests__/review_queue_repo.test.ts` — expected FAIL.
+- [ ] **Step 3:** Implement `review_queue_repo.ts`.
+- [ ] **Step 4:** Run — expected PASS (6 tests). `npx tsc --noEmit` clean.
+- [ ] **Step 5: Commit**
+  ```
+  git add lib/db/repos
+  git commit -m "feat(mobile): add review queue repository with expiry and idempotent resolve"
+  ```
+
+---
+
+### Task 14: `app_settings_repo.ts` — typed key/value settings
+
+**Files:**
+- Create: `mobile/lib/db/repos/app_settings_repo.ts`
+- Test: `mobile/lib/db/repos/__tests__/app_settings_repo.test.ts`
+
+**Interfaces:**
+```ts
+type AppSettings = {
+  onboarding_complete: boolean;
+  capture_enabled: boolean;
+  telemetry_enabled: boolean;
+  theme_preference: "auto" | "light" | "dark";
+  last_parser_ruleset_version: number;
+  cash_reconcile_prompt_at: number | null;
+};
+getSetting<K extends keyof AppSettings>(key: K): Promise<AppSettings[K]>   // returns the default when unset
+setSetting<K extends keyof AppSettings>(key: K, value: AppSettings[K]): Promise<void>
+getAllSettings(): Promise<AppSettings>
+resetSettings(): Promise<void>
+DEFAULT_SETTINGS: AppSettings   // onboarding_complete false, capture_enabled true, telemetry_enabled true, theme_preference "auto", last_parser_ruleset_version 0, cash_reconcile_prompt_at null
+```
+
+**Rules:**
+1. One row per key in `app_settings`; values JSON-encoded so booleans and numbers survive the round trip.
+2. Reading an unset key returns its `DEFAULT_SETTINGS` value — never null, never throws.
+3. `setSetting` upserts.
+
+- [ ] **Step 1: Write the failing tests:** unset key returns its default · set-then-get round-trips each of the six types (boolean, number, string union, null) · `setSetting` twice upserts rather than duplicating · `getAllSettings` merges stored over defaults · `resetSettings` restores every default.
+- [ ] **Step 2:** Run `npx jest --ci lib/db/repos/__tests__/app_settings_repo.test.ts` — expected FAIL.
+- [ ] **Step 3:** Implement `app_settings_repo.ts`.
+- [ ] **Step 4:** Run — expected PASS (5 tests). `npx tsc --noEmit` clean.
+- [ ] **Step 5: Commit**
+  ```
+  git add lib/db/repos
+  git commit -m "feat(mobile): add typed app settings repository with defaults"
+  ```
+
+---
+
+### Task 15: `shipped_features.ts` + `SoonGate` / `PlusGate`
+
+Phased-rollout and paid-tier gating, per `docs/11-mobile-app-design-prompt.md`. These two states must be visually unmistakable: **Soon = grey and dormant, Plus = green and inviting.**
+
+**Files:**
+- Create: `mobile/constants/shipped_features.ts`
+- Create: `mobile/components/gates/soon_gate.tsx`
+- Create: `mobile/components/gates/plus_gate.tsx`
+- Create: `mobile/components/gates/upgrade_sheet.tsx`
+- Test: `mobile/constants/__tests__/shipped_features.test.ts`
+- Test: `mobile/components/gates/__tests__/gates.test.tsx`
+
+**Interfaces:**
+```ts
+// shipped_features.ts
+type FeatureKey =
+  | "limits" | "income" | "goals" | "loans" | "bills"
+  | "safe_to_spend" | "recurring" | "reports" | "csv_export"
+  | "privacy_center" | "listener_health" | "parser_diagnostics";
+type ShipState = "shipped" | "soon";
+const SHIPPED_FEATURES: Record<FeatureKey, ShipState>;
+function isShipped(key: FeatureKey): boolean;
+function useShippedFeature(key: FeatureKey): ShipState;
+
+// soon_gate.tsx
+<SoonGate feature={FeatureKey}>{children}</SoonGate>
+// plus_gate.tsx
+<PlusGate capability={"csv_export" | "recurring" | "backup" | "projection" | "amortization"}>{children}</PlusGate>
+```
+
+**Rules:**
+1. `SHIPPED_FEATURES` is the single per-build rollout switch. Set it for the M1 build: every key `"soon"` EXCEPT none — M1 ships no Plan/More features. Flipping entries to `"shipped"` is the only change M2/M3 make to this file.
+2. `SoonGate` with a `"soon"` feature renders children wrapped so they are: desaturated (`opacity-40`), non-interactive (`pointerEvents="none"`), and captioned with a grey "Soon" chip. Content stays readable — users see the roadmap. With `"shipped"`, it renders children untouched (no wrapper element).
+3. `PlusGate` consults `lib/entitlements.ts` (Task 9). On the free tier it renders children plus a brand-green Plus badge with a lock glyph, and intercepts press to open `UpgradeSheet`. On `plus` it renders children untouched.
+4. `UpgradeSheet` shows the Free-vs-Plus comparison rows from `docs/05-monetization.md` and an upgrade button that is inert in MVP (billing is post-MVP).
+5. Colors come from the contract §2 tokens only: grey chip uses `fg-2`, Plus badge uses `brand`.
+
+- [ ] **Step 1: Write the failing tests:**
+  - `shipped_features.test.ts`: every `FeatureKey` has an entry (no missing keys) · `isShipped` agrees with the map.
+  - `gates.test.tsx`: SoonGate with a soon feature renders the "Soon" chip and sets `pointerEvents` to `none` · SoonGate with a shipped feature renders children with no chip and no wrapper · PlusGate on free tier renders the Plus badge · PlusGate press on free tier opens the upgrade sheet · PlusGate on plus tier renders children with no badge (mock `getTier`).
+- [ ] **Step 2:** Run `npx jest --ci constants/__tests__/shipped_features.test.ts components/gates` — expected FAIL.
+- [ ] **Step 3:** Implement the map, hook, and three components.
+- [ ] **Step 4:** Run — expected PASS (7 tests). `npx tsc --noEmit` clean.
+- [ ] **Step 5: Commit**
+  ```
+  git add constants components/gates
+  git commit -m "feat(mobile): add phased rollout map with Soon and Plus gate components"
+  ```
+
+---
+
+### Task 16: React Query client + query-key factory
+
+**Files:**
+- Create: `mobile/lib/query_client.ts`
+- Create: `mobile/constants/query_keys.ts`
+- Test: `mobile/lib/__tests__/query_client.test.ts`
+- Test: `mobile/constants/__tests__/query_keys.test.ts`
+- Modify: `mobile/package.json` (add `@tanstack/react-query`, `@tanstack/react-query-persist-client`, `@tanstack/query-async-storage-persister`)
+
+**Interfaces:**
+```ts
+// query_client.ts
+const queryClient: QueryClient;
+const persistOptions: { persister: Persister; maxAge: number; buster: string };
+// constants/query_keys.ts
+const queryKeys: {
+  wallets:      { all: readonly ["wallets"]; list: () => readonly ["wallets","list"]; detail: (id: string) => readonly ["wallets","detail",string] };
+  transactions: { all: readonly ["transactions"]; list: (f?: object) => readonly ["transactions","list",object|undefined]; detail: (id: string) => readonly ["transactions","detail",string] };
+  reviewQueue:  { all: readonly ["review_queue"]; open: () => readonly ["review_queue","open"]; count: () => readonly ["review_queue","count"] };
+  categories:   { all: readonly ["categories"]; list: () => readonly ["categories","list"] };
+  limits:       { all: readonly ["limits"]; list: () => readonly ["limits","list"]; detail: (id: string) => readonly ["limits","detail",string] };
+  goals:        { all: readonly ["goals"]; list: () => readonly ["goals","list"]; detail: (id: string) => readonly ["goals","detail",string] };
+  loans:        { all: readonly ["loans"]; list: () => readonly ["loans","list"]; detail: (id: string) => readonly ["loans","detail",string] };
+  bills:        { all: readonly ["bills"]; list: () => readonly ["bills","list"]; detail: (id: string) => readonly ["bills","detail",string] };
+  settings:     { all: readonly ["settings"] };
+};
+```
+
+**Rules (STACK_BASIS §6):** `staleTime` 5 min · `gcTime` 30 min · queries `retry: 3` with exponential backoff · **mutations `retry: 0`** (side effects must never auto-replay) · `refetchOnWindowFocus: false` · `refetchOnReconnect: true`. Persist to AsyncStorage with `maxAge: Infinity` and a `buster` string. No auth-boundary cache reset exists here — this app has no login.
+
+- [ ] **Step 1: Write the failing tests:** default options match every value above (assert each explicitly, especially `mutations.retry === 0`) · `queryKeys.wallets.detail("x")` equals `["wallets","detail","x"]` · every family's `detail`/`list` key starts with its `all` key (parametrized, so invalidating `all` cascades).
+- [ ] **Step 2:** Run `npx jest --ci lib/__tests__/query_client.test.ts constants/__tests__/query_keys.test.ts` — expected FAIL.
+- [ ] **Step 3:** Install the three packages, then implement both files.
+- [ ] **Step 4:** Run — expected PASS. `npx tsc --noEmit` clean.
+- [ ] **Step 5: Commit**
+  ```
+  git add lib/query_client.ts constants/query_keys.ts package.json package-lock.json
+  git commit -m "feat(mobile): add react query client and hierarchical query key factory"
+  ```
+
+---
+
+### Task 17: App shell — root layout, entry route, five-tab navigation
+
+**Files:**
+- Create: `mobile/app/_layout.tsx`
+- Create: `mobile/app/index.tsx`
+- Create: `mobile/app/(tabs)/_layout.tsx`
+- Create: `mobile/app/(tabs)/index.tsx` (Home), `transactions.tsx`, `wallets.tsx`, `plan.tsx`, `more.tsx`
+- Create: `mobile/lib/bootstrap.ts`
+- Test: `mobile/lib/__tests__/bootstrap.test.ts`
+- Test: `mobile/app/__tests__/tabs_layout.test.tsx`
+- Modify: `mobile/package.json` (add `react-native-keyboard-controller`)
+
+**Interfaces:**
+```ts
+// lib/bootstrap.ts
+async function bootstrapApp(): Promise<{ onboardingComplete: boolean }>;
+// runs migrations, seeds default categories, reads app settings — safe to call once at startup
+```
+
+**Rules:**
+1. Root `_layout.tsx` provider order, outer → inner (STACK_BASIS §16, minus auth/contacts — this app is local-first with no login): `PersistQueryClientProvider` → `KeyboardProvider` → `ThemeProvider` → `Stack`. Render `null` until fonts are loaded AND `bootstrapApp()` has resolved.
+2. `Stack` uses `headerShown: false` and `contentStyle.backgroundColor` set to the resolved theme background, so popping a screen never flashes white.
+3. `app/index.tsx` redirects to `/(onboarding)` when `onboarding_complete` is false, else to `/(tabs)`. The onboarding route group does not exist until the M3 plan builds it — until then, guard with a `SHIPPED_FEATURES`-style check and fall through to `/(tabs)`, so the app is runnable at the end of this plan.
+4. Tab bar: five tabs in this order — Home, Transactions, Wallets, Plan, More — with lucide-react-native icons (`House`, `ReceiptText`, `Wallet`, `Target`, `Ellipsis`), active tint `brand`, inactive `fg-2`, bar background `surface`, all via the contract §2 tokens in both light and dark.
+5. Each tab screen is a placeholder rendering its title and the empty state copy from `docs/06-information-architecture.md`. Later plans replace the bodies; the tab registration does not change.
+
+- [ ] **Step 1: Write the failing tests:**
+  - `bootstrap.test.ts`: `bootstrapApp` runs migrations then seeds categories (15 rows present afterward) · calling it twice does not duplicate categories · it returns `onboardingComplete: false` on a fresh database.
+  - `tabs_layout.test.tsx`: renders exactly five tabs with the expected accessible labels, in order.
+- [ ] **Step 2:** Run `npx jest --ci lib/__tests__/bootstrap.test.ts app/__tests__/tabs_layout.test.tsx` — expected FAIL.
+- [ ] **Step 3:** Install `react-native-keyboard-controller`, then implement `bootstrap.ts`, the root layout, the entry route, the tabs layout, and the five placeholder screens.
+- [ ] **Step 4:** Run — expected PASS. `npx tsc --noEmit` clean.
+- [ ] **Step 5:** Manually verify the app boots: `npx expo start` and confirm the five tabs render and switch in both light and dark mode.
+- [ ] **Step 6: Commit**
+  ```
+  git add app lib/bootstrap.ts package.json package-lock.json
+  git commit -m "feat(mobile): add app shell with root providers, entry route and five tabs"
+  ```
+
+---
+
+### Task 18: Foundation green-gate
+
+**Files:** none created — this task proves the foundation is complete and consumable.
+
+- [ ] **Step 1:** Run the full suite: `npx jest --ci`. Expected: PASS, zero failures, zero skipped.
+- [ ] **Step 2:** Run `npx tsc --noEmit`. Expected: clean.
+- [ ] **Step 3:** Verify every contract §3 signature exists with the exact name and shape by grepping the repo files: `createWallet`, `getWallet`, `listWallets`, `insertTransaction`, `listTransactions`, `sumSpend`, `enqueue`, `listOpen`, `resolve`. Any mismatch is a bug in this plan's output — fix it now, before feature plans consume it.
+- [ ] **Step 4:** Verify every contract §7 entitlements function exists: `getTier`, `canCreateWallet`, `canCreateLimit`, `canCreateGoal`, `canCreateLoan`, `historyWindowDays`, `hasRecurringDetection`, `hasBackup`, `hasProjection`.
+- [ ] **Step 5: Commit** (only if Steps 3–4 required fixes)
+  ```
+  git add -A
+  git commit -m "fix(mobile): align foundation exports with the interface contract"
+  ```
+
+---
+
+## Plan completion checklist (for the executor)
+
+- [ ] Tasks 9–18 committed; `npx jest --ci` green; `npx tsc --noEmit` clean.
+- [ ] Repos exist for wallets, transactions, categories, review queue, and app settings — all with contract §3 names, no SQL outside `lib/db/`.
+- [ ] `seedDefaultCategories()` is idempotent and produces the 15 PH defaults; `UNCATEGORIZED_ID` is stable and exported.
+- [ ] `lib/entitlements.ts` matches contract §7 exactly and is the ONLY place tier logic lives.
+- [ ] `constants/shipped_features.ts` covers all twelve feature keys; `SoonGate` renders grey and non-interactive, `PlusGate` renders green with an upgrade sheet.
+- [ ] React Query defaults match STACK_BASIS §6, with `mutations.retry === 0`.
+- [ ] The app boots to a five-tab shell in both light and dark mode.
+- [ ] Next plans unblocked: `2026-08-02-mobile-ingest-m1a-native-module.md`, then `-m1b-pipeline.md`, then `-m1c-ui.md`.

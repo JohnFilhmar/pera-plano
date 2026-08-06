@@ -659,3 +659,283 @@ This is the FIRST of three M1 plans and must be implemented before the others:
   ```
 
 ---
+
+> **Density note for the executor.** Tasks 1–3 above spell out every line of Kotlin and test
+> code. Tasks 4 onward use a compact form: exact files, exact interfaces, the behavior rules
+> that matter, and each test named with what it asserts — you write the bodies. The TDD order
+> is unchanged: named failing test → run and watch it fail → minimum implementation → green →
+> commit. Where a rule is ambiguous, the interface contract §4 wins, then
+> `docs/03-ingest-pipeline.md`.
+
+---
+
+### Task 4: `CapturePrefs` — persisted pause switch and provider allowlist
+
+**Files:**
+- Create: `mobile/modules/notification_listener/android/src/main/java/expo/modules/notificationlistener/CapturePrefs.kt`
+- Test: `mobile/modules/notification_listener/android/src/test/java/expo/modules/notificationlistener/CapturePrefsTest.kt`
+
+**Interfaces:**
+```kotlin
+class CapturePrefs(context: Context) {
+  fun isCaptureEnabled(): Boolean            // default true
+  fun setCaptureEnabled(enabled: Boolean)
+  fun getProviderFilter(): Set<String>       // empty set == allow all
+  fun setProviderFilter(packageNames: Set<String>)
+  fun shouldCapture(packageName: String): Boolean
+  fun recordListenerConnected(connected: Boolean)
+  fun isListenerConnected(): Boolean
+  fun recordCapture(atMillis: Long)
+  fun lastCaptureAt(): Long?                 // null when nothing captured yet
+}
+```
+
+**Rules:**
+1. Backed by `SharedPreferences` under the name `peraplano_capture_prefs` — survives process death, which is the whole point (the service runs when JS does not).
+2. `shouldCapture(pkg)` is `isCaptureEnabled() && (filter.isEmpty() || pkg in filter)`. An empty filter allows all so a fresh install captures before the user has picked providers.
+3. Never throw. A corrupt or missing preference falls back to the documented default.
+
+- [ ] **Step 1: Write the failing tests** (Robolectric, so a real `SharedPreferences` is available):
+  - `capture is enabled by default`
+  - `setCaptureEnabled false makes shouldCapture false for every package`
+  - `an empty provider filter allows any package`
+  - `a non-empty filter allows listed packages and rejects unlisted ones`
+  - `provider filter and enabled flag survive a new CapturePrefs instance` (proves persistence)
+  - `lastCaptureAt is null before any capture and returns the recorded value after`
+- [ ] **Step 2:** Run `.\gradlew.bat :notification_listener:testDebugUnitTest --tests "expo.modules.notificationlistener.CapturePrefsTest"` — expected FAIL (class not found).
+- [ ] **Step 3:** Implement `CapturePrefs.kt`.
+- [ ] **Step 4:** Run the same command — expected PASS (6 tests).
+- [ ] **Step 5: Commit**
+  ```
+  git add mobile/modules/notification_listener/android/src
+  git commit -m "feat(mobile): add persisted capture prefs with provider allowlist"
+  ```
+
+---
+
+### Task 5: `PeraPlanoNotificationListenerService` — the 24/7 capture service
+
+**Files:**
+- Create: `mobile/modules/notification_listener/android/src/main/java/expo/modules/notificationlistener/PeraPlanoNotificationListenerService.kt`
+- Test: `mobile/modules/notification_listener/android/src/test/java/expo/modules/notificationlistener/PeraPlanoNotificationListenerServiceTest.kt`
+
+**Interfaces:**
+```kotlin
+class PeraPlanoNotificationListenerService : NotificationListenerService() {
+  override fun onNotificationPosted(sbn: StatusBarNotification)
+  override fun onListenerConnected()
+  override fun onListenerDisconnected()
+  companion object {
+    var liveSink: ((CaptureRecord) -> Unit)?      // set by the Module while JS is alive
+    fun extractCapture(sbn: StatusBarNotification, nowMillis: Long): CaptureRecord?
+  }
+}
+```
+
+**Rules:**
+1. `extractCapture` is a pure static function taking a `StatusBarNotification` — this is what makes the service testable without a running Android service. Pull `EXTRA_TITLE`, `EXTRA_TEXT`, `EXTRA_SUB_TEXT`, `EXTRA_BIG_TEXT` from `sbn.notification.extras` (each may be a `CharSequence` or absent), `sbn.packageName`, `sbn.postTime`, and generate a UUID id.
+2. Return `null` when title, text, subText, and bigText are ALL null or blank — an empty notification carries no financial information and must not enter the buffer.
+3. `onNotificationPosted` flow: `extractCapture` → if null, drop → `CapturePrefs.shouldCapture(pkg)`, if false, drop → `CaptureBuffer.append(record)` → `CapturePrefs.recordCapture(postTime)` → `liveSink?.invoke(record)`. Buffer FIRST, then notify: if JS crashes mid-delivery the capture is already durable.
+4. `onListenerConnected` / `onListenerDisconnected` call `CapturePrefs.recordListenerConnected(true/false)`.
+5. Ongoing notifications (`sbn.isOngoing`) are skipped — persistent "app is running" notifications are never transactions.
+
+- [ ] **Step 1: Write the failing tests** against `extractCapture` and the posted flow (build `StatusBarNotification` fixtures with a Robolectric `Notification.Builder`; mark every sample text ILLUSTRATIVE in a comment):
+  - `extractCapture pulls package, title, text and postTime into a CaptureRecord`
+  - `extractCapture reads bigText and subText when present`
+  - `extractCapture returns null when every text field is blank`
+  - `onNotificationPosted appends to the buffer when shouldCapture is true`
+  - `onNotificationPosted appends nothing when capture is disabled`
+  - `onNotificationPosted appends nothing for a package outside a non-empty filter`
+  - `onNotificationPosted skips ongoing notifications`
+  - `onNotificationPosted invokes liveSink after the buffer append`
+  - `onListenerConnected and onListenerDisconnected update the recorded connection state`
+- [ ] **Step 2:** Run `.\gradlew.bat :notification_listener:testDebugUnitTest --tests "expo.modules.notificationlistener.PeraPlanoNotificationListenerServiceTest"` — expected FAIL.
+- [ ] **Step 3:** Implement the service.
+- [ ] **Step 4:** Run — expected PASS (9 tests).
+- [ ] **Step 5: Commit**
+  ```
+  git add mobile/modules/notification_listener/android/src
+  git commit -m "feat(mobile): add notification listener service with filtered durable capture"
+  ```
+
+---
+
+### Task 6: `NotificationListenerModule` — the Kotlin/JS bridge
+
+**Files:**
+- Create: `mobile/modules/notification_listener/android/src/main/java/expo/modules/notificationlistener/NotificationListenerModule.kt`
+- Test: `mobile/modules/notification_listener/android/src/test/java/expo/modules/notificationlistener/NotificationListenerModuleTest.kt`
+
+**Interfaces** (must match contract §4 exactly — these names cross the bridge):
+```kotlin
+Name("NotificationListener")
+Function("isAccessGranted") -> Boolean
+Function("openAccessSettings") -> Unit
+AsyncFunction("setCaptureEnabled") { enabled: Boolean -> Unit }
+AsyncFunction("setProviderFilter") { packageNames: List<String> -> Unit }
+AsyncFunction("drainPendingCaptures") -> List<Map<String, Any?>>
+AsyncFunction("getListenerHealth") -> Map<String, Any?>   // granted, serviceConnected, lastCaptureAt
+Events("onCapture")
+```
+
+**Rules:**
+1. `isAccessGranted` uses `NotificationManagerCompat.getEnabledListenerPackages(context)` and checks for the app's own package — never assume granted.
+2. `openAccessSettings` fires `Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)` with `FLAG_ACTIVITY_NEW_TASK`. It cannot grant access itself; it only navigates.
+3. `drainPendingCaptures` returns the buffered records and clears them **atomically** — a crash mid-drain must not lose captures, so clear only after the list is successfully serialized.
+4. `getListenerHealth` returns `granted` (live check), `serviceConnected`, and `lastCaptureAt` (nullable) from `CapturePrefs`.
+5. `OnStartObserving`/`OnStopObserving` set and clear `PeraPlanoNotificationListenerService.liveSink` so events only flow while JS listens.
+6. Every capture map uses exactly the contract §4 `RawCapture` field names: `id`, `packageName`, `title`, `text`, `subText`, `bigText`, `postedAt`, `capturedAt`.
+
+- [ ] **Step 1: Write the failing tests:**
+  - `drainPendingCaptures returns buffered records and empties the buffer`
+  - `a second drain returns an empty list`
+  - `drained maps carry exactly the eight contract field names`
+  - `setCaptureEnabled and setProviderFilter write through to CapturePrefs`
+  - `getListenerHealth reports granted, serviceConnected and lastCaptureAt`
+  - `OnStartObserving installs a liveSink and OnStopObserving clears it`
+- [ ] **Step 2:** Run `.\gradlew.bat :notification_listener:testDebugUnitTest --tests "expo.modules.notificationlistener.NotificationListenerModuleTest"` — expected FAIL.
+- [ ] **Step 3:** Implement the module.
+- [ ] **Step 4:** Run the whole module suite `.\gradlew.bat :notification_listener:testDebugUnitTest` — expected PASS (all tasks' tests).
+- [ ] **Step 5: Commit**
+  ```
+  git add mobile/modules/notification_listener/android/src
+  git commit -m "feat(mobile): add notification listener bridge module"
+  ```
+
+---
+
+### Task 7: `app.plugin.js` — manifest injection (CNG-safe)
+
+**Files:**
+- Create: `mobile/modules/notification_listener/app.plugin.js`
+- Test: `mobile/modules/notification_listener/__tests__/app_plugin.test.ts`
+- Modify: `mobile/app.json` (add the plugin to `plugins`)
+
+**Interfaces:**
+```ts
+withNotificationListener(config: ExpoConfig): ExpoConfig   // default export, an Expo config plugin
+```
+
+**Rules:**
+1. Uses `withAndroidManifest` from `expo/config-plugins`. Nothing may be committed under `mobile/android/` — the manifest is regenerated by `expo prebuild` and EAS Build. This is the whole reason the plugin exists.
+2. Injects into `<application>`:
+   ```xml
+   <service
+     android:name="expo.modules.notificationlistener.PeraPlanoNotificationListenerService"
+     android:exported="false"
+     android:label="PeraPlano"
+     android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+     <intent-filter>
+       <action android:name="android.service.notification.NotificationListenerService" />
+     </intent-filter>
+   </service>
+   ```
+3. Adds `android.permission.RECEIVE_BOOT_COMPLETED` to the manifest permissions. Android restarts a bound listener service itself after boot, so no custom receiver is required; the permission is declared for the boot-time re-bind path.
+4. **Idempotent**: applying the plugin twice must not duplicate the service element. Match on `android:name` before appending.
+5. Do NOT declare `android.permission.READ_SMS` — Google Play prohibits it for expense tracking. Bank SMS reach the app as notifications posted by the default Messages app. A test asserts this permission is absent.
+
+- [ ] **Step 1: Write the failing tests** (call the plugin against a fixture manifest object and assert on the result):
+  - `injects the listener service with the BIND_NOTIFICATION_LISTENER_SERVICE permission`
+  - `injects the notification listener intent-filter action`
+  - `adds RECEIVE_BOOT_COMPLETED to permissions`
+  - `applying the plugin twice does not duplicate the service element`
+  - `never declares READ_SMS or RECEIVE_SMS` (policy guard — this test must never be deleted)
+- [ ] **Step 2:** Run `npx jest --ci modules/notification_listener/__tests__/app_plugin.test.ts` — expected FAIL.
+- [ ] **Step 3:** Implement the plugin and register it in `app.json`.
+- [ ] **Step 4:** Run — expected PASS (5 tests).
+- [ ] **Step 5:** Verify generation end-to-end: `npx expo prebuild --clean --platform android`, then confirm the service block and the permission appear in the generated `android/app/src/main/AndroidManifest.xml`. Delete the generated `android/` directory afterward — it must stay uncommitted.
+- [ ] **Step 6: Commit**
+  ```
+  git add mobile/modules/notification_listener/app.plugin.js mobile/modules/notification_listener/__tests__ mobile/app.json
+  git commit -m "feat(mobile): add config plugin injecting the notification listener service"
+  ```
+
+---
+
+### Task 8: TypeScript wrapper — the contract §4 surface
+
+**Files:**
+- Create: `mobile/modules/notification_listener/index.ts`
+- Test: `mobile/modules/notification_listener/__tests__/index.test.ts`
+
+**Interfaces** — copy contract §4 verbatim; every downstream plan imports from here:
+```ts
+export type RawCapture = {
+  id: string; packageName: string; title: string | null; text: string | null;
+  subText: string | null; bigText: string | null; postedAt: number; capturedAt: number;
+};
+export function isAccessGranted(): Promise<boolean>;
+export function openAccessSettings(): void;
+export function setCaptureEnabled(enabled: boolean): Promise<void>;
+export function setProviderFilter(packageNames: string[]): Promise<void>;
+export function drainPendingCaptures(): Promise<RawCapture[]>;
+export function addCaptureListener(cb: (c: RawCapture) => void): () => void;
+export function getListenerHealth(): Promise<{
+  granted: boolean; serviceConnected: boolean; lastCaptureAt: number | null;
+}>;
+```
+
+**Rules:**
+1. Resolve the native module with `requireNativeModule("NotificationListener")`.
+2. `addCaptureListener` returns an **unsubscribe function** — callers must be able to detach without knowing about `EventSubscription`.
+3. Absent-value normalization: any missing string field arrives as `null`, never `undefined`, so downstream parsers have one shape to handle.
+4. Tests mock `expo-modules-core`'s `requireNativeModule`; the native side is verified by the Kotlin tests and the manual checklist in Task 9.
+
+- [ ] **Step 1: Write the failing tests** with a mocked native module:
+  - `each exported function delegates to the matching native method with the same arguments` (parametrized over all seven)
+  - `drainPendingCaptures returns typed RawCapture objects`
+  - `missing string fields are normalized to null`
+  - `addCaptureListener registers a listener and the returned function removes it`
+  - `getListenerHealth passes lastCaptureAt through as null when the native side reports null`
+- [ ] **Step 2:** Run `npx jest --ci modules/notification_listener/__tests__/index.test.ts` — expected FAIL.
+- [ ] **Step 3:** Implement `index.ts`.
+- [ ] **Step 4:** Run — expected PASS. Run `npx tsc --noEmit` — clean.
+- [ ] **Step 5: Commit**
+  ```
+  git add mobile/modules/notification_listener/index.ts mobile/modules/notification_listener/__tests__
+  git commit -m "feat(mobile): add notification listener typescript wrapper"
+  ```
+
+---
+
+### Task 9: Manual on-device verification
+
+Unit tests cannot prove that Android delivers notifications to a bound listener service, that the buffer survives process death, or that the service re-binds after reboot. **This task is mandatory and must be performed on a real device** (an emulator will not reproduce OEM battery behavior). Record the result of each check in the commit message.
+
+**Preparation:**
+- [ ] Build and install a dev client: `npx eas build --profile development --platform android` (or `npx expo run:android` with a local Android SDK).
+- [ ] Confirm the app launches and the five-tab shell renders.
+
+**Checks:**
+- [ ] **Access grant.** Call `openAccessSettings()` from a debug button or the console; confirm the system Notification Access screen opens and PeraPlano is listed. Grant it. Confirm `isAccessGranted()` now returns `true`.
+- [ ] **Live capture.** Post a test notification:
+  ```
+  adb shell cmd notification post -S bigtext -t "TEST" tag1 "Sent PHP 100.00 to JUAN D. Ref 123."
+  ```
+  Confirm an `onCapture` event fires with the matching text.
+- [ ] **Durability across process death.** Force-stop the app:
+  ```
+  adb shell am force-stop <applicationId>
+  ```
+  Post another test notification, relaunch the app, call `drainPendingCaptures()`, and confirm the notification posted while dead is returned.
+- [ ] **Drain empties.** Call `drainPendingCaptures()` a second time; confirm it returns an empty array.
+- [ ] **Pause switch.** Call `setCaptureEnabled(false)`, post a notification, drain — confirm nothing was captured. Re-enable and confirm capture resumes.
+- [ ] **Provider filter.** Call `setProviderFilter(["com.globe.gcash.android"])`, post a notification from a different package, drain — confirm it was rejected.
+- [ ] **Reboot survival.** `adb reboot`; after boot completes, without opening the app, post a notification; then open the app and drain — confirm it was captured. If it was not, the listener did not re-bind: check that access is still granted (some OEMs revoke it) and record the device and OS version.
+- [ ] **Battery-manager survival.** On a device with an aggressive OEM battery manager (Xiaomi/MIUI, Oppo, Vivo, Huawei — the common PH devices), leave the app closed for two hours, then post a notification and confirm capture. Record which OEM was tested and whether a battery-optimization exemption was required. This result feeds the onboarding guidance built in the M3 plan.
+- [ ] **Buffer cap.** Post 520 notifications in a loop; drain and confirm exactly 500 are returned (oldest evicted, newest kept).
+- [ ] **Commit the results**
+  ```
+  git commit --allow-empty -m "test(mobile): record on-device notification listener verification results"
+  ```
+
+---
+
+## Plan completion checklist (for the executor)
+
+- [ ] Tasks 1–9 committed; `.\gradlew.bat :notification_listener:testDebugUnitTest` green; `npx jest --ci` green; `npx tsc --noEmit` clean.
+- [ ] `mobile/modules/notification_listener/index.ts` exports exactly the seven functions and the `RawCapture` type from contract §4, with no renames.
+- [ ] The config plugin injects the service and its intent-filter idempotently, and the READ_SMS guard test passes.
+- [ ] `mobile/android/` is NOT committed (`git status` clean after a prebuild-and-delete cycle).
+- [ ] Every check in Task 9 was performed on a real device and its result recorded, including the OEM battery-manager outcome.
+- [ ] Next plan unblocked: `2026-08-02-mobile-ingest-m1b-pipeline.md`.
