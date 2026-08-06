@@ -8,17 +8,13 @@
     "scheme": "peraplano",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
-    "splash": {
-      "image": "./assets/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#F7FAF7"
-    },
     "android": {
       "package": "com.peraplano.app",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#F7FAF7"
       },
+      "edgeToEdgeEnabled": true,
       "permissions": []
     },
     "experiments": {
