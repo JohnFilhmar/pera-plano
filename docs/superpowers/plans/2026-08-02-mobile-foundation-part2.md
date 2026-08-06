@@ -1109,7 +1109,17 @@ function useShippedFeature(key: FeatureKey): ShipState;
 ```
 
 **Rules:**
-1. `SHIPPED_FEATURES` is the single per-build rollout switch. Set it for the M1 build: every key `"soon"` EXCEPT none — M1 ships no Plan/More features. Flipping entries to `"shipped"` is the only change M2/M3 make to this file.
+1. `SHIPPED_FEATURES` is the single per-build rollout switch. **Initialize every one of the twelve keys to `"soon"`** — M1 ships the ledger, wallets and Review Queue, none of which are gated by this map, so at the end of M1 the whole Plan tab and most of the More tab correctly read as Soon. Flipping entries to `"shipped"` is the only change later plans make to this file, and each plan flips exactly the keys it finishes:
+
+   | Plan | Flips to `"shipped"` |
+   |---|---|
+   | M2 Part 2 (Task 14) | `limits`, `income` |
+   | M2b (Task 9) | `goals`, `loans` |
+   | M2c (Task 6) | `bills` |
+   | M3 Part 2 (Task 7) | `safe_to_spend`, `recurring` |
+   | M3b (Task 8) | `reports`, `csv_export`, `privacy_center`, `listener_health`, `parser_diagnostics` |
+
+   All twelve keys are `"shipped"` when M3b completes. A key that no plan flips is a bug in the plan set, not a deliberate omission.
 2. `SoonGate` with a `"soon"` feature renders children wrapped so they are: desaturated (`opacity-40`), non-interactive (`pointerEvents="none"`), and captioned with a grey "Soon" chip. Content stays readable — users see the roadmap. With `"shipped"`, it renders children untouched (no wrapper element).
 3. `PlusGate` consults `lib/entitlements.ts` (Task 9). On the free tier it renders children plus a brand-green Plus badge with a lock glyph, and intercepts press to open `UpgradeSheet`. On `plus` it renders children untouched.
 4. `UpgradeSheet` shows the Free-vs-Plus comparison rows from `docs/05-monetization.md` and an upgrade button that is inert in MVP (billing is post-MVP).

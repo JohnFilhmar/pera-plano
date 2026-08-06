@@ -209,15 +209,18 @@ type PaydayEvent = { at: number; amount: Centavos; walletId: string; cadence: Ca
 **Files:**
 - Modify: `mobile/lib/bootstrap.ts`
 - Modify: `mobile/app/_layout.tsx`
+- Modify: `mobile/constants/shipped_features.ts`
 - Test: `mobile/lib/__tests__/bootstrap.test.ts` (extend)
+- Test: `mobile/app/__tests__/plan_hub.test.tsx`
 
 **Rules:**
+0. **Flip `limits` and `income` from `"soon"` to `"shipped"`** in `constants/shipped_features.ts`. M2 Tasks 1–8 built the Limits feature and Tasks 9–13 built Income; this is the flip that removes their grey Soon treatment from the Plan hub. Per the rollout table in the foundation plan (Part 2, Task 15), these two keys belong to this plan and no other plan flips them.
 1. On bootstrap, run `refreshIncomeDetection(now)` and then `maybeEmitPayday(now)` — once, after migrations and the ingest start.
 2. Subscribe to the `ledger:committed` event emitted by the ingest pipeline (M1b Task 10 rule 7): an incoming credit may complete the evidence for detection, so re-run detection on commit, debounced so a burst of drained captures triggers one pass.
 3. Income work must never block or break startup: wrap it so a throw is logged and the app still renders.
 4. The root layout presents `payday_detected_sheet` when `PAYDAY_EVENT` fires while the app is foregrounded.
 
-- [ ] **Step 1: Extend the failing tests:** bootstrap runs income detection after migrations · a `ledger:committed` burst triggers exactly one debounced detection pass · a throwing detection does not prevent bootstrap from resolving · `PAYDAY_EVENT` while foregrounded shows the sheet.
+- [ ] **Step 1: Extend the failing tests:** bootstrap runs income detection after migrations · a `ledger:committed` burst triggers exactly one debounced detection pass · a throwing detection does not prevent bootstrap from resolving · `PAYDAY_EVENT` while foregrounded shows the sheet · the Plan hub renders Limits and Income as active with no Soon chip, and Goals, Loans and Bills still as Soon.
 - [ ] **Step 2:** Run `npx jest --ci lib/__tests__/bootstrap.test.ts` — expected FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run the full suite `npx jest --ci` — expected PASS. `npx tsc --noEmit` clean.
@@ -232,6 +235,7 @@ type PaydayEvent = { at: number; amount: Centavos; walletId: string; cadence: Ca
 ## Plan completion checklist (for the executor)
 
 - [ ] Tasks 10–14 committed; `npx jest --ci` green; `npx tsc --noEmit` clean.
+- [ ] `limits` and `income` are flipped to `"shipped"`; Goals, Loans and Bills remain `"soon"`.
 - [ ] Kinsenas detection handles February and 31-day months correctly (the month-end tests pass).
 - [ ] Averages use the median; a single bonus cannot inflate percent-of-income Limits.
 - [ ] Manual override wins over detection everywhere, and a dismissed suggestion stays dismissed.
