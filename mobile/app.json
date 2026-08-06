@@ -2,36 +2,45 @@
   "expo": {
     "name": "PeraPlano",
     "slug": "pera-plano",
-    "version": "1.0.0",
-    "scheme": "peraplano",
+    "version": "0.1.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "scheme": "peraplano",
+    "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
-    },
-    "ios": {
-      "supportsTablet": true
+      "backgroundColor": "#F7FAF7"
     },
     "android": {
       "package": "com.peraplano.app",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#F7FAF7"
       },
-      "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "permissions": []
     },
-    "web": {
-      "favicon": "./assets/favicon.png"
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
     },
     "plugins": [
       "expo-router",
-      "expo-font",
-      "expo-sqlite"
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 200,
+          "backgroundColor": "#F7FAF7",
+          "dark": {
+            "image": "./assets/splash-icon.png",
+            "backgroundColor": "#0B1210"
+          }
+        }
+      ],
+      "expo-sqlite",
+      "expo-font"
     ]
   }
 }
