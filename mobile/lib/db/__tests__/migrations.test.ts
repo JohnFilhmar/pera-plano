@@ -61,3 +61,41 @@ test("getDatabase turns PRAGMA foreign_keys ON and is a singleton", async () => 
   expect(row?.foreign_keys).toBe(1);
   expect(await getDatabase()).toBe(db);
 });
+
+test("applies migrations in ascending numeric order, not lexicographic order", async () => {
+  const db = await getDatabase();
+  // Deliberately unsorted input, and version 10 spans the digit boundary against 1 and 2:
+  // a lexicographic ("10" < "2") comparator would apply 10 before 2.
+  const outOfOrder: Migration[] = [
+    { version: 10, name: "ten", sql: "CREATE TABLE t_ten (id TEXT PRIMARY KEY);" },
+    { version: 1, name: "one", sql: "CREATE TABLE t_one (id TEXT PRIMARY KEY);" },
+    { version: 2, name: "two", sql: "CREATE TABLE t_two (id TEXT PRIMARY KEY);" },
+  ];
+  const applied = await runMigrations(db, outOfOrder);
+  expect(applied).toEqual([1, 2, 10]);
+});
+
+test("a migration whose version-insert fails rolls back its own DDL, not just prior state", async () => {
+  const db = await getDatabase();
+  // Two migrations sharing one version number: the first's INSERT into
+  // schema_migrations succeeds and commits; the second's CREATE TABLE succeeds but its
+  // INSERT then collides with the first's PRIMARY KEY row. If the insert were not part of
+  // the same transaction as the migration body, second_table would survive that failure —
+  // a schema change applied without ever being recorded.
+  const clashing: Migration[] = [
+    { version: 5, name: "first", sql: "CREATE TABLE first_table (id TEXT PRIMARY KEY);" },
+    { version: 5, name: "second", sql: "CREATE TABLE second_table (id TEXT PRIMARY KEY);" },
+  ];
+  await expect(runMigrations(db, clashing)).rejects.toThrow();
+
+  const tables = await db.getAllAsync<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type = 'table'",
+  );
+  expect(tables.map((t) => t.name)).toContain("first_table");
+  expect(tables.map((t) => t.name)).not.toContain("second_table");
+
+  const recorded = await db.getAllAsync<{ version: number; name: string }>(
+    "SELECT version, name FROM schema_migrations WHERE version = 5",
+  );
+  expect(recorded).toEqual([{ version: 5, name: "first" }]);
+});

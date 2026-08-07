@@ -20,8 +20,13 @@ export function getDatabase(): Promise<SQLiteDatabase> {
 
 /** Close and forget the handle. Used by tests for per-test isolation. */
 export async function closeDatabase(): Promise<void> {
-  if (!dbPromise) return;
-  const db = await dbPromise;
+  const promise = dbPromise;
+  if (!promise) return;
+  // Clear the singleton before awaiting, not after: if `promise` (or `db.closeAsync()`
+  // below) rejects, dbPromise must not be left pointing at a dead, already-settled
+  // promise — otherwise every later getDatabase() replays that same rejection forever
+  // instead of retrying open().
   dbPromise = null;
+  const db = await promise;
   await db.closeAsync();
 }
