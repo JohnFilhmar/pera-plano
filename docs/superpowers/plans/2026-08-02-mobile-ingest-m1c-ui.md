@@ -178,7 +178,7 @@ formatCentavos(amount: Centavos): string;    // 123456 → "₱1,234.56"
 // wallet_matchers_repo.ts
 listMatchers(walletId?: string): Promise<WalletMatcher[]>;
 setMatchers(walletId: string, matchers: NewWalletMatcher[]): Promise<void>;   // replaces the wallet's set
-findWalletForProvider(providerKey: string, walletHint?: string): Promise<string | null>;
+findWalletForPackage(packageName: string, hint?: string): Promise<string | null>;  // shipped wallet_matchers has package_name + hint, NO provider_key column
 ```
 
 **Rules:**
@@ -189,7 +189,7 @@ findWalletForProvider(providerKey: string, walletHint?: string): Promise<string 
 5. **Cash reconciliation:** the sheet asks "How much is in your physical wallet right now?" and writes the difference as an adjustment transaction categorized to Fees & Charges with `source: "manual"` and a note. It never edits past transactions.
 6. Only `type: "cash"` wallets offer reconciliation.
 
-- [ ] **Step 1: Write the failing tests** for `wallet_matchers_repo`: set-then-list round-trips · `setMatchers` replaces rather than appends · `findWalletForProvider` resolves with and without a hint · reassigning a pair moves it to the new wallet. Run, implement, green, commit.
+- [ ] **Step 1: Write the failing tests** for `wallet_matchers_repo`: set-then-list round-trips · `setMatchers` replaces rather than appends · `findWalletForPackage` resolves with and without a hint · reassigning a pair moves it to the new wallet. Run, implement, green, commit.
 - [ ] **Step 2: Write the failing tests** for the form and sheet: the form requires a name and a type · the matcher picker binds provider plus hint · assigning an already-bound pair warns · creating a fourth wallet on the free tier opens the upgrade sheet (mock `getTier` to `"free"`) · creating a fourth wallet on `plus` succeeds · archiving offers the transaction-handling choice and defaults to keeping them · reconciliation writes a single adjustment transaction of the exact difference · reconciling with no difference writes nothing · reconciliation is offered only for cash wallets.
 - [ ] **Step 3:** Run `npx jest --ci components/wallets` — expected FAIL.
 - [ ] **Step 4:** Implement the form, picker, sheet, and both routes.

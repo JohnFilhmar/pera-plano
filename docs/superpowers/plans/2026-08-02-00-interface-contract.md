@@ -88,7 +88,32 @@ sumSpend(args: { from: number; to: number; categoryIds?: string[]; walletIds?: s
 enqueue(item: NewReviewItem): Promise<ReviewQueueItem>
 listOpen(): Promise<ReviewQueueItem[]>
 resolve(id: string, resolution: ReviewResolution): Promise<void>
+countOpen(): Promise<number>
+purgeExpired(now: number): Promise<number>
+// categories_repo.ts
+seedDefaultCategories(): Promise<void>            // idempotent, fixed ids
+UNCATEGORIZED_ID: string                          // stable literal "cat_uncategorized"
+// app_settings_repo.ts — typed key/value; values are JSON-encoded so booleans/numbers/null survive
+getSetting<K extends keyof AppSettings>(key: K): Promise<AppSettings[K]>   // returns the default when unset
+setSetting<K extends keyof AppSettings>(key: K, value: AppSettings[K]): Promise<void>
+getAllSettings(): Promise<AppSettings>
+resetSettings(): Promise<void>
 ```
+
+> **Shipped reality, recorded 2026-08-07 (foundation Tasks 1–14 complete).** Several plans were
+> drafted against guessed table shapes that turned out wrong in ways that fail at *runtime*, not
+> compile time. `mobile/lib/db/migrations/001_core.sql` is the source of truth. The corrections:
+>
+> | Guessed in some plans | Actually shipped |
+> |---|---|
+> | `getDb()` | **`getDatabase()`** (with `closeDatabase()`) |
+> | `app_settings(key TEXT PK, value TEXT)` | `app_settings(id PK, key UNIQUE, **value_json**, updated_at)` — go through `app_settings_repo`, never raw SQL |
+> | `parser_rulesets(..., providers_json, updated_at)`, singleton `id='current'` | `parser_rulesets(id, **version** UNIQUE, **payload_json**, **installed_at**)` — "current" is the highest `version`, there is no singleton row |
+> | `wallet_matchers(..., provider_key, package_name, ...)` | `wallet_matchers(id, wallet_id, **package_name**, hint, ...)` — **no `provider_key` column**; match on `package_name` (+ optional `hint` when one provider feeds two wallets) |
+> | `ReviewKind` with underscores; 5-variant tagged `ReviewResolution` | hyphenated kinds (`low-confidence`, `unknown-provider`, `ambiguous-transfer`, `possible-duplicate`); `ReviewResolution = "confirmed" \| "dismissed"` |
+>
+> Also settled by implementation: date ranges are **`[from, to)`** — `from` inclusive, `to`
+> exclusive — everywhere. Transfer exclusion keys on `transactions.transfer_link_id IS NULL`.
 
 Domain types in `mobile/types/domain.ts` (foundation owns): `Wallet`, `Transaction`,
 `TransferLink`, `Category`, `Limit`, `IncomeProfile`, `Goal`, `Loan`, `Bill`,

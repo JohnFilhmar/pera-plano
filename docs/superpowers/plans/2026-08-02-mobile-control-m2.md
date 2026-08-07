@@ -37,7 +37,7 @@ Foundation's `migrations/001_core.sql` creates all tables from `docs/02-domain-m
 - `bill_payments(id, bill_id, due_date, adjusted_due_date, status, transaction_id, amount_paid, resolved_at, created_at, updated_at)`
 - `recurring_patterns(id, merchant, amount, period, confidence, acknowledged, bill_id, created_at, updated_at)`
 - `user_rules(id, matcher, action, priority, is_enabled, created_from, applied_count, last_applied_at, created_at, updated_at)`
-- `app_settings(key, value)` (TEXT key PK, TEXT value)
+- `app_settings(id TEXT PK, key TEXT UNIQUE, value_json TEXT, updated_at INTEGER)` — use `lib/db/repos/app_settings_repo.ts` (foundation Task 14), NOT raw SQL
 
 If a column name differs in the real `001_core.sql`, adapt the SQL inside the repo function only (repos are the single mapping layer). If a column is entirely MISSING, STOP and escalate to the foundation-plan owner — do not add DDL here. The integration-test harness (Task 1) executes the real migration files, so any mismatch surfaces as a failing repo test, not a runtime surprise.
 
@@ -395,7 +395,7 @@ Everything later tasks lean on: clock injection, UUIDs, centavo formatting, loca
       const db = await createTestDb();
       setDbHandleForTests(db);
       const h = await getDbHandle();
-      await h.runAsync("INSERT INTO app_settings (key, value) VALUES (?, ?)", ["k1", "v1"]);
+      await h.runAsync("INSERT INTO app_settings (id, key, value_json, updated_at) VALUES (?, ?, ?, ?)", ["k1", "v1"]);
       const row = await h.getFirstAsync<{ value: string }>(
         "SELECT value FROM app_settings WHERE key = ?", ["k1"],
       );
@@ -2483,7 +2483,7 @@ Two pieces. The repo maps the singleton `income_profiles` row (+ `income_profile
   export async function setIncomeDetectionState(s: IncomeDetectionState): Promise<void> {
     const db = await getDbHandle();
     await db.runAsync(
-      `INSERT INTO app_settings (key, value) VALUES (?, ?)
+      `INSERT INTO app_settings (id, key, value_json, updated_at) VALUES (?, ?, ?, ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
       [DETECTION_KEY, JSON.stringify(s)],
     );
