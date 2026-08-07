@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <title>About — PeraPlano</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="assets/brand/peraplano-favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous">
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet">
+  <style>
+    :root{color-scheme:light;--brand:#15803D;--brand-2:#22C55E;--on-brand:#FFFFFF;--mint:#DCFCE7;--bg:#F7FAF7;--surface:#FFFFFF;--text:#10201A;--muted:#5B6E64;--danger:#DC2626;--warn:#D97706;--line:rgba(16,32,26,.12);--ph-blue:#0038A8;--ph-red:#CE1126;--ph-yellow:#FCD116;--shadow:0 24px 60px -24px rgba(16,32,26,.28)}
+    :root[data-theme="dark"]{color-scheme:dark;--brand:#22C55E;--brand-2:#4ADE80;--on-brand:#06130C;--mint:#14261C;--bg:#0B1210;--surface:#111A16;--text:#E8F0EC;--muted:#9BB0A6;--danger:#F87171;--warn:#FBBF24;--line:rgba(232,240,236,.14);--shadow:0 24px 60px -24px rgba(0,0,0,.6)}
+    body{margin:0;background:var(--bg);color:var(--text);font-family:'Manrope',system-ui,sans-serif;-webkit-font-smoothing:antialiased;text-wrap:pretty}
+    a{color:var(--brand);text-decoration:none}
+    a:hover{color:var(--brand-2);text-decoration:underline}
+    @keyframes pp-float{0%,100%{transform:translateY(2.5px) rotate(-1.6deg)}50%{transform:translateY(-3.5px) rotate(2deg)}}
+    @keyframes pp-flow{to{stroke-dashoffset:-2.22}}
+  </style>
+  <script>(function(){try{var t=localStorage.getItem('pp-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.setAttribute('data-theme',t)}catch(e){}})();</script>
+</helmet>
+<div data-screen-label="About" style="min-height:100vh;display:flex;flex-direction:column">
+  <header style="position:sticky;top:0;z-index:50;background:color-mix(in oklab, var(--bg) 86%, transparent);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)">
+    <div style="max-width:1120px;margin:0 auto;padding:12px 24px;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+      <a href="Landing.dc.html" style="display:flex;align-items:center;gap:9px;color:var(--text)" style-hover="text-decoration:none">
+        <svg width="26" height="26" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.6 21.4 C 6 21 8.6 18.4 10.2 14.2" fill="none" stroke="var(--brand-2)" stroke-width="1.4" stroke-linecap="round" stroke-dasharray="0.12 2.1" opacity="0.55"></path><path d="M22 2 L2 9 L11 13 Z" fill="var(--brand-2)"></path><path d="M22 2 L11 13 L15 22 Z" fill="var(--brand)"></path></svg>
+        <strong style="font-size:17px;font-weight:800;letter-spacing:-0.01em">PeraPlano</strong>
+      </a>
+      <nav style="display:flex;gap:18px;font-size:13.5px;font-weight:600">
+        <a href="Landing.dc.html" style="color:var(--muted)">Home</a>
+        <a href="About.dc.html" aria-current="page" style="color:var(--text);font-weight:800">About</a>
+        <a href="Pricing.dc.html" style="color:var(--muted)">Pricing</a>
+      </nav>
+      <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
+        <button onClick="{{ toggleTheme }}" aria-label="Toggle dark mode" style="width:36px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--muted);cursor:pointer;padding:0" style-hover="color:var(--brand)">
+          <sc-if value="{{ isDark }}" hint-placeholder-val="{{ false }}">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="m4.93 4.93 1.41 1.41"></path><path d="m17.66 17.66 1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="m6.34 17.66-1.41 1.41"></path><path d="m19.07 4.93-1.41 1.41"></path></svg>
+          </sc-if>
+          <sc-if value="{{ isLight }}" hint-placeholder-val="{{ true }}">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg>
+          </sc-if>
+        </button>
+        <a href="Landing.dc.html#get" style="background:var(--brand);color:var(--on-brand);padding:9px 16px;border-radius:999px;font-size:13px;font-weight:700" style-hover="filter:brightness(1.1);text-decoration:none;color:var(--on-brand)">Get the app</a>
+      </div>
+    </div>
+  </header>
+
+  <sc-if value="{{ exampleBadges }}" hint-placeholder-val="{{ true }}">
+    <div style="background:color-mix(in oklab, var(--warn) 14%, transparent);border-bottom:1px solid color-mix(in oklab, var(--warn) 30%, transparent)">
+      <div style="max-width:1120px;margin:0 auto;padding:9px 24px;font-size:12.5px;font-weight:700;color:var(--warn);display:flex;align-items:center;gap:8px">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><path d="M12 9v4"></path><path d="M12 17h.01"></path><circle cx="12" cy="12" r="10"></circle></svg>
+        Everything on this page is EXAMPLE placeholder copy — replace it with the real story before launch.
+      </div>
+    </div>
+  </sc-if>
+
+  <section style="max-width:820px;margin:0 auto;padding:72px 24px 56px;width:100%;box-sizing:border-box">
+    <div style="display:flex;align-items:center;gap:10px">
+      <div style="font-size:12px;letter-spacing:.16em;font-weight:800;color:var(--brand)">ABOUT US</div>
+      <sc-if value="{{ exampleBadges }}" hint-placeholder-val="{{ true }}"><span style="font-size:9.5px;font-weight:800;letter-spacing:.08em;padding:3px 8px;border-radius:99px;background:color-mix(in oklab, var(--warn) 14%, transparent);color:var(--warn)">EXAMPLE</span></sc-if>
+    </div>
+    <h1 style="margin:14px 0 18px;font-size:clamp(2rem,4.4vw,2.9rem);line-height:1.1;letter-spacing:-0.03em;font-weight:800">Financial clarity for every Filipino.</h1>
+    <p style="margin:0;font-size:17px;line-height:1.7;color:var(--muted);max-width:640px">PeraPlano exists because keeping track of money shouldn't be a second job. Your phone already hears every peso that moves — we just taught it to listen.</p>
+  </section>
+
+  <section style="max-width:820px;margin:0 auto;padding:0 24px 64px;width:100%;box-sizing:border-box">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
+      <h2 style="margin:0;font-size:clamp(1.35rem,2.6vw,1.8rem);letter-spacing:-0.02em;font-weight:800">Our story</h2>
+      <sc-if value="{{ exampleBadges }}" hint-placeholder-val="{{ true }}"><span style="font-size:9.5px;font-weight:800;letter-spacing:.08em;padding:3px 8px;border-radius:99px;background:color-mix(in oklab, var(--warn) 14%, transparent);color:var(--warn)">EXAMPLE</span></sc-if>
+    </div>
+    <div style="font-size:15px;line-height:1.75;color:var(--muted);display:flex;flex-direction:column;gap:14px;max-width:660px">
+      <p style="margin:0">PeraPlano started in 2025 in a Quezon City apartment, with a drawer full of receipts and three budgeting apps abandoned in a row. Every one of them made the same demand: type in everything you spend, every day, forever.</p>
+      <p style="margin:0">But the phone already knew. Every GCash payment pinged. Every BPI debit alerted. The data was sitting right there in the notification shade — nobody was listening to it.</p>
+      <p style="margin:0">So we built the listener. PeraPlano turns the alerts you already get into a complete, automatic picture of your money — parsed on your phone, never uploaded, never sold. You set the rules once; it does the logging forever.</p>
+    </div>
+  </section>
+
+  <section style="background:var(--mint)">
+    <div style="max-width:820px;margin:0 auto;padding:56px 24px;text-align:center">
+      <div style="font-size:12px;letter-spacing:.16em;font-weight:800;color:var(--brand);margin-bottom:12px">OUR MISSION</div>
+      <p style="margin:0 auto;font-size:clamp(1.3rem,2.8vw,1.8rem);line-height:1.4;font-weight:800;letter-spacing:-0.02em;max-width:600px">Financial clarity for every Filipino — automatic, private, and free to start.</p>
+    </div>
+  </section>
+
+  <section style="max-width:1120px;margin:0 auto;padding:64px 24px;width:100%;box-sizing:border-box">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:26px">
+      <h2 style="margin:0;font-size:clamp(1.35rem,2.6vw,1.8rem);letter-spacing:-0.02em;font-weight:800">What we believe</h2>
+      <sc-if value="{{ exampleBadges }}" hint-placeholder-val="{{ true }}"><span style="font-size:9.5px;font-weight:800;letter-spacing:.08em;padding:3px 8px;border-radius:99px;background:color-mix(in oklab, var(--warn) 14%, transparent);color:var(--warn)">EXAMPLE</span></sc-if>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px">
+      <div style="background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:22px">
+        <h3 style="margin:0 0 7px;font-size:15px;font-weight:800">Plain numbers</h3>
+        <p style="margin:0;font-size:13.5px;line-height:1.6;color:var(--muted)">No jargon, no ten-chart dashboards. One honest number you can act on today.</p>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:22px">
+        <h3 style="margin:0 0 7px;font-size:15px;font-weight:800">Privacy is the product</h3>
+        <p style="margin:0;font-size:13.5px;line-height:1.6;color:var(--muted)">Local-first isn't a feature we added — it's the foundation everything sits on.</p>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:22px">
+        <h3 style="margin:0 0 7px;font-size:15px;font-weight:800">Free means free</h3>
+        <p style="margin:0;font-size:13.5px;line-height:1.6;color:var(--muted)">The basics stay free forever. Plus adds depth — never a paywall on your own money.</p>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:22px">
+        <h3 style="margin:0 0 7px;font-size:15px;font-weight:800">Built for payday reality</h3>
+        <p style="margin:0;font-size:13.5px;line-height:1.6;color:var(--muted)">Designed around the 15th and 30th, e-wallet life, and utang that goes both ways.</p>
+      </div>
+    </div>
+  </section>
+
+  <section style="max-width:1120px;margin:0 auto;padding:8px 24px 72px;width:100%;box-sizing:border-box">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:26px">
+      <h2 style="margin:0;font-size:clamp(1.35rem,2.6vw,1.8rem);letter-spacing:-0.02em;font-weight:800">The team</h2>
+      <sc-if value="{{ exampleBadges }}" hint-placeholder-val="{{ true }}"><span style="font-size:9.5px;font-weight:800;letter-spacing:.08em;padding:3px 8px;border-radius:99px;background:color-mix(in oklab, var(--warn) 14%, transparent);color:var(--warn)">EXAMPLE PEOPLE</span></sc-if>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px">
+      <div style="background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:24px;text-align:center">
+        <div style="width:60px;height:60px;border-radius:999px;background:var(--mint);color:var(--brand);display:inline-flex;align-items:center;justify-content:center;font-size:19px;font-weight:800;margin-bottom:13px">AS</div>
+        <h3 style="margin:0 0 4px;font-size:15px;font-weight:800">A. Santos</h3>
+        <p style="margin:0;font-size:12.5px;font-weight:600;color:var(--muted)">Founder · Engineering</p>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:24px;text-align:center">
+        <div style="width:60px;height:60px;border-radius:999px;background:var(--mint);color:var(--brand);display:inline-flex;align-items:center;justify-content:center;font-size:19px;font-weight:800;margin-bottom:13px">RD</div>
+        <h3 style="margin:0 0 4px;font-size:15px;font-weight:800">R. dela Cruz</h3>
+        <p style="margin:0;font-size:12.5px;font-weight:600;color:var(--muted)">Product Design</p>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:24px;text-align:center">
+        <div style="width:60px;height:60px;border-radius:999px;background:var(--mint);color:var(--brand);display:inline-flex;align-items:center;justify-content:center;font-size:19px;font-weight:800;margin-bottom:13px">JR</div>
+        <h3 style="margin:0 0 4px;font-size:15px;font-weight:800">J. Ramos</h3>
+        <p style="margin:0;font-size:12.5px;font-weight:600;color:var(--muted)">Data &amp; Parsing</p>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:24px;text-align:center">
+        <div style="width:60px;height:60px;border-radius:999px;background:var(--mint);color:var(--brand);display:inline-flex;align-items:center;justify-content:center;font-size:19px;font-weight:800;margin-bottom:13px">MV</div>
+        <h3 style="margin:0 0 4px;font-size:15px;font-weight:800">M. Villanueva</h3>
+        <p style="margin:0;font-size:12.5px;font-weight:600;color:var(--muted)">Community &amp; Support</p>
+      </div>
+    </div>
+  </section>
+
+  <section style="max-width:820px;margin:0 auto;padding:0 24px 84px;width:100%;box-sizing:border-box">
+    <div style="background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:32px;text-align:center">
+      <div style="display:inline-flex;align-items:center;gap:10px;margin-bottom:8px">
+        <h2 style="margin:0;font-size:clamp(1.3rem,2.4vw,1.65rem);letter-spacing:-0.02em;font-weight:800">Say hello</h2>
+        <sc-if value="{{ exampleBadges }}" hint-placeholder-val="{{ true }}"><span style="font-size:9.5px;font-weight:800;letter-spacing:.08em;padding:3px 8px;border-radius:99px;background:color-mix(in oklab, var(--warn) 14%, transparent);color:var(--warn)">EXAMPLE</span></sc-if>
+      </div>
+      <p style="margin:0 0 20px;font-size:14px;line-height:1.6;color:var(--muted)">Questions, bank-parser requests, or just kwento about your budget — we read everything.</p>
+      <div style="display:flex;justify-content:center;gap:10px;flex-wrap:wrap;font-size:13.5px;font-weight:700">
+        <a href="mailto:hello@peraplano.example" style="background:var(--brand);color:var(--on-brand);padding:10px 18px;border-radius:999px" style-hover="filter:brightness(1.1);text-decoration:none;color:var(--on-brand)">hello@peraplano.example</a>
+        <a href="mailto:support@peraplano.example" style="border:1px solid var(--line);color:var(--text);padding:10px 18px;border-radius:999px;background:var(--surface)" style-hover="color:var(--brand);text-decoration:none">support@peraplano.example</a>
+      </div>
+    </div>
+  </section>
+
+  <footer style="border-top:1px solid var(--line);margin-top:auto">
+    <div style="max-width:1120px;margin:0 auto;padding:40px 24px 30px">
+      <div style="display:flex;flex-wrap:wrap;gap:44px;justify-content:space-between;align-items:flex-start;margin-bottom:30px">
+        <div style="display:flex;align-items:center;gap:9px">
+          <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 L2 9 L11 13 Z" fill="var(--brand-2)"></path><path d="M22 2 L11 13 L15 22 Z" fill="var(--brand)"></path></svg>
+          <strong style="font-size:16px;font-weight:800">PeraPlano</strong>
+        </div>
+        <div style="display:flex;gap:18px;font-size:13.5px;font-weight:600">
+          <a href="Landing.dc.html" style="color:var(--text)">Home</a>
+          <a href="About.dc.html" style="color:var(--text)">About us</a>
+          <a href="Pricing.dc.html" style="color:var(--text)">Pricing</a>
+        </div>
+      </div>
+      <div style="border-top:1px solid var(--line);padding-top:20px;font-size:12px;color:var(--muted);display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap">
+        <span>© 2026 PeraPlano</span>
+        <span style="display:inline-flex;align-items:center;gap:8px"><span aria-hidden="true">🇵🇭</span> Proudly made in the Philippines
+          <sc-if value="{{ flagAccents }}" hint-placeholder-val="{{ true }}">
+            <span style="display:inline-flex;gap:3px" aria-hidden="true"><span style="width:5px;height:5px;border-radius:99px;background:var(--ph-blue)"></span><span style="width:5px;height:5px;border-radius:99px;background:var(--ph-red)"></span><span style="width:5px;height:5px;border-radius:99px;background:var(--ph-yellow)"></span></span>
+          </sc-if>
+        </span>
+      </div>
+    </div>
+  </footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;exampleBadges&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Content&quot;},&quot;flagAccents&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Brand&quot;}}">
+class Component extends DCLogic {
+  state = {
+    theme: (typeof document !== 'undefined' && document.documentElement.getAttribute('data-theme')) || 'light'
+  };
+  setTheme(t) {
+    document.documentElement.setAttribute('data-theme', t);
+    try { localStorage.setItem('pp-theme', t); } catch (e) {}
+    this.setState({ theme: t });
+  }
+  renderVals() {
+    return {
+      isDark: this.state.theme === 'dark',
+      isLight: this.state.theme !== 'dark',
+      toggleTheme: () => this.setTheme(this.state.theme === 'dark' ? 'light' : 'dark'),
+      exampleBadges: this.props.exampleBadges ?? true,
+      flagAccents: this.props.flagAccents ?? true
+    };
+  }
+}
+</script>
+</body>
+</html>
