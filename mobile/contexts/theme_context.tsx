@@ -38,6 +38,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
           setPreferenceState(stored);
         }
       })
+      .catch(() => {
+        // Storage read failed (e.g. native module error) — fall back to
+        // the default "auto" preference rather than leaving an unhandled
+        // rejection; `finally` below still lets the app render.
+      })
       .finally(() => setIsReady(true));
   }, []);
 
