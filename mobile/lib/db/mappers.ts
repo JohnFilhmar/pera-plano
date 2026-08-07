@@ -1,0 +1,182 @@
+// lib/db/mappers.ts — row (snake_case) <-> domain (camelCase). The foundation
+// covers the aggregates its repos use; feature plans extend THIS file for theirs.
+import type {
+  Category,
+  ReviewItemPayload,
+  ReviewKind,
+  ReviewQueueItem,
+  Transaction,
+  TxDirection,
+  TxSource,
+  Wallet,
+  WalletType,
+} from "@/types/domain";
+
+export type WalletRow = {
+  id: string;
+  name: string;
+  type: string;
+  balance: number;
+  currency: string;
+  is_archived: number;
+  created_at: number;
+  updated_at: number;
+};
+
+export function rowToWallet(row: WalletRow): Wallet {
+  return {
+    id: row.id,
+    name: row.name,
+    type: row.type as WalletType,
+    balance: row.balance,
+    currency: "PHP",
+    isArchived: row.is_archived === 1,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function walletToRow(wallet: Wallet): WalletRow {
+  return {
+    id: wallet.id,
+    name: wallet.name,
+    type: wallet.type,
+    balance: wallet.balance,
+    currency: wallet.currency,
+    is_archived: wallet.isArchived ? 1 : 0,
+    created_at: wallet.createdAt,
+    updated_at: wallet.updatedAt,
+  };
+}
+
+export type TransactionRow = {
+  id: string;
+  wallet_id: string;
+  category_id: string;
+  amount: number;
+  direction: string;
+  occurred_at: number;
+  merchant: string | null;
+  counterparty: string | null;
+  reference_no: string | null;
+  source: string;
+  confidence: number;
+  raw_notification_id: string | null;
+  transfer_link_id: string | null;
+  note: string | null;
+  created_at: number;
+  updated_at: number;
+};
+
+export function rowToTransaction(row: TransactionRow): Transaction {
+  return {
+    id: row.id,
+    walletId: row.wallet_id,
+    categoryId: row.category_id,
+    amount: row.amount,
+    direction: row.direction as TxDirection,
+    occurredAt: row.occurred_at,
+    merchant: row.merchant,
+    counterparty: row.counterparty,
+    referenceNo: row.reference_no,
+    source: row.source as TxSource,
+    confidence: row.confidence,
+    rawNotificationId: row.raw_notification_id,
+    transferLinkId: row.transfer_link_id,
+    note: row.note,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function transactionToRow(tx: Transaction): TransactionRow {
+  return {
+    id: tx.id,
+    wallet_id: tx.walletId,
+    category_id: tx.categoryId,
+    amount: tx.amount,
+    direction: tx.direction,
+    occurred_at: tx.occurredAt,
+    merchant: tx.merchant,
+    counterparty: tx.counterparty,
+    reference_no: tx.referenceNo,
+    source: tx.source,
+    confidence: tx.confidence,
+    raw_notification_id: tx.rawNotificationId,
+    transfer_link_id: tx.transferLinkId,
+    note: tx.note,
+    created_at: tx.createdAt,
+    updated_at: tx.updatedAt,
+  };
+}
+
+export type CategoryRow = {
+  id: string;
+  name: string;
+  parent_id: string | null;
+  icon: string;
+  is_system: number;
+  is_hidden: number;
+  created_at: number;
+  updated_at: number;
+};
+
+export function rowToCategory(row: CategoryRow): Category {
+  return {
+    id: row.id,
+    name: row.name,
+    parentId: row.parent_id,
+    icon: row.icon,
+    isSystem: row.is_system === 1,
+    isHidden: row.is_hidden === 1,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function categoryToRow(category: Category): CategoryRow {
+  return {
+    id: category.id,
+    name: category.name,
+    parent_id: category.parentId,
+    icon: category.icon,
+    is_system: category.isSystem ? 1 : 0,
+    is_hidden: category.isHidden ? 1 : 0,
+    created_at: category.createdAt,
+    updated_at: category.updatedAt,
+  };
+}
+
+export type ReviewQueueItemRow = {
+  id: string;
+  kind: string;
+  payload_json: string;
+  raw_notification_id: string | null;
+  created_at: number;
+  expires_at: number | null;
+  resolved_at: number | null;
+};
+
+export function rowToReviewQueueItem(row: ReviewQueueItemRow): ReviewQueueItem {
+  return {
+    id: row.id,
+    kind: row.kind as ReviewKind,
+    payload: JSON.parse(row.payload_json) as ReviewItemPayload,
+    rawNotificationId: row.raw_notification_id,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    resolvedAt: row.resolved_at,
+  };
+}
+
+export function reviewQueueItemToRow(item: ReviewQueueItem): ReviewQueueItemRow {
+  return {
+    id: item.id,
+    kind: item.kind,
+    payload_json: JSON.stringify(item.payload),
+    raw_notification_id: item.rawNotificationId,
+    created_at: item.createdAt,
+    expires_at: item.expiresAt,
+    resolved_at: item.resolvedAt,
+  };
+}
