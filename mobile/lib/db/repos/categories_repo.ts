@@ -24,6 +24,24 @@ export class SystemCategoryDeleteError extends Error {
 }
 
 /**
+ * Thrown by `hideCategory` and `deleteCategory` when the target is
+ * `UNCATEGORIZED_ID`. Uncategorized is stricter than every other system
+ * category — it can be neither hidden nor deleted at all, not even via the
+ * hide path other system rows use (docs/02-domain-model.md §3.4 invariant 2;
+ * §5 I8). The reason is structural, not stylistic: the ingest pipeline's
+ * Categorizer falls back to `UNCATEGORIZED_ID` for every transaction it can't
+ * classify. Hiding it would make that continuous stream disappear from every
+ * category-filtered view while still counting in totals — a discrepancy with
+ * no visible cause.
+ */
+export class UncategorizedProtectedError extends Error {
+  constructor(public readonly action: "hide" | "delete") {
+    super(`cannot ${action} the Uncategorized category`);
+    this.name = "UncategorizedProtectedError";
+  }
+}
+
+/**
  * Thrown by `updateCategory` when the target is a system category. Per
  * docs/02-domain-model.md §3.4: system categories cannot be renamed,
  * re-parented, or have their icon changed — only hidden/unhidden — because
@@ -254,8 +272,14 @@ export async function updateCategory(
  * (docs/02-domain-model.md §3.4: hiding is "the model's archival mechanism
  * for categories"). This is the supported way to retire a system category —
  * `deleteCategory` rejects those outright. A no-op if `id` has no row.
+ *
+ * Throws `UncategorizedProtectedError` for `UNCATEGORIZED_ID` specifically:
+ * unlike every other system category, Uncategorized cannot be hidden either.
  */
 export async function hideCategory(id: string): Promise<void> {
+  if (id === UNCATEGORIZED_ID) {
+    throw new UncategorizedProtectedError("hide");
+  }
   const db = await getDatabase();
   await db.runAsync("UPDATE categories SET is_hidden = 1, updated_at = ? WHERE id = ?", [
     Date.now(),
@@ -265,16 +289,29 @@ export async function hideCategory(id: string): Promise<void> {
 
 /**
  * Deletes a custom Category, reassigning its children to its own `parentId`
- * (or `null` if it was top-level) so nothing is orphaned. Throws
- * `SystemCategoryDeleteError` for a system row; a no-op if `id` has no row.
+ * (or `null` if it was top-level) and its own Transactions to that same
+ * target — except a Transaction can never go to `null` (`category_id` is
+ * `NOT NULL`), so a top-level category's Transactions fall back to
+ * `UNCATEGORIZED_ID` instead (docs/02-domain-model.md §3.4: "the deleted
+ * category's Transactions are reassigned to its parent if one exists, else
+ * to Uncategorized"). Nothing is orphaned either way.
  *
- * Does not touch Transactions that reference this category directly — the
- * schema's foreign key on `transactions.category_id` will reject the DELETE
- * if any exist. Reassigning a deleted category's own Transactions (to its
- * parent or to Uncategorized, per docs/02-domain-model.md §3.4) is out of
- * this repo's scope; see the task report for why.
+ * Throws `UncategorizedProtectedError` for `UNCATEGORIZED_ID` (checked before
+ * any lookup — it can be neither hidden nor deleted) and
+ * `SystemCategoryDeleteError` for any other system row. A no-op if `id` has
+ * no row.
+ *
+ * The reparent, the Transaction reassignment, and the delete itself run in
+ * one DB transaction: if the final DELETE fails (e.g. some other table still
+ * references this category with its own un-reassigned foreign key), the
+ * whole thing rolls back rather than leaving Transactions pointed at a
+ * category that silently vanished underneath them.
  */
 export async function deleteCategory(id: string): Promise<void> {
+  if (id === UNCATEGORIZED_ID) {
+    throw new UncategorizedProtectedError("delete");
+  }
+
   const db = await getDatabase();
   const existing = await getCategory(id);
   if (!existing) {
@@ -284,11 +321,16 @@ export async function deleteCategory(id: string): Promise<void> {
     throw new SystemCategoryDeleteError(id);
   }
 
+  const reassignTransactionsTo = existing.parentId ?? UNCATEGORIZED_ID;
   const now = Date.now();
   await db.withTransactionAsync(async () => {
     await db.runAsync("UPDATE categories SET parent_id = ?, updated_at = ? WHERE parent_id = ?", [
       existing.parentId,
       now,
+      id,
+    ]);
+    await db.runAsync("UPDATE transactions SET category_id = ? WHERE category_id = ?", [
+      reassignTransactionsTo,
       id,
     ]);
     await db.runAsync("DELETE FROM categories WHERE id = ?", [id]);

@@ -8,10 +8,27 @@ import {
   listCategories,
   seedDefaultCategories,
   SystemCategoryDeleteError,
+  UncategorizedProtectedError,
   UNCATEGORIZED_ID,
 } from "../categories_repo";
+import { createWallet } from "../wallets_repo";
 import { freshDb } from "@/test_support/db";
 import type { SQLiteDatabase } from "expo-sqlite";
+
+/** Raw-SQL transaction insert for setup — no dedicated factory exists yet. */
+async function insertTransaction(args: {
+  id: string;
+  walletId: string;
+  categoryId: string;
+  amount: number;
+}): Promise<void> {
+  const now = Date.now();
+  await db.runAsync(
+    `INSERT INTO transactions (id, wallet_id, category_id, amount, direction, occurred_at, source, confidence, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'out', ?, 'manual', 1.0, ?, ?)`,
+    [args.id, args.walletId, args.categoryId, args.amount, now, now, now],
+  );
+}
 
 let db: SQLiteDatabase;
 
@@ -275,5 +292,117 @@ describe("createCategory sibling-name uniqueness handles the NULL parent_id case
     await expect(
       createCategory({ name: "Echo", icon: "tv", parentId: parent.id }),
     ).resolves.toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Coordinator rulings (fix pass): Uncategorized is protected from hide too,
+// and deleteCategory must reassign its own Transactions instead of relying
+// on the FK to reject the delete outright.
+// ---------------------------------------------------------------------------
+
+describe("Uncategorized cannot be hidden or deleted (docs §3.4 invariant 2, §5 I8)", () => {
+  test("hideCategory(UNCATEGORIZED_ID) throws and the row stays visible and unhidden", async () => {
+    await seedDefaultCategories();
+    await expect(hideCategory(UNCATEGORIZED_ID)).rejects.toThrow(UncategorizedProtectedError);
+
+    const stillThere = await getCategory(UNCATEGORIZED_ID);
+    expect(stillThere).not.toBeNull();
+    expect(stillThere?.isHidden).toBe(false);
+    expect((await listCategories()).map((c) => c.id)).toContain(UNCATEGORIZED_ID);
+  });
+
+  test("deleteCategory(UNCATEGORIZED_ID) throws and the row survives", async () => {
+    await seedDefaultCategories();
+    await expect(deleteCategory(UNCATEGORIZED_ID)).rejects.toThrow(UncategorizedProtectedError);
+
+    const stillThere = await getCategory(UNCATEGORIZED_ID);
+    expect(stillThere).not.toBeNull();
+    expect((await listCategories()).map((c) => c.id)).toContain(UNCATEGORIZED_ID);
+  });
+});
+
+describe("deleteCategory reassigns the deleted category's own transactions instead of orphaning them", () => {
+  test("deleting a child category moves its transactions to the parent, amount intact", async () => {
+    const wallet = await createWallet({ name: "Cash", type: "cash" });
+    const parent = await createCategory({ name: "Food (custom)", icon: "utensils" });
+    const child = await createCategory({ name: "Coffee", icon: "coffee", parentId: parent.id });
+    await insertTransaction({
+      id: "tx-coffee",
+      walletId: wallet.id,
+      categoryId: child.id,
+      amount: 15000,
+    });
+
+    await deleteCategory(child.id);
+
+    expect(await getCategory(child.id)).toBeNull();
+    const row = await db.getFirstAsync<{ category_id: string; amount: number }>(
+      "SELECT category_id, amount FROM transactions WHERE id = ?",
+      ["tx-coffee"],
+    );
+    // Exact centavo value, not just "truthy" — catches a reassignment that
+    // accidentally rewrites more than category_id.
+    expect(row).toEqual({ category_id: parent.id, amount: 15000 });
+  });
+
+  test("deleting a top-level category moves its transactions to Uncategorized, amount intact", async () => {
+    await seedDefaultCategories();
+    const wallet = await createWallet({ name: "Cash", type: "cash" });
+    const custom = await createCategory({ name: "One-off", icon: "circle" });
+    await insertTransaction({
+      id: "tx-oneoff",
+      walletId: wallet.id,
+      categoryId: custom.id,
+      amount: 999999,
+    });
+
+    await deleteCategory(custom.id);
+
+    expect(await getCategory(custom.id)).toBeNull();
+    const row = await db.getFirstAsync<{ category_id: string; amount: number }>(
+      "SELECT category_id, amount FROM transactions WHERE id = ?",
+      ["tx-oneoff"],
+    );
+    expect(row).toEqual({ category_id: UNCATEGORIZED_ID, amount: 999999 });
+  });
+});
+
+describe("deleteCategory's reparent + transaction-reassign + delete are atomic", () => {
+  test("when the delete step fails, no transaction is reassigned and the category survives", async () => {
+    await seedDefaultCategories();
+    const wallet = await createWallet({ name: "Cash", type: "cash" });
+    const custom = await createCategory({ name: "Doomed", icon: "circle" });
+    await insertTransaction({
+      id: "tx-doomed",
+      walletId: wallet.id,
+      categoryId: custom.id,
+      amount: 42000,
+    });
+
+    // Force the final DELETE to fail without mocking anything: a bill still
+    // references this category, and the schema's foreign key on
+    // bills.category_id has no ON DELETE action, so
+    // `DELETE FROM categories WHERE id = ?` throws mid-transaction — after
+    // the reparent and transaction-reassign UPDATEs earlier in the same
+    // withTransactionAsync block have already run, but before COMMIT.
+    const now = Date.now();
+    await db.runAsync(
+      `INSERT INTO bills (id, name, amount, amount_mode, due_rule_json, category_id, created_at, updated_at)
+       VALUES (?, ?, ?, 'fixed', '{}', ?, ?, ?)`,
+      ["bill-doomed", "Doomed Bill", 10000, custom.id, now, now],
+    );
+
+    await expect(deleteCategory(custom.id)).rejects.toThrow(/FOREIGN KEY/i);
+
+    // Rolled back: the category itself must still exist...
+    expect(await getCategory(custom.id)).not.toBeNull();
+    // ...and the transaction must still point at it, not at wherever it
+    // would have been reassigned to had the delete gone through.
+    const row = await db.getFirstAsync<{ category_id: string }>(
+      "SELECT category_id FROM transactions WHERE id = ?",
+      ["tx-doomed"],
+    );
+    expect(row).toEqual({ category_id: custom.id });
   });
 });
