@@ -112,6 +112,14 @@ RSA-OAEP is used rather than ECDH because Keystore's `PURPOSE_AGREE_KEY` require
 
 **Mechanism:** `BiometricPrompt` with `BIOMETRIC_STRONG | DEVICE_CREDENTIAL`. Accepting device credential means the app works for users with no biometric hardware or no enrolled fingerprint, and gives everyone a fallback when a sensor fails.
 
+**The KEK's authentication validity window is 10 seconds, not per-operation.** This is load-bearing and was nearly wrong.
+
+`setUserAuthenticationParameters(0, …)` — the stricter setting — requires every single use of the key to be authorized by a `BiometricPrompt.CryptoObject` bound to that exact cipher. A generic prompt does not satisfy it. Had the key shipped that way, this section's design would have been unimplementable: the app unlocks with a generic prompt, then unwraps the DEK, and that unwrap would have thrown `UserNotAuthenticatedException` every time.
+
+A short validity window instead lets any successful device authentication make the key usable for ten seconds — ample for the single unwrap that happens immediately after unlock, and short enough to be useless as an attack window.
+
+What the stricter setting would have bought is narrow: protection against code *inside our own process* using the key during that window. Such code runs as our UID and can read the DEK out of process memory without touching the Keystore at all, and §4 already places it out of scope. `CryptoObject` binding remains the upgrade path if the threat model ever tightens — it would mean moving the unwrap inside the native biometric callback.
+
 **What happens while locked:**
 - The DEK is cleared from memory and the database handle is closed.
 - The listener keeps capturing to the encrypted buffer (§6). Tracking never stops because the app is locked.

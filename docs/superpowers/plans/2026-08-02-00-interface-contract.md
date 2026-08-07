@@ -312,6 +312,7 @@ Owned by `2026-08-07-encryption-foundation.md`.
 
 - Locked on **cold start**, and again after **five minutes** in the background — measured from when the app backgrounded, not from last interaction.
 - `expo-local-authentication` with biometric **or device credential**. Never biometric-only; users without enrolled biometrics must still open their own app.
+- **The device KEK uses a 10-second authentication validity window, not per-operation auth.** `setUserAuthenticationParameters(0, …)` would require a `CryptoObject`-bound cipher for every use, which a generic unlock prompt cannot satisfy — the DEK unwrap would throw `UserNotAuthenticatedException` on every unlock. Do not "harden" this back to 0 without also moving the unwrap inside the native biometric callback. Reasoning in `docs/12-encryption-and-app-lock.md` §7.
 - `lock()` clears the DEK **and** closes the database handle, so no plaintext page cache survives.
 - The root layout's render gate has **four** conditions: fonts, theme, bootstrap, and unlocked.
 - **The listener keeps capturing while locked** (§4). Tracking never stops because the app is locked.
