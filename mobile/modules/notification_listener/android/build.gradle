@@ -23,6 +23,18 @@ android {
   lint {
     abortOnError false
   }
+
+  // KeyStoreBridge is the first thing in this module that touches real
+  // android.* framework classes (KeyStore, KeyGenParameterSpec, Cipher)
+  // instead of just plain-JVM code, so this is the first task that needs
+  // Robolectric rather than plain JUnit. isIncludeAndroidResources lets
+  // Robolectric pick up this module's own AndroidManifest.xml/resources so
+  // its shadow framework has something to bind against.
+  testOptions {
+    unitTests {
+      includeAndroidResources = true
+    }
+  }
 }
 
 dependencies {
@@ -33,4 +45,20 @@ dependencies {
   // The real org.json is required because android.jar's stubs throw.
   testImplementation "junit:junit:4.13.2"
   testImplementation "org.json:json:20240303"
+
+  // KeyStoreBridge (Task 2 of the encryption plan) is the first thing in
+  // this module to touch real android.* framework classes rather than
+  // plain JVM code, so it needs a JVM test runner that can load them
+  // instead of the plain android.jar stubs, which throw on every method.
+  // IMPORTANT, verified empirically (see task-2-report.md): Robolectric
+  // does NOT provide a working "AndroidKeyStore" JCA provider -- there is
+  // no shadow for KeyStore/KeyGenParameterSpec/KeyPairGenerator in this or
+  // any other Robolectric release checked (4.14.1, 4.16.1, 4.17-beta-2),
+  // and KeyStore.getInstance("AndroidKeyStore") throws
+  // NoSuchAlgorithmException under it. The real Android Keystore requires a
+  // live keystore2 system daemon over Binder, which Robolectric has no
+  // software substitute for. SDK/AGP/Kotlin versions are intentionally NOT
+  // pinned here; they come from the root project via
+  // useDefaultAndroidSdkVersions().
+  testImplementation "org.robolectric:robolectric:4.16.1"
 }
