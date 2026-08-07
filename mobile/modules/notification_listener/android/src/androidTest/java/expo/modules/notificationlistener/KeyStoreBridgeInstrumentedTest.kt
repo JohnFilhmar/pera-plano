@@ -35,9 +35,8 @@ import org.junit.runner.RunWith
  *
  * The three checks that need a HUMAN changing phone settings mid-test
  * (screen-lock removal invalidates the key; biometric enrollment does not;
- * a device with no screen lock cannot create the key at all), plus the
- * fully-authenticated wrap/unwrap round trip via a real BiometricPrompt,
- * are not here -- they cannot be automated and are manual items for the
+ * a device with no screen lock cannot create the key at all) are not here --
+ * they cannot be automated and are manual items for the
  * plan's on-device verification task instead (see task-2-report.md).
  */
 @RunWith(AndroidJUnit4::class)
@@ -102,21 +101,27 @@ class KeyStoreBridgeInstrumentedTest {
   /**
    * Inverted from an earlier draft that called `wrapWithDeviceKek` and
    * expected it to SUCCEED with no prior authentication. It doesn't: the
-   * device KEK requires authentication for every use
-   * (`setUserAuthenticationParameters(0, ...)`), and no `BiometricPrompt`
-   * flow happens anywhere in this process. That earlier version was a test
-   * that was EXPECTED to fail whenever it happened to run against an
-   * unauthenticated session -- a red test people learn to ignore, which
-   * then hides a real regression behind the same red.
+   * device KEK requires a qualifying authentication within the last 10
+   * seconds (`setUserAuthenticationParameters(10, ...)`), and no
+   * `BiometricPrompt` flow happens anywhere in this process, so no such
+   * authentication exists. That earlier version was a test that was
+   * EXPECTED to fail whenever it happened to run against an unauthenticated
+   * session -- a red test people learn to ignore, which then hides a real
+   * regression behind the same red.
    *
-   * Asserting the throw instead is deterministic and proves something
-   * genuinely valuable: that the auth gate is actually wired. That is the
-   * entire security claim of the device wrap (docs §5) -- a device KEK
-   * usable without authentication would be no better than no KEK at all.
+   * This is NOT proving that every operation needs its own fresh prompt --
+   * with a 10-second window (chosen deliberately over per-operation
+   * `CryptoObject` binding; see the comment on `setUserAuthenticationParameters`
+   * in `KeyVault.kt` for why), a `wrapWithDeviceKek`/`unwrapWithDeviceKek`
+   * call made shortly after a real unlock would succeed with no special
+   * binding at all. What this test proves is narrower and still the whole
+   * security claim of the device wrap (docs §5): with NO recent
+   * authentication of ANY kind, the key is unusable. A device KEK usable
+   * without ever authenticating would be no better than no KEK at all.
    *
-   * The fully-authenticated path (wrap, then unwrap, inside a real
-   * `BiometricPrompt`-bound `CryptoObject`) is a manual on-device check
-   * instead -- see task-2-report.md for the precise steps.
+   * The fully-authenticated round trip is exercised by the ordinary app
+   * unlock flow itself (§7) rather than needing a bespoke on-device check --
+   * see task-2-report.md.
    */
   @Test
   fun unauthenticatedWrapWithDeviceKekThrowsUserNotAuthenticated() {

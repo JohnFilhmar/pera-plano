@@ -109,7 +109,32 @@ internal object AndroidKeyVault : KeyVault {
           .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
           .setKeySize(256)
           .setUserAuthenticationRequired(true)
-          .setUserAuthenticationParameters(0, AUTH_TYPES)
+          // 10-second validity window, not 0 (per-operation, CryptoObject-
+          // bound). CryptoObject binding is textbook-stronger -- the
+          // authentication is cryptographically tied to that exact cipher
+          // call -- but what it actually defends against is code inside
+          // OUR OWN process using this key during the window right after
+          // the user authenticates. That code already runs as our UID: it
+          // can read the DEK straight out of process memory and never
+          // needs the Keystore at all. docs/12-encryption-and-app-lock.md
+          // §4 already places "malware with root running while the app is
+          // unlocked" out of scope, so CryptoObject binding's marginal
+          // protection here is close to zero.
+          //
+          // Against that: a 0-second/CryptoObject-bound key would force
+          // the DEK unwrap to happen inside the native biometric callback,
+          // restructuring the JS/native boundary Tasks 6 and 9 are built
+          // around -- for a generic (non-CryptoObject) BiometricPrompt
+          // app-unlock, which is what §7 specifies, a 0-second window
+          // would make EVERY unwrapWithDeviceKek call throw
+          // UserNotAuthenticatedException, since Keystore has no way to
+          // know a plain authenticate() call was "for" this key. Ten
+          // seconds is ample for the single unwrap that follows unlock,
+          // and short enough to be useless as an attack window. If the
+          // threat model ever tightens to include in-process compromise,
+          // the upgrade path is CryptoObject binding (timeout 0) plus
+          // restructuring the unwrap to run inside the auth callback.
+          .setUserAuthenticationParameters(10, AUTH_TYPES)
           // Secure default is `true`; deliberately `false` here. See
           // docs/12-encryption-and-app-lock.md §5: enrolling a new biometric
           // already requires the device screen-lock credential, so the
