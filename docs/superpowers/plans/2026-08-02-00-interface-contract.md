@@ -52,12 +52,28 @@ export const palette = {
 PH-flag colors are accent-only (badges, "made in PH" mark) — brand green leads. Icons: lucide;
 brand mark = `Send`.
 
-## 3. Mobile local database (expo-sqlite)
+## 3. Mobile local database (SQLCipher via op-sqlite)
 
 Owned by the **foundation plan**: `mobile/lib/db/` — `database.ts` (open + PRAGMA foreign_keys ON),
 `migrations.ts` (numbered migration runner, `schema_migrations` table), `migrations/001_core.sql`
 creates ALL tables below (full schema known from `docs/02-domain-model.md`; map camelCase fields
 → snake_case columns). Feature plans NEVER run DDL; they use repositories.
+
+> **Encryption amendment (2026-08-07).** The database is **SQLCipher-encrypted**, opened with
+> `@op-engineering/op-sqlite` rather than `expo-sqlite`. `database.ts` gains:
+> ```ts
+> unlockDatabase(dek: Uint8Array): Promise<void>;
+> isDatabaseUnlocked(): boolean;
+> getDatabase(): Promise<DB>;   // now THROWS DatabaseLockedError before unlock
+> ```
+> **`getDatabase()` throwing when locked is deliberate.** Returning a fresh empty handle instead
+> would let repositories silently write into a second, unencrypted store — data loss that looks
+> like a working app. Every repository call therefore has a new failure mode; callers running
+> behind the app lock satisfy it by construction, but code paths that can run while locked (the
+> listener, scheduled alert delivery) must never touch a repository.
+> Migrations run **after** unlock, on the decrypted handle; `001_core.sql` is unchanged. The Jest
+> mock stays plaintext `sql.js` — repository tests exercise repository logic, not encryption,
+> which is proven by the Kotlin tests and an on-device check. See `docs/12-encryption-and-app-lock.md`.
 
 Tables (PKs are `id TEXT`; FKs `<entity>_id`):
 `wallets`, `wallet_matchers`, `transactions`, `transfer_links`, `categories`, `limits`,
@@ -144,7 +160,26 @@ export function addCaptureListener(cb: (c: RawCapture) => void): () => void; // 
 export function getListenerHealth(): Promise<{
   granted: boolean; serviceConnected: boolean; lastCaptureAt: number | null;
 }>;
+
+// Added 2026-08-07 by the encryption plan. See docs/12-encryption-and-app-lock.md.
+export function getCapturePublicKey(): Promise<string>;           // base64 SPKI; NO auth required
+export function decryptCaptures(lines: string[]): Promise<RawCapture[]>;  // requires unlock
+export function wrapWithDeviceKek(plaintextB64: string): Promise<string>;
+export function unwrapWithDeviceKek(blobB64: string): Promise<string>;    // rejects DeviceKeyInvalidated
+export function isDeviceKeyUsable(): Promise<boolean>;            // false once the Keystore key is destroyed
+export function isDeviceSecure(): Promise<boolean>;               // KeyguardManager.isDeviceSecure()
+export function openSecuritySettings(): void;                     // deep-link, to set a screen lock
+export function isKeyguardLocked(): Promise<boolean>;             // drives amount-free alert copy
 ```
+
+**Encryption amendments (2026-08-07).** Captures are written to disk **sealed** — an RSA-OAEP-wrapped
+AES-256-GCM envelope per record, under a Keystore public key the listener can read without
+authenticating. The private key is auth-gated, so the listener can write forever and read nothing.
+`drainPendingCaptures()` keeps its exact signature and still returns plaintext `RawCapture[]`;
+decryption happens below the bridge, so no caller learns the captures were ever encrypted. It does
+now **require the app to be unlocked**. Binary crosses the bridge as base64, never as number arrays.
+`KeyPermanentlyInvalidatedException` surfaces as a distinguishable `DeviceKeyInvalidated` rejection,
+because JS must respond by prompting for recovery words rather than showing a generic failure.
 
 ## 5. Ingest pipeline — `mobile/lib/ingest/`
 
@@ -235,3 +270,49 @@ At-cap behavior everywhere: keep data, block new creation, never delete (docs/05
 
 Execution order: `server` ∥ `mobile-foundation` first (independent); then `m1` → `m2` → `m3`
 (each depends on the previous being merged). Plans are written in parallel against THIS contract.
+
+## 9. Key management — `mobile/lib/crypto/`
+
+Owned by `2026-08-07-encryption-foundation.md`. Full rationale in `docs/12-encryption-and-app-lock.md`.
+
+Three keys, each with one job:
+
+| Key | What | Where it lives | Unlocked by |
+|---|---|---|---|
+| **DEK** | Random 256-bit AES key; encrypts the SQLCipher database | **Never stored bare** — only ever as two wrap blobs | Either wrap below |
+| **KEK-device** | AES-256 in the Android Keystore, hardware-backed, StrongBox when available | Keystore, non-exportable by construction | Biometric or device credential |
+| **KEK-recovery** | Argon2id-derived from the user's 12 BIP-39 recovery words | Never stored; re-derived from the words | The user typing them |
+
+```ts
+// lib/crypto/key_manager.ts
+type KeyState = "uninitialized" | "locked" | "unlocked";
+initializeKeys(phrase: string[]): Promise<void>;              // first run only
+unlockWithDeviceKey(): Promise<Uint8Array>;                    // throws DeviceKeyInvalidated
+unlockWithRecoveryPhrase(phrase: string[]): Promise<Uint8Array>;
+rewrapAfterInvalidation(phrase: string[]): Promise<void>;
+getKeyState(): Promise<KeyState>;
+lock(): void;
+// lib/crypto/recovery_phrase.ts
+generatePhrase(): string[];                                    // 12 words, BIP-39 English
+deriveRecoveryKey(phrase: string[], salt: Uint8Array): Promise<Uint8Array>;
+normalizePhrase(input: string): string[];
+validatePhrase(words: string[]): { ok: boolean; badIndexes: number[] };   // checksum-verified
+```
+
+Rules that bind every plan:
+1. **The DEK is never written unwrapped.** Two wrap blobs plus a salt live in `expo-secure-store`; the DEK exists only in memory while unlocked.
+2. **A device screen lock is required.** Android refuses to create an auth-gated Keystore key without one. Onboarding gates on `isDeviceSecure()` and cannot be skipped.
+3. **Keystore invalidation is recoverable, not fatal.** Removing the screen lock destroys KEK-device; the recovery words rewrap it without re-encrypting the database.
+4. **Losing both paths is unrecoverable** — the lock screen offers a confirmed wipe-and-start-over, because no support process can help.
+5. **No key material, plaintext, or recovery word may ever reach a log, crash report, or error message.**
+
+## 10. App lock
+
+Owned by `2026-08-07-encryption-foundation.md`.
+
+- Locked on **cold start**, and again after **five minutes** in the background — measured from when the app backgrounded, not from last interaction.
+- `expo-local-authentication` with biometric **or device credential**. Never biometric-only; users without enrolled biometrics must still open their own app.
+- `lock()` clears the DEK **and** closes the database handle, so no plaintext page cache survives.
+- The root layout's render gate has **four** conditions: fonts, theme, bootstrap, and unlocked.
+- **The listener keeps capturing while locked** (§4). Tracking never stops because the app is locked.
+- **Alerts carry two copy variants.** With the keyguard on, no amount, balance, counterparty, or parsed merchant may appear — a bill or wallet name the user chose is fine. Selected at **post** time via `selectAlertCopy(copy, await isKeyguardLocked())`, never at schedule time. This binds M2, M2b, M2c and M3: a task supplying one string instead of two is incomplete.
