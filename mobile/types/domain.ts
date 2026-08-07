@@ -120,6 +120,13 @@ export type Category = {
   updatedAt: EpochMs;
 };
 
+export type NewCategory = {
+  name: string;
+  icon: string;
+  /** Absent/undefined and `null` both mean top-level (docs/02-domain-model.md §3.4). */
+  parentId?: string | null;
+};
+
 // ---------- Limit ----------
 export type LimitScope = "daily" | "weekly" | "monthly" | "annual";
 export type LimitBasis = "fixed" | "percent-of-income";
