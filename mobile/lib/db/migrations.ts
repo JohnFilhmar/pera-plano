@@ -1,4 +1,5 @@
 import type { SQLiteDatabase } from "expo-sqlite";
+import coreSql from "./migrations/001_core.sql";
 
 export type Migration = { version: number; name: string; sql: string };
 
@@ -6,7 +7,7 @@ export type Migration = { version: number; name: string; sql: string };
  * Registry of numbered migrations, ascending. Task 7 registers 001_core.
  * NEVER edit a shipped migration — add a new numbered one instead.
  */
-export const MIGRATIONS: Migration[] = [];
+export const MIGRATIONS: Migration[] = [{ version: 1, name: "core", sql: coreSql }];
 
 /**
  * Applies every migration whose version is not yet in schema_migrations,
