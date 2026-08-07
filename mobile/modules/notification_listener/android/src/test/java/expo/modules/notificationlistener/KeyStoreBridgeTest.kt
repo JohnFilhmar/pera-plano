@@ -5,6 +5,7 @@ import java.security.SecureRandom
 import java.security.spec.X509EncodedKeySpec
 import javax.crypto.BadPaddingException
 import javax.crypto.Cipher
+import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -12,14 +13,21 @@ import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 
 private const val RSA_TRANSFORMATION = "RSA/ECB/OAEPWithSHA-256AndMGF1Padding"
 
 /**
  * Task 2 of the encryption plan (docs/12-encryption-and-app-lock.md §3, §6).
+ *
+ * Plain JUnit -- no Robolectric, no device. [KeyStoreBridge.vault] is swapped
+ * for a [FakeKeyVault] below, so every test here exercises the REAL
+ * AES-GCM/RSA-OAEP `Cipher` logic in [KeyStoreBridge] against a plain-JCE
+ * in-memory key. See [KeyVault]'s class doc for exactly what that does and
+ * does not prove: the real Android-Keystore configuration (hardware
+ * backing, auth-required, StrongBox, invalidation) is invisible here by
+ * construction and is covered instead by
+ * `src/androidTest/.../KeyStoreBridgeInstrumentedTest.kt` and by manual
+ * on-device checks.
  *
  * These tests are written to DISCRIMINATE against plausible-but-broken
  * implementations, not just to prove a round trip works:
@@ -37,21 +45,22 @@ private const val RSA_TRANSFORMATION = "RSA/ECB/OAEPWithSHA-256AndMGF1Padding"
  *    something with the FIRST key and unwrapping it only AFTER the second
  *    `ensure*` call.
  */
-// Pinned to the emulated SDK, not the app's real compileSdk/targetSdk (those
-// stay unpinned via useDefaultAndroidSdkVersions() per the project's build
-// config). Robolectric's API 36 platform jar requires Java 21 to load its
-// sandbox and this toolchain runs Java 17, so tests would otherwise fail at
-// collection time with "Android SDK 36 requires Java 21 (have Java 17)"
-// before a single test body executes. API 35 has full Keystore/Cipher
-// coverage for everything this bridge uses.
-@Config(sdk = [35])
-@RunWith(RobolectricTestRunner::class)
 class KeyStoreBridgeTest {
 
   @Before
   fun setUp() {
+    KeyStoreBridge.vault = FakeKeyVault()
     KeyStoreBridge.ensureDeviceKek()
     KeyStoreBridge.ensureCaptureKeyPair()
+  }
+
+  @After
+  fun tearDown() {
+    // Defensive: KeyStoreBridge is a singleton object, so its `vault` var
+    // is process-global. Production never touches it, but leaving a fake
+    // installed after this class runs would silently defang any future
+    // test file that assumes the real AndroidKeyVault is in place.
+    KeyStoreBridge.vault = AndroidKeyVault
   }
 
   // ---- idempotence of the ensure* functions -----------------------------

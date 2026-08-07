@@ -18,18 +18,36 @@ android {
   defaultConfig {
     versionCode 1
     versionName "0.1.0"
+
+    // Required for src/androidTest (KeyStoreBridgeInstrumentedTest) to run
+    // at all. This module has no separate "app under test" -- its
+    // instrumented tests are self-contained, so this alone is sufficient;
+    // no testApplicationId/testBuildType wiring needed.
+    testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
   }
 
   lint {
     abortOnError false
   }
 
-  // KeyStoreBridge is the first thing in this module that touches real
-  // android.* framework classes (KeyStore, KeyGenParameterSpec, Cipher)
-  // instead of just plain-JVM code, so this is the first task that needs
-  // Robolectric rather than plain JUnit. isIncludeAndroidResources lets
-  // Robolectric pick up this module's own AndroidManifest.xml/resources so
-  // its shadow framework has something to bind against.
+  // Robolectric was added for KeyStoreBridge (Task 2 of the encryption
+  // plan) on the assumption that it would provide a working Android
+  // Keystore for JVM tests. Verified empirically that it does NOT, on any
+  // version (see task-2-report.md): there is no shadow for
+  // KeyStore/KeyGenParameterSpec/KeyPairGenerator in ANY Robolectric
+  // release checked (4.14.1, 4.16.1, 4.17-beta-2), and
+  // KeyStore.getInstance("AndroidKeyStore") throws NoSuchAlgorithmException
+  // under it -- the real Keystore requires a live keystore2 system daemon
+  // over Binder, which Robolectric has no software substitute for.
+  //
+  // Because of that, KeyStoreBridgeTest does NOT use Robolectric: it swaps
+  // KeyStoreBridge's KeyVault seam (see KeyVault.kt) for a plain-JCE fake
+  // and runs as ordinary JUnit. Robolectric stays a dependency here as
+  // forward-looking infra for whatever FUTURE task in this module is first
+  // to need a non-Keystore android.* class (SharedPreferences, Context,
+  // ...) -- isIncludeAndroidResources lets it pick up this module's own
+  // AndroidManifest.xml/resources so its shadow framework has something to
+  // bind against once that day comes.
   testOptions {
     unitTests {
       includeAndroidResources = true
@@ -46,19 +64,15 @@ dependencies {
   testImplementation "junit:junit:4.13.2"
   testImplementation "org.json:json:20240303"
 
-  // KeyStoreBridge (Task 2 of the encryption plan) is the first thing in
-  // this module to touch real android.* framework classes rather than
-  // plain JVM code, so it needs a JVM test runner that can load them
-  // instead of the plain android.jar stubs, which throw on every method.
-  // IMPORTANT, verified empirically (see task-2-report.md): Robolectric
-  // does NOT provide a working "AndroidKeyStore" JCA provider -- there is
-  // no shadow for KeyStore/KeyGenParameterSpec/KeyPairGenerator in this or
-  // any other Robolectric release checked (4.14.1, 4.16.1, 4.17-beta-2),
-  // and KeyStore.getInstance("AndroidKeyStore") throws
-  // NoSuchAlgorithmException under it. The real Android Keystore requires a
-  // live keystore2 system daemon over Binder, which Robolectric has no
-  // software substitute for. SDK/AGP/Kotlin versions are intentionally NOT
-  // pinned here; they come from the root project via
+  // See the class doc on `testOptions` above for why this is here but
+  // KeyStoreBridgeTest doesn't use it. SDK/AGP/Kotlin versions are
+  // intentionally NOT pinned here; they come from the root project via
   // useDefaultAndroidSdkVersions().
   testImplementation "org.robolectric:robolectric:4.16.1"
+
+  // Instrumented tests (src/androidTest) for the properties that can only
+  // be verified against the real Android Keystore on a real device/emulator
+  // -- see KeyStoreBridgeInstrumentedTest.kt and KeyVault.kt's class doc.
+  androidTestImplementation "androidx.test.ext:junit:1.2.1"
+  androidTestImplementation "androidx.test:runner:1.6.2"
 }
