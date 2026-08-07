@@ -181,7 +181,37 @@ internal object AndroidKeyVault : KeyVault {
           // of this keypair (§6): the listener seals captures with no user
           // present and no way to authenticate.
           .setUserAuthenticationRequired(true)
-          .setUserAuthenticationParameters(0, AUTH_TYPES)
+          // Same 10-second window as the device KEK, and the same
+          // reasoning: CryptoObject binding (timeout 0) is
+          // textbook-stronger, but it only defends against our own process
+          // using this key during the post-auth window -- code that
+          // already runs as our UID and can read decrypted captures
+          // straight out of process memory without touching the Keystore
+          // at all. docs/12-encryption-and-app-lock.md §4 places
+          // "malware with root while unlocked" out of scope, so
+          // CryptoObject binding's marginal protection here is close to
+          // zero, same as for the device KEK.
+          //
+          // This one matters more in shape, not degree: drainPendingCaptures()
+          // runs after an ordinary app unlock and calls decryptWithCaptureKey
+          // once per buffered capture -- up to CaptureBuffer.MAX_CAPTURES
+          // (500) doFinal calls in one drain. A timeout of 0 would throw
+          // UserNotAuthenticatedException on the very first record, the
+          // same failure this fixed for the device KEK. Measured: 500
+          // sequential RSA-2048/OAEP decrypts of the software (non-Keystore)
+          // crypto path average well under 1ms each (~440ms total) on a
+          // development machine, so raw computation is not the risk: a full
+          // 500-record drain is nowhere near the 10-second window on pure
+          // compute time. What that measurement can't cover is the
+          // Keystore/Binder IPC round-trip per operation on a real device --
+          // the same fundamental gap as everywhere else in this file (see
+          // KeyVault's class doc) -- so treat the 10-second margin as
+          // generous rather than exact until an on-device timing check
+          // confirms a full-buffer drain in practice. If the threat model
+          // ever tightens to include in-process compromise, the upgrade
+          // path is CryptoObject binding (timeout 0) plus restructuring the
+          // drain to decrypt each record inside the auth callback.
+          .setUserAuthenticationParameters(10, AUTH_TYPES)
           // Same rationale as the device KEK above: a capture already
           // sealed under the OLD public key becomes permanently
           // undecryptable if the private key is invalidated by biometric
