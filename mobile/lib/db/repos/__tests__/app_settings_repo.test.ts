@@ -249,3 +249,66 @@ describe("resetSettings clears the underlying rows, verified directly against th
     expect(await getAllSettings()).toEqual(DEFAULT_SETTINGS);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Coordinator review finding: `app_settings` is read at app boot, and
+// `setSetting` isn't the only thing that can put a row in this table — a
+// corrupted/partially-restored backup, or a future migration writing this
+// table directly, can leave `value_json` unparseable. An unguarded
+// JSON.parse would throw out of `bootstrapApp()` and the app would never
+// open. These tests write a malformed row directly with raw SQL (bypassing
+// `setSetting`, which never writes bad JSON) to prove the read paths recover
+// instead of propagating the SyntaxError.
+// ---------------------------------------------------------------------------
+
+describe("a corrupt value_json cell is decoded defensively, never thrown", () => {
+  test("getSetting returns the key's documented default when its stored value_json is malformed", async () => {
+    await db.runAsync(
+      "INSERT INTO app_settings (id, key, value_json, updated_at) VALUES (?, ?, ?, ?)",
+      ["corrupt-1", "theme_preference", "{not json", Date.now()],
+    );
+
+    const value = await getSetting("theme_preference");
+    expect(value).toBe(DEFAULT_SETTINGS.theme_preference);
+    expect(typeof value).toBe("string");
+  });
+
+  test("getAllSettings falls back to the default for a corrupt key without poisoning the other stored values", async () => {
+    // Two healthy stored values, then one row corrupted via raw SQL — proves
+    // the fallback is scoped to the one bad key, not a whole-read failure
+    // that would also wipe out onboarding_complete/last_parser_ruleset_version.
+    await setSetting("onboarding_complete", true);
+    await setSetting("last_parser_ruleset_version", 3);
+    await db.runAsync(
+      "INSERT INTO app_settings (id, key, value_json, updated_at) VALUES (?, ?, ?, ?)",
+      ["corrupt-2", "theme_preference", "{not json", Date.now()],
+    );
+
+    const all = await getAllSettings();
+    expect(all.theme_preference).toBe(DEFAULT_SETTINGS.theme_preference);
+    expect(all.onboarding_complete).toBe(true);
+    expect(typeof all.onboarding_complete).toBe("boolean");
+    expect(all.last_parser_ruleset_version).toBe(3);
+    expect(typeof all.last_parser_ruleset_version).toBe("number");
+    expect(all.capture_enabled).toBe(DEFAULT_SETTINGS.capture_enabled);
+    expect(all.telemetry_enabled).toBe(DEFAULT_SETTINGS.telemetry_enabled);
+    expect(all.cash_reconcile_prompt_at).toBe(DEFAULT_SETTINGS.cash_reconcile_prompt_at);
+  });
+
+  test("the corruption is logged, not swallowed silently — the warning names the offending key", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await db.runAsync(
+        "INSERT INTO app_settings (id, key, value_json, updated_at) VALUES (?, ?, ?, ?)",
+        ["corrupt-3", "last_parser_ruleset_version", "not json at all", Date.now()],
+      );
+
+      await getSetting("last_parser_ruleset_version");
+
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0][0]).toContain("last_parser_ruleset_version");
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});

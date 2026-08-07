@@ -39,9 +39,36 @@ export const DEFAULT_SETTINGS: AppSettings = {
 type SettingValueRow = { value_json: string };
 
 /**
+ * Decodes one stored `value_json` cell, falling back to `DEFAULT_SETTINGS[key]`
+ * on malformed JSON instead of letting `JSON.parse` throw. `setSetting` is the
+ * only writer and always writes valid JSON, so this should never fire in
+ * normal operation — but a corrupted/partially-restored backup, or a future
+ * migration that writes this table directly, can still leave a row with
+ * unparseable `value_json`. This table is read at app boot (bootstrapApp), so
+ * an uncaught `SyntaxError` here would take the whole app down with no
+ * recovery short of reinstalling and losing the ledger. A settings store is
+ * exactly the wrong place to be strict about that: losing one preference
+ * (theme reverts to auto, say) is a trivial cost next to an app that won't
+ * open. The corruption is logged, not swallowed silently — a setting that
+ * silently resets itself with no trace is its own debugging nightmare, and
+ * this is the one place the app will notice.
+ */
+function decodeStoredValue<K extends keyof AppSettings>(key: K, valueJson: string): AppSettings[K] {
+  try {
+    return JSON.parse(valueJson) as AppSettings[K];
+  } catch {
+    console.warn(
+      `app_settings_repo: corrupt value_json for key "${key}" — falling back to its default`,
+    );
+    return DEFAULT_SETTINGS[key];
+  }
+}
+
+/**
  * Reads one setting. Returns `DEFAULT_SETTINGS[key]` (never `null`, never a
  * throw) when the key has no row yet — bootstrap reads these on a fresh
- * install where `app_settings` is empty.
+ * install where `app_settings` is empty — or when the stored row's JSON is
+ * corrupt (see `decodeStoredValue`).
  */
 export async function getSetting<K extends keyof AppSettings>(key: K): Promise<AppSettings[K]> {
   const db = await getDatabase();
@@ -52,7 +79,7 @@ export async function getSetting<K extends keyof AppSettings>(key: K): Promise<A
   if (!row) {
     return DEFAULT_SETTINGS[key];
   }
-  return JSON.parse(row.value_json) as AppSettings[K];
+  return decodeStoredValue(key, row.value_json);
 }
 
 /**
@@ -89,9 +116,12 @@ export async function setSetting<K extends keyof AppSettings>(
 /**
  * All settings in one read, stored values merged over `DEFAULT_SETTINGS` —
  * a key with no row falls back to its default, a key with a row overrides
- * it. The final cast is the single, contained unsafe point: every field
- * comes from JSON.parse (inherently `unknown`) keyed by a `key` column
- * that's already validated against `DEFAULT_SETTINGS` above.
+ * it. Each value is decoded through `decodeStoredValue`, so one corrupt row
+ * falls back to its own default without poisoning the rest of the object —
+ * the other five keys' stored values are unaffected. The final cast is the
+ * single, contained unsafe point: every field comes from `decodeStoredValue`
+ * (inherently `unknown` to the compiler) keyed by a `key` column that's
+ * already validated against `DEFAULT_SETTINGS` above.
  */
 export async function getAllSettings(): Promise<AppSettings> {
   const db = await getDatabase();
@@ -102,7 +132,8 @@ export async function getAllSettings(): Promise<AppSettings> {
   const stored: Partial<Record<keyof AppSettings, unknown>> = {};
   for (const row of rows) {
     if (row.key in DEFAULT_SETTINGS) {
-      stored[row.key as keyof AppSettings] = JSON.parse(row.value_json);
+      const key = row.key as keyof AppSettings;
+      stored[key] = decodeStoredValue(key, row.value_json);
     }
   }
   return { ...DEFAULT_SETTINGS, ...stored } as AppSettings;
