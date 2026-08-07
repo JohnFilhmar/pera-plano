@@ -11,17 +11,32 @@ import { newId } from "@/lib/ids";
 import type { NewWallet, Wallet } from "@/types/domain";
 
 /**
+ * Thrown by `createWallet` when `name` collides with a non-archived Wallet
+ * (Wallet invariant 1). Carries the offending name so callers can branch on
+ * the failure mode instead of pattern-matching `error.message`.
+ */
+export class DuplicateNameError extends Error {
+  constructor(public readonly walletName: string) {
+    super(`wallet name already in use: ${walletName}`);
+    this.name = "DuplicateNameError";
+  }
+}
+
+/**
  * Creates a Wallet with `openingBalance` (default ₱0.00) as its balance anchor.
- * Throws when the name collides with a non-archived Wallet (Wallet invariant 1).
+ * Throws `DuplicateNameError` when the name collides with a non-archived
+ * Wallet (Wallet invariant 1). The comparison is case-insensitive — wallet
+ * names are free-typed, not chosen from an enum, so "GCash" and "gcash" are
+ * the same collision a real user will trip over.
  */
 export async function createWallet(input: NewWallet): Promise<Wallet> {
   const db = await getDatabase();
   const clash = await db.getFirstAsync<{ id: string }>(
-    "SELECT id FROM wallets WHERE name = ? AND is_archived = 0",
+    "SELECT id FROM wallets WHERE name = ? COLLATE NOCASE AND is_archived = 0",
     [input.name],
   );
   if (clash) {
-    throw new Error(`wallet name already in use: ${input.name}`);
+    throw new DuplicateNameError(input.name);
   }
 
   const now = Date.now();

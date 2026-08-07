@@ -1,5 +1,5 @@
 import { closeDatabase } from "@/lib/db/database";
-import { createWallet, getWallet, listWallets } from "../wallets_repo";
+import { createWallet, DuplicateNameError, getWallet, listWallets } from "../wallets_repo";
 import { freshDb } from "@/test_support/db";
 import type { SQLiteDatabase } from "expo-sqlite";
 
@@ -46,16 +46,25 @@ test("createWallet uses openingBalance as the balance anchor", async () => {
 
 test("createWallet rejects a duplicate name among non-archived wallets", async () => {
   await createWallet({ name: "GCash", type: "e-wallet" });
+  // Asserted on the error class rather than a message regex (review finding 2):
+  // every later repo copies this pattern for its own invariant, and a typed
+  // error survives a message wording tweak that a regex match would not.
   await expect(createWallet({ name: "GCash", type: "e-wallet" })).rejects.toThrow(
-    /already in use/i,
+    DuplicateNameError,
   );
 });
 
-test("createWallet allows reusing the name of an archived wallet", async () => {
+test("createWallet allows reusing the name of an archived wallet, case-insensitively too", async () => {
   const first = await createWallet({ name: "GCash", type: "e-wallet" });
   await db.runAsync("UPDATE wallets SET is_archived = 1 WHERE id = ?", [first.id]);
   const second = await createWallet({ name: "GCash", type: "e-wallet" });
   expect(second.id).not.toBe(first.id);
+
+  // The exemption must survive the case-insensitivity fix too: archiving "GCash"
+  // frees the name for a differently-cased "gcash", not just an exact-case one.
+  await db.runAsync("UPDATE wallets SET is_archived = 1 WHERE id = ?", [second.id]);
+  const third = await createWallet({ name: "gcash", type: "e-wallet" });
+  expect(third.id).not.toBe(second.id);
 });
 
 test("getWallet returns null for an unknown id", async () => {
@@ -81,6 +90,26 @@ test("listWallets hides archived wallets by default and can include them", async
 // filter, dropped ORDER BY, `undefined` instead of `null`, a float creeping
 // into balance, an archive path that deletes) fails for a specific reason.
 // ---------------------------------------------------------------------------
+
+describe("createWallet's duplicate-name check is case-insensitive (review finding 1)", () => {
+  // Wallet names are free-typed, not picked from an enum, so a user who creates
+  // "GCash" and later types "gcash" is the expected way a real person trips the
+  // uniqueness invariant — not an edge case. SQLite's default TEXT collation is
+  // BINARY, so this fails unless the comparison explicitly opts into NOCASE.
+  test("'GCash' then 'gcash' collide", async () => {
+    await createWallet({ name: "GCash", type: "e-wallet" });
+    await expect(createWallet({ name: "gcash", type: "e-wallet" })).rejects.toThrow(
+      DuplicateNameError,
+    );
+  });
+
+  test("DuplicateNameError carries the offending (as-typed) name", async () => {
+    await createWallet({ name: "GCash", type: "e-wallet" });
+    await expect(createWallet({ name: "gcash", type: "e-wallet" })).rejects.toMatchObject({
+      walletName: "gcash",
+    });
+  });
+});
 
 describe("getWallet distinguishes 'missing' from every other falsy-ish outcome", () => {
   test("returns null, not undefined, not throwing, for an id that was never inserted", async () => {
