@@ -2,6 +2,17 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> ### ⚠️ Amended by the encryption plan (2026-08-07)
+> `2026-08-07-encryption-foundation.md` completes before this plan starts.
+> - `drainPendingCaptures()` keeps its signature and still returns plaintext `RawCapture[]` —
+>   decryption happens below the bridge. This plan needs no crypto awareness.
+> - It now **requires the app to be unlocked**. The pipeline only ever runs behind the app lock,
+>   so this is satisfied by construction, but `getDatabase()` throws `DatabaseLockedError` if
+>   anything here is ever called while locked.
+> - Raw capture text is still persisted to `raw_notifications`, now inside an encrypted database.
+>   The 30-day TTL and the never-syncs rule are unchanged.
+
+
 **Goal:** Turn a raw Android notification capture into a trustworthy ledger entry — parse it, reject its duplicate twin, recognize when it is really an internal transfer, categorize it, and either commit it silently or route it to the Review Queue — implementing `docs/03-ingest-pipeline.md` end to end.
 
 **Architecture:** Nine small, individually testable stage modules under `mobile/lib/ingest/`, composed by a single `pipeline.ts` orchestrator. Every stage is a pure function over its inputs plus injected dependencies (clock, repositories, ruleset), so the whole pipeline is testable without a device, a database file, or a real notification. Parser behavior lives in *data* — a versioned ruleset row — not in code, so provider wording changes ship without an app release.

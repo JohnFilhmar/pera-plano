@@ -2,6 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> ### ⚠️ Amended by the encryption plan (2026-08-07)
+> `2026-08-07-encryption-foundation.md` Task 10 **already creates the `(onboarding)` route group**
+> and the recovery-phrase step, and restores `app/index.tsx`'s branch on `onboarding_complete`.
+> - Do not re-create the route group; add this plan's steps alongside the existing one.
+> - The recovery-phrase step is **mandatory and unskippable** — it is the only step in onboarding
+>   that is. Every other step keeps its skip affordance and its degrade-to-manual behavior.
+> - Onboarding cannot complete without `initializeKeys(phrase)` having run.
+
+
 **Goal:** Complete the MVP — the nine-step onboarding that earns the notification permission, the two server calls the app actually makes (parser rule updates and aggregate telemetry), and the final polish pass that proves the whole product works end to end on a real device.
 
 **Architecture:** Onboarding is a route group whose every step is skippable, writing its results through the existing repositories and finishing by setting one flag. The server client is deliberately minimal: one axios instance with no auth interceptor, because the MVP is local-first and calls only public endpoints. Auth, backup and entitlements exist and are tested on the server, and the mobile side stays dormant until cloud backup ships.

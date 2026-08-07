@@ -2,6 +2,17 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> ### ⚠️ Partially superseded — read before resuming (2026-08-07)
+> `2026-08-07-encryption-foundation.md` runs **between Task 3 and Task 4 of this plan**.
+> - **Task 3's outstanding fix round is SUBSUMED** by that plan's Task 3. Do not redo the
+>   NDJSON migration or the degraded-path logging here — it happens there, together with the
+>   per-record encryption envelope that makes the line-delimited format mandatory anyway.
+> - **Task 4 (`CapturePrefs`) is where this plan resumes**, after the encryption plan completes.
+> - Task 5's listener writes **sealed** capture lines via `CaptureEnvelope.seal(...)`, not raw JSON.
+> - Task 6's module gains the key operations listed in the encryption plan's Task 4.
+> - Robolectric arrives in the encryption plan's Task 2, one task earlier than this plan assumed.
+
+
 **Goal:** Build `mobile/modules/notification_listener/` — a local Expo Module (Expo Modules API, Kotlin) plus its config plugin — that captures Android status-bar notifications, buffers them to disk while JS is dead, and exposes exactly the JS API pinned in interface contract §4.
 
 **Architecture:** An Android-only local Expo Module autolinked from `mobile/modules/`. A `NotificationListenerService` subclass extracts the notification's text extras and either hands the capture to JS live (when a JS listener is attached) or appends it to a bounded, disk-backed JSON ring buffer that JS drains on next start. A global capture-enabled flag and a provider allowlist live in `SharedPreferences` so the service honors them without JS being alive; a Kotlin `Module` class exposes access-grant checks, the settings deep link, the two policy setters, the atomic drain, listener health, and a live capture event. A config plugin injects the service, its `BIND_NOTIFICATION_LISTENER_SERVICE` guard, its intent filter, a `BOOT_COMPLETED` receiver, and the `RECEIVE_BOOT_COMPLETED` permission into the generated manifest — nothing under `mobile/android/` is ever committed (CNG).
