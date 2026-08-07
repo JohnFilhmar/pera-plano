@@ -246,8 +246,14 @@ This is the FIRST of three M1 plans and must be implemented before the others:
 - Produces (used by Tasks 3, 5, 6):
   - `data class CaptureRecord(id: String, packageName: String, title: String?, text: String?, subText: String?, bigText: String?, postedAt: Long, capturedAt: Long)`
   - `fun CaptureRecord.toJson(): org.json.JSONObject` — disk buffer encoding.
-  - `fun CaptureRecord.toMap(): Map<String, Any?>` — value returned across the JS bridge from `drainPendingCaptures`.
-  - `fun CaptureRecord.toBundle(): android.os.Bundle` — payload for `sendEvent("onCapture", …)`.
+  - `fun CaptureRecord.toMap(): Map<String, Any?>` — the value returned across the JS bridge from `drainPendingCaptures`, **and** the payload for `sendEvent("onCapture", …)` in Task 6.
+  > **Corrected 2026-08-07.** An earlier draft also specified `fun CaptureRecord.toBundle(): android.os.Bundle`
+  > "for `sendEvent`". That was wrong and it was removed after Task 2's review. Expo's Sweet API
+  > `sendEvent` marshals a `Map`, not a `Bundle`, and a grep of this whole plan found `Bundle`
+  > mentioned nowhere outside Task 2's own text — Task 5's `liveSink` passes a raw `CaptureRecord`
+  > and Task 6 works in maps throughout. `toBundle()` had no caller, could not be unit-tested on
+  > this module's plain-JVM classpath, and would have read as load-bearing to Task 6. Task 6 uses
+  > `sendEvent("onCapture", record.toMap())`, reusing the already-tested encoding. Do not re-add it.
   - `CaptureRecord.Companion.fromJson(json: JSONObject): CaptureRecord`
   - Key names are the JS `RawCapture` field names verbatim (contract §4): `id`, `packageName`, `title`, `text`, `subText`, `bigText`, `postedAt`, `capturedAt`.
 
@@ -334,16 +340,15 @@ This is the FIRST of three M1 plans and must be implemented before the others:
   ```kotlin
   package expo.modules.notificationlistener
 
-  import android.os.Bundle
   import org.json.JSONObject
 
   /**
    * One captured status-bar notification.
    *
    * The field names ARE the JS `RawCapture` field names from interface contract
-   * §4 — the same keys are used for the disk buffer (toJson), the bridge return
-   * value (toMap), and the live event payload (toBundle), so a capture has one
-   * shape everywhere and JS never has to translate.
+   * §4 — the same keys are used for the disk buffer (toJson) and the bridge
+   * value (toMap, also the sendEvent payload), so a capture has one shape
+   * everywhere and JS never has to translate.
    */
   data class CaptureRecord(
     val id: String,
@@ -378,18 +383,6 @@ This is the FIRST of three M1 plans and must be implemented before the others:
       KEY_CAPTURED_AT to capturedAt,
     )
 
-    fun toBundle(): Bundle = Bundle().apply {
-      putString(KEY_ID, id)
-      putString(KEY_PACKAGE_NAME, packageName)
-      putString(KEY_TITLE, title)
-      putString(KEY_TEXT, text)
-      putString(KEY_SUB_TEXT, subText)
-      putString(KEY_BIG_TEXT, bigText)
-      // Doubles, not longs: JS numbers are doubles and epoch-ms is well inside
-      // the exactly-representable range.
-      putDouble(KEY_POSTED_AT, postedAt.toDouble())
-      putDouble(KEY_CAPTURED_AT, capturedAt.toDouble())
-    }
 
     companion object {
       const val KEY_ID = "id"

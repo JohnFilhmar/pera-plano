@@ -1,15 +1,14 @@
 package expo.modules.notificationlistener
 
-import android.os.Bundle
 import org.json.JSONObject
 
 /**
  * One captured status-bar notification.
  *
  * The field names ARE the JS `RawCapture` field names from interface contract
- * §4 — the same keys are used for the disk buffer (toJson), the bridge return
- * value (toMap), and the live event payload (toBundle), so a capture has one
- * shape everywhere and JS never has to translate.
+ * §4 — the same keys are used for the disk buffer (toJson) and the bridge
+ * return value (toMap), so a capture has one shape everywhere and JS never
+ * has to translate.
  *
  * The property every serialization below must hold: a null field (e.g. no
  * subText/bigText on a notification) must come back as null, not the string
@@ -51,19 +50,6 @@ data class CaptureRecord(
     KEY_POSTED_AT to postedAt,
     KEY_CAPTURED_AT to capturedAt,
   )
-
-  fun toBundle(): Bundle = Bundle().apply {
-    putString(KEY_ID, id)
-    putString(KEY_PACKAGE_NAME, packageName)
-    putString(KEY_TITLE, title)
-    putString(KEY_TEXT, text)
-    putString(KEY_SUB_TEXT, subText)
-    putString(KEY_BIG_TEXT, bigText)
-    // Doubles, not longs: JS numbers are doubles and epoch-ms is well inside
-    // the exactly-representable range (2^53).
-    putDouble(KEY_POSTED_AT, postedAt.toDouble())
-    putDouble(KEY_CAPTURED_AT, capturedAt.toDouble())
-  }
 
   companion object {
     const val KEY_ID = "id"
