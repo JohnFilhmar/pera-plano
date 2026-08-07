@@ -179,13 +179,16 @@ validatePhrase(words: string[]): { ok: boolean; badIndexes: number[] };
 ```
 
 **Rules:**
-1. Words come from cryptographically secure randomness (`expo-crypto`), never `Math.random`.
-2. Argon2id parameters are tuned so derivation takes roughly 500 ms–1 s on a mid-range Android device — slow enough to matter, fast enough that recovery is not abandoned. Record the chosen parameters in a comment; they become part of the on-disk format and cannot change without breaking existing phrases.
-3. `normalizePhrase` accepts what a human actually types: extra spaces, mixed case, a trailing newline from a paste.
-4. `validatePhrase` reports **which** words are bad so the UI can highlight them. A bare "invalid phrase" for one mistyped word out of twelve is hostile.
-5. **The phrase never touches a log, an analytics event, or an error message.**
+1. **The wordlist is BIP-39 English** — the standard 2048-word list, vendored verbatim into `wordlist.ts`. Do not hand-roll or substitute a list. No two BIP-39 words share their first four letters, which is what makes typo recovery and word highlighting tractable.
+2. **Use BIP-39's checksum.** A 12-word phrase is 128 bits of entropy plus a 4-bit checksum. `validatePhrase` verifies the checksum, so an internally inconsistent phrase is rejected in milliseconds rather than after a second of Argon2id grinding. This is the main engineering reason for choosing BIP-39 and it must not be skipped.
+3. Words come from cryptographically secure randomness (`expo-crypto`), never `Math.random`.
+4. Argon2id parameters are tuned so derivation takes roughly 500 ms–1 s on a mid-range Android device — slow enough to matter, fast enough that recovery is not abandoned. Record the chosen parameters in a comment; they become part of the on-disk format and cannot change without breaking existing phrases.
+5. `normalizePhrase` accepts what a human actually types: extra spaces, mixed case, a trailing newline from a paste.
+6. `validatePhrase` reports **which** words are bad so the UI can highlight them. A bare "invalid phrase" for one mistyped word out of twelve is hostile.
+7. **The phrase never touches a log, an analytics event, or an error message.**
+8. **Copy rule, binding on every screen that mentions this:** the words are called *recovery words*. Never "seed phrase", never "wallet", never "mnemonic". BIP-39 is a cryptocurrency-adjacent artifact and this is a budgeting app; the engineering benefit is worth taking, the vocabulary is not.
 
-- [ ] **Step 1: Write the failing tests:** a generated phrase is 12 words, all from the wordlist · two generations differ (assert across many draws, not two) · the same phrase and salt derive the same key · a different salt derives a different key · one changed word derives a completely different key · `normalizePhrase` handles mixed case, doubled spaces, and a trailing newline · `validatePhrase` returns the exact indexes of bad words · derivation takes longer than a floor that would indicate the KDF was accidentally configured with trivial parameters.
+- [ ] **Step 1: Write the failing tests:** a generated phrase is 12 words, all from the BIP-39 list · a generated phrase passes its own checksum · two generations differ (assert across many draws, not two) · **a phrase of 12 valid words in the wrong combination fails the checksum** (this is the test that proves the checksum is actually wired, not just the wordlist) · the same phrase and salt derive the same key · a different salt derives a different key · one changed word derives a completely different key · `normalizePhrase` handles mixed case, doubled spaces, and a trailing newline · `validatePhrase` returns the exact indexes of words not in the list · derivation takes longer than a floor that would indicate the KDF was accidentally configured with trivial parameters.
 - [ ] **Step 2:** Run — FAIL. **Step 3:** Implement. **Step 4:** Run — PASS.
 - [ ] **Step 5: Commit**
   ```
@@ -293,17 +296,85 @@ closeDatabase(): Promise<void>;                    // also clears the key
 **Rules:**
 1. Locked on cold start. Locked again after **five minutes** in the background, measured from when the app backgrounded, not from last interaction.
 2. `expo-local-authentication` with biometric-or-device-credential. Never biometric-only — users without enrolled biometrics must still be able to open their own app.
-3. On `DeviceKeyInvalidated`, the prompt switches to the recovery-phrase form and calls `rewrapAfterInvalidation` on success, so the user is back to biometric unlock next launch. Explain in plain language why they are being asked — a bare "enter your recovery phrase" after a routine settings change reads like the app is broken or compromised.
+3. On `DeviceKeyInvalidated`, the prompt switches to the recovery-phrase form and calls `rewrapAfterInvalidation` on success, so the user is back to biometric unlock next launch. Explain in plain language why they are being asked — a bare "enter your recovery phrase" after a routine settings change reads like the app is broken or compromised. Re-wrapping requires a screen lock to exist again; if it does not, send them to set one first (Task 9a).
 4. `lock()` clears the DEK **and** closes the database handle. Leaving it open would keep the plaintext page cache alive.
 5. The root layout's render gate gains a fourth condition: fonts, theme, bootstrap, **and unlocked**.
 6. The listener keeps capturing while locked. Nothing in this task touches it.
+7. **The unrecoverable state needs a way out.** When the Keystore key is gone and the user cannot produce their recovery words, the data is mathematically unrecoverable and no support process can help. The recovery form offers a **wipe and start over** action behind a double confirmation naming exactly what is destroyed. It clears the database, both wrap blobs, the capture buffer, and all settings, then restarts onboarding. It needs no auth gate — someone who cannot decrypt the data also cannot read it, so a wipe destroys but never leaks. The copy must say plainly that the data cannot be recovered; a vague message here reads as the app losing data rather than protecting it.
 
-- [ ] **Step 1: Write the failing tests:** cold start renders the lock screen, not the tabs · a successful unlock renders the tabs · backgrounding for four minutes does not re-lock; six minutes does · `DeviceKeyInvalidated` shows the recovery form rather than a generic error · a successful recovery unlock calls `rewrapAfterInvalidation` · locking closes the database handle · **each of the four render-gate conditions is pinned by its own test** (the foundation's Task 17 review found two of three gates unprotected — do not repeat that).
+- [ ] **Step 1: Write the failing tests:** cold start renders the lock screen, not the tabs · a successful unlock renders the tabs · backgrounding for four minutes does not re-lock; six minutes does · `DeviceKeyInvalidated` shows the recovery form rather than a generic error · a successful recovery unlock calls `rewrapAfterInvalidation` · locking closes the database handle · the wipe action requires two confirmations and one confirmation alone destroys nothing · a completed wipe clears the database, both wrap blobs, the buffer and settings, and routes to onboarding · **each of the four render-gate conditions is pinned by its own test** (the foundation's Task 17 review found two of three gates unprotected — do not repeat that).
 - [ ] **Step 2:** Run — FAIL. **Step 3:** Implement. **Step 4:** Run — PASS; `npx tsc --noEmit` clean.
 - [ ] **Step 5: Commit**
   ```
   git add mobile/app mobile/contexts mobile/components/lock
   git commit -m "feat(security): add app lock with biometric and recovery unlock"
+  ```
+
+---
+
+### Task 9a: Require a device screen lock
+
+**Files:**
+- Modify: `mobile/modules/notification_listener/android/src/main/java/expo/modules/notificationlistener/NotificationListenerModule.kt` (add `isDeviceSecure`, `openSecuritySettings`)
+- Modify: `mobile/modules/notification_listener/index.ts`
+- Create: `mobile/app/(onboarding)/device_lock.tsx`, `mobile/components/onboarding/device_lock_explainer.tsx`
+- Test: `mobile/components/onboarding/__tests__/device_lock.test.tsx`
+
+**Interfaces:**
+```ts
+isDeviceSecure(): Promise<boolean>;    // KeyguardManager.isDeviceSecure()
+openSecuritySettings(): void;          // Settings.ACTION_SECURITY_SETTINGS
+```
+
+**Why this task exists.** Android refuses to create a Keystore key with `setUserAuthenticationRequired(true)` on a device with no screen lock — `KeyGenParameterSpec` throws at generation time. There is no fallback that preserves the security claim: an app-specific PIN without a secure element behind it is offline-brute-forceable against six digits in seconds. So a screen lock is a prerequisite, not a preference.
+
+**Rules:**
+1. This step runs **before** the recovery-phrase step (Task 10) and before any key is generated. Generating keys first and discovering the problem at the failure is a worse experience and leaves partial state.
+2. If `isDeviceSecure()` is true, skip the screen entirely — never make a user with a lock read about needing one.
+3. If false, explain in one plain sentence why (their phone's own lock is what protects the encryption key) and offer a button to `openSecuritySettings()`. On return, re-check. Loop until secure.
+4. **There is no skip.** This is the second unskippable step in onboarding, alongside the recovery phrase. Be honest in the copy that the app cannot continue without it, rather than implying it is optional and then blocking.
+5. Detect this state at **unlock** as well, not only at onboarding: a user who removes their screen lock later invalidates the Keystore key, and the recovery flow in Task 9 must route them here before it can re-wrap.
+
+- [ ] **Step 1: Write the failing tests:** a secure device skips the step entirely · an insecure device renders the explainer and no skip affordance · the action calls `openSecuritySettings` · returning still-insecure re-renders the step rather than advancing · returning secure advances · the unlock-time path routes an insecure device here before attempting a re-wrap.
+- [ ] **Step 2:** Run — FAIL. **Step 3:** Implement both native functions and the screen. **Step 4:** Run — PASS.
+- [ ] **Step 5: Commit**
+  ```
+  git add mobile/modules/notification_listener mobile/app mobile/components/onboarding
+  git commit -m "feat(security): require a device screen lock before key generation"
+  ```
+
+---
+
+### Task 9b: Amount-free alert copy while the keyguard is on
+
+**Files:**
+- Modify: `mobile/modules/notification_listener/android/src/main/java/expo/modules/notificationlistener/NotificationListenerModule.kt` (add `isKeyguardLocked`)
+- Modify: `mobile/modules/notification_listener/index.ts`
+- Create: `mobile/lib/alerts/alert_copy.ts`
+- Test: `mobile/lib/alerts/__tests__/alert_copy.test.ts`
+
+**Interfaces:**
+```ts
+isKeyguardLocked(): Promise<boolean>;
+type AlertCopy = { locked: { title: string; body: string }; unlocked: { title: string; body: string } };
+selectAlertCopy(copy: AlertCopy, keyguardOn: boolean): { title: string; body: string };
+```
+
+**Why this task exists.** Alerts fire whether or not the phone is unlocked, and Android renders them on the lock screen. *"You've spent ₱8,400 of your ₱10,000 limit"* on a phone face-up on a desk undoes the encryption work in the most visible way available.
+
+**Rules:**
+1. Every app-generated alert supplies **both** variants. The locked variant carries no amount, no balance, no counterparty — only that something needs attention: "You've reached 80% of your monthly limit", "Meralco is due in 3 days".
+2. The locked variant must stay genuinely actionable. "PeraPlano has an update for you" is useless and trains users to ignore the app.
+3. **Check the keyguard at post time, not at schedule time.** A bill reminder scheduled three days earlier has no idea what state the phone will be in when it fires.
+4. A bill or wallet *name* is acceptable in the locked variant — the user chose it and it carries no figure. An amount, a balance, a merchant from a parsed notification, or a counterparty is not.
+5. **This rule binds every later task that posts a notification**: M2's limit alerts, M2b's loan reminders, M2c's bill reminders, M3's payday summary and tracking-interrupted notice. A task supplying one string instead of two is incomplete.
+
+- [ ] **Step 1: Write the failing tests:** `selectAlertCopy` returns the locked variant when the keyguard is on and the unlocked variant when off · **no locked variant in the catalogue contains a `₱` character or a digit sequence that could be an amount** (assert programmatically over every entry, so a future alert cannot quietly add one) · every catalogue entry supplies both variants · the locked variant is non-empty and differs from a generic placeholder.
+- [ ] **Step 2:** Run — FAIL. **Step 3:** Implement. **Step 4:** Run — PASS.
+- [ ] **Step 5: Commit**
+  ```
+  git add mobile/lib/alerts mobile/modules/notification_listener
+  git commit -m "feat(security): add amount-free alert copy for the lock screen"
   ```
 
 ---

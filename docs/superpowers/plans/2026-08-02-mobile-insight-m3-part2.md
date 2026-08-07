@@ -2,6 +2,18 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> ### ⚠️ Amended by the encryption plan (2026-08-07)
+> `2026-08-07-encryption-foundation.md` Task 9b makes **amount-free alert copy on the lock screen
+> mandatory**. Every notification this plan posts must supply BOTH variants:
+> - **locked** — no amount, no balance, no counterparty, no parsed merchant. A bill or wallet name
+>   the user chose is fine. "You've reached 80% of your monthly limit."
+> - **unlocked** — the full figure. "You've spent ₱8,400 of your ₱10,000 monthly limit."
+>
+> Select with `selectAlertCopy(copy, await isKeyguardLocked())` **at post time**, never at schedule
+> time — a reminder queued days earlier cannot know the phone's state when it fires. A task that
+> supplies one string instead of two is incomplete.
+
+
 **Goal:** Continue `docs/superpowers/plans/2026-08-02-mobile-insight-m3.md` (which ends at Task 1) by putting the Safe-to-Spend number on the Home screen with all its states, adding the Plus projection curve, and detecting recurring spending so users can see what is already committed each month.
 
 **Architecture:** The pure `computeSafeToSpend` engine from Task 1 stays untouched; this plan adds a data-gathering layer that assembles its input from the limits, bills and goals services, a projection function that walks the same engine forward day by day, and a recurring-pattern detector that clusters ledger history. Screens consume services through React Query hooks and never compute money themselves.

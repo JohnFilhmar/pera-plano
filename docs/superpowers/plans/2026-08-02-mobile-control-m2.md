@@ -2,6 +2,18 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> ### ⚠️ Amended by the encryption plan (2026-08-07)
+> `2026-08-07-encryption-foundation.md` Task 9b makes **amount-free alert copy on the lock screen
+> mandatory**. Every notification this plan posts must supply BOTH variants:
+> - **locked** — no amount, no balance, no counterparty, no parsed merchant. A bill or wallet name
+>   the user chose is fine. "You've reached 80% of your monthly limit."
+> - **unlocked** — the full figure. "You've spent ₱8,400 of your ₱10,000 monthly limit."
+>
+> Select with `selectAlertCopy(copy, await isKeyguardLocked())` **at post time**, never at schedule
+> time — a reminder queued days earlier cannot know the phone's state when it fires. A task that
+> supplies one string instead of two is incomplete.
+
+
 **Goal:** Implement PeraPlano's control layer — Limits, Income detection, Goals & Savings, Loans, and Bills — as pure TypeScript engines plus repository extensions, Plan-tab UI, and local-notification alerts, consuming the M1 ledger and foundation repos exactly per the interface contract.
 
 **Architecture:** Every feature is a pure, clock-injected engine module under `mobile/lib/<feature>/` (unit-tested with fixed timestamps), a repository file under `mobile/lib/db/repos/` (integration-tested against a real SQLite schema via a better-sqlite3 harness), and expo-router screens under `mobile/app/(tabs)/plan/`. A single ledger-commit event emitted from `transactions_repo.insertTransaction` fans out to limit recomputation, income detection, payday events, goal allocation reconciliation, loan payment matching, and bill matching. All user-facing alerts go through one `expo-notifications` alerts service with two Android channels.

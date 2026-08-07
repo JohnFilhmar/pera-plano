@@ -2,6 +2,18 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> ### ⚠️ Amended by the encryption plan (2026-08-07)
+> `2026-08-07-encryption-foundation.md` Task 9b makes **amount-free alert copy on the lock screen
+> mandatory**. Every notification this plan posts must supply BOTH variants:
+> - **locked** — no amount, no balance, no counterparty, no parsed merchant. A bill or wallet name
+>   the user chose is fine. "You've reached 80% of your monthly limit."
+> - **unlocked** — the full figure. "You've spent ₱8,400 of your ₱10,000 monthly limit."
+>
+> Select with `selectAlertCopy(copy, await isKeyguardLocked())` **at post time**, never at schedule
+> time — a reminder queued days earlier cannot know the phone's state when it fires. A task that
+> supplies one string instead of two is incomplete.
+
+
 **Goal:** Track recurring obligations — Meralco, Maynilad, rent, tuition, subscriptions — with Philippine-shaped due rules, amounts that learn from payment history, reminders that fire before the due date, and payments matched from the ledger instead of typed in.
 
 **Architecture:** A pure due-rule engine computes occurrence dates from a rule plus a clock; a pure estimator derives the expected amount from matched history; a service composes both with the ledger and the alerts layer; screens live under the Plan tab. Bills also expose the promotion entry point that the M3 recurring-pattern detector calls when a detected subscription is turned into a tracked Bill.
