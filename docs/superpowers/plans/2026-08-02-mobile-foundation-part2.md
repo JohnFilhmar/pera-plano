@@ -1003,15 +1003,20 @@ These apply to EVERY task. The interface contract at `docs/superpowers/plans/202
   countOpen(): Promise<number>                     // drives the tab badge
   purgeExpired(now: number): Promise<number>       // returns rows removed
   ```
+  Both types are already shipped in `mobile/types/domain.ts` (foundation Task 8) and pinned by the
+  `review_queue_items` CHECK constraint in `001_core.sql`. Consume them; do not redefine or widen:
   ```ts
-  type ReviewKind = "low_confidence" | "unknown_provider" | "possible_transfer" | "possible_duplicate";
-  type ReviewResolution =
-    | { kind: "confirmed"; transactionId: string }
-    | { kind: "corrected"; transactionId: string; userRuleId?: string }
-    | { kind: "linked"; transferLinkId: string }
-    | { kind: "merged"; keptTransactionId: string }
-    | { kind: "dismissed" };
+  type ReviewKind = "low-confidence" | "unknown-provider" | "ambiguous-transfer" | "possible-duplicate";
+  type ReviewResolution = "confirmed" | "dismissed";
   ```
+  > **Corrected 2026-08-07.** An earlier draft of this section specified a five-variant tagged
+  > `ReviewResolution` carrying `transactionId` / `userRuleId` / `transferLinkId` /
+  > `keptTransactionId`. That was over-design and contradicted shipped code: the
+  > `review_queue_items` table has no columns for those fields, so they would have been silently
+  > dropped on write. The outcome of a triage action is already recorded in the rows the action
+  > creates — the Transaction, the UserRule, the TransferLink — which is the single place it
+  > belongs. The queue item only records that it is closed, and whether the user confirmed or
+  > dismissed. M1c's `resolve_actions.ts` returns the created ids to its caller directly.
 
 **Rules:**
 1. `payload_json` stores the stage output verbatim (parsed event, candidate pair, or raw capture ref) — the repo serializes/deserializes, it does not interpret.

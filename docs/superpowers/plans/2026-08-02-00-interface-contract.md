@@ -133,7 +133,7 @@ export async function processCapture(capture: RawCapture): Promise<PipelineOutco
 export type PipelineOutcome =
   | { kind: "committed"; transactionId: string }
   | { kind: "queued"; reviewItemId: string }
-  | { kind: "ignored"; reason: "not_financial" | "duplicate" | "unknown_provider" | "paused" };
+  | { kind: "ignored"; reason: "not_financial" | "duplicate" | "unknown-provider" | "paused" };
 
 // parser.ts — rules come from the parser_rulesets table (seeded from bundled JSON, updatable from server)
 export type ParsedEvent = {

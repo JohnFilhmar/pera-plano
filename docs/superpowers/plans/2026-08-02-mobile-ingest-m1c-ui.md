@@ -299,10 +299,10 @@ findWalletForProvider(providerKey: string, walletHint?: string): Promise<string 
 2. Cards are oldest-first (FIFO) so nothing rots at the bottom.
 3. Each card states **why it is here** in one plain sentence, taken from the gate's `reason`. No card is ever unexplained.
 4. Card layout by kind:
-   - `low_confidence` — parsed fields prefilled, a confidence meter, **Confirm** (primary) and **Correct**.
-   - `unknown_provider` — the raw text, "Is this a money notification?" with **Yes, it is** / **No, ignore this app**.
-   - `possible_transfer` — both legs side by side with **Link as transfer** / **Keep separate**.
-   - `possible_duplicate` — both candidates with **Merge** / **Keep both**.
+   - `low-confidence` — parsed fields prefilled, a confidence meter, **Confirm** (primary) and **Correct**.
+   - `unknown-provider` — the raw text, "Is this a money notification?" with **Yes, it is** / **No, ignore this app**.
+   - `ambiguous-transfer` — both legs side by side with **Link as transfer** / **Keep separate**.
+   - `possible-duplicate` — both candidates with **Merge** / **Keep both**.
 5. Every action is one tap from the list; **Correct** is the only one that opens a form.
 6. Empty state: "All caught up" with the paper-airplane mark — this is a reward state, so it should feel good rather than blank.
 

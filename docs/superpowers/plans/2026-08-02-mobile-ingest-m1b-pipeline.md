@@ -260,7 +260,7 @@ Implements spec §6 exactly. Target: ≥95% of push/SMS twin pairs suppressed.
 type DedupeVerdict =
   | { kind: "unique" }
   | { kind: "duplicate"; ofTransactionId: string }
-  | { kind: "possible_duplicate"; ofTransactionId: string };
+  | { kind: "possible-duplicate"; ofTransactionId: string };
 checkDuplicate(event: NormalizedEvent, recent: Transaction[], tunables: PipelineTunables): DedupeVerdict;
 ```
 
@@ -268,10 +268,10 @@ checkDuplicate(event: NormalizedEvent, recent: Transaction[], tunables: Pipeline
 1. **Strong key.** Same provider + same reference number + same amount, within `dedupeStrongWindowMs` (48 h) → `duplicate`, regardless of channel.
 2. **Twin window.** No reference number, same provider, same amount, same direction, **different channels** (push vs sms), within `dedupeTwinWindowMs` (180 s) → `duplicate`.
 3. **Legitimate twins are protected.** Two **same-channel** events with the same amount, distinct notification instances, and no shared reference are **not** duplicates — two ₱100.00 load purchases minutes apart are real.
-4. **Undecidable → escalate, never guess.** Same amount, same channel, inside the twin window, references absent → `possible_duplicate`, which the pipeline routes to the Review Queue. Silently merging and silently double-counting are both wrong.
+4. **Undecidable → escalate, never guess.** Same amount, same channel, inside the twin window, references absent → `possible-duplicate`, which the pipeline routes to the Review Queue. Silently merging and silently double-counting are both wrong.
 5. `recent` is supplied by the orchestrator (transactions within the strong window); the gate performs no I/O.
 
-- [ ] **Step 1: Write the failing tests:** matching reference within 48 h is a duplicate across different channels · matching reference at 49 h is unique · push and SMS twins 60 s apart with no reference are duplicates · the same pair 200 s apart is unique · two same-channel ₱100.00 purchases 5 min apart are unique (rule 3 regression) · same amount, same channel, 60 s apart, no references is `possible_duplicate` · a different direction is never a duplicate · a different provider is never a duplicate.
+- [ ] **Step 1: Write the failing tests:** matching reference within 48 h is a duplicate across different channels · matching reference at 49 h is unique · push and SMS twins 60 s apart with no reference are duplicates · the same pair 200 s apart is unique · two same-channel ₱100.00 purchases 5 min apart are unique (rule 3 regression) · same amount, same channel, 60 s apart, no references is `possible-duplicate` · a different direction is never a duplicate · a different provider is never a duplicate.
 - [ ] **Step 2:** Run `npx jest --ci lib/ingest/__tests__/dedupe_gate.test.ts` — expected FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run — expected PASS (8 tests).
@@ -296,18 +296,18 @@ Implements spec §7 exactly. Target: ≥90% of internal transfers auto-linked. A
 type TransferVerdict =
   | { kind: "none" }
   | { kind: "auto_link"; counterpartTransactionId: string }
-  | { kind: "possible_transfer"; counterpartTransactionId: string; reason: "fee_delta" | "extended_window" | "multiple_candidates" };
+  | { kind: "ambiguous-transfer"; counterpartTransactionId: string; reason: "fee_delta" | "extended_window" | "multiple_candidates" };
 detectTransfer(event: NormalizedEvent, candidates: Transaction[], tunables: PipelineTunables): TransferVerdict;
 ```
 
 **Rules (verbatim from spec §7):**
 1. **Candidate pair:** one `out` leg and one `in` leg in **different** wallets, within the detection window.
-2. **Windows:** primary `transferPrimaryWindowMs` (15 min); extended `transferExtendedWindowMs` (24 h). Extended-window pairs are **never** auto-linked — they route as `possible_transfer` with reason `extended_window`.
+2. **Windows:** primary `transferPrimaryWindowMs` (15 min); extended `transferExtendedWindowMs` (24 h). Extended-window pairs are **never** auto-linked — they route as `ambiguous-transfer` with reason `extended_window`.
 3. **Fee tolerance:** exact amount match, or `in.amount < out.amount` and `(out.amount − in.amount) ≤ max(₱25.00, 1% of out.amount)`. A fee delta is plausible but **never** auto-linked — reason `fee_delta`.
 4. **Auto-link requires ALL of:** exact amount match, both legs inside the primary window, both wallets known and distinct, and **exactly one** candidate pairing with no competing candidate for either leg. Anything less routes to the Review Queue.
 5. Two candidates inside the primary window → `multiple_candidates`, never a guess.
 
-- [ ] **Step 1: Write the failing tests:** exact amount, different wallets, 5 min apart, single candidate → `auto_link` · the same pair 20 min apart → `possible_transfer` / `extended_window` · a ₱20.00 fee on a ₱1,000.00 transfer → `possible_transfer` / `fee_delta` · a ₱30.00 delta on ₱1,000.00 exceeds `max(₱25, 1%)` → `none` · a ₱40.00 delta on ₱10,000.00 is within 1% → `possible_transfer` / `fee_delta` · same-wallet legs → `none` · two exact candidates → `possible_transfer` / `multiple_candidates` · same-direction legs → `none` · a candidate whose wallet is unknown → never `auto_link` · the coincidence case from the spec (sending ₱1,000.00 to a friend while receiving a ₱1,000.00 salary advance, both inside the window, two candidates) → `possible_transfer`, not a silent link.
+- [ ] **Step 1: Write the failing tests:** exact amount, different wallets, 5 min apart, single candidate → `auto_link` · the same pair 20 min apart → `ambiguous-transfer` / `extended_window` · a ₱20.00 fee on a ₱1,000.00 transfer → `ambiguous-transfer` / `fee_delta` · a ₱30.00 delta on ₱1,000.00 exceeds `max(₱25, 1%)` → `none` · a ₱40.00 delta on ₱10,000.00 is within 1% → `ambiguous-transfer` / `fee_delta` · same-wallet legs → `none` · two exact candidates → `ambiguous-transfer` / `multiple_candidates` · same-direction legs → `none` · a candidate whose wallet is unknown → never `auto_link` · the coincidence case from the spec (sending ₱1,000.00 to a friend while receiving a ₱1,000.00 salary advance, both inside the window, two candidates) → `ambiguous-transfer`, not a silent link.
 - [ ] **Step 2:** Run `npx jest --ci lib/ingest/__tests__/transfer_detector.test.ts` — expected FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run — expected PASS (10 tests).
@@ -387,11 +387,11 @@ decideRoute(args: {
 
 **Rules (spec §9.2 — the thresholds are exact):**
 1. Score routing: `≥ 0.90` auto-commit · `0.60–0.89` review prefilled · `< 0.60` review needs details.
-2. **Hard routes to the Review Queue regardless of score:** unknown provider · non-PHP currency · unmapped wallet (`walletId === null`) · `possible_duplicate` · `possible_transfer` · fee-tolerant transfer candidate.
+2. **Hard routes to the Review Queue regardless of score:** unknown provider · non-PHP currency · unmapped wallet (`walletId === null`) · `possible-duplicate` · `ambiguous-transfer` · fee-tolerant transfer candidate.
 3. A hard route always carries a human-readable `reason` — the Review Queue card shows it, and "why is this here?" must never be a mystery.
 4. A confirmed `duplicate` never reaches this gate; the orchestrator drops it earlier.
 
-- [ ] **Step 1: Write the failing tests:** 0.95 with everything clean → `auto_commit` · exactly 0.90 → `auto_commit` (boundary) · 0.89 → `review_prefilled` (boundary) · exactly 0.60 → `review_prefilled` · 0.59 → `review_needs_details` · 0.99 with `walletId: null` → review (hard route) · 0.99 with `possible_duplicate` → review · 0.99 with `possible_transfer` → review · 0.99 from an unknown provider → review · 0.99 with non-PHP currency → review · every hard route returns a non-empty `reason`.
+- [ ] **Step 1: Write the failing tests:** 0.95 with everything clean → `auto_commit` · exactly 0.90 → `auto_commit` (boundary) · 0.89 → `review_prefilled` (boundary) · exactly 0.60 → `review_prefilled` · 0.59 → `review_needs_details` · 0.99 with `walletId: null` → review (hard route) · 0.99 with `possible-duplicate` → review · 0.99 with `ambiguous-transfer` → review · 0.99 from an unknown provider → review · 0.99 with non-PHP currency → review · every hard route returns a non-empty `reason`.
 - [ ] **Step 2:** Run `npx jest --ci lib/ingest/__tests__/confidence_gate.test.ts` — expected FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run — expected PASS (11 tests).
@@ -425,7 +425,7 @@ unlinkTransfer(id: string): Promise<void>;
 type PipelineOutcome =
   | { kind: "committed"; transactionId: string }
   | { kind: "queued"; reviewItemId: string }
-  | { kind: "ignored"; reason: "not_financial" | "duplicate" | "unknown_provider" | "paused" };
+  | { kind: "ignored"; reason: "not_financial" | "duplicate" | "unknown-provider" | "paused" };
 processCapture(capture: RawCapture): Promise<PipelineOutcome>;
 startIngest(): Promise<() => void>;   // drains the buffer, subscribes to live captures, returns an unsubscribe
 ```
@@ -434,7 +434,7 @@ startIngest(): Promise<() => void>;   // drains the buffer, subscribes to live c
 1. Stage order is fixed and matches spec §2: route → parse → normalize → dedupe → transfer → categorize → gate → commit-or-queue. No stage may be skipped or reordered.
 2. `processCapture` stores the raw capture FIRST (30-day TTL) so `rawNotificationRef` is available for the "Why was this recorded?" view even when the parse later fails.
 3. Paused (`app_settings.capture_enabled === false`) returns `ignored: "paused"` before any parsing work.
-4. `unknown` routing produces a Review Queue item of kind `unknown_provider` and returns `queued` — **not** `ignored`. `ignored: "unknown_provider"` is reserved for the case where the user has explicitly dismissed that package before.
+4. `unknown` routing produces a Review Queue item of kind `unknown-provider` and returns `queued` — **not** `ignored`. `ignored: "unknown-provider"` is reserved for the case where the user has explicitly dismissed that package before.
 5. A `duplicate` verdict returns `ignored: "duplicate"` and writes nothing to the ledger.
 6. An `auto_link` transfer verdict commits the transaction and then creates the `TransferLink` with `feeAmount` as the leg difference. Per contract §3 and `docs/02-domain-model.md`, the fee is **informational only** — it is never counted in any spend total, Limit, or report.
 7. After a successful commit the orchestrator emits a `ledger:committed` event so the M2 limit engine can recompute. Define the event name here; M2 subscribes.
@@ -452,8 +452,8 @@ startIngest(): Promise<() => void>;   // drains the buffer, subscribes to live c
   - `a low-confidence parse is queued and commits nothing` → `queued`, ledger empty, review item present
   - `a push and SMS twin commits once` → second call returns `ignored: "duplicate"`, ledger has exactly one row
   - `an internal transfer between two wallets auto-links both legs` → a `TransferLink` exists and both legs are excluded from `sumSpend`
-  - `an ambiguous transfer is queued instead of linked` → review item of kind `possible_transfer`, no link
-  - `an unknown provider with a money signal is queued` → `queued`, review item kind `unknown_provider`
+  - `an ambiguous transfer is queued instead of linked` → review item of kind `ambiguous-transfer`, no link
+  - `an unknown provider with a money signal is queued` → `queued`, review item kind `unknown-provider`
   - `an unknown provider with no money signal is ignored` → `ignored: "not_financial"`, nothing stored
   - `malformed text from a known provider is queued, never thrown` → `queued`, no exception
   - `a capture while paused is ignored before parsing` → `ignored: "paused"`
