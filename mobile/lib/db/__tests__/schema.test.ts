@@ -321,6 +321,33 @@ describe("foreign keys are enforced on every FK column in the schema", () => {
   );
 });
 
+describe("referential integrity is enforced on delete, not just on insert (invariant I4)", () => {
+  // The FK-insert tests above prove a child can't be created pointing at a nonexistent
+  // parent. They say nothing about whether an existing parent can be deleted out from
+  // under an existing child. SQLite's default FK action is NO ACTION (block the delete),
+  // but that default is silently lost the moment someone adds `ON DELETE CASCADE` (or
+  // SET NULL) to "clean up" a relationship — which would orphan-by-deletion instead of
+  // orphan-by-insert. Invariant I4 ("no orphan transactions") requires the delete to fail.
+  test("deleting a wallet referenced by a transaction is rejected", async () => {
+    // Uses a dedicated wallet, not the shared seeded one: the seeded wallet already backs
+    // several of seedParents()'s own transactions, two of which are transfer-link legs —
+    // deleting it could fail via that unrelated transfer_links restriction and still look
+    // green even if transactions.wallet_id itself had no delete protection at all. A
+    // fresh, otherwise-unreferenced wallet isolates the one relationship under test.
+    const now = Date.now();
+    await insertRow(db, "wallets", {
+      id: "wallet_to_delete", name: "Guarded Wallet", type: "cash", balance: 0,
+      currency: "PHP", is_archived: 0, created_at: now, updated_at: now,
+    });
+    await insertRow(db, "transactions", {
+      ...validRows.transactions, id: "tx_guard", wallet_id: "wallet_to_delete",
+    });
+    await expect(
+      db.runAsync("DELETE FROM wallets WHERE id = ?", ["wallet_to_delete"]),
+    ).rejects.toThrow(/FOREIGN KEY/i);
+  });
+});
+
 describe("NOT NULL is enforced on every required column in the schema", () => {
   const NOT_NULL_COLUMNS: Array<{ table: string; column: string }> = [
     ...["id", "name", "type", "balance", "currency", "is_archived", "created_at", "updated_at"]
@@ -418,6 +445,17 @@ describe("UNIQUE constraints are enforced", () => {
       insertRow(db, "app_settings", { ...validRows.app_settings, id: "as2" }),
     ).rejects.toThrow(/UNIQUE/i);
   });
+
+  test("goals.linked_wallet_id rejects a second goal linked to an already-linked wallet (invariant I10)", async () => {
+    // A savings wallet backs at most one Goal — otherwise the same pesos would count
+    // toward two targets. The repository-layer check planned for Task 8 is a
+    // read-then-write and can be raced by two concurrent createGoal calls; only a DB
+    // constraint is race-proof, so this is enforced here rather than deferred.
+    await insertRow(db, "goals", { ...validRows.goals, id: "g1" });
+    await expect(
+      insertRow(db, "goals", { ...validRows.goals, id: "g2" }),
+    ).rejects.toThrow(/UNIQUE/i);
+  });
 });
 
 describe("money columns hold exact integer centavos, never REAL", () => {
@@ -435,13 +473,17 @@ describe("money columns hold exact integer centavos, never REAL", () => {
     { table: "limits", column: "value" },
     { table: "goals", column: "target_amount" },
     { table: "loans", column: "principal" },
+    { table: "loans", column: "next_due_amount" },
     { table: "bills", column: "amount" },
     { table: "recurring_patterns", column: "amount" },
+    { table: "income_profiles", column: "average_amount" },
   ];
 
   test.each(MONEY_COLUMNS.map(({ table, column }) => [table, column]))(
     "%s.%s round-trips a large centavo value with integer affinity",
     async (table, column) => {
+      // next_due_amount and average_amount are nullable and null in the seed template —
+      // override explicitly so the assertion below exercises a real stored value, not null.
       const row = { ...validRows[table], [column]: LARGE_CENTAVOS };
       await insertRow(db, table, row);
       const result = await db.getFirstAsync<{ value: number; kind: string }>(

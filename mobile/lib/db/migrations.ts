@@ -6,6 +6,13 @@ export type Migration = { version: number; name: string; sql: string };
 /**
  * Registry of numbered migrations, ascending. Task 7 registers 001_core.
  * NEVER edit a shipped migration — add a new numbered one instead.
+ *
+ * Jest cache gotcha: babel-plugin-inline-import inlines each `*.sql` file's contents into
+ * THIS file's transformed output at babel-transform time. Jest's transform cache is keyed
+ * on this file's own mtime/content, not on the `.sql` file it inlines — so editing only a
+ * migration `.sql` file can leave a stale, pre-edit SQL string cached and silently reused
+ * by the next `jest` run. After editing any `*.sql` migration, run once with
+ * `--no-cache` (or `jest --clearCache`) before trusting a green result.
  */
 export const MIGRATIONS: Migration[] = [{ version: 1, name: "core", sql: coreSql }];
 

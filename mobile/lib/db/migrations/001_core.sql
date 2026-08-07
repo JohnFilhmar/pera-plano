@@ -122,7 +122,7 @@ CREATE TABLE goals (
   name TEXT NOT NULL,
   target_amount INTEGER NOT NULL CHECK (target_amount > 0),
   target_date TEXT,
-  linked_wallet_id TEXT NOT NULL REFERENCES wallets(id),
+  linked_wallet_id TEXT NOT NULL UNIQUE REFERENCES wallets(id),
   contribution_rule_json TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
