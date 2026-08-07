@@ -1,0 +1,36 @@
+apply plugin: 'com.android.library'
+
+group = 'expo.modules.notificationlistener'
+version = '0.1.0'
+
+def expoModulesCorePlugin = new File(
+  project(":expo-modules-core").projectDir.absolutePath,
+  "ExpoModulesCorePlugin.gradle"
+)
+apply from: expoModulesCorePlugin
+applyKotlinExpoModulesCorePlugin()
+useCoreDependencies()
+useDefaultAndroidSdkVersions()
+
+android {
+  namespace "expo.modules.notificationlistener"
+
+  defaultConfig {
+    versionCode 1
+    versionName "0.1.0"
+  }
+
+  lint {
+    abortOnError false
+  }
+}
+
+dependencies {
+  // NotificationManagerCompat.getEnabledListenerPackages()
+  implementation "androidx.core:core-ktx:1.13.1"
+
+  // JVM unit tests for the pure Kotlin core (buffer, filter, payloads).
+  // The real org.json is required because android.jar's stubs throw.
+  testImplementation "junit:junit:4.13.2"
+  testImplementation "org.json:json:20240303"
+}
