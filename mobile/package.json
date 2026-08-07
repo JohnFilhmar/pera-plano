@@ -60,7 +60,8 @@
     ],
     "moduleNameMapper": {
       "^@/(.*)$": "<rootDir>/$1",
-      "^expo-sqlite$": "<rootDir>/test_support/expo_sqlite_mock.ts"
+      "^expo-sqlite$": "<rootDir>/test_support/expo_sqlite_mock.ts",
+      "^lucide-react-native$": "<rootDir>/node_modules/lucide-react-native/dist/cjs/lucide-react-native.js"
     },
     "transformIgnorePatterns": [
       "node_modules/(?!((jest-)?react-native|@react-native(-community)?|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-navigation|@react-navigation/.*|native-base|react-native-svg|nativewind|react-native-css-interop|lucide-react-native))"
