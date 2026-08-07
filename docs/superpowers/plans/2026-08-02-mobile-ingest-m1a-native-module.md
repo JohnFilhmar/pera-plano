@@ -674,6 +674,7 @@ This is the FIRST of three M1 plans and must be implemented before the others:
 **Files:**
 - Create: `mobile/modules/notification_listener/android/src/main/java/expo/modules/notificationlistener/CapturePrefs.kt`
 - Test: `mobile/modules/notification_listener/android/src/test/java/expo/modules/notificationlistener/CapturePrefsTest.kt`
+- **Modify: `mobile/modules/notification_listener/android/build.gradle`** — this is the first task that touches a real `android.*` framework class (`SharedPreferences`), so it is where **Robolectric first becomes necessary**. Tasks 1–3 deliberately avoid it: Task 2's `CaptureRecord` is pure Kotlin + `org.json`, and Task 3's `CaptureBuffer` takes a `File` rather than a `Context` in every tested path precisely so it stays a plain JVM test. Add the Robolectric test dependency and the `testOptions { unitTests.isIncludeAndroidResources = true }` block here, and annotate `CapturePrefsTest` with `@RunWith(RobolectricTestRunner::class)`. Do not pin an SDK/AGP version while doing so — the module inherits those from the root project via `useDefaultAndroidSdkVersions()`, and overriding them will fight the app's toolchain after the next `expo prebuild`.
 
 **Interfaces:**
 ```kotlin
