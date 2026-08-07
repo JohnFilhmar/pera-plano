@@ -14,3 +14,13 @@ jest.mock("@react-native-async-storage/async-storage", () =>
 jest.mock("expo-crypto", () => ({
   randomUUID: () => require("crypto").randomUUID(),
 }));
+
+// react-native-keyboard-controller (app/_layout.tsx's KeyboardProvider) reads
+// a native event emitter at module load time — there is no native module
+// under Jest, so even importing it throws ("doesn't seem to be linked")
+// without this. The package ships its own official Jest mock for exactly
+// this reason (its docs' "Testing" section) — swap in the real native module
+// only, not our own wiring around it.
+jest.mock("react-native-keyboard-controller", () =>
+  require("react-native-keyboard-controller/jest"),
+);
