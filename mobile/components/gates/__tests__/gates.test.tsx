@@ -6,6 +6,7 @@ import { fireEvent, render, screen } from "@testing-library/react-native";
 import { Pressable, Text } from "react-native";
 import { palette } from "@/constants/colors";
 import { SHIPPED_FEATURES } from "@/constants/shipped_features";
+import type { FeatureKey, ShipState } from "@/constants/shipped_features";
 import { __setTierForTests } from "@/lib/entitlements";
 import { SoonGate } from "../soon_gate";
 import { PlusGate } from "../plus_gate";
@@ -29,8 +30,15 @@ beforeAll(() => {
 // restored here, since the map has no test seam of its own.
 const FEATURE = "limits" as const;
 
+// SHIPPED_FEATURES is exported readonly — app code must never mutate the
+// single per-build rollout switch at runtime. Tests cast away readonly at
+// this one contained call site.
+function setShipState(key: FeatureKey, state: ShipState): void {
+  (SHIPPED_FEATURES as Record<FeatureKey, ShipState>)[key] = state;
+}
+
 afterEach(() => {
-  SHIPPED_FEATURES[FEATURE] = "soon";
+  setShipState(FEATURE, "soon");
   __setTierForTests(null);
 });
 
@@ -59,7 +67,7 @@ describe("SoonGate", () => {
   });
 
   test("renders children with no wrapper and no chip once the feature ships", () => {
-    SHIPPED_FEATURES[FEATURE] = "shipped";
+    setShipState(FEATURE, "shipped");
     render(
       <SoonGate feature={FEATURE}>
         <Text testID="shipped-child">Monthly limit</Text>
@@ -73,7 +81,7 @@ describe("SoonGate", () => {
   });
 
   test("shipped children stay fully interactive (no lingering wrapper swallows touches)", () => {
-    SHIPPED_FEATURES[FEATURE] = "shipped";
+    setShipState(FEATURE, "shipped");
     const onPress = jest.fn();
     render(
       <SoonGate feature={FEATURE}>
@@ -121,6 +129,21 @@ describe("PlusGate", () => {
     );
     expect(screen.queryByTestId("upgrade-sheet")).toBeNull();
     fireEvent.press(screen.getByTestId("plus-gate"));
+    expect(screen.getByTestId("upgrade-sheet")).toBeTruthy();
+  });
+
+  test("free tier: a real interactive child cannot be pressed through to bypass the paywall", () => {
+    __setTierForTests("free");
+    const childOnPress = jest.fn();
+    render(
+      <PlusGate capability={CAPABILITY}>
+        <Pressable testID="add-wallet-btn" onPress={childOnPress}>
+          <Text>Add Wallet</Text>
+        </Pressable>
+      </PlusGate>,
+    );
+    fireEvent.press(screen.getByTestId("add-wallet-btn"));
+    expect(childOnPress).not.toHaveBeenCalled();
     expect(screen.getByTestId("upgrade-sheet")).toBeTruthy();
   });
 

@@ -46,7 +46,7 @@ export function PlusGate({
         accessibilityRole="button"
         accessibilityLabel="Requires PeraPlano Plus — tap to see what's included"
       >
-        <View>{children}</View>
+        <View pointerEvents="none">{children}</View>
         <View
           testID="plus-badge"
           className="mt-1 flex-row items-center gap-1 self-start rounded-full bg-brand px-2 py-0.5 dark:bg-brand-dark"

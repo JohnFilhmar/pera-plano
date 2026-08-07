@@ -23,7 +23,7 @@ export type FeatureKey =
 
 export type ShipState = "shipped" | "soon";
 
-export const SHIPPED_FEATURES: Record<FeatureKey, ShipState> = {
+export const SHIPPED_FEATURES: Readonly<Record<FeatureKey, ShipState>> = {
   limits: "soon",
   income: "soon",
   goals: "soon",

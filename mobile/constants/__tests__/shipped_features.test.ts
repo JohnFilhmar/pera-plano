@@ -3,7 +3,14 @@ import {
   isShipped,
   useShippedFeature,
 } from "../shipped_features";
-import type { FeatureKey } from "../shipped_features";
+import type { FeatureKey, ShipState } from "../shipped_features";
+
+// SHIPPED_FEATURES is exported readonly — app code must never mutate the
+// single per-build rollout switch at runtime. Tests poke it anyway (there is
+// no other seam), casting away readonly at this one contained call site.
+function setShipState(key: FeatureKey, state: ShipState): void {
+  (SHIPPED_FEATURES as Record<FeatureKey, ShipState>)[key] = state;
+}
 
 // Literal, independent of the module — catches a dynamically-built map that
 // silently drops a key (a Record type does not guarantee completeness at
@@ -43,16 +50,16 @@ describe("isShipped", () => {
     // Restore every key to its baseline in case a prior assertion in this
     // block threw before the finally ran.
     for (const key of ALL_KEYS) {
-      SHIPPED_FEATURES[key] = "soon";
+      setShipState(key, "soon");
     }
   });
 
   test("agrees with the map in both directions, for every key", () => {
     for (const key of ALL_KEYS) {
-      SHIPPED_FEATURES[key] = "soon";
+      setShipState(key, "soon");
       expect(isShipped(key)).toBe(false);
 
-      SHIPPED_FEATURES[key] = "shipped";
+      setShipState(key, "shipped");
       expect(isShipped(key)).toBe(true);
     }
   });
@@ -61,16 +68,16 @@ describe("isShipped", () => {
 describe("useShippedFeature", () => {
   afterEach(() => {
     for (const key of ALL_KEYS) {
-      SHIPPED_FEATURES[key] = "soon";
+      setShipState(key, "soon");
     }
   });
 
   test("returns exactly the map's current state, for every key", () => {
     for (const key of ALL_KEYS) {
-      SHIPPED_FEATURES[key] = "soon";
+      setShipState(key, "soon");
       expect(useShippedFeature(key)).toBe("soon");
 
-      SHIPPED_FEATURES[key] = "shipped";
+      setShipState(key, "shipped");
       expect(useShippedFeature(key)).toBe("shipped");
     }
   });
