@@ -14,8 +14,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
-private const val RSA_TRANSFORMATION = "RSA/ECB/OAEPWithSHA-256AndMGF1Padding"
-
 /**
  * Task 2 of the encryption plan (docs/12-encryption-and-app-lock.md §3, §6).
  *
@@ -79,8 +77,8 @@ class KeyStoreBridgeTest {
   fun `ensureCaptureKeyPair second call does not rotate the key`() {
     val publicKey = capturePublicKey()
     val plaintext = randomBytes(32)
-    val cipher = Cipher.getInstance(RSA_TRANSFORMATION)
-    cipher.init(Cipher.ENCRYPT_MODE, publicKey)
+    val cipher = Cipher.getInstance(KeyStoreBridge.RSA_TRANSFORMATION)
+    cipher.init(Cipher.ENCRYPT_MODE, publicKey, KeyStoreBridge.RSA_OAEP_PARAMS)
     val wrappedUnderFirstKey = cipher.doFinal(plaintext)
 
     KeyStoreBridge.ensureCaptureKeyPair() // second call on this launch; must be a no-op
@@ -153,8 +151,8 @@ class KeyStoreBridgeTest {
     val publicKey = capturePublicKey()
     val plaintext = randomBytes(32)
 
-    val cipher = Cipher.getInstance(RSA_TRANSFORMATION)
-    cipher.init(Cipher.ENCRYPT_MODE, publicKey)
+    val cipher = Cipher.getInstance(KeyStoreBridge.RSA_TRANSFORMATION)
+    cipher.init(Cipher.ENCRYPT_MODE, publicKey, KeyStoreBridge.RSA_OAEP_PARAMS)
     val wrapped = cipher.doFinal(plaintext)
 
     val unwrapped = KeyStoreBridge.decryptWithCaptureKey(wrapped)

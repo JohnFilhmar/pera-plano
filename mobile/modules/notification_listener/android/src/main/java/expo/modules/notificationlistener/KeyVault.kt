@@ -84,7 +84,20 @@ internal object AndroidKeyVault : KeyVault {
   private const val AUTH_TYPES =
     KeyProperties.AUTH_BIOMETRIC_STRONG or KeyProperties.AUTH_DEVICE_CREDENTIAL
 
-  override fun getOrCreateAesKey(alias: String) {
+  // Guards every "does this alias exist, and if not, generate it"
+  // check-then-act below. Without this, the app's startup path and the
+  // notification listener's onListenerConnected -- which fire close enough
+  // to simultaneously on first run that this is not a theoretical race --
+  // can both observe no alias, both generate, and have the second
+  // generation silently replace the first. Anything wrapped under the
+  // first key in that window, including the DEK's device wrap, becomes
+  // permanently unreadable: exactly the failure this whole design exists
+  // to prevent. One lock for both key types is deliberate -- key creation
+  // happens at most once per alias ever, so there is no real contention to
+  // avoid by splitting it.
+  private val lock = Any()
+
+  override fun getOrCreateAesKey(alias: String) = synchronized(lock) {
     val keyStore = keyStore()
     if (!keyStore.containsAlias(alias)) {
       withStrongBoxFallback { strongBox ->
@@ -117,7 +130,7 @@ internal object AndroidKeyVault : KeyVault {
     }
   }
 
-  override fun getOrCreateRsaKeyPair(alias: String) {
+  override fun getOrCreateRsaKeyPair(alias: String) = synchronized(lock) {
     val keyStore = keyStore()
     if (!keyStore.containsAlias(alias)) {
       withStrongBoxFallback { strongBox ->
@@ -126,7 +139,16 @@ internal object AndroidKeyVault : KeyVault {
           KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
         )
           .setKeySize(2048)
-          .setDigests(KeyProperties.DIGEST_SHA256)
+          // Both digests authorized, not just SHA-256: many pre-API-30
+          // Keymaster implementations hardcode OAEP's MGF1 digest to SHA-1
+          // regardless of what's requested, so KeyStoreBridge's decrypt
+          // (and whatever in Task 3 encrypts against the exported public
+          // key) explicitly requests MGF1/SHA-1 via OAEPParameterSpec while
+          // keeping SHA-256 as OAEP's main digest -- see KeyStoreBridge's
+          // RSA_OAEP_PARAMS doc. The Keystore rejects a Cipher.init() whose
+          // requested digest wasn't pre-authorized here, so both must be
+          // listed even though only one is the "real" digest choice.
+          .setDigests(KeyProperties.DIGEST_SHA256, KeyProperties.DIGEST_SHA1)
           .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_RSA_OAEP)
           // Gates the PRIVATE key only. The public half is read via the
           // certificate (see getPublicKey below), which the Keystore never
@@ -173,6 +195,12 @@ internal object AndroidKeyVault : KeyVault {
    * BOTH the AES device KEK and the RSA capture keypair -- there is no
    * reason to hardware-back one and not the other, and this fallback means a
    * device without StrongBox is unaffected either way.
+   *
+   * Probing by attempting generation and catching the exception, rather
+   * than checking `PackageManager.FEATURE_STRONGBOX_KEYSTORE` first, is
+   * deliberate, not an oversight: a feature check would need a
+   * `PackageManager`, and therefore a `Context`, which is exactly what
+   * [KeyStoreBridge] (and this vault) are designed to never require.
    */
   private fun withStrongBoxFallback(generate: (strongBox: Boolean) -> Unit) {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {

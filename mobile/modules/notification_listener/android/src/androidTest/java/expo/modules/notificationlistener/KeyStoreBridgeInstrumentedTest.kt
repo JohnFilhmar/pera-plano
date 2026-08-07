@@ -2,16 +2,19 @@ package expo.modules.notificationlistener
 
 import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
+import android.security.keystore.UserNotAuthenticatedException
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import java.security.KeyFactory
 import java.security.KeyStore
 import java.security.PrivateKey
 import java.security.spec.X509EncodedKeySpec
+import javax.crypto.Cipher
 import javax.crypto.SecretKey
 import javax.crypto.SecretKeyFactory
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -28,22 +31,14 @@ import org.junit.runner.RunWith
  * ```
  *
  * NOT run as part of this task -- confirmed to compile only
- * (`compileDebugAndroidTestKotlin`). See task-2-report.md for why
- * [wrapThenUnwrapRoundTripsAgainstTheRealKeystore] specifically may need
- * more than a bare `connectedDebugAndroidTest` run to actually pass: the
- * device KEK is configured with a zero-second authentication validity
- * (`setUserAuthenticationParameters(0, ...)`), which the standard Keystore
- * pattern satisfies via a `Cipher` bound into a `BiometricPrompt.CryptoObject`
- * -- calling `Cipher.doFinal()` directly, as this test does, throws
- * `UserNotAuthenticatedException` unless the connected device/emulator's
- * current authentication state already satisfies the key. That is a
- * property of the device at test time, not a bug in KeyStoreBridge.
+ * (`compileDebugAndroidTestKotlin`).
  *
  * The three checks that need a HUMAN changing phone settings mid-test
  * (screen-lock removal invalidates the key; biometric enrollment does not;
- * a device with no screen lock cannot create the key at all) are not here
- * -- they cannot be automated and are manual items for the plan's on-device
- * verification task instead.
+ * a device with no screen lock cannot create the key at all), plus the
+ * fully-authenticated wrap/unwrap round trip via a real BiometricPrompt,
+ * are not here -- they cannot be automated and are manual items for the
+ * plan's on-device verification task instead (see task-2-report.md).
  */
 @RunWith(AndroidJUnit4::class)
 class KeyStoreBridgeInstrumentedTest {
@@ -104,12 +99,75 @@ class KeyStoreBridgeInstrumentedTest {
     assertEquals("RSA", publicKey.algorithm)
   }
 
+  /**
+   * Inverted from an earlier draft that called `wrapWithDeviceKek` and
+   * expected it to SUCCEED with no prior authentication. It doesn't: the
+   * device KEK requires authentication for every use
+   * (`setUserAuthenticationParameters(0, ...)`), and no `BiometricPrompt`
+   * flow happens anywhere in this process. That earlier version was a test
+   * that was EXPECTED to fail whenever it happened to run against an
+   * unauthenticated session -- a red test people learn to ignore, which
+   * then hides a real regression behind the same red.
+   *
+   * Asserting the throw instead is deterministic and proves something
+   * genuinely valuable: that the auth gate is actually wired. That is the
+   * entire security claim of the device wrap (docs §5) -- a device KEK
+   * usable without authentication would be no better than no KEK at all.
+   *
+   * The fully-authenticated path (wrap, then unwrap, inside a real
+   * `BiometricPrompt`-bound `CryptoObject`) is a manual on-device check
+   * instead -- see task-2-report.md for the precise steps.
+   */
   @Test
-  fun wrapThenUnwrapRoundTripsAgainstTheRealKeystore() {
+  fun unauthenticatedWrapWithDeviceKekThrowsUserNotAuthenticated() {
     KeyStoreBridge.ensureDeviceKek()
+
+    assertThrows(UserNotAuthenticatedException::class.java) {
+      KeyStoreBridge.wrapWithDeviceKek("instrumented-probe".toByteArray())
+    }
+  }
+
+  /**
+   * The only thing that can prove RSA-OAEP actually round-trips against the
+   * real Keystore rather than merely being accepted at key-creation time.
+   * This exists because Android Keystore has a well-documented history of
+   * OAEP MGF1-digest inconsistency on pre-API-30 Keymaster (see
+   * KeyStoreBridge.RSA_OAEP_PARAMS's doc) -- a wrong combination here would
+   * make every capture seal fail silently on exactly the budget phones this
+   * product targets, and neither the JVM tests (plain JCE has no such
+   * quirk) nor a KeyInfo-only inspection would ever catch it.
+   *
+   * Unlike the device KEK, this uses the REAL exported public key (via
+   * capturePublicKeySpki, exactly as Task 3's capture-sealing code will) to
+   * encrypt, so it also exercises the encrypt-side contract, not just
+   * decrypt.
+   *
+   * NOTE: the capture private key is configured with the same
+   * per-operation authentication as the device KEK
+   * (`setUserAuthenticationParameters(0, ...)`), so this call is also a
+   * candidate to throw `UserNotAuthenticatedException` depending on
+   * exactly when Keystore validates OAEP digest authorization relative to
+   * the auth gate on the connected device. If it throws that instead of
+   * completing, that is a real, useful data point for Task 11's on-device
+   * run -- it does not by itself mean the OAEP fix is wrong, only that this
+   * assertion needs a preceding authenticated session (or a narrower
+   * variant that stops at `Cipher.init()`, where Keystore is documented to
+   * validate the requested digest/purpose regardless of auth state) to
+   * isolate the two failure modes.
+   */
+  @Test
+  fun capturePublicEncryptThenPrivateDecryptRoundTripsAgainstTheRealKeystore() {
+    KeyStoreBridge.ensureCaptureKeyPair()
+
+    val spki = KeyStoreBridge.capturePublicKeySpki()
+    val publicKey = KeyFactory.getInstance("RSA").generatePublic(X509EncodedKeySpec(spki))
+
     val plaintext = "instrumented-probe".toByteArray()
-    val wrapped = KeyStoreBridge.wrapWithDeviceKek(plaintext)
-    val unwrapped = KeyStoreBridge.unwrapWithDeviceKek(wrapped)
+    val cipher = Cipher.getInstance(KeyStoreBridge.RSA_TRANSFORMATION)
+    cipher.init(Cipher.ENCRYPT_MODE, publicKey, KeyStoreBridge.RSA_OAEP_PARAMS)
+    val wrapped = cipher.doFinal(plaintext)
+
+    val unwrapped = KeyStoreBridge.decryptWithCaptureKey(wrapped)
     assertArrayEquals(plaintext, unwrapped)
   }
 
