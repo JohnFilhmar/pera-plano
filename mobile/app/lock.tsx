@@ -10,9 +10,11 @@
 // test) — mirroring app/index.tsx's existing established pattern for the
 // exact same not-yet-built route.
 import { Redirect, type Href } from "expo-router";
+import { DeviceLockExplainer } from "@/components/onboarding/device_lock_explainer";
 import { RecoveryUnlockForm } from "@/components/lock/recovery_unlock_form";
 import { UnlockPrompt } from "@/components/lock/unlock_prompt";
 import { useLock } from "@/contexts/lock_context";
+import { openSecuritySettings } from "@/modules/notification_listener";
 
 export default function LockScreen() {
   const { status, errorMessage, unlock, submitRecoveryPhrase, wipeAndStartOver } = useLock();
@@ -30,6 +32,16 @@ export default function LockScreen() {
     // is the deliberate escape hatch until that route lands — remove it once
     // app/(onboarding)/ exists and this starts type-checking on its own.
     return <Redirect href={"/(onboarding)" as unknown as Href} />;
+  }
+
+  if (status === "needs_device_lock") {
+    // docs §5a's "mid-life removal" paragraph; task-9a-brief rule 5: the
+    // device Keystore key died (removed screen lock) AND there is currently
+    // no screen lock to re-wrap against, so recreateDeviceKek() would fail
+    // outright. Same component the onboarding-time gate uses
+    // (app/(onboarding)/device_lock.tsx) — see lock_context.tsx's header
+    // comment for why this is rendered directly rather than via navigation.
+    return <DeviceLockExplainer onOpenSettings={openSecuritySettings} />;
   }
 
   if (status === "needs_recovery") {

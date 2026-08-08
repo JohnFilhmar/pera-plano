@@ -12,25 +12,35 @@ jest.mock("@/lib/db/database", () => ({
 jest.mock("@/lib/crypto/key_manager", () => ({
   wipeKeys: jest.fn(),
 }));
+jest.mock("@/modules/notification_listener", () => ({
+  clearCaptureBuffer: jest.fn(),
+}));
 
 import { wipeDatabase } from "@/lib/db/database";
 import { wipeKeys } from "@/lib/crypto/key_manager";
+import { clearCaptureBuffer } from "@/modules/notification_listener";
 import { wipeAndStartOver } from "../wipe";
 
 const mockWipeDatabase = wipeDatabase as jest.Mock;
 const mockWipeKeys = wipeKeys as jest.Mock;
+const mockClearCaptureBuffer = clearCaptureBuffer as jest.Mock;
 
 beforeEach(() => {
   jest.clearAllMocks();
   mockWipeDatabase.mockResolvedValue(undefined);
   mockWipeKeys.mockResolvedValue(undefined);
+  mockClearCaptureBuffer.mockResolvedValue(undefined);
 });
 
-test("wipes both the database and the key material", async () => {
+test("wipes the database, the key material, AND the capture buffer", async () => {
   await wipeAndStartOver();
 
   expect(mockWipeDatabase).toHaveBeenCalledTimes(1);
   expect(mockWipeKeys).toHaveBeenCalledTimes(1);
+  // The discriminating assertion: a wipe that clears the database and keys
+  // but forgets the capture buffer (task-9-report.md's documented gap) would
+  // pass every other test in this file -- only this one catches it.
+  expect(mockClearCaptureBuffer).toHaveBeenCalledTimes(1);
 });
 
 test("wipes the database BEFORE the keys -- a database wipe failure must leave the wraps intact, not orphan an unwipeable file with no key left to ever prove it happened", async () => {
@@ -41,10 +51,13 @@ test("wipes the database BEFORE the keys -- a database wipe failure must leave t
   mockWipeKeys.mockImplementation(async () => {
     order.push("keys");
   });
+  mockClearCaptureBuffer.mockImplementation(async () => {
+    order.push("captureBuffer");
+  });
 
   await wipeAndStartOver();
 
-  expect(order).toEqual(["database", "keys"]);
+  expect(order).toEqual(["database", "keys", "captureBuffer"]);
 });
 
 test("a database wipe failure propagates and skips wiping the keys -- no half-wiped state", async () => {
@@ -58,6 +71,12 @@ test("a key-wipe failure still propagates rather than reporting a silent success
   mockWipeKeys.mockRejectedValueOnce(new Error("secure store unavailable"));
 
   await expect(wipeAndStartOver()).rejects.toThrow("secure store unavailable");
+});
+
+test("a capture-buffer-clear failure still propagates rather than reporting a silent success", async () => {
+  mockClearCaptureBuffer.mockRejectedValueOnce(new Error("filesystem error"));
+
+  await expect(wipeAndStartOver()).rejects.toThrow("filesystem error");
 });
 
 test("requires no arguments and no prior authentication state -- callable in the unrecoverable state where nothing else works", async () => {

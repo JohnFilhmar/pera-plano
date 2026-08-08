@@ -32,6 +32,16 @@ jest.mock("@/contexts/lock_context", () => ({
   useLock: jest.fn(),
 }));
 
+// app/lock.tsx (required via requireActual below) now imports
+// openSecuritySettings from this module for its "needs_device_lock" branch
+// (task-9a-brief) -- the real module's top-level requireNativeModule() call
+// throws under Jest with no native registration, same reasoning as every
+// other test file that touches it (see contexts/__tests__/lock_context.test.tsx's
+// doc on this same mock).
+jest.mock("@/modules/notification_listener", () => ({
+  openSecuritySettings: jest.fn(),
+}));
+
 // A SPY that still calls through to the real implementation (not a stub) —
 // every other test in this file relies on the real LockScreen actually
 // rendering UnlockPrompt/RecoveryUnlockForm. Wrapping it in jest.fn() only
@@ -162,6 +172,16 @@ test('"needs_recovery" renders the recovery form, not the tabs, and never attemp
 
   expect(screen.queryByTestId("tab-index")).toBeNull();
   expect(screen.getByTestId("recovery-unlock-form")).toBeTruthy();
+  expect(mockBootstrapApp).not.toHaveBeenCalled();
+});
+
+test('"needs_device_lock" renders the device-lock explainer, not the tabs, and never attempts bootstrap', async () => {
+  setLockStatus("needs_device_lock");
+  renderApp();
+  await flushMicrotasks();
+
+  expect(screen.queryByTestId("tab-index")).toBeNull();
+  expect(screen.getByTestId("device-lock-explainer")).toBeTruthy();
   expect(mockBootstrapApp).not.toHaveBeenCalled();
 });
 

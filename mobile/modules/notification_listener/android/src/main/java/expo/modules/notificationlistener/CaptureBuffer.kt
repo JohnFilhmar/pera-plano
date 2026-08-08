@@ -160,6 +160,40 @@ object CaptureBuffer {
   fun size(file: File): Int = synchronized(lock) { readLines(file).size }
 
   /**
+   * Deletes the pending-capture file outright -- the §11a "wipe and start
+   * over" primitive's one touch-point in this class
+   * (docs/12-encryption-and-app-lock.md §11a; lib/security/wipe.ts). Unlike
+   * [drain], this never opens a single line: a wipe destroys ciphertext it
+   * was never going to read anyway, so there is nothing here for the
+   * capture keypair's authentication window to gate, and no reason this
+   * needs the caller to be unlocked.
+   *
+   * Also removes the `.tmp` sibling [writeLines] uses for its atomic
+   * replace, on the chance a process was killed between writing that file
+   * and completing the move -- it holds the exact same category of content
+   * (sealed lines, nothing more) as the main file, so a wipe that left it
+   * behind would be exactly the "captures belonging to a key lifecycle that
+   * no longer exists" gap this primitive exists to close.
+   *
+   * Succeeds -- returns normally, throws nothing -- whether or not either
+   * file was ever written. "Nothing pending" and "buffer cleared" are the
+   * same end state from the caller's point of view, and the whole point of
+   * a wipe primitive is to be safely callable from the one place
+   * (lib/security/wipe.ts) that has no idea what state the buffer was in
+   * when it runs. A wipe that throws because there happened to be nothing
+   * to wipe is a bug, not a stricter check.
+   */
+  fun clear(file: File): Unit = synchronized(lock) {
+    if (file.exists()) {
+      file.delete()
+    }
+    val temp = File("${file.absolutePath}.tmp")
+    if (temp.exists()) {
+      temp.delete()
+    }
+  }
+
+  /**
    * Reads the pending-capture file's lines.
    *
    * A MISSING file is genuinely empty -- nothing has ever been written --

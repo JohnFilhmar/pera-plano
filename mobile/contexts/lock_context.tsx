@@ -43,6 +43,22 @@
 // guard against a double-tap starting a SECOND concurrent attempt while one
 // is already running (the DEK-split bug class Task 6 found and fixed for
 // initializeKeys — this file's own version of the same discipline).
+//
+// "needs_device_lock" (task-9a-brief; docs §5a) is the resolution of the
+// TODO this file used to carry: submitRecoveryPhrase() checks isDeviceSecure()
+// BEFORE ever calling KeyManager.rewrapAfterInvalidation(phrase), because
+// that call ends in recreateDeviceKek() — which cannot create a new
+// auth-gated Keystore key on a device with no screen lock present, no
+// differently from initializeKeys() at onboarding. An insecure device is
+// routed to "needs_device_lock" (rendered by app/lock.tsx via
+// DeviceLockExplainer) with the phrase deliberately NOT retained anywhere —
+// same "no auto-retry, requires a fresh explicit action" discipline as
+// above, just extended to a case that would otherwise mean quietly holding
+// a decrypted recovery phrase in memory across an indefinite trip to
+// Settings. The AppState effect below re-checks isDeviceSecure() on return
+// and, once satisfied, moves back to "needs_recovery" — never straight to
+// re-attempting the rewrap — so the user submits their phrase again, this
+// time with recreateDeviceKek() actually able to succeed.
 import {
   createContext,
   useCallback,
@@ -63,6 +79,7 @@ import {
   DeviceKeyInvalidatedError,
   DeviceKeyMissingError,
   NotAuthenticatedError,
+  isDeviceSecure,
 } from "@/modules/notification_listener";
 
 export type LockStatus =
@@ -71,6 +88,7 @@ export type LockStatus =
   | "locked" // idle, waiting for the user to tap Unlock (first attempt or a retry)
   | "authenticating" // a device-key unlock attempt is in flight
   | "needs_recovery" // the device Keystore key was permanently invalidated
+  | "needs_device_lock" // needs_recovery, but the device ALSO has no screen lock right now (docs §5a) -- recreateDeviceKek() cannot make a new auth-gated key without one, so this runs before rewrapAfterInvalidation is ever attempted
   | "unlocked"; // the DEK is in memory, the database is open, the cache key is set
 
 type LockContextValue = {
@@ -144,6 +162,30 @@ export function LockProvider({ children }: { children: ReactNode }) {
     setErrorMessage(null);
   }, []);
 
+  /**
+   * task-9a-brief rule 5 / docs §5a's "mid-life removal" paragraph: while
+   * status is "needs_device_lock", a return to the foreground re-checks
+   * isDeviceSecure() and, once satisfied, moves back to "needs_recovery" --
+   * NEVER straight to re-attempting rewrapAfterInvalidation, since the
+   * phrase that got the user here was deliberately never retained (see this
+   * file's header comment). Still insecure: no-op, same "loop until secure"
+   * shape as app/(onboarding)/device_lock.tsx, bounded by a real user action
+   * (leaving for Settings and coming back) every time, never a timer.
+   */
+  const recheckDeviceLockRef = useRef(false);
+  const recheckDeviceLock = useCallback(async () => {
+    if (recheckDeviceLockRef.current) return;
+    recheckDeviceLockRef.current = true;
+    try {
+      const secure = await isDeviceSecure();
+      if (secure) {
+        setStatus("needs_recovery");
+      }
+    } finally {
+      recheckDeviceLockRef.current = false;
+    }
+  }, []);
+
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (next: AppStateStatus) => {
       if (next === "background") {
@@ -151,6 +193,11 @@ export function LockProvider({ children }: { children: ReactNode }) {
         return;
       }
       if (next !== "active") return;
+
+      if (statusRef.current === "needs_device_lock") {
+        void recheckDeviceLock();
+        return;
+      }
 
       const backgroundedAt = backgroundedAtRef.current;
       backgroundedAtRef.current = null;
@@ -161,7 +208,7 @@ export function LockProvider({ children }: { children: ReactNode }) {
       }
     });
     return () => subscription.remove();
-  }, [lockNow]);
+  }, [lockNow, recheckDeviceLock]);
 
   const unlock = useCallback(async () => {
     if (unlockInFlightRef.current) return;
@@ -212,15 +259,19 @@ export function LockProvider({ children }: { children: ReactNode }) {
     recoveryInFlightRef.current = true;
     setErrorMessage(null);
     try {
-      // TODO(Task 9a): isDeviceSecure() does not exist on the
-      // notification_listener bridge yet. Once it does, check it HERE,
-      // before calling rewrapAfterInvalidation, and if it is false, route to
-      // Task 9a's "set a screen lock" step instead (docs/12 §5a; task-9-brief
-      // rule 3) — recreateDeviceKek() cannot create a new auth-gated
-      // Keystore key with no screen lock present. Deliberately NOT
-      // implemented here: this task's scope is explicitly no-Kotlin, and
-      // there is nothing to call yet. Today that failure surfaces as the
-      // generic catch-all below instead of this specific guidance.
+      // task-9a-brief rule 5 / docs §5a: recreateDeviceKek() (inside
+      // rewrapAfterInvalidation below) cannot create a new auth-gated
+      // Keystore key on a device with no screen lock present -- checked
+      // HERE, before that call ever runs, so an insecure device is routed
+      // to set one first rather than spending the phrase on an attempt that
+      // could only fail. See this file's header comment for why the phrase
+      // is deliberately NOT retained across that trip.
+      const secure = await isDeviceSecure();
+      if (!secure) {
+        setStatus("needs_device_lock");
+        return;
+      }
+
       const dek = await KeyManager.rewrapAfterInvalidation(phrase);
       await Database.unlockDatabase(dek);
       QueryCache.setCacheEncryptionKey(dek);

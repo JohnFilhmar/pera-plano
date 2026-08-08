@@ -19,6 +19,9 @@ type NativeNotificationListenerModule = {
   isDeviceKeyUsable(): Promise<boolean>;
   recreateDeviceKek(): Promise<void>;
   drainPendingCaptures(): Promise<RawCapture[]>;
+  clearCaptureBuffer(): Promise<void>;
+  isDeviceSecure(): Promise<boolean>;
+  openSecuritySettings(): void;
 };
 
 const NativeNotificationListener = requireNativeModule<NativeNotificationListenerModule>(
@@ -184,4 +187,48 @@ export function recreateDeviceKek(): Promise<void> {
  */
 export function drainPendingCaptures(): Promise<RawCapture[]> {
   return NativeNotificationListener.drainPendingCaptures().catch(rethrowTyped);
+}
+
+/**
+ * Deletes the pending-capture buffer outright (docs/12-encryption-and-app-lock.md
+ * §11a; task-9a-brief) -- the one native touch-point `lib/security/wipe.ts`'s
+ * `wipeAndStartOver` was missing until this task: without it, a wipe left
+ * `pending_captures.ndjson` on disk, sealed under a capture keypair the wipe
+ * had just made irrelevant. Not a confidentiality leak on its own (the
+ * contents stay ciphertext), but it broke the wipe's own promise to clear
+ * "the capture buffer" as part of starting over.
+ *
+ * Requires NO authentication -- deleting a file of opaque ciphertext needs
+ * no Keystore key at all, unlike every other function in this module past
+ * `getCapturePublicKey`. Resolves whether or not anything was pending; see
+ * `CaptureBuffer.clear`'s doc for why "nothing to wipe" and "wiped" are the
+ * same end state here, never a rejection.
+ */
+export function clearCaptureBuffer(): Promise<void> {
+  return NativeNotificationListener.clearCaptureBuffer();
+}
+
+/**
+ * `KeyguardManager.isDeviceSecure()` -- true once the device has ANY screen
+ * lock configured (docs/12-encryption-and-app-lock.md §5a; task-9a-brief).
+ * Android refuses to create an auth-gated Keystore key with none of these,
+ * so this is the prerequisite check onboarding runs before generating any
+ * key, and that the unlock-time recovery flow (`contexts/lock_context.tsx`'s
+ * `submitRecoveryPhrase`) runs before ever calling `recreateDeviceKek()` --
+ * that call cannot create a new auth-gated key on a device with no screen
+ * lock present either. Requires NO authentication.
+ */
+export function isDeviceSecure(): Promise<boolean> {
+  return NativeNotificationListener.isDeviceSecure();
+}
+
+/**
+ * Launches Android's screen-lock settings page so the user can set one
+ * (docs §5a; task-9a-brief). Synchronous and fire-and-forget, matching the
+ * native side exactly: this reports nothing about whether the user actually
+ * set a lock. Callers find that out by re-checking `isDeviceSecure()` when
+ * the app returns to the foreground -- never from anything this returns.
+ */
+export function openSecuritySettings(): void {
+  NativeNotificationListener.openSecuritySettings();
 }

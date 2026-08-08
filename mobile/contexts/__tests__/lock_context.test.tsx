@@ -103,7 +103,12 @@ jest.mock("@/modules/notification_listener", () => {
       this.name = "NotAuthenticatedError";
     }
   }
-  return { DeviceKeyMissingError, DeviceKeyInvalidatedError, NotAuthenticatedError };
+  return {
+    DeviceKeyMissingError,
+    DeviceKeyInvalidatedError,
+    NotAuthenticatedError,
+    isDeviceSecure: jest.fn(),
+  };
 });
 
 import { act, renderHook, waitFor } from "@testing-library/react-native";
@@ -118,6 +123,7 @@ import {
   DeviceKeyMissingError,
   DeviceKeyInvalidatedError,
   NotAuthenticatedError,
+  isDeviceSecure,
 } from "@/modules/notification_listener";
 import { LockProvider, useLock } from "../lock_context";
 
@@ -131,6 +137,7 @@ const mockCloseDatabase = Database.closeDatabase as jest.Mock;
 const mockSetCacheEncryptionKey = QueryCache.setCacheEncryptionKey as jest.Mock;
 const mockClearCacheEncryptionKey = QueryCache.clearCacheEncryptionKey as jest.Mock;
 const mockWipeAndStartOver = wipeAndStartOver as jest.Mock;
+const mockIsDeviceSecure = isDeviceSecure as jest.Mock;
 
 const DEK = new Uint8Array(32).fill(0x42);
 const PHRASE = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"];
@@ -152,6 +159,10 @@ beforeEach(() => {
   mockCloseDatabase.mockResolvedValue(undefined);
   mockRewrapAfterInvalidation.mockResolvedValue(DEK);
   mockWipeAndStartOver.mockResolvedValue(undefined);
+  // Secure by default so every pre-existing submitRecoveryPhrase() test
+  // above continues to reach rewrapAfterInvalidation unchanged; the
+  // "needs_device_lock" describe block below overrides this per-test.
+  mockIsDeviceSecure.mockResolvedValue(true);
 });
 
 // ---------------------------------------------------------------------------
@@ -409,9 +420,14 @@ describe("submitRecoveryPhrase()", () => {
       }),
     );
 
-    act(() => {
+    await act(async () => {
       void result.current.submitRecoveryPhrase(PHRASE);
       void result.current.submitRecoveryPhrase(PHRASE);
+      // Let the isDeviceSecure() await (task-9a-brief) resolve before
+      // asserting -- rewrapAfterInvalidation is no longer the very first
+      // thing this function does.
+      await Promise.resolve();
+      await Promise.resolve();
     });
 
     expect(mockRewrapAfterInvalidation).toHaveBeenCalledTimes(1);
@@ -421,6 +437,117 @@ describe("submitRecoveryPhrase()", () => {
       await Promise.resolve();
       await Promise.resolve();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The device-screen-lock gate inside submitRecoveryPhrase() (task-9a-brief
+// rule 5; docs §5a's "mid-life removal" paragraph) -- wiring Task 9's TODO.
+// recreateDeviceKek() (inside rewrapAfterInvalidation) cannot create a new
+// auth-gated Keystore key on a device with no screen lock present, so this
+// must be checked and routed BEFORE rewrapAfterInvalidation is ever called.
+// ---------------------------------------------------------------------------
+
+describe("submitRecoveryPhrase() routes an insecure device to needs_device_lock first", () => {
+  async function arriveAtNeedsRecovery() {
+    mockUnlockWithDeviceKey.mockRejectedValue(new DeviceKeyInvalidatedError());
+    const { result } = renderHook(() => useLock(), { wrapper });
+    await waitFor(() => expect(result.current.status).toBe("locked"));
+    await act(async () => {
+      await result.current.unlock();
+    });
+    await waitFor(() => expect(result.current.status).toBe("needs_recovery"));
+    return result;
+  }
+
+  test("an insecure device is routed to needs_device_lock, and rewrapAfterInvalidation is never called", async () => {
+    mockIsDeviceSecure.mockResolvedValue(false);
+    const result = await arriveAtNeedsRecovery();
+
+    await act(async () => {
+      await result.current.submitRecoveryPhrase(PHRASE);
+    });
+
+    expect(result.current.status).toBe("needs_device_lock");
+    // The discriminating assertion: a version of this gate that checked
+    // isDeviceSecure() but still called rewrapAfterInvalidation anyway (or
+    // never checked at all) would attempt to recreate a Keystore key with no
+    // screen lock present -- exactly the failure docs §5a says has no
+    // fallback that preserves the security claim.
+    expect(mockRewrapAfterInvalidation).not.toHaveBeenCalled();
+    expect(mockUnlockDatabase).not.toHaveBeenCalled();
+  });
+
+  test("a secure device proceeds straight to rewrapAfterInvalidation, never needs_device_lock", async () => {
+    mockIsDeviceSecure.mockResolvedValue(true);
+    const result = await arriveAtNeedsRecovery();
+
+    await act(async () => {
+      await result.current.submitRecoveryPhrase(PHRASE);
+    });
+
+    expect(result.current.status).toBe("unlocked");
+    expect(mockRewrapAfterInvalidation).toHaveBeenCalledWith(PHRASE);
+  });
+
+  test("returning still-insecure stays on needs_device_lock -- no auto-advance, no auto-retry of rewrapAfterInvalidation", async () => {
+    mockIsDeviceSecure.mockResolvedValue(false);
+    const result = await arriveAtNeedsRecovery();
+    await act(async () => {
+      await result.current.submitRecoveryPhrase(PHRASE);
+    });
+    await waitFor(() => expect(result.current.status).toBe("needs_device_lock"));
+
+    await act(async () => {
+      emitAppState("active");
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(result.current.status).toBe("needs_device_lock");
+    expect(mockRewrapAfterInvalidation).not.toHaveBeenCalled();
+  });
+
+  test("returning secure moves back to needs_recovery -- NOT straight to unlocked, since the phrase was never retained", async () => {
+    mockIsDeviceSecure.mockResolvedValue(false);
+    const result = await arriveAtNeedsRecovery();
+    await act(async () => {
+      await result.current.submitRecoveryPhrase(PHRASE);
+    });
+    await waitFor(() => expect(result.current.status).toBe("needs_device_lock"));
+
+    mockIsDeviceSecure.mockResolvedValue(true);
+    await act(async () => {
+      emitAppState("active");
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(result.current.status).toBe("needs_recovery");
+    // Still never called -- moving to needs_recovery must not itself spend
+    // a phrase that was never stored anywhere in this context.
+    expect(mockRewrapAfterInvalidation).not.toHaveBeenCalled();
+
+    // A FRESH explicit submit (this time secure) now succeeds normally.
+    await act(async () => {
+      await result.current.submitRecoveryPhrase(PHRASE);
+    });
+    expect(result.current.status).toBe("unlocked");
+    expect(mockRewrapAfterInvalidation).toHaveBeenCalledWith(PHRASE);
+  });
+
+  test("a background transition alone (never returning to active) never rechecks isDeviceSecure while needs_device_lock", async () => {
+    mockIsDeviceSecure.mockResolvedValue(false);
+    const result = await arriveAtNeedsRecovery();
+    await act(async () => {
+      await result.current.submitRecoveryPhrase(PHRASE);
+    });
+    await waitFor(() => expect(result.current.status).toBe("needs_device_lock"));
+    mockIsDeviceSecure.mockClear();
+
+    act(() => emitAppState("background"));
+
+    expect(mockIsDeviceSecure).not.toHaveBeenCalled();
   });
 });
 

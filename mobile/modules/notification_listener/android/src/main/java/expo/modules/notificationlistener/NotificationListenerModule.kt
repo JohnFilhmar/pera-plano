@@ -1,5 +1,9 @@
 package expo.modules.notificationlistener
 
+import android.app.KeyguardManager
+import android.content.Context
+import android.content.Intent
+import android.provider.Settings
 import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.UserNotAuthenticatedException
 import android.util.Base64
@@ -112,6 +116,25 @@ class NotificationListenerModule : Module() {
         }
       records.map { it.toMap() }
     }
+
+    // ---- §11a "wipe and start over": delete the buffer outright ---------
+
+    AsyncFunction("clearCaptureBuffer") {
+      CaptureBuffer.clear(CaptureBuffer.fileFor(requireContext()))
+    }
+
+    // ---- Device screen lock (docs §5a; task-9a-brief) --------------------
+    // Requires NO Keystore key and NO authentication -- KeyguardManager's
+    // lock-state query and launching Settings are both plain system-service
+    // calls, unlike everything above this block.
+
+    AsyncFunction("isDeviceSecure") {
+      isDeviceSecure(requireContext())
+    }
+
+    Function("openSecuritySettings") {
+      openSecuritySettings(requireContext())
+    }
   }
 
   /** Standard Expo-module pattern: the react context, or a clear error if it's gone. */
@@ -168,6 +191,55 @@ internal fun requireDeviceKekPresent() {
   if (!KeyStoreBridge.vault.hasAesKey(KeyStoreBridge.DEVICE_KEK_ALIAS)) {
     throw DeviceKeyMissingException()
   }
+}
+
+/**
+ * `KeyguardManager.isDeviceSecure()` -- true once the device has ANY screen
+ * lock configured (PIN, pattern, password, or an enrolled biometric).
+ *
+ * docs/12-encryption-and-app-lock.md §5a: Android refuses to create a
+ * Keystore key with `setUserAuthenticationRequired(true)` on a device with
+ * none of these -- `KeyGenParameterSpec` throws at generation time, with no
+ * fallback that preserves the security claim (task-9a-brief). This is the
+ * prerequisite check onboarding runs before generating any key at all, and
+ * that the unlock-time recovery flow (`lock_context.tsx`'s
+ * `submitRecoveryPhrase`) runs before ever calling `recreateDeviceKek()` --
+ * that call cannot create a new auth-gated key with no screen lock present
+ * either.
+ *
+ * A top-level function taking a bare [Context] -- not a method on
+ * [NotificationListenerModule] -- for the same testability reason as
+ * [mapKeyErrors]/[requireDeviceKekPresent]: unlike those two this needs a
+ * [Context] (there is no Context-free way to ask the platform about the
+ * screen lock), but nothing else Android-framework-specific, so a
+ * Robolectric test can call it directly with a plain [Context] instead of
+ * constructing a `Module`/`AppContext`.
+ */
+internal fun isDeviceSecure(context: Context): Boolean {
+  val keyguardManager = context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+  return keyguardManager.isDeviceSecure
+}
+
+/**
+ * Launches Android's screen-lock settings page
+ * (`Settings.ACTION_SECURITY_SETTINGS`) so the user can set a PIN, pattern,
+ * password, or biometric (docs §5a; task-9a-brief). `FLAG_ACTIVITY_NEW_TASK`
+ * is required because [NotificationListenerModule.requireContext] hands back
+ * the React Application context, not an Activity -- starting an Activity
+ * from a non-Activity [Context] throws without it.
+ *
+ * Fire-and-forget by design, matching the JS wrapper's `void` (not
+ * `Promise<void>`) return: nothing here reports whether the user actually
+ * set a lock. The caller finds that out the way task-9a-brief rule 3
+ * already requires regardless -- re-checking [isDeviceSecure] when the app
+ * returns to the foreground, never from anything this function returns.
+ *
+ * A top-level, [Context]-taking function for the same testability reason as
+ * [isDeviceSecure] above.
+ */
+internal fun openSecuritySettings(context: Context) {
+  val intent = Intent(Settings.ACTION_SECURITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+  context.startActivity(intent)
 }
 
 /**

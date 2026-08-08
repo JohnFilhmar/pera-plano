@@ -30,13 +30,27 @@ jest.mock("@/components/lock/recovery_unlock_form", () => ({
   },
 }));
 
+jest.mock("@/components/onboarding/device_lock_explainer", () => ({
+  DeviceLockExplainer: (props: { onOpenSettings: () => void }) => {
+    capturedDeviceLockExplainerProps = props;
+    const { Text } = require("react-native");
+    return <Text testID="fake-device-lock-explainer">device-lock-explainer</Text>;
+  },
+}));
+
+jest.mock("@/modules/notification_listener", () => ({
+  openSecuritySettings: jest.fn(),
+}));
+
 import { render, screen } from "@testing-library/react-native";
 import { useLock } from "@/contexts/lock_context";
+import { openSecuritySettings } from "@/modules/notification_listener";
 import LockScreen from "../lock";
 
 let capturedHref: string | undefined;
 let capturedUnlockPromptProps: { isAuthenticating: boolean; errorMessage: string | null } | undefined;
 let capturedRecoveryFormProps: { errorMessage: string | null } | undefined;
+let capturedDeviceLockExplainerProps: { onOpenSettings: () => void } | undefined;
 
 const mockUseLock = useLock as jest.Mock;
 
@@ -55,6 +69,8 @@ beforeEach(() => {
   capturedHref = undefined;
   capturedUnlockPromptProps = undefined;
   capturedRecoveryFormProps = undefined;
+  capturedDeviceLockExplainerProps = undefined;
+  jest.clearAllMocks();
 });
 
 test('"checking" renders nothing at all', () => {
@@ -78,6 +94,15 @@ test('"needs_recovery" renders RecoveryUnlockForm, not UnlockPrompt', () => {
   expect(screen.getByTestId("fake-recovery-form")).toBeTruthy();
   expect(screen.queryByTestId("fake-unlock-prompt")).toBeNull();
   expect(capturedRecoveryFormProps?.errorMessage).toBe("wrong words");
+});
+
+test('"needs_device_lock" renders DeviceLockExplainer, wired to openSecuritySettings -- not RecoveryUnlockForm or UnlockPrompt', () => {
+  mockUseLock.mockReturnValue(baseLockValue({ status: "needs_device_lock" }));
+  render(<LockScreen />);
+  expect(screen.getByTestId("fake-device-lock-explainer")).toBeTruthy();
+  expect(screen.queryByTestId("fake-recovery-form")).toBeNull();
+  expect(screen.queryByTestId("fake-unlock-prompt")).toBeNull();
+  expect(capturedDeviceLockExplainerProps?.onOpenSettings).toBe(openSecuritySettings);
 });
 
 test('"locked" renders UnlockPrompt with isAuthenticating=false', () => {

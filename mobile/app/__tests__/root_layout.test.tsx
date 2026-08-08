@@ -68,6 +68,16 @@ jest.mock("@/contexts/lock_context", () => ({
   useLock: jest.fn(),
 }));
 
+// _layout.tsx unconditionally imports ./lock (LockScreen), which now imports
+// openSecuritySettings from this module for its "needs_device_lock" branch
+// (task-9a-brief) -- module-level imports execute regardless of which
+// branch actually renders, so the real module's top-level
+// requireNativeModule() call would throw here too without this mock, even
+// though useLock is held at "unlocked" throughout this file.
+jest.mock("@/modules/notification_listener", () => ({
+  openSecuritySettings: jest.fn(),
+}));
+
 import { bootstrapApp } from "@/lib/bootstrap";
 import { useTheme } from "@/contexts/theme_context";
 import { useLock } from "@/contexts/lock_context";

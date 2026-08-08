@@ -323,6 +323,67 @@ class CaptureBufferTest {
   }
 
   // ---------------------------------------------------------------------
+  // clear() -- the §11a wipe-and-start-over primitive (task-9a-brief).
+  // Discriminates against an implementation that forgets the idempotence
+  // requirement (throws on a missing file) as much as one that forgets to
+  // delete anything at all.
+  // ---------------------------------------------------------------------
+
+  @Test
+  fun `clear removes a buffer with records in it`() {
+    CaptureBuffer.append(file, record(1))
+    CaptureBuffer.append(file, record(2))
+    assertTrue(file.exists())
+
+    CaptureBuffer.clear(file)
+
+    assertFalse("the file must be gone, not merely emptied", file.exists())
+    assertEquals(0, CaptureBuffer.size(file))
+  }
+
+  @Test
+  fun `clear succeeds cleanly when the file was never written -- a wipe with nothing pending must not throw`() {
+    assertFalse(file.exists())
+
+    CaptureBuffer.clear(file) // must not throw
+
+    assertFalse(file.exists())
+  }
+
+  @Test
+  fun `clear is idempotent -- a second call on an already-cleared buffer does not throw`() {
+    CaptureBuffer.append(file, record(1))
+    CaptureBuffer.clear(file)
+
+    CaptureBuffer.clear(file) // must not throw
+  }
+
+  @Test
+  fun `clear also removes the atomic-write tmp sibling, not just the main file`() {
+    CaptureBuffer.append(file, record(1))
+    val temp = File("${file.absolutePath}.tmp")
+    // Simulate a process killed between writeLines' temp write and its
+    // atomic move -- the realistic shape of a leftover .tmp file, holding
+    // the exact same category of sealed-line content as the main file.
+    temp.writeText("leftover-sealed-content-from-a-killed-write")
+    assertTrue(temp.exists())
+
+    CaptureBuffer.clear(file)
+
+    assertFalse("the buffer must not leave sealed content behind in its .tmp sibling", temp.exists())
+  }
+
+  @Test
+  fun `capture keeps working after a clear -- append starts a fresh buffer rather than staying wedged`() {
+    CaptureBuffer.append(file, record(1))
+    CaptureBuffer.clear(file)
+
+    CaptureBuffer.append(file, record(2))
+
+    assertEquals(listOf("id-2"), CaptureBuffer.drain(file).map { it.id })
+  }
+
+  // ---------------------------------------------------------------------
   // The property the whole design rests on (docs §6): the listener must be
   // able to keep writing while the app is locked, and a drain attempted too
   // early must never be indistinguishable from "every buffered capture is

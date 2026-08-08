@@ -37,6 +37,9 @@ jest.mock("expo-modules-core", () => {
     isDeviceKeyUsable: jest.fn(),
     recreateDeviceKek: jest.fn(),
     drainPendingCaptures: jest.fn(),
+    clearCaptureBuffer: jest.fn(),
+    isDeviceSecure: jest.fn(),
+    openSecuritySettings: jest.fn(),
   };
   return {
     requireNativeModule: () => nativeModule,
@@ -48,9 +51,12 @@ import {
   DeviceKeyInvalidatedError,
   DeviceKeyMissingError,
   NotAuthenticatedError,
+  clearCaptureBuffer,
   drainPendingCaptures,
   getCapturePublicKey,
   isDeviceKeyUsable,
+  isDeviceSecure,
+  openSecuritySettings,
   recreateDeviceKek,
   unwrapWithDeviceKek,
   wrapWithDeviceKek,
@@ -63,6 +69,9 @@ type MockNativeModule = {
   isDeviceKeyUsable: jest.Mock;
   recreateDeviceKek: jest.Mock;
   drainPendingCaptures: jest.Mock;
+  clearCaptureBuffer: jest.Mock;
+  isDeviceSecure: jest.Mock;
+  openSecuritySettings: jest.Mock;
 };
 
 // The same singleton object `index.ts`'s `NativeNotificationListener`
@@ -336,5 +345,59 @@ describe("drainPendingCaptures", () => {
     expect(thrown).not.toBeInstanceOf(NotAuthenticatedError);
     expect(thrown).not.toBeInstanceOf(CaptureBufferReadFailedError);
     expect((thrown as Error).message).toBe("boom, no code at all");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// clearCaptureBuffer -- the §11a wipe primitive Task 9's wipe was missing
+// (docs/12-encryption-and-app-lock.md §11a; task-9a-brief).
+// ---------------------------------------------------------------------------
+
+describe("clearCaptureBuffer", () => {
+  it("delegates to the native module with no arguments and resolves", async () => {
+    mockNativeModule.clearCaptureBuffer.mockResolvedValue(undefined);
+
+    await expect(clearCaptureBuffer()).resolves.toBeUndefined();
+    expect(mockNativeModule.clearCaptureBuffer).toHaveBeenCalledWith();
+  });
+
+  it("requires no authentication: it resolves even when every auth-gated native function is wired to fail", async () => {
+    mockNativeModule.isDeviceKeyUsable.mockRejectedValue(new Error("auth required"));
+    mockNativeModule.unwrapWithDeviceKek.mockRejectedValue(new Error("auth required"));
+    mockNativeModule.drainPendingCaptures.mockRejectedValue(new Error("auth required"));
+    mockNativeModule.clearCaptureBuffer.mockResolvedValue(undefined);
+
+    await expect(clearCaptureBuffer()).resolves.toBeUndefined();
+
+    expect(mockNativeModule.isDeviceKeyUsable).not.toHaveBeenCalled();
+    expect(mockNativeModule.unwrapWithDeviceKek).not.toHaveBeenCalled();
+    expect(mockNativeModule.drainPendingCaptures).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isDeviceSecure / openSecuritySettings -- the docs §5a device screen-lock
+// requirement (task-9a-brief).
+// ---------------------------------------------------------------------------
+
+describe("isDeviceSecure", () => {
+  it("delegates with no arguments and resolves with the native module's boolean, unchanged", async () => {
+    mockNativeModule.isDeviceSecure.mockResolvedValue(true);
+    await expect(isDeviceSecure()).resolves.toBe(true);
+    expect(mockNativeModule.isDeviceSecure).toHaveBeenCalledWith();
+
+    mockNativeModule.isDeviceSecure.mockResolvedValue(false);
+    const result = await isDeviceSecure();
+    expect(result).toBe(false);
+    expect(typeof result).toBe("boolean");
+  });
+});
+
+describe("openSecuritySettings", () => {
+  it("delegates to the native module synchronously, with no arguments, and returns nothing", () => {
+    const result = openSecuritySettings();
+
+    expect(mockNativeModule.openSecuritySettings).toHaveBeenCalledWith();
+    expect(result).toBeUndefined();
   });
 });
