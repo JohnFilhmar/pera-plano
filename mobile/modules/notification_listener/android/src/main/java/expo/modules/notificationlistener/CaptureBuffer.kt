@@ -53,6 +53,15 @@ import java.nio.file.StandardCopyOption
  *    buffered capture being corrupt, and would then discard them for good.
  *    [drain] keeps this from ever costing a byte by decrypting BEFORE it
  *    ever touches the file on disk -- see its doc.
+ *  - a WHOLE-FILE read failure (permission, EMFILE, a transient I/O error --
+ *    anything not about the file's contents) is ALSO different in kind from
+ *    "corrupt" or "empty": [readLines] throws [ReadFailedException] rather
+ *    than returning an empty list, precisely so [append], [drain], and
+ *    [size] can never mistake "could not read this" for "there is nothing
+ *    here". A transient hiccup on any of those three must cost nothing --
+ *    conflating the two would mean the very next [drain] permanently
+ *    destroys every buffered capture over a filesystem blip that had
+ *    nothing to do with them.
  */
 object CaptureBuffer {
 
@@ -76,12 +85,37 @@ object CaptureBuffer {
     File(context.applicationContext.filesDir, FILE_NAME)
 
   /**
+   * Thrown when the pending-capture file EXISTS but could not be read for a
+   * reason unrelated to its contents -- permission, `EMFILE`, a transient
+   * I/O error. Deliberately distinct from an empty/never-written buffer
+   * (which is not an error at all) so that [append], [drain], and [size]
+   * can never treat "couldn't read it" as "there's nothing there" -- see
+   * the class doc.
+   */
+  class ReadFailedException(cause: Throwable) :
+    Exception("failed to read the pending-capture file", cause)
+
+  /**
    * Seals [record] and appends it, evicting the oldest LINE past the cap.
    * Never decrypts an existing line -- see the class doc for why that
    * property is load-bearing, not incidental.
+   *
+   * If the file exists but can't be read right now ([ReadFailedException]),
+   * this throws before writing anything -- the alternative, treating the
+   * unreadable file as empty, would silently overwrite however many
+   * captures it actually holds with just this one new record.
    */
   fun append(file: File, record: CaptureRecord): Int = synchronized(lock) {
     val lines = readLines(file).toMutableList()
+    // Looked up fresh on every append, deliberately not cached: a cached
+    // SPKI would go stale the moment the capture keypair is regenerated
+    // (e.g. a wipe-and-start-over per docs §11a), and every capture sealed
+    // under a stale public key afterward would be silently, permanently
+    // unopenable -- there is no private key anywhere that matches it
+    // anymore. That is real data loss traded for a Keystore certificate
+    // lookup's microseconds. If this lookup ever measurably matters, the
+    // fix is a cache with EXPLICIT invalidation tied to keypair
+    // regeneration, not a bare cache -- do not "optimize" this away.
     lines.add(CaptureEnvelope.seal(record, KeyStoreBridge.capturePublicKeySpki()))
     while (lines.size > MAX_CAPTURES) {
       lines.removeAt(0) // oldest survivors first; the newest is never the one dropped
@@ -102,6 +136,11 @@ object CaptureBuffer {
    * drain can simply be retried once the caller has actually authenticated.
    * Only a normal return -- every line either opened or was individually
    * skipped-and-counted as unrecoverable -- reaches the delete below.
+   *
+   * The same protection applies to [ReadFailedException] from [readLines]
+   * itself: it throws out of the `val lines = readLines(file)` line above,
+   * before [openAll] or the delete ever run, so a transient read failure
+   * (as opposed to the file genuinely being empty) never costs a capture.
    */
   fun drain(file: File): List<CaptureRecord> = synchronized(lock) {
     val lines = readLines(file)
@@ -112,17 +151,35 @@ object CaptureBuffer {
     records
   }
 
-  /** Line count. Never decrypts -- see the class doc. */
+  /**
+   * Line count. Never decrypts -- see the class doc.
+   *
+   * Throws [ReadFailedException], rather than reporting 0, if the file
+   * exists but can't currently be read -- see [readLines].
+   */
   fun size(file: File): Int = synchronized(lock) { readLines(file).size }
 
+  /**
+   * Reads the pending-capture file's lines.
+   *
+   * A MISSING file is genuinely empty -- nothing has ever been written --
+   * and returns an empty list normally. An EXISTING file that fails to read
+   * throws [ReadFailedException] instead of returning an empty list.
+   * Conflating the two would be indistinguishable from every capture being
+   * gone: [drain] would proceed straight to deleting a file it never
+   * actually looked inside, and [append] would silently overwrite however
+   * many buffered captures the file actually holds with just the one new
+   * record. Every caller relies on this exception propagating BEFORE any
+   * write or delete happens -- see [append]'s and [drain]'s docs.
+   */
   private fun readLines(file: File): List<String> {
     if (!file.exists()) return emptyList()
 
     val raw = try {
       file.readText()
     } catch (error: Exception) {
-      Log.e(TAG, "failed to read the pending-capture file; treating it as empty")
-      return emptyList()
+      Log.e(TAG, "failed to read the pending-capture file")
+      throw ReadFailedException(error)
     }
     if (raw.isBlank()) return emptyList()
 

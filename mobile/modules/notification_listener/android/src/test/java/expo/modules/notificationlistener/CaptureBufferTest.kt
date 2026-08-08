@@ -274,6 +274,55 @@ class CaptureBufferTest {
   }
 
   // ---------------------------------------------------------------------
+  // A read failure is not the same thing as an empty buffer. Conflating
+  // them would mean a transient storage hiccup -- not a parseable-but-wrong
+  // content problem, an outright inability to read the file at all -- makes
+  // drain() delete a file it never looked inside, permanently losing
+  // everything pending.
+  // ---------------------------------------------------------------------
+
+  @Test
+  fun `a read failure opening the pending-capture file is not treated as an empty buffer`() {
+    CaptureBuffer.append(file, record(1))
+    CaptureBuffer.append(file, record(2))
+    assertEquals(2, CaptureBuffer.size(file))
+
+    // Preserve the real, valid bytes CaptureBuffer wrote, then put an
+    // unreadable placeholder in their exact place: a directory reliably
+    // makes File.readText() throw on every platform (opening a directory as
+    // a file always fails), without touching CaptureBuffer's own
+    // corruption-handling machinery (base64/crypto) at all -- this is a
+    // storage-layer failure, not a content problem.
+    val backup = File("${file.absolutePath}.backup")
+    Files.move(file.toPath(), backup.toPath())
+    file.mkdirs()
+
+    assertThrows(CaptureBuffer.ReadFailedException::class.java) {
+      CaptureBuffer.drain(file)
+    }
+    assertThrows(CaptureBuffer.ReadFailedException::class.java) {
+      CaptureBuffer.size(file)
+    }
+    assertThrows(CaptureBuffer.ReadFailedException::class.java) {
+      CaptureBuffer.append(file, record(3))
+    }
+
+    // None of the three attempts above may have deleted or overwritten the
+    // unreadable placeholder -- proving each one bailed out before ever
+    // reaching a write or a delete.
+    assertTrue("a failed read must never delete the file it couldn't read", file.exists())
+    assertTrue(file.isDirectory)
+
+    // Restore the real bytes and confirm the whole episode cost nothing --
+    // the original two captures are still exactly there.
+    file.delete()
+    Files.move(backup.toPath(), file.toPath())
+
+    assertEquals(2, CaptureBuffer.size(file))
+    assertEquals(listOf("id-1", "id-2"), CaptureBuffer.drain(file).map { it.id })
+  }
+
+  // ---------------------------------------------------------------------
   // The property the whole design rests on (docs §6): the listener must be
   // able to keep writing while the app is locked, and a drain attempted too
   // early must never be indistinguishable from "every buffered capture is

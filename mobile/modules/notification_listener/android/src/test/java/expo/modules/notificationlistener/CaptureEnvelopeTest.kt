@@ -136,9 +136,16 @@ class CaptureEnvelopeTest {
     val first = decodeWireFormat(CaptureEnvelope.seal(original, publicKey()))
     val second = decodeWireFormat(CaptureEnvelope.seal(original, publicKey()))
 
+    // NOTE: this is a basic OAEP sanity check, not evidence about AES key
+    // freshness -- RSA-OAEP's own randomized padding guarantees the wrapped
+    // bytes differ on every call regardless of whether the AES key
+    // underneath was reused, so passing here proves OAEP's randomization is
+    // working, nothing more. The `iv` and `ciphertext` assertions below are
+    // the ones that actually pin AES key/IV freshness.
     assertFalse(
       "the wrapped AES key must differ across seals of the same record -- " +
-        "identical wrapped keys would mean the underlying AES key was reused",
+        "identical wrapped bytes here would mean OAEP's own randomized " +
+        "padding was broken",
       first.wrappedAesKey.contentEquals(second.wrappedAesKey),
     )
     assertFalse(

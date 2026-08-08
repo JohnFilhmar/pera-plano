@@ -42,12 +42,26 @@ android {
   //
   // Because of that, KeyStoreBridgeTest does NOT use Robolectric: it swaps
   // KeyStoreBridge's KeyVault seam (see KeyVault.kt) for a plain-JCE fake
-  // and runs as ordinary JUnit. Robolectric stays a dependency here as
-  // forward-looking infra for whatever FUTURE task in this module is first
-  // to need a non-Keystore android.* class (SharedPreferences, Context,
-  // ...) -- isIncludeAndroidResources lets it pick up this module's own
-  // AndroidManifest.xml/resources so its shadow framework has something to
-  // bind against once that day comes.
+  // and runs as ordinary JUnit. Robolectric became load-bearing (not just
+  // forward-looking) as of Task 3 of the encryption plan: CaptureEnvelope
+  // and CaptureBuffer call android.util.Base64/Log, which throw "not
+  // mocked" under plain JUnit, so CaptureEnvelopeTest and CaptureBufferTest
+  // both run under @RunWith(RobolectricTestRunner::class) while still
+  // swapping KeyStoreBridge's KeyVault seam for the fake, exactly like
+  // KeyStoreBridgeTest -- isIncludeAndroidResources lets Robolectric pick up
+  // this module's own AndroidManifest.xml/resources so its shadow framework
+  // has something to bind against.
+  //
+  // TOOLCHAIN NOTE for whoever next bumps the JDK: both of those two test
+  // classes carry `@Config(sdk = [34])`, pinned below this module's real
+  // compileSdk (36 above) because Robolectric 4.16.1's SDK-36 shadow jar
+  // requires Java 21 and this project's toolchain was Java 17 at the time
+  // Task 3 landed (`Failed to create a Robolectric sandbox: Android SDK 36
+  // requires Java 21 (have Java 17)`). If/when the dev and CI JDK moves to
+  // 21+, that pin in CaptureBufferTest.kt and CaptureEnvelopeTest.kt can be
+  // dropped (or raised) -- it is a toolchain fact, not a statement about
+  // this app's real minSdk/targetSdk (24/36) or about the crypto/format
+  // logic those tests exercise.
   testOptions {
     unitTests {
       includeAndroidResources = true
