@@ -33,6 +33,14 @@ export interface SQLiteDatabase {
   getAllAsync<T>(sql: string, params?: BindValue[]): Promise<T[]>;
   withTransactionAsync(work: () => Promise<void>): Promise<void>;
   closeAsync(): Promise<void>;
+  /**
+   * Deletes the database FILE from disk. Only ever called by wipeDatabase()
+   * (docs/12-encryption-and-app-lock.md §11a) — never by closeDatabase(),
+   * which must keep the file intact for the next unlock. MUST be called
+   * after closeAsync(), never before: op-sqlite's own documented pattern is
+   * `db.close(); db.delete();` (op-sqlite API docs, "Delete Database File").
+   */
+  deleteAsync(): Promise<void>;
 }
 
 /**
@@ -184,6 +192,9 @@ function wrapConnection(raw: RawConnection): SQLiteDatabase {
     async closeAsync() {
       raw.close();
     },
+    async deleteAsync() {
+      raw.delete();
+    },
   };
 }
 
@@ -260,4 +271,33 @@ export async function closeDatabase(): Promise<void> {
   dbPromise = null;
   const db = await promise;
   await db.closeAsync();
+}
+
+/**
+ * The §11a "wipe and start over" primitive's database half
+ * (docs/12-encryption-and-app-lock.md §11a; lib/security/wipe.ts is the full
+ * orchestration). Deletes the SQLCipher database FILE from disk — not a
+ * logical clear (`DELETE FROM ...`), which would require the DEK to open the
+ * file and run a query against it, and the whole point of this function is
+ * that it must work in the unrecoverable state, where NO key exists at all.
+ *
+ * If a handle is already open, it is closed first (never delete a still-open
+ * file — see SQLiteDatabase.deleteAsync's doc). If nothing is open, a fresh
+ * handle is opened with NO encryption key just to reach the file — safe,
+ * because SQLCipher only validates a key against the file's contents on
+ * first genuine use (a query/PRAGMA), never at open() itself, and this
+ * function never runs one.
+ *
+ * dbPromise is cleared before either close/delete pair runs — mirroring
+ * closeDatabase()'s own ordering — so a failure here still leaves
+ * isDatabaseUnlocked() false rather than wedging on a handle this function
+ * is in the middle of destroying.
+ */
+export async function wipeDatabase(): Promise<void> {
+  const promise = dbPromise;
+  dbPromise = null;
+
+  const db = promise ? await promise : wrapConnection(OpSqlite.open({ name: DB_NAME }));
+  await db.closeAsync();
+  await db.deleteAsync();
 }

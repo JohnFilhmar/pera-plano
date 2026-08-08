@@ -87,6 +87,7 @@ import {
   rewrapAfterInvalidation,
   getKeyState,
   lock,
+  wipeKeys,
   RecoveryUnlockFailedError,
 } from "../key_manager";
 
@@ -351,7 +352,7 @@ describe("rewrapAfterInvalidation", () => {
     lock();
     simulateDeviceKeyInvalidated();
 
-    await expect(rewrapAfterInvalidation(TEST_PHRASE)).resolves.toBeUndefined();
+    await expect(rewrapAfterInvalidation(TEST_PHRASE)).resolves.toBeInstanceOf(Uint8Array);
   });
 
   it("leaves the DEK unlocked in memory immediately after a successful recovery", async () => {
@@ -365,6 +366,25 @@ describe("rewrapAfterInvalidation", () => {
     await expect(getKeyState()).resolves.toBe("unlocked");
   });
 
+  it("returns the SAME recovered DEK it leaves unlocked in memory, so a caller never has to re-derive it via a second, redundant unlock call", async () => {
+    // Carried forward from Task 6's progress note: rewrapAfterInvalidation
+    // already holds the plaintext DEK by the time it succeeds, so Task 9's
+    // app-lock flow (get the DEK -> unlockDatabase(dek) ->
+    // setCacheEncryptionKey(dek)) must be able to use THIS return value
+    // directly. A second unlockWithRecoveryPhrase call to fetch it would
+    // re-run Argon2id for nothing (~1.5s wasted) and is exactly what this
+    // return value exists to make unnecessary.
+    wireDefaultNativeBridge();
+    await initializeKeys(TEST_PHRASE);
+    const originalDek = Uint8Array.from(await unlockWithDeviceKey());
+    lock();
+    simulateDeviceKeyInvalidated();
+
+    const returnedDek = await rewrapAfterInvalidation(TEST_PHRASE);
+
+    expect(Buffer.from(returnedDek)).toEqual(Buffer.from(originalDek));
+  });
+
   it("propagates RecoveryUnlockFailedError for a wrong phrase without touching the device key at all", async () => {
     wireDefaultNativeBridge();
     await initializeKeys(TEST_PHRASE);
@@ -373,6 +393,50 @@ describe("rewrapAfterInvalidation", () => {
 
     await expect(rewrapAfterInvalidation(WRONG_PHRASE)).rejects.toBeInstanceOf(RecoveryUnlockFailedError);
     expect(nativeRecreate).not.toHaveBeenCalled();
+  });
+});
+
+describe("wipeKeys", () => {
+  it("deletes all three secure-store items, so getKeyState reports uninitialized afterward", async () => {
+    wireDefaultNativeBridge();
+    await initializeKeys(TEST_PHRASE);
+    expect(secureStoreMock.__store.size).toBe(3);
+
+    await wipeKeys();
+
+    expect(secureStoreMock.__store.size).toBe(0);
+    await expect(getKeyState()).resolves.toBe("uninitialized");
+  });
+
+  it("clears the in-memory DEK -- a wipe must not leave key material live after 'destroying' it", async () => {
+    wireDefaultNativeBridge();
+    await initializeKeys(TEST_PHRASE);
+    await expect(getKeyState()).resolves.toBe("unlocked");
+
+    await wipeKeys();
+
+    await expect(getKeyState()).resolves.toBe("uninitialized");
+  });
+
+  it("is safe to call when already uninitialized (no keys ever written)", async () => {
+    await expect(wipeKeys()).resolves.toBeUndefined();
+    await expect(getKeyState()).resolves.toBe("uninitialized");
+  });
+
+  it("leaves initializeKeys free to run a genuinely fresh setup afterward, not blocked by stale remnants", async () => {
+    wireDefaultNativeBridge();
+    await initializeKeys(TEST_PHRASE);
+    await wipeKeys();
+
+    await initializeKeys(OTHER_PHRASE);
+
+    await expect(getKeyState()).resolves.toBe("unlocked");
+    lock();
+    // Only the NEW phrase should unlock the NEW keys -- proves wipeKeys did
+    // not merely hide the old wraps behind a false "uninitialized" report
+    // while secretly leaving them (and the old DEK) reachable.
+    await expect(unlockWithRecoveryPhrase(TEST_PHRASE)).rejects.toBeInstanceOf(RecoveryUnlockFailedError);
+    await expect(unlockWithRecoveryPhrase(OTHER_PHRASE)).resolves.toBeInstanceOf(Uint8Array);
   });
 });
 

@@ -317,12 +317,14 @@ export async function unlockWithRecoveryPhrase(phrase: string[]): Promise<Uint8A
  * their recovery words forever), then rewraps the SAME DEK under the fresh
  * key. The database is untouched — only the device wrap blob changes.
  *
- * Leaves the DEK unlocked in memory: this function already holds the
- * plaintext DEK by the time it succeeds, and forcing a second, separate
- * unlock call right after a successful recovery would be a redundant prompt
- * for no security benefit.
+ * Leaves the DEK unlocked in memory AND returns it: this function already
+ * holds the plaintext DEK by the time it succeeds, and forcing a second,
+ * separate unlockWithRecoveryPhrase call right after a successful recovery
+ * would re-run Argon2id (~1.5s) for nothing (Task 6's carried-forward note
+ * to Task 9). The app-lock flow needs this exact value to hand to
+ * unlockDatabase(dek)/setCacheEncryptionKey(dek) without re-deriving it.
  */
-export async function rewrapAfterInvalidation(phrase: string[]): Promise<void> {
+export async function rewrapAfterInvalidation(phrase: string[]): Promise<Uint8Array> {
   const recoveredDek = await unwrapWithRecoveryPhrase(phrase);
 
   await NotificationListener.recreateDeviceKek();
@@ -330,6 +332,7 @@ export async function rewrapAfterInvalidation(phrase: string[]): Promise<void> {
   await SecureStore.setItemAsync(STORAGE_KEYS.deviceWrap, newDeviceWrapB64);
 
   dek = recoveredDek;
+  return recoveredDek;
 }
 
 /**
@@ -365,4 +368,36 @@ export function lock(): void {
     dek.fill(0);
   }
   dek = null;
+}
+
+/**
+ * The §11a "wipe and start over" primitive for this module's share of the
+ * unrecoverable state (docs/12-encryption-and-app-lock.md §11a; contract §9
+ * rule 4): the Keystore key is gone AND the recovery phrase is lost, so
+ * there is no path left to the DEK. Clears the in-memory DEK exactly like
+ * lock(), then deletes all three secure-store items — the device wrap, the
+ * recovery wrap, and the recovery salt — so hasStoredKeys() reports false
+ * and getKeyState() returns to "uninitialized", ready for a completely
+ * fresh initializeKeys() run through onboarding.
+ *
+ * This was flagged as an open decision in Task 6's progress log ("Task 9
+ * either gets a small exported wipe() added here, or a fixed well-known-keys
+ * agreement"). DECISION: add it here, not a well-known-keys agreement in the
+ * caller — STORAGE_KEYS stays private to this module (by design, per
+ * hasStoredKeys()'s own doc), and a wipe is exactly the kind of destructive
+ * operation that should have exactly one implementation, owned by the
+ * module that defined the keys in the first place.
+ *
+ * Deliberately requires NO authentication and never throws on missing
+ * items: SecureStore.deleteItemAsync is idempotent for an absent key, and a
+ * wipe destroys — it must never be blockable by the very state (no usable
+ * key) that put the user here.
+ */
+export async function wipeKeys(): Promise<void> {
+  lock();
+  await Promise.all([
+    SecureStore.deleteItemAsync(STORAGE_KEYS.deviceWrap),
+    SecureStore.deleteItemAsync(STORAGE_KEYS.recoveryWrap),
+    SecureStore.deleteItemAsync(STORAGE_KEYS.recoverySalt),
+  ]);
 }

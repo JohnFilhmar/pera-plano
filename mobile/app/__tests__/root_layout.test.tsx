@@ -14,6 +14,15 @@
 //     proven by forcing the rejection and asserting the recovery UI is on
 //     screen, then that its retry action actually re-invokes bootstrapApp()
 //     (not a decorative button that does nothing).
+//
+// Task 9 added a FOURTH gate (the app lock, contexts/lock_context.tsx) —
+// this file holds it at an already-"unlocked" default throughout (via the
+// same "mock the hook, keep the provider real-but-irrelevant" shape used for
+// theme below) so the three gates above keep being tested in isolation. The
+// lock gate itself gets its OWN dedicated, discriminating tests in
+// app/__tests__/lock_gate.test.tsx — deliberately NOT folded in here, so a
+// regression in either the pre-existing three or the new fourth condition
+// points at one obvious file.
 import { act, fireEvent, waitFor } from "@testing-library/react-native";
 import { renderRouter, screen } from "expo-router/testing-library";
 import { useFonts } from "expo-font";
@@ -48,12 +57,25 @@ jest.mock("@/contexts/theme_context", () => ({
   useTheme: jest.fn(),
 }));
 
+// Unlike ThemeProvider above, LockProvider is NOT kept real: its real
+// implementation reaches expo-local-authentication, expo-secure-store and
+// the notification_listener native module, none of which have a native
+// registration under Jest. AppShell reads useLock() directly (mocked), so
+// the provider itself only needs to exist as a harmless passthrough for the
+// tree to mount at all.
+jest.mock("@/contexts/lock_context", () => ({
+  LockProvider: ({ children }: { children: import("react").ReactNode }) => children,
+  useLock: jest.fn(),
+}));
+
 import { bootstrapApp } from "@/lib/bootstrap";
 import { useTheme } from "@/contexts/theme_context";
+import { useLock } from "@/contexts/lock_context";
 
 const mockBootstrapApp = bootstrapApp as jest.Mock;
 const mockUseFonts = useFonts as jest.Mock;
 const mockUseTheme = useTheme as jest.Mock;
+const mockUseLock = useLock as jest.Mock;
 
 function renderApp() {
   return renderRouter(
@@ -93,6 +115,16 @@ beforeEach(() => {
     isReady: true,
     preference: "auto",
     setPreference: jest.fn(),
+  });
+  // Held "unlocked" by default so these tests keep isolating fonts/theme/
+  // bootstrap exactly as before Task 9 added the fourth gate — see
+  // lock_gate.test.tsx for the dedicated tests that pin THIS condition.
+  mockUseLock.mockReturnValue({
+    status: "unlocked",
+    errorMessage: null,
+    unlock: jest.fn(),
+    submitRecoveryPhrase: jest.fn(),
+    wipeAndStartOver: jest.fn(),
   });
   // app/_layout.tsx deliberately logs a caught bootstrap failure (so it isn't
   // swallowed silently) — expected noise in the two failure tests below.

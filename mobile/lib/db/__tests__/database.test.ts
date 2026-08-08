@@ -4,6 +4,7 @@ import {
   getDatabase,
   isDatabaseUnlocked,
   unlockDatabase,
+  wipeDatabase,
 } from "../database";
 import { runMigrations } from "../migrations";
 
@@ -159,4 +160,52 @@ test("unlockDatabase can recover after a rejected open, once closeDatabase clear
   } finally {
     sqliteMock.open = originalOpen;
   }
+});
+
+// ---------------------------------------------------------------------------
+// wipeDatabase() — the §11a "wipe and start over" primitive's database half
+// (docs/12-encryption-and-app-lock.md §11a). Unlike closeDatabase(), this
+// must destroy the underlying file on disk, not just release the handle —
+// the whole point is that the data cannot come back. It must also work with
+// NO key at all (the unrecoverable state has none), which is exactly why it
+// deletes rather than opening for real use.
+// ---------------------------------------------------------------------------
+
+test("wipeDatabase() closes an already-open handle, deletes the file, and returns to the locked state", async () => {
+  await unlockDatabase(DEK);
+  expect(isDatabaseUnlocked()).toBe(true);
+
+  await wipeDatabase();
+
+  expect(isDatabaseUnlocked()).toBe(false);
+  await expect(getDatabase()).rejects.toBeInstanceOf(DatabaseLockedError);
+});
+
+test("wipeDatabase() works with NO key and no prior unlock at all -- the unrecoverable-state case has no DEK to open with", async () => {
+  expect(isDatabaseUnlocked()).toBe(false);
+
+  await expect(wipeDatabase()).resolves.toBeUndefined();
+
+  expect(isDatabaseUnlocked()).toBe(false);
+  await expect(getDatabase()).rejects.toBeInstanceOf(DatabaseLockedError);
+});
+
+test("wipeDatabase() always closes before it deletes -- never deletes a still-open file", async () => {
+  // The mock's delete() throws if called before close() (test_support/
+  // sqlite_mock.ts), modeling op-sqlite's documented `db.close(); db.delete();`
+  // ordering. If database.ts's wipeDatabase() ever called delete() first (or
+  // skipped close()), this would surface as a rejection here instead of
+  // silently passing.
+  await unlockDatabase(DEK);
+  await expect(wipeDatabase()).resolves.toBeUndefined();
+});
+
+test("after wipeDatabase(), unlockDatabase() can open a brand-new handle again", async () => {
+  await unlockDatabase(DEK);
+  await wipeDatabase();
+
+  await unlockDatabase(OTHER_DEK);
+  expect(isDatabaseUnlocked()).toBe(true);
+  const db = await getDatabase();
+  expect(db).toBeDefined();
 });

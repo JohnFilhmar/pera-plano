@@ -122,6 +122,8 @@ function firstStatementOnly(sql: string): string {
 }
 
 class OPSQLiteMockConnection {
+  private closed = false;
+
   constructor(private readonly ready: Promise<SqlJsDatabase>) {}
 
   async execute<T = Record<string, unknown>>(
@@ -155,6 +157,23 @@ class OPSQLiteMockConnection {
     // on the close having physically finished by the time this call returns — each test opens
     // a brand-new in-memory database, so an unclosed previous one has no observable effect.
     void this.ready.then((db) => db.close());
+    this.closed = true;
+  }
+
+  /**
+   * Mirrors real op-sqlite's documented `db.close(); db.delete();` ordering
+   * (op-sqlite API docs, "Delete Database File") by THROWING if close()
+   * has not already run — this is deliberate, not incidental: it makes
+   * database.ts's wipeDatabase() calling delete() before (or instead of)
+   * close() fail loudly under Jest, instead of only on a real device
+   * attempting to unlink a file a live connection still holds open. There is
+   * no real file backing this in-memory sql.js mock, so beyond that ordering
+   * check there is nothing further to actually unlink.
+   */
+  delete(): void {
+    if (!this.closed) {
+      throw new Error("op-sqlite mock: delete() called before close() — real op-sqlite requires close() first");
+    }
   }
 }
 
