@@ -10,9 +10,14 @@ jest.mock("@react-native-async-storage/async-storage", () =>
   require("@react-native-async-storage/async-storage/jest/async-storage-mock"),
 );
 
-// expo-crypto is a native module; node's crypto provides the same UUIDv4 API.
+// expo-crypto is a native module; node's crypto provides the same UUIDv4 API
+// and, via randomBytes, the same CSPRNG guarantee getRandomBytesAsync makes
+// on-device (recovery_phrase.ts's whole reason for using expo-crypto instead
+// of Math.random is that guarantee — the mock must not weaken it).
 jest.mock("expo-crypto", () => ({
   randomUUID: () => require("crypto").randomUUID(),
+  getRandomBytesAsync: (byteCount: number) =>
+    Promise.resolve(new Uint8Array(require("crypto").randomBytes(byteCount))),
 }));
 
 // react-native-keyboard-controller (app/_layout.tsx's KeyboardProvider) reads
