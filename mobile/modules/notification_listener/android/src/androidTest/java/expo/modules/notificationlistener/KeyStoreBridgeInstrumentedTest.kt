@@ -176,6 +176,61 @@ class KeyStoreBridgeInstrumentedTest {
     assertArrayEquals(plaintext, unwrapped)
   }
 
+  /**
+   * The on-device counterpart to a mutation the JVM suite structurally
+   * cannot catch, which is why this test lives here rather than beside
+   * `KeyStoreBridgeTest`'s other `recreateAesKey` cases.
+   *
+   * `KeyVault.recreateAesKey`'s contract is "delete the alias if present,
+   * THEN generate a fresh key" -- the delete is what makes it actually
+   * rotate rather than a no-op. [FakeKeyVault] has no separate delete step
+   * to omit at all (see its doc), so a mutation that removes
+   * [AndroidKeyVault.recreateAesKey]'s `keyStore.deleteEntry(alias)` call
+   * is INVISIBLE to every JVM test, including the ones this fix round
+   * added -- confirmed directly: removing that one line left all 50 JVM
+   * tests green. Only the real Keystore can show the difference between
+   * "deleted then regenerated" and "regenerated over the same live key,"
+   * because only the real Keystore has a persistent entry for `deleteEntry`
+   * to remove in the first place.
+   *
+   * Why this matters beyond a coverage gap: without the delete,
+   * `recreateDeviceKek()` would silently keep serving the SAME dead key
+   * under the alias. `rewrapAfterInvalidation` (contract §9) would recover
+   * the DEK via the recovery phrase, call this, get the same invalidated
+   * key back, and fail to wrap under it again -- the user re-enters their
+   * twelve words, forever, with no way out. That is the exact failure the
+   * mandatory recovery phrase (docs/12-encryption-and-app-lock.md §5)
+   * exists to prevent.
+   *
+   * Like [unauthenticatedWrapWithDeviceKekThrowsUserNotAuthenticated] and
+   * [capturePublicEncryptThenPrivateDecryptRoundTripsAgainstTheRealKeystore],
+   * the wrap/unwrap calls here depend on running inside the device KEK's
+   * ~10-second post-authentication window -- see this file's class doc:
+   * NOT run as part of this task, confirmed to compile only. A run outside
+   * that window would throw `UserNotAuthenticatedException` on the very
+   * first `wrapWithDeviceKek` call, which is a session-timing fact about
+   * whoever runs `connectedDebugAndroidTest`, not evidence against
+   * `recreateAesKey`'s delete-then-generate behavior itself.
+   */
+  @Test
+  fun recreateDeviceKekRotatesTheKeyAgainstTheRealKeystore() {
+    KeyStoreBridge.ensureDeviceKek()
+    val wrappedUnderOldKey = KeyStoreBridge.wrapWithDeviceKek("instrumented-probe".toByteArray())
+
+    KeyStoreBridge.recreateDeviceKek()
+
+    // The discriminating assertion: without deleteEntry, the real Keystore
+    // keeps serving the OLD key under the alias and this would NOT throw.
+    assertThrows(Exception::class.java) {
+      KeyStoreBridge.unwrapWithDeviceKek(wrappedUnderOldKey)
+    }
+
+    // The replacement key is fully usable -- this is not merely destructive.
+    val wrappedUnderNewKey = KeyStoreBridge.wrapWithDeviceKek("instrumented-probe".toByteArray())
+    val unwrapped = KeyStoreBridge.unwrapWithDeviceKek(wrappedUnderNewKey)
+    assertArrayEquals("instrumented-probe".toByteArray(), unwrapped)
+  }
+
   private fun androidKeyStore(): KeyStore =
     KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
 }
