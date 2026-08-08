@@ -318,11 +318,24 @@ rewrapAfterInvalidation(phrase: string[]): Promise<void>;
 getKeyState(): Promise<KeyState>;
 lock(): void;
 // lib/crypto/recovery_phrase.ts
-generatePhrase(): string[];                                    // 12 words, BIP-39 English
+generatePhrase(): Promise<string[]>;                           // 12 words, BIP-39 English — ASYNC, see below
 deriveRecoveryKey(phrase: string[], salt: Uint8Array): Promise<Uint8Array>;
 normalizePhrase(input: string): string[];
 validatePhrase(words: string[]): { ok: boolean; badIndexes: number[] };   // checksum-verified
 ```
+
+> **`generatePhrase` is async on purpose.** It uses `expo-crypto`'s `getRandomBytesAsync`, not the
+> synchronous `getRandomBytes`, because the latter documents a `Math.random` fallback under some
+> dev/debugger conditions. A phrase generated from `Math.random` would silently compromise both the
+> recovery path and the cloud-backup key at once, on exactly the devices a developer is most likely
+> to be looking at. Do not "simplify" this to a sync call.
+>
+> **Argon2id parameters are permanent.** They are part of the on-disk format: change them and every
+> existing phrase stops deriving the same key, which means every existing user loses their data.
+> They are deliberately lighter than a password KDF would be, and that is correct — a 12-word BIP-39
+> phrase carries 128 bits of CSPRNG entropy, so no work factor changes an attacker's position
+> against 2^128. The security rests on the entropy source; the KDF is defense in depth against a
+> *narrowed* search (a partially-recorded phrase). Do not harden them without a migration path.
 
 Rules that bind every plan:
 1. **The DEK is never written unwrapped.** Two wrap blobs plus a salt live in `expo-secure-store`; the DEK exists only in memory while unlocked.
