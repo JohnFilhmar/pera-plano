@@ -135,6 +135,16 @@ class NotificationListenerModule : Module() {
     Function("openSecuritySettings") {
       openSecuritySettings(requireContext())
     }
+
+    // ---- Keyguard state at alert-post time (docs §7a; task-9b-brief) ----
+    // Requires NO Keystore key and NO authentication -- KeyguardManager's
+    // current-lock-state query is a plain system-service call, same as
+    // isDeviceSecure above, but it answers a different question (see
+    // isKeyguardLocked's doc).
+
+    AsyncFunction("isKeyguardLocked") {
+      isKeyguardLocked(requireContext())
+    }
   }
 
   /** Standard Expo-module pattern: the react context, or a clear error if it's gone. */
@@ -240,6 +250,29 @@ internal fun isDeviceSecure(context: Context): Boolean {
 internal fun openSecuritySettings(context: Context) {
   val intent = Intent(Settings.ACTION_SECURITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
   context.startActivity(intent)
+}
+
+/**
+ * `KeyguardManager.isKeyguardLocked()` -- true if the device is locked RIGHT
+ * NOW.
+ *
+ * docs/12-encryption-and-app-lock.md §7a: every app-generated alert
+ * (limit alerts, bill/loan reminders, the payday summary, the
+ * tracking-interrupted notice) renders on the lock screen whether or not
+ * the phone is unlocked, and must show an amount-free variant while it is
+ * locked. This is the query the alerts service calls at POST time --
+ * immediately before `lib/alerts/alert_copy.ts`'s `selectAlertCopy` --
+ * never at schedule time, because a reminder queued days earlier cannot
+ * know what state the phone will be in when it actually fires.
+ *
+ * Deliberately distinct from [isDeviceSecure] above, which asks a different
+ * question ("does this device have a screen lock configured at all",
+ * docs §5a) despite both being one-line `KeyguardManager` queries wrapped
+ * the same way for the same testability reason -- see that function's doc.
+ */
+internal fun isKeyguardLocked(context: Context): Boolean {
+  val keyguardManager = context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+  return keyguardManager.isKeyguardLocked
 }
 
 /**

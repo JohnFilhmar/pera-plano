@@ -22,6 +22,7 @@ type NativeNotificationListenerModule = {
   clearCaptureBuffer(): Promise<void>;
   isDeviceSecure(): Promise<boolean>;
   openSecuritySettings(): void;
+  isKeyguardLocked(): Promise<boolean>;
 };
 
 const NativeNotificationListener = requireNativeModule<NativeNotificationListenerModule>(
@@ -231,4 +232,26 @@ export function isDeviceSecure(): Promise<boolean> {
  */
 export function openSecuritySettings(): void {
   NativeNotificationListener.openSecuritySettings();
+}
+
+/**
+ * `KeyguardManager.isKeyguardLocked()` -- true if the device is locked RIGHT
+ * NOW (docs/12-encryption-and-app-lock.md §7a; task-9b-brief). Distinct from
+ * `isDeviceSecure` above: that asks whether a screen lock is CONFIGURED at
+ * all (an onboarding-time prerequisite); this asks about the device's
+ * CURRENT lock state, and exists specifically to drive amount-free alert
+ * copy (`lib/alerts/alert_copy.ts`'s `selectAlertCopy`).
+ *
+ * Every alert-posting task (M2's limit alerts, M2b's loan reminders, M2c's
+ * bill reminders, M3's payday summary and tracking-interrupted notice) MUST
+ * call this at POST time, immediately before `selectAlertCopy`, never at
+ * schedule time -- a reminder queued days earlier cannot know what state
+ * the phone will be in when it actually fires:
+ *
+ *   selectAlertCopy(copy, await isKeyguardLocked())
+ *
+ * Requires NO Keystore key and NO authentication, like `isDeviceSecure`.
+ */
+export function isKeyguardLocked(): Promise<boolean> {
+  return NativeNotificationListener.isKeyguardLocked();
 }

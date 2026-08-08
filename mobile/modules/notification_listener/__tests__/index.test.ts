@@ -40,6 +40,7 @@ jest.mock("expo-modules-core", () => {
     clearCaptureBuffer: jest.fn(),
     isDeviceSecure: jest.fn(),
     openSecuritySettings: jest.fn(),
+    isKeyguardLocked: jest.fn(),
   };
   return {
     requireNativeModule: () => nativeModule,
@@ -56,6 +57,7 @@ import {
   getCapturePublicKey,
   isDeviceKeyUsable,
   isDeviceSecure,
+  isKeyguardLocked,
   openSecuritySettings,
   recreateDeviceKek,
   unwrapWithDeviceKek,
@@ -72,6 +74,7 @@ type MockNativeModule = {
   clearCaptureBuffer: jest.Mock;
   isDeviceSecure: jest.Mock;
   openSecuritySettings: jest.Mock;
+  isKeyguardLocked: jest.Mock;
 };
 
 // The same singleton object `index.ts`'s `NativeNotificationListener`
@@ -399,5 +402,40 @@ describe("openSecuritySettings", () => {
 
     expect(mockNativeModule.openSecuritySettings).toHaveBeenCalledWith();
     expect(result).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isKeyguardLocked — docs/12-encryption-and-app-lock.md §7a; task-9b-brief.
+// The POST-time check every alert-posting task (M2/M2b/M2c/M3) must call
+// immediately before selectAlertCopy, never at schedule time. Distinct from
+// isDeviceSecure above: that asks whether a screen lock is CONFIGURED at
+// all (an onboarding prerequisite); this asks whether the device is LOCKED
+// RIGHT NOW (a per-notification check).
+// ---------------------------------------------------------------------------
+
+describe("isKeyguardLocked", () => {
+  it("delegates with no arguments and resolves with the native module's boolean, unchanged", async () => {
+    mockNativeModule.isKeyguardLocked.mockResolvedValue(true);
+    await expect(isKeyguardLocked()).resolves.toBe(true);
+    expect(mockNativeModule.isKeyguardLocked).toHaveBeenCalledWith();
+
+    mockNativeModule.isKeyguardLocked.mockResolvedValue(false);
+    const result = await isKeyguardLocked();
+    expect(result).toBe(false);
+    expect(typeof result).toBe("boolean");
+  });
+
+  it("requires no authentication: it resolves even when every auth-gated native function is wired to fail", async () => {
+    mockNativeModule.isDeviceKeyUsable.mockRejectedValue(new Error("auth required"));
+    mockNativeModule.unwrapWithDeviceKek.mockRejectedValue(new Error("auth required"));
+    mockNativeModule.drainPendingCaptures.mockRejectedValue(new Error("auth required"));
+    mockNativeModule.isKeyguardLocked.mockResolvedValue(true);
+
+    await expect(isKeyguardLocked()).resolves.toBe(true);
+
+    expect(mockNativeModule.isDeviceKeyUsable).not.toHaveBeenCalled();
+    expect(mockNativeModule.unwrapWithDeviceKek).not.toHaveBeenCalled();
+    expect(mockNativeModule.drainPendingCaptures).not.toHaveBeenCalled();
   });
 });
