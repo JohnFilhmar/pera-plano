@@ -1,13 +1,11 @@
-// app/__tests__/index.test.tsx — the entry route's ordering hazard
-// (task-17-brief.md, sharpened by coordinator ruling in task-17 review round
-// 2): the (onboarding) route group does not exist yet — it ships in a later
-// plan together with the branch that will redirect there, so there is never
-// an intermediate state where the branch exists but the route doesn't.
-// Today, index.tsx has no branch at all: it falls through to the tabs
-// unconditionally. This proves that, and — via a mocked Redirect that
-// captures its target rather than a real router — that it never even
-// constructs the nonexistent route's href.
-import { render } from "@testing-library/react-native";
+// app/__tests__/index.test.tsx — the entry route's branch (task-10-brief.md),
+// restored now that app/(onboarding)/index.tsx actually exists. Mocks
+// app_settings_repo directly rather than a real database, since this file's
+// only subject is "what href does Index compute for a given setting value" —
+// not app_settings_repo's own persistence, which has its own suite.
+jest.mock("@/lib/db/repos/app_settings_repo", () => ({
+  getSetting: jest.fn(),
+}));
 
 let capturedHref: string | undefined;
 
@@ -18,14 +16,46 @@ jest.mock("expo-router", () => ({
   },
 }));
 
+import { render, waitFor } from "@testing-library/react-native";
+import { getSetting } from "@/lib/db/repos/app_settings_repo";
 import Index from "../index";
+
+const mockGetSetting = getSetting as jest.Mock;
 
 beforeEach(() => {
   capturedHref = undefined;
+  jest.clearAllMocks();
 });
 
-test("a first-run user still lands on the tabs, not the nonexistent onboarding route", () => {
+test("a user with onboarding_complete false is sent to onboarding", async () => {
+  mockGetSetting.mockResolvedValue(false);
+
   render(<Index />);
-  expect(capturedHref).toBe("/(tabs)");
-  expect(capturedHref).not.toBe("/(onboarding)");
+
+  await waitFor(() => expect(capturedHref).toBe("/(onboarding)"));
+  expect(mockGetSetting).toHaveBeenCalledWith("onboarding_complete");
+});
+
+test("a user with onboarding_complete true is sent to the tabs", async () => {
+  mockGetSetting.mockResolvedValue(true);
+
+  render(<Index />);
+
+  await waitFor(() => expect(capturedHref).toBe("/(tabs)"));
+});
+
+test("renders nothing while the setting is still being read", () => {
+  mockGetSetting.mockReturnValue(new Promise(() => {}));
+
+  render(<Index />);
+
+  expect(capturedHref).toBeUndefined();
+});
+
+test("a failed read fails toward onboarding, never toward skipping it", async () => {
+  mockGetSetting.mockRejectedValue(new Error("db unavailable"));
+
+  render(<Index />);
+
+  await waitFor(() => expect(capturedHref).toBe("/(onboarding)"));
 });

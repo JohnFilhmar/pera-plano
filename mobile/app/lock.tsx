@@ -5,11 +5,20 @@
 // BootstrapErrorScreen) — not reached via router navigation, though living
 // under app/ also registers it as the addressable route "/lock" for free.
 //
-// "needs_onboarding" redirects to "/(onboarding)", a route that does not
-// exist in this codebase yet (it ships in a later task, per this file's own
-// test) — mirroring app/index.tsx's existing established pattern for the
-// exact same not-yet-built route.
-import { Redirect, type Href } from "expo-router";
+// "needs_onboarding" renders app/(onboarding)/index.tsx's OnboardingIndexScreen
+// DIRECTLY (task-10-brief.md) — an earlier version of this file used
+// <Redirect href="/(onboarding)"> instead, back when that route did not
+// exist yet. That approach could never have worked even once the route
+// existed: the Stack a Redirect's target needs in order to actually render
+// only mounts once AppShell reports lockStatus "unlocked" (interface
+// contract §10's four-condition gate), and a brand-new user has no DEK, so
+// that condition is never true before onboarding runs — a Redirect fired
+// from here would only update router state that nothing is currently
+// mounted to display. Rendering OnboardingIndexScreen directly is exactly
+// what every OTHER non-"unlocked" status already does below
+// (DeviceLockExplainer, RecoveryUnlockForm, UnlockPrompt); this just extends
+// that same discipline to the one status that used to be the exception.
+import OnboardingIndexScreen from "./(onboarding)/index";
 import { DeviceLockExplainer } from "@/components/onboarding/device_lock_explainer";
 import { RecoveryUnlockForm } from "@/components/lock/recovery_unlock_form";
 import { UnlockPrompt } from "@/components/lock/unlock_prompt";
@@ -24,14 +33,7 @@ export default function LockScreen() {
   }
 
   if (status === "needs_onboarding") {
-    // "/(onboarding)" does not exist as a route in this codebase yet — it
-    // ships in a later task (mirroring app/index.tsx's identical, already-
-    // established forward-reference to the same not-yet-built route).
-    // Expo Router's typed routes (app.json's experiments.typedRoutes) can
-    // only type-check hrefs against routes that already exist, so this cast
-    // is the deliberate escape hatch until that route lands — remove it once
-    // app/(onboarding)/ exists and this starts type-checking on its own.
-    return <Redirect href={"/(onboarding)" as unknown as Href} />;
+    return <OnboardingIndexScreen />;
   }
 
   if (status === "needs_device_lock") {

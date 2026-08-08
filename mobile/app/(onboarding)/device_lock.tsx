@@ -16,15 +16,17 @@
 // ever renders DeviceLockExplainer.
 //
 // ORDERING HAZARD, same shape as app/index.tsx's and app/lock.tsx's existing
-// notes: this file is the FIRST thing to exist under app/(onboarding)/ --
-// there is no index route in that group yet, and nothing in this codebase
-// navigates here yet either. That wiring (an onboarding flow that pushes
-// this screen, then the recovery-phrase step once this one is satisfied) is
-// Task 10 / the M3c onboarding plan's job, exactly like app/lock.tsx's own
-// "/(onboarding)" redirect already forward-references a route that doesn't
-// resolve yet. This file's job is narrower and already fully testable on its
-// own: given mount, report accurately whether the device is secure, and
-// given a return from Settings, re-check rather than trust stale state.
+// notes: this file used to be the FIRST thing to exist under
+// app/(onboarding)/, with no index route in that group and nothing in this
+// codebase navigating here. Task 10 (app/(onboarding)/index.tsx) closes that
+// gap: it renders this screen first, unconditionally, and advances to the
+// recovery-phrase step via the optional `onSecure` callback below, fired
+// once (and only once) `check()` determines the device is secure. This
+// file's OWN job stays narrower and unchanged: given mount, report
+// accurately whether the device is secure, and given a return from
+// Settings, re-check rather than trust stale state. `onSecure` is optional
+// specifically so every test that predates it (constructing this component
+// with zero props) keeps working unmodified.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import { isDeviceSecure, openSecuritySettings } from "@/modules/notification_listener";
@@ -32,7 +34,7 @@ import { DeviceLockExplainer } from "@/components/onboarding/device_lock_explain
 
 type Status = "checking" | "insecure" | "secure";
 
-export default function DeviceLockScreen() {
+export default function DeviceLockScreen({ onSecure }: { onSecure?: () => void } = {}) {
   const [status, setStatus] = useState<Status>("checking");
   // Guards against an overlapping second isDeviceSecure() call -- the same
   // double-tap/double-fire discipline as contexts/lock_context.tsx's
@@ -68,6 +70,17 @@ export default function DeviceLockScreen() {
     });
     return () => subscription.remove();
   }, [check]);
+
+  // Fires the caller's onward-navigation hook exactly once per transition
+  // into "secure" -- deliberately a separate effect from check() itself, so
+  // this stays a plain post-commit side effect rather than a call made
+  // during state-setting. onSecure is optional so every pre-Task-10 test
+  // (constructing this component with zero props) is unaffected.
+  useEffect(() => {
+    if (status === "secure") {
+      onSecure?.();
+    }
+  }, [status, onSecure]);
 
   // "checking" and "secure" render identically (nothing) but for different
   // reasons -- see this file's header comment. Only "insecure" ever shows

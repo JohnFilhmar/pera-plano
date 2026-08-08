@@ -190,4 +190,38 @@ describe("DeviceLockScreen", () => {
 
     expect(mockIsDeviceSecure).not.toHaveBeenCalled();
   });
+
+  // -------------------------------------------------------------------------
+  // onSecure (task-10-brief.md): the hook app/(onboarding)/index.tsx uses to
+  // advance past this step. Optional, so every test above (constructing
+  // this component with zero props) is unaffected.
+  // -------------------------------------------------------------------------
+
+  test("calls onSecure once the device is found secure", async () => {
+    mockIsDeviceSecure.mockResolvedValue(true);
+    const onSecure = jest.fn();
+
+    render(<DeviceLockScreen onSecure={onSecure} />);
+
+    await waitFor(() => expect(onSecure).toHaveBeenCalledTimes(1));
+  });
+
+  test("never calls onSecure while the device is insecure", async () => {
+    mockIsDeviceSecure.mockResolvedValue(false);
+    const onSecure = jest.fn();
+
+    render(<DeviceLockScreen onSecure={onSecure} />);
+
+    await waitFor(() => expect(screen.getByTestId("device-lock-explainer")).toBeTruthy());
+    expect(onSecure).not.toHaveBeenCalled();
+  });
+
+  test("does not throw when rendered with no onSecure prop at all, even once secure", async () => {
+    mockIsDeviceSecure.mockResolvedValue(true);
+
+    expect(() => render(<DeviceLockScreen />)).not.toThrow();
+    await act(async () => {
+      await Promise.resolve();
+    });
+  });
 });

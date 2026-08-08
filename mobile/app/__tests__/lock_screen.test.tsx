@@ -1,17 +1,27 @@
 // app/__tests__/lock_screen.test.tsx — LockScreen's own routing decision:
 // which status maps to which child, in isolation from the render-gate
 // wiring (lock_gate.test.tsx) and from the state machine itself
-// (contexts/__tests__/lock_context.test.tsx). Each of the four branches is
+// (contexts/__tests__/lock_context.test.tsx). Each of the five branches is
 // pinned separately so deleting any one of them fails exactly its own test.
-jest.mock("expo-router", () => ({
-  Redirect: (props: { href: string }) => {
-    capturedHref = props.href;
-    return null;
-  },
-}));
-
+//
+// "needs_onboarding" used to render <Redirect href="/(onboarding)"> (a
+// route that did not exist yet); task-10-brief.md replaced that with a
+// direct render of app/(onboarding)/index.tsx's OnboardingIndexScreen — see
+// app/lock.tsx's header comment for why a Redirect could never actually
+// have worked here. The real onboarding chain (device_lock.tsx,
+// recovery_phrase.tsx, key_manager.ts) has its own dedicated suites, so it
+// is faked here exactly like UnlockPrompt/RecoveryUnlockForm/
+// DeviceLockExplainer already are below.
 jest.mock("@/contexts/lock_context", () => ({
   useLock: jest.fn(),
+}));
+
+jest.mock("@/app/(onboarding)/index", () => ({
+  __esModule: true,
+  default: () => {
+    const { Text } = require("react-native");
+    return <Text testID="fake-onboarding-entry">onboarding-entry</Text>;
+  },
 }));
 
 jest.mock("@/components/lock/unlock_prompt", () => ({
@@ -47,7 +57,6 @@ import { useLock } from "@/contexts/lock_context";
 import { openSecuritySettings } from "@/modules/notification_listener";
 import LockScreen from "../lock";
 
-let capturedHref: string | undefined;
 let capturedUnlockPromptProps: { isAuthenticating: boolean; errorMessage: string | null } | undefined;
 let capturedRecoveryFormProps: { errorMessage: string | null } | undefined;
 let capturedDeviceLockExplainerProps: { onOpenSettings: () => void } | undefined;
@@ -66,7 +75,6 @@ function baseLockValue(overrides: Partial<ReturnType<typeof useLock>> = {}) {
 }
 
 beforeEach(() => {
-  capturedHref = undefined;
   capturedUnlockPromptProps = undefined;
   capturedRecoveryFormProps = undefined;
   capturedDeviceLockExplainerProps = undefined;
@@ -77,13 +85,15 @@ test('"checking" renders nothing at all', () => {
   mockUseLock.mockReturnValue(baseLockValue({ status: "checking" }));
   render(<LockScreen />);
   expect(screen.toJSON()).toBeNull();
-  expect(capturedHref).toBeUndefined();
+  expect(screen.queryByTestId("fake-onboarding-entry")).toBeNull();
 });
 
-test('"needs_onboarding" redirects to "/(onboarding)"', () => {
+test('"needs_onboarding" renders the onboarding flow directly, not the tabs or a Redirect', () => {
   mockUseLock.mockReturnValue(baseLockValue({ status: "needs_onboarding" }));
   render(<LockScreen />);
-  expect(capturedHref).toBe("/(onboarding)");
+  expect(screen.getByTestId("fake-onboarding-entry")).toBeTruthy();
+  expect(screen.queryByTestId("fake-recovery-form")).toBeNull();
+  expect(screen.queryByTestId("fake-unlock-prompt")).toBeNull();
 });
 
 test('"needs_recovery" renders RecoveryUnlockForm, not UnlockPrompt', () => {
