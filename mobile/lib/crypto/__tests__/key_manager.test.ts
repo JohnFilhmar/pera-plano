@@ -417,6 +417,70 @@ describe("getKeyState", () => {
     expect(nativeIsUsable).not.toHaveBeenCalled();
     expect(nativeUnwrap).not.toHaveBeenCalled();
   });
+
+  // A partial first-run state: the process dies (or a write rejects)
+  // between two of initializeKeys's three sequential SecureStore writes
+  // (deviceWrap, then recoveryWrap, then recoverySalt -- see
+  // performInitializeKeys), leaving a STRICT SUBSET of the three items on
+  // disk. See hasStoredKeys()'s doc for the argument that its `&&` of all
+  // three makes "locked" for a partial subset IMPOSSIBLE by construction --
+  // these tests pin that down as observable behavior, using the real write
+  // order learned from a genuine completed initializeKeys call rather than
+  // hardcoding this module's private storage-key strings.
+  describe("with a partial first-run state (process death mid-initializeKeys)", () => {
+    it("reports uninitialized, not locked, when only the FIRST of the three writes landed", async () => {
+      wireDefaultNativeBridge();
+      await initializeKeys(TEST_PHRASE);
+      const keysInWriteOrder = [...secureStoreMock.__store.keys()];
+      const values = new Map(secureStoreMock.__store);
+      lock();
+      secureStoreMock.__store.clear();
+
+      secureStoreMock.__store.set(keysInWriteOrder[0], values.get(keysInWriteOrder[0]) as string);
+
+      await expect(getKeyState()).resolves.toBe("uninitialized");
+    });
+
+    it("reports uninitialized, not locked, when only the FIRST TWO of the three writes landed", async () => {
+      wireDefaultNativeBridge();
+      await initializeKeys(TEST_PHRASE);
+      const keysInWriteOrder = [...secureStoreMock.__store.keys()];
+      const values = new Map(secureStoreMock.__store);
+      lock();
+      secureStoreMock.__store.clear();
+
+      secureStoreMock.__store.set(keysInWriteOrder[0], values.get(keysInWriteOrder[0]) as string);
+      secureStoreMock.__store.set(keysInWriteOrder[1], values.get(keysInWriteOrder[1]) as string);
+
+      await expect(getKeyState()).resolves.toBe("uninitialized");
+    });
+
+    it("self-heals: a later initializeKeys call replaces a stale partial remnant with a fully consistent pair, unaffected by what was left behind", async () => {
+      wireDefaultNativeBridge();
+      await initializeKeys(TEST_PHRASE); // establish the real write order once
+      const keysInWriteOrder = [...secureStoreMock.__store.keys()];
+      lock();
+      secureStoreMock.__store.clear();
+
+      // Simulate a crash after the first two of three writes, from a phrase
+      // that will never be used again. There is no live DEK depending on
+      // this remnant -- initializeKeys never sets the in-memory `dek` until
+      // AFTER all three writes succeed -- so overwriting it from scratch is
+      // safe by construction, not just in this test.
+      secureStoreMock.__store.set(keysInWriteOrder[0], "stale-partial-device-wrap");
+      secureStoreMock.__store.set(keysInWriteOrder[1], "stale-partial-recovery-wrap");
+      await expect(getKeyState()).resolves.toBe("uninitialized");
+
+      await initializeKeys(OTHER_PHRASE);
+
+      await expect(getKeyState()).resolves.toBe("unlocked");
+      lock();
+      const viaDevice = Uint8Array.from(await unlockWithDeviceKey()); // snapshot before lock() scrubs the buffer
+      lock();
+      const viaRecovery = await unlockWithRecoveryPhrase(OTHER_PHRASE);
+      expect(Buffer.from(viaDevice)).toEqual(Buffer.from(viaRecovery));
+    });
+  });
 });
 
 describe("lock", () => {

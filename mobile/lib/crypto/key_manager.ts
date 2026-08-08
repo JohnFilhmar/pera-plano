@@ -102,7 +102,35 @@ function base64ToBytes(b64: string): Uint8Array {
   return new Uint8Array(out);
 }
 
-/** True once every piece of first-run state exists in secure storage. */
+/**
+ * True once every piece of first-run state exists in secure storage.
+ *
+ * PARTIAL WRITES, ON PURPOSE: performInitializeKeys writes deviceWrap, then
+ * recoveryWrap, then recoverySalt as three SEPARATE awaited calls, not one
+ * atomic transaction (expo-secure-store has no multi-key transaction
+ * primitive to reach for). If the process dies, or any one write rejects,
+ * between two of those three, secure storage is left holding a STRICT
+ * SUBSET of the three items.
+ *
+ * This function's `&&` of all three means ANY strict subset -- 0, 1, or 2
+ * present, regardless of which ones -- evaluates to false, exactly the same
+ * as "initializeKeys has never run." That is a deliberate classification,
+ * not an oversight, and it is provably the honest one:
+ * performInitializeKeys never assigns the in-memory `dek` (nor does any
+ * other code path) until AFTER all three writes have already succeeded, so
+ * a strict subset can only exist on a device where no caller was ever
+ * handed a DEK and nothing was ever encrypted with one. There is no
+ * committed state to protect, so getKeyState() reporting "uninitialized" --
+ * never "locked" -- for a partial subset is both correct and useful: it
+ * routes the user back through onboarding, and the NEXT initializeKeys
+ * call safely overwrites the stale remnant with a fresh, fully consistent
+ * DEK (see the "self-heals from a partial first-run state" test in
+ * key_manager.test.ts). The failure mode this comment exists to rule out is
+ * getKeyState() reporting "locked" for a partial write -- that would send
+ * the user to an unlock screen for a DEK that no wrap on disk can actually
+ * produce. The boolean `&&` below makes that impossible by construction:
+ * there is no subset of size < 3 for which it evaluates to true.
+ */
 async function hasStoredKeys(): Promise<boolean> {
   const [deviceWrap, recoveryWrap, recoverySalt] = await Promise.all([
     SecureStore.getItemAsync(STORAGE_KEYS.deviceWrap),
@@ -163,6 +191,51 @@ async function unwrapWithRecoveryPhrase(phrase: string[]): Promise<Uint8Array> {
 }
 
 /**
+ * Serializes initializeKeys so concurrent calls observe and PRODUCE the
+ * SAME DEK, instead of racing to mint two different ones.
+ *
+ * THE BUG THIS FIXES: the realistic trigger is a double-tap on the
+ * onboarding "confirm your recovery words" button on a laggy budget
+ * phone — this product's target hardware. Two concurrent initializeKeys
+ * calls used to each run hasStoredKeys(), each see "nothing stored yet"
+ * (the check happened before either call had written anything), and each
+ * mint an INDEPENDENT DEK. The three writes from both calls then
+ * interleaved at the SecureStore level in whatever order their individual
+ * awaits happened to resolve, so the device wrap could end up holding one
+ * call's DEK while the recovery wrap ended up holding the OTHER call's DEK.
+ * Nothing crashed; the guard ("never overwrite an existing DEK") is not
+ * wrong, it just was not atomic — both calls read "no DEK present" before
+ * either wrote anything. Everything then worked perfectly right up until
+ * the day the OTHER unlock path was needed (e.g. the user removed their
+ * screen lock, invalidating the device key) — at which point the recovery
+ * phrase, made mandatory specifically to prevent data loss, silently failed
+ * to open the same database.
+ *
+ * THE FIX: the first call to arrive starts performInitializeKeys and
+ * stores its promise in this module-level variable BEFORE doing anything
+ * else observable. Every other call's check-and-return runs with no
+ * `await` in between — JS is single-threaded, so nothing can run between
+ * the `if` below and the assignment inside it — so a second call arriving
+ * even a microtask later still finds inFlightInit already set and AWAITS
+ * THAT SAME PROMISE instead of starting a second, independent init. Both
+ * callers therefore observe the exact same DEK, not merely "don't crash."
+ * Cleared in .finally() once the in-flight call settles (success OR
+ * failure), so a genuinely later call — after the first one has fully
+ * finished — is free to run its own hasStoredKeys() check rather than
+ * being blocked forever.
+ */
+let inFlightInit: Promise<void> | null = null;
+
+export function initializeKeys(phrase: string[]): Promise<void> {
+  if (inFlightInit === null) {
+    inFlightInit = performInitializeKeys(phrase).finally(() => {
+      inFlightInit = null;
+    });
+  }
+  return inFlightInit;
+}
+
+/**
  * First-run setup. Generates the DEK exactly once from a CSPRNG, wraps it
  * under both KEK-device (via the native bridge, which creates the Keystore
  * key on demand — see wrapWithDeviceKek's contract) and KEK-recovery
@@ -173,8 +246,16 @@ async function unwrapWithRecoveryPhrase(phrase: string[]): Promise<Uint8Array> {
  * already has one would orphan the encrypted database (silently swapping
  * every future read/write onto a key that cannot open the data already on
  * disk). If first-run state is already present, this is a no-op.
+ *
+ * The hasStoredKeys() check below is the ATOMIC re-check the fix depends
+ * on: it is only ever evaluated with a single execution of this function
+ * in flight at a time (see initializeKeys's inFlightInit guard, above),
+ * which is what makes "check, then write" here safe against a concurrent
+ * initializeKeys call — the exact race that guard exists to close. Without
+ * it, this check-then-write is exactly what let two concurrent calls both
+ * observe "no DEK yet" and each mint an independent one.
  */
-export async function initializeKeys(phrase: string[]): Promise<void> {
+async function performInitializeKeys(phrase: string[]): Promise<void> {
   if (await hasStoredKeys()) {
     return;
   }
