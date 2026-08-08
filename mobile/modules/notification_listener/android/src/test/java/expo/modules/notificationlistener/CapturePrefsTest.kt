@@ -186,4 +186,32 @@ class CapturePrefsTest {
     prefs.recordCapture(0L)
     assertEquals(0L, prefs.lastCaptureAt())
   }
+
+  // ---------------------------------------------------------------------
+  // The connection flag. Not one of the six tests the plan names, but it is
+  // half of what `getListenerHealth` reports (contract §4) and it has the
+  // same process-death requirement as everything else here -- Task 5 covers
+  // the SERVICE that calls these, which is a different thing from covering
+  // the persistence underneath them.
+  //
+  // The default is the load-bearing part: `false`. The health screen exists
+  // to catch the case where Android silently never bound the service, so a
+  // default of `true` would have it report a healthy listener on a device
+  // where capture has never once run -- the exact failure it was built to
+  // surface, reported as success.
+  // ---------------------------------------------------------------------
+
+  @Test
+  fun `listener connection defaults to false and survives a new CapturePrefs instance`() {
+    assertFalse("an unobserved binding must never be reported as connected", prefs.isListenerConnected())
+
+    prefs.recordListenerConnected(true)
+    assertTrue(prefs.isListenerConnected())
+    assertTrue("must survive the process that wrote it", CapturePrefs(context).isListenerConnected())
+
+    // Disconnect has to persist too. Only writing on connect would leave a
+    // killed service permanently reported as bound.
+    prefs.recordListenerConnected(false)
+    assertFalse(CapturePrefs(context).isListenerConnected())
+  }
 }
