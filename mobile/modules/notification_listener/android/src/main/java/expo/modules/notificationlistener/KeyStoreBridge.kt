@@ -98,6 +98,30 @@ object KeyStoreBridge {
     vault.getOrCreateAesKey(DEVICE_KEK_ALIAS)
   }
 
+  /**
+   * Deletes the device KEK and generates a fresh replacement,
+   * UNCONDITIONALLY -- unlike [ensureDeviceKek], this always rotates. The
+   * recovery primitive for docs/12-encryption-and-app-lock.md §5: removing
+   * the device screen lock permanently invalidates the device KEK (the
+   * alias survives invalidation -- see [isDeviceKekUsable] -- but Android
+   * will never again produce a usable key under it), and Android requires
+   * the dead alias be deleted before a live replacement can be generated
+   * under the same name.
+   *
+   * Every wrap ever made under the OLD key becomes permanently unopenable
+   * the instant this runs. That is expected, not a bug: the caller
+   * (`key_manager.ts`'s `rewrapAfterInvalidation`, contract §9) only calls
+   * this AFTER already recovering the DEK via the recovery phrase, and
+   * immediately re-wraps that same DEK under the fresh key this produces.
+   * Calling this without already holding the DEK from the recovery path
+   * loses it forever -- this is exactly why it is a separate, obviously
+   * destructive primitive rather than something [ensureDeviceKek] does
+   * automatically when it finds an invalidated key.
+   */
+  fun recreateDeviceKek() {
+    vault.recreateAesKey(DEVICE_KEK_ALIAS)
+  }
+
   /** Returns `iv || ciphertext` (GCM tag is part of the trailing ciphertext bytes). */
   fun wrapWithDeviceKek(plaintext: ByteArray): ByteArray {
     val cipher = Cipher.getInstance(AES_TRANSFORMATION)

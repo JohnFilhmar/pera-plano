@@ -4,7 +4,7 @@ import type { RawCapture } from "@/types/domain";
 
 /**
  * JS-facing surface of the notification listener local Expo module. The
- * five functions below are added by the encryption plan's Task 4 (interface
+ * functions below are added by the encryption plan's Task 4 (interface
  * contract §4, docs/12-encryption-and-app-lock.md §6/§9) — the seam where
  * the Kotlin crypto in `KeyStoreBridge`/`CaptureBuffer` meets JS.
  *
@@ -17,6 +17,7 @@ type NativeNotificationListenerModule = {
   wrapWithDeviceKek(plaintextB64: string): Promise<string>;
   unwrapWithDeviceKek(blobB64: string): Promise<string>;
   isDeviceKeyUsable(): Promise<boolean>;
+  recreateDeviceKek(): Promise<void>;
   drainPendingCaptures(): Promise<RawCapture[]>;
 };
 
@@ -29,9 +30,14 @@ const NativeNotificationListener = requireNativeModule<NativeNotificationListene
 // §6/§9). Four possible outcomes for an operation that touches an
 // auth-gated Keystore key, and each demands a different caller response:
 //
-//   - DeviceKeyInvalidatedError -- the device KEK was permanently destroyed
-//     (screen lock removed). Caller must prompt for the 12-word recovery
-//     phrase, never show a generic failure.
+//   - DeviceKeyInvalidatedError -- the device KEK WAS created and was later
+//     permanently destroyed (screen lock removed). Caller must prompt for
+//     the 12-word recovery phrase, then call recreateDeviceKek(), never
+//     show a generic failure.
+//   - DeviceKeyMissingError -- the device KEK has NEVER been created at
+//     all. Genuinely different from "invalidated": there is nothing to
+//     recover, so the caller belongs in onboarding (initializeKeys, §9),
+//     not the recovery-phrase flow.
 //   - NotAuthenticatedError -- called outside the ~10s post-unlock
 //     authentication window. Caller must re-prompt biometric/device
 //     credential and retry the SAME call. This is NOT a statement about
@@ -50,19 +56,38 @@ const NativeNotificationListener = requireNativeModule<NativeNotificationListene
 // ---------------------------------------------------------------------
 
 /** `code` values a native rejection can carry, matching the Kotlin side exactly. */
-type BridgeErrorCode = "DeviceKeyInvalidated" | "NotAuthenticated" | "CaptureBufferReadFailed";
+type BridgeErrorCode =
+  | "DeviceKeyInvalidated"
+  | "DeviceKeyMissing"
+  | "NotAuthenticated"
+  | "CaptureBufferReadFailed";
 
 /**
  * The device KEK (or the capture keypair's private key, for
- * `drainPendingCaptures`) was permanently invalidated -- typically because
- * the user removed their device screen lock. Recoverable only via the
- * recovery phrase (docs/12-encryption-and-app-lock.md §5); never fatal.
+ * `drainPendingCaptures`) WAS created and was later permanently invalidated
+ * -- typically because the user removed their device screen lock.
+ * Recoverable via the recovery phrase followed by `recreateDeviceKek()`
+ * (docs/12-encryption-and-app-lock.md §5); never fatal on its own.
  */
 export class DeviceKeyInvalidatedError extends Error {
   readonly code: BridgeErrorCode = "DeviceKeyInvalidated";
   constructor(message = "the device key has been permanently invalidated") {
     super(message);
     this.name = "DeviceKeyInvalidatedError";
+  }
+}
+
+/**
+ * The device KEK has never been created on this device at all. Distinct
+ * from `DeviceKeyInvalidatedError`: there is no prior wrap to recover, so
+ * the caller belongs in onboarding (`initializeKeys`, contract §9), never
+ * the recovery-phrase flow.
+ */
+export class DeviceKeyMissingError extends Error {
+  readonly code: BridgeErrorCode = "DeviceKeyMissing";
+  constructor(message = "the device key has not been created yet") {
+    super(message);
+    this.name = "DeviceKeyMissingError";
   }
 }
 
@@ -97,13 +122,14 @@ export class CaptureBufferReadFailedError extends Error {
 /**
  * Maps a native rejection's `code` to its distinguishable JS error type. An
  * unrecognized `code` (or no `code` at all) rethrows the original error
- * completely unchanged -- this function only ever narrows the three known
+ * completely unchanged -- this function only ever narrows the four known
  * codes, never substitutes a default for anything else, so a genuinely
- * novel native failure is never miscategorized as one of the three.
+ * novel native failure is never miscategorized as one of the four.
  */
 function rethrowTyped(error: unknown): never {
   const code = (error as { code?: unknown } | null | undefined)?.code;
   if (code === "DeviceKeyInvalidated") throw new DeviceKeyInvalidatedError();
+  if (code === "DeviceKeyMissing") throw new DeviceKeyMissingError();
   if (code === "NotAuthenticated") throw new NotAuthenticatedError();
   if (code === "CaptureBufferReadFailed") throw new CaptureBufferReadFailedError();
   throw error;
@@ -119,7 +145,13 @@ export function wrapWithDeviceKek(plaintextB64: string): Promise<string> {
   return NativeNotificationListener.wrapWithDeviceKek(plaintextB64).catch(rethrowTyped);
 }
 
-/** Unwraps a base64 blob under the device KEK; returns the base64 plaintext. */
+/**
+ * Unwraps a base64 blob under the device KEK; returns the base64 plaintext.
+ * Rejects with `DeviceKeyMissingError` if the device KEK was never created
+ * (belongs in onboarding), or `DeviceKeyInvalidatedError` if it was created
+ * and later destroyed (belongs in the recovery-phrase flow) -- see the
+ * rejection taxonomy above.
+ */
 export function unwrapWithDeviceKek(blobB64: string): Promise<string> {
   return NativeNotificationListener.unwrapWithDeviceKek(blobB64).catch(rethrowTyped);
 }
@@ -127,6 +159,19 @@ export function unwrapWithDeviceKek(blobB64: string): Promise<string> {
 /** False once the device KEK has been permanently invalidated (e.g. screen lock removed). */
 export function isDeviceKeyUsable(): Promise<boolean> {
   return NativeNotificationListener.isDeviceKeyUsable();
+}
+
+/**
+ * Deletes the device KEK and generates a fresh replacement, UNCONDITIONALLY
+ * -- the recovery primitive behind `key_manager.ts`'s `rewrapAfterInvalidation`
+ * (contract §9). Call this ONLY after successfully unwrapping the DEK via
+ * the recovery phrase, then immediately `wrapWithDeviceKek` that same DEK
+ * under the fresh key this produces. Every wrap made under the OLD key
+ * becomes permanently unopenable the instant this resolves -- calling it
+ * without already holding the DEK from the recovery path loses it forever.
+ */
+export function recreateDeviceKek(): Promise<void> {
+  return NativeNotificationListener.recreateDeviceKek();
 }
 
 /**

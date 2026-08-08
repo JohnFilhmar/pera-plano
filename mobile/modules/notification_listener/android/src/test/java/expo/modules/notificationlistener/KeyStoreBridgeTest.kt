@@ -87,6 +87,42 @@ class KeyStoreBridgeTest {
     assertArrayEquals(plaintext, unwrapped)
   }
 
+  // ---- recreateDeviceKek: the recovery primitive, deliberately NOT idempotent -----
+
+  @Test
+  fun `recreateDeviceKek replaces the key -- an old wrap becomes unopenable under the new one`() {
+    val wrappedUnderOldKey = KeyStoreBridge.wrapWithDeviceKek("secret".toByteArray())
+
+    KeyStoreBridge.recreateDeviceKek()
+
+    // Proves this actually rotated the key, not merely a no-op like
+    // ensureDeviceKek's second call -- a broken "recreate" that quietly
+    // kept the old key would pass a naive "still round-trips" test.
+    assertThrows(BadPaddingException::class.java) {
+      KeyStoreBridge.unwrapWithDeviceKek(wrappedUnderOldKey)
+    }
+  }
+
+  @Test
+  fun `recreateDeviceKek's replacement key is fully usable -- a fresh wrap-unwrap round-trips`() {
+    KeyStoreBridge.recreateDeviceKek()
+
+    val wrapped = KeyStoreBridge.wrapWithDeviceKek("secret".toByteArray())
+    val unwrapped = KeyStoreBridge.unwrapWithDeviceKek(wrapped)
+
+    assertArrayEquals("secret".toByteArray(), unwrapped)
+  }
+
+  @Test
+  fun `recreateDeviceKek works even when no device KEK has ever been created`() {
+    KeyStoreBridge.vault = FakeKeyVault() // fresh vault, no keys at all -- not even via setUp's ensureDeviceKek
+
+    KeyStoreBridge.recreateDeviceKek()
+
+    val wrapped = KeyStoreBridge.wrapWithDeviceKek("secret".toByteArray())
+    assertArrayEquals("secret".toByteArray(), KeyStoreBridge.unwrapWithDeviceKek(wrapped))
+  }
+
   // ---- device KEK wrap / unwrap -----------------------------------------
 
   @Test

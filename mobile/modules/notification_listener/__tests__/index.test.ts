@@ -35,6 +35,7 @@ jest.mock("expo-modules-core", () => {
     wrapWithDeviceKek: jest.fn(),
     unwrapWithDeviceKek: jest.fn(),
     isDeviceKeyUsable: jest.fn(),
+    recreateDeviceKek: jest.fn(),
     drainPendingCaptures: jest.fn(),
   };
   return {
@@ -45,10 +46,12 @@ jest.mock("expo-modules-core", () => {
 import {
   CaptureBufferReadFailedError,
   DeviceKeyInvalidatedError,
+  DeviceKeyMissingError,
   NotAuthenticatedError,
   drainPendingCaptures,
   getCapturePublicKey,
   isDeviceKeyUsable,
+  recreateDeviceKek,
   unwrapWithDeviceKek,
   wrapWithDeviceKek,
 } from "../index";
@@ -58,6 +61,7 @@ type MockNativeModule = {
   wrapWithDeviceKek: jest.Mock;
   unwrapWithDeviceKek: jest.Mock;
   isDeviceKeyUsable: jest.Mock;
+  recreateDeviceKek: jest.Mock;
   drainPendingCaptures: jest.Mock;
 };
 
@@ -147,6 +151,25 @@ describe("unwrapWithDeviceKek", () => {
 
     await expect(unwrapWithDeviceKek("YmxvYi1iYXNlNjQ=")).rejects.toBeInstanceOf(NotAuthenticatedError);
   });
+
+  it("surfaces a DeviceKeyMissing native rejection as DeviceKeyMissingError -- distinct from DeviceKeyInvalidatedError", async () => {
+    // DeviceKeyMissing means the device KEK was NEVER created (belongs in
+    // onboarding); DeviceKeyInvalidated means it WAS created and later
+    // died (belongs in the recovery-phrase flow). Reachable specifically
+    // at unlock -- unwrapWithDeviceKek is called with no prior
+    // ensureDeviceKek, unlike wrapWithDeviceKek.
+    mockNativeModule.unwrapWithDeviceKek.mockRejectedValue(nativeRejection("DeviceKeyMissing"));
+
+    let thrown: unknown;
+    try {
+      await unwrapWithDeviceKek("YmxvYi1iYXNlNjQ=");
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(DeviceKeyMissingError);
+    expect(thrown).not.toBeInstanceOf(DeviceKeyInvalidatedError);
+  });
 });
 
 describe("isDeviceKeyUsable", () => {
@@ -159,6 +182,15 @@ describe("isDeviceKeyUsable", () => {
     const result = await isDeviceKeyUsable();
     expect(result).toBe(false);
     expect(typeof result).toBe("boolean");
+  });
+});
+
+describe("recreateDeviceKek", () => {
+  it("delegates with no arguments and resolves", async () => {
+    mockNativeModule.recreateDeviceKek.mockResolvedValue(undefined);
+
+    await expect(recreateDeviceKek()).resolves.toBeUndefined();
+    expect(mockNativeModule.recreateDeviceKek).toHaveBeenCalledWith();
   });
 });
 
@@ -245,7 +277,15 @@ describe("drainPendingCaptures", () => {
     expect(thrown).toBeInstanceOf(CaptureBufferReadFailedError);
   });
 
-  it("the three rejection types map to three distinct, non-overlapping error classes -- collapsing any two is the bug this task must avoid", async () => {
+  it("the four rejection types map to four distinct, non-overlapping error classes -- collapsing any two is the bug this task must avoid", async () => {
+    // Exercised via drainPendingCaptures purely as a vehicle: rethrowTyped
+    // is the SAME shared mapping function behind wrapWithDeviceKek,
+    // unwrapWithDeviceKek, and drainPendingCaptures, so testing it through
+    // any one call site proves the mapping itself, regardless of which
+    // Kotlin catch site would realistically produce a given code (e.g.
+    // DeviceKeyMissing is only realistically reachable from
+    // unwrapWithDeviceKek -- see that describe block -- but the JS-level
+    // mapping code does not know or care which call site it came from).
     async function rejectionFor(code: string): Promise<unknown> {
       mockNativeModule.drainPendingCaptures.mockRejectedValueOnce(nativeRejection(code));
       try {
@@ -256,23 +296,32 @@ describe("drainPendingCaptures", () => {
       }
     }
 
-    const deviceKeyInvalidated = await rejectionFor("DeviceKeyInvalidated");
-    const notAuthenticated = await rejectionFor("NotAuthenticated");
-    const readFailed = await rejectionFor("CaptureBufferReadFailed");
+    const classesByCode: Array<[string, new (...args: never[]) => Error]> = [
+      ["DeviceKeyInvalidated", DeviceKeyInvalidatedError],
+      ["DeviceKeyMissing", DeviceKeyMissingError],
+      ["NotAuthenticated", NotAuthenticatedError],
+      ["CaptureBufferReadFailed", CaptureBufferReadFailedError],
+    ];
 
-    expect(deviceKeyInvalidated).toBeInstanceOf(DeviceKeyInvalidatedError);
-    expect(notAuthenticated).toBeInstanceOf(NotAuthenticatedError);
-    expect(readFailed).toBeInstanceOf(CaptureBufferReadFailedError);
+    const rejections = await Promise.all(classesByCode.map(([code]) => rejectionFor(code)));
 
-    expect(deviceKeyInvalidated).not.toBeInstanceOf(NotAuthenticatedError);
-    expect(deviceKeyInvalidated).not.toBeInstanceOf(CaptureBufferReadFailedError);
-    expect(notAuthenticated).not.toBeInstanceOf(DeviceKeyInvalidatedError);
-    expect(notAuthenticated).not.toBeInstanceOf(CaptureBufferReadFailedError);
-    expect(readFailed).not.toBeInstanceOf(DeviceKeyInvalidatedError);
-    expect(readFailed).not.toBeInstanceOf(NotAuthenticatedError);
+    // Each code produces an instance of its OWN class...
+    classesByCode.forEach(([, ErrorClass], i) => {
+      expect(rejections[i]).toBeInstanceOf(ErrorClass);
+    });
+
+    // ...and of NO other class in the taxonomy -- the exhaustive pairwise
+    // check that actually catches a collapse between any two.
+    classesByCode.forEach(([, _ErrorClass], i) => {
+      classesByCode.forEach(([, OtherErrorClass], j) => {
+        if (i !== j) {
+          expect(rejections[i]).not.toBeInstanceOf(OtherErrorClass);
+        }
+      });
+    });
   });
 
-  it("an unrecognized native rejection code is rethrown unchanged, not miscategorized as one of the three known types", async () => {
+  it("an unrecognized native rejection code is rethrown unchanged, not miscategorized as one of the four known types", async () => {
     mockNativeModule.drainPendingCaptures.mockRejectedValue(new Error("boom, no code at all"));
 
     let thrown: unknown;
@@ -283,6 +332,7 @@ describe("drainPendingCaptures", () => {
     }
 
     expect(thrown).not.toBeInstanceOf(DeviceKeyInvalidatedError);
+    expect(thrown).not.toBeInstanceOf(DeviceKeyMissingError);
     expect(thrown).not.toBeInstanceOf(NotAuthenticatedError);
     expect(thrown).not.toBeInstanceOf(CaptureBufferReadFailedError);
     expect((thrown as Error).message).toBe("boom, no code at all");

@@ -34,6 +34,15 @@ internal class FakeKeyVault : KeyVault {
     }
   }
 
+  // Unconditionally overwrites -- matches AndroidKeyVault's "always
+  // rotates, regardless of prior state" contract for this function. A
+  // plain Map#put here is enough: unlike AndroidKeyVault there is no
+  // separate delete step to model, since there is no real Keystore entry
+  // that must be removed before a new one can take its name.
+  override fun recreateAesKey(alias: String) {
+    secretKeys[alias] = KeyGenerator.getInstance("AES").apply { init(256, SecureRandom()) }.generateKey()
+  }
+
   override fun getOrCreateRsaKeyPair(alias: String) {
     keyPairs.getOrPut(alias) {
       KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()

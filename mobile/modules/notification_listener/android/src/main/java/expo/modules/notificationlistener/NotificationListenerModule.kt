@@ -13,19 +13,25 @@ import expo.modules.kotlin.modules.ModuleDefinition
  * interface contract §4 wrapper (mobile/modules/notification_listener/index.ts).
  *
  * Encryption-plan Task 4 (docs/12-encryption-and-app-lock.md §6, §9; interface
- * contract §4) adds the five key-operation functions below. Every one of
- * them is a thin pass-through to [KeyStoreBridge] / [CaptureBuffer] -- no new
- * crypto logic lives here, only two things:
+ * contract §4) adds the key-operation functions below. Every one of them is a
+ * thin pass-through to [KeyStoreBridge] / [CaptureBuffer] -- no new crypto
+ * logic lives here, only two things:
  *
  *  1. Base64 <-> [ByteArray] conversion at the boundary (contract §4 rule 3:
  *     binary crosses the bridge as base64 strings, never number arrays).
- *  2. Mapping two platform exceptions to a distinguishable [CodedException]
- *     with a `code` a JS caller can branch on (contract §4 rule 2, and the
- *     rejection taxonomy this task's brief calls out):
+ *  2. Mapping platform exceptions to a distinguishable [CodedException] with
+ *     a `code` a JS caller can branch on (contract §4 rule 2, and the
+ *     rejection taxonomy this task's brief calls out) -- FOUR outcomes, each
+ *     demanding a different JS-side response:
  *       - [KeyPermanentlyInvalidatedException] -> `code == "DeviceKeyInvalidated"`
- *         (the screen lock was removed, or the key was otherwise
- *         permanently destroyed; JS must prompt for the recovery phrase,
- *         never show a generic failure)
+ *         (a key that WAS created and was later permanently destroyed --
+ *         typically the screen lock was removed; JS must prompt for the
+ *         recovery phrase, never show a generic failure)
+ *       - a device KEK alias that has NEVER been created at all ->
+ *         `code == "DeviceKeyMissing"` (a genuinely different state from
+ *         "invalidated": nothing was ever wrapped, so there is nothing to
+ *         recover -- JS belongs in onboarding, not the recovery flow; see
+ *         [requireDeviceKekPresent])
  *       - [UserNotAuthenticatedException] -> `code == "NotAuthenticated"`
  *         (called outside the ~10s post-unlock authentication window; JS
  *         must re-prompt biometric/device-credential and retry the SAME
@@ -33,20 +39,23 @@ import expo.modules.kotlin.modules.ModuleDefinition
  *         [CaptureBuffer]'s class doc on why `drain()` decrypts before ever
  *         touching the file specifically so this exception leaves every
  *         capture intact on disk)
- *
- * [drainPendingCaptures] additionally maps a third, buffer-specific failure:
  *       - [CaptureBuffer.ReadFailedException] -> `code == "CaptureBufferReadFailed"`
  *         (a storage-layer read error, unrelated to auth or to the file's
- *         contents; JS must leave the buffer alone and retry later -- NEVER
- *         treat this as "the buffer is empty" either)
+ *         contents, and only reachable from [drainPendingCaptures]; JS must
+ *         leave the buffer alone and retry later -- NEVER treat this as
+ *         "the buffer is empty" either)
  *
- * A fourth outcome -- the buffer is genuinely empty -- is not an error at
+ * A fifth outcome -- the buffer is genuinely empty -- is not an error at
  * all: [CaptureBuffer.drain] returns an empty list normally, and
  * `drainPendingCaptures` resolves with `[]`. Collapsing any two of these
- * four outcomes together is the exact bug class this task exists to avoid:
- * each demands a different JS-side response (prompt for recovery words /
- * re-prompt biometric and retry / leave the buffer alone and try later / do
- * nothing).
+ * outcomes together is the exact bug class this task exists to avoid: each
+ * demands a different JS-side response (prompt onboarding / prompt for
+ * recovery words / re-prompt biometric and retry / leave the buffer alone
+ * and try later / do nothing).
+ *
+ * `recreateDeviceKek` is the one function here that is NOT a taxonomy
+ * source -- it is the recovery ACTION the `DeviceKeyInvalidated` rejection
+ * exists to lead to. See [KeyStoreBridge.recreateDeviceKek]'s doc.
  */
 class NotificationListenerModule : Module() {
 
@@ -70,6 +79,12 @@ class NotificationListenerModule : Module() {
     }
 
     AsyncFunction("unwrapWithDeviceKek") { blobB64: String ->
+      // Deliberately no ensureDeviceKek() here (unlike wrapWithDeviceKek):
+      // if the device KEK has never existed, silently generating one would
+      // turn a clear "never initialized" state into a confusing decrypt
+      // failure under the WRONG key. requireDeviceKekPresent gives that
+      // state its own distinguishable rejection instead.
+      requireDeviceKekPresent()
       val blob = Base64.decode(blobB64, Base64.NO_WRAP)
       val plaintext = mapKeyErrors { KeyStoreBridge.unwrapWithDeviceKek(blob) }
       Base64.encodeToString(plaintext, Base64.NO_WRAP)
@@ -77,6 +92,12 @@ class NotificationListenerModule : Module() {
 
     AsyncFunction("isDeviceKeyUsable") {
       KeyStoreBridge.isDeviceKekUsable()
+    }
+
+    // ---- Recovery: rotate a permanently-invalidated device KEK ----------
+
+    AsyncFunction("recreateDeviceKek") {
+      KeyStoreBridge.recreateDeviceKek()
     }
 
     // ---- Decrypting drain of the buffered-while-dead queue ---------------
@@ -95,24 +116,58 @@ class NotificationListenerModule : Module() {
 
   /** Standard Expo-module pattern: the react context, or a clear error if it's gone. */
   private fun requireContext() = appContext.reactContext ?: throw Exceptions.ReactContextLost()
+}
 
-  /**
-   * Maps the two Keystore exceptions [KeyStoreBridge] can throw for ANY
-   * device-KEK or capture-private-key operation to the distinguishable
-   * [CodedException]s the JS side branches on -- see the class doc's
-   * taxonomy. Every other exception (a tampered blob's
-   * [javax.crypto.BadPaddingException], for instance) propagates completely
-   * unchanged; this function only ever narrows two specific exception
-   * types, never widens what already crosses the bridge as-is.
-   */
-  private fun <T> mapKeyErrors(block: () -> T): T =
-    try {
-      block()
-    } catch (invalidated: KeyPermanentlyInvalidatedException) {
-      throw DeviceKeyInvalidatedException()
-    } catch (notAuthenticated: UserNotAuthenticatedException) {
-      throw NotAuthenticatedException()
-    }
+/**
+ * Maps the two Keystore exceptions [KeyStoreBridge] can throw for ANY
+ * device-KEK or capture-private-key operation to the distinguishable
+ * [CodedException]s the JS side branches on -- see
+ * [NotificationListenerModule]'s class doc for the full taxonomy. Every
+ * other exception (a tampered blob's [javax.crypto.BadPaddingException],
+ * for instance) propagates completely unchanged; this function only ever
+ * narrows two specific exception types, never widens what already crosses
+ * the bridge as-is.
+ *
+ * A top-level, Context-free function -- not a method on
+ * [NotificationListenerModule] -- specifically so `NotificationListenerModuleTest`
+ * can exercise it directly against real [KeyPermanentlyInvalidatedException]/
+ * [UserNotAuthenticatedException] instances without constructing a `Module`
+ * or an `AppContext` at all.
+ */
+internal fun <T> mapKeyErrors(block: () -> T): T =
+  try {
+    block()
+  } catch (invalidated: KeyPermanentlyInvalidatedException) {
+    throw DeviceKeyInvalidatedException()
+  } catch (notAuthenticated: UserNotAuthenticatedException) {
+    throw NotAuthenticatedException()
+  }
+
+/**
+ * Throws [DeviceKeyMissingException] if the device KEK has never been
+ * created at all. Deliberately distinct from [KeyPermanentlyInvalidatedException]
+ * (a key that WAS created and later died) -- see [NotificationListenerModule]'s
+ * class doc taxonomy: "never initialized" belongs in onboarding, "died"
+ * belongs in the recovery flow, and conflating them sends the user to the
+ * wrong screen.
+ *
+ * [KeyStoreBridge.unwrapWithDeviceKek] has no way to distinguish "never
+ * created" from other Keystore failures on its own -- the underlying
+ * [KeyVault.getAesKey] throws a bare, uncoded `IllegalStateException`
+ * either way, from a code path shared with the (unrelated) capture-keypair
+ * lookup -- so this check runs BEFORE calling it, using the same
+ * [KeyVault.hasAesKey] presence check [KeyStoreBridge.isDeviceKekUsable]
+ * already relies on, rather than catching that generic exception and
+ * risking miscategorizing some unrelated future `IllegalStateException` as
+ * `DeviceKeyMissing`.
+ *
+ * A top-level, Context-free function for the same testability reason as
+ * [mapKeyErrors].
+ */
+internal fun requireDeviceKekPresent() {
+  if (!KeyStoreBridge.vault.hasAesKey(KeyStoreBridge.DEVICE_KEK_ALIAS)) {
+    throw DeviceKeyMissingException()
+  }
 }
 
 /**
@@ -130,6 +185,20 @@ internal class DeviceKeyInvalidatedException :
   CodedException(
     code = "DeviceKeyInvalidated",
     message = "the device key has been permanently invalidated",
+    cause = null,
+  )
+
+/**
+ * Crosses the bridge as `code == "DeviceKeyMissing"` -- the device KEK has
+ * never been created on this device at all. Distinct from
+ * `DeviceKeyInvalidated`: there is no prior wrap to recover, so JS belongs
+ * in onboarding (`initializeKeys`, contract §9), not the recovery-phrase
+ * flow. See [requireDeviceKekPresent].
+ */
+internal class DeviceKeyMissingException :
+  CodedException(
+    code = "DeviceKeyMissing",
+    message = "the device key has not been created yet",
     cause = null,
   )
 

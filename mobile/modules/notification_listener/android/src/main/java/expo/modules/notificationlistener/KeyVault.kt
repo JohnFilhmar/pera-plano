@@ -53,6 +53,20 @@ internal interface KeyVault {
   /** Ensures an AES key for [alias] exists, generating one if absent. Idempotent, never rotates. */
   fun getOrCreateAesKey(alias: String)
 
+  /**
+   * Deletes any existing AES key for [alias] (a no-op if absent) and
+   * generates a fresh one, UNCONDITIONALLY -- unlike [getOrCreateAesKey],
+   * this ALWAYS rotates. This is the recovery primitive for a key that
+   * Android has permanently invalidated (docs/12-encryption-and-app-lock.md
+   * §5): the dead alias survives invalidation, and Android requires it be
+   * deleted before a live replacement can be generated under the same
+   * name. Deliberately a separate, obviously-destructive function rather
+   * than folded into [getOrCreateAesKey] -- a function that silently
+   * rotated on every call would orphan every wrap ever made under the
+   * previous key, including ones still perfectly valid.
+   */
+  fun recreateAesKey(alias: String)
+
   /** Ensures an RSA keypair for [alias] exists, generating one if absent. Idempotent, never rotates. */
   fun getOrCreateRsaKeyPair(alias: String)
 
@@ -98,59 +112,82 @@ internal object AndroidKeyVault : KeyVault {
   private val lock = Any()
 
   override fun getOrCreateAesKey(alias: String) = synchronized(lock) {
-    val keyStore = keyStore()
-    if (!keyStore.containsAlias(alias)) {
-      withStrongBoxFallback { strongBox ->
-        val builder = KeyGenParameterSpec.Builder(
-          alias,
-          KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
-        )
-          .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-          .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-          .setKeySize(256)
-          .setUserAuthenticationRequired(true)
-          // 10-second validity window, not 0 (per-operation, CryptoObject-
-          // bound). CryptoObject binding is textbook-stronger -- the
-          // authentication is cryptographically tied to that exact cipher
-          // call -- but what it actually defends against is code inside
-          // OUR OWN process using this key during the window right after
-          // the user authenticates. That code already runs as our UID: it
-          // can read the DEK straight out of process memory and never
-          // needs the Keystore at all. docs/12-encryption-and-app-lock.md
-          // §4 already places "malware with root running while the app is
-          // unlocked" out of scope, so CryptoObject binding's marginal
-          // protection here is close to zero.
-          //
-          // Against that: a 0-second/CryptoObject-bound key would force
-          // the DEK unwrap to happen inside the native biometric callback,
-          // restructuring the JS/native boundary Tasks 6 and 9 are built
-          // around -- for a generic (non-CryptoObject) BiometricPrompt
-          // app-unlock, which is what §7 specifies, a 0-second window
-          // would make EVERY unwrapWithDeviceKek call throw
-          // UserNotAuthenticatedException, since Keystore has no way to
-          // know a plain authenticate() call was "for" this key. Ten
-          // seconds is ample for the single unwrap that follows unlock,
-          // and short enough to be useless as an attack window. If the
-          // threat model ever tightens to include in-process compromise,
-          // the upgrade path is CryptoObject binding (timeout 0) plus
-          // restructuring the unwrap to run inside the auth callback.
-          .setUserAuthenticationParameters(10, AUTH_TYPES)
-          // Secure default is `true`; deliberately `false` here. See
-          // docs/12-encryption-and-app-lock.md §5: enrolling a new biometric
-          // already requires the device screen-lock credential, so the
-          // attacker `true` would guard against is one already outside this
-          // app's threat model (§4) -- while `true` itself would silently
-          // destroy the only device-side wrap of the user's DEK the next
-          // time they add a fingerprint, a routine settings action. Do NOT
-          // "fix" this back to true; the recovery phrase (§5) is the
-          // deliberate second path, not this flag.
-          .setInvalidatedByBiometricEnrollment(false)
-        if (strongBox) builder.setIsStrongBoxBacked(true)
+    if (!keyStore().containsAlias(alias)) {
+      generateAesKey(alias)
+    }
+  }
 
-        KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, PROVIDER).apply {
-          init(builder.build())
-          generateKey()
-        }
+  override fun recreateAesKey(alias: String) = synchronized(lock) {
+    val keyStore = keyStore()
+    // deleteEntry on an absent alias would throw on some KeyStore
+    // providers -- guarded exactly like every other check-then-act here,
+    // under the same lock, so a concurrent getOrCreateAesKey can never
+    // observe the alias missing mid-recreate and generate a competing key.
+    if (keyStore.containsAlias(alias)) {
+      keyStore.deleteEntry(alias)
+    }
+    generateAesKey(alias)
+  }
+
+  /**
+   * The actual AES-256-GCM key-generation call, shared by
+   * [getOrCreateAesKey] (only when [alias] is absent) and [recreateAesKey]
+   * (unconditionally, after deleting any existing entry). Every hardware/
+   * authentication flag below is identical regardless of caller -- a
+   * recreated key must be exactly as strong as one created on first run,
+   * never a weaker "recovery-mode" variant.
+   */
+  private fun generateAesKey(alias: String) {
+    withStrongBoxFallback { strongBox ->
+      val builder = KeyGenParameterSpec.Builder(
+        alias,
+        KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
+      )
+        .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+        .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+        .setKeySize(256)
+        .setUserAuthenticationRequired(true)
+        // 10-second validity window, not 0 (per-operation, CryptoObject-
+        // bound). CryptoObject binding is textbook-stronger -- the
+        // authentication is cryptographically tied to that exact cipher
+        // call -- but what it actually defends against is code inside
+        // OUR OWN process using this key during the window right after
+        // the user authenticates. That code already runs as our UID: it
+        // can read the DEK straight out of process memory and never
+        // needs the Keystore at all. docs/12-encryption-and-app-lock.md
+        // §4 already places "malware with root running while the app is
+        // unlocked" out of scope, so CryptoObject binding's marginal
+        // protection here is close to zero.
+        //
+        // Against that: a 0-second/CryptoObject-bound key would force
+        // the DEK unwrap to happen inside the native biometric callback,
+        // restructuring the JS/native boundary Tasks 6 and 9 are built
+        // around -- for a generic (non-CryptoObject) BiometricPrompt
+        // app-unlock, which is what §7 specifies, a 0-second window
+        // would make EVERY unwrapWithDeviceKek call throw
+        // UserNotAuthenticatedException, since Keystore has no way to
+        // know a plain authenticate() call was "for" this key. Ten
+        // seconds is ample for the single unwrap that follows unlock,
+        // and short enough to be useless as an attack window. If the
+        // threat model ever tightens to include in-process compromise,
+        // the upgrade path is CryptoObject binding (timeout 0) plus
+        // restructuring the unwrap to run inside the auth callback.
+        .setUserAuthenticationParameters(10, AUTH_TYPES)
+        // Secure default is `true`; deliberately `false` here. See
+        // docs/12-encryption-and-app-lock.md §5: enrolling a new biometric
+        // already requires the device screen-lock credential, so the
+        // attacker `true` would guard against is one already outside this
+        // app's threat model (§4) -- while `true` itself would silently
+        // destroy the only device-side wrap of the user's DEK the next
+        // time they add a fingerprint, a routine settings action. Do NOT
+        // "fix" this back to true; the recovery phrase (§5) is the
+        // deliberate second path, not this flag.
+        .setInvalidatedByBiometricEnrollment(false)
+      if (strongBox) builder.setIsStrongBoxBacked(true)
+
+      KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, PROVIDER).apply {
+        init(builder.build())
+        generateKey()
       }
     }
   }
