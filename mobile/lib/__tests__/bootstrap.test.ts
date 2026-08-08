@@ -2,14 +2,15 @@
 // tests, plus the idempotency-by-row-count proof the task explicitly calls
 // for: run bootstrapApp() twice and assert the category count did NOT
 // double, rather than merely asserting the second call "does not throw."
-import { closeDatabase, getDatabase } from "@/lib/db/database";
+import { closeDatabase, getDatabase, unlockDatabase } from "@/lib/db/database";
 import {
   __resetBootstrapForTests,
   bootstrapApp,
   getLastBootstrapResult,
 } from "@/lib/bootstrap";
 import { setSetting } from "@/lib/db/repos/app_settings_repo";
-import type { SQLiteDatabase } from "expo-sqlite";
+import { TEST_DEK } from "@/test_support/db";
+import type { SQLiteDatabase } from "@/lib/db/database";
 
 // bootstrapApp opens its own database via getDatabase() (same singleton every
 // repo goes through) — unlike the repo test suites, there is deliberately no
@@ -17,8 +18,20 @@ import type { SQLiteDatabase } from "expo-sqlite";
 // that setup is the whole point of this suite.
 let db: SQLiteDatabase | undefined;
 
+// Task 7: getDatabase() now throws DatabaseLockedError until unlockDatabase(dek) has run
+// (interface contract §3). This suite is about bootstrapApp()'s migrate/seed sequence, not
+// about the unlock gate itself (that is lib/db/__tests__/database.test.ts's job), so it
+// satisfies the precondition directly rather than asserting anything about it.
+//
+// CARRY TO TASK 9: nothing in the real app calls unlockDatabase() yet. app/_layout.tsx's
+// AppShell calls bootstrapApp() unconditionally on mount with no unlock gate in front of it,
+// so on a real device bootstrapApp() will throw DatabaseLockedError and the app will show the
+// "PeraPlano couldn't start" recovery screen on every cold start until Task 9 wires its
+// unlock screen (device biometric / recovery phrase -> key_manager.unlockWith*() ->
+// database.unlockDatabase(dek)) BEFORE AppShell's bootstrapApp() call.
 beforeEach(async () => {
   await closeDatabase();
+  await unlockDatabase(TEST_DEK);
   __resetBootstrapForTests();
 });
 

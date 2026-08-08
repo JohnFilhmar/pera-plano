@@ -12,6 +12,7 @@
     "@expo-google-fonts/inter": "^0.4.2",
     "@noble/ciphers": "^2.2.0",
     "@noble/hashes": "^2.3.0",
+    "@op-engineering/op-sqlite": "^17.1.5",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-navigation/bottom-tabs": "^7.18.15",
     "@react-navigation/native": "^7.3.15",
@@ -27,7 +28,6 @@
     "expo-router": "~6.0.24",
     "expo-secure-store": "~15.0.8",
     "expo-splash-screen": "~31.0.13",
-    "expo-sqlite": "~16.0.10",
     "expo-status-bar": "~3.0.9",
     "lucide-react-native": "^1.29.0",
     "nativewind": "^4.2.6",
@@ -63,6 +63,9 @@
       "nativeModulesDir": "./modules"
     }
   },
+  "op-sqlite": {
+    "sqlcipher": true
+  },
   "jest": {
     "preset": "jest-expo",
     "setupFiles": [
@@ -70,7 +73,7 @@
     ],
     "moduleNameMapper": {
       "^@/(.*)$": "<rootDir>/$1",
-      "^expo-sqlite$": "<rootDir>/test_support/expo_sqlite_mock.ts",
+      "^@op-engineering/op-sqlite$": "<rootDir>/test_support/sqlite_mock.ts",
       "^lucide-react-native$": "<rootDir>/node_modules/lucide-react-native/dist/cjs/lucide-react-native.js"
     },
     "transformIgnorePatterns": [

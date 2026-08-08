@@ -13,7 +13,7 @@ import {
 } from "../categories_repo";
 import { createWallet } from "../wallets_repo";
 import { freshDb } from "@/test_support/db";
-import type { SQLiteDatabase } from "expo-sqlite";
+import type { SQLiteDatabase } from "@/lib/db/database";
 
 /** Raw-SQL transaction insert for setup — no dedicated factory exists yet. */
 async function insertTransaction(args: {

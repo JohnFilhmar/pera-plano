@@ -35,7 +35,6 @@
           }
         }
       ],
-      "expo-sqlite",
       "expo-font",
       "expo-secure-store"
     ]

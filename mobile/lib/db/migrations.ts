@@ -1,4 +1,4 @@
-import type { SQLiteDatabase } from "expo-sqlite";
+import type { SQLiteDatabase } from "./database";
 import coreSql from "./migrations/001_core.sql";
 
 export type Migration = { version: number; name: string; sql: string };

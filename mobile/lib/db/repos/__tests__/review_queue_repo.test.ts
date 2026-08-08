@@ -2,7 +2,7 @@ import { closeDatabase } from "@/lib/db/database";
 import { countOpen, enqueue, listOpen, purgeExpired, resolve } from "../review_queue_repo";
 import { freshDb } from "@/test_support/db";
 import type { ReviewItemPayload, ReviewKind } from "@/types/domain";
-import type { SQLiteDatabase } from "expo-sqlite";
+import type { SQLiteDatabase } from "@/lib/db/database";
 
 let db: SQLiteDatabase;
 

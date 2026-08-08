@@ -11,7 +11,7 @@ import {
   transactionToRow,
   walletToRow,
 } from "../mappers";
-import type { SQLiteDatabase } from "expo-sqlite";
+import type { SQLiteDatabase } from "../database";
 
 afterEach(async () => {
   await closeDatabase();

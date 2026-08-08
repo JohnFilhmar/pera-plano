@@ -8,7 +8,7 @@ import {
   type AppSettings,
 } from "../app_settings_repo";
 import { freshDb } from "@/test_support/db";
-import type { SQLiteDatabase } from "expo-sqlite";
+import type { SQLiteDatabase } from "@/lib/db/database";
 
 let db: SQLiteDatabase;
 

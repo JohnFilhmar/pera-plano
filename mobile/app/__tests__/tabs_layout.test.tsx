@@ -15,6 +15,25 @@ import TransactionsScreen from "../(tabs)/transactions";
 import WalletsScreen from "../(tabs)/wallets";
 import PlanScreen from "../(tabs)/plan";
 import MoreScreen from "../(tabs)/more";
+import { closeDatabase, unlockDatabase } from "@/lib/db/database";
+import { TEST_DEK } from "@/test_support/db";
+
+// Unlike root_layout.test.tsx, this file renders the REAL RootLayout with the REAL
+// bootstrapApp() (nothing here mocks @/lib/bootstrap) — the whole point is proving the real
+// startup sequence produces five real tabs. As of Task 7, bootstrapApp()'s getDatabase() call
+// throws DatabaseLockedError until something has called unlockDatabase(dek) (interface
+// contract §3's gate), so this test must satisfy that precondition itself.
+//
+// CARRY TO TASK 9: same gap noted in lib/__tests__/bootstrap.test.ts — nothing in the real
+// app calls unlockDatabase() yet, so app/_layout.tsx's AppShell will show the bootstrap-error
+// screen on every real cold start until Task 9's unlock gate runs before it.
+beforeEach(async () => {
+  await unlockDatabase(TEST_DEK);
+});
+
+afterEach(async () => {
+  await closeDatabase();
+});
 
 function renderApp() {
   return renderRouter(

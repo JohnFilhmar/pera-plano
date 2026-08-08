@@ -1,10 +1,18 @@
-import { closeDatabase, getDatabase } from "../database";
+import { closeDatabase, getDatabase, unlockDatabase } from "../database";
 import { runMigrations, type Migration } from "../migrations";
+import { TEST_DEK } from "@/test_support/db";
 
 const TEST_MIGRATIONS: Migration[] = [
   { version: 1, name: "one", sql: "CREATE TABLE t_one (id TEXT PRIMARY KEY);" },
   { version: 2, name: "two", sql: "CREATE TABLE t_two (id TEXT PRIMARY KEY);" },
 ];
+
+// This suite calls getDatabase() directly (not freshDb()) because it is testing
+// migrations.ts/database.ts themselves, not repository behavior — but getDatabase() still
+// requires an unlock first as of Task 7 (interface contract §3's DatabaseLockedError gate).
+beforeEach(async () => {
+  await unlockDatabase(TEST_DEK);
+});
 
 afterEach(async () => {
   await closeDatabase();

@@ -1,7 +1,7 @@
 import { closeDatabase } from "../database";
 import { runMigrations } from "../migrations";
 import { freshDb } from "@/test_support/db";
-import type { SQLiteDatabase } from "expo-sqlite";
+import type { SQLiteDatabase } from "../database";
 
 const EXPECTED_TABLES = [
   "app_settings", "bill_payments", "bills", "categories", "goals",
