@@ -1,13 +1,20 @@
 package expo.modules.notificationlistener
 
+import android.security.keystore.UserNotAuthenticatedException
 import java.io.File
 import java.nio.file.Files
+import java.security.PrivateKey
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 /**
  * CaptureBuffer is what makes captures survive Android killing the JS
@@ -15,15 +22,38 @@ import org.junit.Test
  * These tests never reuse in-memory state to prove a property -- every
  * assertion about persistence goes back through a `File`, because that is
  * the only thing a real process relaunch actually has.
+ *
+ * Runs under Robolectric for `android.util.Base64`/`Log` (see
+ * CaptureEnvelopeTest's doc for why); [KeyStoreBridge.vault] is swapped for
+ * a [FakeKeyVault] exactly like Task 2's KeyStoreBridgeTest so every seal/
+ * open here exercises the real crypto against a plain-JCE in-memory key
+ * instead of the real (untestable-off-device) Android Keystore.
  */
+// See CaptureEnvelopeTest's doc on the same annotation for why 34, not the
+// module's compileSdk 36.
+@Config(sdk = [34])
+@RunWith(RobolectricTestRunner::class)
 class CaptureBufferTest {
 
   private lateinit var file: File
+  private lateinit var fakeVault: FakeKeyVault
 
   @Before
   fun setUp() {
     val dir = Files.createTempDirectory("capture_buffer_test").toFile()
     file = File(dir, CaptureBuffer.FILE_NAME)
+
+    fakeVault = FakeKeyVault()
+    KeyStoreBridge.vault = fakeVault
+    KeyStoreBridge.ensureCaptureKeyPair()
+  }
+
+  @After
+  fun tearDown() {
+    // Defensive, same reasoning as KeyStoreBridgeTest: KeyStoreBridge.vault
+    // is process-global, so leaving a fake installed would silently defang
+    // any test file that assumes the real AndroidKeyVault is in place.
+    KeyStoreBridge.vault = AndroidKeyVault
   }
 
   private fun record(n: Int) = CaptureRecord(
@@ -58,7 +88,7 @@ class CaptureBufferTest {
     val drained = CaptureBuffer.drain(file)
 
     assertEquals(CaptureBuffer.MAX_CAPTURES, drained.size)
-    // ids 0..4 must be gone; id-5 is the oldest survivor. A implementation
+    // ids 0..4 must be gone; id-5 is the oldest survivor. An implementation
     // that evicted the NEWEST instead would leave id-0 first and id-499
     // last here instead.
     assertEquals("id-5", drained.first().id)
@@ -118,7 +148,7 @@ class CaptureBufferTest {
   }
 
   @Test
-  fun `capture text containing raw newlines and array-breaking characters round-trips through the file untouched`() {
+  fun `capture text containing raw newlines does not fragment the line-delimited format, and round-trips exactly`() {
     val hostile = record(9).copy(
       text = "You have sent PHP 1,000.00\nRef: 123]},{\"id\":\"evil\"}",
       bigText = "line one\nline two\r\nline three",
@@ -127,11 +157,15 @@ class CaptureBufferTest {
 
     CaptureBuffer.append(file, hostile)
 
-    // The hostile content must be JSON-escaped on disk, not embedded as a
-    // literal control character that could confuse a naive parser or split
-    // the file into what looks like extra records.
-    val raw = file.readText()
-    assertFalse("raw file must not contain a literal newline", raw.contains("\n"))
+    // The hostile record's own embedded newlines must not have fragmented
+    // the on-disk format into extra "lines" -- there is exactly one sealed
+    // line on disk for the one capture appended, despite `text`/`bigText`
+    // containing several raw newline characters. This holds because the
+    // sealed payload is base64 (no newline in its alphabet) of an encrypted
+    // blob -- the plaintext newlines are inside the ciphertext, never on
+    // disk as literal bytes.
+    val onDiskLines = file.readText().split("\n").filter { it.isNotEmpty() }
+    assertEquals("one hostile capture must produce exactly one line on disk", 1, onDiskLines.size)
 
     val restored = CaptureBuffer.drain(file).single()
     assertEquals(hostile.text, restored.text)
@@ -193,7 +227,7 @@ class CaptureBufferTest {
 
   @Test
   fun `a corrupt buffer file is discarded instead of wedging capture forever`() {
-    file.writeText("{not json at all")
+    file.writeText("this is not a valid sealed line at all")
 
     assertTrue(CaptureBuffer.drain(file).isEmpty())
 
@@ -202,31 +236,80 @@ class CaptureBufferTest {
   }
 
   @Test
-  fun `a truncated write left behind by a killed process is discarded without throwing`() {
-    // The realistic process-kill shape for this file format: a valid first
-    // record followed by a second one cut off mid-object, so the file is
-    // *not* a parseable JSON array at all.
-    val truncated = "[${record(1).toJson()}," +
-      """{"id":"id-2","packageName":"com.globe.gcash.android","title":"GCash","text":"You have se"""
+  fun `a truncated final line costs only that record -- every earlier line still opens`() {
+    CaptureBuffer.append(file, record(1))
+    CaptureBuffer.append(file, record(2))
+
+    val goodLines = file.readText().split("\n").filter { it.isNotEmpty() }
+    assertEquals(2, goodLines.size)
+
+    // The realistic shape of a process kill mid-write of the newest line:
+    // the first line is complete, the second is cut far short of even a
+    // valid length header -- no trailing newline at all, exactly what a
+    // kill mid-append would leave behind.
+    val truncated = goodLines[0] + "\n" + goodLines[1].take(10)
     file.writeText(truncated)
 
     val drained = CaptureBuffer.drain(file)
 
-    assertTrue(drained.isEmpty())
-    assertFalse("corrupt file must be cleared, not left behind", file.exists())
+    assertEquals(listOf("id-1"), drained.map { it.id })
+    assertFalse("file must be cleared after drain even though one line was unrecoverable", file.exists())
 
-    // And capture keeps working afterward -- one bad file must not wedge
+    // And capture keeps working afterward -- one bad line must not wedge
     // the buffer forever.
     CaptureBuffer.append(file, record(3))
     assertEquals(listOf("id-3"), CaptureBuffer.drain(file).map { it.id })
   }
 
   @Test
-  fun `an unreadable entry between two good ones is skipped without losing either`() {
-    file.writeText("[${record(1).toJson()},{\"id\":\"broken\"},${record(2).toJson()}]")
+  fun `a corrupt line between two good ones is skipped with neighbours intact`() {
+    val publicKey = KeyStoreBridge.capturePublicKeySpki()
+    val line1 = CaptureEnvelope.seal(record(1), publicKey)
+    val line2 = CaptureEnvelope.seal(record(2), publicKey)
+    file.writeText(listOf(line1, "not-a-valid-sealed-line", line2).joinToString("\n") + "\n")
 
     val drained = CaptureBuffer.drain(file)
 
     assertEquals(listOf("id-1", "id-2"), drained.map { it.id })
   }
+
+  // ---------------------------------------------------------------------
+  // The property the whole design rests on (docs §6): the listener must be
+  // able to keep writing while the app is locked, and a drain attempted too
+  // early must never be indistinguishable from "every buffered capture is
+  // corrupt" -- that would silently and permanently destroy recoverable
+  // data the very first time drain runs a moment too soon.
+  // ---------------------------------------------------------------------
+
+  @Test
+  fun `append and size never touch the private key -- the buffer keeps accepting captures while the app stays locked`() {
+    KeyStoreBridge.vault = LockedPrivateKeyVault(fakeVault)
+
+    CaptureBuffer.append(file, record(1))
+    CaptureBuffer.append(file, record(2))
+
+    assertEquals(2, CaptureBuffer.size(file))
+
+    // drain(), which DOES need the private key, must throw rather than
+    // quietly returning an empty list -- and the file must survive that
+    // failed attempt untouched, so the same drain can be retried once the
+    // caller has actually authenticated.
+    assertThrows(UserNotAuthenticatedException::class.java) {
+      CaptureBuffer.drain(file)
+    }
+    assertTrue("a drain that aborts on a locked key must not touch the file", file.exists())
+    assertEquals(2, CaptureBuffer.size(file))
+  }
+}
+
+/**
+ * Simulates a locked capture private key -- exactly
+ * [android.security.keystore.UserNotAuthenticatedException] in production
+ * -- while leaving the public key (and everything else) usable through
+ * [delegate]. That asymmetry is the entire point of docs §6: the listener
+ * can always seal, and can never open, until the user authenticates.
+ */
+private class LockedPrivateKeyVault(private val delegate: KeyVault) : KeyVault by delegate {
+  override fun getPrivateKey(alias: String): PrivateKey =
+    throw UserNotAuthenticatedException()
 }
