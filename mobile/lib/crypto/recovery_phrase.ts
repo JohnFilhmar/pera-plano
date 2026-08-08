@@ -17,7 +17,7 @@
 // must never reach a log, an analytics event, an error message, or a stack
 // trace. Do not add a catch block here that logs its input on failure.
 
-import { getRandomBytesAsync } from "expo-crypto";
+import * as Crypto from "expo-crypto";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { argon2idAsync } from "@noble/hashes/argon2.js";
 import { BIP39_WORDLIST } from "./wordlist";
@@ -114,7 +114,7 @@ function checksumBitsForEntropy(entropy: Uint8Array): string {
  * backup key.
  */
 export async function generatePhrase(): Promise<string[]> {
-  const entropy = await getRandomBytesAsync(ENTROPY_BYTES);
+  const entropy = await Crypto.getRandomBytesAsync(ENTROPY_BYTES);
   const checksum = checksumBitsForEntropy(entropy);
   const bits = bytesToBitString(entropy) + checksum;
 

@@ -1,3 +1,4 @@
+import * as Crypto from "expo-crypto";
 import {
   generatePhrase,
   deriveRecoveryKey,
@@ -89,6 +90,35 @@ describe("generatePhrase", () => {
     );
     const serialized = draws.map((words) => words.join(" "));
     expect(new Set(serialized).size).toBe(serialized.length);
+  });
+});
+
+// These two are whitebox on purpose. No assertion on generatePhrase's OUTPUT
+// can ever prove its randomness came from a CSPRNG rather than a fast,
+// insecure PRNG — Math.random is non-deterministic across calls too, so
+// "does not repeat across many draws" above passes against either. The
+// property that actually matters — that the bytes' PROVENANCE is the secure
+// source, never Math.random — is only observable by asserting on the call
+// itself.
+describe("generatePhrase randomness provenance", () => {
+  it("draws its entropy from expo-crypto's getRandomBytesAsync", async () => {
+    const spy = jest.spyOn(Crypto, "getRandomBytesAsync");
+    try {
+      await generatePhrase();
+      expect(spy).toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("never falls back to Math.random", async () => {
+    const spy = jest.spyOn(Math, "random");
+    try {
+      await generatePhrase();
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
