@@ -215,10 +215,43 @@ function toRawKeyLiteral(dek: Uint8Array): string {
   return `x'${hex}'`;
 }
 
+/**
+ * Strips the raw-key literal (and the bare hex inside it) out of a message that came from
+ * outside this module.
+ *
+ * The SECURITY note on toRawKeyLiteral binds code we own; op-sqlite is a third-party native
+ * library, and a library that interpolates its own config into a failure message ("unable to
+ * open X (encryptionKey: ...)") would hand the DEK straight to whatever catches it — in this
+ * app that is console.error in app/_layout.tsx, i.e. logcat. We cannot audit that library's
+ * error strings, so the guarantee is enforced here, on our side of the boundary, instead of
+ * assumed on theirs.
+ *
+ * The message survives redacted rather than being replaced wholesale: a real open failure
+ * (corrupt file, no disk space) still has to be diagnosable.
+ */
+function redactKeyLiteral(message: string, literal: string): string {
+  const hex = literal.slice(2, -1);
+  return message.split(literal).join("x'<redacted>'").split(hex).join("<redacted>");
+}
+
 async function openEncrypted(dek: Uint8Array): Promise<SQLiteDatabase> {
-  const raw = OpSqlite.open({ name: DB_NAME, encryptionKey: toRawKeyLiteral(dek) });
+  const literal = toRawKeyLiteral(dek);
+  let raw;
+  try {
+    raw = OpSqlite.open({ name: DB_NAME, encryptionKey: literal });
+  } catch (error) {
+    // Rebuilt rather than re-thrown with a patched `.message`. V8 formats `.stack` lazily on
+    // first access, so patching the message in place usually produces a clean stack too — but
+    // only while nothing has read `.stack` yet. Once it has been read, the string is memoized
+    // WITH the original message and a later `.message` write cannot reach it, so anything that
+    // touched the error before us (a logger, a wrapper, a debugger) makes that approach leak.
+    // A fresh Error has no such history. `cause` is dropped for the same reason.
+    throw new Error(redactKeyLiteral(error instanceof Error ? error.message : String(error), literal));
+  }
   const db = wrapConnection(raw);
-  // Contract §3: foreign keys are always enforced.
+  // Contract §3: foreign keys are always enforced. Note this statement carries no key —
+  // SQLCipher validates the key here (first real use), so a wrong-key failure surfaces from
+  // execAsync with only "PRAGMA foreign_keys = ON;" as its statement text.
   await db.execAsync("PRAGMA foreign_keys = ON;");
   return db;
 }

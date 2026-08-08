@@ -163,6 +163,50 @@ test("unlockDatabase can recover after a rejected open, once closeDatabase clear
 });
 
 // ---------------------------------------------------------------------------
+// The DEK is handed to a third-party native library as an option value. We do
+// not control what that library puts in its error messages, and node_modules
+// is not auditable from here — so the guarantee has to be enforced on OUR side
+// of the boundary rather than assumed on theirs. This test simulates the worst
+// realistic case: a library that echoes its options back in the failure.
+// ---------------------------------------------------------------------------
+
+test("an op-sqlite open failure that echoes its options never surfaces the DEK", async () => {
+  const originalOpen = sqliteMock.open;
+  const dekHex = "11".repeat(32);
+  sqliteMock.open = (options: { name: string; encryptionKey?: string }) => {
+    // Exactly what a library that interpolates its config into the error would produce.
+    const error = new Error(`unable to open database ${options.name} (encryptionKey: ${options.encryptionKey})`);
+    // Reading `.stack` before throwing memoizes the formatted string WITH the original
+    // message. This is what a library that logs its own failure does, and it is what makes
+    // the difference between the two candidate fixes: patching `.message` in place cannot
+    // reach an already-materialized stack, whereas building a fresh Error is unaffected.
+    // Without this line the weaker fix passes and the test proves nothing.
+    void error.stack;
+    throw error;
+  };
+
+  try {
+    let caught: unknown;
+    await unlockDatabase(DEK).catch((error: unknown) => {
+      caught = error;
+    });
+
+    const message = (caught as Error).message;
+    // The two forms the key could take: SQLCipher's literal, and the bare hex inside it.
+    expect(message).not.toContain(dekHex);
+    expect(message).not.toContain(`x'${dekHex}'`);
+    // The diagnostic value has to survive the redaction, or the guard just trades a
+    // key leak for an unfixable bug report.
+    expect(message).toContain("unable to open database");
+    // A stack can carry a copy of the message it was built from.
+    expect((caught as Error).stack ?? "").not.toContain(dekHex);
+  } finally {
+    sqliteMock.open = originalOpen;
+    await closeDatabase().catch(() => undefined);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // wipeDatabase() — the §11a "wipe and start over" primitive's database half
 // (docs/12-encryption-and-app-lock.md §11a). Unlike closeDatabase(), this
 // must destroy the underlying file on disk, not just release the handle —
