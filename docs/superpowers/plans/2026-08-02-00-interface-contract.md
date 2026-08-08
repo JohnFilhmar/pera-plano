@@ -165,12 +165,37 @@ export function getListenerHealth(): Promise<{
 export function getCapturePublicKey(): Promise<string>;           // base64 SPKI; NO auth required
 export function decryptCaptures(lines: string[]): Promise<RawCapture[]>;  // requires unlock
 export function wrapWithDeviceKek(plaintextB64: string): Promise<string>;
-export function unwrapWithDeviceKek(blobB64: string): Promise<string>;    // rejects DeviceKeyInvalidated
+export function unwrapWithDeviceKek(blobB64: string): Promise<string>;
 export function isDeviceKeyUsable(): Promise<boolean>;            // false once the Keystore key is destroyed
+export function recreateDeviceKek(): Promise<void>;               // deletes the dead alias, then generates fresh
 export function isDeviceSecure(): Promise<boolean>;               // KeyguardManager.isDeviceSecure()
 export function openSecuritySettings(): void;                     // deep-link, to set a screen lock
 export function isKeyguardLocked(): Promise<boolean>;             // drives amount-free alert copy
 ```
+
+**The device-KEK state machine has four states, and the bridge distinguishes all four.** Collapsing any two produces a bug that looks like data loss:
+
+| State | Rejection code | What the caller must do |
+|---|---|---|
+| Never created | `DeviceKeyMissing` | Route to onboarding — there is nothing to recover |
+| Created, usable | *(resolves)* | Normal unlock |
+| Created, auth window closed | `NotAuthenticated` | Re-prompt biometric and retry; **never** treat as an empty result |
+| Created, permanently invalidated | `DeviceKeyInvalidated` | Recovery words → `recreateDeviceKek()` → re-wrap the DEK |
+
+A fifth code, `CaptureBufferReadFailed`, means the buffer file could not be read. It is **not** emptiness: `drain()` decrypts before touching the file, so the captures are still on disk. Leave them and retry later.
+
+JS branches on `instanceof` or `.code`, never on message strings. An unrecognized native code passes through unchanged rather than being miscategorized.
+
+> **`recreateDeviceKek()` exists because `ensureDeviceKek()` cannot recover.** `ensureDeviceKek()` is
+> presence-only idempotent, and an *invalidated* key still has its alias present — so re-running it
+> after invalidation returns the same dead key and `rewrapAfterInvalidation` would fail identically,
+> looping the user through their recovery words forever. Android requires the dead alias be deleted
+> before a usable replacement can be generated. Keep the two separate: `ensureDeviceKek()` must never
+> rotate (that would orphan every existing wrap), and `recreateDeviceKek()` must be explicitly
+> destructive at the call site.
+>
+> **Known gap:** `isDeviceKeyUsable()` returns `false` for both "never created" and "invalidated".
+> Task 6's `getKeyState()` needs a presence check to tell them apart without provoking a failed unwrap.
 
 **Encryption amendments (2026-08-07).** Captures are written to disk **sealed** — an RSA-OAEP-wrapped
 AES-256-GCM envelope per record, under a Keystore public key the listener can read without
