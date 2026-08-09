@@ -163,7 +163,14 @@ export function getListenerHealth(): Promise<{
 
 // Added 2026-08-07 by the encryption plan. See docs/12-encryption-and-app-lock.md.
 export function getCapturePublicKey(): Promise<string>;           // base64 SPKI; NO auth required
-export function decryptCaptures(lines: string[]): Promise<RawCapture[]>;  // requires unlock
+// STRUCK 2026-08-09 (M1a Task 6). `decryptCaptures(lines)` was never implemented in the Kotlin
+// module or index.ts -- it existed only here, a leftover from an intermediate design where JS
+// held the raw NDJSON and asked native to decrypt it. The shipped design keeps the buffer file
+// entirely below the bridge: CaptureBuffer.fileFor(context) is native-only, JS never sees a
+// sealed line, and drainPendingCaptures does read + decrypt + delete in one native call under
+// the same lock append takes. Adding it back would require JS to obtain lines it has no way to
+// obtain, and would break drain's decrypt-before-touch property (a UserNotAuthenticated must
+// leave every capture on disk). Do not reintroduce it.
 export function wrapWithDeviceKek(plaintextB64: string): Promise<string>;
 export function unwrapWithDeviceKek(blobB64: string): Promise<string>;
 export function isDeviceKeyUsable(): Promise<boolean>;            // false once the Keystore key is destroyed
