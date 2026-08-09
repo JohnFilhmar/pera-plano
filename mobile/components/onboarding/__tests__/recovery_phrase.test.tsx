@@ -50,9 +50,34 @@ beforeEach(() => {
   mockInitializeKeys.mockResolvedValue(undefined);
 });
 
+// The 5000 ms default is not enough for the FIRST render in this file when the
+// whole suite is running: that one call pays costs none of the others do --
+// importing the 2048-word BIP-39 list, the first mount of this component tree,
+// and jest-expo's transform of both -- while competing with every other Jest
+// worker for CPU. Observed as `shows all twelve recovery words` (the first test
+// here) timing out under full-suite load while the same file passed in 1.6 s on
+// its own.
+//
+// This is a timeout on a CONTENT assertion, not a performance budget: nothing
+// here is asserting that the screen is fast, so the default was only ever an
+// arbitrary ceiling. Raising it removes a CI flake without weakening a single
+// claim the file makes. If this ever needs raising again, that IS a signal
+// something got genuinely slow -- investigate rather than raise it twice.
+//
+// BOTH ceilings have to move, and this is the trap: waitFor's timeout and
+// Jest's per-test timeout are independent, and Jest's default is ALSO 5000 ms.
+// Raising only waitFor's changes nothing -- Jest kills the test at 5 s first,
+// and the flake survives looking exactly the same. The waitFor value is kept
+// BELOW the test value on purpose, so a genuine hang fails with waitFor's
+// "unable to find element" message rather than Jest's contentless timeout.
+jest.setTimeout(30_000);
+const FIRST_RENDER_TIMEOUT_MS = 20_000;
+
 async function renderScreenAndWaitForWords(): Promise<void> {
   render(<RecoveryPhraseScreen />);
-  await waitFor(() => expect(screen.getByTestId("phrase-display")).toBeTruthy());
+  await waitFor(() => expect(screen.getByTestId("phrase-display")).toBeTruthy(), {
+    timeout: FIRST_RENDER_TIMEOUT_MS,
+  });
 }
 
 function getDisplayedWords(): string[] {
