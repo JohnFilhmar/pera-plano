@@ -1,16 +1,64 @@
 import { requireNativeModule } from "expo-modules-core";
 
+import type { EventSubscription } from "expo-modules-core";
+
 import type { RawCapture } from "@/types/domain";
 
 /**
+ * The one event the Kotlin module emits, matching `EVENT_ON_CAPTURE` in
+ * `NotificationListenerModule.kt` exactly. A constant for the same reason it
+ * is one over there: a typo in an event name produces a listener that
+ * silently never fires rather than an error.
+ */
+const CAPTURE_EVENT_NAME = "onCapture";
+
+/**
+ * The three facts `getListenerHealth` promises (interface contract §4), and
+ * nothing else.
+ *
+ * `lastCaptureAt` is `number | null`, never `number`. `0` is a valid epoch
+ * millisecond, so a 0-as-absent sentinel would render as "last captured
+ * 1 January 1970" instead of "not yet" — `CapturePrefs.lastCaptureAt` already
+ * draws that distinction on the Kotlin side and nothing here may flatten it.
+ */
+export type ListenerHealth = {
+  granted: boolean;
+  serviceConnected: boolean;
+  lastCaptureAt: number | null;
+};
+
+/**
+ * A capture exactly as it can arrive over the bridge, which is NOT quite a
+ * `RawCapture`: a nullable string field may be ABSENT from the object rather
+ * than present-and-null. `normalizeCapture` below closes that gap so every
+ * value this module hands out is a true `RawCapture`.
+ */
+type NativeRawCapture = Omit<RawCapture, "title" | "text" | "subText" | "bigText"> & {
+  title?: string | null;
+  text?: string | null;
+  subText?: string | null;
+  bigText?: string | null;
+};
+
+/** Health as it can arrive over the bridge — `lastCaptureAt` may be absent. */
+type NativeListenerHealth = Omit<ListenerHealth, "lastCaptureAt"> & {
+  lastCaptureAt?: number | null;
+};
+
+/**
  * JS-facing surface of the notification listener local Expo module. The
- * functions below are added by the encryption plan's Task 4 (interface
+ * encryption functions are added by the encryption plan's Task 4 (interface
  * contract §4, docs/12-encryption-and-app-lock.md §6/§9) — the seam where
- * the Kotlin crypto in `KeyStoreBridge`/`CaptureBuffer` meets JS.
+ * the Kotlin crypto in `KeyStoreBridge`/`CaptureBuffer` meets JS. The
+ * listener's own surface (the access grant, the two switches, health, and
+ * the `onCapture` event) is added by the M1a plan's Task 8.
  *
  * `NotificationListenerModule.kt` is the only thing on the other side of
- * `requireNativeModule` below; see its class doc for the exact exception ->
- * `code` mapping this file reads.
+ * `requireNativeModule` below, and it — not any plan document — is the source
+ * of truth for each function's shape: everything it declares as an
+ * `AsyncFunction` is a `Promise` here, and the two it declares as a bare
+ * `Function` (`openSecuritySettings`, `openAccessSettings`) are `void`. See
+ * its class doc for the exact exception -> `code` mapping this file reads.
  */
 type NativeNotificationListenerModule = {
   getCapturePublicKey(): Promise<string>;
@@ -18,11 +66,29 @@ type NativeNotificationListenerModule = {
   unwrapWithDeviceKek(blobB64: string): Promise<string>;
   isDeviceKeyUsable(): Promise<boolean>;
   recreateDeviceKek(): Promise<void>;
-  drainPendingCaptures(): Promise<RawCapture[]>;
+  drainPendingCaptures(): Promise<NativeRawCapture[]>;
   clearCaptureBuffer(): Promise<void>;
   isDeviceSecure(): Promise<boolean>;
   openSecuritySettings(): void;
   isKeyguardLocked(): Promise<boolean>;
+
+  // ---- The listener surface (M1a plan Task 8; contract §4) --------------
+  isAccessGranted(): Promise<boolean>;
+  openAccessSettings(): void;
+  setCaptureEnabled(enabled: boolean): Promise<void>;
+  setProviderFilter(packageNames: string[]): Promise<void>;
+  getListenerHealth(): Promise<NativeListenerHealth>;
+
+  /**
+   * Inherited from the `EventEmitter` every Expo `NativeModule` extends —
+   * the JS end of the Kotlin `Events(EVENT_ON_CAPTURE)` declaration. Not
+   * called directly by anything outside `addCaptureListener`, which is what
+   * keeps `EventSubscription` from leaking into callers.
+   */
+  addListener(
+    eventName: typeof CAPTURE_EVENT_NAME,
+    listener: (capture: NativeRawCapture) => void,
+  ): EventSubscription;
 };
 
 const NativeNotificationListener = requireNativeModule<NativeNotificationListenerModule>(
@@ -139,6 +205,36 @@ function rethrowTyped(error: unknown): never {
   throw error;
 }
 
+/**
+ * The JS-side absent-value guarantee (M1a plan Task 8 rule 3): every capture
+ * leaving this module has exactly the eight contract §4 fields, and a missing
+ * string field is `null` — never `undefined`.
+ *
+ * Task 5 already collapses blank-to-null per field on the Kotlin side, and
+ * `CaptureRecord.toMap` writes all eight keys. This closes the remaining gap:
+ * a field the BRIDGE omits from the object entirely. Downstream parsers get
+ * exactly one "nothing here" shape to branch on rather than two.
+ *
+ * `??` and not `||`: an empty string and a `0` timestamp are real values and
+ * must survive. Both capture paths run through here — the drained queue and
+ * the live `onCapture` event — deliberately, because the Kotlin side routes
+ * both through the one `CaptureRecord.toMap` so a live capture and a drained
+ * one can never disagree about their fields, and normalizing only one of them
+ * here would reintroduce exactly that disagreement.
+ */
+function normalizeCapture(capture: NativeRawCapture): RawCapture {
+  return {
+    id: capture.id,
+    packageName: capture.packageName,
+    title: capture.title ?? null,
+    text: capture.text ?? null,
+    subText: capture.subText ?? null,
+    bigText: capture.bigText ?? null,
+    postedAt: capture.postedAt,
+    capturedAt: capture.capturedAt,
+  };
+}
+
 /** Base64-encoded SPKI public key of the capture keypair. Requires NO authentication. */
 export function getCapturePublicKey(): Promise<string> {
   return NativeNotificationListener.getCapturePublicKey();
@@ -185,9 +281,16 @@ export function recreateDeviceKek(): Promise<void> {
  * captures were sealed on disk. Requires the app to be unlocked (the
  * capture keypair's private-key authentication window); see the rejection
  * taxonomy above for what a caller does with each failure mode.
+ *
+ * `.catch(rethrowTyped)` stays attached directly to the native call, ahead of
+ * the normalization step, so the rejection taxonomy only ever narrows a NATIVE
+ * failure — a bug thrown by `normalizeCapture` itself could never be
+ * miscategorized as one of the four codes.
  */
 export function drainPendingCaptures(): Promise<RawCapture[]> {
-  return NativeNotificationListener.drainPendingCaptures().catch(rethrowTyped);
+  return NativeNotificationListener.drainPendingCaptures()
+    .catch(rethrowTyped)
+    .then((captures) => captures.map(normalizeCapture));
 }
 
 /**
@@ -254,4 +357,116 @@ export function openSecuritySettings(): void {
  */
 export function isKeyguardLocked(): Promise<boolean> {
   return NativeNotificationListener.isKeyguardLocked();
+}
+
+// ---------------------------------------------------------------------
+// The listener's own surface (M1a plan Task 8; interface contract §4).
+//
+// Everything above is the encryption plan's half of contract §4. Below is
+// the half the listener itself needs: the notification-access grant, the two
+// user-facing switches, health, and live capture events. None of these
+// touches a Keystore key, so none requires authentication and none can
+// produce a rejection from the taxonomy above.
+// ---------------------------------------------------------------------
+
+/**
+ * Whether the user has granted this app notification access — the permission
+ * the entire ingest pipeline depends on.
+ *
+ * ALWAYS A LIVE QUERY on the native side, never a cached flag: access is
+ * revocable from system settings at any moment with no callback to this app,
+ * and some OEM builds drop it across a reboot or an app update. Callers must
+ * therefore re-ask rather than remembering an earlier answer — in particular
+ * when the app returns to the foreground after `openAccessSettings()`.
+ */
+export function isAccessGranted(): Promise<boolean> {
+  return NativeNotificationListener.isAccessGranted();
+}
+
+/**
+ * Launches Android's Notification Access settings page so the user can grant
+ * the listener. Synchronous and fire-and-forget, matching the native side
+ * exactly — a bare `Function` in the Kotlin `ModuleDefinition`, not an
+ * `AsyncFunction`.
+ *
+ * IT ONLY NAVIGATES. Nothing here grants anything, and nothing here reports
+ * whether the user granted anything; there is no such Android API. Callers
+ * find out by re-running `isAccessGranted()` when the app returns to the
+ * foreground, never from anything this returns — which is why returning a
+ * Promise would be actively misleading rather than merely redundant.
+ */
+export function openAccessSettings(): void {
+  NativeNotificationListener.openAccessSettings();
+}
+
+/**
+ * The global pause switch (contract §4). Writes straight through to
+ * `SharedPreferences` below the bridge, never to in-memory state: the
+ * listener service that has to honour this runs in a process Android may
+ * create long after this one is dead, so the value has to outlive us.
+ *
+ * Distinct from `setProviderFilter([])` — this is how capture is turned OFF;
+ * an empty provider filter means "allow every package". See that function.
+ */
+export function setCaptureEnabled(enabled: boolean): Promise<void> {
+  return NativeNotificationListener.setCaptureEnabled(enabled);
+}
+
+/**
+ * The provider allowlist (contract §4). Crosses the bridge as an array and is
+ * stored as a set below it — duplicates collapse and order is meaningless,
+ * since membership is the only question the listener ever asks.
+ *
+ * AN EMPTY ARRAY MEANS "ALLOW EVERY PACKAGE", not "allow none". Passing `[]`
+ * is how a caller CLEARS the filter, never how it disables capture; that is
+ * `setCaptureEnabled(false)`'s job.
+ */
+export function setProviderFilter(packageNames: string[]): Promise<void> {
+  return NativeNotificationListener.setProviderFilter(packageNames);
+}
+
+/**
+ * Subscribes to live captures and returns an UNSUBSCRIBE FUNCTION — callers
+ * detach by calling it, and never see an `EventSubscription`.
+ *
+ * Calling the returned function is mandatory on teardown, not optional
+ * hygiene. The Kotlin side installs its live sink on the first subscriber
+ * (`OnStartObserving`) and tears it down when the last one leaves
+ * (`OnStopObserving`), so a listener that is never removed keeps the native
+ * service holding a lambda that closes over a dead JS runtime, and keeps raw
+ * bank/e-wallet notification text flowing into a callback whose screen is
+ * gone.
+ *
+ * The subscription is wrapped in an arrow rather than returned as
+ * `subscription.remove` directly so the method can never be invoked detached
+ * from its own receiver.
+ */
+export function addCaptureListener(listener: (capture: RawCapture) => void): () => void {
+  const subscription = NativeNotificationListener.addListener(CAPTURE_EVENT_NAME, (capture) => {
+    listener(normalizeCapture(capture));
+  });
+  return () => {
+    subscription.remove();
+  };
+}
+
+/**
+ * The three facts contract §4 promises about the listener, and nothing else.
+ *
+ * `granted` is a live access check on the native side, never a stored flag —
+ * see `isAccessGranted`. `serviceConnected` and `lastCaptureAt` are written
+ * by the listener service itself.
+ *
+ * `lastCaptureAt` STAYS NULL when nothing has ever been captured, and is
+ * normalized to `null` if the bridge omits it. It is never coerced to `0`:
+ * `0` is a valid epoch millisecond, so the health UI would render "not yet"
+ * as "last captured 1 January 1970". `??` and not `||` for the same reason —
+ * a genuine `0` must survive.
+ */
+export function getListenerHealth(): Promise<ListenerHealth> {
+  return NativeNotificationListener.getListenerHealth().then((health) => ({
+    granted: health.granted,
+    serviceConnected: health.serviceConnected,
+    lastCaptureAt: health.lastCaptureAt ?? null,
+  }));
 }

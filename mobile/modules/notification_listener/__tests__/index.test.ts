@@ -41,6 +41,16 @@ jest.mock("expo-modules-core", () => {
     isDeviceSecure: jest.fn(),
     openSecuritySettings: jest.fn(),
     isKeyguardLocked: jest.fn(),
+    // M1a Task 8 -- the listener surface. `addListener` is not a function
+    // the Kotlin `ModuleDefinition` declares by name: it is the EventEmitter
+    // method every Expo `NativeModule` inherits, which the Kotlin side feeds
+    // via `Events("onCapture")` + `sendEvent`.
+    isAccessGranted: jest.fn(),
+    openAccessSettings: jest.fn(),
+    setCaptureEnabled: jest.fn(),
+    setProviderFilter: jest.fn(),
+    getListenerHealth: jest.fn(),
+    addListener: jest.fn(),
   };
   return {
     requireNativeModule: () => nativeModule,
@@ -52,14 +62,20 @@ import {
   DeviceKeyInvalidatedError,
   DeviceKeyMissingError,
   NotAuthenticatedError,
+  addCaptureListener,
   clearCaptureBuffer,
   drainPendingCaptures,
   getCapturePublicKey,
+  getListenerHealth,
+  isAccessGranted,
   isDeviceKeyUsable,
   isDeviceSecure,
   isKeyguardLocked,
+  openAccessSettings,
   openSecuritySettings,
   recreateDeviceKek,
+  setCaptureEnabled,
+  setProviderFilter,
   unwrapWithDeviceKek,
   wrapWithDeviceKek,
 } from "../index";
@@ -75,6 +91,12 @@ type MockNativeModule = {
   isDeviceSecure: jest.Mock;
   openSecuritySettings: jest.Mock;
   isKeyguardLocked: jest.Mock;
+  isAccessGranted: jest.Mock;
+  openAccessSettings: jest.Mock;
+  setCaptureEnabled: jest.Mock;
+  setProviderFilter: jest.Mock;
+  getListenerHealth: jest.Mock;
+  addListener: jest.Mock;
 };
 
 // The same singleton object `index.ts`'s `NativeNotificationListener`
@@ -437,5 +459,377 @@ describe("isKeyguardLocked", () => {
     expect(mockNativeModule.isDeviceKeyUsable).not.toHaveBeenCalled();
     expect(mockNativeModule.unwrapWithDeviceKek).not.toHaveBeenCalled();
     expect(mockNativeModule.drainPendingCaptures).not.toHaveBeenCalled();
+  });
+});
+
+// ===========================================================================
+// M1a Task 8 -- the listener surface (interface contract §4; M1a plan Task 8).
+//
+// Everything above this line is the encryption plan's half of contract §4.
+// Everything below is the half the listener itself needs: the notification-
+// access grant, the two user-facing switches, health, and live capture
+// events.
+//
+// `NotificationListenerModule.kt` -- not the plan's interface block -- is the
+// source of truth for each function's sync/async shape. The plan disagrees
+// with the contract on `isAccessGranted`, so every shape below was read off
+// the Kotlin `ModuleDefinition`: `AsyncFunction` for all but
+// `openAccessSettings`, which is a bare `Function` and therefore `void`.
+// ===========================================================================
+
+/** The eight contract §4 field names, as `Object.keys(...)` should report them. */
+const RAW_CAPTURE_FIELDS = [
+  "bigText",
+  "capturedAt",
+  "id",
+  "packageName",
+  "postedAt",
+  "subText",
+  "text",
+  "title",
+].sort();
+
+/**
+ * A capture with every one of the eight fields populated -- deliberately
+ * including non-null `subText`/`bigText`, which the encryption-era
+ * `drainPendingCaptures` test above leaves `null`. A normalizer that dropped
+ * either field entirely would still pass that older test; it cannot pass this
+ * one.
+ */
+const fullyPopulatedCapture: RawCapture = {
+  id: "cap-live-1",
+  packageName: "com.globe.gcash.android",
+  title: "GCash",
+  text: "You have received PHP 1,250.00",
+  subText: "Wallet",
+  bigText: "You have received PHP 1,250.00 from JUAN D. Ref. No. 9001234567.",
+  postedAt: 1754060400000,
+  capturedAt: 1754060400500,
+};
+
+/**
+ * What the bridge hands over when the Kotlin side's nullable string fields are
+ * absent rather than null. Task 5 already collapses blank-to-null per field in
+ * Kotlin; this is the shape the JS wrapper has to defend against on top of
+ * that -- a field the bridge omits from the object entirely.
+ */
+const captureWithFieldsOmitted = {
+  id: "cap-sparse-1",
+  packageName: "com.bdo.digitalbanking",
+  postedAt: 1754060500000,
+  capturedAt: 1754060500250,
+};
+
+/** A stand-in for expo-modules-core's `EventSubscription`. */
+function subscriptionStub(): { remove: jest.Mock } {
+  return { remove: jest.fn() };
+}
+
+describe("the contract §4 listener surface", () => {
+  // The file-level beforeEach resets every implementation, so each native
+  // method needs a resolvable default again before the delegation table below
+  // can await anything.
+  beforeEach(() => {
+    mockNativeModule.isAccessGranted.mockResolvedValue(true);
+    mockNativeModule.openAccessSettings.mockReturnValue(undefined);
+    mockNativeModule.setCaptureEnabled.mockResolvedValue(undefined);
+    mockNativeModule.setProviderFilter.mockResolvedValue(undefined);
+    mockNativeModule.drainPendingCaptures.mockResolvedValue([]);
+    mockNativeModule.getListenerHealth.mockResolvedValue({
+      granted: true,
+      serviceConnected: true,
+      lastCaptureAt: null,
+    });
+    mockNativeModule.addListener.mockReturnValue(subscriptionStub());
+  });
+
+  // -------------------------------------------------------------------------
+  // Delegation, parametrized over all seven contract §4 listener functions.
+  // Asserting the ARGUMENTS (not merely that the mock was called) is what
+  // catches a dropped or reordered argument; asserting that no OTHER native
+  // method was touched is what catches a wrapper wired to the wrong one.
+  // -------------------------------------------------------------------------
+
+  type DelegationCase = {
+    wrapper: string;
+    nativeMethod: keyof MockNativeModule;
+    call: () => unknown;
+    nativeArgs: unknown[];
+  };
+
+  const delegationCases: DelegationCase[] = [
+    {
+      wrapper: "isAccessGranted",
+      nativeMethod: "isAccessGranted",
+      call: () => isAccessGranted(),
+      nativeArgs: [],
+    },
+    {
+      wrapper: "openAccessSettings",
+      nativeMethod: "openAccessSettings",
+      call: () => openAccessSettings(),
+      nativeArgs: [],
+    },
+    {
+      wrapper: "setCaptureEnabled",
+      nativeMethod: "setCaptureEnabled",
+      // `false` rather than `true`: a wrapper that inverted the flag, or that
+      // hardcoded `true` and ignored its argument, passes with `true` and
+      // fails here.
+      call: () => setCaptureEnabled(false),
+      nativeArgs: [false],
+    },
+    {
+      wrapper: "setProviderFilter",
+      nativeMethod: "setProviderFilter",
+      // Two entries, so a wrapper that spread the array into positional
+      // arguments, or reversed it, fails.
+      call: () => setProviderFilter(["com.globe.gcash.android", "com.bdo.digitalbanking"]),
+      nativeArgs: [["com.globe.gcash.android", "com.bdo.digitalbanking"]],
+    },
+    {
+      wrapper: "drainPendingCaptures",
+      nativeMethod: "drainPendingCaptures",
+      call: () => drainPendingCaptures(),
+      nativeArgs: [],
+    },
+    {
+      wrapper: "getListenerHealth",
+      nativeMethod: "getListenerHealth",
+      call: () => getListenerHealth(),
+      nativeArgs: [],
+    },
+    {
+      // The one wrapper whose native counterpart is NOT its namesake: capture
+      // events arrive through the inherited EventEmitter, under the exact
+      // event name `EVENT_ON_CAPTURE` declares in Kotlin. A typo here produces
+      // a listener that silently never fires rather than an error, which is
+      // why the event name is asserted literally.
+      wrapper: "addCaptureListener",
+      nativeMethod: "addListener",
+      call: () => addCaptureListener(jest.fn()),
+      nativeArgs: ["onCapture", expect.any(Function)],
+    },
+  ];
+
+  it.each(delegationCases)(
+    "each exported function delegates to the matching native method with the same arguments: $wrapper -> $nativeMethod",
+    async ({ nativeMethod, call, nativeArgs }) => {
+      await call();
+
+      expect(mockNativeModule[nativeMethod]).toHaveBeenCalledTimes(1);
+      expect(mockNativeModule[nativeMethod]).toHaveBeenCalledWith(...nativeArgs);
+
+      const everyNativeMethod = Object.keys(mockNativeModule) as Array<keyof MockNativeModule>;
+      everyNativeMethod
+        .filter((method) => method !== nativeMethod)
+        .forEach((method) => {
+          expect(mockNativeModule[method]).not.toHaveBeenCalled();
+        });
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // isAccessGranted / openAccessSettings -- the grant, and the only way to ask
+  // for it (Kotlin: AsyncFunction / Function respectively).
+  // -------------------------------------------------------------------------
+
+  describe("isAccessGranted", () => {
+    it("resolves with the native module's boolean unchanged, both true and false", async () => {
+      mockNativeModule.isAccessGranted.mockResolvedValue(true);
+      await expect(isAccessGranted()).resolves.toBe(true);
+
+      mockNativeModule.isAccessGranted.mockResolvedValue(false);
+      const revoked = await isAccessGranted();
+      expect(revoked).toBe(false);
+      expect(typeof revoked).toBe("boolean");
+    });
+  });
+
+  describe("openAccessSettings", () => {
+    // The brief's named trap. The plan's interface block and the Kotlin agree
+    // that this is synchronous, but an `async` wrapper -- or one that
+    // `return`ed the native call -- would still satisfy the delegation case
+    // above. `toBeUndefined()` is what actually discriminates: an async
+    // wrapper hands back a Promise.
+    it("is synchronous and returns nothing -- never a Promise", () => {
+      const result = openAccessSettings();
+
+      expect(mockNativeModule.openAccessSettings).toHaveBeenCalledWith();
+      expect(result).toBeUndefined();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // The two user-facing switches.
+  // -------------------------------------------------------------------------
+
+  describe("setCaptureEnabled", () => {
+    it("forwards the boolean unchanged in both directions -- an inverted pause switch silently stops capture", async () => {
+      await setCaptureEnabled(false);
+      expect(mockNativeModule.setCaptureEnabled).toHaveBeenLastCalledWith(false);
+
+      await setCaptureEnabled(true);
+      expect(mockNativeModule.setCaptureEnabled).toHaveBeenLastCalledWith(true);
+      expect(mockNativeModule.setCaptureEnabled).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe("setProviderFilter", () => {
+    it("forwards an empty array AS an empty array -- that clears the filter, and is not the same as omitting the argument", async () => {
+      // CapturePrefs.getProviderFilter reads an empty allowlist as "allow
+      // every package". A wrapper that dropped `[]` as falsy, or substituted a
+      // default, would turn "clear the filter" into something else entirely.
+      await setProviderFilter([]);
+
+      expect(mockNativeModule.setProviderFilter).toHaveBeenCalledWith([]);
+      expect(mockNativeModule.setProviderFilter.mock.calls[0][0]).toHaveLength(0);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // drainPendingCaptures -- the eight fields, and the JS-side absent-value
+  // guarantee (plan Task 8 rule 3).
+  // -------------------------------------------------------------------------
+
+  describe("drainPendingCaptures", () => {
+    it("returns typed RawCapture objects carrying all eight fields intact, including non-null subText and bigText", async () => {
+      mockNativeModule.drainPendingCaptures.mockResolvedValue([fullyPopulatedCapture]);
+
+      const [capture] = await drainPendingCaptures();
+
+      expect(capture).toEqual(fullyPopulatedCapture);
+      expect(Object.keys(capture).sort()).toEqual(RAW_CAPTURE_FIELDS);
+      expect(capture.subText).toBe("Wallet");
+      expect(capture.bigText).toBe(
+        "You have received PHP 1,250.00 from JUAN D. Ref. No. 9001234567.",
+      );
+      expect(capture.postedAt).toBe(1754060400000);
+      expect(capture.capturedAt).toBe(1754060400500);
+    });
+
+    it("normalizes missing string fields to null, never leaving them undefined", async () => {
+      mockNativeModule.drainPendingCaptures.mockResolvedValue([captureWithFieldsOmitted]);
+
+      const [capture] = await drainPendingCaptures();
+
+      // toBeNull, never toBeFalsy: `undefined` is falsy, so toBeFalsy would
+      // pass on the exact bug this guards against -- two "nothing here"
+      // shapes reaching downstream parsers instead of one.
+      expect(capture.title).toBeNull();
+      expect(capture.text).toBeNull();
+      expect(capture.subText).toBeNull();
+      expect(capture.bigText).toBeNull();
+      expect(Object.keys(capture).sort()).toEqual(RAW_CAPTURE_FIELDS);
+    });
+
+    it("leaves a genuinely empty drain empty rather than manufacturing a normalized row", async () => {
+      mockNativeModule.drainPendingCaptures.mockResolvedValue([]);
+
+      await expect(drainPendingCaptures()).resolves.toEqual([]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // addCaptureListener -- live events, and the unsubscribe function that has
+  // to actually detach (plan Task 8 rule 2). A listener that cannot be removed
+  // keeps the native sink installed across screens and leaks raw notification
+  // text into a dead callback.
+  // -------------------------------------------------------------------------
+
+  describe("addCaptureListener", () => {
+    it("registers a listener and the returned function removes it", () => {
+      const subscription = subscriptionStub();
+      mockNativeModule.addListener.mockReturnValue(subscription);
+      const onCapture = jest.fn();
+
+      const unsubscribe = addCaptureListener(onCapture);
+
+      expect(mockNativeModule.addListener).toHaveBeenCalledWith("onCapture", expect.any(Function));
+      expect(typeof unsubscribe).toBe("function");
+      // Registering must not detach anything on its own.
+      expect(subscription.remove).not.toHaveBeenCalled();
+
+      // The registered native listener genuinely drives the caller's callback.
+      const nativeListener = mockNativeModule.addListener.mock.calls[0][1] as (
+        capture: RawCapture,
+      ) => void;
+      nativeListener(fullyPopulatedCapture);
+      expect(onCapture).toHaveBeenCalledWith(fullyPopulatedCapture);
+
+      // The point of the test: the returned function is not a no-op. Assert
+      // the subscription's own remove was invoked, not merely that something
+      // callable came back.
+      unsubscribe();
+      expect(subscription.remove).toHaveBeenCalledTimes(1);
+    });
+
+    it("applies the same absent-value normalization to a live capture as the drained path does", () => {
+      // The Kotlin side deliberately routes both paths through the one
+      // CaptureRecord.toMap so a live capture and a drained one can never
+      // disagree about their fields. The JS side must not reintroduce the
+      // disagreement by normalizing only one of them.
+      mockNativeModule.addListener.mockReturnValue(subscriptionStub());
+      const onCapture = jest.fn();
+
+      addCaptureListener(onCapture);
+      const nativeListener = mockNativeModule.addListener.mock.calls[0][1] as (
+        capture: unknown,
+      ) => void;
+      nativeListener(captureWithFieldsOmitted);
+
+      const delivered = onCapture.mock.calls[0][0] as RawCapture;
+      expect(delivered.title).toBeNull();
+      expect(delivered.text).toBeNull();
+      expect(delivered.subText).toBeNull();
+      expect(delivered.bigText).toBeNull();
+      expect(Object.keys(delivered).sort()).toEqual(RAW_CAPTURE_FIELDS);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // getListenerHealth -- three facts, and the null that must stay null.
+  // -------------------------------------------------------------------------
+
+  describe("getListenerHealth", () => {
+    it("passes lastCaptureAt through as null when the native side reports null", async () => {
+      mockNativeModule.getListenerHealth.mockResolvedValue({
+        granted: true,
+        serviceConnected: true,
+        lastCaptureAt: null,
+      });
+
+      const health = await getListenerHealth();
+
+      // `0` is a valid epoch millisecond, so a `?? 0` here would render as
+      // "last captured 1 January 1970" on the health screen instead of
+      // "not yet".
+      expect(health.lastCaptureAt).toBeNull();
+      expect(health).toEqual({ granted: true, serviceConnected: true, lastCaptureAt: null });
+    });
+
+    it("normalizes an absent lastCaptureAt to null and passes a real timestamp through untouched", async () => {
+      mockNativeModule.getListenerHealth.mockResolvedValue({
+        granted: false,
+        serviceConnected: false,
+      });
+
+      const neverCaptured = await getListenerHealth();
+      expect(neverCaptured.lastCaptureAt).toBeNull();
+      expect(neverCaptured.granted).toBe(false);
+      expect(neverCaptured.serviceConnected).toBe(false);
+
+      mockNativeModule.getListenerHealth.mockResolvedValue({
+        granted: true,
+        serviceConnected: true,
+        lastCaptureAt: 1754060400000,
+      });
+
+      const healthy = await getListenerHealth();
+      expect(healthy.lastCaptureAt).toBe(1754060400000);
+      expect(Object.keys(healthy).sort()).toEqual(
+        ["granted", "lastCaptureAt", "serviceConnected"].sort(),
+      );
+    });
   });
 });
