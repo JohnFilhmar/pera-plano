@@ -37,7 +37,8 @@
       ],
       "expo-font",
       "expo-secure-store",
-      "expo-local-authentication"
+      "expo-local-authentication",
+      "./modules/notification_listener/app.plugin.js"
     ]
   }
 }
