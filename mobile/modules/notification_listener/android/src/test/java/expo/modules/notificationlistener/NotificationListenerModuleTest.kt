@@ -1,6 +1,7 @@
 package expo.modules.notificationlistener
 
 import android.content.Context
+import android.content.Intent
 import android.provider.Settings
 import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.UserNotAuthenticatedException
@@ -18,6 +19,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows
 import org.robolectric.annotation.Config
 
 /**
@@ -429,6 +431,41 @@ class NotificationListenerModuleTest {
    * of [CaptureBuffer.drain] with [CaptureRecord.toMap], which is what JS
    * actually receives.
    */
+  // ---------------------------------------------------------------------
+  // openAccessSettings. Not in the plan's six-test list, but rule 2 of the
+  // task brief is a behavioural requirement like any other, and this is the
+  // one navigation the whole feature depends on: until the user reaches the
+  // Notification Access screen, nothing is ever captured. Mirrors the pair
+  // DeviceSecurityTest keeps on its twin, openSecuritySettings.
+  // ---------------------------------------------------------------------
+
+  @Test
+  fun `openAccessSettings starts an Intent for ACTION_NOTIFICATION_LISTENER_SETTINGS`() {
+    val context = RuntimeEnvironment.getApplication()
+
+    openAccessSettings(context)
+
+    val started = Shadows.shadowOf(context).nextStartedActivity
+    assertNotNull("openAccessSettings must actually call startActivity", started)
+    // The security-settings action is the near-miss to guard against: it is
+    // the twin helper's action, one screen away, and lands the user somewhere
+    // that cannot grant notification access at all.
+    assertEquals(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS, started.action)
+  }
+
+  @Test
+  fun `openAccessSettings sets FLAG_ACTIVITY_NEW_TASK -- required because the caller is not an Activity Context`() {
+    val context = RuntimeEnvironment.getApplication()
+
+    openAccessSettings(context)
+
+    val started = Shadows.shadowOf(context).nextStartedActivity
+    assertTrue(
+      "starting an Activity from a non-Activity Context throws on a real device without this flag",
+      (started.flags and Intent.FLAG_ACTIVITY_NEW_TASK) != 0,
+    )
+  }
+
   private fun drainAsTheBridgeDoes(): List<Map<String, Any?>> =
     CaptureBuffer.drain(CaptureBuffer.fileFor(context)).map { it.toMap() }
 
