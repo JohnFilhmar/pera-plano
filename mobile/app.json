@@ -15,7 +15,10 @@
         "backgroundColor": "#F7FAF7"
       },
       "edgeToEdgeEnabled": true,
-      "permissions": []
+      "permissions": [
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT"
+      ]
     },
     "experiments": {
       "typedRoutes": true,
@@ -39,6 +42,12 @@
       "expo-secure-store",
       "expo-local-authentication",
       "./modules/notification_listener/app.plugin.js"
-    ]
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "3bbb3e99-a491-42b2-9b7c-dddb251a630d"
+      }
+    }
   }
 }
