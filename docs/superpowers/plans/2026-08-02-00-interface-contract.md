@@ -252,6 +252,29 @@ export function parseCapture(
 > Every other stage already takes `tunables` as its trailing argument (`normalizeEvent`,
 > `checkDuplicate`, `detectTransfer`), so this is a correction to an oversight, not a new pattern.
 
+```ts
+// normalizer.ts — pinned 2026-08-10 (M1b Task 5). Previously this signature lived only in the
+// M1b plan, which is why the `matchers` parameter could be added freely; recorded here so the
+// next change is a deliberate contract edit rather than a drift.
+export type NormalizedEvent = ParsedEvent & {
+  walletId: string | null;      // null is a HARD Review Queue route (spec §9.2), not a penalty
+  channel: "push" | "sms";
+};
+export function normalizeEvent(
+  event: ParsedEvent,
+  provider: ProviderRuleset,
+  wallets: Wallet[],
+  matchers: WalletMatcher[],    // loaded by the orchestrator; this stage does no I/O
+  tunables: PipelineTunables,   // REQUIRED here, unlike parseCapture's optional default
+): NormalizedEvent;
+```
+
+> **`wallet_matchers` matches on `package_name`, never `provider_key`** — the column does not
+> exist (see the shipped-reality table above). `matcher.hint` disambiguates a provider that feeds
+> two wallets (GCash main vs GSave) and compares by **equality**, case- and whitespace-folded, not
+> by substring: substring matching lets two rows claim the same event and turns wallet routing
+> into an array-order accident.
+
 Ruleset JSON shape (bundled seed `mobile/assets/parser_rules/seed.json`; same shape served by
 the server): `{ version: number, providers: [{ providerKey, packageNames: string[], version,
 channel: "push"|"sms", senderIds?: string[], templates: [{ id, match: string /* regex, named
