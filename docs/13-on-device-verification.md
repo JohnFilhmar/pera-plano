@@ -15,7 +15,25 @@
 > | Part 3 switches / drain-empties | **NOT RUN** — need the JS bridge; blocked |
 > | Part 4 database unreadable / ledger / re-lock | **NOT RUN** — need onboarding; blocked |
 > | Battery-manager 2 h idle | **NOT RUN** — and this device is Samsung, not one of the four target OEMs |
-> | Part 5 (screen lock, fingerprint, no-lock device) | Deferred by decision |
+> | Part 5 (screen lock, fingerprint, no-lock device) | **DEFERRED — no free device available** |
+>
+> ### Deferred, and what that does and does not block
+>
+> Everything still open is **verification, not implementation**. No later plan (M1b, M1c, M2, M3,
+> the server) depends on any of it, so development proceeds unblocked.
+>
+> It does block **release**, and one item disproportionately:
+>
+> - **Enrolling an additional fingerprint must not invalidate the key.** This is the only proof
+>   that `setInvalidatedByBiometricEnrollment(false)` actually took effect. The instrumented
+>   suite confirms the *flag is set* (`captureKeyPairIsCreatedWithExpectedKeystoreProperties`
+>   and its device-KEK twin both assert `isInvalidatedByBiometricEnrollment == false`, and both
+>   passed on hardware) — but only a real enrollment proves Android honours it. If it does not,
+>   every user loses their entire history on a routine settings change.
+> - **Argon2id timing (Gate A)** stays a ship gate: the parameters are part of the on-disk format
+>   and cannot change once any real user holds a recovery phrase.
+> - **Battery-manager survival** needs a **Xiaomi/Oppo/Vivo/Huawei** handset. The Samsung tested
+>   here cannot answer the question that matters for the Philippine market.
 >
 > **The bug this session existed to find.** On a fresh install where notification access is
 > granted from Android Settings *before* the app is first opened, every capture was silently
