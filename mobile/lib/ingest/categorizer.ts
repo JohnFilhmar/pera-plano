@@ -43,8 +43,16 @@ import type { NormalizedEvent } from "@/lib/ingest/normalizer";
 import type { Transaction, UserRule, UserRuleMatcher } from "@/types/domain";
 
 /**
- * The verdict. Plan Task 8 / consumed by `confidence_gate.ts` (Task 9), which
- * subtracts `penalty` from the running score.
+ * The verdict. Plan Task 8. **The ORCHESTRATOR subtracts `penalty` from the
+ * running score, not the confidence gate** — the gate's signature takes a bare
+ * `confidence: number` and never sees a `CategoryVerdict`.
+ *
+ * That distinction is load-bearing rather than pedantic: because the
+ * subtraction happens in `pipeline.ts`, it is the one place in this pipeline
+ * where a naive `0.95 - 0.05` can produce `0.8999999999999999` and drop a clean
+ * auto-commit into the Review Queue. The gate compares in ten-thousandths
+ * defensively, but the arithmetic itself belongs upstream and must be scaled
+ * there too.
  *
  * `source` is not decoration: the Transaction detail sheet shows *why* a
  * category was chosen ("Why was this recorded?", docs/04-features/11 §), and a
