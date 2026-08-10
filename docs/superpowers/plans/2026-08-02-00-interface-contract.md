@@ -233,13 +233,45 @@ export type ParsedEvent = {
   merchant?: string; counterparty?: string; referenceNo?: string; balanceAfter?: Centavos;
   occurredAt: number; walletHint?: string; confidence: number; // 0..1
 };
-export function parseCapture(capture: RawCapture, rules: ProviderRuleset[]): ParsedEvent | null;
+export function parseCapture(
+  capture: RawCapture,
+  rules: ProviderRuleset[],
+  tunables: PipelineTunables,   // ADDED 2026-08-10 — see note below
+): ParsedEvent | null;
 ```
+
+> **`tunables` added 2026-08-10 (after M1b Task 4).** The signature previously ended at `rules`,
+> which made a spec requirement unimplementable: spec §9.1's penalty table "ships as tunable
+> ruleset data (§11)", but with no `tunables` parameter the parser could only read
+> `DEFAULT_TUNABLES`. A server bundle retuning `weakDirection`, `amountAmbiguity`,
+> `merchantMissing` or `smsChannel` would have moved nothing, while the Normalizer's and
+> DedupeGate's tunables — which *are* passed in — moved normally. That is the worst kind of
+> half-working: remote tuning appears to be wired up and silently is not, for exactly the four
+> penalties that decide auto-commit.
+>
+> Every other stage already takes `tunables` as its trailing argument (`normalizeEvent`,
+> `checkDuplicate`, `detectTransfer`), so this is a correction to an oversight, not a new pattern.
 
 Ruleset JSON shape (bundled seed `mobile/assets/parser_rules/seed.json`; same shape served by
 the server): `{ version: number, providers: [{ providerKey, packageNames: string[], version,
-templates: [{ id, match: string /* regex, named groups: amount, direction?, merchant?,
-counterparty?, ref?, balance? */, direction?: "in"|"out", confidence: number }] }] }`.
+channel: "push"|"sms", senderIds?: string[], templates: [{ id, match: string /* regex, named
+groups: amount, direction?, merchant?, counterparty?, ref?, balance?, walletHint? */,
+direction?: "in"|"out", confidence: number }] }], tunables?: PipelineTunables }`.
+
+> **`channel`, `senderIds`, `tunables` and `walletHint` added 2026-08-10 (M1b Tasks 1–4).** All
+> four are **additions** — every field this sketch already named keeps its name and type. Each was
+> required by a spec rule with nowhere else to live: `channel` by §9.1's SMS penalty and §6's twin
+> window, `senderIds` by §3 rule 2 (without it every personal text message routes as bank SMS),
+> `tunables` by §11.1, and `walletHint` because `ParsedEvent.walletHint` above is read by the
+> Normalizer to tell a GCash main wallet from GSave — with no capture group to populate it, the
+> field was dead on arrival.
+>
+> **The server's `GET /v1/parser_rules` must serve these too**, or the two ends of a shape that is
+> explicitly "the same shape served by the server" will disagree.
+>
+> `tunables` is optional on the wire and merged over `DEFAULT_TUNABLES` **on read**, so a bundle
+> omitting it picks up recalibrated defaults from an app update instead of freezing the values
+> that were current when it was installed.
 
 ## 6. Server — Fastify + Prisma + Postgres
 

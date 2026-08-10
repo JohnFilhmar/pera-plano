@@ -1007,3 +1007,61 @@ test("parseCapture is pure — the same inputs give the same result, and inputs 
   expect(first).toEqual(second);
   expect(capture.postedAt).toBe(POSTED_AT);
 });
+
+// ---------------------------------------------------------------------------
+// Remote tunability of the §9.1 penalties.
+//
+// Spec §9.1's penalty table "ships as tunable ruleset data (§11)", so a server
+// bundle must be able to move these four penalties without an app release.
+// Until 2026-08-10 contract §5 pinned parseCapture to (capture, rules) with no
+// tunables argument, so it could only ever read DEFAULT_TUNABLES -- and the
+// failure was silent, because the Normalizer's and DedupeGate's tunables WERE
+// passed in and moved normally. Remote tuning looked wired up and was not, for
+// precisely the four penalties that decide auto-commit.
+// ---------------------------------------------------------------------------
+
+test("a retuned penalty from the ruleset actually moves the score", () => {
+  // ILLUSTRATIVE. This fixture also trips merchantMissing (the template binds
+  // no merchant group), so the absolute score is 1.00 − smsChannel − merchant.
+  // That is exactly why the assertion below is on the DELTA rather than on a
+  // hardcoded total: the delta isolates the one penalty under test and does not
+  // silently encode which others happen to apply.
+  const provider = makeProvider({
+    channel: "sms",
+    templates: [makeTemplate({ direction: "out", confidence: 1 })],
+  });
+  const capture = makeCapture({ text: "You paid ₱10.00 to STORE" }); // ILLUSTRATIVE
+
+  const atDefault = parseCapture(capture, [provider], DEFAULT_TUNABLES);
+
+  // The same capture, same template — only the ruleset's smsChannel penalty
+  // changed, from its default to 0.40.
+  const retunedTo = 0.4;
+  const retuned = parseCapture(capture, [provider], {
+    ...DEFAULT_TUNABLES,
+    penalties: { ...DEFAULT_TUNABLES.penalties, smsChannel: retunedTo },
+  });
+
+  // A parser that ignored the argument and read DEFAULT_TUNABLES would return
+  // the same number twice, making this delta 0.
+  const delta = atDefault!.confidence - retuned!.confidence;
+  expect(delta).toBeCloseTo(retunedTo - DEFAULT_TUNABLES.penalties.smsChannel, 5);
+  expect(delta).toBeGreaterThan(0);
+});
+
+test("parseCapture defaults to DEFAULT_TUNABLES when none is supplied", () => {
+  // The third argument is optional so existing call sites keep working; this
+  // pins that the default is the shipped table rather than an empty object,
+  // which would make every penalty NaN.
+  const provider = makeProvider({
+    channel: "sms",
+    templates: [makeTemplate({ direction: "out", confidence: 1 })],
+  });
+  const capture = makeCapture({ text: "You paid ₱10.00 to STORE" }); // ILLUSTRATIVE
+
+  const implicit = parseCapture(capture, [provider]);
+  const explicit = parseCapture(capture, [provider], DEFAULT_TUNABLES);
+
+  expect(implicit!.confidence).toBe(explicit!.confidence);
+  expect(Number.isNaN(implicit!.confidence)).toBe(false);
+});

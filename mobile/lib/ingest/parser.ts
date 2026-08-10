@@ -19,7 +19,7 @@
 // Pure: no I/O, no clock, no database. `occurredAt` comes from the capture's
 // own `postedAt`, so the whole stage is a function of its two arguments.
 import { countAmountTokens, parseAmountToCentavos } from "@/lib/ingest/amount";
-import { DEFAULT_TUNABLES } from "@/lib/ingest/ruleset_types";
+import { DEFAULT_TUNABLES, type PipelineTunables } from "@/lib/ingest/ruleset_types";
 
 import type { ProviderRuleset, ProviderTemplate } from "@/lib/ingest/ruleset_types";
 import type { Centavos, RawCapture, TxDirection } from "@/types/domain";
@@ -260,13 +260,14 @@ function hasAmbiguousAmount(text: string, balanceBound: boolean): boolean {
  * The wallet-fallback penalty (0.10) is deliberately absent — the Normalizer
  * applies it, because it is the stage that resolves wallets (plan Task 5).
  *
- * PENALTY VALUES COME FROM `DEFAULT_TUNABLES`. Spec §11.1 wants them
- * remotely retunable, but contract §5 pins `parseCapture` to
- * `(capture, rules)` with no tunables argument, and the contract is law. The
- * consequence is worth knowing: a server bundle that retunes these four
- * penalties changes nothing here, while the Normalizer's and ConfidenceGate's
- * tunables — which are passed in — do move. Closing that gap means changing the
- * contract's signature, not working around it here.
+ * PENALTY VALUES ARE PASSED IN, not read from `DEFAULT_TUNABLES`. Spec §9.1's
+ * table "ships as tunable ruleset data (§11)", so a server bundle must be able
+ * to retune these four penalties without an app release. Contract §5 originally
+ * pinned `parseCapture` to `(capture, rules)` with no tunables argument, which
+ * made that impossible — and made it silently impossible, since the Normalizer's
+ * and DedupeGate's tunables *were* passed in and moved normally. The contract
+ * was corrected on 2026-08-10 to take `tunables` as its trailing argument, the
+ * same shape every other stage already used.
  */
 function scoreMatch(args: {
   template: ProviderTemplate;
@@ -274,8 +275,9 @@ function scoreMatch(args: {
   directionSource: DirectionSource;
   merchant: string | undefined;
   ambiguousAmount: boolean;
+  tunables: PipelineTunables;
 }): number {
-  const { penalties } = DEFAULT_TUNABLES;
+  const { penalties } = args.tunables;
   let scaled = toScaled(args.template.confidence);
 
   if (args.directionSource === "keyword") scaled -= toScaled(penalties.weakDirection);
@@ -302,6 +304,7 @@ function buildEvent(
   match: RegExpExecArray,
   text: string,
   capture: RawCapture,
+  tunables: PipelineTunables,
 ): ParsedEvent | undefined {
   const { provider, template } = compiled;
   const groups = match.groups ?? {};
@@ -333,6 +336,7 @@ function buildEvent(
       directionSource: resolved.source,
       merchant,
       ambiguousAmount: hasAmbiguousAmount(text, rawBalance !== undefined),
+      tunables,
     }),
   };
 
@@ -377,7 +381,11 @@ function buildEvent(
  * marketing and balance inquiries, and the orchestrator routes a known
  * provider's unparsed capture to the Review Queue with its raw text intact.
  */
-export function parseCapture(capture: RawCapture, rules: ProviderRuleset[]): ParsedEvent | null {
+export function parseCapture(
+  capture: RawCapture,
+  rules: ProviderRuleset[],
+  tunables: PipelineTunables = DEFAULT_TUNABLES,
+): ParsedEvent | null {
   const templates = compileTemplates(rules);
 
   for (const text of searchableTexts(capture)) {
@@ -385,7 +393,7 @@ export function parseCapture(capture: RawCapture, rules: ProviderRuleset[]): Par
       const match = compiled.regex.exec(text);
       if (match === null) continue;
 
-      const event = buildEvent(compiled, match, text, capture);
+      const event = buildEvent(compiled, match, text, capture, tunables);
       if (event !== undefined) return event;
     }
   }
