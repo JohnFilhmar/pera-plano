@@ -203,7 +203,7 @@ parseCapture(capture: RawCapture, rules: ProviderRuleset[]): ParsedEvent | null;
 **Rules:**
 1. `parseAmountToCentavos` accepts `"₱1,234.56"`, `"PHP 1,234.56"`, `"1234.56"`, `"1,234"` (→ `123400`), and `"P1,234.56"`. It returns `null` for anything else. It must never use floating-point arithmetic to reach centavos — parse the integer and fraction parts separately, or the classic `12.10 * 100 === 1209.9999` bug will corrupt the ledger.
 2. `parseCapture` searches the notification text in this order: `bigText`, then `text`, then `title` — expanded text is the most complete (spec §5).
-3. Template scoring per spec §9.1: base `1.00` when the template's regex **matches**, `0.70` for a partial/fuzzy match.
+3. Template scoring per spec §9.1: base `1.00` when the template's regex **matches**, `0.70` for a partial/fuzzy match. Then subtract: weak-cue direction `0.15`, amount ambiguity `0.30` (when `countAmountTokens > 1` and the template did not bind an explicit balance group to absorb the second token), merchant missing `0.05`, SMS channel `0.05`. Clamp to `[0, 1]`. The wallet-fallback penalty (`0.10`) is applied later by the normalizer, which is the stage that resolves wallets.
 
    > **CORRECTED 2026-08-10 (after Task 2).** This rule previously read "base `1.00` when every
    > group the template declares is bound". That is a misstatement of the spec and, taken
