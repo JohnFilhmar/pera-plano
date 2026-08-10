@@ -1,5 +1,46 @@
 # On-Device Verification — one session, two plans
 
+> ## Session 1 results — 2026-08-10 · Samsung Galaxy A54 5G (SM-A546E), Android 16 / SDK 36
+>
+> | Check | Result |
+> |---|---|
+> | **Part 2** — instrumented Keystore suite | **7/7 PASS** (3 need a fresh unlock — see note) |
+> | **Gate B** — 500-record drain vs 10 s window | **5,265 ms** (10.53 ms/record) — PASS, 53% of budget |
+> | Config plugin on real hardware | **PASS** — service registered, bound, correct permission |
+> | Live capture, app never launched | **BUG FOUND, FIXED** (`bca1bcd`), re-verified PASS |
+> | Buffer contains no readable notification text | **PASS** — pure ciphertext, 6/6 plaintext probes absent |
+> | Durability across process death | **PASS** — captured while force-stopped |
+> | Reboot survival | **PASS** — re-bound and captured, app never opened |
+> | **Gate A** — Argon2id timing | **NOT RUN** — needs JS in Hermes; blocked |
+> | Part 3 switches / drain-empties | **NOT RUN** — need the JS bridge; blocked |
+> | Part 4 database unreadable / ledger / re-lock | **NOT RUN** — need onboarding; blocked |
+> | Battery-manager 2 h idle | **NOT RUN** — and this device is Samsung, not one of the four target OEMs |
+> | Part 5 (screen lock, fingerprint, no-lock device) | Deferred by decision |
+>
+> **The bug this session existed to find.** On a fresh install where notification access is
+> granted from Android Settings *before* the app is first opened, every capture was silently
+> dropped — `CaptureBuffer.append` looks up the capture public key on every append, but the
+> keypair was created only by the app. `handlePosted`'s never-throw guard turned that into one
+> logcat line per lost notification. The JVM suite could not have caught it: the service test's
+> own `setUp` called `ensureCaptureKeyPair()`, so the harness was doing what production had
+> forgotten. Fixed in `onListenerConnected()`; regression test uses a virgin vault.
+>
+> **Why 3 Keystore tests fail unattended.** They exercise auth-gated keys, and an unattended run
+> has no authentication inside the 10-second window. Not a defect. The whole suite runs in
+> ~1.2 s, so one fresh unlock covers it — drive it with `adb shell am instrument` (≈0.2 s
+> startup) rather than Gradle, which is too slow to fit the window.
+>
+> **What blocked the rest.** The Windows build fails on `MAX_PATH` (the relative object path is
+> 292 chars before any root, so no amount of relocation helps) — EAS cloud builds are now the
+> route. The EAS dev client then could not resolve the Metro manifest through a deep link, so
+> no JS ever ran. Everything still open needs JS.
+>
+> **Gate B caveat worth carrying.** It passes, but the JVM estimate was 442 ms and reality is
+> 5,265 ms — **12× off**. This mid-range handset uses 53% of the window. A budget device at
+> 1.5–2× slower lands at 8–10 s, and for those users a full-buffer drain would fail *every*
+> time, not intermittently.
+
+
 Everything in this document needs a **real Android phone**. None of it can be emulated, mocked,
 or inferred from the test suites, which is exactly why it exists as its own gate.
 
