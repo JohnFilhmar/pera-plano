@@ -385,6 +385,53 @@ class PeraPlanoNotificationListenerServiceTest {
   // Connection state (plan rule 4) -- half of getListenerHealth.
   // =====================================================================
 
+  /**
+   * REGRESSION, found on a real device (docs/13-on-device-verification.md,
+   * Part 3). On a fresh install where the user grants notification access
+   * from Android Settings BEFORE ever opening the app, every notification was
+   * silently dropped:
+   *
+   * ```
+   * E PeraPlanoListener: dropped one notification capture: IllegalStateException
+   * ```
+   *
+   * `CaptureBuffer.append` looks the capture public key up on every append,
+   * but the keypair was only ever created by the APP (via the bridge's
+   * `getCapturePublicKey`), so with the app never launched `getPublicKey`
+   * threw `error("capture keypair has not been created")`. The never-throw
+   * rule turned that into a dropped capture and one logcat line -- contained,
+   * but the notification is gone for good.
+   *
+   * Every other test in this file missed it because [setUp] itself calls
+   * `KeyStoreBridge.ensureCaptureKeyPair()` -- the harness was doing the very
+   * thing production code had forgotten. So this test deliberately installs a
+   * VIRGIN vault and never pre-creates anything: that absence is the whole
+   * point, and re-adding a setup call here would silently retire the test.
+   */
+  @Test
+  fun `a listener bound before the app has ever run creates the capture keypair itself`() {
+    // A brand-new vault: no capture keypair, exactly like a fresh install
+    // whose app has never been opened.
+    KeyStoreBridge.vault = FakeKeyVault()
+
+    val service = Robolectric.buildService(PeraPlanoNotificationListenerService::class.java).get()
+    service.onListenerConnected()
+
+    val sbn = statusBarNotification(
+      packageName = gcash,
+      notification = notification(title = sampleTitle, text = sampleText),
+    )
+    service.onNotificationPosted(sbn)
+
+    // The assertion that matters: the capture is DURABLE, not merely
+    // "no exception was thrown". A drop is silent by design, so anything
+    // weaker than reading the record back out of the buffer would pass
+    // against the very bug this test exists for.
+    val stored = CaptureBuffer.drain(CaptureBuffer.fileFor(context)).single()
+    assertEquals(gcash, stored.packageName)
+    assertEquals(sampleText, stored.text)
+  }
+
   @Test
   fun `onListenerConnected and onListenerDisconnected update the recorded connection state`() {
     val service = Robolectric.buildService(PeraPlanoNotificationListenerService::class.java).get()

@@ -69,11 +69,44 @@ class PeraPlanoNotificationListenerService : NotificationListenerService() {
   }
 
   override fun onListenerConnected() {
+    ensureCaptureKeyReady()
     recordConnection(this, true)
   }
 
   override fun onListenerDisconnected() {
     recordConnection(this, false)
+  }
+
+  /**
+   * Creates the capture keypair if it does not exist yet, so this service can
+   * seal notifications with no help from the app.
+   *
+   * WHY THIS IS HERE AT ALL. Nothing stops a user granting notification
+   * access from Android Settings before they ever open PeraPlano. Until this
+   * call existed, that user's notifications were all silently dropped:
+   * `CaptureBuffer.append` looks the capture public key up on every append,
+   * the keypair was created only by the app, and so `getPublicKey` threw
+   * `IllegalStateException` on every single post. [handlePosted]'s catch
+   * turned that into one logcat line per lost notification. Found on a real
+   * device, not by the suite -- see the regression test of the same name.
+   *
+   * Safe to call on every bind: `ensureCaptureKeyPair` is idempotent and
+   * never rotates an existing keypair, so it cannot orphan already-sealed
+   * records. Done once per connection rather than per notification because
+   * generating an RSA-2048 Keystore key is expensive and posts are frequent.
+   *
+   * Never throws. On a device with no screen lock, key generation legitimately
+   * fails (docs/12-encryption-and-app-lock.md §5a) and there is nothing this
+   * service can do about it -- onboarding is what must demand a screen lock.
+   * Dropping back to the previous behaviour is the correct outcome there.
+   */
+  private fun ensureCaptureKeyReady() {
+    try {
+      KeyStoreBridge.ensureCaptureKeyPair()
+    } catch (error: Exception) {
+      // Message deliberately omitted -- see the class doc's SECURITY note.
+      Log.e(TAG, "could not prepare the capture keypair: ${error.javaClass.simpleName}")
+    }
   }
 
   /**
