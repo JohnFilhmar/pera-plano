@@ -153,6 +153,42 @@ function searchableTexts(capture: RawCapture): string[] {
   );
 }
 
+/**
+ * Currency markers that are definitively NOT Philippine pesos.
+ *
+ * `PHP`, `Php` and `₱` are deliberately absent — those are ours. So is a bare
+ * `P`, which is a peso marker here (see `amount.ts`).
+ *
+ * `$` is included and is the one worth thinking about: it is ambiguous (many
+ * currencies use it) and it appears in ordinary merchant names. Including it
+ * over-triggers slightly, sending the odd legitimate transaction to the Review
+ * Queue. That is the correct direction to be wrong — spec §1 principle 1 makes
+ * the Review Queue the remedy for uncertainty, and the alternative is booking a
+ * foreign amount as pesos, which corrupts totals with no visible symptom.
+ */
+const FOREIGN_CURRENCY = /\b(USD|EUR|GBP|JPY|AUD|CAD|SGD|HKD|CNY|RMB|KRW|THB|MYR|IDR|VND|AED|CHF|NZD|TWD|INR)\b|[$€£¥₩]/u;
+
+/**
+ * True when a currency marker other than the peso sits next to the captured
+ * amount.
+ *
+ * Scoped to a window around the amount rather than the whole text on purpose: a
+ * notification may legitimately mention another currency elsewhere ("USD rates
+ * updated") while the transaction itself is in pesos. What must never pass is a
+ * foreign marker attached to THIS number.
+ */
+function hasForeignCurrencyMarker(text: string, rawAmount: string): boolean {
+  const at = text.indexOf(rawAmount);
+  if (at === -1) return FOREIGN_CURRENCY.test(text);
+
+  // Enough to cover "USD " / "US$" before, and " USD" after.
+  const WINDOW = 6;
+  const before = text.slice(Math.max(0, at - WINDOW), at);
+  const after = text.slice(at + rawAmount.length, at + rawAmount.length + WINDOW);
+
+  return FOREIGN_CURRENCY.test(before) || FOREIGN_CURRENCY.test(after) || FOREIGN_CURRENCY.test(rawAmount);
+}
+
 /** A bound group's text, trimmed, or `undefined` when unbound or blank. */
 function boundValue(groups: Record<string, string | undefined>, name: string): string | undefined {
   const trimmed = groups[name]?.trim();
@@ -311,6 +347,22 @@ function buildEvent(
 
   const rawAmount = boundValue(groups, "amount");
   if (rawAmount === undefined) return undefined;
+
+  // Spec §5 rule 1 / §9.2: PHP only in MVP, and a non-PHP amount is a HARD
+  // route to the Review Queue regardless of score.
+  //
+  // This check belongs here and nowhere else. `parseAmountToCentavos` accepts a
+  // BARE "50.00", so a template that captures only the digits out of
+  // "USD 50.00" yields 5000 centavos and books fifty dollars as fifty pesos --
+  // silently, with full confidence. The Normalizer cannot catch it either: it
+  // receives a ParsedEvent, which carries no text, so by then the currency
+  // marker is already gone. The parser is the only stage that sees the amount
+  // and the words around it at the same time.
+  //
+  // Refusing returns `undefined`, so the search falls through to the next
+  // template and ultimately to `null` -- the raw capture reaches the Review
+  // Queue with its text intact, which is exactly what the spec asks for.
+  if (hasForeignCurrencyMarker(text, rawAmount)) return undefined;
 
   const amount = parseAmountToCentavos(rawAmount);
   if (amount === null) return undefined;

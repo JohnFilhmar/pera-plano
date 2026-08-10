@@ -1065,3 +1065,51 @@ test("parseCapture defaults to DEFAULT_TUNABLES when none is supplied", () => {
   expect(implicit!.confidence).toBe(explicit!.confidence);
   expect(Number.isNaN(implicit!.confidence)).toBe(false);
 });
+
+// ---------------------------------------------------------------------------
+// Non-PHP currency is a HARD route to the Review Queue (spec §5 rule 1, §9.2).
+//
+// The failure this guards is silent and expensive: parseAmountToCentavos
+// accepts a BARE "50.00", so a template capturing only the digits out of
+// "USD 50.00" would return 5000 centavos and book fifty dollars as fifty pesos
+// at full confidence. The plan assigned this check to the Normalizer, which
+// cannot do it -- a ParsedEvent carries no text, so the currency marker is
+// already gone by then.
+// ---------------------------------------------------------------------------
+
+test("a foreign currency amount is refused rather than booked as pesos", () => {
+  // ILLUSTRATIVE. The template binds only the digits, which is exactly how a
+  // real template written for "₱50.00" would behave on a USD notification.
+  const provider = makeProvider({
+    templates: [
+      makeTemplate({ match: String.raw`(?<amount>[\d,]+\.\d{2})`, direction: "out", confidence: 1 }),
+    ],
+  });
+
+  const foreign = parseCapture(makeCapture({ text: "You paid USD 50.00 to STORE" }), [provider]);
+  expect(foreign).toBeNull();
+
+  // The identical notification in pesos still parses — proving the guard keys
+  // on the currency marker and has not simply broken this template.
+  const pesos = parseCapture(makeCapture({ text: "You paid PHP 50.00 to STORE" }), [provider]);
+  expect(pesos).not.toBeNull();
+  expect(pesos!.amount).toBe(5000);
+});
+
+test("a foreign currency mentioned away from the amount does not block the parse", () => {
+  // ILLUSTRATIVE. Scoping the check to a window around the amount is what keeps
+  // an unrelated aside from sending a genuine peso transaction to the queue.
+  const provider = makeProvider({
+    templates: [
+      makeTemplate({ match: String.raw`paid (?<amount>[\d,]+\.\d{2})`, direction: "out", confidence: 1 }),
+    ],
+  });
+
+  const event = parseCapture(
+    makeCapture({ text: "You paid 50.00 to STORE. USD rates updated today." }),
+    [provider],
+  );
+
+  expect(event).not.toBeNull();
+  expect(event!.amount).toBe(5000);
+});
