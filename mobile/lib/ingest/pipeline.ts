@@ -180,7 +180,10 @@ async function queue(
  * (rule 2) so that "why was this recorded?" is answerable even when the parse
  * later fails — or throws.
  */
-export async function processCapture(capture: RawCapture): Promise<PipelineOutcome> {
+export async function processCapture(
+  capture: RawCapture,
+  now: number = Date.now(),
+): Promise<PipelineOutcome> {
   if ((await getSetting("capture_enabled")) === false) {
     return { kind: "ignored", reason: "paused" };
   }
@@ -210,7 +213,7 @@ export async function processCapture(capture: RawCapture): Promise<PipelineOutco
     return { kind: "ignored", reason: "duplicate" };
   }
 
-  await storeRawCapture(capture, Date.now());
+  await storeRawCapture(capture, now);
 
   if (routed.kind === "unknown") {
     return queue("unknown-provider", capture.id, {
@@ -457,11 +460,14 @@ export async function startIngest(): Promise<() => void> {
 
     const ordered = [...buffered].sort((a, b) => a.postedAt - b.postedAt);
 
-    // Rule 10: durable first, all of it, before any processing.
+    // Rule 10: durable first, all of it, before any processing. One clock read
+    // for the whole batch, so every capture drained together shares a TTL
+    // anchor rather than drifting apart by however long the writes took.
+    const storedAt = Date.now();
     const fresh: RawCapture[] = [];
     for (const capture of ordered) {
       if (await hasRawCapture(capture.id)) continue;
-      await storeRawCapture(capture, Date.now());
+      await storeRawCapture(capture, storedAt);
       fresh.push(capture);
     }
 
