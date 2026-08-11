@@ -11,6 +11,10 @@ import {
 import { setSetting } from "@/lib/db/repos/app_settings_repo";
 import { getActiveRuleset, getActiveVersion } from "@/lib/db/repos/parser_rulesets_repo";
 import { TEST_DEK } from "@/test_support/db";
+import { enqueue, listOpen } from "@/lib/db/repos/review_queue_repo";
+import { getRawCapture, RAW_CAPTURE_TTL_MS, storeRawCapture } from "@/lib/db/repos/raw_notifications_repo";
+import { runMigrations } from "@/lib/db/migrations";
+import type { RawCapture } from "@/types/domain";
 import type { SQLiteDatabase } from "@/lib/db/database";
 
 // bootstrapApp opens its own database via getDatabase() (same singleton every
@@ -117,3 +121,63 @@ describe("getLastBootstrapResult", () => {
     expect(getLastBootstrapResult()).toEqual(resolved);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Retention hygiene (plan Task 11 rule 1).
+//
+// Startup is where retention runs, because it is the only moment guaranteed to
+// happen on a device the user actually opens. Both purges are bounded by the
+// clock, so both tests pin it rather than trusting wall time.
+// ---------------------------------------------------------------------------
+
+test("bootstrapApp purges raw captures past their 30-day TTL and leaves the rest", async () => {
+  await unlockDatabase(TEST_DEK);
+  db = await getDatabase();
+  await runMigrations(db);
+
+  const now = Date.now();
+  // One expired, one not. Asserting only the expired one is gone is what
+  // separates "purge works" from "purge deleted the table".
+  await storeRawCapture(rawFixture("raw-old"), now - RAW_CAPTURE_TTL_MS - 1);
+  await storeRawCapture(rawFixture("raw-fresh"), now);
+
+  await bootstrapApp();
+
+  expect(await getRawCapture("raw-old")).toBeNull();
+  expect(await getRawCapture("raw-fresh")).not.toBeNull();
+});
+
+test("bootstrapApp purges expired review items and leaves the rest", async () => {
+  await unlockDatabase(TEST_DEK);
+  db = await getDatabase();
+  await runMigrations(db);
+
+  const now = Date.now();
+  await enqueue({ kind: "low-confidence", payload: {}, expiresAt: now - 1 });
+  await enqueue({ kind: "low-confidence", payload: {}, expiresAt: now + 60_000 });
+
+  await bootstrapApp();
+
+  // Counted straight off the table, NOT through listOpen: that query already
+  // filters `expires_at > now`, so an assertion through it passes whether or
+  // not the purge ever ran. Retention means the row is GONE from disk — the
+  // point is that expired notification-derived content stops existing, not
+  // that a list hides it.
+  const rows = await db.getAllAsync<{ id: string }>("SELECT id FROM review_queue_items");
+  expect(rows).toHaveLength(1);
+  // And it is the right survivor.
+  expect(await listOpen()).toHaveLength(1);
+});
+
+function rawFixture(id: string): RawCapture {
+  return {
+    id,
+    packageName: "com.globe.gcash.android",
+    title: "GCash", // ILLUSTRATIVE
+    text: "You sent ₱1.00", // ILLUSTRATIVE
+    subText: null,
+    bigText: null,
+    postedAt: 1,
+    capturedAt: 1,
+  };
+}

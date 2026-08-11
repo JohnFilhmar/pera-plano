@@ -76,13 +76,24 @@ jest.mock("@/contexts/lock_context", () => ({
 // though useLock is held at "unlocked" throughout this file.
 jest.mock("@/modules/notification_listener", () => ({
   openSecuritySettings: jest.fn(),
+  // startIngest reaches for both of these. Without them it throws on an
+  // undefined call, which the layout swallows -- so the suite would pass while
+  // silently never exercising the real start path.
+  drainPendingCaptures: jest.fn().mockResolvedValue([]),
+  addCaptureListener: jest.fn().mockReturnValue(jest.fn()),
+}));
+
+jest.mock("@/lib/ingest/pipeline", () => ({
+  startIngest: jest.fn().mockResolvedValue(jest.fn()),
 }));
 
 import { bootstrapApp } from "@/lib/bootstrap";
+import { startIngest } from "@/lib/ingest/pipeline";
 import { useTheme } from "@/contexts/theme_context";
 import { useLock } from "@/contexts/lock_context";
 
 const mockBootstrapApp = bootstrapApp as jest.Mock;
+const mockStartIngest = startIngest as jest.Mock;
 const mockUseFonts = useFonts as jest.Mock;
 const mockUseTheme = useTheme as jest.Mock;
 const mockUseLock = useLock as jest.Mock;
@@ -119,6 +130,8 @@ let consoleErrorSpy: jest.SpyInstance;
 
 beforeEach(() => {
   mockBootstrapApp.mockReset();
+  mockStartIngest.mockReset();
+  mockStartIngest.mockResolvedValue(jest.fn());
   mockUseFonts.mockReturnValue([true, null]);
   mockUseTheme.mockReturnValue({
     resolved: "light",
@@ -216,4 +229,59 @@ test("the recovery screen's retry action actually re-invokes bootstrapApp and ca
   expect(mockBootstrapApp).toHaveBeenCalledTimes(2);
   await waitFor(() => expect(screen.queryByTestId("tab-index")).toBeTruthy());
   expect(screen.queryByTestId("bootstrap-error")).toBeNull();
+});
+
+// ---------------------------------------------------------------------------
+// Ingest startup (m1b plan Task 11, rules 2 and 3).
+// ---------------------------------------------------------------------------
+
+test("ingest starts once bootstrap resolves, and not before", async () => {
+  let resolveBootstrap: (value: { onboardingComplete: boolean }) => void = () => undefined;
+  mockBootstrapApp.mockReturnValue(
+    new Promise<{ onboardingComplete: boolean }>((resolve) => {
+      resolveBootstrap = resolve;
+    }),
+  );
+
+  renderApp();
+
+  // The pipeline reads the ruleset bootstrap seeds. Draining the native buffer
+  // before that exists would burn captures against no parser rules — and the
+  // drain is destructive, so those captures do not come back.
+  expect(mockStartIngest).not.toHaveBeenCalled();
+
+  await act(async () => {
+    resolveBootstrap({ onboardingComplete: true });
+  });
+
+  await waitFor(() => expect(mockStartIngest).toHaveBeenCalledTimes(1));
+});
+
+test("a rejecting startIngest still renders the app", async () => {
+  mockBootstrapApp.mockResolvedValue({ onboardingComplete: true });
+  // A broken ruleset, a failed drain, a Keystore auth window that closed —
+  // every one of these is survivable. An app that will not open is not: the
+  // user cannot even read the ledger they already have, let alone fix it.
+  mockStartIngest.mockRejectedValue(new Error("drain failed"));
+  jest.spyOn(console, "error").mockImplementation(() => undefined);
+
+  renderApp();
+
+  await waitFor(() => expect(screen.queryByTestId("tab-index")).toBeTruthy());
+  expect(screen.queryByTestId("bootstrap-error")).toBeNull();
+});
+
+test("unmounting tears down the live capture subscription", async () => {
+  const unsubscribe = jest.fn();
+  mockBootstrapApp.mockResolvedValue({ onboardingComplete: true });
+  mockStartIngest.mockResolvedValue(unsubscribe);
+
+  const view = renderApp();
+  await waitFor(() => expect(mockStartIngest).toHaveBeenCalledTimes(1));
+
+  view.unmount();
+
+  // A subscription surviving its tree keeps delivering captures into a dead
+  // listener for the rest of the process.
+  await waitFor(() => expect(unsubscribe).toHaveBeenCalledTimes(1));
 });

@@ -11,6 +11,8 @@ import { getDatabase } from "@/lib/db/database";
 import { runMigrations } from "@/lib/db/migrations";
 import { getSetting } from "@/lib/db/repos/app_settings_repo";
 import { seedDefaultCategories } from "@/lib/db/repos/categories_repo";
+import { purgeExpired } from "@/lib/db/repos/review_queue_repo";
+import { purgeExpiredRawCaptures } from "@/lib/db/repos/raw_notifications_repo";
 import { seedParserRules } from "@/lib/ingest/seed_rules";
 
 export type BootstrapResult = { onboardingComplete: boolean };
@@ -45,9 +47,37 @@ export async function bootstrapApp(): Promise<BootstrapResult> {
   await runMigrations(db);
   await seedDefaultCategories();
   await seedParserRules();
+  await runRetention(Date.now());
   const onboardingComplete = await getSetting("onboarding_complete");
   lastResult = { onboardingComplete };
   return lastResult;
+}
+
+/**
+ * Retention hygiene (plan Task 11 rule 1). Startup is where it runs, because it
+ * is the only moment guaranteed to happen on a device someone actually opens —
+ * there is no background job, and a phone that never launches the app should
+ * not be accumulating notification text indefinitely.
+ *
+ * Raw captures carry the 30-day TTL that makes the "we keep the text for a
+ * month" promise real rather than aspirational (contract §3), and expired
+ * review items are notification-derived content too. `listOpen` already hides
+ * an expired item, which is exactly why the deletion has to happen here:
+ * hiding is not retention.
+ *
+ * FAILURES ARE SWALLOWED, unlike every other step in this sequence. A purge is
+ * housekeeping; the app is completely usable without it, and letting a failed
+ * DELETE put the user on the recovery screen would trade a slightly larger
+ * table for a device that cannot open. That asymmetry is the whole reason this
+ * is not inlined above.
+ */
+async function runRetention(now: number): Promise<void> {
+  try {
+    await purgeExpiredRawCaptures(now);
+    await purgeExpired(now);
+  } catch {
+    // Housekeeping only — never worth failing a launch over.
+  }
 }
 
 /**

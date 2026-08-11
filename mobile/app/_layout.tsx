@@ -48,6 +48,7 @@ import { ThemeProvider, useTheme } from "@/contexts/theme_context";
 import { LockProvider, useLock } from "@/contexts/lock_context";
 import { applyGlobalFont } from "@/lib/fonts";
 import { bootstrapApp } from "@/lib/bootstrap";
+import { startIngest } from "@/lib/ingest/pipeline";
 import { persistOptions, queryClient } from "@/lib/query_client";
 import LockScreen from "./lock";
 
@@ -119,6 +120,38 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
       runBootstrap();
     }
   }, [lockStatus, runBootstrap]);
+
+  // Ingest starts only once bootstrap has succeeded — the pipeline reads the
+  // parser ruleset bootstrap seeds, and starting first would drain the native
+  // buffer with no rules to parse it against.
+  //
+  // NOTHING HERE MAY BLOCK OR BREAK THE APP (plan Task 11 rule 3). The whole
+  // effect is fire-and-forget with its own catch: a broken parser, a failed
+  // drain, a rejected Keystore auth — none of them may keep the UI from
+  // rendering. The user can still read their ledger and fix things by hand;
+  // an app that will not open cannot be fixed at all.
+  useEffect(() => {
+    if (bootstrapState !== "ready") return;
+
+    let stop: (() => void) | null = null;
+    let cancelled = false;
+
+    startIngest()
+      .then((unsubscribe) => {
+        // Unmounted before the drain finished: tear down immediately rather
+        // than leaking a live subscription into a dead tree.
+        if (cancelled) unsubscribe();
+        else stop = unsubscribe;
+      })
+      .catch((error: unknown) => {
+        console.error("startIngest failed; the app runs without live capture", error);
+      });
+
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
+  }, [bootstrapState]);
 
   // Fonts, theme, and the lock's own "checking" phase all render nothing —
   // the same bucket pre-Task-9 fonts/theme/bootstrap already shared.
