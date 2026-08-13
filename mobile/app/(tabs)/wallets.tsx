@@ -56,14 +56,17 @@ export default function WalletsScreen() {
   if (wallets.length === 0) {
     return (
       <View className="flex-1 justify-center bg-bg dark:bg-bg-dark">
-        {/* Rule 6's sentence, split across EmptyState's heading and body:
-            "No wallets yet — add the bank or e-wallet you use most."
+        {/* Title is the SPEC's string (docs/04-features/02-wallets.md, UX-states
+            table), not the plan's. Global Constraints: "Where this plan and a
+            spec disagree, the spec wins" — and they disagree here. The plan's
+            wording survives as the body, because it says the one useful thing
+            the spec's does not: WHICH wallet to add first.
             The "Add wallet" action itself belongs to Task 5, which owns
             app/wallet/new.tsx — a button here would open nothing. */}
         <EmptyState
           testID="wallets-empty"
-          title="No wallets yet"
-          body="Add the bank or e-wallet you use most."
+          title="Add your first Wallet"
+          body="Start with the bank or e-wallet you use most."
         />
       </View>
     );

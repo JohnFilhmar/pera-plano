@@ -388,15 +388,16 @@ describe("empty state", () => {
   test("renders when there are no wallets", async () => {
     renderScreen();
 
-    // Rule 6's single sentence, split across EmptyState's required title and
-    // body: "No wallets yet — add the bank or e-wallet you use most."
-    expect(await screen.findByText("No wallets yet")).toBeTruthy();
-    expect(screen.getByText("Add the bank or e-wallet you use most.")).toBeTruthy();
+    // Title is the SPEC's string (UX-states table); the plan's wording survives
+    // as the body. Global Constraints: where the plan and a spec disagree, the
+    // spec wins -- and they disagree on exactly this line.
+    expect(await screen.findByText("Add your first Wallet")).toBeTruthy();
+    expect(screen.getByText("Start with the bank or e-wallet you use most.")).toBeTruthy();
   });
 
   test("renders no total row when there is nothing to total", async () => {
     renderScreen();
-    await screen.findByText("No wallets yet");
+    await screen.findByText("Add your first Wallet");
 
     expect(screen.queryByTestId("wallets-total-amount")).toBeNull();
   });
@@ -407,7 +408,7 @@ describe("empty state", () => {
 
     renderScreen();
 
-    expect(screen.queryByText("No wallets yet")).toBeNull();
+    expect(screen.queryByText("Add your first Wallet")).toBeNull();
     await screen.findByText("BPI");
   });
 });
