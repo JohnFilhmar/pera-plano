@@ -113,12 +113,18 @@ formatCentavos(amount: Centavos): string;    // 123456 → "₱1,234.56"
 
 **Files:**
 - Create: `mobile/hooks/queries/use_wallets.ts`, `use_wallet.ts`, `use_transactions.ts`, `use_transaction.ts`, `use_categories.ts`, `use_review_queue.ts`, `use_review_count.ts`
-- Create: `mobile/hooks/mutations/use_create_wallet.ts`, `use_update_wallet.ts`, `use_archive_wallet.ts`, `use_create_transaction.ts`, `use_update_transaction.ts`, `use_resolve_review_item.ts`, `use_link_transfer.ts`, `use_unlink_transfer.ts`, `use_reconcile_cash.ts`
+- Create: `mobile/hooks/mutations/use_create_wallet.ts`, `use_update_wallet.ts`, `use_archive_wallet.ts`, `use_create_transaction.ts`, `use_update_transaction.ts`, `use_resolve_review_item.ts`, `use_link_transfer.ts`, `use_unlink_transfer.ts` (`use_reconcile_cash.ts` STRUCK 2026-08-11 — deferred to Task 5, which designs what reconciliation writes)
 - Test: `mobile/hooks/__tests__/hooks.test.tsx`
 
 **Rules:**
 1. Each hook is thin: a `queryKey` from `constants/query_keys.ts` plus a repository call. No business logic in hooks.
-2. Every mutation invalidates the narrowest sufficient key set. A new transaction invalidates `transactions.all`, the affected `wallets.detail`, and `reviewQueue.count` — not the whole cache.
+2. Every mutation invalidates the narrowest sufficient key set. A new transaction invalidates `transactions.all`, `wallets.list()`, the affected `wallets.detail`, and `reviewQueue.count` — not the whole cache.
+
+   > **`wallets.list()` added 2026-08-11 (during Task 3).** The original set omitted it, which is
+   > wrong in a way that would have looked like a caching mystery rather than a bug: the list rows
+   > carry the very balance the transaction just moved, so the Wallets tab would keep showing the
+   > pre-transaction figure for up to the client's 5-minute `staleTime`. The user watches money
+   > leave their account and the app says it did not.
 3. Mutations inherit `retry: 0` from the client (foundation Task 16). Never override it: a retried write double-posts money.
 4. `use_review_count` powers the tab badge and is the only hook that polls; give it a 30 s `refetchInterval`.
 
@@ -168,8 +174,14 @@ formatCentavos(amount: Centavos): string;    // 123456 → "₱1,234.56"
 **Files:**
 - Create: `mobile/app/wallet/new.tsx`, `mobile/app/wallet/[id]/edit.tsx`
 - Create: `mobile/components/wallets/wallet_form.tsx`, `matcher_picker.tsx`, `cash_reconcile_sheet.tsx`
-- Create: `mobile/lib/db/repos/wallet_matchers_repo.ts`
-- Test: `mobile/lib/db/repos/__tests__/wallet_matchers_repo.test.ts`
+- **EXTEND** (not create): `mobile/lib/db/repos/wallet_matchers_repo.ts`
+- **EXTEND** (not create): `mobile/lib/db/repos/__tests__/wallet_matchers_repo.test.ts`
+
+  > **CORRECTED 2026-08-11 (after Task 3).** Both files already exist — M1b Task 10 shipped them
+  > so the ingest Normalizer could resolve a capture to a wallet. Only `listMatchers` is there;
+  > `setMatchers` and `findWalletForPackage` are still owed. Recreating the file would clobber
+  > the pipeline's read path, and the failure would show up as captures silently landing in the
+  > Review Queue with no wallet rather than as a broken build.
 - Test: `mobile/components/wallets/__tests__/wallet_form.test.tsx`
 - Test: `mobile/components/wallets/__tests__/cash_reconcile_sheet.test.tsx`
 
