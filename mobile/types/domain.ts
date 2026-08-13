@@ -41,6 +41,23 @@ export type WalletMatcher = {
   updatedAt: EpochMs;
 };
 
+/**
+ * A matcher as the matcher picker offers it, before it belongs to a Wallet
+ * (m1c Task 5). `walletId` is the argument to `setMatchers`, not a field here —
+ * the whole point of that call is to decide which Wallet the pair lands on.
+ *
+ * `hint` is the CONTENT DISCRIMINATOR that lets one provider feed two Wallets
+ * (docs/04-features/02-wallets.md §matcher management — GCash main vs GSave).
+ * Absent, `null`, and blank all mean the same thing and are stored as `null`:
+ * `normalizeEvent`'s `foldHint` reads a blank hint as "this row claims the whole
+ * provider", so a form writing `""` where it meant nothing must not produce a
+ * row the pipeline and the conflict check disagree about.
+ */
+export type NewWalletMatcher = {
+  packageName: string;
+  hint?: string | null;
+};
+
 // ---------- Transaction ----------
 export type TxDirection = "in" | "out";
 export type TxSource = "notification" | "manual" | "recurring-rule" | "import";
