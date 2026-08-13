@@ -24,13 +24,18 @@ test("001_core creates exactly the 19 contract tables", async () => {
   expect(EXPECTED_TABLES).toHaveLength(19);
 });
 
-test("transactions has the exact contract §3 columns in order", async () => {
+test("transactions has the exact contract §3 columns in order, with 002's pair appended after them", async () => {
   const db = await freshDb();
   const cols = await db.getAllAsync<{ name: string }>("PRAGMA table_info(transactions)");
   expect(cols.map((c) => c.name)).toEqual([
     "id", "wallet_id", "category_id", "amount", "direction", "occurred_at",
     "merchant", "counterparty", "reference_no", "source", "confidence",
     "raw_notification_id", "transfer_link_id", "note", "created_at", "updated_at",
+    // 002_balance_after (m1c Task 3b). APPENDED, never interleaved: SQLite's
+    // ALTER TABLE ADD COLUMN can only add at the end, so all sixteen contract §3
+    // columns keep their exact positions — which is the assertion above still
+    // being written out in full rather than sliced.
+    "balance_after", "computed_balance",
   ]);
 });
 
@@ -469,6 +474,10 @@ describe("money columns hold exact integer centavos, never REAL", () => {
   const MONEY_COLUMNS: Array<{ table: string; column: string }> = [
     { table: "wallets", column: "balance" },
     { table: "transactions", column: "amount" },
+    // 002_balance_after's pair are money columns like any other — an
+    // ALTER TABLE that typed them REAL would round the provider's own figure.
+    { table: "transactions", column: "balance_after" },
+    { table: "transactions", column: "computed_balance" },
     { table: "transfer_links", column: "fee_amount" },
     { table: "limits", column: "value" },
     { table: "goals", column: "target_amount" },

@@ -126,6 +126,8 @@ describe("transaction mapper", () => {
     rawNotificationId: null,
     transferLinkId: null,
     note: null,
+    balanceAfter: null,
+    computedBalance: null,
     createdAt: 1754060400002,
     updatedAt: 1754060400003,
   };
@@ -210,9 +212,90 @@ describe("transaction mapper", () => {
       rawNotificationId: null,
       transferLinkId: null,
       note: null,
+      balanceAfter: null,
+      computedBalance: null,
       createdAt: now,
       updatedAt: now + 1,
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // m1c Task 3b — balance-after, the provider's own statement of the balance.
+  //
+  // The failure this guards against is not "the mapper throws"; it is the
+  // mapper writing the value and reading back `undefined`, which turns the
+  // wallet-drift badge off for every wallet at once and looks exactly like
+  // "your bank and your ledger agree".
+  // -------------------------------------------------------------------------
+
+  test("balanceAfter and computedBalance survive a full round trip: domain -> row -> SQLite -> row -> domain", async () => {
+    const db = await freshDb();
+    const now = Date.now();
+    await db.runAsync(
+      "INSERT INTO wallets (id, name, type, balance, currency, is_archived, created_at, updated_at) VALUES ('w1','W','cash',0,'PHP',0,?,?)",
+      [now, now],
+    );
+    await db.runAsync(
+      "INSERT INTO categories (id, name, parent_id, icon, is_system, is_hidden, created_at, updated_at) VALUES ('c1','C',NULL,'circle',0,0,?,?)",
+      [now, now],
+    );
+
+    // Three DISTINCT money values, none derivable from another by accident:
+    // amount 15000, balanceAfter 431025, computedBalance 88975. A mapper that
+    // read the wrong column would land on a number this test can name.
+    const original: Transaction = {
+      ...tx,
+      id: "t_round_trip",
+      walletId: "w1",
+      categoryId: "c1",
+      amount: 15000,
+      balanceAfter: 431025,
+      computedBalance: 88975,
+      createdAt: now,
+      updatedAt: now,
+      occurredAt: now,
+    };
+    const row = transactionToRow(original);
+    await db.runAsync(
+      `INSERT INTO transactions
+         (id, wallet_id, category_id, amount, direction, occurred_at, merchant, counterparty,
+          reference_no, source, confidence, raw_notification_id, transfer_link_id, note,
+          created_at, updated_at, balance_after, computed_balance)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        row.id, row.wallet_id, row.category_id, row.amount, row.direction, row.occurred_at,
+        row.merchant, row.counterparty, row.reference_no, row.source, row.confidence,
+        row.raw_notification_id, row.transfer_link_id, row.note, row.created_at,
+        row.updated_at, row.balance_after, row.computed_balance,
+      ],
+    );
+
+    const readBack = await db.getFirstAsync<Record<string, unknown>>(
+      "SELECT * FROM transactions WHERE id = 't_round_trip'",
+    );
+    const domain = rowToTransaction(readBack as never);
+    expect(domain.balanceAfter).toBe(431025);
+    expect(domain.computedBalance).toBe(88975);
+    expect(domain.balanceAfter).not.toBeUndefined();
+    expect(domain).toEqual(original);
+  });
+
+  test("a null balanceAfter stays null through the mapper — never 0, and never the string 'null'", () => {
+    // 0 is a legitimate reported balance (a drained wallet). Coercing absent to
+    // 0 would snap real wallets to empty; coercing it to "null" would store a
+    // string in an INTEGER money column.
+    const row = transactionToRow({ ...tx, balanceAfter: null, computedBalance: null });
+    expect(row.balance_after).toBeNull();
+    expect(row.computed_balance).toBeNull();
+    expect(row.balance_after).not.toBe(0);
+    expect(row.balance_after).not.toBe("null");
+  });
+
+  test("a reported balance of exactly 0 survives as 0, not as null", () => {
+    const row = transactionToRow({ ...tx, balanceAfter: 0, computedBalance: 0 });
+    expect(row.balance_after).toBe(0);
+    expect(row.balance_after).not.toBeNull();
+    expect(rowToTransaction({ ...row } as never).balanceAfter).toBe(0);
   });
 });
 

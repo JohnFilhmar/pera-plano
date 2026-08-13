@@ -8,7 +8,7 @@
 import { getDatabase } from "@/lib/db/database";
 import { rowToWallet, type WalletRow } from "@/lib/db/mappers";
 import { newId } from "@/lib/ids";
-import type { NewWallet, Wallet } from "@/types/domain";
+import type { Centavos, NewWallet, Wallet } from "@/types/domain";
 
 /**
  * Thrown by `createWallet` when `name` collides with a non-archived Wallet
@@ -182,4 +182,58 @@ export async function archiveWallet(id: string): Promise<void> {
     "UPDATE wallets SET is_archived = 1, updated_at = ? WHERE id = ? AND is_archived = 0",
     [Date.now(), id],
   );
+}
+
+/**
+ * The two balances a Wallet has, and the gap between them.
+ *
+ * `reported` is the provider's own figure from the last balance-carrying
+ * Transaction committed against this Wallet — the one that actually SET the
+ * Wallet's `balance` (docs/04-features/02-wallets.md §balance handling rule 1).
+ * `computed` is what the balance would have been without that snap. `drift` is
+ * `reported - computed`: POSITIVE means the bank holds more than the ledger
+ * accounts for (income the app never saw), NEGATIVE means it holds less (spend
+ * the app never saw). Compare its magnitude against the ruleset's
+ * `balanceDriftToleranceCentavos` to decide whether the attention state fires
+ * (rule 3) — the tolerance lives in ruleset data because the spec lists its
+ * value as an open question (§14 item 1) to be tuned during M1.
+ *
+ * `null` — NOT a zero drift — when the Wallet has never received a reported
+ * balance at all: cash Wallets, brand-new Wallets, providers that omit it, and
+ * unknown ids. A zero would render a badge saying the bank and the ledger agree
+ * on a Wallet the app has never had a bank figure for, which is a claim it has
+ * no basis for making. A Wallet whose figures genuinely match returns
+ * `drift: 0`, and those two states must stay distinguishable.
+ *
+ * WHY COMMIT ORDER RATHER THAN `occurred_at`. This describes the CURRENT
+ * balance, and the current balance is whatever the last snap to run set it to.
+ * Rule 12 makes the snap unconditional, and rule 9's out-of-order suppression is
+ * not implemented (see `insertTransaction`), so a late-arriving older
+ * notification does re-anchor the Wallet — and the explainer must describe the
+ * figure the Wallet actually holds, not a newer one that no longer governs it.
+ *
+ * Both figures are read off the transaction row rather than recomputed: the snap
+ * overwrote the computed balance the instant it happened, and re-deriving it
+ * would need the anchor walk that is reconciliation work.
+ */
+export async function getBalanceDrift(
+  walletId: string,
+): Promise<{ reported: Centavos; computed: Centavos; drift: Centavos } | null> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ balance_after: number; computed_balance: number }>(
+    `SELECT balance_after, computed_balance
+       FROM transactions
+      WHERE wallet_id = ? AND balance_after IS NOT NULL
+      ORDER BY created_at DESC, rowid DESC
+      LIMIT 1`,
+    [walletId],
+  );
+  if (row === null) return null;
+
+  // `computed_balance` is written as a pair with `balance_after`, so this
+  // coalesce only catches a row backfilled by hand; treating it as equal to the
+  // reported figure reports no drift rather than inventing one out of a null.
+  const reported = row.balance_after;
+  const computed = row.computed_balance ?? reported;
+  return { reported, computed, drift: reported - computed };
 }

@@ -28,7 +28,7 @@
 // Two shape decisions worth stating, because both look like omissions:
 //
 //   - `tunables` is absent from the JSON, deliberately. The repository merges
-//     tunables on READ from DEFAULT_TUNABLES, so restating the thirteen
+//     tunables on READ from DEFAULT_TUNABLES, so restating the fourteen
 //     constants here would buy nothing and create a second copy that silently
 //     drifts the first time one is recalibrated (§9.1). Absent means "whatever
 //     ruleset_types.ts says today", which is exactly what a bundled seed wants.

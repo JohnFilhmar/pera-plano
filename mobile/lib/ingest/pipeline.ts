@@ -350,6 +350,14 @@ async function commit(
     source: "notification",
     confidence,
     rawNotificationId: capture.id,
+    // The provider's own statement of the balance, when its notification made
+    // one. `insertTransaction` snaps the wallet to it (wallets spec rule 1);
+    // `undefined` here means the notification carried none, and the ordinary
+    // computed path applies. The parser has always extracted this and the
+    // normalizer has always carried it — until m1c Task 3b this line did not
+    // exist, so it was dropped on the floor and every wallet balance was the
+    // signed sum of whatever parsed, drifting from the bank permanently.
+    balanceAfter: event.balanceAfter ?? null,
   });
 
   if (verdicts.transfer.kind === "auto_link") {

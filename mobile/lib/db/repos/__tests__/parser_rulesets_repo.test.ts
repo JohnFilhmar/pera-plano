@@ -226,11 +226,15 @@ test("DEFAULT_TUNABLES matches the spec values exactly", () => {
   expect(DEFAULT_TUNABLES.penalties.walletFallback).toBe(0.1); // §9.1
   expect(DEFAULT_TUNABLES.penalties.merchantMissing).toBe(0.05); // §9.1
   expect(DEFAULT_TUNABLES.penalties.smsChannel).toBe(0.05); // §9.1
+  // ₱1.00 — docs/04-features/02-wallets.md §14 open question 1, an initial
+  // value the M1 corpus is expected to correct.
+  expect(DEFAULT_TUNABLES.balanceDriftToleranceCentavos).toBe(100);
 
   // The exact key set, so a tunable added or renamed without a spec value
   // pinned here fails instead of shipping unasserted.
   expect(Object.keys(DEFAULT_TUNABLES).sort()).toEqual([
     "autoCommitThreshold",
+    "balanceDriftToleranceCentavos",
     "dedupeStrongWindowMs",
     "dedupeTwinWindowMs",
     "penalties",
@@ -300,6 +304,7 @@ test("a partial tunables object is completed from DEFAULT_TUNABLES", async () =>
     transferFeeRate: 0.01,
     autoCommitThreshold: 0.95,
     prefilledThreshold: 0.6,
+    balanceDriftToleranceCentavos: 100,
     penalties: {
       weakDirection: 0.15,
       amountAmbiguity: 0.3,
@@ -308,6 +313,26 @@ test("a partial tunables object is completed from DEFAULT_TUNABLES", async () =>
       smsChannel: 0.2,
     },
   });
+});
+
+test("the balance-drift tolerance ships as ₱1.00 and is remotely retunable", async () => {
+  // docs/04-features/02-wallets.md §14 open question 1 says this threshold is
+  // UNKNOWN — "too tight makes noise, too loose hides parser rot" — and has to
+  // be tuned against real parser accuracy during M1. An admittedly-unknown
+  // number belongs in ruleset data, where the server can change it without an
+  // app release, not in a constant that needs one. Below ₱1.00 is rounding;
+  // above it is a real missed transaction.
+  expect(DEFAULT_TUNABLES.balanceDriftToleranceCentavos).toBe(100);
+
+  await upsertRuleset({
+    version: 1,
+    providers: [gcashProvider()],
+    tunables: { balanceDriftToleranceCentavos: 5_000 },
+  });
+  const read = await getActiveRuleset();
+  expect(read!.tunables.balanceDriftToleranceCentavos).toBe(5_000);
+  // ...and retuning it alone leaves every other threshold on its shipped value.
+  expect(read!.tunables.autoCommitThreshold).toBe(DEFAULT_TUNABLES.autoCommitThreshold);
 });
 
 test("a corrupt payload falls back to the newest parseable version instead of throwing", async () => {

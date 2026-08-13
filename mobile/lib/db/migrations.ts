@@ -1,10 +1,12 @@
 import type { SQLiteDatabase } from "./database";
 import coreSql from "./migrations/001_core.sql";
+import balanceAfterSql from "./migrations/002_balance_after.sql";
 
 export type Migration = { version: number; name: string; sql: string };
 
 /**
- * Registry of numbered migrations, ascending. Task 7 registers 001_core.
+ * Registry of numbered migrations, ascending. Task 7 registers 001_core;
+ * m1c Task 3b registers 002_balance_after.
  * NEVER edit a shipped migration — add a new numbered one instead.
  *
  * Jest cache gotcha: babel-plugin-inline-import inlines each `*.sql` file's contents into
@@ -14,7 +16,10 @@ export type Migration = { version: number; name: string; sql: string };
  * by the next `jest` run. After editing any `*.sql` migration, run once with
  * `--no-cache` (or `jest --clearCache`) before trusting a green result.
  */
-export const MIGRATIONS: Migration[] = [{ version: 1, name: "core", sql: coreSql }];
+export const MIGRATIONS: Migration[] = [
+  { version: 1, name: "core", sql: coreSql },
+  { version: 2, name: "balance_after", sql: balanceAfterSql },
+];
 
 /**
  * Applies every migration whose version is not yet in schema_migrations,

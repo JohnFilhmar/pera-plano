@@ -100,6 +100,8 @@ function makeCandidate(overrides: Partial<Transaction> = {}): Transaction {
     rawNotificationId: null,
     transferLinkId: null,
     note: null,
+    balanceAfter: null,
+    computedBalance: null,
     createdAt: OCCURRED_AT,
     updatedAt: OCCURRED_AT,
     ...overrides,

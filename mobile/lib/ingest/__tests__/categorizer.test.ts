@@ -69,6 +69,8 @@ function tx(overrides: Partial<Transaction> = {}): Transaction {
     rawNotificationId: null,
     transferLinkId: null,
     note: null,
+    balanceAfter: null,
+    computedBalance: null,
     createdAt: T0,
     updatedAt: T0,
     ...overrides,

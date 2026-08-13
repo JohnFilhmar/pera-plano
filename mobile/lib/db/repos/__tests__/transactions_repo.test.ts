@@ -8,6 +8,7 @@ import {
   sumSpend,
   TransactionNotFoundError,
   updateTransaction,
+  type TransactionPatch,
 } from "../transactions_repo";
 import { freshDb } from "@/test_support/db";
 import type { SQLiteDatabase } from "@/lib/db/database";
@@ -1000,5 +1001,246 @@ describe("updateTransaction keeps the wallet balance in step with the ledger", (
 
     expect(await balanceOf(walletId)).toBe(expected.get(walletId));
     expect(await balanceOf(other.id)).toBe(expected.get(other.id));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// m1c Task 3b — the reported balance-after, and the SNAP.
+//
+// docs/04-features/02-wallets.md §balance handling rule 1: "When a committed
+// Transaction carries a balance-after for its Wallet, the Wallet `balance`
+// SNAPS to that reported value. Reported wins because it is the provider's own
+// statement of truth."
+//
+// THE ONE THING EVERY TEST BELOW IS BUILT AROUND. The wallet in `beforeEach`
+// opens at ₱1,000.00 (100000). Every snapping test below reports a figure that
+// no increment of any amount in the test could produce, so "set" and "add" can
+// never be confused for one another. A test that seeded the wallet at the
+// reported figure minus the amount would pass against an implementation that
+// ignored the snap entirely — which is precisely the bug this task exists to
+// close.
+// ---------------------------------------------------------------------------
+
+const OPENING = 100000; // the shared `walletId` wallet, ₱1,000.00
+
+describe("a reported balance-after SETS the wallet balance instead of moving it", () => {
+  test("the wallet snaps to the reported figure, not to opening minus the amount", async () => {
+    // Deliberately wrong starting balance. ₱150.00 out of a wallet the app
+    // thinks holds ₱1,000.00 would leave 85000 if incremented. The provider
+    // says the balance afterwards is ₱9,000.00 — 900000. The app has clearly
+    // missed ₱8,150.00 of income, and the bank is right.
+    const tx = await insertTransaction({
+      walletId,
+      categoryId: CATEGORY_ID,
+      amount: 15000,
+      direction: "out",
+      occurredAt: 1000,
+      source: "notification",
+      confidence: 0.95,
+      balanceAfter: 900000,
+    });
+
+    expect(await balanceOf(walletId)).toBe(900000);
+    // The three numbers a broken implementation would land on instead:
+    expect(await balanceOf(walletId)).not.toBe(OPENING - 15000); // incremented
+    expect(await balanceOf(walletId)).not.toBe(OPENING + 900000); // added the report
+    expect(await balanceOf(walletId)).not.toBe(OPENING); // dropped the report
+    expect(tx.balanceAfter).toBe(900000);
+  });
+
+  test("an OUT transaction whose reported balance is HIGHER than before still snaps upward", async () => {
+    // The sharpest discriminator in this file. An increment on an `out` row can
+    // only ever LOWER the balance; here the reported figure is above the
+    // starting one, so any implementation that adds a signed effect — however
+    // it computes it — moves the balance the wrong way. Only a SET lands here.
+    await insertTransaction({
+      walletId,
+      categoryId: CATEGORY_ID,
+      amount: 25000,
+      direction: "out",
+      occurredAt: 1000,
+      source: "notification",
+      confidence: 0.95,
+      balanceAfter: 500000,
+    });
+
+    expect(await balanceOf(walletId)).toBe(500000);
+    expect(await balanceOf(walletId)).toBeGreaterThan(OPENING);
+  });
+
+  test("an IN transaction whose reported balance is LOWER than before still snaps downward", async () => {
+    // The mirror image, so the snap cannot be a one-directional special case.
+    await insertTransaction({
+      walletId,
+      categoryId: CATEGORY_ID,
+      amount: 25000,
+      direction: "in",
+      occurredAt: 1000,
+      source: "notification",
+      confidence: 0.95,
+      balanceAfter: 4000,
+    });
+
+    expect(await balanceOf(walletId)).toBe(4000);
+    expect(await balanceOf(walletId)).toBeLessThan(OPENING);
+  });
+
+  test("a reported balance of exactly ₱0.00 empties the wallet — 0 is a report, not an absence", async () => {
+    await insertTransaction({
+      walletId,
+      categoryId: CATEGORY_ID,
+      amount: 5000,
+      direction: "out",
+      occurredAt: 1000,
+      source: "notification",
+      confidence: 0.95,
+      balanceAfter: 0,
+    });
+    // A `balanceAfter ? snap : increment` truthiness check leaves 95000 here.
+    expect(await balanceOf(walletId)).toBe(0);
+  });
+
+  test("two snaps in a row leave the wallet on the SECOND reported figure, not on their sum", async () => {
+    await insertTransaction({
+      walletId, categoryId: CATEGORY_ID, amount: 10000, direction: "out",
+      occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 700000,
+    });
+    await insertTransaction({
+      walletId, categoryId: CATEGORY_ID, amount: 20000, direction: "out",
+      occurredAt: 2000, source: "notification", confidence: 0.95, balanceAfter: 300000,
+    });
+
+    expect(await balanceOf(walletId)).toBe(300000);
+    expect(await balanceOf(walletId)).not.toBe(700000 - 20000);
+  });
+
+  test("the snap only touches the reporting wallet, never a sibling", async () => {
+    const other = await createWallet({ name: "Maya", type: "e-wallet", openingBalance: 50000 });
+    await insertTransaction({
+      walletId, categoryId: CATEGORY_ID, amount: 15000, direction: "out",
+      occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 900000,
+    });
+
+    expect(await balanceOf(walletId)).toBe(900000);
+    expect(await balanceOf(other.id)).toBe(50000);
+  });
+});
+
+describe("the ordinary computed path is untouched when no balance is reported", () => {
+  test("an omitted balanceAfter still increments, exactly as before", async () => {
+    await insertTransaction({
+      walletId, categoryId: CATEGORY_ID, amount: 15000, direction: "out",
+      occurredAt: 1000, source: "manual", confidence: 1,
+    });
+    expect(await balanceOf(walletId)).toBe(OPENING - 15000);
+  });
+
+  test("an explicit null balanceAfter increments too — absent and null mean the same thing", async () => {
+    await insertTransaction({
+      walletId, categoryId: CATEGORY_ID, amount: 15000, direction: "out",
+      occurredAt: 1000, source: "manual", confidence: 1, balanceAfter: null,
+    });
+    expect(await balanceOf(walletId)).toBe(OPENING - 15000);
+    const [row] = await listTransactions({});
+    expect(row.balanceAfter).toBeNull();
+    expect(row.computedBalance).toBeNull();
+  });
+
+  test("a non-reporting transaction after a snap moves off the SNAPPED balance", async () => {
+    // The snap is an anchor: what follows it is computed FROM it (spec rule 2),
+    // not from the pre-snap running total.
+    await insertTransaction({
+      walletId, categoryId: CATEGORY_ID, amount: 10000, direction: "out",
+      occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 900000,
+    });
+    await insertTransaction({
+      walletId, categoryId: CATEGORY_ID, amount: 25000, direction: "out",
+      occurredAt: 2000, source: "manual", confidence: 1,
+    });
+    expect(await balanceOf(walletId)).toBe(875000);
+  });
+});
+
+describe("the snap and the row insert are one SQL transaction", () => {
+  test("a rejected insert leaves NO snapped balance and NO row behind", async () => {
+    // amount 0 violates the schema's CHECK (amount > 0). An implementation that
+    // snapped the wallet outside the transaction — or before the insert, with
+    // no transaction at all — would leave the wallet claiming ₱9,000.00 with
+    // nothing in the ledger to explain it.
+    await expect(
+      insertTransaction({
+        walletId, categoryId: CATEGORY_ID, amount: 0, direction: "out",
+        occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 900000,
+      }),
+    ).rejects.toThrow();
+
+    expect(await balanceOf(walletId)).toBe(OPENING);
+    expect(await listTransactions({})).toHaveLength(0);
+  });
+
+  test("a rejected insert against a nonexistent wallet snaps nothing at all", async () => {
+    await expect(
+      insertTransaction({
+        walletId: "no-such-wallet", categoryId: CATEGORY_ID, amount: 15000, direction: "out",
+        occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 900000,
+      }),
+    ).rejects.toThrow();
+
+    expect(await balanceOf(walletId)).toBe(OPENING);
+    expect(await listTransactions({})).toHaveLength(0);
+  });
+});
+
+describe("balanceAfter round-trips through the repository, and is provenance", () => {
+  test("the reported figure reads back from getTransaction, not as undefined", async () => {
+    const tx = await insertTransaction({
+      walletId, categoryId: CATEGORY_ID, amount: 15000, direction: "out",
+      occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 900000,
+    });
+
+    const read = await getTransaction(tx.id);
+    expect(read?.balanceAfter).toBe(900000);
+    expect(read?.balanceAfter).not.toBeUndefined();
+    expect(read).toEqual(tx);
+  });
+
+  test("the computed figure the snap overrode is kept alongside it", async () => {
+    // What the balance WOULD have been (spec rule 2's computed expectation), so
+    // the drift explainer has both numbers to show. 100000 - 15000 = 85000.
+    const tx = await insertTransaction({
+      walletId, categoryId: CATEGORY_ID, amount: 15000, direction: "out",
+      occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 900000,
+    });
+    expect(tx.computedBalance).toBe(85000);
+    expect((await getTransaction(tx.id))?.computedBalance).toBe(85000);
+    // Distinct from both the reported figure and the amount — a transposed
+    // column binding lands on one of those.
+    expect(tx.computedBalance).not.toBe(tx.balanceAfter);
+    expect(tx.computedBalance).not.toBe(tx.amount);
+  });
+
+  test("updateTransaction cannot patch balanceAfter or computedBalance", async () => {
+    // Provenance, exactly like source / confidence / rawNotificationId: it is
+    // the PROVIDER's statement about a moment that has already passed, and a
+    // user correction changes the facts, not the story of where they came from.
+    // The cast is the point of the test — TransactionPatch has no such key, so
+    // this is what a caller reaching past the type system would achieve.
+    const tx = await insertTransaction({
+      walletId, categoryId: CATEGORY_ID, amount: 15000, direction: "out",
+      occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 900000,
+    });
+
+    const updated = await updateTransaction(tx.id, {
+      amount: 16000,
+      balanceAfter: 1,
+      computedBalance: 2,
+    } as unknown as TransactionPatch);
+
+    expect(updated.balanceAfter).toBe(900000);
+    expect(updated.computedBalance).toBe(85000);
+    const reread = await getTransaction(tx.id);
+    expect(reread?.balanceAfter).toBe(900000);
+    expect(reread?.computedBalance).toBe(85000);
+    expect(reread?.amount).toBe(16000);
   });
 });

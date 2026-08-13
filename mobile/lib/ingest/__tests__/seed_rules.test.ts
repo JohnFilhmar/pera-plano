@@ -447,7 +447,7 @@ test("merchant and reference groups are optional — the same templates match wi
 // ---------------------------------------------------------------------------
 
 test("seed.json omits tunables so DEFAULT_TUNABLES stays the single source of truth", () => {
-  // The repo merges tunables on READ, so restating the thirteen constants here
+  // The repo merges tunables on READ, so restating the fourteen constants here
   // would buy nothing and create a second copy that drifts the first time one
   // is recalibrated (spec §9.1) in ruleset_types.ts.
   expect(Object.keys(RAW)).not.toContain("tunables");

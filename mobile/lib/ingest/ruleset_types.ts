@@ -20,6 +20,7 @@
 //   - `tunables` — spec §11.1 lists dedupe windows, transfer windows and fee
 //     tolerances, and the confidence penalties and thresholds as ruleset data
 //     precisely so they can be retuned remotely (§6 rule 6, §7 rule 3.3).
+import type { Centavos } from "@/types/domain";
 
 /** One ordered pattern within a provider's pack. Contract §5. */
 export type ProviderTemplate = {
@@ -64,6 +65,20 @@ export type PipelineTunables = {
   transferFeeRate: number;
   autoCommitThreshold: number;
   prefilledThreshold: number;
+  /**
+   * How far a reported balance-after may sit from the computed expectation
+   * before the Wallet enters the balance-drift attention state
+   * (docs/04-features/02-wallets.md §balance handling rule 3). The snap happens
+   * either way — rule 12 — this only decides whether the user is told.
+   *
+   * Ruleset data rather than a constant BECAUSE THE SPEC ADMITS IT DOES NOT
+   * KNOW THE VALUE: §14 open question 1 says the threshold "needs tuning
+   * against real parser accuracy data during M1; too tight makes noise, too
+   * loose hides parser rot". A number that will certainly be recalibrated
+   * belongs where the server can recalibrate it, not where it needs an app
+   * release.
+   */
+  balanceDriftToleranceCentavos: Centavos;
   penalties: {
     weakDirection: number;
     amountAmbiguity: number;
@@ -95,7 +110,7 @@ export type PartialPipelineTunables = Partial<Omit<PipelineTunables, "penalties"
  * A bundle as it ARRIVES — from the bundled seed JSON or the server. The only
  * difference from `RulesetBundle` is that `tunables` may be absent or partial:
  * a payload that only wants to change one threshold must not have to restate
- * the other twelve, and one that cares about none omits the key entirely
+ * the other thirteen, and one that cares about none omits the key entirely
  * (plan Task 1 rule 3). Every `RulesetBundle` is a valid input, so callers
  * holding a complete bundle need no conversion.
  */
@@ -126,6 +141,12 @@ export const DEFAULT_TUNABLES: PipelineTunables = {
   autoCommitThreshold: 0.9,
   /** §9.2 — `0.60`-`0.89` routes to the Review Queue prefilled; below, needs details. */
   prefilledThreshold: 0.6,
+  /**
+   * ₱1.00, in centavos. docs/04-features/02-wallets.md §14 open question 1 — an
+   * initial value, not a measured one: below ₱1.00 is rounding, above it is a
+   * real missed transaction. Retuned remotely once M1 has parser-accuracy data.
+   */
+  balanceDriftToleranceCentavos: 100,
   penalties: {
     /** §9.1 — direction inferred from weak cues rather than an explicit template field. */
     weakDirection: 0.15,

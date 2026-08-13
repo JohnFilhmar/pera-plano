@@ -66,6 +66,9 @@ export type TransactionRow = {
   note: string | null;
   created_at: number;
   updated_at: number;
+  /** 002_balance_after — appended by ALTER TABLE, hence last, not next to `amount`. */
+  balance_after: number | null;
+  computed_balance: number | null;
 };
 
 export function rowToTransaction(row: TransactionRow): Transaction {
@@ -84,6 +87,11 @@ export function rowToTransaction(row: TransactionRow): Transaction {
     rawNotificationId: row.raw_notification_id,
     transferLinkId: row.transfer_link_id,
     note: row.note,
+    // `?? null`, never `|| null`: a reported balance of exactly 0 is a drained
+    // wallet the provider told us about, not a missing report. It also
+    // normalizes the `undefined` a row selected before 002 existed would carry.
+    balanceAfter: row.balance_after ?? null,
+    computedBalance: row.computed_balance ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -105,6 +113,8 @@ export function transactionToRow(tx: Transaction): TransactionRow {
     raw_notification_id: tx.rawNotificationId,
     transfer_link_id: tx.transferLinkId,
     note: tx.note,
+    balance_after: tx.balanceAfter,
+    computed_balance: tx.computedBalance,
     created_at: tx.createdAt,
     updated_at: tx.updatedAt,
   };

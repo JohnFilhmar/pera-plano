@@ -19,7 +19,7 @@ jest.mock("@/modules/notification_listener", () => ({
 import { closeDatabase } from "@/lib/db/database";
 import { addCaptureListener, drainPendingCaptures } from "@/modules/notification_listener";
 import { createUserRule } from "@/lib/db/repos/user_rules_repo";
-import { createWallet } from "@/lib/db/repos/wallets_repo";
+import { createWallet, getBalanceDrift, getWallet } from "@/lib/db/repos/wallets_repo";
 import { onAppEvent } from "@/lib/events/app_events";
 import { freshDb } from "@/test_support/db";
 import { getRawCapture, storeRawCapture } from "@/lib/db/repos/raw_notifications_repo";
@@ -164,6 +164,67 @@ test("a clean GCash send commits a transaction with source notification", async 
     transferLinkId: null,
   });
   expect(await listOpen()).toHaveLength(0);
+});
+
+// ---------------------------------------------------------------------------
+// m1c Task 3b — the reported balance-after, end to end.
+//
+// The parser has always extracted it and the normalizer has always carried it;
+// until this task `commit()` dropped it on the floor, because the column and
+// the field did not exist. These assert on the COMMITTED ROW produced by a real
+// capture, not on a unit call, because "the orchestrator forgot to pass it" is
+// exactly the bug that survives a green unit suite.
+// ---------------------------------------------------------------------------
+
+test("the balance the provider reported reaches the committed row", async () => {
+  // gcashSend's text ends "Your new balance is ₱1,250.00" — 125000 centavos.
+  // The wallet is opened at ₱9,000.00, deliberately NOT at a figure the ₱500.00
+  // spend could turn into 125000: incrementing lands on 850000, so the two
+  // paths can never produce the same answer.
+  const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 900000 });
+  await addMatcher(wallet.id, GCASH);
+
+  const outcome = await processCapture(gcashSend("cap-balance"));
+  expect(outcome.kind).toBe("committed");
+
+  const [row] = await ledger();
+  expect(row.balanceAfter).toBe(125000);
+  // And the wallet SNAPPED to it rather than moving by the amount.
+  const snapped = await getWallet(wallet.id);
+  expect(snapped?.balance).toBe(125000);
+  expect(snapped?.balance).not.toBe(900000 - 50000);
+});
+
+test("the drift the snap absorbed is recoverable from the wallet afterwards", async () => {
+  // Rule 3's attention state needs both figures. computed = 900000 - 50000.
+  const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 900000 });
+  await addMatcher(wallet.id, GCASH);
+
+  await processCapture(gcashSend("cap-drift"));
+
+  expect(await getBalanceDrift(wallet.id)).toEqual({
+    reported: 125000,
+    computed: 850000,
+    drift: -725000,
+  });
+});
+
+test("a provider notification with no balance in its text commits with balanceAfter null", async () => {
+  // Most notifications do not report one, and the ordinary computed path has to
+  // stay exactly as it was for them. Same GCash template, balance clause absent.
+  const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 900000 });
+  await addMatcher(wallet.id, GCASH);
+
+  await processCapture(
+    gcashSend("cap-no-balance", {
+      text: "You sent ₱500.00 to Juan Dela Cruz. Ref No. ABC123456.",
+    }),
+  );
+
+  const [row] = await ledger();
+  expect(row.balanceAfter).toBeNull();
+  expect((await getWallet(wallet.id))?.balance).toBe(850000);
+  expect(await getBalanceDrift(wallet.id)).toBeNull();
 });
 
 test("a committed transaction carries a resolvable rawNotificationRef", async () => {

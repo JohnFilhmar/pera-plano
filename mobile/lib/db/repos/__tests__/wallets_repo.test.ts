@@ -3,11 +3,13 @@ import {
   archiveWallet,
   createWallet,
   DuplicateNameError,
+  getBalanceDrift,
   getWallet,
   listWallets,
   updateWallet,
   WalletNotFoundError,
 } from "../wallets_repo";
+import { insertTransaction } from "../transactions_repo";
 import { freshDb } from "@/test_support/db";
 import type { SQLiteDatabase } from "@/lib/db/database";
 
@@ -415,5 +417,173 @@ describe("archiveWallet sets the flag and never deletes (invariant I4)", () => {
     await archiveWallet(first.id);
     const second = await createWallet({ name: "GCash", type: "e-wallet" });
     expect(second.id).not.toBe(first.id);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// m1c Task 3b — getBalanceDrift, the data behind the "balance drift" attention
+// state (docs/04-features/02-wallets.md §Wallets tab states, and §balance
+// handling rule 3: "the drift explainer shows the gap").
+//
+// A boolean would satisfy the badge and starve the explainer: "your balances
+// disagree" with no figures is a warning the user cannot act on, and rule 3's
+// two offers (record the gap as an adjustment, or dismiss) both need the gap as
+// a number. So this returns both figures AND their difference, or nothing at
+// all when there is nothing to explain.
+// ---------------------------------------------------------------------------
+
+describe("getBalanceDrift reports the gap between the provider's figure and ours", () => {
+  const CATEGORY_ID = "cat_drift";
+
+  async function seedCategory(): Promise<void> {
+    const now = Date.now();
+    await db.runAsync(
+      `INSERT INTO categories (id, name, parent_id, icon, is_system, is_hidden, created_at, updated_at)
+       VALUES (?, 'Food & Dining', NULL, 'utensils', 1, 0, ?, ?)`,
+      [CATEGORY_ID, now, now],
+    );
+  }
+
+  beforeEach(seedCategory);
+
+  test("returns null for a wallet that has never received a reported balance", async () => {
+    // Not `{ drift: 0 }`. A zero drift renders a badge saying the bank and the
+    // ledger agree — a claim the app has no basis whatsoever for making on a
+    // cash wallet, or on any wallet before its first reporting notification.
+    const wallet = await createWallet({ name: "Pocket cash", type: "cash", openingBalance: 50000 });
+    await insertTransaction({
+      walletId: wallet.id, categoryId: CATEGORY_ID, amount: 12000, direction: "out",
+      occurredAt: 1000, source: "manual", confidence: 1,
+    });
+
+    expect(await getBalanceDrift(wallet.id)).toBeNull();
+  });
+
+  test("returns null for an unknown wallet id", async () => {
+    expect(await getBalanceDrift("does-not-exist")).toBeNull();
+  });
+
+  test("returns the reported figure, the computed figure and the gap between them", async () => {
+    // Opening ₱1,000.00, a ₱150.00 spend, and the provider says ₱9,000.00.
+    // computed = 100000 - 15000 = 85000. reported = 900000. drift = 815000.
+    // All three are different numbers, so a transposed field is visible.
+    const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
+    await insertTransaction({
+      walletId: wallet.id, categoryId: CATEGORY_ID, amount: 15000, direction: "out",
+      occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 900000,
+    });
+
+    expect(await getBalanceDrift(wallet.id)).toEqual({
+      reported: 900000,
+      computed: 85000,
+      drift: 815000,
+    });
+  });
+
+  test("drift is reported MINUS computed, so a bank holding less than we counted reads negative", async () => {
+    // The sign carries meaning the explainer needs: negative means the app
+    // over-counted (a spend it missed), positive means it under-counted.
+    const wallet = await createWallet({ name: "BPI", type: "bank", openingBalance: 100000 });
+    await insertTransaction({
+      walletId: wallet.id, categoryId: CATEGORY_ID, amount: 10000, direction: "out",
+      occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 60000,
+    });
+
+    const drift = await getBalanceDrift(wallet.id);
+    expect(drift).toEqual({ reported: 60000, computed: 90000, drift: -30000 });
+    expect(drift!.drift).toBe(drift!.reported - drift!.computed);
+  });
+
+  test("returns a zero drift, NOT null, when the provider and the ledger agree exactly", async () => {
+    // The agreeing case must still produce figures: this is what tells the UI
+    // "checked, and it matches", which is a different statement from "never
+    // checked" — and it is the only way the drift tolerance can be applied.
+    const wallet = await createWallet({ name: "Maya", type: "e-wallet", openingBalance: 100000 });
+    await insertTransaction({
+      walletId: wallet.id, categoryId: CATEGORY_ID, amount: 15000, direction: "out",
+      occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 85000,
+    });
+
+    expect(await getBalanceDrift(wallet.id)).toEqual({
+      reported: 85000,
+      computed: 85000,
+      drift: 0,
+    });
+  });
+
+  test("reads the LATEST reported balance, not the first one", async () => {
+    const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
+    await insertTransaction({
+      walletId: wallet.id, categoryId: CATEGORY_ID, amount: 10000, direction: "out",
+      occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 700000,
+    });
+    // The second report lands on the SNAPPED balance: computed = 700000 - 20000.
+    await insertTransaction({
+      walletId: wallet.id, categoryId: CATEGORY_ID, amount: 20000, direction: "out",
+      occurredAt: 2000, source: "notification", confidence: 0.95, balanceAfter: 650000,
+    });
+
+    expect(await getBalanceDrift(wallet.id)).toEqual({
+      reported: 650000,
+      computed: 680000,
+      drift: -30000,
+    });
+  });
+
+  test("non-reporting transactions between two reports are folded into the computed figure", async () => {
+    const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
+    await insertTransaction({
+      walletId: wallet.id, categoryId: CATEGORY_ID, amount: 10000, direction: "out",
+      occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 700000,
+    });
+    await insertTransaction({
+      walletId: wallet.id, categoryId: CATEGORY_ID, amount: 5000, direction: "out",
+      occurredAt: 2000, source: "manual", confidence: 1,
+    });
+    // Running balance is now 695000; a ₱50.00 spend takes it to 690000.
+    await insertTransaction({
+      walletId: wallet.id, categoryId: CATEGORY_ID, amount: 5000, direction: "out",
+      occurredAt: 3000, source: "notification", confidence: 0.95, balanceAfter: 690000,
+    });
+
+    expect(await getBalanceDrift(wallet.id)).toEqual({
+      reported: 690000,
+      computed: 690000,
+      drift: 0,
+    });
+  });
+
+  test("the figures come from the report that actually set the balance — commit order, not occurred_at order", async () => {
+    // A LATE-ARRIVING OLDER NOTIFICATION. Spec rule 9's second half ("out-of-order
+    // arrivals snap only if the notification timestamp is newer") is NOT
+    // implemented — rule 12 is: the snap always proceeds. So the wallet's balance
+    // is whatever the last COMMITTED report said, and the explainer has to
+    // describe that same figure or it would explain a balance the wallet does
+    // not have. Deliberately committed with the older occurred_at LAST.
+    const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
+    await insertTransaction({
+      walletId: wallet.id, categoryId: CATEGORY_ID, amount: 10000, direction: "out",
+      occurredAt: 9000, source: "notification", confidence: 0.95, balanceAfter: 700000,
+    });
+    await insertTransaction({
+      walletId: wallet.id, categoryId: CATEGORY_ID, amount: 20000, direction: "out",
+      occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 300000,
+    });
+
+    const drift = await getBalanceDrift(wallet.id);
+    expect(drift?.reported).toBe(300000);
+    expect((await getWallet(wallet.id))?.balance).toBe(drift?.reported);
+  });
+
+  test("one wallet's report never leaks into another wallet's drift", async () => {
+    const reporting = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
+    const quiet = await createWallet({ name: "Pocket cash", type: "cash", openingBalance: 20000 });
+    await insertTransaction({
+      walletId: reporting.id, categoryId: CATEGORY_ID, amount: 15000, direction: "out",
+      occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 900000,
+    });
+
+    expect(await getBalanceDrift(quiet.id)).toBeNull();
+    expect(await getBalanceDrift(reporting.id)).not.toBeNull();
   });
 });

@@ -35,40 +35,93 @@ function historyFloor(): number | null {
   return days === null ? null : Date.now() - days * DAY_MS;
 }
 
+/** The wallet's balance as it stands right now, or 0 when the id has no row. */
+async function currentBalance(
+  db: Awaited<ReturnType<typeof getDatabase>>,
+  walletId: string,
+): Promise<Centavos> {
+  const row = await db.getFirstAsync<{ balance: number }>(
+    "SELECT balance FROM wallets WHERE id = ?",
+    [walletId],
+  );
+  return row?.balance ?? 0;
+}
+
 /**
- * Commits a Transaction and moves its Wallet's balance in the same SQL
- * transaction (`in` adds, `out` subtracts). Callers must not re-apply the delta.
+ * Commits a Transaction and settles its Wallet's balance in the same SQL
+ * transaction. Callers must not re-apply the delta.
+ *
+ * TWO PATHS, AND WHICH ONE RUNS IS DECIDED BY `balanceAfter`:
+ *
+ *   - NO REPORTED BALANCE (the common case — most notifications omit one, manual
+ *     entries have none, cash never reports): the balance MOVES by the signed
+ *     effect, `in` adding and `out` subtracting. Unchanged behaviour.
+ *
+ *   - A REPORTED BALANCE: the balance is SET to it, not moved by the amount.
+ *     docs/04-features/02-wallets.md §balance handling rule 1 — "reported wins
+ *     because it is the provider's own statement of truth". This is the whole
+ *     point: a computed balance is the signed sum of what the app managed to
+ *     parse, so one missed notification puts it permanently out of step with the
+ *     bank, silently. A snap re-anchors it to the provider's own figure every
+ *     time one arrives. Rule 12: the snap ALWAYS proceeds — drift never blocks
+ *     the commit, it only raises the attention state (see `getBalanceDrift`).
+ *
+ * The pre-snap computed figure is captured first and stored on the row, because
+ * the snap destroys it and rule 3's drift explainer needs both numbers.
+ *
+ * The read, the insert and the balance write share ONE SQL transaction. A snap
+ * applied outside it would survive a rejected insert — a wallet claiming a
+ * balance with nothing in the ledger to explain it.
+ *
+ * NOT IMPLEMENTED HERE: spec rule 9's second half, "out-of-order arrivals snap
+ * only if the notification timestamp is newer than the current snapshot's". A
+ * late-arriving older notification therefore re-anchors the wallet to its own
+ * (stale) figure. The data to fix it now exists — `balance_after` alongside
+ * `occurred_at` — but suppressing a snap is a routing decision that belongs
+ * with the reconciliation work, not with persisting the value.
  */
 export async function insertTransaction(tx: NewTransaction): Promise<Transaction> {
   const db = await getDatabase();
   const now = Date.now();
-  const record: Transaction = {
-    id: newId(),
-    walletId: tx.walletId,
-    categoryId: tx.categoryId,
-    amount: tx.amount,
-    direction: tx.direction,
-    occurredAt: tx.occurredAt,
-    merchant: tx.merchant ?? null,
-    counterparty: tx.counterparty ?? null,
-    referenceNo: tx.referenceNo ?? null,
-    source: tx.source,
-    confidence: tx.confidence,
-    rawNotificationId: tx.rawNotificationId ?? null,
-    transferLinkId: tx.transferLinkId ?? null,
-    note: tx.note ?? null,
-    createdAt: now,
-    updatedAt: now,
-  };
-  const row = transactionToRow(record);
+  const id = newId();
+  const balanceAfter = tx.balanceAfter ?? null;
+
+  let record: Transaction | null = null;
 
   await db.withTransactionAsync(async () => {
+    // Read inside the transaction, so nothing can move the balance between the
+    // figure we record as "computed" and the snap that replaces it.
+    const before = balanceAfter === null ? null : await currentBalance(db, tx.walletId);
+
+    const committed: Transaction = {
+      id,
+      walletId: tx.walletId,
+      categoryId: tx.categoryId,
+      amount: tx.amount,
+      direction: tx.direction,
+      occurredAt: tx.occurredAt,
+      merchant: tx.merchant ?? null,
+      counterparty: tx.counterparty ?? null,
+      referenceNo: tx.referenceNo ?? null,
+      source: tx.source,
+      confidence: tx.confidence,
+      rawNotificationId: tx.rawNotificationId ?? null,
+      transferLinkId: tx.transferLinkId ?? null,
+      note: tx.note ?? null,
+      balanceAfter,
+      computedBalance: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    committed.computedBalance = before === null ? null : before + signedEffect(committed);
+
+    const row = transactionToRow(committed);
     await db.runAsync(
       `INSERT INTO transactions (
          id, wallet_id, category_id, amount, direction, occurred_at, merchant,
          counterparty, reference_no, source, confidence, raw_notification_id,
-         transfer_link_id, note, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         transfer_link_id, note, created_at, updated_at, balance_after, computed_balance
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         row.id,
         row.wallet_id,
@@ -86,16 +139,34 @@ export async function insertTransaction(tx: NewTransaction): Promise<Transaction
         row.note,
         row.created_at,
         row.updated_at,
+        row.balance_after,
+        row.computed_balance,
       ],
     );
-    await db.runAsync("UPDATE wallets SET balance = balance + ?, updated_at = ? WHERE id = ?", [
-      signedEffect(record),
-      now,
-      record.walletId,
-    ]);
+
+    if (balanceAfter === null) {
+      await db.runAsync("UPDATE wallets SET balance = balance + ?, updated_at = ? WHERE id = ?", [
+        signedEffect(committed),
+        now,
+        committed.walletId,
+      ]);
+    } else {
+      // SET, not `balance + ?`. Compared against `balanceAfter === null` rather
+      // than truthiness on purpose: a reported ₱0.00 is a drained wallet, and
+      // `if (balanceAfter)` would quietly fall through to the increment for it.
+      await db.runAsync("UPDATE wallets SET balance = ?, updated_at = ? WHERE id = ?", [
+        balanceAfter,
+        now,
+        committed.walletId,
+      ]);
+    }
+
+    record = committed;
   });
 
-  return record;
+  // Non-null by construction: withTransactionAsync rethrows anything the body
+  // threw, so reaching here means the assignment above ran.
+  return record as unknown as Transaction;
 }
 
 /**
@@ -124,6 +195,14 @@ export async function getTransaction(id: string): Promise<Transaction | null> {
  * row and the stamp on both legs are one atomic pair owned by
  * transfer_links_repo, and a second writer here would let a stamped leg exist
  * with no link row — money silently gone from every total.
+ *
+ * `balanceAfter` and `computedBalance` are excluded for the same reason as the
+ * first three, and belong with them: the first is the PROVIDER's statement about
+ * a moment that has already passed, and the second is what the app believed at
+ * that same moment. Neither is a fact about the transaction the user is
+ * correcting, and an editable balance-after would let a wallet be set to any
+ * number at all through the edit form — the exact back door `updateWallet`
+ * refuses to open by keeping `balance` unpatchable.
  */
 export type TransactionPatch = Partial<
   Pick<
@@ -165,6 +244,19 @@ export type TransactionPatch = Partial<
  * MVP (nothing adds it to a spend total — see transfer_links_repo's header), so
  * recomputing it would mean this repo reaching across into another aggregate
  * for a number nothing reads.
+ *
+ * ALSO NOT HANDLED HERE, AND THIS ONE IS A KNOWN LIMITATION: the balance ANCHOR
+ * is not re-derived. Spec rule 2 defines the computed balance as "last anchor +
+ * signed sum since", and a Transaction carrying a `balanceAfter` IS an anchor —
+ * it SET the wallet's balance rather than moving it. Reverse-then-apply keeps
+ * the arithmetic self-consistent after an edit (the balance still equals the
+ * anchor plus the ledger's own signed sum), but editing a transaction that had
+ * snapped leaves the anchor itself untouched, so `balanceAfter` and
+ * `computedBalance` on that row go on describing the moment it was committed
+ * rather than the moment as edited. Re-deriving from the last anchor is
+ * reconciliation work (m1c Task 3b brief, "explicitly out of scope"), not edit
+ * work; until it lands, a corrected snap row's stored drift is history, not a
+ * live figure.
  */
 export async function updateTransaction(
   id: string,

@@ -61,6 +61,28 @@ export type Transaction = {
   rawNotificationId: string | null;
   transferLinkId: string | null;
   note: string | null;
+  /**
+   * The balance the PROVIDER reported after this transaction, or `null` when it
+   * reported none (most notifications, every manual entry, all cash).
+   *
+   * Committing a Transaction that carries one snaps its Wallet's `balance` to it
+   * — reported wins, because it is the provider's own statement of truth
+   * (docs/04-features/02-wallets.md §balance handling rule 1). Nullable, and
+   * `null` is NOT `0`: a reported ₱0.00 is a drained wallet, a real fact.
+   */
+  balanceAfter: Centavos | null;
+  /**
+   * What the balance would have been WITHOUT the snap — the wallet's balance
+   * immediately before this row, plus its signed effect (spec rule 2's computed
+   * expectation). Written by `insertTransaction` only on rows that carry a
+   * `balanceAfter`, `null` on every other row.
+   *
+   * It exists because the snap destroys it: a heartbeat after the wallet is set
+   * to the reported figure, the number it disagreed with is gone, and rule 3's
+   * drift explainer has to show both. Frozen at commit time — see
+   * `updateTransaction`'s note on anchors.
+   */
+  computedBalance: Centavos | null;
   createdAt: EpochMs;
   updatedAt: EpochMs;
 };
@@ -79,6 +101,16 @@ export type NewTransaction = {
   rawNotificationId?: string | null;
   transferLinkId?: string | null;
   note?: string | null;
+  /**
+   * The provider's reported balance-after, when the notification carried one.
+   * Absent and `null` mean the same thing: no report, so the ordinary computed
+   * path applies. Present means the Wallet's balance is SET to this value.
+   *
+   * `computedBalance` is deliberately NOT accepted here — the repository derives
+   * it from the wallet's own state at commit time, and a caller-supplied value
+   * would let the drift explainer be handed a number nothing verified.
+   */
+  balanceAfter?: Centavos | null;
 };
 
 /** Contract §3 pinned filter for listTransactions. */
