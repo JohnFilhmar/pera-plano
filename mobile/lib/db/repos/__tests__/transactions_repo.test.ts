@@ -1,7 +1,14 @@
 import { closeDatabase } from "@/lib/db/database";
 import { __setTierForTests } from "@/lib/entitlements";
 import { createWallet } from "../wallets_repo";
-import { insertTransaction, listTransactions, sumSpend } from "../transactions_repo";
+import {
+  getTransaction,
+  insertTransaction,
+  listTransactions,
+  sumSpend,
+  TransactionNotFoundError,
+  updateTransaction,
+} from "../transactions_repo";
 import { freshDb } from "@/test_support/db";
 import type { SQLiteDatabase } from "@/lib/db/database";
 
@@ -660,5 +667,338 @@ describe("sumSpend keeps exact integer precision on totals over ₱10,000,000.00
     const total = await sumSpend({ from: 0, to: 3000 });
     expect(total).toBe(1_200_000_000);
     expect(Number.isInteger(total)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// m1c Task 3 — the read-one and edit paths the transaction detail screen and
+// the Review Queue's "Correct" action need. The m1c plan named hooks
+// (`use_transaction`, `use_update_transaction`) over repository functions that
+// were never written; these are those functions.
+// ---------------------------------------------------------------------------
+
+/** The signed effect a transaction has on its wallet's balance. */
+function signedEffect(direction: "in" | "out", amount: number): number {
+  return direction === "in" ? amount : -amount;
+}
+
+async function balanceOf(id: string): Promise<number> {
+  const row = await db.getFirstAsync<{ balance: number }>(
+    "SELECT balance FROM wallets WHERE id = ?",
+    [id],
+  );
+  return row?.balance ?? Number.NaN;
+}
+
+describe("getTransaction reads one row by id", () => {
+  test("returns the committed transaction, mapped to the domain shape", async () => {
+    const tx = await insertTransaction({
+      walletId,
+      categoryId: CATEGORY_ID,
+      amount: 15000,
+      direction: "out",
+      occurredAt: 1754060400000,
+      merchant: "Jollibee",
+      source: "notification",
+      confidence: 0.94,
+    });
+
+    const read = await getTransaction(tx.id);
+    expect(read).toEqual(tx);
+    expect(read?.merchant).toBe("Jollibee");
+  });
+
+  test("returns null, not undefined, for an unknown id", async () => {
+    const result = await getTransaction("does-not-exist");
+    expect(result).toBeNull();
+    expect(result).not.toBeUndefined();
+  });
+});
+
+describe("updateTransaction keeps the wallet balance in step with the ledger", () => {
+  // THE RULE THIS SUITE DEFENDS. insertTransaction moves the wallet balance as
+  // part of committing the row, so every later edit to amount, direction or
+  // wallet MUST move it again by exactly the difference. An update that writes
+  // the row alone leaves the balance describing a transaction that no longer
+  // exists — the silent disagreement a money app may never produce.
+
+  test("editing a non-money field leaves every balance untouched", async () => {
+    const before = await balanceOf(walletId);
+    const tx = await insertTransaction({
+      walletId,
+      categoryId: CATEGORY_ID,
+      amount: 15000,
+      direction: "out",
+      occurredAt: 1000,
+      source: "notification",
+      confidence: 0.9,
+    });
+    const afterInsert = await balanceOf(walletId);
+    expect(afterInsert).toBe(before - 15000);
+
+    const updated = await updateTransaction(tx.id, {
+      categoryId: OTHER_CATEGORY_ID,
+      note: "reimbursed by Ate",
+    });
+    expect(updated.categoryId).toBe(OTHER_CATEGORY_ID);
+    expect(updated.note).toBe("reimbursed by Ate");
+    expect(await balanceOf(walletId)).toBe(afterInsert);
+  });
+
+  test("raising an out-transaction amount subtracts exactly the difference", async () => {
+    const tx = await insertTransaction({
+      walletId,
+      categoryId: CATEGORY_ID,
+      amount: 15000,
+      direction: "out",
+      occurredAt: 1000,
+      source: "notification",
+      confidence: 0.9,
+    });
+    const afterInsert = await balanceOf(walletId);
+
+    await updateTransaction(tx.id, { amount: 20000 });
+    // Not "balance minus 20000" — the original 15000 was already applied. Only
+    // the 5000 difference may move.
+    expect(await balanceOf(walletId)).toBe(afterInsert - 5000);
+  });
+
+  test("lowering an out-transaction amount gives the difference back", async () => {
+    const tx = await insertTransaction({
+      walletId,
+      categoryId: CATEGORY_ID,
+      amount: 15000,
+      direction: "out",
+      occurredAt: 1000,
+      source: "notification",
+      confidence: 0.9,
+    });
+    const afterInsert = await balanceOf(walletId);
+
+    await updateTransaction(tx.id, { amount: 5000 });
+    expect(await balanceOf(walletId)).toBe(afterInsert + 10000);
+  });
+
+  test("flipping the direction moves the balance by TWICE the amount", async () => {
+    // The single most likely wrong implementation is "apply the new effect"
+    // without reversing the old one, which moves the balance by one amount
+    // instead of two. Correcting a misparsed direction is a first-week Review
+    // Queue action, so this path is hot, not exotic.
+    const tx = await insertTransaction({
+      walletId,
+      categoryId: CATEGORY_ID,
+      amount: 15000,
+      direction: "out",
+      occurredAt: 1000,
+      source: "notification",
+      confidence: 0.6,
+    });
+    const afterInsert = await balanceOf(walletId);
+
+    const updated = await updateTransaction(tx.id, { direction: "in" });
+    expect(updated.direction).toBe("in");
+    expect(await balanceOf(walletId)).toBe(afterInsert + 30000);
+  });
+
+  test("moving a transaction to another wallet reverses it from the old and applies it to the new", async () => {
+    const other = await createWallet({ name: "Maya", type: "e-wallet", openingBalance: 50000 });
+    const tx = await insertTransaction({
+      walletId,
+      categoryId: CATEGORY_ID,
+      amount: 15000,
+      direction: "out",
+      occurredAt: 1000,
+      source: "notification",
+      confidence: 0.6,
+    });
+    const originAfterInsert = await balanceOf(walletId);
+
+    const updated = await updateTransaction(tx.id, { walletId: other.id });
+    expect(updated.walletId).toBe(other.id);
+    // The origin wallet gets its money back...
+    expect(await balanceOf(walletId)).toBe(originAfterInsert + 15000);
+    // ...and the destination wallet pays it. A repo that only re-applied to the
+    // new wallet would leave the money missing from BOTH balances at once.
+    expect(await balanceOf(other.id)).toBe(50000 - 15000);
+  });
+
+  test("changing the wallet AND the amount together settles both wallets exactly", async () => {
+    const other = await createWallet({ name: "Maya", type: "e-wallet", openingBalance: 50000 });
+    const tx = await insertTransaction({
+      walletId,
+      categoryId: CATEGORY_ID,
+      amount: 15000,
+      direction: "out",
+      occurredAt: 1000,
+      source: "notification",
+      confidence: 0.6,
+    });
+    const originAfterInsert = await balanceOf(walletId);
+
+    await updateTransaction(tx.id, { walletId: other.id, amount: 20000 });
+    expect(await balanceOf(walletId)).toBe(originAfterInsert + 15000);
+    expect(await balanceOf(other.id)).toBe(50000 - 20000);
+  });
+
+  test("an omitted key leaves the field alone; an explicit null clears it", async () => {
+    const tx = await insertTransaction({
+      walletId,
+      categoryId: CATEGORY_ID,
+      amount: 15000,
+      direction: "out",
+      occurredAt: 1000,
+      merchant: "Jollibee",
+      counterparty: "Juan",
+      referenceNo: "REF-1",
+      note: "lunch",
+      source: "notification",
+      confidence: 0.9,
+    });
+
+    const kept = await updateTransaction(tx.id, { amount: 16000 });
+    expect(kept.merchant).toBe("Jollibee");
+    expect(kept.counterparty).toBe("Juan");
+    expect(kept.referenceNo).toBe("REF-1");
+    expect(kept.note).toBe("lunch");
+
+    const cleared = await updateTransaction(tx.id, { merchant: null, note: null });
+    expect(cleared.merchant).toBeNull();
+    expect(cleared.note).toBeNull();
+    expect(cleared.counterparty).toBe("Juan");
+  });
+
+  test("provenance fields are not editable through the patch", async () => {
+    // source, confidence, rawNotificationId and transferLinkId are how the app
+    // explains where a number came from. A user correction rewrites the FACTS
+    // (amount, wallet, category); it must never rewrite the provenance, and
+    // transfer_link_id in particular belongs to transfer_links_repo, which owns
+    // the link row and the leg stamp as one atomic pair.
+    const tx = await insertTransaction({
+      walletId,
+      categoryId: CATEGORY_ID,
+      amount: 15000,
+      direction: "out",
+      occurredAt: 1000,
+      source: "notification",
+      confidence: 0.42,
+    });
+
+    const updated = await updateTransaction(tx.id, { amount: 16000 });
+    expect(updated.source).toBe("notification");
+    expect(updated.confidence).toBe(0.42);
+    expect(updated.rawNotificationId).toBeNull();
+    expect(updated.transferLinkId).toBeNull();
+  });
+
+  test("bumps updated_at and leaves created_at alone", async () => {
+    const dateSpy = jest.spyOn(Date, "now");
+    dateSpy.mockReturnValue(1_000);
+    const tx = await insertTransaction({
+      walletId,
+      categoryId: CATEGORY_ID,
+      amount: 15000,
+      direction: "out",
+      occurredAt: 1000,
+      source: "notification",
+      confidence: 0.9,
+    });
+    dateSpy.mockReturnValue(9_000);
+    const updated = await updateTransaction(tx.id, { amount: 16000 });
+    dateSpy.mockRestore();
+
+    expect(updated.createdAt).toBe(1_000);
+    expect(updated.updatedAt).toBe(9_000);
+  });
+
+  test("the returned object is exactly what getTransaction reads back", async () => {
+    const tx = await insertTransaction({
+      walletId,
+      categoryId: CATEGORY_ID,
+      amount: 15000,
+      direction: "out",
+      occurredAt: 1000,
+      source: "notification",
+      confidence: 0.9,
+    });
+    const updated = await updateTransaction(tx.id, {
+      amount: 16000,
+      merchant: "Mang Inasal",
+      occurredAt: 2000,
+    });
+    expect(await getTransaction(tx.id)).toEqual(updated);
+  });
+
+  test("throws TransactionNotFoundError for an unknown id", async () => {
+    await expect(updateTransaction("does-not-exist", { amount: 100 })).rejects.toThrow(
+      TransactionNotFoundError,
+    );
+  });
+
+  test("a rejected write rolls the balance move back with it", async () => {
+    // amount has a CHECK (amount > 0). The row UPDATE and the two balance moves
+    // must share one SQL transaction, so a rejected row edit cannot leave the
+    // wallet already debited for a transaction that was never changed.
+    const tx = await insertTransaction({
+      walletId,
+      categoryId: CATEGORY_ID,
+      amount: 15000,
+      direction: "out",
+      occurredAt: 1000,
+      source: "notification",
+      confidence: 0.9,
+    });
+    const afterInsert = await balanceOf(walletId);
+
+    await expect(updateTransaction(tx.id, { amount: 0 })).rejects.toThrow();
+
+    expect(await balanceOf(walletId)).toBe(afterInsert);
+    expect((await getTransaction(tx.id))?.amount).toBe(15000);
+  });
+
+  test("the balance a sequence of edits leaves behind equals the ledger's own sum", async () => {
+    // The property that actually matters, stated end to end: after any number of
+    // edits, the wallet balance must still equal opening balance + the signed sum
+    // of every transaction against it. Any single missed or doubled adjustment
+    // above shows up here as a mismatch.
+    const OPENING = 100000; // the shared `walletId` wallet's opening balance
+    const other = await createWallet({ name: "Maya", type: "e-wallet", openingBalance: 0 });
+
+    const a = await insertTransaction({
+      walletId,
+      categoryId: CATEGORY_ID,
+      amount: 15000,
+      direction: "out",
+      occurredAt: 1000,
+      source: "notification",
+      confidence: 0.9,
+    });
+    const b = await insertTransaction({
+      walletId,
+      categoryId: CATEGORY_ID,
+      amount: 30000,
+      direction: "in",
+      occurredAt: 2000,
+      source: "notification",
+      confidence: 0.9,
+    });
+
+    await updateTransaction(a.id, { amount: 22500 });
+    await updateTransaction(b.id, { direction: "out" });
+    await updateTransaction(a.id, { walletId: other.id });
+
+    const rows = await db.getAllAsync<{ wallet_id: string; amount: number; direction: string }>(
+      "SELECT wallet_id, amount, direction FROM transactions",
+    );
+    const expected = new Map<string, number>([
+      [walletId, OPENING],
+      [other.id, 0],
+    ]);
+    for (const row of rows) {
+      const running = expected.get(row.wallet_id) ?? 0;
+      expected.set(row.wallet_id, running + signedEffect(row.direction as "in" | "out", row.amount));
+    }
+
+    expect(await balanceOf(walletId)).toBe(expected.get(walletId));
+    expect(await balanceOf(other.id)).toBe(expected.get(other.id));
   });
 });

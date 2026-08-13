@@ -23,6 +23,18 @@ export class DuplicateNameError extends Error {
 }
 
 /**
+ * Thrown by `updateWallet` when `id` has no row — the same shape
+ * categories_repo.ts uses for `CategoryNotFoundError`. `archiveWallet` does
+ * NOT throw this: archiving is idempotent by design (see its own doc).
+ */
+export class WalletNotFoundError extends Error {
+  constructor(public readonly walletId: string) {
+    super(`wallet not found: ${walletId}`);
+    this.name = "WalletNotFoundError";
+  }
+}
+
+/**
  * Creates a Wallet with `openingBalance` (default ₱0.00) as its balance anchor.
  * Throws `DuplicateNameError` when the name collides with a non-archived
  * Wallet (Wallet invariant 1). The comparison is case-insensitive — wallet
@@ -90,4 +102,84 @@ export async function listWallets(opts?: { includeArchived?: boolean }): Promise
     : "SELECT * FROM wallets WHERE is_archived = 0 ORDER BY created_at ASC";
   const rows = await db.getAllAsync<WalletRow>(sql);
   return rows.map(rowToWallet);
+}
+
+/**
+ * Edits a Wallet's own fields — the write path behind the wallet edit form
+ * (m1c Task 5). Throws `WalletNotFoundError` when `id` has no row, and
+ * `DuplicateNameError` when the new name collides case-insensitively with a
+ * DIFFERENT non-archived Wallet (Wallet invariant 1 applies to the UPDATE path
+ * exactly as it does to the INSERT one; enforcing it only in `createWallet`
+ * would leave renaming as an unguarded back door into two live wallets sharing
+ * a name — the thing the matcher rules key on). The row being renamed is
+ * excluded from that check, so re-casing a wallet's own name, or saving the
+ * form without touching the name, is always allowed.
+ *
+ * `balance` IS NOT PATCHABLE, and neither is `currency` or `isArchived`. The
+ * balance is the ledger's running total, moved only by `insertTransaction` /
+ * `updateTransaction` as part of committing the transaction that explains the
+ * move. A wallet-edit form that could set it directly would let a user write a
+ * number no transaction accounts for — which is precisely why adjusting a cash
+ * balance has to go through an adjustment transaction instead (m1c Task 5's
+ * cash reconciliation). Archiving has its own function below.
+ */
+export async function updateWallet(
+  id: string,
+  patch: Partial<Pick<Wallet, "name" | "type">>,
+): Promise<Wallet> {
+  const db = await getDatabase();
+  const existing = await getWallet(id);
+  if (!existing) {
+    throw new WalletNotFoundError(id);
+  }
+
+  const name = patch.name ?? existing.name;
+  if (patch.name !== undefined) {
+    const clash = await db.getFirstAsync<{ id: string }>(
+      "SELECT id FROM wallets WHERE name = ? COLLATE NOCASE AND is_archived = 0 AND id != ?",
+      [name, id],
+    );
+    if (clash) {
+      throw new DuplicateNameError(name);
+    }
+  }
+
+  const updated: Wallet = {
+    ...existing,
+    name,
+    type: patch.type ?? existing.type,
+    updatedAt: Date.now(),
+  };
+
+  await db.runAsync("UPDATE wallets SET name = ?, type = ?, updated_at = ? WHERE id = ?", [
+    updated.name,
+    updated.type,
+    updated.updatedAt,
+    id,
+  ]);
+  return updated;
+}
+
+/**
+ * Retires a Wallet by setting `is_archived`. IT NEVER DELETES.
+ *
+ * A Wallet with Transactions behind it cannot be removed without orphaning
+ * them: the schema's `NO ACTION` foreign key on `transactions.wallet_id` blocks
+ * the DELETE outright (invariant I4), and a delete-and-recreate would destroy
+ * the ledger that explains every balance the app has ever shown. Archiving is
+ * the whole retirement story — the wallet drops out of `listWallets()`, stays
+ * readable by id and under `includeArchived`, keeps its transactions attached,
+ * frees its name for reuse, and the ingest Normalizer already refuses to
+ * resolve a capture into an archived wallet.
+ *
+ * Idempotent, like `review_queue_repo.resolve` and `unlinkTransfer`: archiving
+ * an unknown or already-archived id is a silent no-op, never an error, so a
+ * double-tap in the wallet detail screen cannot fail.
+ */
+export async function archiveWallet(id: string): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync(
+    "UPDATE wallets SET is_archived = 1, updated_at = ? WHERE id = ? AND is_archived = 0",
+    [Date.now(), id],
+  );
 }

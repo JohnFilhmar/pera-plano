@@ -1,5 +1,13 @@
 import { closeDatabase } from "@/lib/db/database";
-import { createWallet, DuplicateNameError, getWallet, listWallets } from "../wallets_repo";
+import {
+  archiveWallet,
+  createWallet,
+  DuplicateNameError,
+  getWallet,
+  listWallets,
+  updateWallet,
+  WalletNotFoundError,
+} from "../wallets_repo";
 import { freshDb } from "@/test_support/db";
 import type { SQLiteDatabase } from "@/lib/db/database";
 
@@ -257,5 +265,155 @@ describe("archiving a wallet is not deleting it (invariant I4)", () => {
     await expect(db.runAsync("DELETE FROM wallets WHERE id = ?", [wallet.id])).rejects.toThrow(
       /FOREIGN KEY/i,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// m1c Task 3 — the write paths the wallet edit form and the archive action need.
+// The m1c plan named hooks (`use_update_wallet`, `use_archive_wallet`) over
+// repository functions that were never written; these are those functions.
+// ---------------------------------------------------------------------------
+
+describe("updateWallet edits the wallet's own fields and nothing else", () => {
+  test("renames a wallet, bumps updated_at, and leaves created_at and the balance alone", async () => {
+    const dateSpy = jest.spyOn(Date, "now");
+    dateSpy.mockReturnValue(1_000);
+    const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 250_00 });
+    dateSpy.mockReturnValue(9_000);
+    const updated = await updateWallet(wallet.id, { name: "GCash Main" });
+    dateSpy.mockRestore();
+
+    expect(updated.name).toBe("GCash Main");
+    expect(updated.createdAt).toBe(1_000);
+    expect(updated.updatedAt).toBe(9_000);
+    // The balance is the ledger's running total, not a form field. An update
+    // path that recomputed or reset it would silently rewrite money.
+    expect(updated.balance).toBe(250_00);
+    expect((await getWallet(wallet.id))?.name).toBe("GCash Main");
+    expect((await getWallet(wallet.id))?.balance).toBe(250_00);
+  });
+
+  test("changes the type", async () => {
+    const wallet = await createWallet({ name: "Coins.ph", type: "e-wallet" });
+    const updated = await updateWallet(wallet.id, { type: "savings" });
+    expect(updated.type).toBe("savings");
+    expect((await getWallet(wallet.id))?.type).toBe("savings");
+  });
+
+  test("an omitted key leaves that field alone rather than nulling it", async () => {
+    // A naive `UPDATE ... SET name = ?, type = ?` with `patch.name` bound
+    // directly writes NULL/undefined over the untouched column. Patching ONLY
+    // the type must leave the name intact, and vice versa.
+    const wallet = await createWallet({ name: "BPI Payroll", type: "bank" });
+    const typeOnly = await updateWallet(wallet.id, { type: "savings" });
+    expect(typeOnly.name).toBe("BPI Payroll");
+
+    const nameOnly = await updateWallet(wallet.id, { name: "BPI Savings" });
+    expect(nameOnly.type).toBe("savings");
+  });
+
+  test("throws WalletNotFoundError for an unknown id", async () => {
+    await expect(updateWallet("does-not-exist", { name: "Ghost" })).rejects.toThrow(
+      WalletNotFoundError,
+    );
+  });
+
+  test("rejects a rename onto another non-archived wallet's name, case-insensitively", async () => {
+    await createWallet({ name: "GCash", type: "e-wallet" });
+    const other = await createWallet({ name: "Maya", type: "e-wallet" });
+    // Invariant 1 has to hold on the UPDATE path too — enforcing it only in
+    // createWallet leaves renaming as an unguarded back door into two live
+    // wallets sharing a name, which is exactly what the matcher rules key on.
+    await expect(updateWallet(other.id, { name: "gcash" })).rejects.toThrow(DuplicateNameError);
+  });
+
+  test("re-casing a wallet's OWN name is allowed — the self-row must be excluded from the check", async () => {
+    const wallet = await createWallet({ name: "gcash", type: "e-wallet" });
+    // A collision check written as "any non-archived row with this name" finds
+    // the row being renamed and refuses every no-op save the form makes.
+    const updated = await updateWallet(wallet.id, { name: "GCash" });
+    expect(updated.name).toBe("GCash");
+  });
+
+  test("a name freed by archiving may be taken by a rename", async () => {
+    const retired = await createWallet({ name: "Old GCash", type: "e-wallet" });
+    const current = await createWallet({ name: "Maya", type: "e-wallet" });
+    await archiveWallet(retired.id);
+
+    const updated = await updateWallet(current.id, { name: "Old GCash" });
+    expect(updated.name).toBe("Old GCash");
+  });
+});
+
+describe("archiveWallet sets the flag and never deletes (invariant I4)", () => {
+  test("flips is_archived and bumps updated_at, leaving the row in place", async () => {
+    const dateSpy = jest.spyOn(Date, "now");
+    dateSpy.mockReturnValue(1_000);
+    const wallet = await createWallet({ name: "Old bank", type: "bank" });
+    dateSpy.mockReturnValue(9_000);
+    await archiveWallet(wallet.id);
+    dateSpy.mockRestore();
+
+    const archived = await getWallet(wallet.id);
+    expect(archived?.isArchived).toBe(true);
+    expect(archived?.updatedAt).toBe(9_000);
+    expect(archived?.createdAt).toBe(1_000);
+  });
+
+  test("the wallet's transactions survive, still pointing at the archived wallet", async () => {
+    // The whole reason there is no deleteWallet: the schema's NO ACTION foreign
+    // key would reject the DELETE, and an archive implemented as delete-and-
+    // recreate would orphan (or destroy) the ledger behind it.
+    const wallet = await createWallet({ name: "Everyday", type: "cash" });
+    const now = Date.now();
+    await db.runAsync(
+      "INSERT INTO categories (id, name, parent_id, icon, is_system, is_hidden, created_at, updated_at) VALUES (?, ?, NULL, ?, 0, 0, ?, ?)",
+      ["cat_archive", "Groceries", "shopping-cart", now, now],
+    );
+    await db.runAsync(
+      `INSERT INTO transactions (id, wallet_id, category_id, amount, direction, occurred_at, source, confidence, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'out', ?, 'manual', 1.0, ?, ?)`,
+      ["tx_archive", wallet.id, "cat_archive", 5000, now, now, now],
+    );
+
+    await archiveWallet(wallet.id);
+
+    const stillThere = await db.getFirstAsync<{ id: string; wallet_id: string }>(
+      "SELECT id, wallet_id FROM transactions WHERE id = ?",
+      ["tx_archive"],
+    );
+    expect(stillThere).toEqual({ id: "tx_archive", wallet_id: wallet.id });
+  });
+
+  test("an archived wallet leaves listWallets() but stays readable by id and via includeArchived", async () => {
+    const keep = await createWallet({ name: "Everyday", type: "cash" });
+    const retire = await createWallet({ name: "Old bank", type: "bank" });
+    await archiveWallet(retire.id);
+
+    expect((await listWallets()).map((w) => w.id)).toEqual([keep.id]);
+    expect((await listWallets({ includeArchived: true })).map((w) => w.id)).toEqual([
+      keep.id,
+      retire.id,
+    ]);
+    // Still readable by id — the detail route for an archived wallet must work.
+    expect(await getWallet(retire.id)).not.toBeNull();
+  });
+
+  test("archiving twice is a no-op, not an error", async () => {
+    const wallet = await createWallet({ name: "Old bank", type: "bank" });
+    await archiveWallet(wallet.id);
+    await expect(archiveWallet(wallet.id)).resolves.toBeUndefined();
+    expect((await getWallet(wallet.id))?.isArchived).toBe(true);
+  });
+
+  test("archiving an unknown id is a silent no-op", async () => {
+    await expect(archiveWallet("does-not-exist")).resolves.toBeUndefined();
+  });
+
+  test("archiving frees the name for a new wallet", async () => {
+    const first = await createWallet({ name: "GCash", type: "e-wallet" });
+    await archiveWallet(first.id);
+    const second = await createWallet({ name: "GCash", type: "e-wallet" });
+    expect(second.id).not.toBe(first.id);
   });
 });
