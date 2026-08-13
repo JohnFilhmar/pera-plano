@@ -319,6 +319,84 @@ export async function updateTransaction(
   return after;
 }
 
+/**
+ * Moves every Transaction from one Wallet to another, settling both balances.
+ * m1c Task 5's archive flow; docs/04-features/02-wallets.md rules 18 and 19.
+ *
+ * Archiving asks what should happen to a Wallet's history — keep it attached
+ * (the default) or move it somewhere still in use. This is the move, and there
+ * is deliberately no delete beside it: invariant 4 forbids orphan Transactions,
+ * and `wallets_repo` exports no `deleteWallet` at all.
+ *
+ * WHY IT IS HERE RATHER THAN A LOOP OVER `updateTransaction` IN A HOOK.
+ * `listTransactions` is clamped to the tier's history floor, so a Free-tier
+ * caller enumerating rows through it would move the last 90 days and silently
+ * leave everything older attached to the archived Wallet. The floor is a
+ * VISIBILITY rule (docs/05-monetization.md §3.3) and applying it to ownership
+ * would make old transactions vanish from a Wallet that still shows their
+ * money. The SQL below is unclamped for that reason, exactly as `getTransaction`
+ * is.
+ *
+ * The balance work is `updateTransaction`'s reverse-then-apply, batched: the
+ * source loses the signed effect of every row it is giving up and the target
+ * gains it. Rows and balances move in ONE SQL transaction, because a
+ * half-finished move splits a Wallet's history across two Wallets with both
+ * balances wrong.
+ *
+ * Every other column is untouched, `raw_notification_id` above all — spec rule
+ * 19: invariant 5's "why was this recorded?" transparency has to survive a move,
+ * or retiring a Wallet quietly destroys the provenance of its history.
+ *
+ * NOT HANDLED, AND KNOWN: spec rule 4 of the delete flow — a TransferLink whose
+ * two legs would end up in the SAME Wallet should be dissolved and both legs
+ * sent to the Review Queue for re-triage. That needs the Review Queue's write
+ * path (m1c Task 10) and `unlinkTransfer`, and it is a routing decision rather
+ * than a persistence one. Until it lands, moving a Wallet that holds one leg of
+ * an internal transfer into the Wallet holding the other leaves a link whose
+ * legs share a Wallet. It affects no total (transfer legs are excluded from
+ * spend and income by invariant 2) and no balance (both legs still apply), but
+ * the link is meaningless and should be re-triaged.
+ */
+export async function reassignWalletTransactions(
+  fromWalletId: string,
+  toWalletId: string,
+): Promise<void> {
+  if (fromWalletId === toWalletId) return;
+
+  const db = await getDatabase();
+  const now = Date.now();
+
+  await db.withTransactionAsync(async () => {
+    // Read inside the transaction: the delta and the rows it describes must be
+    // the same set, or the balances settle against a ledger that moved.
+    const rows = await db.getAllAsync<{ amount: number; direction: string }>(
+      "SELECT amount, direction FROM transactions WHERE wallet_id = ?",
+      [fromWalletId],
+    );
+    if (rows.length === 0) return;
+
+    const delta = rows.reduce(
+      (total, row) => total + (row.direction === "in" ? row.amount : -row.amount),
+      0,
+    );
+
+    await db.runAsync(
+      "UPDATE transactions SET wallet_id = ?, updated_at = ? WHERE wallet_id = ?",
+      [toWalletId, now, fromWalletId],
+    );
+    await db.runAsync("UPDATE wallets SET balance = balance - ?, updated_at = ? WHERE id = ?", [
+      delta,
+      now,
+      fromWalletId,
+    ]);
+    await db.runAsync("UPDATE wallets SET balance = balance + ?, updated_at = ? WHERE id = ?", [
+      delta,
+      now,
+      toWalletId,
+    ]);
+  });
+}
+
 /** Reverse-chronological ledger read, clamped to the tier's history window. */
 export async function listTransactions(filter: TxFilter): Promise<Transaction[]> {
   const db = await getDatabase();

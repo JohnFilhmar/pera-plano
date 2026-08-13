@@ -32,6 +32,18 @@ export const PROVIDER_LABELS: Record<string, string> = {
 };
 
 /**
+ * The name to show for a provider key. m1c Task 5's matcher picker.
+ *
+ * Falls back to the KEY, never to an empty string: the ruleset is
+ * remotely-updatable and can ship a provider this file has never heard of, and
+ * a picker row with no label is a row the user cannot choose deliberately.
+ * "seabank" is worse than "SeaBank" and better than blank.
+ */
+export function providerLabel(providerKey: string): string {
+  return PROVIDER_LABELS[providerKey] ?? providerKey;
+}
+
+/**
  * The name to show for a matcher's android package.
  *
  * Falls back twice, never to an empty string: an unlabelled key shows the key,
@@ -45,5 +57,5 @@ export function providerLabelForPackage(
 ): string {
   const provider = providers.find((candidate) => candidate.packageNames.includes(packageName));
   if (!provider) return packageName;
-  return PROVIDER_LABELS[provider.providerKey] ?? provider.providerKey;
+  return providerLabel(provider.providerKey);
 }

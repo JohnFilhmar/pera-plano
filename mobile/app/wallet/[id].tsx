@@ -3,7 +3,7 @@
 // Balance header, the drift badge, the wallet's matcher chips, and its
 // transactions.
 //
-// TWO THINGS THIS SCREEN DELIBERATELY DOES NOT HAVE YET:
+// ONE THING THIS SCREEN DELIBERATELY DOES NOT HAVE YET:
 //
 //   NO LEDGER LIST. Rule 4 says the detail shows the wallet's transactions
 //   "reusing the ledger list from Task 6" — day grouping, category chips,
@@ -13,29 +13,43 @@
 //   the meantime is how a transfer leg ends up muted on one screen and counted
 //   as spending on the other.
 //
-//   NO EDIT / RECONCILE / ARCHIVE ACTIONS. Rule 4 lists all three, and m1c Task
-//   5 owns all three: the wallet form (app/wallet/[id]/edit.tsx), the cash
-//   reconciliation sheet, and the archive flow's "what happens to this wallet's
-//   transactions?" prompt. A button here would either open a route that does
-//   not exist or archive a wallet without asking the question that keeps its
-//   transactions from being orphaned (invariant 4).
-import { useLocalSearchParams } from "expo-router";
+// THE THREE ACTIONS ARRIVED WITH m1c TASK 5 (rule 4: edit, reconcile, archive),
+// each behind the thing that makes it safe:
+//
+//   EDIT opens app/wallet/[id]/edit.tsx.
+//   RECONCILE is offered for `type: "cash"` ONLY (Task 5 rule 6). A wallet with
+//     a provider re-anchors itself from the reported balance-after; a typed
+//     adjustment there would fight the next snap.
+//   ARCHIVE opens the sheet that asks what happens to this wallet's
+//     transactions — never a bare confirm, because archiving without that
+//     question is how history gets orphaned or silently relocated.
+//
+// THERE IS NO DELETE, and there is no route to one. Invariant 4 forbids orphan
+// Transactions, the schema's NO ACTION foreign key blocks the DELETE outright,
+// and `wallets_repo` exports no `deleteWallet` to call.
+import { useLocalSearchParams, useRouter } from "expo-router";
+import { useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 
 import { AmountText } from "@/components/ui/amount_text";
+import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Chip } from "@/components/ui/chip";
 import { EmptyState } from "@/components/ui/empty_state";
 import { SectionHeader } from "@/components/ui/section_header";
 import { ListRow } from "@/components/ui/list_row";
+import { ArchiveWalletSheet } from "@/components/wallets/archive_wallet_sheet";
 import { BalanceMismatchBadge } from "@/components/wallets/balance_mismatch_badge";
+import { CashReconcileSheet } from "@/components/wallets/cash_reconcile_sheet";
 import { MatcherChipList } from "@/components/wallets/matcher_chip_list";
 import { WalletTypeIcon } from "@/components/wallets/wallet_type_icon";
+import { useArchiveWallet } from "@/hooks/mutations/use_archive_wallet";
 import { useBalanceDrift } from "@/hooks/queries/use_balance_drift";
 import { useRuleset } from "@/hooks/queries/use_ruleset";
 import { useTransactions } from "@/hooks/queries/use_transactions";
 import { useWallet } from "@/hooks/queries/use_wallet";
 import { useWalletMatchers } from "@/hooks/queries/use_wallet_matchers";
+import { useWallets } from "@/hooks/queries/use_wallets";
 import type { Transaction } from "@/types/domain";
 
 /** `occurredAt` as a short, local, unambiguous date. Not money — no AmountText
@@ -45,14 +59,19 @@ function occurredOn(transaction: Transaction): string {
 }
 
 export default function WalletDetailScreen() {
+  const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
   const walletId = id ?? "";
+  const [reconciling, setReconciling] = useState(false);
+  const [archiving, setArchiving] = useState(false);
 
   const { data: wallet, isPending } = useWallet(walletId);
   const { data: drift } = useBalanceDrift(walletId);
   const { data: ruleset } = useRuleset();
   const { data: matchers } = useWalletMatchers(walletId);
   const { data: transactions } = useTransactions({ walletId });
+  const { data: wallets } = useWallets();
+  const archiveWallet = useArchiveWallet();
 
   if (isPending) {
     return <View testID="wallet-detail-loading" className="flex-1 bg-bg dark:bg-bg-dark" />;
@@ -111,6 +130,62 @@ export default function WalletDetailScreen() {
             </View>
           </Card>
         </View>
+
+        {/* Rule 4's three actions. There is no fourth: see the file header on
+            why delete is offered nowhere. Archived wallets get none of them —
+            an archived wallet is read-only until it is unarchived (spec §UX
+            states, "rows are read-only until unarchived"). */}
+        {!wallet.isArchived ? (
+          <View className="flex-row gap-2 px-4 pt-3">
+            <View className="flex-1">
+              <Button
+                testID="wallet-detail-edit"
+                title="Edit"
+                variant="secondary"
+                onPress={() =>
+                  router.push({ pathname: "/wallet/[id]/edit", params: { id: wallet.id } })
+                }
+              />
+            </View>
+            {isCash ? (
+              <View className="flex-1">
+                <Button
+                  testID="wallet-detail-reconcile"
+                  title="Reconcile"
+                  variant="secondary"
+                  onPress={() => setReconciling(true)}
+                />
+              </View>
+            ) : null}
+            <View className="flex-1">
+              <Button
+                testID="wallet-detail-archive"
+                title="Archive"
+                variant="ghost"
+                onPress={() => setArchiving(true)}
+              />
+            </View>
+          </View>
+        ) : null}
+
+        <CashReconcileSheet
+          wallet={wallet}
+          visible={reconciling}
+          onDismiss={() => setReconciling(false)}
+        />
+        <ArchiveWalletSheet
+          wallet={wallet}
+          visible={archiving}
+          onDismiss={() => setArchiving(false)}
+          otherWallets={wallets ?? []}
+          transactionCount={(transactions ?? []).length}
+          onArchive={(moveTransactionsTo) => {
+            archiveWallet.mutate(
+              { id: wallet.id, moveTransactionsTo },
+              { onSuccess: () => setArchiving(false) },
+            );
+          }}
+        />
 
         {/* Rule 4: cash wallets have empty matchers and the matcher UI is
             hidden for them — money enters by manual entry, transfer legs and

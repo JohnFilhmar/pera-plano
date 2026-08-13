@@ -5,6 +5,7 @@ import { Pressable, Text, View } from "react-native";
  * matrix (docs/05-monetization.md §2) that a gate actually surfaces today.
  */
 export type PlusCapability =
+  | "wallets"
   | "csv_export"
   | "recurring"
   | "backup"
@@ -17,6 +18,11 @@ const CAPABILITY_COPY: Record<
   PlusCapability,
   { label: string; free: string; plus: string }
 > = {
+  // Added by m1c Task 5: the wallet cap is the first gate a user can actually
+  // hit, and it is the one that most needs to read as a limit on BREADTH rather
+  // than a threat to data. Free's "3" is the whole gate in
+  // docs/04-features/02-wallets.md §Free vs Plus.
+  wallets: { label: "Wallets", free: "3", plus: "Unlimited" },
   csv_export: { label: "Export", free: "—", plus: "CSV (PDF later)" },
   recurring: {
     label: "Recurring/subscription detection",

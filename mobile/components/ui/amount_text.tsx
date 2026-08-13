@@ -60,6 +60,42 @@ export function formatCentavos(amount: Centavos): string {
   return `${negative ? "-" : ""}₱${grouped}.${fraction}`;
 }
 
+/**
+ * The safe ceiling for a typed amount: ₱90,071,992,547,409.91.
+ *
+ * Past `Number.MAX_SAFE_INTEGER` integer arithmetic silently stops being exact,
+ * which in a money app means a balance that does not add up and nothing that
+ * throws. Clamping is not a real product limit — it is the point past which the
+ * user is leaning on the keypad, and the app must still hold a number it can do
+ * arithmetic with.
+ */
+const MAX_SAFE_CENTAVOS = Number.MAX_SAFE_INTEGER;
+
+/**
+ * Keystrokes → centavos. The inverse of `formatCentavos`, and it lives beside it
+ * so the two cannot drift apart.
+ *
+ * BUILT FROM THE DIGITS, NEVER PARSED BACK FROM A FORMATTED STRING. Typing
+ * `1`,`2`,`3`,`4` yields `1234` centavos, displayed as `₱12.34` — the same rule
+ * m1c Task 8's numpad states, because the alternative
+ * (`Number("12.34") * 100 === 1233.9999...`) is the float bug `lib/ingest/
+ * amount.ts` exists to avoid, arriving from the other direction.
+ *
+ * Non-digits are DROPPED rather than rejected: some Android keyboards emit a
+ * decimal separator on a numeric keypad, and a field that refused the keystroke
+ * would look broken to the one user in ten whose keyboard does it.
+ */
+export function centavosFromDigits(text: string): Centavos {
+  const digits = text.replace(/\D/gu, "");
+  if (digits === "") return 0;
+
+  // Trimmed before Number() rather than clamped after: a 30-digit string is
+  // already beyond exact representation by the time it becomes a Number, so
+  // `Math.min` on the result would be comparing two approximations.
+  const trimmed = digits.replace(/^0+/u, "").slice(0, String(MAX_SAFE_CENTAVOS).length - 1);
+  return trimmed === "" ? 0 : Number(trimmed);
+}
+
 const SIZE_CLASS: Record<AmountSize, string> = {
   sm: "text-sm",
   md: "text-base",

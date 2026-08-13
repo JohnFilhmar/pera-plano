@@ -51,6 +51,20 @@ export const queryKeys = {
      */
     drift: (id: string) => ["wallets", "detail", id, "drift"] as const,
     matchers: (id: string) => ["wallets", "detail", id, "matchers"] as const,
+    /**
+     * EVERY matcher on the device, for m1c Task 5's reassignment warning — the
+     * picker has to name the wallet a pair is about to move off.
+     *
+     * A SIBLING of `detail`, not a child of it, because it belongs to no single
+     * wallet. It still nests under `wallets.all`, which is what `setMatchers`
+     * invalidates: a move rewrites TWO wallets' rows and the mutation cannot
+     * know the loser's id without a read, so the family root is the narrowest
+     * key that reliably reaches both. Naming only the saving wallet's key would
+     * leave the other wallet's detail screen showing chips for a provider it no
+     * longer catches — a screen disagreeing with the pipeline about where money
+     * lands.
+     */
+    allMatchers: () => ["wallets", "matchers"] as const,
   },
   transactions: {
     all: ["transactions"] as const,

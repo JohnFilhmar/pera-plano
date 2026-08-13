@@ -11,12 +11,21 @@
 //   `useTransactions({ walletId })`; building a second ledger now would mean
 //   deleting it in two tasks' time.
 //
-//   NO EDIT / RECONCILE / ARCHIVE ACTIONS. Task 5 owns the wallet form, the
-//   cash reconciliation sheet, and the archive flow's "what happens to this
-//   wallet's transactions?" prompt. A button here would either open a route
-//   that does not exist or archive a wallet without asking that question.
+//   NO DRIFT DISMISSAL. Spec rule 3 offers "record the gap as an adjustment,
+//   or dismiss (accept the snap silently)", and there is still no
+//   acknowledged/dismissed flag anywhere in the schema — so a dismissed drift
+//   would re-render on the next open, forever. m1c Task 5 examined this and
+//   left it deferred: doing it properly needs a third migration, which is the
+//   project owner's decision to make, as migration 002 was.
+//
+// THE EDIT / RECONCILE / ARCHIVE ACTIONS ARRIVED WITH TASK 5, which owns the
+// wallet form, the cash reconciliation sheet and the archive flow's "what
+// happens to this wallet's transactions?" prompt. Their behaviour is tested in
+// app/__tests__/wallet_routes.test.tsx, against a real database; what this file
+// still asserts is WHICH of them a non-cash wallet is offered.
 jest.mock("expo-router", () => ({
   useLocalSearchParams: () => mockParams,
+  useRouter: () => ({ push: (...args: unknown[]) => mockPush(...args) }),
 }));
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -36,6 +45,7 @@ import type { Wallet } from "@/types/domain";
 import WalletDetailScreen from "../wallet/[id]";
 
 let mockParams: { id: string } = { id: "" };
+const mockPush = jest.fn();
 
 const GCASH_PACKAGE = "com.globe.gcash.android";
 
@@ -255,8 +265,8 @@ describe("the wallet's transactions", () => {
   });
 });
 
-describe("what this screen deliberately does not offer yet", () => {
-  test("no reconcile, edit or archive action — Task 5 owns all three", async () => {
+describe("the actions m1c Task 5 added", () => {
+  test("edit and archive are offered; reconcile is not, because this is not cash", async () => {
     await insertTransaction({
       walletId: gcash.id,
       categoryId: UNCATEGORIZED_ID,
@@ -271,16 +281,33 @@ describe("what this screen deliberately does not offer yet", () => {
     renderDetail(gcash.id);
     await screen.findByTestId("wallet-detail-drift");
 
-    expect(screen.queryByText(/reconcile/i)).toBeNull();
-    expect(screen.queryByText(/^edit$/i)).toBeNull();
-    expect(screen.queryByText(/archive$/i)).toBeNull();
+    expect(screen.getByTestId("wallet-detail-edit")).toBeTruthy();
+    expect(screen.getByTestId("wallet-detail-archive")).toBeTruthy();
+    // Task 5 rule 6: cash only. An e-wallet re-anchors itself from the
+    // provider's reported balance-after, and a typed adjustment would fight
+    // the next snap.
+    expect(screen.queryByTestId("wallet-detail-reconcile")).toBeNull();
   });
 
-  test("no dismiss action on the drift — nothing in the schema can remember it", async () => {
+  test("still offers no DELETE, at any transaction count", async () => {
+    // Invariant 4, and there is no `deleteWallet` in the repository to call.
+    renderDetail(gcash.id);
+    await screen.findByText("GCash");
+
+    expect(screen.queryByTestId("wallet-detail-delete")).toBeNull();
+  });
+
+  test("STILL no dismiss action on the drift — nothing in the schema can remember it", async () => {
     // Spec rule 3 offers "record the gap as an adjustment, or dismiss". There
-    // is no acknowledged/dismissed flag anywhere in the schema, so a dismissed
-    // drift would re-render on the next open, forever. Task 5 designs the flag
-    // together with what reconciliation writes.
+    // is still no acknowledged/dismissed flag anywhere in the schema, so a
+    // dismissed drift would re-render on the next open, forever.
+    //
+    // TASK 5 LOOKED AT THIS AND LEFT IT ALONE, deliberately. The honest fix is
+    // a third migration — most likely `wallets.drift_dismissed_transaction_id`,
+    // so a NEWER drift shows again while the acknowledged one stays quiet; a
+    // bare boolean would silence the next real drift too. That is a schema
+    // decision for the project owner, exactly as migration 002 was, and this
+    // test is what keeps a half-version of it from being added quietly.
     await insertTransaction({
       walletId: gcash.id,
       categoryId: UNCATEGORIZED_ID,

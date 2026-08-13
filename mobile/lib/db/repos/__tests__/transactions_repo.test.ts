@@ -1,10 +1,11 @@
 import { closeDatabase } from "@/lib/db/database";
 import { __setTierForTests } from "@/lib/entitlements";
-import { createWallet } from "../wallets_repo";
+import { createWallet, getWallet } from "../wallets_repo";
 import {
   getTransaction,
   insertTransaction,
   listTransactions,
+  reassignWalletTransactions,
   sumSpend,
   TransactionNotFoundError,
   updateTransaction,
@@ -12,6 +13,7 @@ import {
 } from "../transactions_repo";
 import { freshDb } from "@/test_support/db";
 import type { SQLiteDatabase } from "@/lib/db/database";
+import type { NewTransaction } from "@/types/domain";
 
 const DAY = 24 * 60 * 60 * 1000;
 const CATEGORY_ID = "cat_food";
@@ -1242,5 +1244,117 @@ describe("balanceAfter round-trips through the repository, and is provenance", (
     expect(reread?.balanceAfter).toBe(900000);
     expect(reread?.computedBalance).toBe(85000);
     expect(reread?.amount).toBe(16000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reassignWalletTransactions — m1c Task 5's archive flow (spec rules 18, 19).
+// ---------------------------------------------------------------------------
+//
+// Archiving offers "keep these transactions here" (the default) or "move them
+// to another wallet". This is the move. It exists as a repository function
+// rather than as a loop over `updateTransaction` in a hook for one reason that
+// matters and one that is merely correct:
+//
+//   `listTransactions` IS CLAMPED TO THE TIER'S HISTORY FLOOR. A Free-tier loop
+//   over it would move the last 90 days and silently leave everything older
+//   attached to the archived wallet — an invariant-4 near-miss whose symptom is
+//   old transactions vanishing from a wallet that still shows their money.
+//
+//   ONE SQL TRANSACTION. A half-finished move splits a wallet's history across
+//   two wallets with both balances wrong.
+
+describe("reassignWalletTransactions", () => {
+  let target: string;
+
+  /** A committed row on the source wallet, with only the field under test varied. */
+  function baseTx(patch: Partial<NewTransaction> = {}): NewTransaction {
+    return {
+      walletId,
+      categoryId: CATEGORY_ID,
+      amount: 10000,
+      direction: "out",
+      occurredAt: Date.now(),
+      source: "notification",
+      confidence: 1,
+      ...patch,
+    };
+  }
+
+  beforeEach(async () => {
+    target = (await createWallet({ name: "BPI", type: "bank", openingBalance: 0 })).id;
+  });
+
+  test("moves every transaction to the new wallet", async () => {
+    await insertTransaction(baseTx({ amount: 10000, direction: "out" }));
+    await insertTransaction(baseTx({ amount: 25000, direction: "in" }));
+
+    await reassignWalletTransactions(walletId, target);
+
+    expect(await listTransactions({ walletId })).toEqual([]);
+    expect(await listTransactions({ walletId: target })).toHaveLength(2);
+  });
+
+  test("carries the balance effect across with the rows", async () => {
+    // Opening ₱1,000.00, minus ₱100.00 → ₱900.00 on the source.
+    await insertTransaction(baseTx({ amount: 10000, direction: "out" }));
+
+    await reassignWalletTransactions(walletId, target);
+
+    // Reverse-then-apply, batched: the source is left holding only its own
+    // anchor, and the target gains exactly what the rows account for. A move
+    // that shifted rows but not balances would leave the source claiming money
+    // it has no ledger for — the silent disagreement this app may never show.
+    const source = await getWallet(walletId);
+    const destination = await getWallet(target);
+    expect(source?.balance).toBe(100000);
+    expect(destination?.balance).toBe(-10000);
+  });
+
+  test("preserves the raw notification reference (spec rule 19)", async () => {
+    await db.runAsync(
+      `INSERT INTO raw_notifications (id, package_name, title, text, sub_text, big_text, posted_at, captured_at, expires_at)
+       VALUES ('raw-1', 'com.globe.gcash.android', 't', 'b', NULL, NULL, 0, 0, 0)`,
+    );
+    const tx = await insertTransaction(baseTx({ rawNotificationId: "raw-1" }));
+
+    await reassignWalletTransactions(walletId, target);
+
+    // Invariant 5 survives moves: "why was this recorded?" must still answer
+    // after the wallet it was recorded into has been retired.
+    const moved = await getTransaction(tx.id);
+    expect(moved?.rawNotificationId).toBe("raw-1");
+    expect(moved?.walletId).toBe(target);
+  });
+
+  test("moves rows older than the free tier's history window", async () => {
+    const old = await insertTransaction(
+      baseTx({ occurredAt: Date.now() - 200 * DAY, amount: 5000, direction: "out" }),
+    );
+    __setTierForTests("free");
+
+    await reassignWalletTransactions(walletId, target);
+
+    // The clamp is a VISIBILITY rule, never a retention or ownership one. A
+    // move that respected it would orphan this row on the archived wallet.
+    expect((await getTransaction(old.id))?.walletId).toBe(target);
+  });
+
+  test("a wallet with no transactions is a no-op, not an error", async () => {
+    await reassignWalletTransactions(walletId, target);
+
+    expect((await getWallet(walletId))?.balance).toBe(100000);
+    expect((await getWallet(target))?.balance).toBe(0);
+  });
+
+  test("moving a wallet to itself changes nothing", async () => {
+    await insertTransaction(baseTx({ amount: 10000, direction: "out" }));
+
+    await reassignWalletTransactions(walletId, walletId);
+
+    // Reverse-then-apply on one row nets out, but only if the two statements
+    // actually both run. Guarding early is cheaper than trusting they do.
+    expect((await getWallet(walletId))?.balance).toBe(90000);
+    expect(await listTransactions({ walletId })).toHaveLength(1);
   });
 });

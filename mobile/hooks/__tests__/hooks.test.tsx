@@ -630,7 +630,9 @@ describe("useArchiveWallet", () => {
 
     const { result } = renderHook(() => useArchiveWallet(), { wrapper: wrapperFor(client) });
     await act(async () => {
-      result.current.mutate(walletA.id);
+      // Task 5 widened the variables to carry the transaction choice; an
+      // omitted `moveTransactionsTo` is the default "keep them here".
+      result.current.mutate({ id: walletA.id });
     });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
@@ -887,7 +889,7 @@ function mutationCases(): Record<MutationHookName, () => Promise<void>> {
   return {
     useCreateWallet: () => fire(useCreateWallet, { name: "Cash on hand", type: "cash" as const }),
     useUpdateWallet: () => fire(useUpdateWallet, { id: walletA.id, patch: { name: "Renamed" } }),
-    useArchiveWallet: () => fire(useArchiveWallet, walletB.id),
+    useArchiveWallet: () => fire(useArchiveWallet, { id: walletB.id }),
     useCreateTransaction: () =>
       fire(useCreateTransaction, {
         walletId: walletA.id,
