@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
-import { Text, View } from "react-native";
+import { View } from "react-native";
+import { Chip } from "@/components/ui/chip";
 import { isShipped } from "@/constants/shipped_features";
 import type { FeatureKey } from "@/constants/shipped_features";
 
@@ -14,6 +15,11 @@ import type { FeatureKey } from "@/constants/shipped_features";
  *
  * `SHIPPED_FEATURES` (constants/shipped_features.ts) is the single per-build
  * switch this gate consults; it never re-implements rollout logic itself.
+ *
+ * The chip itself is `components/ui/chip.tsx` tone `soon` rather than a local
+ * pill, so this gate and every other grey chip in the app cannot drift into
+ * two slightly different greys meaning the same thing. Layout (`mt-1`,
+ * `self-start`) stays here — that is this gate's concern, not the chip's.
  */
 export function SoonGate({
   feature,
@@ -31,13 +37,8 @@ export function SoonGate({
       <View pointerEvents="none" className="opacity-40">
         {children}
       </View>
-      <View
-        testID="soon-chip"
-        className="mt-1 self-start rounded-full bg-fg-2 px-2 py-0.5 dark:bg-fg-2-dark"
-      >
-        <Text className="text-xs font-semibold text-surface dark:text-surface-dark">
-          Soon
-        </Text>
+      <View className="mt-1 self-start">
+        <Chip testID="soon-chip" label="Soon" tone="soon" />
       </View>
     </View>
   );
