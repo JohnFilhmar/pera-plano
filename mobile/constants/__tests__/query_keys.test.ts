@@ -10,8 +10,53 @@ import { queryKeys } from "../query_keys";
 describe("exact key contents (STACK_BASIS §6 shape)", () => {
   test("wallets", () => {
     expect(queryKeys.wallets.all).toEqual(["wallets"]);
-    expect(queryKeys.wallets.list()).toEqual(["wallets", "list"]);
+    expect(queryKeys.wallets.lists()).toEqual(["wallets", "list"]);
+    expect(queryKeys.wallets.list()).toEqual(["wallets", "list", false]);
+    expect(queryKeys.wallets.list(true)).toEqual(["wallets", "list", true]);
     expect(queryKeys.wallets.detail("abc")).toEqual(["wallets", "detail", "abc"]);
+    expect(queryKeys.wallets.drift("abc")).toEqual(["wallets", "detail", "abc", "drift"]);
+    expect(queryKeys.wallets.matchers("abc")).toEqual(["wallets", "detail", "abc", "matchers"]);
+  });
+
+  test("wallets.list — the archived toggle is IN the key, with one entry per state", () => {
+    // m1c Task 4. Without the parameter the Wallets tab's "Show archived"
+    // toggle and the default view share a single cache entry, and whichever
+    // resolved first answers for both.
+    expect(queryKeys.wallets.list(true)).not.toEqual(queryKeys.wallets.list(false));
+    // …and the bare call is the SAME entry as the explicit `false`, not a
+    // third one keyed on `undefined`: two keys for one list is two copies of
+    // the same balances that can fall out of step after a write.
+    expect(queryKeys.wallets.list()).toEqual(queryKeys.wallets.list(false));
+  });
+
+  test("wallets.lists() is the prefix BOTH toggle states nest under", () => {
+    // This is what lets a mutation invalidate `lists()` once and refresh the
+    // archived view as well as the default one.
+    const lists = queryKeys.wallets.lists();
+    for (const key of [queryKeys.wallets.list(false), queryKeys.wallets.list(true)]) {
+      expect(key.slice(0, lists.length)).toEqual(lists);
+    }
+    // The detail family must NOT nest under it, or invalidating the lists
+    // would drop every wallet's cached detail too.
+    expect(queryKeys.wallets.detail("abc").slice(0, lists.length)).not.toEqual(lists);
+  });
+
+  test("wallets.drift/matchers nest under the wallet's own detail key", () => {
+    // A committed transaction invalidates `wallets.detail(id)`; the drift
+    // figures and matcher chips on that same screen have to go stale with it.
+    const detail = queryKeys.wallets.detail("abc");
+    for (const key of [queryKeys.wallets.drift("abc"), queryKeys.wallets.matchers("abc")]) {
+      expect(key.slice(0, detail.length)).toEqual(detail);
+    }
+    // Another wallet's detail must not sweep them up.
+    expect(queryKeys.wallets.drift("abc").slice(0, detail.length)).not.toEqual(
+      queryKeys.wallets.detail("xyz"),
+    );
+  });
+
+  test("ruleset — the active parser bundle, where the drift tolerance lives", () => {
+    expect(queryKeys.ruleset.all).toEqual(["ruleset"]);
+    expect(queryKeys.ruleset.active()).toEqual(["ruleset", "active"]);
   });
 
   test("transactions — list() takes an optional filter object", () => {

@@ -30,7 +30,7 @@ export function useUpdateTransaction() {
       invalidateKeys(queryClient, [
         queryKeys.transactions.all,
         ...(patch.walletId === undefined
-          ? [queryKeys.wallets.list(), queryKeys.wallets.detail(transaction.walletId)]
+          ? [queryKeys.wallets.lists(), queryKeys.wallets.detail(transaction.walletId)]
           : [queryKeys.wallets.all]),
       ]),
   });

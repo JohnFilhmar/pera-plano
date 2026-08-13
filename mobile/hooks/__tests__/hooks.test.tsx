@@ -26,27 +26,37 @@ import { act, renderHook, waitFor } from "@testing-library/react-native";
 import type { ReactNode } from "react";
 
 import { queryKeys } from "@/constants/query_keys";
-import { closeDatabase } from "@/lib/db/database";
+import { closeDatabase, getDatabase } from "@/lib/db/database";
 import {
   listCategories,
   seedDefaultCategories,
   UNCATEGORIZED_ID,
 } from "@/lib/db/repos/categories_repo";
+import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { countOpen, enqueue } from "@/lib/db/repos/review_queue_repo";
 import * as transactionsRepo from "@/lib/db/repos/transactions_repo";
 import { getTransaction, insertTransaction } from "@/lib/db/repos/transactions_repo";
 import { linkTransfer } from "@/lib/db/repos/transfer_links_repo";
-import { getWallet, createWallet, listWallets } from "@/lib/db/repos/wallets_repo";
+import {
+  archiveWallet,
+  getWallet,
+  createWallet,
+  listWallets,
+} from "@/lib/db/repos/wallets_repo";
+import { DEFAULT_TUNABLES } from "@/lib/ingest/ruleset_types";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
 import type { Transaction, Wallet } from "@/types/domain";
 
+import { useBalanceDrift, useBalanceDrifts } from "../queries/use_balance_drift";
 import { useCategories } from "../queries/use_categories";
 import { useReviewCount, REVIEW_COUNT_POLL_MS } from "../queries/use_review_count";
 import { useReviewQueue } from "../queries/use_review_queue";
+import { useRuleset } from "../queries/use_ruleset";
 import { useTransaction } from "../queries/use_transaction";
 import { useTransactions } from "../queries/use_transactions";
 import { useWallet } from "../queries/use_wallet";
+import { useWalletMatchers } from "../queries/use_wallet_matchers";
 import { useWallets } from "../queries/use_wallets";
 
 import { useArchiveWallet } from "../mutations/use_archive_wallet";
@@ -256,12 +266,268 @@ describe("query hooks read through the repositories under the shared key factory
 });
 
 // ---------------------------------------------------------------------------
+// The archived toggle is part of the cache key (m1c Task 4 widened both)
+// ---------------------------------------------------------------------------
+
+describe("useWallets(includeArchived) and queryKeys.wallets.list(includeArchived)", () => {
+  // Task 3 shipped `useWallets()` with no options BECAUSE the key took no
+  // parameter, and a toggled and untoggled list sharing one cache entry would
+  // show each other's data. Task 4 widened the hook and the key together; this
+  // block is what keeps them widened.
+  let archived: Wallet;
+
+  beforeEach(async () => {
+    archived = await createWallet({ name: "Closed BDO", type: "bank" });
+    await archiveWallet(archived.id);
+  });
+
+  test("defaults to the active wallets only", async () => {
+    const { result } = renderHook(() => useWallets(), { wrapper: wrapperFor(client) });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.map((w) => w.id)).toEqual([walletA.id, walletB.id]);
+  });
+
+  test("includeArchived: true appends the archived tail", async () => {
+    const { result } = renderHook(() => useWallets({ includeArchived: true }), {
+      wrapper: wrapperFor(client),
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.map((w) => w.id)).toEqual([walletA.id, walletB.id, archived.id]);
+  });
+
+  test("BOTH LISTS DIFFER IN THE SAME RENDER — two cache entries, not one", async () => {
+    // The failure this catches is not a wrong list; it is the SAME list twice.
+    // Keyed without the flag, whichever query resolved first answers for both,
+    // and the Wallets tab's toggle silently does nothing (or, worse, leaves the
+    // archived rows on screen after being switched off).
+    const { result } = renderHook(
+      () => ({ active: useWallets(), all: useWallets({ includeArchived: true }) }),
+      { wrapper: wrapperFor(client) },
+    );
+    await waitFor(() => {
+      expect(result.current.active.isSuccess).toBe(true);
+      expect(result.current.all.isSuccess).toBe(true);
+    });
+
+    expect(result.current.active.data?.map((w) => w.id)).toEqual([walletA.id, walletB.id]);
+    expect(result.current.all.data?.map((w) => w.id)).toEqual([
+      walletA.id,
+      walletB.id,
+      archived.id,
+    ]);
+    expect(result.current.active.data).not.toEqual(result.current.all.data);
+    expect(client.getQueryData(queryKeys.wallets.list(false))).toBeDefined();
+    expect(client.getQueryData(queryKeys.wallets.list(true))).toBeDefined();
+  });
+
+  test("useWallets() and useWallets({ includeArchived: false }) share ONE entry", async () => {
+    // The other half of the key design. A key of `["wallets","list",undefined]`
+    // for the bare call and `["wallets","list",false]` for the explicit one
+    // means the same list is fetched and stored twice — two rows of the same
+    // balances that can disagree after a write invalidates only one of them.
+    const { result } = renderHook(
+      () => ({ bare: useWallets(), explicit: useWallets({ includeArchived: false }) }),
+      { wrapper: wrapperFor(client) },
+    );
+    await waitFor(() => {
+      expect(result.current.bare.isSuccess).toBe(true);
+      expect(result.current.explicit.isSuccess).toBe(true);
+    });
+
+    expect(queryKeys.wallets.list()).toEqual(queryKeys.wallets.list(false));
+    expect(client.getQueryCache().findAll({ queryKey: queryKeys.wallets.lists() })).toHaveLength(1);
+  });
+
+  test("a wallet mutation invalidates BOTH toggle states", async () => {
+    // Mutations invalidate the `lists()` PREFIX, not one concrete toggle
+    // state. Naming `list(false)` alone would leave a user who is looking at
+    // the archived view staring at a list the write already changed.
+    client.setQueryData(queryKeys.wallets.list(false), []);
+    client.setQueryData(queryKeys.wallets.list(true), []);
+
+    const { result } = renderHook(() => useCreateWallet(), { wrapper: wrapperFor(client) });
+    await act(async () => {
+      result.current.mutate({ name: "Cash on hand", type: "cash" });
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(wasInvalidated(client, queryKeys.wallets.list(false))).toBe(true);
+    expect(wasInvalidated(client, queryKeys.wallets.list(true))).toBe(true);
+    // Still narrow: a wallet's own detail is untouched by a different wallet
+    // being created.
+    expect(wasInvalidated(client, queryKeys.wallets.detail(walletA.id))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Drift, matchers and the ruleset — the Wallets tab's other three reads
+// ---------------------------------------------------------------------------
+
+describe("useBalanceDrift", () => {
+  async function commitReporting(reported: number): Promise<void> {
+    await insertTransaction({
+      walletId: walletA.id,
+      categoryId,
+      amount: 5_000,
+      direction: "out",
+      occurredAt: 2_000,
+      source: "notification",
+      confidence: 0.9,
+      balanceAfter: reported,
+    });
+  }
+
+  test("returns null — NOT a zero drift — for a wallet that never reported a balance", async () => {
+    const { result } = renderHook(() => useBalanceDrift(walletB.id), {
+      wrapper: wrapperFor(client),
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toBeNull();
+  });
+
+  test("returns both figures and the gap between them", async () => {
+    // walletA opened at 100_000 and txA took 15_000 out, so the computed
+    // expectation after another 5_000 out is 80_000.
+    await commitReporting(900_000);
+
+    const { result } = renderHook(() => useBalanceDrift(walletA.id), {
+      wrapper: wrapperFor(client),
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toEqual({
+      reported: 900_000,
+      computed: 80_000,
+      drift: 820_000,
+    });
+  });
+
+  test("hangs off the wallet's DETAIL key, so committing a transaction refreshes it", async () => {
+    // A drift that does not refetch after a commit describes a balance the
+    // wallet no longer holds. Nesting the key under `wallets.detail(id)` is
+    // what makes the mutations Task 3 already wrote reach it, with no new
+    // invalidation to remember.
+    expect(queryKeys.wallets.drift(walletA.id).slice(0, 3)).toEqual(
+      queryKeys.wallets.detail(walletA.id),
+    );
+
+    client.setQueryData(queryKeys.wallets.drift(walletA.id), null);
+    const { result } = renderHook(() => useCreateTransaction(), { wrapper: wrapperFor(client) });
+    await act(async () => {
+      result.current.mutate({
+        walletId: walletA.id,
+        categoryId,
+        amount: 1_000,
+        direction: "out",
+        occurredAt: 6_000,
+        source: "manual",
+        confidence: 1,
+      });
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(wasInvalidated(client, queryKeys.wallets.drift(walletA.id))).toBe(true);
+  });
+
+  test("useBalanceDrifts maps each id to its own drift, or to null", async () => {
+    await commitReporting(900_000);
+
+    const { result } = renderHook(() => useBalanceDrifts([walletA.id, walletB.id]), {
+      wrapper: wrapperFor(client),
+    });
+    // Awaited on the QUERY STATE, not on the mapped value: a still-loading
+    // entry deliberately maps to `null` (never render a disagreement you have
+    // not confirmed), which is indistinguishable from a wallet that has no
+    // reported balance. Only the cache can tell those two apart.
+    await waitFor(() => {
+      expect(client.getQueryState(queryKeys.wallets.drift(walletA.id))?.status).toBe("success");
+      expect(client.getQueryState(queryKeys.wallets.drift(walletB.id))?.status).toBe("success");
+    });
+
+    expect(result.current[walletA.id]).toEqual({
+      reported: 900_000,
+      computed: 80_000,
+      drift: 820_000,
+    });
+    expect(result.current[walletB.id]).toBeNull();
+  });
+
+  test("useBalanceDrifts with no ids issues no queries", async () => {
+    const { result } = renderHook(() => useBalanceDrifts([]), { wrapper: wrapperFor(client) });
+    await waitFor(() => expect(result.current).toEqual({}));
+    expect(client.getQueryCache().getAll()).toHaveLength(0);
+  });
+});
+
+describe("useRuleset", () => {
+  test("returns null when the device has no ruleset installed", async () => {
+    const { result } = renderHook(() => useRuleset(), { wrapper: wrapperFor(client) });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toBeNull();
+  });
+
+  test("returns the installed bundle with its tunables completed from the defaults", async () => {
+    // The drift tolerance is the tunable the Wallets tab reads. A payload that
+    // overrides nothing still has to arrive with a usable value.
+    await upsertRuleset({ version: 1, providers: [] });
+
+    const { result } = renderHook(() => useRuleset(), { wrapper: wrapperFor(client) });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.tunables.balanceDriftToleranceCentavos).toBe(
+      DEFAULT_TUNABLES.balanceDriftToleranceCentavos,
+    );
+  });
+
+  test("carries a retuned tolerance through unchanged", async () => {
+    await upsertRuleset({
+      version: 2,
+      providers: [],
+      tunables: { balanceDriftToleranceCentavos: 12_345 },
+    });
+
+    const { result } = renderHook(() => useRuleset(), { wrapper: wrapperFor(client) });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.tunables.balanceDriftToleranceCentavos).toBe(12_345);
+  });
+});
+
+describe("useWalletMatchers", () => {
+  async function insertMatcher(walletId: string, hint: string | null): Promise<void> {
+    const db = await getDatabase();
+    await db.runAsync(
+      `INSERT INTO wallet_matchers (id, wallet_id, package_name, hint, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [`m-${walletId}-${hint ?? "main"}`, walletId, "com.globe.gcash.android", hint, 1_000, 1_000],
+    );
+  }
+
+  test("returns only the given wallet's matchers", async () => {
+    await insertMatcher(walletA.id, null);
+    await insertMatcher(walletB.id, "GSave");
+
+    const { result } = renderHook(() => useWalletMatchers(walletA.id), {
+      wrapper: wrapperFor(client),
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.map((m) => m.walletId)).toEqual([walletA.id]);
+  });
+
+  test("hangs off the wallet's detail key too", async () => {
+    expect(queryKeys.wallets.matchers(walletA.id).slice(0, 3)).toEqual(
+      queryKeys.wallets.detail(walletA.id),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Only ONE hook may poll
 // ---------------------------------------------------------------------------
 
 const QUERY_HOOK_NAMES = [
   "useWallets",
   "useWallet",
+  "useBalanceDrift",
+  "useWalletMatchers",
+  "useRuleset",
   "useTransactions",
   "useTransaction",
   "useCategories",
@@ -276,6 +542,15 @@ function queryHookCases(): Record<QueryHookName, { key: readonly unknown[]; rend
   return {
     useWallets: { key: queryKeys.wallets.list(), render: () => useWallets() },
     useWallet: { key: queryKeys.wallets.detail(walletA.id), render: () => useWallet(walletA.id) },
+    useBalanceDrift: {
+      key: queryKeys.wallets.drift(walletA.id),
+      render: () => useBalanceDrift(walletA.id),
+    },
+    useWalletMatchers: {
+      key: queryKeys.wallets.matchers(walletA.id),
+      render: () => useWalletMatchers(walletA.id),
+    },
+    useRuleset: { key: queryKeys.ruleset.active(), render: () => useRuleset() },
     useTransactions: { key: queryKeys.transactions.list({}), render: () => useTransactions({}) },
     useTransaction: {
       key: queryKeys.transactions.detail(txA.id),

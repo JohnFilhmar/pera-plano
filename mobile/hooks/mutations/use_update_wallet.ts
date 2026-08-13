@@ -25,7 +25,7 @@ export function useUpdateWallet() {
     mutationFn: ({ id, patch }: UpdateWalletVariables) => updateWallet(id, patch),
     onSuccess: (wallet) =>
       invalidateKeys(queryClient, [
-        queryKeys.wallets.list(),
+        queryKeys.wallets.lists(),
         queryKeys.wallets.detail(wallet.id),
       ]),
   });

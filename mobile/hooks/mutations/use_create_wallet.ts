@@ -24,6 +24,6 @@ export function useCreateWallet() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: NewWallet) => createWallet(input),
-    onSuccess: () => invalidateKeys(queryClient, [queryKeys.wallets.list()]),
+    onSuccess: () => invalidateKeys(queryClient, [queryKeys.wallets.lists()]),
   });
 }

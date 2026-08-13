@@ -20,6 +20,6 @@ export function useArchiveWallet() {
   return useMutation({
     mutationFn: (id: string) => archiveWallet(id),
     onSuccess: (_result, id) =>
-      invalidateKeys(queryClient, [queryKeys.wallets.list(), queryKeys.wallets.detail(id)]),
+      invalidateKeys(queryClient, [queryKeys.wallets.lists(), queryKeys.wallets.detail(id)]),
   });
 }

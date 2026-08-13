@@ -18,11 +18,14 @@ import { invalidateKeys } from "./invalidate_keys";
  *     filter, so the family root is the narrowest key that reaches all of them.
  *   - `wallets.detail(walletId)` — the ONE wallet whose balance moved. Not
  *     `wallets.all`: no other wallet's detail can have changed.
- *   - `wallets.list()` — its rows carry the same balance that just moved. The
- *     plan's rule text names only the detail key; without the list too, the
- *     Wallets tab would keep showing the pre-transaction balance for up to the
- *     client's five-minute staleTime, which is the exact silent disagreement
- *     between a total and its ledger that this app may never produce.
+ *   - `wallets.lists()` — the rows there carry the same balance that just
+ *     moved. The plan's rule text names only the detail key; without the list
+ *     too, the Wallets tab would keep showing the pre-transaction balance for
+ *     up to the client's five-minute staleTime, which is the exact silent
+ *     disagreement between a total and its ledger that this app may never
+ *     produce. It is the PREFIX, not `list(false)`: m1c Task 4 keyed the list
+ *     by the "Show archived" toggle, and a user looking at the archived view
+ *     is owed the same refresh as one looking at the default view.
  *   - `reviewQueue.count()` — committing is how a queue item stops being open,
  *     so the tab badge has to re-count.
  *
@@ -38,7 +41,7 @@ export function useCreateTransaction() {
       invalidateKeys(queryClient, [
         queryKeys.transactions.all,
         queryKeys.wallets.detail(transaction.walletId),
-        queryKeys.wallets.list(),
+        queryKeys.wallets.lists(),
         queryKeys.reviewQueue.count(),
       ]),
   });
