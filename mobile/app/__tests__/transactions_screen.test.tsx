@@ -12,6 +12,10 @@
 //
 // It also pins the two empty states as the screen actually reaches them, with
 // each case asserting the other's copy is absent.
+jest.mock("expo-router", () => ({
+  useRouter: () => ({ push: (...args: unknown[]) => mockPush(...args) }),
+}));
+
 import { render, screen, fireEvent, waitFor } from "@testing-library/react-native";
 
 import { closeDatabase } from "@/lib/db/database";
@@ -32,6 +36,8 @@ import {
 } from "@/components/transactions/ledger_list";
 
 import TransactionsScreen from "../(tabs)/transactions";
+
+const mockPush = jest.fn();
 
 const FOOD = "cat_food_dining";
 const TRANSPORT = "cat_transport";
@@ -285,5 +291,32 @@ describe("the two empty states, reached through the screen", () => {
 
     expect(await screen.findByTestId("ledger-empty-filtered")).toBeTruthy();
     expect(screen.queryByText(LEDGER_EMPTY_TITLE)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Opening a row (m1c Task 7)
+// ---------------------------------------------------------------------------
+
+describe("opening a transaction", () => {
+  test("tapping a row navigates to that transaction's detail route", async () => {
+    // Task 6 shipped these rows inert because app/transaction/[id].tsx did not
+    // exist. It does now, and the WIRING is what this asserts: `LedgerList`
+    // reporting the pressed row proves nothing on its own if the screen
+    // rendering it forgets to send that row anywhere.
+    await seedGrid();
+    renderScreen();
+    await screen.findByText("Jollibee");
+
+    const row = screen.getAllByTestId(/^transaction-row-/)[0];
+    fireEvent.press(row);
+
+    expect(mockPush).toHaveBeenCalledTimes(1);
+    // The id travels as a PARAM, not spliced into a path string: a merchant id
+    // with a slash in it would silently route somewhere else.
+    expect(mockPush).toHaveBeenCalledWith({
+      pathname: "/transaction/[id]",
+      params: { id: String(row.props.testID).replace("transaction-row-", "") },
+    });
   });
 });

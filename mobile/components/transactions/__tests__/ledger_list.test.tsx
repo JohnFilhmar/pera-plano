@@ -27,7 +27,7 @@
 // props and no database is opened. Timestamps are built with `new Date(y, m, d)`
 // — LOCAL time, matching the local calendar grouping under test, so the file
 // passes in any timezone.
-import { render, screen } from "@testing-library/react-native";
+import { fireEvent, render, screen } from "@testing-library/react-native";
 import type { ComponentProps } from "react";
 import { Text } from "react-native";
 
@@ -556,5 +556,51 @@ describe("the 90-day history boundary row", () => {
     renderLedger([]);
 
     expect(screen.queryByTestId("ledger-history-cutoff")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Opening a row (m1c Task 7)
+//
+// Task 6 shipped these rows INERT on purpose: app/transaction/[id].tsx did not
+// exist yet, and a dead tap on the most-tapped list in the app is worse than an
+// obviously static one. That route exists now, so the rows open it — but the
+// list still navigates NOTHING itself. It reports the row that was pressed and
+// the screen decides where that goes, which is what keeps this file free of a
+// router and keeps the two screens rendering the same list.
+// ---------------------------------------------------------------------------
+
+describe("opening a transaction", () => {
+  test("pressing a row reports THAT row, not its index or its id alone", () => {
+    const onSelect = jest.fn();
+    const jollibee = tx({ id: "t1", merchant: "Jollibee" });
+    const grab = tx({ id: "t2", merchant: "Grab", occurredAt: AUG_13_6PM });
+    renderLedger([jollibee, grab], { onSelect });
+
+    fireEvent.press(screen.getByTestId("transaction-row-t2"));
+
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledWith(grab);
+  });
+
+  test("a transfer leg opens too — it is the row most likely to need explaining", () => {
+    const onSelect = jest.fn();
+    const leg = tx({ id: "t9", transferLinkId: "link-1" });
+    renderLedger([leg], { onSelect });
+
+    fireEvent.press(screen.getByTestId("transaction-row-t9"));
+
+    expect(onSelect).toHaveBeenCalledWith(leg);
+  });
+
+  test("without a handler the row is not pressable, and pressing it throws nothing", () => {
+    // The wallet detail and the Transactions tab both pass one. A third caller
+    // that forgets gets a plain row rather than a tap that silently does
+    // nothing — the state Task 6 chose deliberately.
+    renderLedger([tx({ id: "t1" })]);
+
+    const row = screen.getByTestId("transaction-row-t1");
+    expect(row.props.onStartShouldSetResponder).toBeUndefined();
+    expect(() => fireEvent.press(row)).not.toThrow();
   });
 });

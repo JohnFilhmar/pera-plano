@@ -44,10 +44,42 @@ export function providerLabel(providerKey: string): string {
 }
 
 /**
+ * Android package → provider key, for the packages shipped in
+ * assets/parser_rules/seed.json.
+ *
+ * A FALLBACK, NOT AN AUTHORITY. The installed ruleset is what actually routes a
+ * capture and it is remote-updatable (docs/03 §11.1: a wrong package name is
+ * corrected without an app release), so it always wins below. This table exists
+ * for the window where the ruleset has not answered — a cold React Query cache,
+ * an install whose ruleset write failed — because during that window the only
+ * other answer is the raw package id.
+ *
+ * On a matcher chip that would merely be ugly. On m1c Task 7's "Why was this
+ * recorded?" panel it is a broken promise: the panel exists to tell the user
+ * which app was read, and "com.globe.gcash.android" does not tell them that.
+ */
+const PACKAGE_PROVIDER_KEYS: Record<string, string> = {
+  "com.globe.gcash.android": "gcash",
+  "com.paymaya": "maya",
+  "com.bpi.ng.app": "bpi",
+  "com.bdo.digitalbanking": "bdo",
+  "com.unionbank.ecommerce.mobile.android": "unionbank",
+  "com.metrobank.mobilebanking": "metrobank",
+  "com.seabank.ph": "seabank",
+  "com.gotyme.bank": "gotyme",
+  "com.cimbbank.ph": "cimb",
+  "com.lbp.mobilebanking": "landbank",
+  "com.shopee.ph": "shopeepay",
+  "com.grabtaxi.passenger": "grabpay",
+  "com.google.android.apps.messaging": "sms_relay",
+  "com.samsung.android.messaging": "sms_relay",
+};
+
+/**
  * The name to show for a matcher's android package.
  *
- * Falls back twice, never to an empty string: an unlabelled key shows the key,
- * and a package no installed ruleset claims shows the package itself. A blank
+ * Falls back three times, never to an empty string: the installed ruleset
+ * first, then the shipped package table above, then the package itself. A blank
  * chip reading "Catches:" would tell the user their wallet catches nothing,
  * which is the opposite of what a stale label means.
  */
@@ -56,6 +88,8 @@ export function providerLabelForPackage(
   packageName: string,
 ): string {
   const provider = providers.find((candidate) => candidate.packageNames.includes(packageName));
-  if (!provider) return packageName;
-  return providerLabel(provider.providerKey);
+  if (provider) return providerLabel(provider.providerKey);
+
+  const knownKey = PACKAGE_PROVIDER_KEYS[packageName];
+  return knownKey ? providerLabel(knownKey) : packageName;
 }

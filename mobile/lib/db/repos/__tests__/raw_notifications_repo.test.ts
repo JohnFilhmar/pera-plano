@@ -10,6 +10,7 @@ import { createWallet } from "../wallets_repo";
 import { enqueue } from "../review_queue_repo";
 import {
   getRawCapture,
+  getRawCaptureExpiry,
   hasRawCapture,
   purgeExpiredRawCaptures,
   RAW_CAPTURE_TTL_MS,
@@ -89,6 +90,52 @@ test("expires_at is exactly now + 30 days", async () => {
 
 test("getRawCapture returns null for an id that was never stored", async () => {
   expect(await getRawCapture("never-seen")).toBeNull();
+});
+
+// ---------------------------------------------------------------------------
+// getRawCaptureExpiry — the number the "Why was this recorded?" countdown reads
+// (m1c Task 7 rule 2).
+//
+// A SEPARATE ACCESSOR, DELIBERATELY. `RawCapture` is interface-contract §4 —
+// the shape the Kotlin listener hands across the native bridge — and it carries
+// no `expires_at`. Widening it to carry one would change the native contract for
+// the benefit of one screen. The column exists on the ROW, so the row is where
+// the screen reads it from.
+// ---------------------------------------------------------------------------
+
+test("getRawCaptureExpiry reads the STORED expiry, not capturedAt + the TTL", async () => {
+  // A capture taken five days before it was stored: a replayed batch, or a
+  // drain that only ran when the user next unlocked the app. The two candidate
+  // answers are five days apart, and only one of them is when the row will
+  // actually be deleted.
+  const capturedAt = NOW - 5 * 24 * 60 * 60 * 1000;
+  await storeRawCapture(capture({ id: "cap-late", capturedAt }), NOW);
+
+  expect(await getRawCaptureExpiry("cap-late")).toBe(NOW + RAW_CAPTURE_TTL_MS);
+  // The derivation the panel must never use. `purgeExpiredRawCaptures` deletes
+  // on `expires_at`, so a countdown computed from `capturedAt` would promise a
+  // deletion five days before it happens — the panel's one job, done wrong.
+  expect(await getRawCaptureExpiry("cap-late")).not.toBe(capturedAt + RAW_CAPTURE_TTL_MS);
+});
+
+test("getRawCaptureExpiry is null for an id that was never stored or has been purged", async () => {
+  // Not a throw: a Transaction older than 30 days reaches the panel exactly
+  // this way, and "already deleted" is a normal answer there.
+  expect(await getRawCaptureExpiry("never-seen")).toBeNull();
+
+  await storeRawCapture(capture({ id: "cap-old" }), NOW - THIRTY_DAYS_MS - 1);
+  expect(await purgeExpiredRawCaptures(NOW)).toBe(1);
+  expect(await getRawCaptureExpiry("cap-old")).toBeNull();
+});
+
+test("a replayed store does not push the expiry the panel is showing", async () => {
+  await storeRawCapture(capture(), NOW);
+  await storeRawCapture(capture(), NOW + 60_000);
+
+  // `INSERT OR IGNORE` keeps the first row, so the countdown the user was shown
+  // yesterday still names the same instant today. An upsert here would extend
+  // retention past the 30 days they were promised, silently.
+  expect(await getRawCaptureExpiry("cap-1")).toBe(NOW + THIRTY_DAYS_MS);
 });
 
 test("hasRawCapture distinguishes a stored capture from an unseen one", async () => {

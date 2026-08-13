@@ -29,7 +29,7 @@ jest.mock("expo-router", () => ({
 }));
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react-native";
+import { fireEvent, render, screen } from "@testing-library/react-native";
 import type { ReactNode } from "react";
 
 import { closeDatabase, getDatabase } from "@/lib/db/database";
@@ -104,6 +104,34 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await closeDatabase();
+});
+
+describe("opening a transaction from the wallet's ledger", () => {
+  test("tapping a row navigates to that transaction's detail route", async () => {
+    // The SECOND screen rendering the one ledger list (m1c Task 7). Both have
+    // to wire the tap, or the same row opens on one screen and is dead on the
+    // other — with nothing about the row itself explaining the difference.
+    const tx = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 25_000,
+      direction: "out",
+      occurredAt: Date.now(),
+      merchant: "Jollibee",
+      source: "notification",
+      confidence: 0.9,
+    });
+
+    renderDetail(gcash.id);
+    await screen.findByText("Jollibee");
+
+    fireEvent.press(screen.getByTestId(`transaction-row-${tx.id}`));
+
+    expect(mockPush).toHaveBeenCalledWith({
+      pathname: "/transaction/[id]",
+      params: { id: tx.id },
+    });
+  });
 });
 
 describe("the balance header", () => {

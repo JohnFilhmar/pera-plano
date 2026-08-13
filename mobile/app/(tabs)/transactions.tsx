@@ -25,6 +25,7 @@
 //   correct only while `listTransactions` returns the whole tier-clamped window
 //   in one read — see `searchTransactions` in ledger_list.tsx for exactly what
 //   paginating that query would silently break.
+import { useRouter } from "expo-router";
 import { useState } from "react";
 import { ScrollView, View } from "react-native";
 
@@ -36,6 +37,7 @@ import { useWallets } from "@/hooks/queries/use_wallets";
 import type { TxFilter } from "@/types/domain";
 
 export default function TransactionsScreen() {
+  const router = useRouter();
   const [filter, setFilter] = useState<TxFilter>({});
   const [search, setSearch] = useState("");
 
@@ -69,6 +71,11 @@ export default function TransactionsScreen() {
             categories={categories}
             search={search}
             filtered={filtered}
+            // m1c Task 7: the rows open the detail screen. Task 6 left them
+            // inert because this route did not exist yet.
+            onSelect={(transaction) =>
+              router.push({ pathname: "/transaction/[id]", params: { id: transaction.id } })
+            }
           />
         </View>
       </ScrollView>

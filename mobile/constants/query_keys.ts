@@ -115,6 +115,37 @@ export const queryKeys = {
     all: ["ruleset"] as const,
     active: () => ["ruleset", "active"] as const,
   },
+  /**
+   * The captured notification text behind m1c Task 7's "Why was this recorded?"
+   * panel (lib/db/repos/raw_notifications_repo.ts).
+   *
+   * TWO KEYS OVER ONE ROW, and the expiry nests under the capture's own
+   * `detail` key rather than sitting beside it. `purgeExpiredRawCaptures`
+   * removes the text and the expiry in the same DELETE, so anything that
+   * invalidates one has to reach the other — a sibling key would let the panel
+   * keep counting down to a deletion that has already happened, which is the
+   * single most damaging thing this panel can get wrong.
+   */
+  rawCaptures: {
+    all: ["raw_captures"] as const,
+    detail: (id: string) => ["raw_captures", "detail", id] as const,
+    expiry: (id: string) => ["raw_captures", "detail", id, "expiry"] as const,
+  },
+  /**
+   * The corrections the user has taught the pipeline
+   * (lib/db/repos/user_rules_repo.ts).
+   *
+   * NOTHING READS THIS FAMILY YET — the Categorizer asks the repository
+   * directly, mid-parse, outside React Query entirely. The key exists so
+   * `useCreateUserRule` names a real one instead of invalidating nothing, and
+   * so the settings screen that lists rules (m3b) inherits an invalidation that
+   * already fires on every correction rather than having to retrofit it into
+   * every write that has shipped by then.
+   */
+  userRules: {
+    all: ["user_rules"] as const,
+    list: () => ["user_rules", "list"] as const,
+  },
   settings: {
     all: ["settings"] as const,
   },

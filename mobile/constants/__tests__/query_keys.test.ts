@@ -105,6 +105,29 @@ describe("exact key contents (STACK_BASIS §6 shape)", () => {
     expect(queryKeys.bills.detail("b1")).toEqual(["bills", "detail", "b1"]);
   });
 
+  test("rawCaptures — the transparency panel's two reads over one row", () => {
+    // snake_case key segment, mirroring the `raw_notifications` table. The
+    // expiry nests UNDER the capture's own detail key: the purge removes the
+    // row and the expiry together, so anything that invalidates one has to
+    // reach the other, or the panel counts down to a deletion that has already
+    // happened.
+    expect(queryKeys.rawCaptures.all).toEqual(["raw_captures"]);
+    expect(queryKeys.rawCaptures.detail("cap1")).toEqual(["raw_captures", "detail", "cap1"]);
+    expect(queryKeys.rawCaptures.expiry("cap1")).toEqual([
+      "raw_captures",
+      "detail",
+      "cap1",
+      "expiry",
+    ]);
+    const detail = queryKeys.rawCaptures.detail("cap1");
+    expect(queryKeys.rawCaptures.expiry("cap1").slice(0, detail.length)).toEqual(detail);
+  });
+
+  test("userRules — the corrections a category edit teaches the pipeline", () => {
+    expect(queryKeys.userRules.all).toEqual(["user_rules"]);
+    expect(queryKeys.userRules.list()).toEqual(["user_rules", "list"]);
+  });
+
   test("settings — all key only, no list()/detail()", () => {
     expect(queryKeys.settings.all).toEqual(["settings"]);
   });

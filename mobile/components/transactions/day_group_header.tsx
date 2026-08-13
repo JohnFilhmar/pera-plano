@@ -20,24 +20,12 @@
 import { Text, View } from "react-native";
 
 import { AmountText } from "@/components/ui/amount_text";
+// Spelled out rather than taken from `Intl`, so a header reads the same on
+// every device and in every test locale. It moved to lib/datetime.ts when the
+// transaction detail screen (m1c Task 7) needed the same table: two month
+// tables is how two screens end up disagreeing about the same instant.
+import { MONTHS } from "@/lib/datetime";
 import type { Centavos, EpochMs, IsoDate } from "@/types/domain";
-
-/** Short month names, spelled out here rather than taken from `Intl`, so a
- * header reads the same on every device and in every test locale. */
-const MONTHS = [
-  "Jan",
-  "Feb",
-  "Mar",
-  "Apr",
-  "May",
-  "Jun",
-  "Jul",
-  "Aug",
-  "Sep",
-  "Oct",
-  "Nov",
-  "Dec",
-];
 
 /** Epoch milliseconds → the LOCAL calendar day as 'YYYY-MM-DD'. See the header. */
 export function localDateKey(at: EpochMs): IsoDate {

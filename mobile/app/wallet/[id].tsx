@@ -207,6 +207,10 @@ export default function WalletDetailScreen() {
           transactions={transactions}
           wallets={wallets}
           categories={categories}
+          // m1c Task 7: same rows, same destination as the Transactions tab.
+          onSelect={(transaction) =>
+            router.push({ pathname: "/transaction/[id]", params: { id: transaction.id } })
+          }
           empty={
             <Text
               testID="wallet-detail-no-transactions"

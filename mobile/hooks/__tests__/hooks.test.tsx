@@ -33,6 +33,10 @@ import {
   UNCATEGORIZED_ID,
 } from "@/lib/db/repos/categories_repo";
 import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
+import {
+  RAW_CAPTURE_TTL_MS,
+  storeRawCapture,
+} from "@/lib/db/repos/raw_notifications_repo";
 import { countOpen, enqueue } from "@/lib/db/repos/review_queue_repo";
 import * as transactionsRepo from "@/lib/db/repos/transactions_repo";
 import { getTransaction, insertTransaction } from "@/lib/db/repos/transactions_repo";
@@ -53,6 +57,7 @@ import { useCategories } from "../queries/use_categories";
 import { useReviewCount, REVIEW_COUNT_POLL_MS } from "../queries/use_review_count";
 import { useReviewQueue } from "../queries/use_review_queue";
 import { useRuleset } from "../queries/use_ruleset";
+import { useRawCapture, useRawCaptureExpiry } from "../queries/use_raw_capture";
 import { useTransaction } from "../queries/use_transaction";
 import { useTransactions } from "../queries/use_transactions";
 import { useWallet } from "../queries/use_wallet";
@@ -65,6 +70,7 @@ import { useCreateWallet } from "../mutations/use_create_wallet";
 import { useLinkTransfer } from "../mutations/use_link_transfer";
 import { useResolveReviewItem } from "../mutations/use_resolve_review_item";
 import { useUnlinkTransfer } from "../mutations/use_unlink_transfer";
+import { useCreateUserRule } from "../mutations/use_create_user_rule";
 import { useUpdateTransaction } from "../mutations/use_update_transaction";
 import { useUpdateWallet } from "../mutations/use_update_wallet";
 
@@ -863,6 +869,7 @@ const MUTATION_HOOK_NAMES = [
   "useResolveReviewItem",
   "useLinkTransfer",
   "useUnlinkTransfer",
+  "useCreateUserRule",
 ] as const;
 
 type MutationHookName = (typeof MUTATION_HOOK_NAMES)[number];
@@ -934,6 +941,12 @@ function mutationCases(): Record<MutationHookName, () => Promise<void>> {
       const link = await linkTransfer(txA.id, inLeg.id, 0);
       await fire(useUnlinkTransfer, link.id);
     },
+    useCreateUserRule: () =>
+      fire(useCreateUserRule, {
+        matcher: { merchantPattern: "Jollibee" },
+        action: { kind: "set-category" as const, categoryId },
+        createdFrom: txA.id,
+      }),
   };
 }
 
@@ -960,5 +973,77 @@ describe("Rule 2 — no mutation hook invalidates the whole cache", () => {
       expect(filters?.queryKey).toBeDefined();
       expect(filters?.queryKey?.length).toBeGreaterThan(0);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The raw-capture reads behind the "Why was this recorded?" panel (m1c Task 7)
+//
+// TWO HOOKS OVER ONE ROW, ON PURPOSE. `RawCapture` is interface-contract §4 —
+// the shape the Kotlin listener hands across the native bridge — and carries no
+// expiry. Rather than widening a native contract for one screen, the expiry has
+// its own accessor and its own hook.
+// ---------------------------------------------------------------------------
+
+describe("useRawCapture / useRawCaptureExpiry", () => {
+  const CAPTURE_ID = "cap-detail-1";
+  const STORED_AT = 1_800_000_000_000;
+
+  async function storeOne(): Promise<void> {
+    await storeRawCapture(
+      {
+        id: CAPTURE_ID,
+        packageName: "com.globe.gcash.android",
+        title: "GCash",
+        text: "You have sent PHP 500.00 to JUAN D.",
+        subText: null,
+        bigText: null,
+        postedAt: STORED_AT - 30 * 24 * 60 * 60 * 1000,
+        capturedAt: STORED_AT - 30 * 24 * 60 * 60 * 1000,
+      },
+      STORED_AT,
+    );
+  }
+
+  test("useRawCapture reads the stored capture under its own key", async () => {
+    await storeOne();
+    const { result } = renderHook(() => useRawCapture(CAPTURE_ID), { wrapper: wrapperFor(client) });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.text).toBe("You have sent PHP 500.00 to JUAN D.");
+    expect(client.getQueryCache().find({ queryKey: queryKeys.rawCaptures.detail(CAPTURE_ID) })).toBeDefined();
+  });
+
+  test("useRawCaptureExpiry reads the STORED expiry, not capturedAt + the TTL", async () => {
+    // The capture is 30 days old and was stored today — a replayed or
+    // late-drained batch. Derived from `capturedAt` the panel would announce a
+    // deletion that already happened; the stored column is the one the purge
+    // actually deletes on.
+    await storeOne();
+    const { result } = renderHook(() => useRawCaptureExpiry(CAPTURE_ID), {
+      wrapper: wrapperFor(client),
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toBe(STORED_AT + RAW_CAPTURE_TTL_MS);
+  });
+
+  test("a null id fetches nothing — a transaction with no capture is not an error", async () => {
+    // Every manual entry, and every notification row past the 30-day purge.
+    const capture = renderHook(() => useRawCapture(null), { wrapper: wrapperFor(client) });
+    const expiry = renderHook(() => useRawCaptureExpiry(null), { wrapper: wrapperFor(client) });
+
+    expect(capture.result.current.fetchStatus).toBe("idle");
+    expect(expiry.result.current.fetchStatus).toBe("idle");
+    expect(capture.result.current.data).toBeUndefined();
+  });
+
+  test("a purged id resolves to null rather than throwing", async () => {
+    const { result } = renderHook(() => useRawCapture("never-stored"), {
+      wrapper: wrapperFor(client),
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toBeNull();
   });
 });

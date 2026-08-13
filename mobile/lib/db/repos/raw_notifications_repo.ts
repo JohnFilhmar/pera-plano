@@ -17,7 +17,7 @@
 // Same house shape as wallets_repo.ts: thin functions over getDatabase(),
 // domain types from types/domain.ts, no entitlement checks.
 import { getDatabase } from "@/lib/db/database";
-import type { RawCapture } from "@/types/domain";
+import type { EpochMs, RawCapture } from "@/types/domain";
 
 /**
  * The retention window, spec §1 principle 2 / §9.3 rule 1 / docs §12: thirty
@@ -115,6 +115,37 @@ export async function getRawCapture(id: string): Promise<RawCapture | null> {
     [id],
   );
   return row ? rowToRawCapture(row) : null;
+}
+
+/**
+ * When this capture will be destroyed, or `null` when it is already gone.
+ *
+ * A SEPARATE ACCESSOR RATHER THAN A FIELD ON `RawCapture`. That type is
+ * interface-contract §4 — the shape the Kotlin listener hands across the native
+ * bridge — and it has no `expiresAt`, because the native side does not assign
+ * one: `storeRawCapture` computes it here, from the STORE time. Adding it to
+ * the type to save the "Why was this recorded?" panel one read would change a
+ * native contract for the benefit of one screen.
+ *
+ * READ IT, NEVER DERIVE IT. `capturedAt + RAW_CAPTURE_TTL_MS` is the obvious
+ * shortcut and it is wrong whenever the two clocks differ, which is exactly
+ * what a replayed batch or a drain deferred until the next unlock produces: a
+ * capture taken on the 1st and stored on the 8th is deleted on the 38th, not
+ * the 31st. `purgeExpiredRawCaptures` deletes on THIS column, so any countdown
+ * computed from anything else is the app promising a deletion date the database
+ * will not honour — on the one screen whose entire job is being trustworthy
+ * about deletion.
+ *
+ * `null` covers "never stored" and "already purged" alike, and both are normal
+ * answers: the panel renders its expired notice for either.
+ */
+export async function getRawCaptureExpiry(id: string): Promise<EpochMs | null> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ expires_at: number }>(
+    "SELECT expires_at FROM raw_notifications WHERE id = ?",
+    [id],
+  );
+  return row ? row.expires_at : null;
 }
 
 /**

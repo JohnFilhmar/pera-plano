@@ -24,7 +24,7 @@
 // mean one query per row (Global Constraints: components consume hooks, and
 // this component consumes none at all).
 import { ArrowLeftRight } from "lucide-react-native";
-import { Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 
 import { AmountText } from "@/components/ui/amount_text";
 import { registerIcon } from "@/components/ui/button";
@@ -56,10 +56,27 @@ export type TransactionRowProps = {
   /** Resolved by `LedgerList` from the categories it already holds. */
   category?: Category;
   wallet?: Wallet;
+  /**
+   * Opens this row. m1c Task 7.
+   *
+   * REPORTS THE ROW, NAVIGATES NOTHING. Keeping `useRouter` out of this file is
+   * what lets the same component render on the Transactions tab, the wallet
+   * detail, and (later) the Review Queue's cards without any of them inheriting
+   * a route the others do not want — and it keeps this file testable without a
+   * router at all. Optional, so a caller with nowhere to send the user gets a
+   * plain row rather than a tap that silently does nothing.
+   */
+  onPress?: () => void;
   testID?: string;
 };
 
-export function TransactionRow({ transaction, category, wallet, testID }: TransactionRowProps) {
+export function TransactionRow({
+  transaction,
+  category,
+  wallet,
+  onPress,
+  testID,
+}: TransactionRowProps) {
   // `transferLinkId !== null` is the whole definition of a transfer leg. Not
   // "the category is Transfers", not a merchant heuristic — the link row is the
   // only thing `sumSpend` consults, so it is the only thing the row may show.
@@ -67,8 +84,8 @@ export function TransactionRow({ transaction, category, wallet, testID }: Transa
   const rowTestID = testID ?? `transaction-row-${transaction.id}`;
   const categoryName = category?.name ?? UNNAMED_CATEGORY;
 
-  return (
-    <View testID={rowTestID}>
+  const content = (
+    <>
       <ListRow
         // Rule 2's fallback chain, in order. The category name is the last
         // resort rather than a placeholder like "Transaction", because it is
@@ -97,9 +114,10 @@ export function TransactionRow({ transaction, category, wallet, testID }: Transa
             size="md"
           />
         }
-        // NO onPress YET. The transaction detail route is m1c Task 7's
-        // (app/transaction/[id].tsx); a row that navigated nowhere would be a
-        // dead tap on the most-tapped list in the app.
+        // The press handler is on the WRAPPER below, not here. Nesting a
+        // Pressable inside another one gives the row two touch targets with
+        // different bounds, and the chip line — which is where a user's thumb
+        // lands when they are reading the category — would not be one of them.
       />
       <View className="flex-row flex-wrap items-center gap-2 px-4 pb-3">
         <Chip testID={`transaction-category-${transaction.id}`} label={categoryName} />
@@ -112,6 +130,25 @@ export function TransactionRow({ transaction, category, wallet, testID }: Transa
           </Text>
         ) : null}
       </View>
-    </View>
+    </>
+  );
+
+  // Task 6 shipped this row INERT: app/transaction/[id].tsx did not exist, and
+  // a dead tap on the most-tapped list in the app is worse than an obviously
+  // static one. That route exists now — but a caller with nowhere to send the
+  // user still gets the plain row rather than a tap that does nothing.
+  if (!onPress) {
+    return <View testID={rowTestID}>{content}</View>;
+  }
+
+  return (
+    <Pressable
+      testID={rowTestID}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`${transaction.merchant ?? transaction.counterparty ?? categoryName}, ${categoryName}`}
+    >
+      {content}
+    </Pressable>
   );
 }

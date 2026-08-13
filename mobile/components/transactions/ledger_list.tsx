@@ -209,6 +209,16 @@ export type LedgerListProps = {
    * no rows is a narrower and more useful statement than the tab-wide one.
    */
   empty?: ReactNode;
+  /**
+   * Opens a row (m1c Task 7's app/transaction/[id].tsx).
+   *
+   * THE LIST REPORTS, THE SCREEN NAVIGATES. Calling `useRouter` here would put
+   * a route inside the one component both the Transactions tab and the wallet
+   * detail render — and inside the 560-line presentational test file that
+   * currently needs no router at all. Optional, because a caller with nowhere
+   * to send the user should get inert rows rather than dead taps.
+   */
+  onSelect?: (transaction: Transaction) => void;
   testID?: string;
 };
 
@@ -220,6 +230,7 @@ export function LedgerList({
   filtered = false,
   now = Date.now(),
   empty,
+  onSelect,
   testID = "ledger-list",
 }: LedgerListProps) {
   // Nothing at all until the first read resolves. An empty state that flashes
@@ -262,6 +273,7 @@ export function LedgerList({
               transaction={transaction}
               category={categoriesById.get(transaction.categoryId)}
               wallet={walletsById.get(transaction.walletId)}
+              onPress={onSelect ? () => onSelect(transaction) : undefined}
             />
           ))}
         </View>
