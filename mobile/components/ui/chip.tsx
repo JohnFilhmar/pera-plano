@@ -39,12 +39,19 @@ const TONE_BG: Record<ChipTone, string> = {
 /**
  * Filled tones invert to the surface colour, which lands near-white on light
  * fills and near-black on the brighter dark-mode fills — the same pairing the
- * shipped Plus badge and Soon chip already use.
+ * shipped Plus badge and Soon chip already use. Contrast against 12px
+ * semibold text clears WCAG AA (4.5:1) on all of them: brand 5.0, danger 4.8,
+ * soon 5.4 in light; 9:1 or better in dark.
+ *
+ * `warn` is the exception and takes dark ink in BOTH themes. Amber is the one
+ * token bright enough that white sits at 3.2:1 against it — legible on a
+ * designer's monitor, not on a phone outdoors, which is exactly where a
+ * "due today" chip has to be read.
  */
 const TONE_TEXT: Record<ChipTone, string> = {
   neutral: "text-fg-2 dark:text-fg-2-dark",
   brand: "text-surface dark:text-surface-dark",
-  warn: "text-surface dark:text-surface-dark",
+  warn: "text-fg dark:text-surface-dark",
   danger: "text-surface dark:text-surface-dark",
   soon: "text-surface dark:text-surface-dark",
 };

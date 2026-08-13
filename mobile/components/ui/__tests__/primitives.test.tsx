@@ -354,6 +354,16 @@ test("Chip tone soon is the exact chip SoonGate ships — one grey, not two", ()
   expect(classListOf("soon-chip")).toEqual(chipClasses);
 });
 
+test("Chip tone warn takes dark ink — white on amber is unreadable outdoors", () => {
+  // Amber is the one fill bright enough that `text-surface` white drops to
+  // 3.2:1, under WCAG AA for this size. Every other filled tone clears 4.5:1
+  // with white, so only this one deviates.
+  render(<Chip testID="chip" label="Due today" tone="warn" />);
+  const ink = String(screen.getByText("Due today").props.className ?? "").split(/\s+/);
+  expect(ink).toContain("text-fg");
+  expect(ink).not.toContain("text-surface");
+});
+
 test("Chip tone brand is visibly not the soon grey", () => {
   render(<Chip testID="chip" label="Plus" tone="brand" />);
   expect(classListOf("chip")).not.toContain("bg-fg-2");
