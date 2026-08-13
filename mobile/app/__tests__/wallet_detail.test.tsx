@@ -36,6 +36,7 @@ import { closeDatabase, getDatabase } from "@/lib/db/database";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { insertTransaction } from "@/lib/db/repos/transactions_repo";
+import { linkTransfer } from "@/lib/db/repos/transfer_links_repo";
 import { archiveWallet, createWallet } from "@/lib/db/repos/wallets_repo";
 import { DEFAULT_TUNABLES } from "@/lib/ingest/ruleset_types";
 import { queryClient as appQueryClient } from "@/lib/query_client";
@@ -262,6 +263,46 @@ describe("the wallet's transactions", () => {
     await screen.findByText("GCash");
 
     expect(await screen.findByTestId("wallet-detail-no-transactions")).toBeTruthy();
+  });
+
+  test("renders them through the app's ONE ledger list, not a second one (Task 6)", async () => {
+    // The placeholder this screen used to carry is gone. Two ledger
+    // implementations is how a transfer leg ends up muted on one screen and
+    // counted as spending on the other, so the day header and the transfer row
+    // state are asserted HERE too — on the screen that reuses them.
+    const bpi = await createWallet({ name: "BPI", type: "bank", openingBalance: 0 });
+    const leg = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 500_000,
+      direction: "out",
+      occurredAt: Date.now(),
+      merchant: "Transfer to BPI",
+      source: "notification",
+      confidence: 0.9,
+    });
+    const inLeg = await insertTransaction({
+      walletId: bpi.id,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 500_000,
+      direction: "in",
+      occurredAt: Date.now(),
+      merchant: "Transfer from GCash",
+      source: "notification",
+      confidence: 0.9,
+    });
+    await linkTransfer(leg.id, inLeg.id, 0);
+
+    renderDetail(gcash.id);
+
+    expect(await screen.findByTestId("wallet-detail-ledger")).toBeTruthy();
+    expect(screen.getAllByTestId(/^day-group-\d{4}-\d{2}-\d{2}$/).length).toBe(1);
+    expect(screen.getByTestId(`transaction-transfer-${leg.id}`)).toHaveTextContent(
+      "Transfer — not counted as spending",
+    );
+    expect(String(screen.getByTestId(`transaction-amount-${leg.id}`).props.className)).toContain(
+      "text-fg-2",
+    );
   });
 });
 

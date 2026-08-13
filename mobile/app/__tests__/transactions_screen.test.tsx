@@ -1,0 +1,289 @@
+// app/__tests__/transactions_screen.test.tsx — m1c plan Task 6.
+//
+// The ledger end to end, against a REAL database: the filter bar builds a
+// `TxFilter`, `useTransactions` keys the cache on it, `listTransactions` ANDs
+// its clauses, and `LedgerList` groups whatever comes back.
+//
+// THE COMPOSITION TEST IS WHY THIS FILE EXISTS. Whether two filters narrow to
+// the intersection or quietly replace each other cannot be decided in
+// components/transactions/__tests__/filter_bar.test.tsx — that file proves the
+// bar EMITS both, and this one proves the emitted filter reaches the SQL and
+// comes back with one row rather than three.
+//
+// It also pins the two empty states as the screen actually reaches them, with
+// each case asserting the other's copy is absent.
+import { render, screen, fireEvent, waitFor } from "@testing-library/react-native";
+
+import { closeDatabase } from "@/lib/db/database";
+import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
+import { insertTransaction } from "@/lib/db/repos/transactions_repo";
+import { linkTransfer } from "@/lib/db/repos/transfer_links_repo";
+import { createWallet } from "@/lib/db/repos/wallets_repo";
+import { queryClient as appQueryClient } from "@/lib/query_client";
+import { freshDb } from "@/test_support/db";
+import type { Wallet } from "@/types/domain";
+
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactNode } from "react";
+
+import {
+  LEDGER_EMPTY_TITLE,
+  LEDGER_FILTERED_EMPTY_TITLE,
+} from "@/components/transactions/ledger_list";
+
+import TransactionsScreen from "../(tabs)/transactions";
+
+const FOOD = "cat_food_dining";
+const TRANSPORT = "cat_transport";
+
+function makeTestClient(): QueryClient {
+  const defaults = appQueryClient.getDefaultOptions();
+  return new QueryClient({
+    defaultOptions: {
+      ...defaults,
+      queries: { ...defaults.queries, retry: 0, gcTime: Infinity },
+      mutations: { ...defaults.mutations, gcTime: 0 },
+    },
+  });
+}
+
+/**
+ * Waits for the ledger's pending read to resolve.
+ *
+ * Every filter change is a new React Query key, so `data` is `undefined` for a
+ * beat and the list renders its loading placeholder. Assertions made during
+ * that gap ("Grab is gone!") pass just as happily on a filter bar that dropped
+ * every filter, which is the bug these tests exist to catch.
+ */
+async function settled(): Promise<void> {
+  // The timeout is raised from RNTL's 1s default deliberately: two chip presses
+  // start two reads against a real (in-memory) database, and under the full
+  // suite's parallelism that has overrun a one-second budget. A longer wait
+  // costs nothing when the read is fast and is the difference between a
+  // deterministic assertion and a flake that reads as a filter bug.
+  await waitFor(() => expect(screen.queryByTestId("ledger-list-loading")).toBeNull(), {
+    timeout: 10_000,
+  });
+}
+
+function renderScreen(): void {
+  const client = makeTestClient();
+  function Wrapper({ children }: { children: ReactNode }) {
+    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  }
+  render(<TransactionsScreen />, { wrapper: Wrapper });
+}
+
+let gcash: Wallet;
+let bpi: Wallet;
+
+beforeEach(async () => {
+  await freshDb();
+  await seedDefaultCategories();
+  gcash = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100_000 });
+  bpi = await createWallet({ name: "BPI", type: "bank", openingBalance: 500_000 });
+});
+
+afterEach(async () => {
+  await closeDatabase();
+});
+
+/** Four rows across two wallets and two categories — one per combination. */
+async function seedGrid(): Promise<void> {
+  const now = Date.now();
+  const rows = [
+    { walletId: gcash.id, categoryId: FOOD, merchant: "Jollibee" },
+    { walletId: gcash.id, categoryId: TRANSPORT, merchant: "Grab" },
+    { walletId: bpi.id, categoryId: FOOD, merchant: "Mang Inasal" },
+    { walletId: bpi.id, categoryId: TRANSPORT, merchant: "Angkas" },
+  ];
+  for (const [index, row] of rows.entries()) {
+    await insertTransaction({
+      ...row,
+      amount: 10_000 + index,
+      direction: "out",
+      occurredAt: now - index * 60_000,
+      source: "notification",
+      confidence: 0.9,
+    });
+  }
+}
+
+describe("the ledger", () => {
+  test("renders the tracked rows, grouped under a day header", async () => {
+    await seedGrid();
+
+    renderScreen();
+
+    expect(await screen.findByText("Jollibee")).toBeTruthy();
+    expect(screen.getAllByTestId(/^day-group-\d{4}-\d{2}-\d{2}$/).length).toBe(1);
+  });
+
+  test("a transfer leg is muted and labelled, on this screen and not just in isolation", async () => {
+    // The rule the whole task exists for has to survive the wiring, not just
+    // the component test.
+    const outLeg = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 500_000,
+      direction: "out",
+      occurredAt: Date.now(),
+      merchant: "Transfer to BPI",
+      source: "notification",
+      confidence: 0.9,
+    });
+    const inLeg = await insertTransaction({
+      walletId: bpi.id,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 500_000,
+      direction: "in",
+      occurredAt: Date.now(),
+      merchant: "Transfer from GCash",
+      source: "notification",
+      confidence: 0.9,
+    });
+    // The real linking path, so the stamp on both legs is the one the pipeline
+    // writes rather than a hand-rolled UPDATE this screen might not recognise.
+    await linkTransfer(outLeg.id, inLeg.id, 0, { detectedBy: "auto", confidence: 0.95 });
+
+    renderScreen();
+
+    await screen.findByText("Transfer from GCash");
+    for (const leg of [outLeg, inLeg]) {
+      expect(screen.getByTestId(`transaction-transfer-${leg.id}`)).toHaveTextContent(
+        "Transfer — not counted as spending",
+      );
+      expect(String(screen.getByTestId(`transaction-amount-${leg.id}`).props.className)).toContain(
+        "text-fg-2",
+      );
+    }
+    // …and neither leg reaches the day's net (invariant I2).
+    expect(screen.getByTestId(/^day-group-\d{4}-\d{2}-\d{2}-net$/)).toHaveTextContent("₱0.00");
+  });
+});
+
+describe("filters compose (AND), all the way to the SQL", () => {
+  test("wallet AND category narrows to the intersection, not to their union", async () => {
+    // A bar that replaced the filter instead of merging it would show two rows
+    // here — the list WIDENING when the user asked for something narrower.
+    await seedGrid();
+
+    renderScreen();
+    await screen.findByText("Jollibee");
+
+    fireEvent.press(screen.getByTestId(`filter-wallet-${gcash.id}`));
+    fireEvent.press(screen.getByTestId(`filter-category-${FOOD}`));
+
+    // Each filter change is a new cache key, so the list is briefly empty while
+    // the new read resolves. Asserting through that gap would pass on a bar
+    // that dropped BOTH filters just as readily.
+    await settled();
+    expect(screen.getByText("Jollibee")).toBeTruthy();
+    expect(screen.queryByText("Grab")).toBeNull();
+    expect(screen.queryByText("Mang Inasal")).toBeNull();
+    expect(screen.queryByText("Angkas")).toBeNull();
+  });
+
+  test("clearing the category chip restores the wallet-only list, keeping the wallet", async () => {
+    await seedGrid();
+
+    renderScreen();
+    await screen.findByText("Jollibee");
+
+    fireEvent.press(screen.getByTestId(`filter-wallet-${gcash.id}`));
+    fireEvent.press(screen.getByTestId(`filter-category-${FOOD}`));
+    await settled();
+    expect(screen.queryByText("Grab")).toBeNull();
+
+    fireEvent.press(screen.getByTestId("filter-chip-categoryId"));
+
+    // Grab is back (same wallet, other category); BPI's rows are still gone.
+    await settled();
+    expect(screen.getByText("Grab")).toBeTruthy();
+    expect(screen.queryByText("Mang Inasal")).toBeNull();
+  });
+
+  test("direction filters to one side of the ledger", async () => {
+    await seedGrid();
+    await insertTransaction({
+      walletId: gcash.id,
+      categoryId: FOOD,
+      amount: 250_000,
+      direction: "in",
+      occurredAt: Date.now(),
+      merchant: "Sweldo",
+      source: "notification",
+      confidence: 0.9,
+    });
+
+    renderScreen();
+    await screen.findByText("Sweldo");
+
+    fireEvent.press(screen.getByTestId("filter-direction-in"));
+
+    await settled();
+    expect(screen.getByText("Sweldo")).toBeTruthy();
+    expect(screen.queryByText("Jollibee")).toBeNull();
+  });
+});
+
+describe("search", () => {
+  test("narrows over the rows on screen, matching merchant and note", async () => {
+    await seedGrid();
+
+    renderScreen();
+    await screen.findByText("Jollibee");
+
+    fireEvent.changeText(screen.getByTestId("filter-search"), "angkas");
+
+    await waitFor(() => expect(screen.queryByText("Jollibee")).toBeNull());
+    expect(screen.getByText("Angkas")).toBeTruthy();
+  });
+});
+
+describe("the two empty states, reached through the screen", () => {
+  test("an untouched ledger says nothing has been tracked yet", async () => {
+    renderScreen();
+
+    expect(await screen.findByTestId("ledger-empty")).toBeTruthy();
+    expect(screen.getByText(LEDGER_EMPTY_TITLE)).toBeTruthy();
+    expect(screen.queryByText(LEDGER_FILTERED_EMPTY_TITLE)).toBeNull();
+  });
+
+  test("a filter matching nothing NEVER claims nothing was tracked", async () => {
+    // The alarming false statement: a user with a full ledger being told the
+    // app recorded nothing, because they tapped a category chip.
+    await insertTransaction({
+      walletId: gcash.id,
+      categoryId: FOOD,
+      amount: 10_000,
+      direction: "out",
+      occurredAt: Date.now(),
+      merchant: "Jollibee",
+      source: "notification",
+      confidence: 0.9,
+    });
+
+    renderScreen();
+    await screen.findByText("Jollibee");
+
+    fireEvent.press(screen.getByTestId(`filter-category-${TRANSPORT}`));
+
+    expect(await screen.findByTestId("ledger-empty-filtered")).toBeTruthy();
+    expect(screen.getByText(LEDGER_FILTERED_EMPTY_TITLE)).toBeTruthy();
+    expect(screen.queryByText(LEDGER_EMPTY_TITLE)).toBeNull();
+    expect(screen.queryByTestId("ledger-empty")).toBeNull();
+  });
+
+  test("a SEARCH matching nothing is also a filtered empty", async () => {
+    await seedGrid();
+
+    renderScreen();
+    await screen.findByText("Jollibee");
+
+    fireEvent.changeText(screen.getByTestId("filter-search"), "meralco");
+
+    expect(await screen.findByTestId("ledger-empty-filtered")).toBeTruthy();
+    expect(screen.queryByText(LEDGER_EMPTY_TITLE)).toBeNull();
+  });
+});

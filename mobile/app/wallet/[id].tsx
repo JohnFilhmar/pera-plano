@@ -3,15 +3,18 @@
 // Balance header, the drift badge, the wallet's matcher chips, and its
 // transactions.
 //
-// ONE THING THIS SCREEN DELIBERATELY DOES NOT HAVE YET:
+// THE LEDGER LIST ARRIVED WITH m1c TASK 6. Rule 4 says the detail shows the
+// wallet's transactions "reusing the ledger list from Task 6" — day grouping,
+// category chips, transfer-leg muting, the lot — and until that task existed
+// this screen carried a deliberately plain list instead, with a comment saying
+// why. That placeholder is gone: there is now exactly ONE ledger implementation
+// in the app, which is the point. Two of them was never a styling problem, it is
+// how a transfer leg ends up muted on one screen and counted as spending on the
+// other, with neither screen admitting they disagree.
 //
-//   NO LEDGER LIST. Rule 4 says the detail shows the wallet's transactions
-//   "reusing the ledger list from Task 6" — day grouping, category chips,
-//   transfer-leg muting, the lot. Task 6 has not happened. The rows below are a
-//   plain list from `useTransactions({ walletId })`; building a second ledger
-//   here would mean deleting it two tasks from now, and having two of them in
-//   the meantime is how a transfer leg ends up muted on one screen and counted
-//   as spending on the other.
+// The screen keeps its OWN empty state (`LedgerList`'s `empty` slot): "Nothing
+// tracked in this wallet yet" is a narrower and more useful statement than the
+// tab-wide one, and it is true even when the rest of the ledger is full.
 //
 // THE THREE ACTIONS ARRIVED WITH m1c TASK 5 (rule 4: edit, reconcile, archive),
 // each behind the thing that makes it safe:
@@ -31,13 +34,13 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 
+import { LedgerList } from "@/components/transactions/ledger_list";
 import { AmountText } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Chip } from "@/components/ui/chip";
 import { EmptyState } from "@/components/ui/empty_state";
 import { SectionHeader } from "@/components/ui/section_header";
-import { ListRow } from "@/components/ui/list_row";
 import { ArchiveWalletSheet } from "@/components/wallets/archive_wallet_sheet";
 import { BalanceMismatchBadge } from "@/components/wallets/balance_mismatch_badge";
 import { CashReconcileSheet } from "@/components/wallets/cash_reconcile_sheet";
@@ -45,18 +48,12 @@ import { MatcherChipList } from "@/components/wallets/matcher_chip_list";
 import { WalletTypeIcon } from "@/components/wallets/wallet_type_icon";
 import { useArchiveWallet } from "@/hooks/mutations/use_archive_wallet";
 import { useBalanceDrift } from "@/hooks/queries/use_balance_drift";
+import { useCategories } from "@/hooks/queries/use_categories";
 import { useRuleset } from "@/hooks/queries/use_ruleset";
 import { useTransactions } from "@/hooks/queries/use_transactions";
 import { useWallet } from "@/hooks/queries/use_wallet";
 import { useWalletMatchers } from "@/hooks/queries/use_wallet_matchers";
 import { useWallets } from "@/hooks/queries/use_wallets";
-import type { Transaction } from "@/types/domain";
-
-/** `occurredAt` as a short, local, unambiguous date. Not money — no AmountText
- * rule applies — and not the ledger's day grouping, which is Task 6's. */
-function occurredOn(transaction: Transaction): string {
-  return new Date(transaction.occurredAt).toISOString().slice(0, 10);
-}
 
 export default function WalletDetailScreen() {
   const router = useRouter();
@@ -71,6 +68,7 @@ export default function WalletDetailScreen() {
   const { data: matchers } = useWalletMatchers(walletId);
   const { data: transactions } = useTransactions({ walletId });
   const { data: wallets } = useWallets();
+  const { data: categories } = useCategories();
   const archiveWallet = useArchiveWallet();
 
   if (isPending) {
@@ -200,28 +198,24 @@ export default function WalletDetailScreen() {
         ) : null}
 
         <SectionHeader title="Transactions" />
-        {transactions && transactions.length === 0 ? (
-          <Text
-            testID="wallet-detail-no-transactions"
-            className="px-4 text-fg-2 dark:text-fg-2-dark"
-          >
-            Nothing tracked in this wallet yet.
-          </Text>
-        ) : null}
-        {/* PLACEHOLDER LIST — m1c Task 6 replaces this whole block with the
-            real ledger list (day grouping, category chips, and the muted
-            "Transfer — not counted as spending" row state). Do not grow it. */}
-        {(transactions ?? []).map((transaction) => (
-          <ListRow
-            key={transaction.id}
-            testID={`wallet-detail-tx-${transaction.id}`}
-            title={transaction.merchant ?? transaction.counterparty ?? "Transaction"}
-            subtitle={occurredOn(transaction)}
-            right={
-              <AmountText amount={transaction.amount} direction={transaction.direction} size="md" />
-            }
-          />
-        ))}
+        {/* THE app's ONE ledger list (m1c Task 6). `filtered` stays false: the
+            wallet scope is what this screen IS, not a filter the user applied,
+            so an empty one is "nothing tracked in this wallet" rather than
+            "no transactions match these filters". */}
+        <LedgerList
+          testID="wallet-detail-ledger"
+          transactions={transactions}
+          wallets={wallets}
+          categories={categories}
+          empty={
+            <Text
+              testID="wallet-detail-no-transactions"
+              className="px-4 text-fg-2 dark:text-fg-2-dark"
+            >
+              Nothing tracked in this wallet yet.
+            </Text>
+          }
+        />
       </View>
     </ScrollView>
   );
