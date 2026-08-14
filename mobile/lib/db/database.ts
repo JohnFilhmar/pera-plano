@@ -157,6 +157,32 @@ function wrapConnection(raw: RawConnection): SQLiteDatabase {
   // method below for why it exists and what it costs.
   let transactionDepth = 0;
 
+  /**
+   * Serializes OUTERMOST transactions, so an independent flow waits its turn
+   * instead of joining one already in progress.
+   *
+   * Without this the depth counter alone is unsafe, and the failure is silent
+   * data loss. The ingest pipeline runs on its own promise chain
+   * (`startIngest`) concurrently with the UI, so this is reachable:
+   *
+   *   1. the pipeline's insertTransaction opens a transaction and awaits
+   *   2. the user confirms a Review Queue item; that flow sees depth > 0 and
+   *      JOINS, believing it is nested
+   *   3. the user's work finishes and reports success to the screen
+   *   4. the pipeline's insert then throws, and its ROLLBACK takes the user's
+   *      committed work with it
+   *
+   * The user is told their correction was saved and it is not. Before
+   * re-entrancy existed SQLite rejected step 2 outright, which was loud and
+   * wrong; joining is quiet and wrong. Queuing is correct: an independent flow
+   * runs after, with its own BEGIN and its own fate.
+   *
+   * With the queue in place, `transactionDepth > 0` can only mean GENUINE
+   * nesting — a repository called from inside another's work() on the same
+   * flow — which is exactly what re-entrancy was added for.
+   */
+  let writeQueue: Promise<unknown> = Promise.resolve();
+
   return {
     async execAsync(sql: string) {
       for (const statement of splitStatements(sql)) {
@@ -215,20 +241,29 @@ function wrapConnection(raw: RawConnection): SQLiteDatabase {
         return;
       }
 
-      transactionDepth = 1;
-      await raw.execute("BEGIN");
-      try {
-        await work();
-        await raw.execute("COMMIT");
-      } catch (error) {
-        await raw.execute("ROLLBACK");
-        throw error;
-      } finally {
-        // Reset rather than decrement: whichever way the outermost frame ended, no transaction
-        // is open on this connection any more. A leaked non-zero depth would make every later
-        // withTransactionAsync a silent no-op that never commits.
-        transactionDepth = 0;
-      }
+      // Outermost frame: take its turn in the queue rather than starting now.
+      const run = writeQueue.then(async () => {
+        transactionDepth = 1;
+        await raw.execute("BEGIN");
+        try {
+          await work();
+          await raw.execute("COMMIT");
+        } catch (error) {
+          await raw.execute("ROLLBACK");
+          throw error;
+        } finally {
+          // Reset rather than decrement: whichever way the outermost frame ended, no transaction
+          // is open on this connection any more. A leaked non-zero depth would make every later
+          // withTransactionAsync a silent no-op that never commits.
+          transactionDepth = 0;
+        }
+      });
+
+      // The queue swallows this frame's rejection so ONE failed write does not
+      // poison every write after it — the caller still receives it below.
+      writeQueue = run.catch(() => undefined);
+
+      await run;
     },
     async closeAsync() {
       raw.close();

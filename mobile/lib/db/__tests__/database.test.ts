@@ -253,3 +253,111 @@ test("after wipeDatabase(), unlockDatabase() can open a brand-new handle again",
   const db = await getDatabase();
   expect(db).toBeDefined();
 });
+
+// ---------------------------------------------------------------------------
+// Transaction re-entrancy, and the queue that makes it safe.
+//
+// Re-entrancy exists so a Review Queue triage action can commit a Transaction,
+// create a UserRule and resolve the item together, even though two of those
+// repositories already open transactions of their own.
+//
+// The danger it introduces is that an INDEPENDENT flow could join a transaction
+// it knows nothing about. The ingest pipeline runs on its own promise chain
+// concurrently with the UI, so a live capture landing mid-tap would otherwise
+// share fate with the user's correction: the user is told it saved, the
+// pipeline's insert then fails, and the rollback takes both.
+// ---------------------------------------------------------------------------
+
+test("a nested transaction joins the outer one rather than starting a second", async () => {
+  await unlockDatabase(DEK);
+  const db = await getDatabase();
+  await db.execAsync("CREATE TABLE IF NOT EXISTS reentry_probe (id INTEGER PRIMARY KEY);");
+
+  let inner = false;
+  await db.withTransactionAsync(async () => {
+    await db.runAsync("INSERT INTO reentry_probe (id) VALUES (1)");
+    // SQLite rejects a second BEGIN outright, so reaching the end of this
+    // callback at all is the assertion.
+    await db.withTransactionAsync(async () => {
+      await db.runAsync("INSERT INTO reentry_probe (id) VALUES (2)");
+      inner = true;
+    });
+  });
+
+  expect(inner).toBe(true);
+  expect(await db.getAllAsync("SELECT id FROM reentry_probe")).toHaveLength(2);
+});
+
+test("an inner failure rolls the WHOLE unit back, not just its own frame", async () => {
+  await unlockDatabase(DEK);
+  const db = await getDatabase();
+  await db.execAsync("CREATE TABLE IF NOT EXISTS reentry_probe (id INTEGER PRIMARY KEY);");
+
+  await expect(
+    db.withTransactionAsync(async () => {
+      await db.runAsync("INSERT INTO reentry_probe (id) VALUES (1)");
+      await db.withTransactionAsync(async () => {
+        throw new Error("inner blew up");
+      });
+    }),
+  ).rejects.toThrow("inner blew up");
+
+  // The outer insert is gone too. That is what a triage action needs: a
+  // committed transaction with an unresolved queue item means the user is asked
+  // to confirm the same purchase twice.
+  expect(await db.getAllAsync("SELECT id FROM reentry_probe")).toHaveLength(0);
+});
+
+test("two INDEPENDENT flows do not share a transaction — the second waits", async () => {
+  await unlockDatabase(DEK);
+  const db = await getDatabase();
+  await db.execAsync("CREATE TABLE IF NOT EXISTS reentry_probe (id INTEGER PRIMARY KEY);");
+
+  // Flow A opens a transaction and stays open across an await, exactly as the
+  // ingest pipeline does mid-insert.
+  let releaseA: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    releaseA = resolve;
+  });
+
+  const flowA = db.withTransactionAsync(async () => {
+    await db.runAsync("INSERT INTO reentry_probe (id) VALUES (1)");
+    await gate;
+    throw new Error("flow A failed");
+  });
+
+  // Flow B starts while A is still open. If it JOINED A, it would be rolled
+  // back by A's failure and the user would be told their write succeeded.
+  const flowB = db.withTransactionAsync(async () => {
+    await db.runAsync("INSERT INTO reentry_probe (id) VALUES (2)");
+  });
+
+  releaseA();
+  await expect(flowA).rejects.toThrow("flow A failed");
+  await flowB;
+
+  // A's row is gone, B's survived. Joined, both would be gone.
+  const rows = await db.getAllAsync<{ id: number }>("SELECT id FROM reentry_probe");
+  expect(rows.map((row) => row.id)).toEqual([2]);
+});
+
+test("a failed write does not poison the writes queued behind it", async () => {
+  await unlockDatabase(DEK);
+  const db = await getDatabase();
+  await db.execAsync("CREATE TABLE IF NOT EXISTS reentry_probe (id INTEGER PRIMARY KEY);");
+
+  await expect(
+    db.withTransactionAsync(async () => {
+      throw new Error("first write failed");
+    }),
+  ).rejects.toThrow("first write failed");
+
+  // A queue that propagated the rejection would leave every later write
+  // rejecting forever, which on this app means the ledger silently stops
+  // accepting anything after one bad row.
+  await db.withTransactionAsync(async () => {
+    await db.runAsync("INSERT INTO reentry_probe (id) VALUES (3)");
+  });
+
+  expect(await db.getAllAsync("SELECT id FROM reentry_probe")).toHaveLength(1);
+});
