@@ -1,6 +1,8 @@
 package expo.modules.notificationlistener
 
 import android.security.keystore.KeyPermanentlyInvalidatedException
+import android.util.Base64
+import java.security.GeneralSecurityException
 import java.security.spec.MGF1ParameterSpec
 import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
@@ -19,6 +21,13 @@ import javax.crypto.spec.PSource
  *    runs at arbitrary hours with no user present and must be able to seal
  *    a capture it can never itself read back (§6). Its PRIVATE half is
  *    gated exactly like the device KEK.
+ *  - `PREFS_KEK_ALIAS`: an AES-256-GCM key that seals the listener's own
+ *    sensitive `SharedPreferences` values -- above all the provider filter,
+ *    which is a list of the banks and e-wallets the user holds. Unlike the
+ *    two above it requires NO authentication at all, in either direction.
+ *    That is a deliberate weakening with a written-out argument; see
+ *    [ensurePrefsKek] and `AndroidKeyVault.getOrCreateUnauthenticatedAesKey`
+ *    before changing it.
  *
  * WHERE the keys live (real "AndroidKeyStore", vs. an in-memory fake for
  * JVM tests) is behind [vault], a narrow, test-only-swappable seam -- see
@@ -53,6 +62,7 @@ object KeyStoreBridge {
   // themselves are still not part of the public API.
   internal const val DEVICE_KEK_ALIAS = "peraplano.device_kek"
   internal const val CAPTURE_KEY_ALIAS = "peraplano.capture_keypair"
+  internal const val PREFS_KEK_ALIAS = "peraplano.prefs_kek"
 
   private const val AES_TRANSFORMATION = "AES/GCM/NoPadding"
 
@@ -186,4 +196,151 @@ object KeyStoreBridge {
     cipher.init(Cipher.DECRYPT_MODE, vault.getPrivateKey(CAPTURE_KEY_ALIAS), RSA_OAEP_PARAMS)
     return cipher.doFinal(wrapped)
   }
+
+  // ---- Prefs KEK (AES-256-GCM, NO user authentication) -------------------
+
+  /**
+   * Idempotent: a second call on an existing key is a no-op, never a
+   * rotation -- exactly like [ensureDeviceKek], and for the same reason
+   * (this runs on every app launch, and rotating would orphan every value
+   * already sealed under the old key).
+   *
+   * **This key requires no user authentication, deliberately.** The full
+   * argument, including what that gives up and what it buys, is on
+   * `AndroidKeyVault.getOrCreateUnauthenticatedAesKey` -- read it before
+   * changing anything here. The one-paragraph version: the notification
+   * listener has to decide whether to capture a notification while the app
+   * is locked and no user is present (docs/12-encryption-and-app-lock.md
+   * §6), so a filter sealed under an auth-bound key would be unreadable at
+   * precisely the moment it is needed. The realistic alternative is not a
+   * stronger key, it is the plaintext `SharedPreferences` this replaces --
+   * and per §4 an offline filesystem read (stolen phone, unencrypted
+   * backup, forensic extraction) is IN scope while code running as our UID
+   * is not.
+   *
+   * NOTE for whoever wires this up: unlike [ensureCaptureKeyPair] this is
+   * not yet called from anywhere in production. Task 2 of the
+   * provider-selection plan is what makes `CapturePrefs` use it, and it must
+   * call this from BOTH the app-launch path and the listener's
+   * `onListenerConnected` -- a fresh install where notification access is
+   * granted from Android Settings before the app is ever opened is a real
+   * configuration, and it is exactly how the capture keypair's equivalent
+   * gap (`bca1bcd`) silently dropped every capture on the 2026-08-10 device
+   * session.
+   */
+  fun ensurePrefsKek() {
+    vault.getOrCreateUnauthenticatedAesKey(PREFS_KEK_ALIAS)
+  }
+
+  /**
+   * Seals [plaintext] into one base64 string of `iv || ciphertext || tag`,
+   * suitable for storing as a `SharedPreferences` string value. The GCM tag
+   * is the trailing bytes of what `doFinal` returns, so it needs no separate
+   * framing.
+   *
+   * A zero-length [plaintext] seals and opens like any other value. That is
+   * load-bearing, not an edge case: an empty provider filter means "allow
+   * all" (contract §4), so an implementation that shortcut empty input to
+   * `""` would make "the user deselected every app" indistinguishable from
+   * "nothing was ever stored".
+   *
+   * Throws [PrefsValueSealException] on any failure -- see its doc for why
+   * it carries no cause.
+   */
+  fun sealPrefsValue(plaintext: ByteArray): String = payloadFree("sealPrefsValue") {
+    val cipher = Cipher.getInstance(AES_TRANSFORMATION)
+    cipher.init(Cipher.ENCRYPT_MODE, vault.getAesKey(PREFS_KEK_ALIAS))
+    // Same guarantee as wrapWithDeviceKek: an AES/GCM cipher init'd for
+    // ENCRYPT_MODE with no caller-supplied GCMParameterSpec mints a fresh
+    // random IV itself and refuses a supplied one. Nothing here supplies one.
+    val iv = cipher.iv
+    Base64.encodeToString(iv + cipher.doFinal(plaintext), Base64.NO_WRAP)
+  }
+
+  /**
+   * Opens a string produced by [sealPrefsValue].
+   *
+   * **A tampered blob fails to open; it never opens into something else.**
+   * GCM's authentication tag is verified by `doFinal`, which throws
+   * `AEADBadTagException` if either the ciphertext or the tag has been
+   * altered by so much as one bit -- and this function does not catch that
+   * and turn it into a value. A caller gets bytes it sealed, or an
+   * exception. There is no third outcome, and specifically no
+   * "plausible-looking garbage", which is what an unauthenticated cipher
+   * mode (CBC, CTR) would hand back for the same input.
+   *
+   * Throws [PrefsValueSealException] on any failure: malformed base64, a
+   * blob too short to hold an IV and a tag, a missing or replaced key, or a
+   * failed tag check. Deliberately one type for all of them -- the caller
+   * ([CapturePrefs], Task 2) falls back to the documented default in every
+   * case, so distinguishing them would only invite a caller to treat one as
+   * recoverable when none of them are.
+   */
+  fun openPrefsValue(blobB64: String): ByteArray = payloadFree("openPrefsValue") {
+    val blob = Base64.decode(blobB64, Base64.NO_WRAP)
+    require(blob.size >= GCM_IV_LENGTH_BYTES + GCM_TAG_LENGTH_BITS / 8) {
+      "sealed prefs value is too short to hold an IV and a tag"
+    }
+
+    val cipher = Cipher.getInstance(AES_TRANSFORMATION)
+    cipher.init(
+      Cipher.DECRYPT_MODE,
+      vault.getAesKey(PREFS_KEK_ALIAS),
+      GCMParameterSpec(GCM_TAG_LENGTH_BITS, blob.copyOfRange(0, GCM_IV_LENGTH_BYTES)),
+    )
+    cipher.doFinal(blob.copyOfRange(GCM_IV_LENGTH_BYTES, blob.size))
+  }
+
+  /**
+   * Runs [body] and converts ANY failure into a [PrefsValueSealException]
+   * naming [operation] and the failed exception's TYPE -- never its message,
+   * and never its cause.
+   *
+   * This is the structural version of the class-level "no payload in an
+   * error" rule, and it exists because the softer version -- "the platform's
+   * messages happen to be clean, we checked" -- is exactly the reasoning
+   * that failed in `fa927b8`, where op-sqlite interpolated its own config
+   * (including the database key) into an open failure that this app then
+   * handed to `console.error` and therefore to logcat. The lesson recorded
+   * there was to redact on OUR side of the boundary rather than trust
+   * theirs, and the same applies to every JCE provider, Keystore
+   * implementation and OEM base64 decoder this code will run against. The
+   * cause chain is dropped rather than attached for the same reason: a
+   * `Log.e(TAG, msg, throwable)` prints every nested message, so a chained
+   * cause is not a private field, it is a published one.
+   *
+   * The type name is kept because it says WHICH layer failed --
+   * `AEADBadTagException` (tampering or a replaced key) versus
+   * `IllegalArgumentException` (a malformed value) is a genuinely different
+   * bug to chase on a real device -- and a Java class name cannot contain a
+   * secret.
+   *
+   * Catches `Exception`, not `Throwable`: an `Error` (OOM, linkage) is not
+   * this layer's to relabel.
+   */
+  private fun <T> payloadFree(operation: String, body: () -> T): T =
+    try {
+      body()
+    } catch (failure: Exception) {
+      val type = failure.javaClass.simpleName.ifEmpty { failure.javaClass.name }
+      throw PrefsValueSealException(operation, type)
+    }
 }
+
+/**
+ * The only exception [KeyStoreBridge.sealPrefsValue] and
+ * [KeyStoreBridge.openPrefsValue] ever throw.
+ *
+ * Carries the operation name and the failed exception's class name, and
+ * nothing else: no plaintext, no key material, no sealed blob, and no cause
+ * whose own message could smuggle any of those in. See
+ * `KeyStoreBridge.payloadFree` for why the cause is dropped rather than
+ * chained.
+ *
+ * Not constructible outside this module -- its constructor is `internal`, so
+ * nothing can fabricate one carrying a message of its own choosing.
+ */
+class PrefsValueSealException internal constructor(
+  operation: String,
+  failureType: String,
+) : GeneralSecurityException("$operation failed ($failureType)")

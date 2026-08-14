@@ -54,6 +54,26 @@ internal interface KeyVault {
   fun getOrCreateAesKey(alias: String)
 
   /**
+   * Ensures an AES key for [alias] exists that requires **no** user
+   * authentication to use. Idempotent, never rotates -- same contract as
+   * [getOrCreateAesKey] in every respect except that one.
+   *
+   * This is a **deliberate, documented weakening** relative to every other
+   * key in this file, and it is not an oversight to be tidied up. The full
+   * argument lives on [AndroidKeyVault.getOrCreateUnauthenticatedAesKey];
+   * the short version is that the notification listener must answer "should
+   * I capture this?" while the app is locked, so the alternative to a
+   * no-auth key is not a stronger key -- it is storing the provider filter
+   * in plaintext, which is what this replaces.
+   *
+   * Separate from [getOrCreateAesKey] rather than a boolean parameter on it,
+   * for the same reason [recreateAesKey] is separate: a caller has to name
+   * the weaker thing to get the weaker thing. A flag would let a future
+   * caller pass `false` by accident and quietly downgrade the device KEK.
+   */
+  fun getOrCreateUnauthenticatedAesKey(alias: String)
+
+  /**
    * Deletes any existing AES key for [alias] (a no-op if absent) and
    * generates a fresh one, UNCONDITIONALLY -- unlike [getOrCreateAesKey],
    * this ALWAYS rotates. This is the recovery primitive for a key that
@@ -114,6 +134,94 @@ internal object AndroidKeyVault : KeyVault {
   override fun getOrCreateAesKey(alias: String) = synchronized(lock) {
     if (!keyStore().containsAlias(alias)) {
       generateAesKey(alias)
+    }
+  }
+
+  /**
+   * The one key in this file that is usable with **no user authentication
+   * at all**, and the security argument for it -- written down here rather
+   * than left to be inferred, because the next reader's instinct will be to
+   * "fix" it to match [getOrCreateAesKey].
+   *
+   * **What it is weaker against, honestly:** anyone who can execute code as
+   * our UID can read this key and open anything sealed under it. That is a
+   * real reduction relative to the DEK's KEK, and it is not being papered
+   * over. But it costs nothing that was being defended: that attacker --
+   * "malware with root running while the app is unlocked", and its cousin
+   * "an attacker who knows the device screen-lock PIN" -- is already
+   * **explicitly out of scope** in docs/12-encryption-and-app-lock.md §4.
+   * §4 also names the reason the stricter setting buys so little here: code
+   * running as our UID can read the plaintext straight out of process memory
+   * and never touch the Keystore at all.
+   *
+   * **What it buys, and this is the part that matters:** the cases §4 puts
+   * firmly *in* scope -- an offline filesystem read from a lost or stolen
+   * phone, an unencrypted device backup (`adb backup`, OEM sync), forensic
+   * extraction. In all three the attacker has bytes and no running process,
+   * and a key sealed in the secure element is a key they do not have. §4
+   * promises "the database file is ciphertext; the buffer is ciphertext" --
+   * this is what lets the listener's own prefs join that list instead of
+   * sitting beside them in plaintext, revealing exactly which banks and
+   * e-wallets the user holds.
+   *
+   * **Why the alternative is not "a stronger key":** [PeraPlanoNotificationListenerService]
+   * runs whether or not the app is open, at arbitrary hours, with no user
+   * present and no `BiometricPrompt` possible (docs §6). It has to answer
+   * "should I capture this notification?" from the provider filter on every
+   * single delivery. A key gated on authentication would be unreadable at
+   * exactly the moment the filter is needed, on every capture that happens
+   * while the phone is locked -- which is most of them. So the realistic
+   * choice is not "no-auth key vs. auth-bound key", it is **"no-auth key vs.
+   * no encryption at all"**, and ciphertext an offline attacker cannot open
+   * beats plaintext they can read with `cat`.
+   *
+   * This is the same asymmetry that already makes §6 work: the capture
+   * keypair's PUBLIC half is deliberately usable with no authentication for
+   * exactly the same reason. The difference is that a public key gives up
+   * nothing by being readable, and this one does -- hence this comment
+   * rather than a one-liner.
+   *
+   * **What is deliberately NOT set here, and why:**
+   *  - `setUserAuthenticationParameters` -- meaningless without
+   *    `setUserAuthenticationRequired(true)`, and listing it would imply an
+   *    auth window exists.
+   *  - `setInvalidatedByBiometricEnrollment` -- Keymaster only consults it
+   *    for auth-bound keys, so setting it either way here is inert. It is
+   *    also unnecessary: this key survives screen-lock removal and biometric
+   *    re-enrollment precisely *because* it is not auth-bound, which
+   *    incidentally means the prefs it seals need no recovery path at all.
+   *
+   * `setUserAuthenticationRequired(false)` below is the platform default and
+   * is written out explicitly anyway: an omitted call reads as forgotten, and
+   * this one has to read as chosen.
+   *
+   * Kept as its own generator rather than a parameter on [generateAesKey]
+   * so that function's invariant stays absolute -- every key it produces is
+   * auth-bound, for every caller, always. The handful of duplicated builder
+   * lines are the price of that, and a cheap one.
+   */
+  override fun getOrCreateUnauthenticatedAesKey(alias: String) = synchronized(lock) {
+    if (!keyStore().containsAlias(alias)) {
+      withStrongBoxFallback { strongBox ->
+        val builder = KeyGenParameterSpec.Builder(
+          alias,
+          KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
+        )
+          .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+          .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+          .setKeySize(256)
+          // THE ENTIRE POINT OF THIS KEY. Do not "fix" this to true -- see
+          // this function's doc. Making it true would not harden the app; it
+          // would make the provider filter unreadable while the phone is
+          // locked, which is when nearly every capture happens.
+          .setUserAuthenticationRequired(false)
+        if (strongBox) builder.setIsStrongBoxBacked(true)
+
+        KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, PROVIDER).apply {
+          init(builder.build())
+          generateKey()
+        }
+      }
     }
   }
 

@@ -148,6 +148,36 @@ cd mobile/android
 
 - [ ] Result → `________________`
 
+### Added 2026-08-14 — the prefs KEK. **NOT RUN.**
+
+Provider-selection Task 1 added two assertions to `KeyStoreBridgeInstrumentedTest`. They were
+written, they compile (`compileDebugAndroidTestKotlin`), and they have **never been executed** —
+the 7/7 in Session 1's table predates them and does not cover them. Do not read that row as
+covering these.
+
+Neither can be moved to the JVM. Robolectric has no Android Keystore, and `FakeKeyVault` is plain
+JCE — it never constructs a `KeyGenParameterSpec`, so `isUserAuthenticationRequired` is not merely
+untested there, it does not exist. A JVM assertion on it would be asserting nothing.
+
+- [ ] `prefsKekIsNotUserAuthenticationBound` — the prefs KEK reports
+      **`isUserAuthenticationRequired == false`**, 256-bit, encrypt+decrypt → `________________`
+- [ ] `prefsValueSealsAndOpensWithNoAuthenticationAtAll` — a prefs value seals and opens in an
+      unauthenticated instrumentation session, with no fresh unlock and no 10-second window
+      → `________________`
+
+> **Read the polarity before recording a result.** Every other Keystore assertion in that file
+> wants `isUserAuthenticationRequired == true`. This one wants **false**, deliberately — the
+> notification listener has to answer "should I capture this?" at 3am with the app locked, so a
+> provider filter sealed under an auth-bound key would be unreadable at exactly the moment it is
+> needed. Per `docs/12` §4, the attacker this gives up on (code executing as our UID) is already
+> out of scope, while the one it defends against (offline filesystem read — stolen phone,
+> unencrypted backup, forensic extraction) is firmly in scope. The alternative here was never a
+> stronger key; it was the plaintext `SharedPreferences` this replaced.
+>
+> If `prefsValueSealsAndOpensWithNoAuthenticationAtAll` ever needs a fresh unlock to pass, the key
+> has silently become auth-bound and the filter is unreadable while the phone is locked. That is a
+> product-breaking regression, not a flaky test.
+
 ---
 
 ## Part 3 — The notification listener (M1a Task 9)

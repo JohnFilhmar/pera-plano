@@ -34,6 +34,23 @@ internal class FakeKeyVault : KeyVault {
     }
   }
 
+  /**
+   * Byte-for-byte identical to [getOrCreateAesKey] here, and that is not a
+   * shortcut -- it is the honest modelling. The ONLY difference between the
+   * two in production is `setUserAuthenticationRequired(false)` on the
+   * `KeyGenParameterSpec`, and this class never constructs one (see the class
+   * doc above), so there is nothing here for the distinction to attach to.
+   *
+   * Concretely: a mutation that flipped `AndroidKeyVault`'s
+   * `setUserAuthenticationRequired` to `true` -- which would make the
+   * provider filter unreadable while the phone is locked, i.e. on nearly
+   * every capture -- would leave every JVM test in this module green. That
+   * assertion lives in
+   * `src/androidTest/.../KeyStoreBridgeInstrumentedTest.kt`
+   * (`prefsKekIsNotUserAuthenticationBound`) and can only run on a device.
+   */
+  override fun getOrCreateUnauthenticatedAesKey(alias: String) = getOrCreateAesKey(alias)
+
   // Unconditionally overwrites -- matches AndroidKeyVault's "always
   // rotates, regardless of prior state" contract for this function. A
   // plain Map#put here is enough: unlike AndroidKeyVault there is no

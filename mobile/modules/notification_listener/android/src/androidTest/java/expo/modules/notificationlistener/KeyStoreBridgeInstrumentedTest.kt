@@ -231,6 +231,77 @@ class KeyStoreBridgeInstrumentedTest {
     assertArrayEquals("instrumented-probe".toByteArray(), unwrapped)
   }
 
+  // ---- the prefs KEK: the ONE key here that must NOT be auth-bound -------
+
+  /**
+   * **The assertion this whole key exists for, and the only place it can be
+   * made.** Robolectric has no Android Keystore -- verified three ways during
+   * encryption Task 4 -- and [FakeKeyVault] is plain JCE, which never
+   * constructs a `KeyGenParameterSpec` and so cannot model
+   * `isUserAuthenticationRequired` at all. A JVM test asserting this would be
+   * asserting nothing.
+   *
+   * Read the inverted polarity carefully before "fixing" it: its two
+   * siblings above (`deviceKekIsCreatedWithExpectedKeystoreProperties`,
+   * `captureKeyPairIsCreatedWithExpectedKeystoreProperties`) both assert
+   * `assertTrue(isUserAuthenticationRequired)`. This one asserts
+   * `assertFalse`, deliberately, and that is not a weaker version of the same
+   * check -- it is a different requirement. See
+   * [KeyStoreBridge.ensurePrefsKek]'s KDoc and
+   * `AndroidKeyVault.getOrCreateUnauthenticatedAesKey` for the full argument;
+   * the short version is that the notification listener has to answer
+   * "should I capture this?" at 3am with the app locked, so a filter sealed
+   * under an auth-bound key would be unreadable at exactly the moment it is
+   * needed. The realistic alternative to this key is not a stronger key, it
+   * is no encryption at all.
+   */
+  @Test
+  fun prefsKekIsNotUserAuthenticationBound() {
+    KeyStoreBridge.ensurePrefsKek()
+
+    val key = androidKeyStore().getKey(KeyStoreBridge.PREFS_KEK_ALIAS, null) as SecretKey
+    val keyInfo = SecretKeyFactory.getInstance(key.algorithm, "AndroidKeyStore")
+      .getKeySpec(key, KeyInfo::class.java) as KeyInfo
+
+    assertFalse(
+      "the prefs KEK must NOT require user authentication -- the listener " +
+        "reads the provider filter while the app is locked, so an auth-bound " +
+        "key here means no encryption at all rather than stronger encryption",
+      keyInfo.isUserAuthenticationRequired,
+    )
+    assertEquals(256, keyInfo.keySize)
+    assertTrue((keyInfo.purposes and KeyProperties.PURPOSE_ENCRYPT) != 0)
+    assertTrue((keyInfo.purposes and KeyProperties.PURPOSE_DECRYPT) != 0)
+  }
+
+  /**
+   * The functional counterpart to
+   * [unauthenticatedWrapWithDeviceKekThrowsUserNotAuthenticated], with the
+   * polarity flipped on purpose: that test proves the device KEK is
+   * UNUSABLE with no recent authentication; this one proves the prefs KEK is
+   * USABLE with none. Both run in the same unauthenticated instrumentation
+   * session, so together they prove the two keys really are configured
+   * differently rather than the harness merely happening to be authenticated.
+   *
+   * Unlike the three auth-gated tests in this class, this one needs no fresh
+   * unlock and no 10-second window -- if it ever starts needing one, the
+   * prefs key has silently become auth-bound and the provider filter is
+   * unreadable at 3am.
+   */
+  @Test
+  fun prefsValueSealsAndOpensWithNoAuthenticationAtAll() {
+    KeyStoreBridge.ensurePrefsKek()
+
+    val plaintext = "com.globe.gcash.android".toByteArray()
+    val sealed = KeyStoreBridge.sealPrefsValue(plaintext)
+
+    assertFalse(
+      "a sealed prefs value must not carry its plaintext",
+      sealed.contains("com.globe.gcash.android"),
+    )
+    assertArrayEquals(plaintext, KeyStoreBridge.openPrefsValue(sealed))
+  }
+
   private fun androidKeyStore(): KeyStore =
     KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
 }
