@@ -320,6 +320,59 @@ export async function updateTransaction(
 }
 
 /**
+ * Removes a Transaction AND takes its effect back out of its Wallet's balance,
+ * in one SQL transaction.
+ *
+ * THE REVERSAL IS THE POINT, and it is the same argument `updateTransaction`
+ * makes above. `insertTransaction` MOVED the wallet balance as part of writing
+ * the row, so the balance already carries this transaction's effect. Deleting
+ * the row alone would leave the wallet describing a transaction that no longer
+ * exists — the silent disagreement between a total and the ledger meant to
+ * explain it that this app may never show. Reverse-then-(nothing) is just
+ * `updateTransaction`'s reverse-then-apply with the second half removed.
+ *
+ * THE CALLER THIS EXISTS FOR IS "SAME TRANSACTION". When a duplicate reaches the
+ * ledger twice, BOTH rows moved the balance, so the wallet is short by twice one
+ * purchase. Deleting one and reversing it is what brings the balance back to the
+ * truth — which is the entire reason the user pressed the button.
+ *
+ * THROWS RATHER THAN NO-OPS on an unknown id, unlike `deleteUserRule` and
+ * `unlinkTransfer`. Those remove a claim; this moves money. A caller deleting a
+ * row that is not there has lost track of what it is reversing, and answering
+ * "fine, done" hides a balance bug behind a success.
+ *
+ * A row referenced elsewhere CANNOT be deleted, and that is a feature rather
+ * than a gap: `transfer_links`, `loan_payments` and `bill_payments` all hold
+ * foreign keys onto `transactions` with no ON DELETE action, so the DELETE
+ * throws and this whole call rolls back. Discarding a transfer leg would leave a
+ * link pointing at nothing and money missing from every total; the caller has to
+ * unlink (or unmatch) first and decide that deliberately.
+ *
+ * Spec rule 10 — "committed transactions are never deleted by any queue action"
+ * — still holds for the queue's own dismissals: a held (uncommitted) twin has no
+ * row for this function to touch, and `mergeDuplicate` reaches it only for the
+ * ledger-side merge of two ALREADY-committed rows, which spec §"Flow: merge /
+ * split / link / unlink" describes as its own user-initiated action.
+ */
+export async function deleteTransaction(id: string): Promise<void> {
+  const db = await getDatabase();
+  const existing = await getTransaction(id);
+  if (!existing) {
+    throw new TransactionNotFoundError(id);
+  }
+
+  const now = Date.now();
+  await db.withTransactionAsync(async () => {
+    await db.runAsync("DELETE FROM transactions WHERE id = ?", [id]);
+    await db.runAsync("UPDATE wallets SET balance = balance - ?, updated_at = ? WHERE id = ?", [
+      signedEffect(existing),
+      now,
+      existing.walletId,
+    ]);
+  });
+}
+
+/**
  * Moves every Transaction from one Wallet to another, settling both balances.
  * m1c Task 5's archive flow; docs/04-features/02-wallets.md rules 18 and 19.
  *

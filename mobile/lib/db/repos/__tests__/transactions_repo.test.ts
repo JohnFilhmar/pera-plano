@@ -2,6 +2,7 @@ import { closeDatabase } from "@/lib/db/database";
 import { __setTierForTests } from "@/lib/entitlements";
 import { createWallet, getWallet } from "../wallets_repo";
 import {
+  deleteTransaction,
   getTransaction,
   insertTransaction,
   listTransactions,
@@ -1356,5 +1357,100 @@ describe("reassignWalletTransactions", () => {
     // actually both run. Guarding early is cheaper than trusting they do.
     expect((await getWallet(walletId))?.balance).toBe(90000);
     expect(await listTransactions({ walletId })).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// deleteTransaction — m1c Task 10, the merge primitive.
+// ---------------------------------------------------------------------------
+//
+// THE BALANCE IS THE TEST. `insertTransaction` MOVED the wallet balance when the
+// row was written, so a delete that only removes the row leaves the wallet
+// describing a transaction that no longer exists — the same bug class Task 3
+// fixed for edits, in the one flow whose entire purpose is to undo a double
+// count.
+describe("deleteTransaction reverses the row's balance effect", () => {
+  function baseTx(patch: Partial<NewTransaction> = {}): NewTransaction {
+    return {
+      walletId,
+      categoryId: CATEGORY_ID,
+      amount: 10000,
+      direction: "out",
+      occurredAt: Date.now(),
+      source: "notification",
+      confidence: 1,
+      ...patch,
+    };
+  }
+
+  test("removes the row", async () => {
+    const tx = await insertTransaction(baseTx());
+
+    await deleteTransaction(tx.id);
+
+    expect(await getTransaction(tx.id)).toBeNull();
+  });
+
+  test("gives an out-leg's money back to the wallet", async () => {
+    // Opening ₱1,000.00 − ₱100.00 = ₱900.00 while the row exists.
+    const tx = await insertTransaction(baseTx({ amount: 10000, direction: "out" }));
+    expect((await getWallet(walletId))?.balance).toBe(90000);
+
+    await deleteTransaction(tx.id);
+
+    expect((await getWallet(walletId))?.balance).toBe(100000);
+  });
+
+  test("takes an in-leg's money back out of the wallet", async () => {
+    const tx = await insertTransaction(baseTx({ amount: 25000, direction: "in" }));
+    expect((await getWallet(walletId))?.balance).toBe(125000);
+
+    await deleteTransaction(tx.id);
+
+    expect((await getWallet(walletId))?.balance).toBe(100000);
+  });
+
+  test("leaves every other row's effect on the balance alone", async () => {
+    const doomed = await insertTransaction(baseTx({ amount: 10000, direction: "out" }));
+    await insertTransaction(baseTx({ amount: 3000, direction: "out" }));
+
+    await deleteTransaction(doomed.id);
+
+    // 100000 − 3000: the survivor still moved the balance and must keep doing so.
+    expect((await getWallet(walletId))?.balance).toBe(97000);
+    expect(await listTransactions({ walletId })).toHaveLength(1);
+  });
+
+  test("throws TransactionNotFoundError for an id with no row", async () => {
+    // NOT a silent no-op, unlike `deleteUserRule` or `unlinkTransfer`: this
+    // function moves money. A caller deleting a row that is not there has lost
+    // track of what it is reversing, and swallowing that hides a balance bug.
+    await expect(deleteTransaction("nope")).rejects.toThrow(TransactionNotFoundError);
+  });
+
+  test("the delete and the balance reversal are one SQL transaction", async () => {
+    const tx = await insertTransaction(baseTx({ amount: 10000, direction: "out" }));
+    // A bill_payments row holds a foreign key onto this transaction with no
+    // ON DELETE action, so the DELETE itself throws — after any balance write in
+    // the same block would already have run.
+    const now = Date.now();
+    await db.runAsync(
+      `INSERT INTO bills (id, name, amount, amount_mode, due_rule_json, category_id, created_at, updated_at)
+       VALUES ('bill-1', 'Meralco', 10000, 'fixed', '{}', ?, ?, ?)`,
+      [CATEGORY_ID, now, now],
+    );
+    await db.runAsync(
+      `INSERT INTO bill_payments (id, bill_id, transaction_id, cycle_due_date, created_at, updated_at)
+       VALUES ('bp-1', 'bill-1', ?, '2026-08-01', ?, ?)`,
+      [tx.id, now, now],
+    );
+
+    await expect(deleteTransaction(tx.id)).rejects.toThrow(/FOREIGN KEY/i);
+
+    // Rolled back together: the row survives and the balance still accounts for
+    // it. A reversal that outlived the failed delete would credit the user for
+    // money that never came back.
+    expect(await getTransaction(tx.id)).not.toBeNull();
+    expect((await getWallet(walletId))?.balance).toBe(90000);
   });
 });

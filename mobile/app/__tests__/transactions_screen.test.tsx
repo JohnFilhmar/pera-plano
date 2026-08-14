@@ -18,8 +18,10 @@ jest.mock("expo-router", () => ({
 
 import { render, screen, fireEvent, waitFor } from "@testing-library/react-native";
 
+import { reviewQueueEntrySubtitle } from "@/components/review/review_queue_entry";
 import { closeDatabase } from "@/lib/db/database";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
+import { enqueue } from "@/lib/db/repos/review_queue_repo";
 import { insertTransaction } from "@/lib/db/repos/transactions_repo";
 import { linkTransfer } from "@/lib/db/repos/transfer_links_repo";
 import { createWallet } from "@/lib/db/repos/wallets_repo";
@@ -318,5 +320,76 @@ describe("opening a transaction", () => {
       pathname: "/transaction/[id]",
       params: { id: String(row.props.testID).replace("transaction-row-", "") },
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The Review Queue entry point (m1c Task 10)
+// ---------------------------------------------------------------------------
+//
+// WITHOUT THIS ROW THE WHOLE REVIEW QUEUE IS DEAD CODE. Task 9 shipped
+// app/review/index.tsx and nothing anywhere links to it; neither Task 9's nor
+// Task 10's file list touches this screen. The spec puts the queue at the top of
+// the Transactions tab (§UX states), and this is that entry point.
+describe("the review queue entry point", () => {
+  async function queueItems(count: number): Promise<void> {
+    for (let index = 0; index < count; index++) {
+      await enqueue({
+        kind: "low-confidence",
+        payload: { amount: 1000 + index, direction: "out", confidence: 0.4 },
+      });
+    }
+  }
+
+  test("is absent when the queue is empty", async () => {
+    await seedGrid();
+
+    renderScreen();
+    await screen.findByText("Jollibee");
+    await settled();
+
+    // An empty queue advertising itself is the opposite of the reward state the
+    // spec asks for ("absence of work is the reward"), and a row that is always
+    // there is a row the user stops seeing on the day it matters.
+    await waitFor(() => expect(screen.queryByTestId("review-queue-entry")).toBeNull());
+  });
+
+  test("appears with the open count once something needs review", async () => {
+    await seedGrid();
+    await queueItems(3);
+
+    renderScreen();
+
+    expect(await screen.findByTestId("review-queue-entry")).toBeTruthy();
+    expect(screen.getByText(reviewQueueEntrySubtitle(3))).toBeTruthy();
+  });
+
+  test("counts one item in the singular", async () => {
+    await queueItems(1);
+
+    renderScreen();
+
+    expect(await screen.findByText(reviewQueueEntrySubtitle(1))).toBeTruthy();
+  });
+
+  test("opens the queue", async () => {
+    await queueItems(2);
+
+    renderScreen();
+    fireEvent.press(await screen.findByTestId("review-queue-entry"));
+
+    expect(mockPush).toHaveBeenCalledWith("/review");
+  });
+
+  test("is still offered when the ledger itself is empty", async () => {
+    // The two states are independent: a brand-new install whose very first
+    // captures all landed in the queue has nothing in the ledger and everything
+    // to triage. A row rendered inside the ledger list would vanish exactly then.
+    await queueItems(1);
+
+    renderScreen();
+
+    expect(await screen.findByTestId("review-queue-entry")).toBeTruthy();
+    expect(screen.getByTestId("ledger-empty")).toBeTruthy();
   });
 });

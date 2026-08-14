@@ -29,9 +29,11 @@ import { useRouter } from "expo-router";
 import { useState } from "react";
 import { ScrollView, View } from "react-native";
 
+import { ReviewQueueEntry } from "@/components/review/review_queue_entry";
 import { FilterBar } from "@/components/transactions/filter_bar";
 import { LedgerList } from "@/components/transactions/ledger_list";
 import { useCategories } from "@/hooks/queries/use_categories";
+import { useReviewCount } from "@/hooks/queries/use_review_count";
 import { useTransactions } from "@/hooks/queries/use_transactions";
 import { useWallets } from "@/hooks/queries/use_wallets";
 import type { TxFilter } from "@/types/domain";
@@ -44,6 +46,7 @@ export default function TransactionsScreen() {
   const { data: transactions } = useTransactions(filter);
   const { data: wallets } = useWallets();
   const { data: categories } = useCategories();
+  const { data: reviewCount } = useReviewCount();
 
   // What tells the two empty states apart. `Object.keys` rather than a
   // hand-maintained list of fields: a filter added to `TxFilter` later would
@@ -65,6 +68,13 @@ export default function TransactionsScreen() {
       />
       <ScrollView>
         <View className="pb-8">
+          {/* The queue, at the top of this tab (spec §UX states) and ONLY when
+              something is waiting. It sits above the ledger rather than inside
+              it because the two are independent: a fresh install whose first
+              captures all landed in the queue has nothing in the list and
+              everything to triage, and a row rendered inside `LedgerList` would
+              disappear at exactly that moment. */}
+          <ReviewQueueEntry count={reviewCount} onPress={() => router.push("/review")} />
           <LedgerList
             transactions={transactions}
             wallets={wallets}

@@ -153,6 +153,10 @@ function splitStatements(sql: string): string[] {
 
 /** Adapts an op-sqlite raw connection to the SQLiteDatabase shape every caller depends on. */
 function wrapConnection(raw: RawConnection): SQLiteDatabase {
+  // How many withTransactionAsync frames are open on THIS connection. See that
+  // method below for why it exists and what it costs.
+  let transactionDepth = 0;
+
   return {
     async execAsync(sql: string) {
       for (const statement of splitStatements(sql)) {
@@ -180,6 +184,38 @@ function wrapConnection(raw: RawConnection): SQLiteDatabase {
       // calls back into THIS SAME db's execAsync/runAsync inside the work() callback, not a
       // tx-scoped object — matching that existing call shape exactly is what keeps this swap
       // contained to lib/db/.
+      //
+      // RE-ENTRANT (m1c Task 10). A nested call JOINS the transaction already open on this
+      // connection instead of issuing a second BEGIN, which SQLite rejects outright ("cannot
+      // start a transaction within a transaction").
+      //
+      // WHY THAT IS NEEDED AT ALL. A Review Queue triage action has to commit a Transaction,
+      // create a UserRule and resolve the queue item TOGETHER — three repositories, and two of
+      // them (insertTransaction, linkTransfer) already open a transaction of their own to keep
+      // their row and its balance/stamp inseparable. Without re-entrancy the caller's only
+      // options are to give up atomicity (a committed Transaction with an unresolved item means
+      // the user confirms the same purchase twice) or to re-implement those repositories' SQL
+      // outside them, which is worse.
+      //
+      // WHAT IT COSTS, STATED PLAINLY: the inner frame no longer owns its own rollback
+      // boundary. An inner failure unwinds to the OUTERMOST frame and rolls everything back —
+      // which is precisely what a triage action wants, and is why this is a depth counter
+      // rather than a SAVEPOINT ladder. It also means two INDEPENDENT flows must never have
+      // transactions open on this connection at the same time: the second would silently join
+      // the first and share its fate. Nothing in this app does — writes are sequential, driven
+      // by a user tap or by the pipeline's own serial drain — and before this change the same
+      // situation threw instead.
+      if (transactionDepth > 0) {
+        transactionDepth++;
+        try {
+          await work();
+        } finally {
+          transactionDepth--;
+        }
+        return;
+      }
+
+      transactionDepth = 1;
       await raw.execute("BEGIN");
       try {
         await work();
@@ -187,6 +223,11 @@ function wrapConnection(raw: RawConnection): SQLiteDatabase {
       } catch (error) {
         await raw.execute("ROLLBACK");
         throw error;
+      } finally {
+        // Reset rather than decrement: whichever way the outermost frame ended, no transaction
+        // is open on this connection any more. A leaked non-zero depth would make every later
+        // withTransactionAsync a silent no-op that never commits.
+        transactionDepth = 0;
       }
     },
     async closeAsync() {

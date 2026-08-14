@@ -24,12 +24,14 @@ jest.mock("expo-router", () => ({
 }));
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react-native";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { ReactNode } from "react";
 
 import { closeDatabase } from "@/lib/db/database";
 import { seedDefaultCategories } from "@/lib/db/repos/categories_repo";
-import { enqueue, resolve } from "@/lib/db/repos/review_queue_repo";
+import { countOpen, enqueue, resolve } from "@/lib/db/repos/review_queue_repo";
+import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions_repo";
+import { listUserRules } from "@/lib/db/repos/user_rules_repo";
 import { createWallet } from "@/lib/db/repos/wallets_repo";
 import { GATE_REASONS } from "@/lib/ingest/confidence_gate";
 import { queryClient as appQueryClient } from "@/lib/query_client";
@@ -54,6 +56,11 @@ function makeTestClient(): QueryClient {
     defaultOptions: {
       ...defaults,
       queries: { ...defaults.queries, retry: 0, gcTime: Infinity },
+      // Task 10 gave this screen mutations. The app's default mutation `gcTime`
+      // is five minutes, and a settled mutation holds a timer for that long —
+      // long enough to outlive the whole suite and force Jest to kill the
+      // worker. Zero here, matching app/__tests__/transactions_screen.test.tsx.
+      mutations: { ...defaults.mutations, gcTime: 0 },
     },
   });
 }
@@ -95,11 +102,13 @@ async function renderScreen(): Promise<void> {
   await waitFor(() => expect(screen.getByTestId("review-queue-screen")).toBeTruthy());
 }
 
+let walletId: string;
+
 beforeEach(async () => {
   jest.clearAllMocks();
   await freshDb();
   await seedDefaultCategories();
-  await createWallet({ name: "GCash", type: "e-wallet" });
+  walletId = (await createWallet({ name: "GCash", type: "e-wallet" })).id;
 });
 
 afterEach(async () => {
@@ -221,7 +230,7 @@ describe("the review queue screen", () => {
     expect(screen.getByTestId(`review-card-${live.id}`)).toBeTruthy();
   });
 
-  test("the actions render but stay inert until Task 10 wires them", async () => {
+  test("the actions are live now that Task 10 has wired them", async () => {
     const queued = await enqueueAt(NOW - HOUR, {
       kind: "low-confidence",
       payload: gatedPayload(),
@@ -229,13 +238,137 @@ describe("the review queue screen", () => {
 
     await renderScreen();
 
+    // Task 9 shipped these DISABLED on purpose — a money decision that silently
+    // does nothing when tapped is worse than one that is visibly unavailable.
+    // Supplying the handlers is what lights them up.
     const primary = await screen.findByTestId(`review-primary-${queued.id}`);
-    expect(primary.props.accessibilityState.disabled).toBe(true);
-    expect(await screen.findByTestId(`review-secondary-${queued.id}`)).toBeTruthy();
+    expect(primary.props.accessibilityState.disabled).toBe(false);
+    const secondary = await screen.findByTestId(`review-secondary-${queued.id}`);
+    expect(secondary.props.accessibilityState.disabled).toBe(false);
   });
 
   test("offers a way back out of the queue", async () => {
     await renderScreen();
     expect(screen.getByTestId("review-queue-back")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Triage, end to end (m1c Task 10)
+// ---------------------------------------------------------------------------
+//
+// The actions themselves are proven in lib/review/__tests__/resolve_actions.ts
+// against SQLite. What only THIS file can prove is that the buttons are wired to
+// them at all — a card whose primary calls nothing passes every unit test that
+// action has, and ships a queue that clears nothing.
+describe("triaging from the queue", () => {
+  test("Looks right commits the row and the card leaves", async () => {
+    const queued = await enqueueAt(NOW - HOUR, {
+      kind: "low-confidence",
+      payload: gatedPayload({ walletId }),
+    });
+
+    await renderScreen();
+    fireEvent.press(await screen.findByTestId(`review-primary-${queued.id}`));
+
+    await waitFor(async () => expect(await listTransactions({})).toHaveLength(1));
+    expect((await listTransactions({}))[0]).toMatchObject({
+      amount: 125000,
+      source: "notification",
+      confidence: 1,
+    });
+    await waitFor(() => expect(screen.queryByTestId(`review-card-${queued.id}`)).toBeNull());
+  });
+
+  test("Correct opens the sheet, and saving a fix teaches the pipeline", async () => {
+    const queued = await enqueueAt(NOW - HOUR, {
+      kind: "low-confidence",
+      payload: gatedPayload({ walletId }),
+    });
+
+    await renderScreen();
+    fireEvent.press(await screen.findByTestId(`review-secondary-${queued.id}`));
+
+    // Rule 5: "Correct" is the ONLY action that opens a form.
+    expect(await screen.findByTestId("correct-sheet")).toBeTruthy();
+
+    fireEvent.press(screen.getByTestId("correct-category"));
+    fireEvent.press(screen.getByTestId("category-option-cat_transport"));
+    fireEvent.press(screen.getByTestId("category-picker-save"));
+    fireEvent.press(screen.getByTestId("correct-save"));
+
+    await waitFor(async () => expect(await listUserRules()).toHaveLength(1));
+    const [rule] = await listUserRules();
+    expect(rule.action).toEqual({ kind: "set-category", categoryId: "cat_transport" });
+    expect((await listTransactions({}))[0].categoryId).toBe("cat_transport");
+    await waitFor(() => expect(screen.queryByTestId(`review-card-${queued.id}`)).toBeNull());
+  });
+
+  test("Not money discards the capture without touching the ledger", async () => {
+    const queued = await enqueueAt(NOW - HOUR, {
+      kind: "unknown-provider",
+      payload: { amount: null, direction: null, packageName: "com.games.loud" },
+    });
+
+    await renderScreen();
+    fireEvent.press(await screen.findByTestId(`review-secondary-${queued.id}`));
+
+    await waitFor(async () => expect(await countOpen()).toBe(0));
+    // Spec: a single "Not money" DISCARDS. The mute ("always ignore this app")
+    // is offered only after the second dismissal of the same source, so no rule
+    // may be created here.
+    expect(await listTransactions({})).toEqual([]);
+    expect(await listUserRules()).toEqual([]);
+  });
+
+  test("Same transaction closes a duplicate without deleting the committed original", async () => {
+    const original = await insertTransaction({
+      walletId,
+      categoryId: "cat_food_dining",
+      amount: 125000,
+      direction: "out",
+      occurredAt: NOW - 2 * HOUR,
+      source: "notification",
+      confidence: 0.95,
+    });
+    const queued = await enqueueAt(NOW - HOUR, {
+      kind: "possible-duplicate",
+      payload: gatedPayload({ walletId, duplicateOfTransactionId: original.id }),
+    });
+
+    await renderScreen();
+    fireEvent.press(await screen.findByTestId(`review-primary-${queued.id}`));
+
+    await waitFor(async () => expect(await countOpen()).toBe(0));
+    // Rule 10, and this is the one the DedupeGate's design depends on: the twin
+    // was never committed, so "Same transaction" discards a HELD record. The
+    // committed original must survive untouched, and the ledger must still hold
+    // exactly one row.
+    expect(await listTransactions({})).toHaveLength(1);
+    expect((await listTransactions({}))[0].id).toBe(original.id);
+  });
+
+  test("Different commits the held twin as its own transaction", async () => {
+    const original = await insertTransaction({
+      walletId,
+      categoryId: "cat_food_dining",
+      amount: 125000,
+      direction: "out",
+      occurredAt: NOW - 2 * HOUR,
+      source: "notification",
+      confidence: 0.95,
+    });
+    const queued = await enqueueAt(NOW - HOUR, {
+      kind: "possible-duplicate",
+      payload: gatedPayload({ walletId, duplicateOfTransactionId: original.id }),
+    });
+
+    await renderScreen();
+    fireEvent.press(await screen.findByTestId(`review-secondary-${queued.id}`));
+
+    // Two genuine ₱1,250.00 purchases minutes apart are a real thing that
+    // happens, and the DedupeGate holding the second one is a QUESTION, not a
+    // verdict. "Different" has to be able to answer it.
+    await waitFor(async () => expect(await listTransactions({})).toHaveLength(2));
   });
 });

@@ -26,11 +26,14 @@
 // Global Constraints: hooks only, no repository import, no SQL.
 import { ChevronLeft } from "lucide-react-native";
 import { useRouter } from "expo-router";
+import { useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 
+import { CorrectSheet } from "@/components/review/correct_sheet";
 import { ReviewCard } from "@/components/review/review_card";
 import { registerIcon } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty_state";
+import { useReviewAction, type ReviewAction } from "@/hooks/mutations/use_review_action";
 import { useCategories } from "@/hooks/queries/use_categories";
 import { useReviewQueue } from "@/hooks/queries/use_review_queue";
 import { useRuleset } from "@/hooks/queries/use_ruleset";
@@ -82,6 +85,64 @@ export function sortOldestFirst(items: readonly ReviewQueueItem[]): ReviewQueueI
   return [...items].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
 }
 
+/**
+ * What the PRIMARY button on each kind of card actually does (rule 4's pairs, in
+ * the spec's wording — see `REVIEW_ACTIONS`).
+ *
+ *   "Looks right"                  → commit exactly what was proposed.
+ *   "Same transaction"             → discard the HELD twin. The DedupeGate never
+ *                                    committed it, so there is nothing to delete
+ *                                    and the committed original is untouched
+ *                                    (rule 10). `mergeDuplicate` is the ledger's
+ *                                    merge, for two rows that are both already
+ *                                    committed.
+ *   "It's a transfer"              → commit the queued leg AND pair it, in one
+ *                                    write; a commit that failed to pair would
+ *                                    leave an internal movement inflating spend.
+ *   "This is a money notification" → open the assisted form, which is the only
+ *                                    way the missing amount and wallet can be
+ *                                    supplied.
+ */
+function primaryActionFor(item: ReviewQueueItem): ReviewAction | "correct" {
+  switch (item.kind) {
+    case "low-confidence":
+      return { kind: "confirm", itemId: item.id };
+    case "possible-duplicate":
+      return { kind: "dismiss", itemId: item.id };
+    case "ambiguous-transfer":
+      return { kind: "confirm-transfer", itemId: item.id };
+    case "unknown-provider":
+      return "correct";
+  }
+}
+
+/**
+ * And the SECONDARY.
+ *
+ *   "Correct"        → the form. Rule 5: the only action that opens one.
+ *   "Different"      → commit the held twin as its own Transaction. Two genuine
+ *                      ₱1,250.00 purchases minutes apart are a real thing, and
+ *                      the gate holding the second one was a question.
+ *   "Not a transfer" → commit the queued leg unpaired; both legs then count
+ *                      normally, which is what "not a transfer" means.
+ *   "Not money"      → discard the capture. NOT the mute: spec §"unknown
+ *                      provider" step 5 offers "always ignore notifications like
+ *                      this" only after the SECOND dismissal of the same source,
+ *                      and creating an ignore rule on the first would silence an
+ *                      app on one tap the user cannot see the consequence of.
+ */
+function secondaryActionFor(item: ReviewQueueItem): ReviewAction | "correct" {
+  switch (item.kind) {
+    case "low-confidence":
+      return "correct";
+    case "possible-duplicate":
+    case "ambiguous-transfer":
+      return { kind: "confirm", itemId: item.id };
+    case "unknown-provider":
+      return { kind: "dismiss", itemId: item.id };
+  }
+}
+
 export default function ReviewQueueScreen() {
   const router = useRouter();
 
@@ -89,8 +150,22 @@ export default function ReviewQueueScreen() {
   const { data: wallets } = useWallets();
   const { data: categories } = useCategories();
   const { data: ruleset } = useRuleset();
+  const triage = useReviewAction();
+
+  // The item whose correction form is open, held by ID rather than by object so
+  // a refetch that replaces the array cannot leave a stale copy on screen.
+  const [correcting, setCorrecting] = useState<string | null>(null);
 
   const ordered = items === undefined ? undefined : sortOldestFirst(items);
+  const correctingItem = ordered?.find((entry) => entry.id === correcting) ?? null;
+
+  function dispatch(action: ReviewAction | "correct", item: ReviewQueueItem): void {
+    if (action === "correct") {
+      setCorrecting(item.id);
+      return;
+    }
+    triage.mutate(action);
+  }
 
   return (
     <View testID="review-queue-screen" className="flex-1 bg-bg dark:bg-bg-dark">
@@ -133,14 +208,34 @@ export default function ReviewQueueScreen() {
                 wallets={wallets}
                 categories={categories}
                 providers={ruleset?.providers}
-                // m1c Task 10 passes the handlers. Until it does, every pair
-                // renders DISABLED rather than live-but-inert — see
-                // review_card.tsx's header for why a dead tap on a money
+                // Supplying the handlers is what lights the pair up: without
+                // them the card renders DISABLED rather than live-but-inert —
+                // see review_card.tsx's header on why a dead tap on a money
                 // decision is the one affordance worth withholding.
+                onPrimary={(item) => dispatch(primaryActionFor(item), item)}
+                onSecondary={(item) => dispatch(secondaryActionFor(item), item)}
               />
             ))}
           </View>
         </ScrollView>
+      )}
+
+      {/* ONE SHEET FOR THE WHOLE LIST, not one per card. Only one correction can
+          be open at a time, and mounting a modal behind every row would put the
+          queue's whole form state in memory for a screen that shows a card at a
+          time. */}
+      {correctingItem === null ? null : (
+        <CorrectSheet
+          visible
+          item={correctingItem}
+          wallets={wallets ?? []}
+          categories={categories ?? []}
+          onDismiss={() => setCorrecting(null)}
+          onSubmit={(patch) => {
+            setCorrecting(null);
+            triage.mutate({ kind: "correct", itemId: correctingItem.id, patch });
+          }}
+        />
       )}
     </View>
   );
