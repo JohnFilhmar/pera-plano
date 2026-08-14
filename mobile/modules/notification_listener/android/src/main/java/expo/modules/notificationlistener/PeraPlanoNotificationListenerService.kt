@@ -33,6 +33,13 @@ import java.util.UUID
  * user asked not to capture, so every drop below is a bare `return` before the
  * sink is ever reached.
  *
+ * THE ONE THING THAT HAPPENS EVEN FOR A DROPPED NOTIFICATION is
+ * [CapturePrefs.recordObservedPackage] -- the package NAME, and nothing else
+ * (provider-selection plan Task 3). It is not an exception to the mirror rule
+ * but its complement: the rule is about notification CONTENT, and an
+ * unselected package is exactly what the onboarding picker exists to offer.
+ * See the comment on the call itself.
+ *
  * TESTABILITY: [extractCapture] is a pure companion function and [handlePosted]
  * takes its [CapturePrefs] and its buffer `File` as parameters, so the whole
  * flow is exercisable with no running Android `Service` at all (plan rule 1).
@@ -232,6 +239,29 @@ class PeraPlanoNotificationListenerService : NotificationListenerService() {
       nowMillis: Long,
     ) {
       try {
+        // BEFORE EVERY DROP BELOW, and that placement is the whole point
+        // (provider-selection plan Task 3 rule 1). Seven of the thirteen
+        // package names in the parser seed were constructed from app names
+        // rather than observed anywhere, and a wrong one is a silent failure
+        // -- the provider is never routed and the bank simply looks broken.
+        // This service sees `sbn.packageName` for every notification on the
+        // device, so it is the one place that can learn the real ones, with
+        // no new permission.
+        //
+        // A package the user has NOT selected -- one dropped by the filter
+        // three lines down, or an ongoing tile dropped on the next -- is
+        // precisely the one the onboarding picker has to be able to offer.
+        // Recording after any of these returns would surface only the apps
+        // the user already chose, which makes the picker useless for its own
+        // job.
+        //
+        // PACKAGE NAME ONLY, never the notification's text: see
+        // [CapturePrefs.recordObservedPackage]. And it cannot cost a capture
+        // -- it never throws, which is what keeps this first line from
+        // reaching the catch below and losing the notification it was only
+        // supposed to make a note of.
+        prefs.recordObservedPackage(sbn.packageName, nowMillis)
+
         // Plan rule 5. Ongoing notifications are the persistent "app is
         // running" / "download in progress" tiles -- never transactions, and
         // they re-post constantly, so capturing them would churn the bounded

@@ -53,6 +53,10 @@ class CapturePrefsTest {
   private val legacyKeyLastCaptureAt = "last_capture_at"
   private val sealedKeyProviderFilter = "provider_filter_sealed"
   private val sealedKeyLastCaptureAt = "last_capture_at_sealed"
+  private val sealedKeyObservedPackages = "observed_packages_sealed"
+
+  // Epoch milliseconds, interface contract §1.
+  private val seenAt = 1754060400000L
 
   private lateinit var context: Context
   private lateinit var prefs: CapturePrefs
@@ -485,8 +489,213 @@ class CapturePrefsTest {
   }
 
   // =====================================================================
+  // OBSERVED PACKAGES (provider-selection plan Task 3).
+  //
+  // Seven of the thirteen package names in `seed.json` were constructed from
+  // app names rather than observed anywhere. A wrong one is a SILENT failure:
+  // that provider is never routed, captures nothing, logs nothing, and looks
+  // to the user like their bank simply does not work. This list is how the
+  // app stops guessing -- the listener already receives `sbn.packageName` for
+  // every notification on the device, so real names can be learned with NO
+  // new permission (deliberately not QUERY_ALL_PACKAGES).
+  //
+  // It is sealed for the same reason the filter is: a list of the apps a
+  // person uses is a behavioural profile. PACKAGE NAMES ONLY -- never a
+  // title, never body text; the assertion for that lives in
+  // PeraPlanoNotificationListenerServiceTest, where a real notification with
+  // real text goes in one end.
+  // =====================================================================
+
+  @Test
+  fun `recordObservedPackage stores a package with a count of one and the time it was seen`() {
+    assertEquals(
+      "a fresh install has seen nothing yet",
+      emptyList<ObservedPackage>(),
+      prefs.listObservedPackages(),
+    )
+
+    prefs.recordObservedPackage(gcash, seenAt)
+
+    // Through an instance that did NOT perform the write, like everything
+    // else here: the picker runs in the APP's process, and the recording
+    // happens in the listener's, which Android may have created purely to
+    // host it.
+    val observed = CapturePrefs(context).listObservedPackages().single()
+    assertEquals(gcash, observed.packageName)
+    assertEquals(1, observed.count)
+    assertEquals(seenAt, observed.lastSeenAt)
+  }
+
+  @Test
+  fun `the same package seen again is one entry with a higher count and a later lastSeenAt`() {
+    prefs.recordObservedPackage(gcash, seenAt)
+    prefs.recordObservedPackage(gcash, seenAt + 60_000)
+    prefs.recordObservedPackage(gcash, seenAt + 120_000)
+
+    val observed = CapturePrefs(context).listObservedPackages()
+
+    // ONE entry, not three. This file is rewritten on every notification, so
+    // an implementation that appended per delivery rather than per app would
+    // grow without bound -- and would blow through the 100-package cap on a
+    // single chatty app in an afternoon.
+    assertEquals("one entry per app, never one per notification", 1, observed.size)
+    // A count that overwrote rather than accumulated would read 1 forever,
+    // which makes "seen 12 times" -- the signal that separates a real
+    // financial app from a one-off -- permanently useless.
+    assertEquals(3, observed.single().count)
+    assertEquals(seenAt + 120_000, observed.single().lastSeenAt)
+  }
+
+  @Test
+  fun `listObservedPackages is newest-first, not first-seen-first`() {
+    prefs.recordObservedPackage(gcash, seenAt)
+    prefs.recordObservedPackage(maya, seenAt + 1_000)
+    prefs.recordObservedPackage(bpi, seenAt + 2_000)
+
+    assertEquals(
+      listOf(bpi, maya, gcash),
+      CapturePrefs(context).listObservedPackages().map { it.packageName },
+    )
+
+    // Re-seeing the OLDEST entry moves it to the front. Insertion order alone
+    // cannot produce this, so an implementation that merely reversed the list
+    // it built passes the assertion above and fails here.
+    prefs.recordObservedPackage(gcash, seenAt + 3_000)
+
+    assertEquals(
+      listOf(gcash, bpi, maya),
+      CapturePrefs(context).listObservedPackages().map { it.packageName },
+    )
+
+    // ...and by RECENCY, not by frequency. Everything above is satisfied by
+    // an implementation that ordered on `count` instead -- the two agree
+    // whenever the re-seen package is also the newest one. A brand-new
+    // package arriving last makes them disagree: it has the LOWEST count and
+    // must still come first. Recency is what the picker needs; an app that
+    // notified five minutes ago is one the user still has, while a chatty one
+    // from last month may well be uninstalled.
+    val newcomer = "com.example.newbank" // ILLUSTRATIVE
+    prefs.recordObservedPackage(newcomer, seenAt + 4_000)
+
+    val observed = CapturePrefs(context).listObservedPackages()
+    assertEquals(listOf(newcomer, gcash, bpi, maya), observed.map { it.packageName })
+    assertEquals("the newest entry is also the least frequent one", 1, observed.first().count)
+    assertEquals(2, observed[1].count)
+  }
+
+  @Test
+  fun `the hundred-and-first package evicts the least-recently-seen, not the first inserted`() {
+    // 100 distinct packages, inserted oldest-first so insertion order and
+    // recency agree...
+    for (index in 0 until 100) {
+      prefs.recordObservedPackage(fillerPackage(index), seenAt + index)
+    }
+    assertEquals(100, prefs.listObservedPackages().size)
+
+    // ...and then made to DISAGREE: the FIRST-inserted package becomes the
+    // most recently seen. Without this step "evict the oldest insertion" and
+    // "evict the least recently seen" are the same answer, and the test
+    // cannot tell a correct implementation from the wrong one.
+    prefs.recordObservedPackage(fillerPackage(0), seenAt + 500)
+
+    prefs.recordObservedPackage(gcash, seenAt + 600)
+
+    val observed = CapturePrefs(context).listObservedPackages()
+    val names = observed.map { it.packageName }
+
+    // The bound holds: a file rewritten on every notification cannot grow
+    // without limit, and a list of every app that has ever notified the user
+    // is a behavioural profile nobody asked for.
+    assertEquals("at most 100 packages are kept", 100, observed.size)
+    // The new one is in, at the front.
+    assertEquals(gcash, names.first())
+    // The LEAST-RECENTLY-SEEN one is the one that went...
+    assertFalse(
+      "the least-recently-seen package must be the one evicted",
+      names.contains(fillerPackage(1)),
+    )
+    // ...and the first-INSERTED one survived, because it was seen again. An
+    // implementation evicting by insertion order fails exactly here.
+    assertTrue(
+      "a package re-seen recently must survive, however long ago it was first seen",
+      names.contains(fillerPackage(0)),
+    )
+    // Its count survived the eviction pass too -- it is one entry, updated,
+    // not a fresh insertion that lost its history.
+    assertEquals(2, observed.single { it.packageName == fillerPackage(0) }.count)
+  }
+
+  @Test
+  fun `the raw stored observed packages are ciphertext -- no package name survives on disk`() {
+    prefs.recordObservedPackage(gcash, seenAt)
+    prefs.recordObservedPackage(maya, seenAt + 1_000)
+
+    val stored = rawPrefs().getString(sealedKeyObservedPackages, null)
+    assertNotNull("the observed packages must be stored as a sealed string", stored)
+
+    // The whole file, exactly as `cat shared_prefs/peraplano_capture_prefs.xml`
+    // on a stolen phone would show it. The apps a person has installed are the
+    // apps a person banks with -- this list is sealed for the same reason the
+    // provider filter is.
+    val onDisk = rawStoredText()
+    for (packageName in listOf(gcash, maya)) {
+      assertFalse("no observed package may appear in the prefs file: $onDisk", onDisk.contains(packageName))
+    }
+
+    // NO PLAINTEXT PREDECESSOR, and so no migration entry (Task 2's note):
+    // this key never existed unsealed, so there is nothing legacy to read or
+    // delete -- and nothing may start writing one.
+    assertFalse("observed packages have never existed in plaintext", rawPrefs().contains("observed_packages"))
+
+    // The accessor still works, which is what makes the above a seal rather
+    // than a deletion.
+    assertEquals(
+      listOf(maya, gcash),
+      CapturePrefs(context).listObservedPackages().map { it.packageName },
+    )
+  }
+
+  @Test
+  fun `recording an observed package never throws, whatever state the stored value is in`() {
+    // A device with no prefs KEK at all -- the Keystore refused, or the app
+    // has never been opened and the listener's own ensure call failed. The
+    // recording is BOOKKEEPING; an exception escaping it would reach
+    // handlePosted's catch and cost a real notification, which arrives once
+    // and never again.
+    KeyStoreBridge.vault = FakeKeyVault()
+    val withoutKey = CapturePrefs(context)
+
+    withoutKey.recordObservedPackage(gcash, seenAt) // must not throw
+
+    assertEquals(emptyList<ObservedPackage>(), withoutKey.listObservedPackages())
+
+    // ...and a value nothing can open -- the shape a preferences file left by
+    // an older or foreign build has -- reads as "nothing seen yet" rather
+    // than throwing, and the next recording heals it.
+    KeyStoreBridge.ensurePrefsKek()
+    rawPrefs().edit().putString(sealedKeyObservedPackages, "this is not a sealed value at all").commit()
+
+    val overGarbage = CapturePrefs(context)
+    assertEquals(emptyList<ObservedPackage>(), overGarbage.listObservedPackages())
+
+    overGarbage.recordObservedPackage(maya, seenAt) // must not throw
+
+    assertEquals(
+      listOf(maya),
+      CapturePrefs(context).listObservedPackages().map { it.packageName },
+    )
+  }
+
+  // =====================================================================
   // Helpers
   // =====================================================================
+
+  /**
+   * ILLUSTRATIVE filler for the eviction test -- a package name shaped like a
+   * real one, `index` zero-padded so the strings sort the same way the
+   * numbers do and a failure message reads in order.
+   */
+  private fun fillerPackage(index: Int): String = "com.example.app%03d".format(index)
 
   /**
    * The preferences file as an attacker with the bytes would see it -- the

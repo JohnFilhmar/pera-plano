@@ -75,6 +75,9 @@ class NotificationListenerModuleTest {
   /** Interface contract §4 `getListenerHealth`, verbatim. */
   private val healthKeys = setOf("granted", "serviceConnected", "lastCaptureAt")
 
+  /** Interface contract §4 `ObservedPackage`, verbatim. Nothing else may appear. */
+  private val observedKeys = setOf("packageName", "count", "lastSeenAt")
+
   // ILLUSTRATIVE package names -- real PH e-wallet package ids used only as
   // opaque allowlist strings; nothing here needs them to exist on the device.
   private val gcash = "com.globe.gcash.android"
@@ -421,6 +424,41 @@ class NotificationListenerModuleTest {
     // ...and revoking access has to be visible too, not just granting it.
     denyNotificationAccess()
     assertEquals(false, listenerHealth(context)["granted"])
+  }
+
+  // =====================================================================
+  // listObservedPackages (contract §4; provider-selection plan Task 3)
+  //
+  // What the onboarding picker reads: the packages this device has actually
+  // been seen posting notifications, so the app can stop guessing at the
+  // seven `seed.json` names that were constructed from app names.
+  // =====================================================================
+
+  @Test
+  fun `listObservedPackages hands JS the observed packages newest-first as contract maps`() {
+    // Nothing seen yet is an empty list, never an error -- a fresh install
+    // reaches the picker before any notification has arrived.
+    assertEquals(emptyList<Map<String, Any?>>(), observedPackages(context))
+
+    val prefs = CapturePrefs(context)
+    prefs.recordObservedPackage(gcash, 1_754_060_400_000L)
+    prefs.recordObservedPackage(maya, 1_754_060_401_000L)
+    prefs.recordObservedPackage(gcash, 1_754_060_402_000L)
+
+    val observed = observedPackages(context)
+
+    // Exactly the three contract §4 `ObservedPackage` fields, and nothing
+    // else -- a notification title or body reaching this map would make the
+    // picker's payload a shadow copy of the capture buffer.
+    assertEquals(2, observed.size)
+    assertEquals(observedKeys, observed.first().keys)
+    assertEquals(observedKeys, observed.last().keys)
+
+    // Newest-first, and the re-seen package moved to the front.
+    assertEquals(listOf(gcash, maya), observed.map { it["packageName"] })
+    assertEquals(2, observed.first()["count"])
+    assertEquals(1_754_060_402_000L, observed.first()["lastSeenAt"])
+    assertEquals(1, observed.last()["count"])
   }
 
   // =====================================================================

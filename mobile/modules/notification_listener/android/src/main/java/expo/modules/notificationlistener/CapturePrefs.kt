@@ -18,16 +18,18 @@ import android.content.SharedPreferences
  * symptom would be the app quietly capturing from providers the user
  * de-selected, which is a privacy regression, not a glitch.
  *
- * TWO OF THE FOUR ARE SEALED AT REST, TWO ARE NOT, and the split is
+ * THREE OF THE FIVE ARE SEALED AT REST, TWO ARE NOT, and the split is
  * deliberate (provider-selection plan Task 2 rule 1):
  *
  *  - **Sealed** under the prefs KEK ([KeyStoreBridge.sealPrefsValue]):
  *    `provider_filter`, because it names every bank and e-wallet the user
- *    holds, and `last_capture_at`, because it is a behavioural fact about
- *    when they last moved money. docs/12-encryption-and-app-lock.md §4 places
+ *    holds; `last_capture_at`, because it is a behavioural fact about
+ *    when they last moved money; and `observed_packages` (Task 3), because a
+ *    list of the apps a person uses is the same disclosure the filter is,
+ *    one step less curated. docs/12-encryption-and-app-lock.md §4 places
  *    "a malicious app reading app-private storage on a rooted device" IN
  *    scope and promises "the database file is ciphertext; the buffer is
- *    ciphertext" -- until this task these two sat beside them in plaintext,
+ *    ciphertext" -- until this task these sat beside them in plaintext,
  *    readable with `cat shared_prefs/peraplano_capture_prefs.xml`.
  *  - **Plaintext:** `capture_enabled` and `listener_connected`. Two booleans
  *    that reveal nothing about anyone's finances. Sealing them would buy
@@ -177,6 +179,129 @@ class CapturePrefs(context: Context) {
     val filter = getProviderFilter()
     return filter.isEmpty() || packageName in filter
   }
+
+  // ---------------------------------------------------------------------
+  // Observed packages -- SEALED. Package names only, bounded at 100.
+  // ---------------------------------------------------------------------
+
+  /**
+   * Notes that [packageName] posted a notification at [atMillis] (epoch
+   * milliseconds, interface contract §1), incrementing its count and moving
+   * it to the front of [listObservedPackages].
+   *
+   * WHY THIS EXISTS. Seven of the thirteen package names in the parser
+   * `seed.json` were **constructed from app names** rather than observed
+   * anywhere -- `com.bpi.ng.app`, `com.bdo.digitalbanking`,
+   * `com.metrobank.mobilebanking` and four more. A wrong one is a SILENT
+   * failure: that provider is never routed, captures nothing, logs nothing,
+   * and looks to the user like their bank simply does not work. The listener
+   * already receives `sbn.packageName` for every notification on the device,
+   * so the real names can be learned with NO new permission -- deliberately
+   * not `QUERY_ALL_PACKAGES`, a restricted Play permission this build does
+   * not need and would have to justify in writing.
+   *
+   * CALLED FOR EVERY NOTIFICATION THE LISTENER SEES, INCLUDING THE ONES IT
+   * DROPS -- filtered out, ongoing, paused, or carrying no text. A package
+   * the user has not selected is precisely the one that must appear in the
+   * picker; recording only captured notifications would surface exactly the
+   * apps they already chose, which makes the picker useless for its own job.
+   * See `PeraPlanoNotificationListenerService.handlePosted`, where this is
+   * the first line inside the try for exactly that reason.
+   *
+   * PACKAGE NAMES, A COUNT AND A TIMESTAMP. Never a title, never body text.
+   * This list is already sensitive enough to be sealed; adding content would
+   * make it a shadow copy of the notification history the sealed
+   * [CaptureBuffer] exists to protect, sitting under a key that -- by
+   * design -- requires no user authentication at all.
+   *
+   * NEVER THROWS, like everything else here, and the reason is sharper on
+   * this path than anywhere else in the class: this runs BEFORE the capture
+   * in `handlePosted`, inside the try whose catch turns any escape into one
+   * silently dropped notification. The recording is bookkeeping for a screen
+   * the user visits once; a real notification arrives once and never again.
+   * A failure here stores nothing and costs nothing.
+   *
+   * An empty package name is ignored rather than stored: `sbn.packageName`
+   * is never empty in practice, and a blank entry would occupy one of the
+   * bounded slots below while naming nothing the picker could offer.
+   *
+   * MEASURED, because this runs on every notification and the number is not
+   * small. Robolectric/JVM, 10,000 calls after a 2,000-call warm-up:
+   *
+   * | | per call |
+   * |---|---|
+   * | [KeyStoreBridge.sealPrefsValue] alone on a 4 KB list, no write | 13 us |
+   * | `setCaptureEnabled` -- a bare boolean, NO crypto, one `commit()` | 1,175 us |
+   * | `recordCapture` -- seals a Long, one `commit()` | 2,366 us |
+   * | **this function** -- seals the list, one `commit()` | **3,848 us** |
+   *
+   * THE SEALING IS NOT THE COST. 13 us of it is crypto; the rest is
+   * `SharedPreferences.commit()`, which rewrites the whole XML file and
+   * fsyncs it -- a bare boolean with no crypto at all pays 1,175 us of the
+   * same thing. That cost is PRE-EXISTING (see the class doc for why
+   * `commit()` and not `apply()`), and this function is flat across a
+   * 12-entry and a 100-entry list, which is what rules the list size out.
+   *
+   * What this task genuinely adds is therefore not encryption overhead but
+   * (a) one commit on the DROPPED path, which previously wrote nothing at
+   * all, and (b) ~5.5 KB of sealed base64 to a file that every other write
+   * rewrites in full -- which is why `recordCapture` above measures 2,366 us
+   * once this list is at its cap.
+   *
+   * Acceptable, deliberately: notifications arrive at human rates on a
+   * background binder thread, so 4 ms is nowhere near user-visible. It is a
+   * flash-write and battery cost, not a latency one. TREAT THESE AS A
+   * CEILING rather than a floor -- unlike the Keystore numbers in
+   * [shouldCapture], a Robolectric `commit()` is real host file I/O on a
+   * developer's NTFS volume, and a device writing app-private storage on
+   * ext4/f2fs should be cheaper. docs/13-on-device-verification.md carries
+   * the on-device confirmation.
+   */
+  fun recordObservedPackage(packageName: String, atMillis: Long) {
+    if (packageName.isEmpty()) return
+
+    val existing = listObservedPackages()
+    val previous = existing.firstOrNull { it.packageName == packageName }
+    val updated = ObservedPackage(
+      packageName = packageName,
+      // ACCUMULATES. Overwriting with 1 would make "seen 12 times" -- the
+      // signal that separates a bank the user actually uses from a one-off
+      // -- permanently useless to the picker.
+      count = (previous?.count ?: 0) + 1,
+      lastSeenAt = atMillis,
+    )
+
+    // The updated entry first, so a stable sort keeps it ahead of anything
+    // sharing its timestamp -- it is by definition the most recent thing
+    // this device has seen.
+    val merged = (listOf(updated) + existing.filter { it.packageName != packageName })
+      .sortedByDescending { it.lastSeenAt }
+      .take(MAX_OBSERVED_PACKAGES)
+
+    val sealed = seal(encodeObservedPackages(merged)) ?: return
+    write { it.putString(KEY_OBSERVED_PACKAGES_SEALED, sealed) }
+  }
+
+  /**
+   * Every package this device has seen post a notification, **newest-first**
+   * -- the list the onboarding provider picker offers alongside the seed
+   * catalogue (plan Task 4).
+   *
+   * Newest-first because recency is the only ranking the app has any evidence
+   * for: an app that notified five minutes ago is one the user actually uses,
+   * and the picker's first screenful is what most people will ever read.
+   * The order is established on write (see [recordObservedPackage], which has
+   * to sort anyway to evict correctly), so this is a plain decode of a list
+   * that is already in order.
+   *
+   * Empty when nothing has been seen yet, or when the stored value cannot be
+   * opened -- the same never-throw fallback as everything else here. An empty
+   * picker degrades to "the seed catalogue only", which is exactly the
+   * pre-Task-3 behaviour and visibly harmless; an exception on this path
+   * would take the onboarding screen down with it.
+   */
+  fun listObservedPackages(): List<ObservedPackage> =
+    openSealed(KEY_OBSERVED_PACKAGES_SEALED)?.let { decodeObservedPackages(it) } ?: emptyList()
 
   // ---------------------------------------------------------------------
   // Health facts (contract §4 `getListenerHealth`).
@@ -372,6 +497,56 @@ class CapturePrefs(context: Context) {
       .toSet()
 
   /**
+   * The observed list's plaintext wire format: one package per line, three
+   * tab-separated fields -- `packageName`, `count`, `lastSeenAt`.
+   *
+   * Two separators that cannot collide with the data, for the same reason
+   * [encodeProviderFilter] uses a newline: an Android package name is a
+   * dot-joined sequence of Java identifiers, so no whitespace of any kind is
+   * legal in one, and neither a tab nor a newline can be smuggled in to split
+   * one entry into two bogus ones. The other two fields are decimal digits.
+   *
+   * A hand-rolled format rather than JSON because this is written on EVERY
+   * notification the device receives -- see the class doc on `commit()` --
+   * and because there are exactly three fields, all of them primitives, with
+   * no nullability to model.
+   */
+  private fun encodeObservedPackages(packages: List<ObservedPackage>): ByteArray =
+    packages
+      .joinToString(OBSERVED_RECORD_SEPARATOR) {
+        it.packageName + OBSERVED_FIELD_SEPARATOR + it.count + OBSERVED_FIELD_SEPARATOR + it.lastSeenAt
+      }
+      .toByteArray(Charsets.UTF_8)
+
+  /**
+   * Inverse of [encodeObservedPackages], and TOTAL: a line that is empty,
+   * has the wrong number of fields, or carries an unparseable count or
+   * timestamp is dropped rather than throwing.
+   *
+   * That matters more here than the equivalent leniency in
+   * [decodeProviderFilter]. This runs inside [recordObservedPackage], which
+   * runs inside `handlePosted`'s try -- so a `NumberFormatException` out of a
+   * malformed line would not merely lose the observed list, it would cost the
+   * NOTIFICATION being processed, once per delivery, silently. The empty
+   * string decodes to an empty list for the same reason the filter's does.
+   */
+  private fun decodeObservedPackages(plaintext: ByteArray): List<ObservedPackage> =
+    String(plaintext, Charsets.UTF_8)
+      .split(OBSERVED_RECORD_SEPARATOR)
+      .mapNotNull { line ->
+        val fields = line.split(OBSERVED_FIELD_SEPARATOR)
+        if (fields.size != OBSERVED_FIELD_COUNT) return@mapNotNull null
+        val packageName = fields[0]
+        val count = fields[1].toIntOrNull()
+        val lastSeenAt = fields[2].toLongOrNull()
+        if (packageName.isEmpty() || count == null || lastSeenAt == null) {
+          null
+        } else {
+          ObservedPackage(packageName, count, lastSeenAt)
+        }
+      }
+
+  /**
    * Every write goes through here so the `commit()`-not-`apply()` decision
    * (see the class doc) is made in exactly one place, and so a failing write
    * can never escape into the listener service either.
@@ -409,6 +584,20 @@ class CapturePrefs(context: Context) {
     private const val KEY_LAST_CAPTURE_AT_SEALED = "last_capture_at_sealed"
 
     /**
+     * The observed list, sealed like its two neighbours -- and with NO
+     * legacy counterpart below and NO entry in [migrateLegacyPlaintextValues],
+     * deliberately. This key was introduced already sealed (plan Task 3), so
+     * there has never been a plaintext version of it on any device: nothing
+     * to read, nothing to delete, and a migration entry would be code that
+     * can only ever find an empty result.
+     *
+     * It keeps the `_sealed` suffix anyway, so the preferences file stays
+     * self-describing -- every key in it either is sealed or is one of the
+     * two booleans that deliberately are not.
+     */
+    private const val KEY_OBSERVED_PACKAGES_SEALED = "observed_packages_sealed"
+
+    /**
      * What a pre-sealing build wrote: a plaintext `StringSet` and a plaintext
      * `Long`. Nothing reads these except the migration, which deletes them.
      * They stay named here because a constant that is only ever passed to
@@ -421,7 +610,64 @@ class CapturePrefs(context: Context) {
 
     private const val FILTER_SEPARATOR = "\n"
 
+    private const val OBSERVED_RECORD_SEPARATOR = "\n"
+    private const val OBSERVED_FIELD_SEPARATOR = "\t"
+    private const val OBSERVED_FIELD_COUNT = 3
+
+    /**
+     * The cap on [recordObservedPackage], evicting the least-recently-seen
+     * (plan Task 3 rule 3).
+     *
+     * A BOUND, not a tuning knob. This value is re-encoded, re-sealed and
+     * rewritten on every single notification the device receives, so an
+     * unbounded list would turn a busy hour into a growing write on each
+     * delivery. It is also a privacy bound: a record of every app that has
+     * ever notified this phone is a behavioural profile nobody asked for,
+     * and the picker only ever needs the apps the user currently uses.
+     *
+     * 100 is far more than the number of financial apps a person holds, and
+     * eviction is by recency rather than by count so an app used weekly is
+     * never displaced by one chatty game.
+     */
+    internal const val MAX_OBSERVED_PACKAGES = 100
+
     private const val DEFAULT_CAPTURE_ENABLED = true
     private const val DEFAULT_LISTENER_CONNECTED = false
+  }
+}
+
+/**
+ * One package this device has seen post a notification (interface contract
+ * §4; provider-selection plan Task 3). The field names ARE the JS
+ * `ObservedPackage` field names, so the picker never has to translate --
+ * the same discipline [CaptureRecord] holds for `RawCapture`.
+ *
+ * THREE FIELDS, AND THAT IS THE POINT. There is deliberately nowhere here to
+ * put a notification title or body: this type is the storage schema, so a
+ * later edit that wanted to "just also keep the last message" would have to
+ * widen it in the open rather than slip content in. See
+ * [CapturePrefs.recordObservedPackage] for why that boundary is a privacy
+ * rule and not a schema preference.
+ *
+ * [lastSeenAt] is epoch milliseconds (contract §1) and is the time the
+ * LISTENER saw the notification, not the `postTime` the posting app claimed
+ * -- recency here is about what this device observed.
+ */
+data class ObservedPackage(
+  val packageName: String,
+  val count: Int,
+  val lastSeenAt: Long,
+) {
+
+  fun toMap(): Map<String, Any?> = mapOf(
+    KEY_PACKAGE_NAME to packageName,
+    KEY_COUNT to count,
+    KEY_LAST_SEEN_AT to lastSeenAt,
+  )
+
+  companion object {
+    const val KEY_PACKAGE_NAME = "packageName"
+    const val KEY_COUNT = "count"
+    const val KEY_LAST_SEEN_AT = "lastSeenAt"
   }
 }

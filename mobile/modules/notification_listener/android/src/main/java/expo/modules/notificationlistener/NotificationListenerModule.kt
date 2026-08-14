@@ -195,6 +195,12 @@ class NotificationListenerModule : Module() {
       listenerHealth(requireContext())
     }
 
+    // ---- Learned package names (contract §4; provider-selection Task 3) --
+
+    AsyncFunction("listObservedPackages") {
+      observedPackages(requireContext())
+    }
+
     // ---- Live capture events (contract §4; plan Task 6 rule 5) -----------
     //
     // The sink is installed only while JS is actually subscribed, and torn
@@ -366,6 +372,28 @@ internal fun listenerHealth(context: Context): Map<String, Any?> {
     "lastCaptureAt" to prefs.lastCaptureAt(),
   )
 }
+
+/**
+ * Every package this device has been seen posting a notification, newest
+ * first (contract §4 `listObservedPackages`; provider-selection plan Task 3)
+ * -- what the onboarding picker offers alongside the seed catalogue.
+ *
+ * These are REAL package names, read off `sbn.packageName` by the listener,
+ * and that is the entire point: seven of the thirteen names in the parser
+ * seed were constructed from app names, and a wrong one silently routes
+ * nothing. Requires NO new Android permission -- in particular not
+ * `QUERY_ALL_PACKAGES`, which is restricted on Play and unnecessary when the
+ * listener is already told who posted.
+ *
+ * Mapped through [ObservedPackage.toMap] rather than a second hand-rolled
+ * mapping, for the same reason [installLiveSink] uses [CaptureRecord.toMap]:
+ * one place decides these field names.
+ *
+ * An empty list is the normal fresh-install answer, never an error -- the
+ * user can reach the picker before any notification has arrived.
+ */
+internal fun observedPackages(context: Context): List<Map<String, Any?>> =
+  CapturePrefs(context).listObservedPackages().map { it.toMap() }
 
 /**
  * Points [PeraPlanoNotificationListenerService.liveSink] at [emit], adapting

@@ -50,6 +50,10 @@ jest.mock("expo-modules-core", () => {
     setCaptureEnabled: jest.fn(),
     setProviderFilter: jest.fn(),
     getListenerHealth: jest.fn(),
+    // Provider-selection plan Task 3 -- the packages this device has been
+    // seen posting notifications, which is how the onboarding picker stops
+    // guessing at package names.
+    listObservedPackages: jest.fn(),
     addListener: jest.fn(),
   };
   return {
@@ -71,6 +75,7 @@ import {
   isDeviceKeyUsable,
   isDeviceSecure,
   isKeyguardLocked,
+  listObservedPackages,
   openAccessSettings,
   openSecuritySettings,
   recreateDeviceKek,
@@ -96,6 +101,7 @@ type MockNativeModule = {
   setCaptureEnabled: jest.Mock;
   setProviderFilter: jest.Mock;
   getListenerHealth: jest.Mock;
+  listObservedPackages: jest.Mock;
   addListener: jest.Mock;
 };
 
@@ -540,6 +546,7 @@ describe("the contract §4 listener surface", () => {
       serviceConnected: true,
       lastCaptureAt: null,
     });
+    mockNativeModule.listObservedPackages.mockResolvedValue([]);
     mockNativeModule.addListener.mockReturnValue(subscriptionStub());
   });
 
@@ -597,6 +604,12 @@ describe("the contract §4 listener surface", () => {
       wrapper: "getListenerHealth",
       nativeMethod: "getListenerHealth",
       call: () => getListenerHealth(),
+      nativeArgs: [],
+    },
+    {
+      wrapper: "listObservedPackages",
+      nativeMethod: "listObservedPackages",
+      call: () => listObservedPackages(),
       nativeArgs: [],
     },
     {
@@ -830,6 +843,49 @@ describe("the contract §4 listener surface", () => {
       expect(Object.keys(healthy).sort()).toEqual(
         ["granted", "lastCaptureAt", "serviceConnected"].sort(),
       );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // listObservedPackages -- what the onboarding picker reads (provider-
+  // selection plan Task 3). Seven of the thirteen `seed.json` package names
+  // were constructed from app names, and a wrong one is a silent failure:
+  // that provider is never routed and looks to the user like their bank
+  // simply does not work. These are the names the device actually saw.
+  // -------------------------------------------------------------------------
+
+  describe("listObservedPackages", () => {
+    it("resolves with the native array unchanged, newest-first, carrying exactly the three ObservedPackage fields", async () => {
+      // Newest-first is the native side's ordering guarantee, and this
+      // wrapper must not re-sort or reverse it -- the picker shows these in
+      // the order it receives them.
+      const observed = [
+        { packageName: "com.globe.gcash.android", count: 12, lastSeenAt: 1754060402000 },
+        { packageName: "com.paymaya", count: 3, lastSeenAt: 1754060401000 },
+      ];
+      mockNativeModule.listObservedPackages.mockResolvedValue(observed);
+
+      const result = await listObservedPackages();
+
+      expect(mockNativeModule.listObservedPackages).toHaveBeenCalledWith();
+      expect(result).toEqual(observed);
+      expect(result.map((entry) => entry.packageName)).toEqual([
+        "com.globe.gcash.android",
+        "com.paymaya",
+      ]);
+      // PACKAGE NAMES ONLY. A title or body reaching this payload would make
+      // the picker's data a shadow copy of the capture buffer, so the field
+      // set is asserted exactly rather than sampled.
+      expect(Object.keys(result[0]).sort()).toEqual(["count", "lastSeenAt", "packageName"]);
+    });
+
+    it("resolves with an empty array when nothing has been observed yet -- not an error", async () => {
+      // The fresh-install state: the user can reach the picker before a
+      // single notification has arrived, and an empty list is the correct,
+      // unremarkable answer there.
+      mockNativeModule.listObservedPackages.mockResolvedValue([]);
+
+      await expect(listObservedPackages()).resolves.toEqual([]);
     });
   });
 });

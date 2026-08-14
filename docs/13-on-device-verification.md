@@ -178,6 +178,35 @@ untested there, it does not exist. A JVM assertion on it would be asserting noth
 > has silently become auth-bound and the filter is unreadable while the phone is locked. That is a
 > product-breaking regression, not a flaky test.
 
+### Added 2026-08-14 — what the capture path actually costs. **NOT RUN.**
+
+Two JVM measurements need a device to confirm, and they fail in **opposite directions**, so neither
+can stand in for the other.
+
+- [ ] **`shouldCapture()` — the JVM number is a FLOOR** (Task 2: 6.7–7.9 µs). Robolectric's
+      `FakeKeyVault` is plain JCE, so it never pays the keystore2 Binder round-trip a real
+      `Cipher.init` does on every AES-GCM open. The device number can only be **higher**.
+      → `________________`
+- [ ] **`recordObservedPackage()` — the JVM number is a CEILING** (Task 3: 3.8–5.0 ms). Almost all
+      of it is `SharedPreferences.commit()` doing real host file I/O on an NTFS dev volume; a phone
+      writing app-private storage on ext4/f2fs should be **cheaper**. → `________________`
+
+> **What to watch, and it is not the crypto.** Sealing a 4 KB list costs 13 µs. A bare boolean
+> `setCaptureEnabled` — no crypto whatsoever — costs 1,175 µs on the same harness. The cost is the
+> synchronous full-file rewrite, and it is pre-existing.
+>
+> What Task 3 changed is that a **dropped** notification now pays one, where before it wrote
+> nothing at all. On a chatty phone that is a commit per notification, on the listener's binder
+> thread, all day. Not a latency problem — notifications arrive at human rates — but a flash-write
+> and battery one, and this listener never stops.
+>
+> If the device number lands near the JVM's rather than well below it, the lever is `apply()`
+> instead of `commit()` **for this one value**: losing the last observed-package write is harmless
+> bookkeeping that the next notification rewrites, which is emphatically not true of the provider
+> filter sitting beside it. That would mean splitting `CapturePrefs.write`, which today routes
+> every write through one place precisely so the `commit()`-vs-`apply()` decision is made once —
+> so it is a deliberate change, not a tweak. **Measure first.**
+
 ---
 
 ## Part 3 — The notification listener (M1a Task 9)

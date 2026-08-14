@@ -28,6 +28,29 @@ export type ListenerHealth = {
 };
 
 /**
+ * One package this device has actually been seen posting a notification
+ * (interface contract §4; provider-selection plan Task 3) — the raw material
+ * for the onboarding provider picker.
+ *
+ * These are REAL package names, read off `sbn.packageName` by the listener
+ * service, which is the whole reason this exists: seven of the thirteen
+ * package names in the parser seed were constructed from app names rather
+ * than observed anywhere, and a wrong one is a silent failure — that provider
+ * is never routed, captures nothing, and looks to the user like their bank
+ * simply does not work.
+ *
+ * THREE FIELDS, NEVER A NOTIFICATION'S CONTENT. `count` is occurrences and
+ * `lastSeenAt` is epoch milliseconds; there is deliberately nowhere here for
+ * a title or body, which would make this list a shadow copy of the capture
+ * history the sealed native buffer exists to protect.
+ */
+export type ObservedPackage = {
+  packageName: string;
+  count: number;
+  lastSeenAt: number;
+};
+
+/**
  * A capture exactly as it can arrive over the bridge, which is NOT quite a
  * `RawCapture`: a nullable string field may be ABSENT from the object rather
  * than present-and-null. `normalizeCapture` below closes that gap so every
@@ -78,6 +101,12 @@ type NativeNotificationListenerModule = {
   setCaptureEnabled(enabled: boolean): Promise<void>;
   setProviderFilter(packageNames: string[]): Promise<void>;
   getListenerHealth(): Promise<NativeListenerHealth>;
+
+  // ---- Learned package names (provider-selection plan Task 3) ----------
+  // Every field is non-nullable and always written by the Kotlin
+  // `ObservedPackage.toMap()`, so unlike captures and health there is no
+  // absent-value gap for the wrapper to close.
+  listObservedPackages(): Promise<ObservedPackage[]>;
 
   /**
    * Inherited from the `EventEmitter` every Expo `NativeModule` extends —
@@ -469,4 +498,28 @@ export function getListenerHealth(): Promise<ListenerHealth> {
     serviceConnected: health.serviceConnected,
     lastCaptureAt: health.lastCaptureAt ?? null,
   }));
+}
+
+/**
+ * Every package this device has been seen posting a notification, NEWEST
+ * FIRST (contract §4; provider-selection plan Task 3) — what the onboarding
+ * provider picker offers alongside the seed catalogue.
+ *
+ * The ordering is the native side's and is not re-sorted here: recency is the
+ * only ranking the app has evidence for, and the picker's first screenful is
+ * what most people will ever read.
+ *
+ * The native side records a package for EVERY notification the listener sees,
+ * including the ones it drops for being filtered out or ongoing — a package
+ * the user has not selected is precisely the one that has to appear in the
+ * picker. It records the package NAME only; see `ObservedPackage`.
+ *
+ * Resolves with `[]` when nothing has been observed yet, which is the normal
+ * fresh-install state rather than an error, and requires NO authentication:
+ * the list is sealed under the listener's own unauthenticated prefs key, not
+ * the auth-gated device KEK, so this cannot produce a rejection from the
+ * taxonomy above.
+ */
+export function listObservedPackages(): Promise<ObservedPackage[]> {
+  return NativeNotificationListener.listObservedPackages();
 }

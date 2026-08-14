@@ -161,6 +161,15 @@ export function getListenerHealth(): Promise<{
   granted: boolean; serviceConnected: boolean; lastCaptureAt: number | null;
 }>;
 
+// Added 2026-08-13 by the provider-selection plan (Task 3). The listener records the package
+// name of EVERY notification it sees -- including the ones it drops for being filtered out or
+// ongoing, because a package the user has not selected is precisely the one the onboarding
+// picker must offer. PACKAGE NAMES ONLY: never a title, never body text. Bounded at 100,
+// evicting the least-recently-seen, and sealed at rest like the provider filter. Needs NO new
+// Android permission -- deliberately not QUERY_ALL_PACKAGES.
+export type ObservedPackage = { packageName: string; count: number; lastSeenAt: number };
+export function listObservedPackages(): Promise<ObservedPackage[]>; // newest-first
+
 // Added 2026-08-07 by the encryption plan. See docs/12-encryption-and-app-lock.md.
 export function getCapturePublicKey(): Promise<string>;           // base64 SPKI; NO auth required
 // STRUCK 2026-08-09 (M1a Task 6). `decryptCaptures(lines)` was never implemented in the Kotlin

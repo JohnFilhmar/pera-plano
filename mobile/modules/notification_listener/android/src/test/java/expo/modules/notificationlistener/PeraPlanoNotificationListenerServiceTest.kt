@@ -389,6 +389,179 @@ class PeraPlanoNotificationListenerServiceTest {
   }
 
   // =====================================================================
+  // OBSERVED PACKAGES (provider-selection plan Task 3).
+  //
+  // Seven of the thirteen package names in `seed.json` were constructed from
+  // app names rather than observed anywhere, and a wrong one is a SILENT
+  // failure -- that provider is never routed, captures nothing, logs nothing,
+  // and looks to the user like their bank simply does not work. This service
+  // already receives `sbn.packageName` for every notification on the device,
+  // so it is the one place that can learn the real names, with NO new
+  // permission (deliberately not QUERY_ALL_PACKAGES).
+  // =====================================================================
+
+  @Test
+  fun `handlePosted records the observed package of a captured notification`() {
+    post(statusBarNotification(gcash, notification(title = sampleTitle, text = sampleText)))
+
+    // It really was captured -- otherwise this test would pass against a
+    // service that dropped everything and recorded on the way out.
+    assertEquals(1, bufferedIds().size)
+
+    val observed = prefs.listObservedPackages().single()
+    assertEquals(gcash, observed.packageName)
+    assertEquals(1, observed.count)
+    // The time the listener SAW it, so a package's recency reflects the
+    // device's clock rather than whatever postTime the posting app claimed.
+    assertEquals(capturedAt, observed.lastSeenAt)
+  }
+
+  /**
+   * THE TEST THAT MATTERS IN THIS TASK, and the one a careless implementation
+   * passes without.
+   *
+   * A package the user has NOT selected is precisely the one that must appear
+   * in the picker -- that is the picker's entire job. An implementation that
+   * recorded only CAPTURED notifications would surface exactly the apps the
+   * user already chose, which makes the list useless for choosing anything.
+   *
+   * Capture stays ENABLED here: the drop is the provider filter's doing, not
+   * the pause switch's, so a service that only recorded while capture was on
+   * still fails.
+   */
+  @Test
+  fun `handlePosted records the package of a notification the provider filter dropped`() {
+    prefs.setProviderFilter(setOf(maya))
+    recordSink()
+
+    post(statusBarNotification(gcash, notification(title = sampleTitle, text = sampleText)))
+
+    // Genuinely dropped -- nothing buffered, nothing delivered to JS.
+    assertTrue(prefs.isCaptureEnabled())
+    assertEquals(emptyList<String>(), bufferedIds())
+    assertEquals(emptyList<CaptureRecord>(), sinkRecords)
+
+    // ...and yet the app now knows this package exists, which is the whole
+    // point: an unselected bank is exactly what the picker has to offer.
+    assertEquals(listOf(gcash), prefs.listObservedPackages().map { it.packageName })
+  }
+
+  @Test
+  fun `handlePosted records the package of an ongoing notification it dropped`() {
+    recordSink()
+
+    // The second drop path, and the earliest return in handlePosted: a
+    // persistent "app is running" tile never reaches the filter at all, so a
+    // recording placed after the ongoing check misses it entirely -- and a
+    // bank app's foreground-service tile can easily be the only notification
+    // it ever posts before the user picks providers.
+    post(
+      statusBarNotification(
+        gcash,
+        notification(title = sampleTitle, text = sampleText, ongoing = true),
+      ),
+    )
+
+    assertEquals(emptyList<String>(), bufferedIds())
+    assertEquals(emptyList<CaptureRecord>(), sinkRecords)
+    assertEquals(listOf(gcash), prefs.listObservedPackages().map { it.packageName })
+  }
+
+  @Test
+  fun `handlePosted records the package when capture is paused and when there is no text to capture`() {
+    // The remaining two drop paths, so all four are covered: pause switch,
+    // provider filter, ongoing, and nothing-worth-capturing. "Every
+    // notification the listener sees" has no exceptions.
+    prefs.setCaptureEnabled(false)
+
+    post(statusBarNotification(gcash, notification(title = sampleTitle, text = sampleText)))
+    post(statusBarNotification(maya, notification(title = "   ", text = "  ")))
+
+    assertEquals(emptyList<String>(), bufferedIds())
+    assertEquals(
+      setOf(gcash, maya),
+      prefs.listObservedPackages().map { it.packageName }.toSet(),
+    )
+  }
+
+  /**
+   * PACKAGE NAMES ONLY -- never a title, never body text (plan Task 3 rule 2).
+   *
+   * This list is sealed, so a sweep of the raw preferences file alone would
+   * pass against an implementation that stored the whole notification: the
+   * ciphertext hides everything equally. So the blob is OPENED here and the
+   * PLAINTEXT swept, which is the only assertion that can tell the two apart.
+   * Adding content would make this a shadow copy of the notification history
+   * the sealed buffer exists to protect, sitting under a weaker key -- the
+   * prefs KEK is deliberately not auth-bound (docs/12 §4).
+   */
+  @Test
+  fun `the stored observed packages carry no notification title or body`() {
+    post(
+      statusBarNotification(
+        gcash,
+        notification(
+          title = sampleTitle,
+          text = sampleText,
+          subText = sampleSubText,
+          bigText = sampleBigText,
+        ),
+      ),
+    )
+
+    val plaintext = openObservedPackagesBlob()
+
+    // Looking at the right blob: the package name IS in there...
+    assertTrue("the observed package must be what was stored: $plaintext", plaintext.contains(gcash))
+    // ...and nothing the notification said is.
+    for (content in listOf(sampleTitle, sampleText, sampleSubText, sampleBigText)) {
+      assertFalse("no notification content may be stored: $plaintext", plaintext.contains(content))
+    }
+
+    // And the same sweep over the raw file, which catches the other half of
+    // the same mistake -- content stored unsealed under some other key.
+    val onDisk = rawPrefsText()
+    for (content in listOf(sampleTitle, sampleText, sampleSubText, sampleBigText, gcash)) {
+      assertFalse("nothing may reach the prefs file in plaintext: $onDisk", onDisk.contains(content))
+    }
+  }
+
+  /**
+   * The recording is bookkeeping for a screen the user visits once. A real
+   * notification arrives once and never again -- so a recording that failed
+   * must cost nothing at all.
+   *
+   * A device with NO prefs KEK is what that failure looks like from here: the
+   * seal that stores the list cannot run. If recording threw instead of
+   * giving up quietly, handlePosted's catch would turn it into one silently
+   * dropped capture per notification, which is the failure mode this whole
+   * class is written to avoid.
+   */
+  @Test
+  fun `a notification is still captured when the observed package cannot be recorded`() {
+    KeyStoreBridge.vault = FakeKeyVault()
+    // The buffer still needs its own key; the prefs KEK deliberately stays
+    // absent, because that absence IS the test.
+    KeyStoreBridge.ensureCaptureKeyPair()
+    val prefsWithoutKey = CapturePrefs(context)
+    recordSink()
+
+    PeraPlanoNotificationListenerService.handlePosted(
+      sbn = statusBarNotification(gcash, notification(title = sampleTitle, text = sampleText)),
+      prefs = prefsWithoutKey,
+      bufferFile = bufferFile,
+      nowMillis = capturedAt,
+    )
+
+    // The capture survived -- durable on disk and delivered to JS.
+    assertEquals(1, bufferedIds().size)
+    assertEquals(1, sinkRecords.size)
+    assertEquals(sampleText, sinkRecords.single().text)
+    // ...and nothing was learned, which is the acceptable half of the trade.
+    assertEquals(emptyList<ObservedPackage>(), prefsWithoutKey.listObservedPackages())
+  }
+
+  // =====================================================================
   // Connection state (plan rule 4) -- half of getListenerHealth.
   // =====================================================================
 
@@ -532,6 +705,34 @@ class PeraPlanoNotificationListenerServiceTest {
       .split("\n")
       .filter { it.isNotEmpty() }
       .map { CaptureEnvelope.open(it).id }
+  }
+
+  /**
+   * The preferences file as an attacker holding the bytes would see it --
+   * every stored key and value, plus the on-disk XML when it exists. The same
+   * sweep `CapturePrefsTest` makes, repeated here because this is the suite
+   * where real notification TEXT enters the system.
+   */
+  private fun rawPrefsText(): String {
+    val prefsFile = context.getSharedPreferences(CapturePrefs.PREFS_NAME, Context.MODE_PRIVATE)
+    val entries = prefsFile.all.entries.joinToString("\n") { "${it.key}=${it.value}" }
+    val xml = File(File(context.applicationInfo.dataDir, "shared_prefs"), "${CapturePrefs.PREFS_NAME}.xml")
+    return if (xml.isFile) entries + "\n" + xml.readText() else entries
+  }
+
+  /**
+   * The observed-package list DECRYPTED -- what is actually being stored,
+   * rather than what a sealed blob happens to look like from outside. The key
+   * name is a literal for the same reason `CapturePrefsTest` spells its keys
+   * out: this is the storage format, and asking the code under test what it
+   * calls its own key would rename in lockstep and stop testing anything.
+   */
+  private fun openObservedPackagesBlob(): String {
+    val blob = context
+      .getSharedPreferences(CapturePrefs.PREFS_NAME, Context.MODE_PRIVATE)
+      .getString("observed_packages_sealed", null)
+    assertNotNull("nothing was stored for the observed packages at all", blob)
+    return String(KeyStoreBridge.openPrefsValue(requireNotNull(blob)), Charsets.UTF_8)
   }
 
   private fun notification(
