@@ -12,6 +12,8 @@
 import { Ellipsis, House, ReceiptText, Target, Wallet } from "lucide-react-native";
 import { Tabs } from "expo-router";
 import type { ComponentType } from "react";
+import { View } from "react-native";
+import { ReviewCountBadge } from "@/components/review/review_badge";
 import { palette } from "@/constants/colors";
 import { useTheme } from "@/contexts/theme_context";
 
@@ -21,11 +23,21 @@ type TabConfigEntry = {
   name: string;
   label: string;
   Icon: ComponentType<TabIconProps>;
+  /**
+   * Carries the Review Queue count (docs/04-features/08-review-queue.md rule
+   * 18 — "The Transactions tab badge counts actionable items").
+   *
+   * A FLAG RATHER THAN A SECOND ICON ENTRY, so the badge cannot silently end up
+   * on two tabs or on none. The queue rides Transactions because that is where
+   * its results land: the badge is a claim about the ledger, and putting it on
+   * a tab that does not lead to the ledger would make the number unactionable.
+   */
+  badged?: boolean;
 };
 
 export const TAB_CONFIG: readonly TabConfigEntry[] = [
   { name: "index", label: "Home", Icon: House },
-  { name: "transactions", label: "Transactions", Icon: ReceiptText },
+  { name: "transactions", label: "Transactions", Icon: ReceiptText, badged: true },
   { name: "wallets", label: "Wallets", Icon: Wallet },
   { name: "plan", label: "Plan", Icon: Target },
   { name: "more", label: "More", Icon: Ellipsis },
@@ -46,7 +58,7 @@ export default function TabsLayout() {
         },
       }}
     >
-      {TAB_CONFIG.map(({ name, label, Icon }) => (
+      {TAB_CONFIG.map(({ name, label, Icon, badged }) => (
         <Tabs.Screen
           key={name}
           name={name}
@@ -54,7 +66,19 @@ export default function TabsLayout() {
             title: label,
             tabBarAccessibilityLabel: label,
             tabBarButtonTestID: `tab-${name}`,
-            tabBarIcon: ({ color, size }: TabIconProps) => <Icon color={color} size={size} />,
+            tabBarIcon: ({ color, size }: TabIconProps) =>
+              badged ? (
+                // The badge is positioned absolutely against this wrapper, so
+                // it rides the glyph without changing the tab bar's layout —
+                // a badge that reflowed the bar would move every other tab
+                // under a thumb already on its way down.
+                <View>
+                  <Icon color={color} size={size} />
+                  <ReviewCountBadge />
+                </View>
+              ) : (
+                <Icon color={color} size={size} />
+              ),
           }}
         />
       ))}
