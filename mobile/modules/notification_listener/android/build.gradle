@@ -40,9 +40,16 @@ android {
   // under it -- the real Keystore requires a live keystore2 system daemon
   // over Binder, which Robolectric has no software substitute for.
   //
-  // Because of that, KeyStoreBridgeTest does NOT use Robolectric: it swaps
-  // KeyStoreBridge's KeyVault seam (see KeyVault.kt) for a plain-JCE fake
-  // and runs as ordinary JUnit. Robolectric became load-bearing (not just
+  // Because of that, no JVM test can exercise the real Keystore at all:
+  // KeyStoreBridgeTest swaps KeyStoreBridge's KeyVault seam (see KeyVault.kt)
+  // for a plain-JCE fake. It DOES now run under Robolectric — corrected
+  // 2026-08-14, when provider-selection Task 1 added sealPrefsValue, whose
+  // base64 comes from android.util.Base64 (java.util.Base64 needs API 26 and
+  // minSdk here is 24). That changes nothing about Keystore testability: the
+  // fake vault is still what makes the suite possible, and the real
+  // configuration is still only checkable in androidTest.
+  //
+  // Robolectric became load-bearing (not just
   // forward-looking) as of Task 3 of the encryption plan: CaptureEnvelope
   // and CaptureBuffer call android.util.Base64/Log, which throw "not
   // mocked" under plain JUnit, so CaptureEnvelopeTest and CaptureBufferTest
