@@ -71,8 +71,12 @@
   },
   "jest": {
     "preset": "jest-expo",
+    "testTimeout": 30000,
     "setupFiles": [
       "<rootDir>/test_support/jest_setup.ts"
+    ],
+    "setupFilesAfterEnv": [
+      "<rootDir>/test_support/jest_setup_after_env.ts"
     ],
     "moduleNameMapper": {
       "^@/(.*)$": "<rootDir>/$1",
