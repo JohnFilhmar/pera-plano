@@ -77,10 +77,10 @@ happened. Never "OK" — the point of the exercise is the value, not the tick.
 
 | Layer | Status |
 |---|---|
-| JS suite | 679 tests, 43 suites, green |
-| Kotlin suite | 87 tests, 10 suites, green |
+| JS suite | ~~679 tests, 43 suites~~ → **1,859 tests, 89 suites**, green (2026-08-14) |
+| Kotlin suite | ~~87 tests, 10 suites~~ → **127 tests, 10 suites**, green (2026-08-14) |
 | `tsc --noEmit` | clean |
-| Prebuild → generated manifest | `<service>`, its intent-filter, and `RECEIVE_BOOT_COMPLETED` verified present; no `READ_SMS` |
+| Prebuild → generated manifest | `<service>`, its intent-filter, and `RECEIVE_BOOT_COMPLETED` verified present; no `READ_SMS`. Re-verified 2026-08-14 after the provider-selection plan: eight permissions, unchanged, and **no `QUERY_ALL_PACKAGES`** — the observed-package list is learned from `sbn.packageName`, not from a package query |
 | Log hygiene | no key, DEK, phrase, or notification text reachable from any log or exception message |
 
 What remains is everything that depends on **Android actually behaving like Android**: delivering
@@ -262,6 +262,114 @@ adb reboot
 ### Buffer cap
 - [ ] Post 520 notifications in a loop; drain returns **exactly 500** — oldest evicted, newest
       kept → `________________`
+
+---
+
+## Part 3a — Do the picker's package names match the real apps?
+
+Added 2026-08-14 by the provider-selection plan (Task 5, plan rule 3). **NOT RUN.**
+
+**This is the check that retires the guesses.** Seven of the seed's package names were constructed
+from app names and have never been seen anywhere — `com.bpi.ng.app`, `com.bdo.digitalbanking`,
+`com.metrobank.mobilebanking`, `com.seabank.ph`, `com.gotyme.bank`, `com.cimbbank.ph`,
+`com.lbp.mobilebanking`. `lib/ingest/seed_rules.ts`'s own header goes further: **none** of the
+fifteen has been checked against a device or a Play Store listing. The other eight are not
+*verified*, only *unflagged*.
+
+A wrong package name is a **silent** failure. That provider is never routed, captures nothing, logs
+nothing, and looks to the user exactly like their bank does not work.
+
+No test suite can answer this. `buildProviderChoices` is tested against fixtures, which proves the
+merge, the dedupe and the ordering are right and says nothing whatsoever about whether the strings
+being merged are real.
+
+**Prerequisites:** notification access granted (Part 3), and the app able to reach the provider
+step of onboarding — the screen immediately after the recovery phrase
+(`app/(onboarding)/index.tsx`).
+
+### Step 1 — Make the phone notify
+
+The listener records `sbn.packageName` for **every** notification it sees, including the ones it
+drops for being filtered out, ongoing, paused, or carrying no text. What it cannot do is record an
+app that never notifies: there is no package query anywhere in this build — deliberately not
+`QUERY_ALL_PACKAGES` — so an installed-but-silent app is invisible to the picker by construction.
+
+Before running onboarding, make every financial app you actually hold post at least one
+notification: send ₱1 to yourself, check a balance, let a promo push land.
+
+- Financial apps installed on this device → `________________`
+- Apps you deliberately made notify → `________________`
+
+### Step 2 — Read the list
+
+Either complete onboarding as far as the provider step and read the **"Apps we've seen"** group, or
+call `listObservedPackages()` from the dev client. Both read the same sealed value.
+
+- Total packages in "Apps we've seen" → `________________`
+
+### Step 3 — Score every seed package name
+
+Tick **Seen** only when the exact string appears. When it does not, get ground truth from `adb`:
+
+```bash
+adb shell pm list packages | grep -i bpi     # bdo, metrobank, seabank, gotyme, cimb, landbank…
+adb shell cmd package list packages -3       # every third-party package on the device
+```
+
+| Seed provider | Seed package name | Flagged invented | Seen? | Real package if different |
+|---|---|---|---|---|
+| gcash | `com.globe.gcash.android` | | `____` | `____` |
+| maya | `com.paymaya` | | `____` | `____` |
+| bpi | `com.bpi.ng.app` | **yes** | `____` | `____` |
+| bdo | `com.bdo.digitalbanking` | **yes** | `____` | `____` |
+| unionbank | `com.unionbank.ecommerce.mobile.android` | | `____` | `____` |
+| metrobank | `com.metrobank.mobilebanking` | **yes** | `____` | `____` |
+| seabank | `com.seabank.ph` | **yes** | `____` | `____` |
+| gotyme | `com.gotyme.bank` | **yes** | `____` | `____` |
+| cimb | `com.cimbbank.ph` | **yes** | `____` | `____` |
+| landbank | `com.lbp.mobilebanking` | **yes** | `____` | `____` |
+| shopeepay | `com.shopee.ph` | | `____` | `____` |
+| grabpay | `com.grabtaxi.passenger` | | `____` | `____` |
+| sms_relay | `com.google.android.apps.messaging` | | `____` | `____` |
+| sms_relay | `com.samsung.android.messaging` | | `____` | `____` |
+| sms_relay | `com.android.mms` | | `____` | `____` |
+
+**Fifteen package names, thirteen providers** — `sms_relay` carries three. Score every row, not just
+the seven flagged ones.
+
+### What each outcome proves, and what it does not
+
+**Seen.** The name is correct on this device and this OS build. Retire it from the guessed list and
+record *which* device confirmed it — a package name can legitimately differ between an OEM build
+and a Play build, so one confirmation is evidence, not a closed question.
+
+**Not seen, you hold that app, and you made it notify this session.** The seed name is **wrong**.
+The real one is already sitting in "Apps we've seen" under whatever Android calls it: the picker
+renders an observed package the catalogue has never heard of using its own package name, with no
+subtitle, precisely so this case is visible rather than hidden. Copy it into the last column. The
+fix is a `seed.json` edit and a ruleset version bump, not an app release.
+
+**Not seen, and you do not hold that app. → *Nothing is proved.*** Not that the name is right, not
+that it is wrong. Leave the row flagged unverified and do not tick it off. This is the outcome for
+*most* rows in any single session — one person does not hold ten banks — and reading an absence as
+a confirmation is the specific mistake this check exists to prevent. Covering all thirteen
+providers takes several testers holding different banks, not a cleverer single run.
+
+**Not seen, you hold the app, but it never notified during the session.** Also proves nothing. Go
+back to step 1.
+
+### Two things to record while you are on this screen
+
+- **How many rows read `sms_relay`.** Three seed packages share that provider key and
+  `ProviderChoice.displayName` *is* the provider key, so the picker renders three identically
+  labelled rows distinguished only by the package-name subtitle under each. Confirm whether that
+  reads acceptably on a real screen. → `________________`
+  > Related but separate: the seed cannot express one bank on two channels at all — see Session 2's
+  > twin-suppression step below, where the same modelling gap makes the ≥95% target unreachable as
+  > the corpus stands.
+- **Anything in "Apps we've seen" that is a financial app the seed has never heard of.** These
+  render under their raw package name with no subtitle. Each one is a provider the corpus work does
+  not yet know exists. → `________________`
 
 ---
 

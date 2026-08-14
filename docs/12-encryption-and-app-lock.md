@@ -2,7 +2,7 @@
 
 This document specifies how PeraPlano protects financial data at rest on the device and in cloud backup, and how the app is locked behind biometric or PIN authentication. It supersedes the earlier assumption that the local database and the notification-capture buffer are stored in plaintext.
 
-**Status:** Draft v1 · 2026-08-07
+**Status:** Draft v1 · 2026-08-07 · §3/§4/§6a/§8 updated 2026-08-14 (the listener's preferences key)
 
 ---
 
@@ -27,15 +27,16 @@ So the design below uses a random data key, sealed in hardware, unsealed by the 
 
 ## 3. Key hierarchy
 
-Three keys, each with one job.
+Four keys, each with one job. The first three protect the ledger and are unlocked by the user; the fourth protects the listener's own settings and is unlocked by nothing at all, deliberately — §6a is where that is argued.
 
 | Key | What it is | Where it lives | What unlocks it |
 |---|---|---|---|
 | **DEK** (Data Encryption Key) | Random 256-bit AES key. Encrypts the SQLCipher database. | Never stored bare. Only ever stored wrapped. | Either wrap below |
 | **KEK-device** | AES-256 key in the Android Keystore, hardware-backed (StrongBox when the device has it) | Android Keystore. Non-exportable by construction. | Biometric or device credential |
 | **KEK-recovery** | Derived from the user's recovery phrase with Argon2id | Never stored. Re-derived from the phrase when needed. | The user typing or pasting their phrase |
+| **KEK-prefs** | AES-256 key in the Android Keystore with `setUserAuthenticationRequired(false)`. Seals the sensitive values in the notification listener's `SharedPreferences`. Alias `peraplano.prefs_kek`. | Android Keystore. Non-exportable, but usable by anything running as our UID. | **Nothing** — see §6a |
 
-The DEK is written to disk twice, wrapped once by each KEK. Either path yields the same DEK. This is what makes the system survive the failure described in §5 while still allowing cloud restore on a new device.
+The DEK is written to disk twice, wrapped once by KEK-device and once by KEK-recovery. Either path yields the same DEK. This is what makes the system survive the failure described in §5 while still allowing cloud restore on a new device. **KEK-prefs never touches the DEK** and is not a third unwrap path: it seals a handful of small settings values and nothing else.
 
 **Why a random DEK rather than deriving the database key straight from the Keystore key:** re-wrapping is cheap, re-encrypting a database is not. When the user changes their recovery phrase, or the Keystore key is invalidated and re-created, only the two small wrap blobs change. The database is untouched.
 
@@ -46,7 +47,7 @@ What this design defends against, honestly scoped:
 | Threat | Defended | How |
 |---|---|---|
 | Stolen or lost device, screen locked | Yes | Data is SQLCipher-encrypted; the DEK requires hardware-backed auth |
-| Malicious app reading app-private storage on a rooted device | Yes | The database file is ciphertext; the buffer is ciphertext |
+| Malicious app reading app-private storage on a rooted device | Yes | The database file is ciphertext; the buffer is ciphertext; the listener's sensitive preferences are ciphertext (§6a) |
 | Unencrypted cloud device-backup (adb backup, OEM sync) | Yes | Same — everything at rest is ciphertext |
 | Someone handed the unlocked phone | Yes | App lock, §7 |
 | Server operator or a server breach reading user finances | Yes | The vault blob is encrypted client-side; the server holds opaque bytes |
@@ -55,6 +56,14 @@ What this design defends against, honestly scoped:
 | Malware with root running *while the app is unlocked* | **No** | The DEK is in process memory by necessity |
 
 Naming the last three matters. A design that claims to stop them would be lying.
+
+### The second row was not true of every file until 2026-08-14
+
+**The notification listener's provider filter was stored in plaintext**, from the listener's first commit until the provider-selection plan sealed it on **2026-08-14**. So was `last_capture_at`. Both sat in `shared_prefs/peraplano_capture_prefs.xml`, app-private but entirely unencrypted, beside a database and a capture buffer this table has always correctly described as ciphertext. Anything that could read app-private storage could read them with a single `cat`, and what it got back was a list of every bank and e-wallet the user had selected — the same disclosure the ledger encryption exists to prevent, in a smaller and much easier file.
+
+Both are now sealed under KEK-prefs (§6a), and a one-time migration deletes the plaintext keys. `observed_packages` was introduced already sealed and has never existed in plaintext on any device.
+
+This is recorded rather than quietly corrected. A threat model that acquires a fix without ever admitting the gap reads as though it was never broken — and the next person deciding whether some *other* value is safe where it sits needs to know that a value in this exact table's scope once was not.
 
 ## 5. The recovery problem
 
@@ -106,6 +115,42 @@ RSA-OAEP is used rather than ECDH because Keystore's `PURPOSE_AGREE_KEY` require
 
 **Consequence for the buffer's design:** the line-delimited format (one self-contained encrypted record per line) becomes more important, not less. A single encrypted blob spanning the whole file could not be appended to without decrypting it first — which the listener cannot do.
 
+## 6a. The listener's preferences key — no authentication, on purpose
+
+§6 solves the capture. This solves the question that comes *before* the capture: **should I capture this at all?**
+
+`PeraPlanoNotificationListenerService` answers that for every notification the device receives, from a process Android may have created purely to host it, at 3am, with the phone locked and no user present. The answer comes out of `CapturePrefs` — the provider allowlist and the global pause switch. Those values therefore have to be readable in precisely the state where the DEK and the capture keypair's private key are not.
+
+**KEK-prefs is an AES-256 Keystore key created with `setUserAuthenticationRequired(false)`** (§3), and every sensitive value in `CapturePrefs` is sealed under it with AES-256-GCM — `KeyStoreBridge.sealPrefsValue` / `openPrefsValue`, storing base64 `iv || ciphertext || tag`. StrongBox is requested with the same fallback as the other keys, and a failure to seal or open throws a payload-free exception that never carries the value or the key.
+
+**What it buys.** Exactly the threat §4 puts in scope and nothing beyond it: an **offline filesystem read** — a stolen phone, an unencrypted device backup, a forensic extraction, a malicious app reading app-private storage on a rooted device. All of those now see base64 ciphertext where they used to see a list of the user's banks.
+
+**What it explicitly does not buy.** Code executing as our UID can ask the Keystore to open these values, because opening them is exactly what the listener does all day. That attacker is already out of scope in §4 — malware with root while the app is unlocked reads the DEK straight out of process memory without touching the Keystore at all — and this key neither improves nor worsens that case.
+
+**Why the asymmetry is acceptable.** Because the alternative here was never a stronger key. An auth-bound key would be unreadable at exactly the moment the value is needed: the listener would fail to read the filter with the phone locked, and `CapturePrefs`'s never-throw contract would fall back to its documented default of *allow all* — capturing from every app on the phone, which is the opposite of what the user asked for, arrived at by making the key stronger. The real alternative was the plaintext this replaced (§4).
+
+### What is sealed, and what is deliberately not
+
+| Value | State | Why |
+|---|---|---|
+| `provider_filter` | **Sealed** | It names every bank and e-wallet the user holds |
+| `last_capture_at` | **Sealed** | A behavioural fact about when they last moved money |
+| `observed_packages` | **Sealed** | The apps that notify this phone — the same disclosure as the filter, one step less curated |
+| `capture_enabled` | Plaintext | A boolean: is tracking paused. Reveals nothing about anyone's finances |
+| `listener_connected` | Plaintext | A boolean: does Android currently have the service bound. Same |
+
+The two booleans are plaintext for a reason past "they are harmless". `shouldCapture()` reads `capture_enabled` on **every** notification, so sealing it would add a decrypt to the hottest path in the module and buy nothing at all.
+
+The filter's own decrypt on that path was **measured rather than assumed**, because "encrypt it and cache the plaintext" is the obvious next move and it is the wrong one. On the JVM an AES-GCM open of a 13-package filter costs ~7 µs per call, against 199 µs for the RSA-OAEP capture envelope built on the very next line of `handlePosted` — about 28× more, on the same delivery. So no cache: it would buy nothing measurable and would risk a stale filter still capturing from a provider the user had just removed. The JVM figure is a **floor** (a real device pays a keystore2 Binder round-trip per `Cipher.init` that the plain-JCE test fake does not model); `docs/13-on-device-verification.md` carries the on-device confirmation.
+
+### The migration, and the one value that has none
+
+An install carrying the pre-2026-08-14 format reads the plaintext `provider_filter` and `last_capture_at`, writes them sealed under **new key names**, and **deletes the plaintext keys in the same `commit()`**. Both halves matter. A migration that wrote a sealed copy and left the original behind would be the failure that looks like success — every accessor would read ciphertext, every seal test would pass, and the preferences file pulled off a stolen phone would still name every bank the user holds. Doing it in one commit means a process death cannot leave plaintext sitting beside its sealed copy; and if the seal fails, nothing is written *or* deleted, because discarding a value it could not preserve would lose the user's provider selection for no gain.
+
+The migration needs no "already migrated" flag: the sealed values live under different key names, so once the plaintext keys are gone there is structurally nothing left for a second run to find. That matters because it runs in a constructor that fires once per notification.
+
+**`observed_packages` has no migration path, and that is not an oversight.** It was introduced already sealed, so no device has ever held a plaintext copy. A migration entry for it would be code that can only ever find an empty result.
+
 ## 7. App lock
 
 **Trigger:** the app requires authentication on cold start, and again when it returns to the foreground after **five minutes** in the background. Not on every foreground — PeraPlano's core interaction is a two-second glance at one number, and re-prompting on every glance would train users to disable the feature.
@@ -150,6 +195,7 @@ Implementation: the alerts service checks `KeyguardManager.isKeyguardLocked()` a
 |---|---|
 | The entire SQLite database — all 19 tables, indexes, and the write-ahead log | SQLCipher, AES-256, keyed by the DEK |
 | The notification capture buffer | Per-line RSA-OAEP + AES-256-GCM envelope (§6) |
+| The listener's provider filter, last-capture timestamp and observed-package list | AES-256-GCM under KEK-prefs — a Keystore key requiring **no** authentication (§6a). Plaintext until 2026-08-14 |
 | The persisted React Query cache in AsyncStorage | AES-256-GCM with a key wrapped the same way as the DEK |
 | The cloud backup blob | AES-256-GCM under a key derived from the recovery phrase — **not** the device Keystore key, which cannot travel |
 | Server-side storage | The vault column holds client-encrypted bytes; Postgres disk encryption is defense in depth, not the protection |
