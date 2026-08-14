@@ -268,3 +268,64 @@ nothing is worth nothing.
 - **Two money formatters exist** — `formatPeso()` in `lib/alerts/alert_copy.ts` versus the
   contract-designated `formatCentavos()`. M1c must reconcile them or the contract must carve out
   an explicit exception.
+
+---
+
+# Session 2 — M1 walkthrough (M1c Task 11, Step 4)
+
+Added 2026-08-14, when M1 became code-complete. **Not yet run** — it needs the dev client that
+Session 1 could not get past the Metro manifest, plus a device.
+
+Everything below is a claim the test suite cannot make. 1810 tests prove the pieces behave; this
+proves the product works.
+
+## Preconditions
+
+- The EAS dev build installed (Session 1's route — the Windows `MAX_PATH` failure has not gone
+  away, so a local build is still not an option).
+- A cash wallet and a GCash wallet, so the manual-entry and matcher paths both have somewhere to go.
+
+## The walkthrough
+
+Record the actual outcome in each box. "OK" is not an outcome.
+
+- [ ] **Grant notification access from inside the app** → `________________`
+- [ ] **Create a GCash wallet and bind its matcher** → `________________`
+- [ ] **Post an illustrative GCash notification; it lands in the ledger within seconds**
+      → `________________`
+- [ ] **"Why was this recorded?" shows the captured text and a real expiry countdown**
+      → `________________`
+- [ ] **Post a twin SMS-style notification; it does NOT double-count** → `________________`
+
+  > Expect this one to fail as seeded, and it is not a bug in the gate. The shipped seed cannot
+  > express one bank on two channels — a BPI push is `providerKey: "bpi"` and its SMS relay is
+  > `"sms_relay"`, so they never compare as the same provider and §6's twin window can never fire.
+  > Recording the failure here is the point: it is the evidence the corpus work needs.
+
+- [ ] **Move money between two wallets; the transfer links and is excluded from spend**
+      → `________________`
+- [ ] **A low-confidence capture appears in the Review Queue** → `________________`
+- [ ] **Correcting it creates a UserRule, and the next matching capture uses it**
+      → `________________`
+- [ ] **Add a cash transaction manually** → `________________`
+- [ ] **Reconcile the cash wallet; the adjustment appears and past rows are untouched**
+      → `________________`
+- [ ] **The whole flow renders correctly in dark mode** → `________________`
+
+## Known issues to confirm or refute while you are in there
+
+- **The badge over-counts unrecognised apps.** Spec rule 18 counts unknown-provider items one per
+  *source app*; `countOpen()` counts rows, so one chatty unrecognised app inflates the number.
+- **Balance drift has no dismiss.** The badge is display-only until a schema decision is made
+  (see below).
+- **Seven test files are in the route table.** `app/__tests__/*.test.tsx` are real Expo Router
+  routes and would ship. Confirm they are absent from a production build before release.
+
+## Commit the results
+
+```bash
+git commit --allow-empty -m "test(mobile): record M1 on-device walkthrough results"
+```
+
+Paste the recorded outcomes into that message. An empty commit whose message says nothing is worth
+nothing.
