@@ -107,6 +107,13 @@ class PeraPlanoNotificationListenerServiceTest {
 
     KeyStoreBridge.vault = FakeKeyVault()
     KeyStoreBridge.ensureCaptureKeyPair()
+    // CapturePrefs seals the provider filter and the capture timestamp under
+    // the prefs KEK (provider-selection plan Task 2), so handlePosted cannot
+    // read the filter or record a capture without one. That production
+    // creates this key itself -- in `onListenerConnected`, on a device where
+    // the app has never been opened -- is asserted below against a VIRGIN
+    // vault, deliberately not by this line.
+    KeyStoreBridge.ensurePrefsKek()
 
     sinkRecords.clear()
     bufferSeenFromInsideSink.clear()
@@ -430,6 +437,43 @@ class PeraPlanoNotificationListenerServiceTest {
     val stored = CaptureBuffer.drain(CaptureBuffer.fileFor(context)).single()
     assertEquals(gcash, stored.packageName)
     assertEquals(sampleText, stored.text)
+  }
+
+  /**
+   * THE SAME REGRESSION, ONE KEY OVER (provider-selection plan Task 2).
+   *
+   * `KeyStoreBridge.ensurePrefsKek()` was added by Task 1 and called by
+   * nothing. The prefs KEK is what seals the provider filter, and the filter
+   * is what `handlePosted` consults on EVERY delivery -- so a listener bound
+   * on a device where PeraPlano has never been opened has to create this key
+   * itself, exactly as it already does for the capture keypair above. Its
+   * KDoc says so in as many words, because this is the second time the shape
+   * has come up.
+   *
+   * VIRGIN VAULT, and no other operation before the assertion: the key's
+   * EXISTENCE is the claim. Sealing something first and checking it
+   * round-trips would pass against an implementation that created the key
+   * lazily somewhere else entirely, which is precisely the wiring this test
+   * exists to pin.
+   */
+  @Test
+  fun `a listener bound before the app has ever run creates the prefs KEK itself`() {
+    KeyStoreBridge.vault = FakeKeyVault()
+
+    val service = Robolectric.buildService(PeraPlanoNotificationListenerService::class.java).get()
+    service.onListenerConnected()
+
+    assertTrue(
+      "onListenerConnected must create the prefs KEK -- the filter is unreadable without it",
+      KeyStoreBridge.vault.hasAesKey(KeyStoreBridge.PREFS_KEK_ALIAS),
+    )
+
+    // ...and it is genuinely usable, so the listener can honour a filter the
+    // user set on this device rather than falling back to allow-all forever.
+    CapturePrefs(context).setProviderFilter(setOf(gcash))
+    val reopened = CapturePrefs(context)
+    assertEquals(setOf(gcash), reopened.getProviderFilter())
+    assertFalse(reopened.shouldCapture(maya))
   }
 
   @Test

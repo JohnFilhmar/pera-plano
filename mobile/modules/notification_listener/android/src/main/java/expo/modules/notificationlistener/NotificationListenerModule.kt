@@ -7,6 +7,7 @@ import android.provider.Settings
 import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.UserNotAuthenticatedException
 import android.util.Base64
+import android.util.Log
 import androidx.core.app.NotificationManagerCompat
 import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.exception.Exceptions
@@ -75,6 +76,16 @@ class NotificationListenerModule : Module() {
 
   override fun definition() = ModuleDefinition {
     Name("NotificationListener")
+
+    // ---- App launch (provider-selection plan Task 2) ---------------------
+    // The earliest native code this app runs in its own process. See
+    // [ensurePrefsKeyOnLaunch] for why the prefs KEK is created here rather
+    // than lazily on first use, and why the listener service does the same
+    // thing independently.
+
+    OnCreate {
+      ensurePrefsKeyOnLaunch()
+    }
 
     // ---- Capture keypair: public half, no auth required -----------------
 
@@ -219,6 +230,49 @@ class NotificationListenerModule : Module() {
  * silently-never-firing listener rather than an error.
  */
 internal const val EVENT_ON_CAPTURE = "onCapture"
+
+/** Only for the one line below that has nothing to report to JS. */
+private const val TAG = "PeraPlanoListenerModule"
+
+/**
+ * Creates the prefs KEK on app launch (provider-selection plan Task 2), so
+ * every value [CapturePrefs] seals -- the provider filter above all -- has a
+ * key to seal against before anything can ask for one.
+ *
+ * CALLED FROM `OnCreate`, NOT LAZILY FROM `setProviderFilter`. The first
+ * thing that touches `CapturePrefs` in this process may well be a read
+ * (`getListenerHealth` on the health screen) or the constructor's own
+ * plaintext-to-sealed migration, neither of which is a natural place to hang
+ * key creation off. `OnCreate` runs once, needs no `Context` (nothing in
+ * [KeyStoreBridge] does), and cannot be skipped by a JS refactor the way a
+ * bootstrap call from TypeScript could.
+ *
+ * AND IT IS ONLY HALF THE WIRING. `PeraPlanoNotificationListenerService`'s
+ * `onListenerConnected` creates the same key, independently, and both are
+ * required. A user can grant notification access from Android Settings
+ * before ever opening PeraPlano; Android then hosts the listener in a
+ * process where this module was never created and this function never ran.
+ * The capture keypair had exactly this shape -- created only by the app --
+ * and silently dropped every capture on such a device until `bca1bcd`. One
+ * call site is how that bug is written; two is how it is not.
+ *
+ * NEVER THROWS. An exception escaping module creation would take the whole
+ * native module down with it, costing the app every function on this bridge
+ * -- including `isDeviceSecure`/`openSecuritySettings`, which is the flow
+ * that fixes a device unable to create keys in the first place. A device
+ * where this fails degrades to the pre-Task-2 behaviour for the values
+ * involved (see `CapturePrefs`), which is exactly what it should do.
+ */
+internal fun ensurePrefsKeyOnLaunch() {
+  try {
+    KeyStoreBridge.ensurePrefsKek()
+  } catch (error: Exception) {
+    // Type only, never a message: the same SECURITY discipline KeyStoreBridge
+    // and the listener service hold -- nothing from the crypto layer reaches
+    // logcat with a payload attached.
+    Log.e(TAG, "could not prepare the prefs key: ${error.javaClass.simpleName}")
+  }
+}
 
 /**
  * Whether the user has granted this app notification access (plan Task 6

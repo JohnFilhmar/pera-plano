@@ -69,7 +69,9 @@ class PeraPlanoNotificationListenerService : NotificationListenerService() {
   }
 
   override fun onListenerConnected() {
-    ensureCaptureKeyReady()
+    // Keys BEFORE anything that touches CapturePrefs: constructing it runs
+    // the plaintext-to-sealed migration, which needs the prefs KEK.
+    ensureKeysReady()
     recordConnection(this, true)
   }
 
@@ -78,34 +80,56 @@ class PeraPlanoNotificationListenerService : NotificationListenerService() {
   }
 
   /**
-   * Creates the capture keypair if it does not exist yet, so this service can
-   * seal notifications with no help from the app.
+   * Creates BOTH Keystore keys this service depends on, if they do not exist
+   * yet, so it can run with no help from the app at all:
+   *
+   *  - the **capture keypair**, whose public half seals every notification
+   *    into [CaptureBuffer];
+   *  - the **prefs KEK**, which seals the provider filter [CapturePrefs]
+   *    consults on every delivery.
    *
    * WHY THIS IS HERE AT ALL. Nothing stops a user granting notification
-   * access from Android Settings before they ever open PeraPlano. Until this
-   * call existed, that user's notifications were all silently dropped:
+   * access from Android Settings before they ever open PeraPlano. Until the
+   * first call existed, that user's notifications were all silently dropped:
    * `CaptureBuffer.append` looks the capture public key up on every append,
    * the keypair was created only by the app, and so `getPublicKey` threw
    * `IllegalStateException` on every single post. [handlePosted]'s catch
    * turned that into one logcat line per lost notification. Found on a real
    * device, not by the suite -- see the regression test of the same name.
    *
-   * Safe to call on every bind: `ensureCaptureKeyPair` is idempotent and
-   * never rotates an existing keypair, so it cannot orphan already-sealed
-   * records. Done once per connection rather than per notification because
-   * generating an RSA-2048 Keystore key is expensive and posts are frequent.
+   * THE PREFS KEK IS HERE FOR THE IDENTICAL REASON, and it is the second time
+   * the shape has come up: on that same never-opened install, `CapturePrefs`
+   * could neither open the filter (falling back to allow-all, capturing from
+   * every app on the phone) nor seal a capture timestamp (leaving the health
+   * screen reporting "not yet" forever). The app-launch path creates it too
+   * -- `ensurePrefsKeyOnLaunch`, from the module's `OnCreate` -- and BOTH are
+   * required: neither process is guaranteed to have run first.
    *
-   * Never throws. On a device with no screen lock, key generation legitimately
-   * fails (docs/12-encryption-and-app-lock.md §5a) and there is nothing this
-   * service can do about it -- onboarding is what must demand a screen lock.
-   * Dropping back to the previous behaviour is the correct outcome there.
+   * Each key is ensured in its own guarded call, not one shared `try`, so a
+   * device that cannot create one still gets the other. Safe to call on every
+   * bind: both `ensure*` functions are idempotent and never rotate an
+   * existing key, so neither can orphan an already-sealed record or filter.
+   * Done once per connection rather than per notification because generating
+   * a Keystore key is expensive and posts are frequent.
+   *
+   * Never throws. On a device with no screen lock, capture-keypair generation
+   * legitimately fails (docs/12-encryption-and-app-lock.md §5a) and there is
+   * nothing this service can do about it -- onboarding is what must demand a
+   * screen lock. Dropping back to the previous behaviour is the correct
+   * outcome there. (The prefs KEK is unauthenticated and is not subject to
+   * that constraint; see `AndroidKeyVault.getOrCreateUnauthenticatedAesKey`.)
    */
-  private fun ensureCaptureKeyReady() {
+  private fun ensureKeysReady() {
+    ensureKey("the capture keypair") { KeyStoreBridge.ensureCaptureKeyPair() }
+    ensureKey("the prefs key") { KeyStoreBridge.ensurePrefsKek() }
+  }
+
+  private fun ensureKey(what: String, ensure: () -> Unit) {
     try {
-      KeyStoreBridge.ensureCaptureKeyPair()
+      ensure()
     } catch (error: Exception) {
       // Message deliberately omitted -- see the class doc's SECURITY note.
-      Log.e(TAG, "could not prepare the capture keypair: ${error.javaClass.simpleName}")
+      Log.e(TAG, "could not prepare $what: ${error.javaClass.simpleName}")
     }
   }
 

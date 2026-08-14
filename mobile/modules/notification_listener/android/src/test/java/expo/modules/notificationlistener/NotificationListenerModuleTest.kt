@@ -85,6 +85,13 @@ class NotificationListenerModuleTest {
   @Before
   fun setUp() {
     KeyStoreBridge.vault = FakeKeyVault()
+    // CapturePrefs seals the provider filter and the capture timestamp
+    // (provider-selection plan Task 2), so `setProviderFilter` and
+    // `listenerHealth` below need a prefs KEK to seal and open against. Note
+    // that this creates ONLY that alias -- the device KEK deliberately stays
+    // absent so `requireDeviceKekPresent`'s never-created test still has the
+    // state it is about.
+    KeyStoreBridge.ensurePrefsKek()
     context = RuntimeEnvironment.getApplication()
     PeraPlanoNotificationListenerService.liveSink = null
   }
@@ -96,6 +103,48 @@ class NotificationListenerModuleTest {
     // installed would silently defang whichever test runs next.
     KeyStoreBridge.vault = AndroidKeyVault
     PeraPlanoNotificationListenerService.liveSink = null
+  }
+
+  // ---------------------------------------------------------------------
+  // App launch (provider-selection plan Task 2)
+  // ---------------------------------------------------------------------
+
+  /**
+   * `KeyStoreBridge.ensurePrefsKek()` was added by Task 1 and called by
+   * nothing at all. This is one of the two call sites that fix that; the
+   * other is `PeraPlanoNotificationListenerService.onListenerConnected`, and
+   * BOTH are required -- see [ensurePrefsKeyOnLaunch]'s doc, and the
+   * `bca1bcd` regression the capture keypair suffered from having only one.
+   *
+   * VIRGIN VAULT (setUp's `FakeKeyVault` has only the prefs alias, and this
+   * test replaces it with one that has nothing) and no other operation before
+   * the assertion: the key's EXISTENCE is the claim. Sealing something and
+   * checking it round-trips would pass against a lazy create somewhere else.
+   */
+  @Test
+  fun `the app-launch path creates the prefs KEK`() {
+    KeyStoreBridge.vault = FakeKeyVault()
+    assertFalse(KeyStoreBridge.vault.hasAesKey(KeyStoreBridge.PREFS_KEK_ALIAS))
+
+    ensurePrefsKeyOnLaunch()
+
+    assertTrue(
+      "app launch must create the prefs KEK -- the provider filter is unreadable without it",
+      KeyStoreBridge.vault.hasAesKey(KeyStoreBridge.PREFS_KEK_ALIAS),
+    )
+  }
+
+  @Test
+  fun `the app-launch path never throws when the Keystore is unusable`() {
+    // The real AndroidKeyVault under Robolectric, which has no
+    // "AndroidKeyStore" provider at all (see this module's build.gradle) --
+    // the closest thing the JVM has to a device whose Keystore refuses to
+    // generate. An exception escaping here would take module creation down
+    // with it and cost the app every function on this bridge, including the
+    // screen-lock settings flow that is how such a device gets fixed.
+    KeyStoreBridge.vault = AndroidKeyVault
+
+    ensurePrefsKeyOnLaunch() // must not throw
   }
 
   // ---------------------------------------------------------------------
