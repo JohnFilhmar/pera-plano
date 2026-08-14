@@ -848,8 +848,8 @@ describe("the contract §4 listener surface", () => {
 
   // -------------------------------------------------------------------------
   // listObservedPackages -- what the onboarding picker reads (provider-
-  // selection plan Task 3). Seven of the thirteen `seed.json` package names
-  // were constructed from app names, and a wrong one is a silent failure:
+  // selection plan Task 3). Not one of the fifteen `seed.json` package names
+  // has been checked against a device, and a wrong one is a silent failure:
   // that provider is never routed and looks to the user like their bank
   // simply does not work. These are the names the device actually saw.
   // -------------------------------------------------------------------------

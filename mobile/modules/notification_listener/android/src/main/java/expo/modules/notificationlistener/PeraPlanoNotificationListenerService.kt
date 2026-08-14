@@ -240,9 +240,9 @@ class PeraPlanoNotificationListenerService : NotificationListenerService() {
     ) {
       try {
         // BEFORE EVERY DROP BELOW, and that placement is the whole point
-        // (provider-selection plan Task 3 rule 1). Seven of the thirteen
-        // package names in the parser seed were constructed from app names
-        // rather than observed anywhere, and a wrong one is a silent failure
+        // (provider-selection plan Task 3 rule 1). Not one of the fifteen
+        // package names in the parser seed has been checked against a device
+        // or a Play listing, and a wrong one is a silent failure
         // -- the provider is never routed and the bank simply looks broken.
         // This service sees `sbn.packageName` for every notification on the
         // device, so it is the one place that can learn the real ones, with

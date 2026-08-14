@@ -379,8 +379,8 @@ internal fun listenerHealth(context: Context): Map<String, Any?> {
  * -- what the onboarding picker offers alongside the seed catalogue.
  *
  * These are REAL package names, read off `sbn.packageName` by the listener,
- * and that is the entire point: seven of the thirteen names in the parser
- * seed were constructed from app names, and a wrong one silently routes
+ * and that is the entire point: not one of the fifteen names in the parser
+ * seed has been checked against a device, and a wrong one silently routes
  * nothing. Requires NO new Android permission -- in particular not
  * `QUERY_ALL_PACKAGES`, which is restricted on Play and unnecessary when the
  * listener is already told who posted.

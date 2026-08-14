@@ -6,10 +6,11 @@
 // against the pure function directly, where a wrong answer is visible as data
 // rather than as a rendered tree.
 //
-// WHY DEDUPE IS THE LOAD-BEARING TEST HERE. Seven of the thirteen seed package
-// names were invented rather than observed (lib/ingest/seed_rules.ts's header),
-// so the six real ones WILL also arrive from the device — GCash is in both
-// lists on any phone that has it. A naive concatenation renders GCash twice,
+// WHY DEDUPE IS THE LOAD-BEARING TEST HERE. None of the fifteen seed package
+// names has been checked against a device (lib/ingest/seed_rules.ts's header),
+// but "unverified" is not "wrong" — whichever ones happen to be right WILL
+// also arrive from the device, and GCash is in both lists on any phone that
+// has it. A naive concatenation renders GCash twice,
 // and the second row's tap toggles a different entry than the one the user is
 // looking at. That is the specific bug this file exists to catch.
 import { DEFAULT_TUNABLES } from "@/lib/ingest/ruleset_types";

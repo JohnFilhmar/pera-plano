@@ -33,11 +33,11 @@ export type ListenerHealth = {
  * for the onboarding provider picker.
  *
  * These are REAL package names, read off `sbn.packageName` by the listener
- * service, which is the whole reason this exists: seven of the thirteen
- * package names in the parser seed were constructed from app names rather
- * than observed anywhere, and a wrong one is a silent failure — that provider
- * is never routed, captures nothing, and looks to the user like their bank
- * simply does not work.
+ * service, which is the whole reason this exists: not one of the fifteen
+ * package names in the parser seed has been checked against a device or a
+ * Play listing (see `lib/ingest/seed_rules.ts`), and a wrong one is a silent
+ * failure — that provider is never routed, captures nothing, and looks to the
+ * user like their bank simply does not work.
  *
  * THREE FIELDS, NEVER A NOTIFICATION'S CONTENT. `count` is occurrences and
  * `lastSeenAt` is epoch milliseconds; there is deliberately nowhere here for

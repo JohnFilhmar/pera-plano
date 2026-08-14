@@ -189,10 +189,13 @@ class CapturePrefs(context: Context) {
    * milliseconds, interface contract §1), incrementing its count and moving
    * it to the front of [listObservedPackages].
    *
-   * WHY THIS EXISTS. Seven of the thirteen package names in the parser
-   * `seed.json` were **constructed from app names** rather than observed
-   * anywhere -- `com.bpi.ng.app`, `com.bdo.digitalbanking`,
-   * `com.metrobank.mobilebanking` and four more. A wrong one is a SILENT
+   * WHY THIS EXISTS. **NOT ONE of the fifteen package names in the parser
+   * `seed.json` has been checked against a device or a Play listing** --
+   * `lib/ingest/seed_rules.ts`'s own header says so outright. Seven are
+   * transparently constructed from app names (`com.bpi.ng.app`,
+   * `com.bdo.digitalbanking`, `com.metrobank.mobilebanking` and four more),
+   * but the other eight are merely unflagged, not verified. Fifteen rather
+   * than thirteen because `sms_relay` carries three. A wrong one is a SILENT
    * failure: that provider is never routed, captures nothing, logs nothing,
    * and looks to the user like their bank simply does not work. The listener
    * already receives `sbn.packageName` for every notification on the device,

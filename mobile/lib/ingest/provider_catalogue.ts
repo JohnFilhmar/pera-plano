@@ -2,10 +2,14 @@
 // with what the parser seed guesses, into the one ordered list the onboarding
 // provider picker renders (provider-selection plan Task 4).
 //
-// WHY THIS EXISTS RATHER THAN JUST RENDERING THE SEED. Seven of the thirteen
-// package names in assets/parser_rules/seed.json were constructed from app
-// names and have never been checked against a device (see seed_rules.ts's
-// header). A wrong package name is a SILENT failure: that provider is never
+// WHY THIS EXISTS RATHER THAN JUST RENDERING THE SEED. NOT ONE of the fifteen
+// package names in assets/parser_rules/seed.json has been checked against a
+// device or a Play listing — seed_rules.ts's own header says so outright.
+// Seven are transparently constructed from app names (com.bpi.ng.app,
+// com.bdo.digitalbanking, com.metrobank.mobilebanking and four more), but the
+// remaining eight are merely unflagged, not verified, and the count is fifteen
+// rather than thirteen because sms_relay carries three.
+// A wrong package name is a SILENT failure: that provider is never
 // routed, captures nothing, logs nothing, and looks to the user exactly like
 // their bank simply does not work. The listener already receives
 // `sbn.packageName` for every notification on the device (Task 3), so the app

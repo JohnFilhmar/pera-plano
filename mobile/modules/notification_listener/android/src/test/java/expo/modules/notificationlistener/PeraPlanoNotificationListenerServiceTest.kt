@@ -391,8 +391,8 @@ class PeraPlanoNotificationListenerServiceTest {
   // =====================================================================
   // OBSERVED PACKAGES (provider-selection plan Task 3).
   //
-  // Seven of the thirteen package names in `seed.json` were constructed from
-  // app names rather than observed anywhere, and a wrong one is a SILENT
+  // Not one of the fifteen package names in `seed.json` has been checked
+  // against a device or a Play listing, and a wrong one is a SILENT
   // failure -- that provider is never routed, captures nothing, logs nothing,
   // and looks to the user like their bank simply does not work. This service
   // already receives `sbn.packageName` for every notification on the device,

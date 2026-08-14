@@ -491,8 +491,8 @@ class CapturePrefsTest {
   // =====================================================================
   // OBSERVED PACKAGES (provider-selection plan Task 3).
   //
-  // Seven of the thirteen package names in `seed.json` were constructed from
-  // app names rather than observed anywhere. A wrong one is a SILENT failure:
+  // Not one of the fifteen package names in `seed.json` has been checked
+  // against a device or a Play listing. A wrong one is a SILENT failure:
   // that provider is never routed, captures nothing, logs nothing, and looks
   // to the user like their bank simply does not work. This list is how the
   // app stops guessing -- the listener already receives `sbn.packageName` for
