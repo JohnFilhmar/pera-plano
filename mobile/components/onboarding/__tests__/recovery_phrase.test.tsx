@@ -73,8 +73,8 @@ beforeEach(() => {
 jest.setTimeout(30_000);
 const FIRST_RENDER_TIMEOUT_MS = 20_000;
 
-async function renderScreenAndWaitForWords(): Promise<void> {
-  render(<RecoveryPhraseScreen />);
+async function renderScreenAndWaitForWords(props: { onDone?: () => void } = {}): Promise<void> {
+  render(<RecoveryPhraseScreen {...props} />);
   await waitFor(() => expect(screen.getByTestId("phrase-display")).toBeTruthy(), {
     timeout: FIRST_RENDER_TIMEOUT_MS,
   });
@@ -103,8 +103,8 @@ function getConfirmPositions(): number[] {
   return positions;
 }
 
-async function proceedToConfirm(): Promise<string[]> {
-  await renderScreenAndWaitForWords();
+async function proceedToConfirm(props: { onDone?: () => void } = {}): Promise<string[]> {
+  await renderScreenAndWaitForWords(props);
   const words = getDisplayedWords();
   await act(async () => {
     fireEvent.press(screen.getByTestId("phrase-continue-button"));
@@ -307,4 +307,62 @@ test("a failed initializeKeys does not advance past this step, and going back th
   await waitFor(() => expect(screen.getByTestId("recovery-phrase-error")).toBeTruthy());
   expect(screen.queryByTestId("recovery-phrase-done")).toBeNull();
   expect(mockInitializeKeys).toHaveBeenCalledTimes(1);
+});
+
+// ---------------------------------------------------------------------------
+// onDone (provider-selection plan Task 4): the hook app/(onboarding)/index.tsx
+// uses to advance from this step to the provider picker. Optional, exactly
+// like device_lock.tsx's onSecure, so every test above (constructing this
+// component with zero props) is unaffected.
+// ---------------------------------------------------------------------------
+
+async function confirmPhrase(props: { onDone?: () => void } = {}): Promise<void> {
+  const words = await proceedToConfirm(props);
+  const positions = getConfirmPositions();
+  fillConfirmInputs(positions.map((p) => words[p]));
+  await act(async () => {
+    fireEvent.press(screen.getByTestId("confirm-submit-button"));
+  });
+  await waitFor(() => expect(screen.getByTestId("recovery-phrase-done")).toBeTruthy());
+}
+
+test("offers an onward action once the keys are initialized, and only then", async () => {
+  const onDone = jest.fn();
+
+  await renderScreenAndWaitForWords({ onDone });
+  // Not on the display step -- the words are not confirmed yet, so there is
+  // nothing to move on from.
+  expect(screen.queryByTestId("recovery-phrase-continue-button")).toBeNull();
+
+  await confirmPhrase({ onDone });
+
+  expect(screen.getByTestId("recovery-phrase-continue-button")).toBeTruthy();
+  expect(onDone).not.toHaveBeenCalled();
+});
+
+test("tapping the onward action reports completion exactly once", async () => {
+  const onDone = jest.fn();
+
+  await confirmPhrase({ onDone });
+  fireEvent.press(screen.getByTestId("recovery-phrase-continue-button"));
+
+  expect(onDone).toHaveBeenCalledTimes(1);
+});
+
+test("never auto-advances past the confirmation screen the user has not read", async () => {
+  const onDone = jest.fn();
+
+  await confirmPhrase({ onDone });
+
+  // The done screen tells the user their words are saved and to keep them
+  // offline. Firing onDone from an effect would replace it before it could be
+  // read -- the one screen in onboarding that has to land.
+  expect(onDone).not.toHaveBeenCalled();
+});
+
+test("renders no onward action at all when no onDone is given, exactly as before", async () => {
+  await confirmPhrase();
+
+  expect(screen.getByTestId("recovery-phrase-done")).toBeTruthy();
+  expect(screen.queryByTestId("recovery-phrase-continue-button")).toBeNull();
 });

@@ -30,11 +30,28 @@ jest.mock("../device_lock", () => ({
   },
 }));
 
+let capturedOnPhraseDone: (() => void) | undefined;
 jest.mock("../recovery_phrase", () => ({
   __esModule: true,
-  default: () => {
+  default: (props: { onDone?: () => void }) => {
+    capturedOnPhraseDone = props.onDone;
     const { Text } = require("react-native");
     return <Text testID="fake-recovery-phrase">recovery-phrase</Text>;
+  },
+}));
+
+// Faked for the same reason as the two above — this file's only subject is the
+// SEQUENCING. It is also the one child that MUST be mocked rather than merely
+// ought to be: app/(onboarding)/providers.tsx imports
+// @/modules/notification_listener, whose value side calls requireNativeModule
+// at module load and throws under Jest.
+let capturedOnProvidersDone: (() => void) | undefined;
+jest.mock("../providers", () => ({
+  __esModule: true,
+  default: (props: { onDone?: () => void }) => {
+    capturedOnProvidersDone = props.onDone;
+    const { Text } = require("react-native");
+    return <Text testID="fake-providers">providers</Text>;
   },
 }));
 
@@ -47,8 +64,21 @@ const mockGetKeyState = getKeyState as jest.Mock;
 beforeEach(() => {
   capturedHref = undefined;
   capturedOnSecure = undefined;
+  capturedOnPhraseDone = undefined;
+  capturedOnProvidersDone = undefined;
   jest.clearAllMocks();
 });
+
+/** Walks the flow as a fresh install does: device lock, then the phrase. */
+async function advanceToPhraseStep() {
+  mockGetKeyState.mockResolvedValue("uninitialized");
+  render(<OnboardingIndexScreen />);
+  await waitFor(() => expect(screen.getByTestId("fake-device-lock")).toBeTruthy());
+  await act(async () => {
+    capturedOnSecure!();
+  });
+  await waitFor(() => expect(screen.getByTestId("fake-recovery-phrase")).toBeTruthy());
+}
 
 test("renders nothing while getKeyState is still resolving", async () => {
   let resolveState!: (state: string) => void;
@@ -114,4 +144,48 @@ test("keys already unlocked: also falls through to the tabs, never re-shows the 
   await waitFor(() => expect(screen.getByTestId("fake-redirect")).toBeTruthy());
   expect(capturedHref).toBe("/(tabs)");
   expect(screen.queryByTestId("fake-recovery-phrase")).toBeNull();
+});
+
+// ---------------------------------------------------------------------------
+// The provider step (provider-selection plan Task 4) — the first of the steps
+// that "actually belong after the phrase", filling part of the temporary
+// fall-through to /(tabs) this file's header describes.
+// ---------------------------------------------------------------------------
+
+test("the provider picker never renders before the recovery phrase is captured", async () => {
+  await advanceToPhraseStep();
+
+  // Ordering matters for the same reason the device lock leads: the picker
+  // writes to native prefs, and a user who abandons onboarding before the
+  // phrase would have a configured listener and no way back to their data.
+  expect(screen.queryByTestId("fake-providers")).toBeNull();
+});
+
+test("once the recovery phrase is captured, advances to the provider picker", async () => {
+  await advanceToPhraseStep();
+  expect(capturedOnPhraseDone).toBeDefined();
+
+  await act(async () => {
+    capturedOnPhraseDone!();
+  });
+
+  await waitFor(() => expect(screen.getByTestId("fake-providers")).toBeTruthy());
+  expect(screen.queryByTestId("fake-recovery-phrase")).toBeNull();
+  expect(screen.queryByTestId("fake-redirect")).toBeNull();
+});
+
+test("completing the provider step falls through to the tabs", async () => {
+  await advanceToPhraseStep();
+  await act(async () => {
+    capturedOnPhraseDone!();
+  });
+  await waitFor(() => expect(screen.getByTestId("fake-providers")).toBeTruthy());
+  expect(capturedOnProvidersDone).toBeDefined();
+
+  await act(async () => {
+    capturedOnProvidersDone!();
+  });
+
+  await waitFor(() => expect(screen.getByTestId("fake-redirect")).toBeTruthy());
+  expect(capturedHref).toBe("/(tabs)");
 });

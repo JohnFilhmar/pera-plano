@@ -48,7 +48,7 @@ import { PhraseConfirm } from "@/components/onboarding/phrase_confirm";
 
 type Stage = "generating" | "display" | "confirm" | "initializing" | "done" | "error";
 
-export default function RecoveryPhraseScreen() {
+export default function RecoveryPhraseScreen({ onDone }: { onDone?: () => void } = {}) {
   const [stage, setStage] = useState<Stage>("generating");
   const [words, setWords] = useState<string[] | null>(null);
   const [retryKey, setRetryKey] = useState(0);
@@ -149,10 +149,20 @@ export default function RecoveryPhraseScreen() {
     );
   }
 
-  // stage === "done": initializeKeys has already resolved. M3c adds what
-  // comes next in onboarding; this task's own job ends here (task-10-brief's
-  // explicit "do not build M3c's steps"), so there is deliberately no
-  // further action on this screen.
+  // stage === "done": initializeKeys has already resolved.
+  //
+  // `onDone` is the caller's onward-navigation hook, added by the
+  // provider-selection plan's Task 4 so app/(onboarding)/index.tsx can advance
+  // to the provider picker. Optional, exactly like device_lock.tsx's onSecure,
+  // so every test that predates it (constructing this component with zero
+  // props) keeps working unmodified — and the action below renders only when a
+  // caller actually supplied one, rather than a dead button that goes nowhere.
+  //
+  // FIRED FROM A TAP, NEVER FROM AN EFFECT. Unlike device_lock.tsx, where
+  // "secure" is a machine-observed fact worth advancing on immediately, this
+  // screen's last frame is addressed to the user: it confirms the words are
+  // saved and tells them to keep the paper somewhere private and offline.
+  // Auto-advancing would replace that message before it could be read.
   return (
     <View
       testID="recovery-phrase-done"
@@ -164,6 +174,17 @@ export default function RecoveryPhraseScreen() {
       <Text className="text-center text-fg-2 dark:text-fg-2-dark">
         Keep what you wrote down somewhere private and offline.
       </Text>
+      {onDone ? (
+        <Pressable
+          testID="recovery-phrase-continue-button"
+          onPress={onDone}
+          accessibilityRole="button"
+          accessibilityLabel="Continue"
+          className="mt-2 rounded-lg bg-brand px-6 py-3 dark:bg-brand-dark"
+        >
+          <Text className="font-semibold text-surface dark:text-surface-dark">Continue</Text>
+        </Pressable>
+      ) : null}
     </View>
   );
 }

@@ -28,6 +28,17 @@
 //      codebase already uses for every not-yet-built next step (see
 //      app/index.tsx's and app/lock.tsx's own prior header comments).
 //
+// THE PROVIDER STEP (provider-selection plan Task 4) is the first of "the
+// steps that actually belong after the phrase" to exist. It runs in the
+// FRESH-INSTALL sequence only -- branch 1 above -- and branch 2's
+// already-keyed user still falls straight through to "/(tabs)". That
+// asymmetry is deliberate and temporary: NOTHING in the app writes
+// `onboarding_complete` yet (M3c owns that), so routing the already-keyed
+// user into the picker would re-ask them on every single launch with no way
+// to ever stop being asked. Re-prompting forever is a worse bug than the
+// temporary landing spot it would be trying to fix. When M3c lands the
+// setting write, this branch is where the rest of its steps hang.
+//
 // ORDERING (task-10-brief rule 1 / docs §5a): device-lock renders FIRST and
 // unconditionally, for every entry above. Nothing here calls generatePhrase()
 // or initializeKeys() until DeviceLockScreen reports secure via onSecure --
@@ -42,8 +53,15 @@ import { useCallback, useEffect, useState } from "react";
 import { getKeyState } from "@/lib/crypto/key_manager";
 import DeviceLockScreen from "./device_lock";
 import RecoveryPhraseScreen from "./recovery_phrase";
+import ProvidersScreen from "./providers";
 
-type Step = "checking" | "device_lock" | "recovery_phrase" | "already_keyed";
+type Step =
+  | "checking"
+  | "device_lock"
+  | "recovery_phrase"
+  | "providers"
+  | "done"
+  | "already_keyed";
 
 export default function OnboardingIndexScreen() {
   const [step, setStep] = useState<Step>("checking");
@@ -60,12 +78,18 @@ export default function OnboardingIndexScreen() {
   }, []);
 
   const handleSecure = useCallback(() => setStep("recovery_phrase"), []);
+  // The provider picker runs AFTER the phrase, never before: it is the first
+  // step that writes anything the listener will act on, and a user who
+  // abandoned onboarding earlier would be left with a configured listener and
+  // no recovery words for the data it goes on to collect.
+  const handlePhraseDone = useCallback(() => setStep("providers"), []);
+  const handleProvidersDone = useCallback(() => setStep("done"), []);
 
   if (step === "checking") {
     return null;
   }
 
-  if (step === "already_keyed") {
+  if (step === "already_keyed" || step === "done") {
     return <Redirect href="/(tabs)" />;
   }
 
@@ -73,5 +97,9 @@ export default function OnboardingIndexScreen() {
     return <DeviceLockScreen onSecure={handleSecure} />;
   }
 
-  return <RecoveryPhraseScreen />;
+  if (step === "recovery_phrase") {
+    return <RecoveryPhraseScreen onDone={handlePhraseDone} />;
+  }
+
+  return <ProvidersScreen onDone={handleProvidersDone} />;
 }
