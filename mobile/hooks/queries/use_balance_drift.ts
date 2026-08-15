@@ -15,7 +15,26 @@ import { queryKeys } from "@/constants/query_keys";
 import { getBalanceDrift } from "@/lib/db/repos/wallets_repo";
 import type { Centavos } from "@/types/domain";
 
-export type BalanceDrift = { reported: Centavos; computed: Centavos; drift: Centavos };
+export type BalanceDrift = {
+  reported: Centavos;
+  computed: Centavos;
+  drift: Centavos;
+  /**
+   * The transaction these figures were read off — the newest one carrying a
+   * reported balance, which IS the identity of this drift (migration 003).
+   */
+  reportingTransactionId: string;
+  /**
+   * The drift the user has already seen and accepted, or `null` for none.
+   *
+   * COMPARED, NOT TESTED FOR TRUTHINESS. Equal to `reportingTransactionId`
+   * means the user has seen this one, so the badge stays quiet; anything else —
+   * including a dismissal of an OLDER report — means this disagreement is new
+   * and says so. A boolean in this slot would silence every later drift as
+   * well, which is the failure the id shape exists to prevent.
+   */
+  dismissedTransactionId: string | null;
+};
 
 /** One wallet's drift — the detail screen's read. */
 export function useBalanceDrift(walletId: string) {

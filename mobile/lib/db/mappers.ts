@@ -19,6 +19,8 @@ export type WalletRow = {
   balance: number;
   currency: string;
   is_archived: number;
+  /** 003_drift_dismissal — appended by ALTER TABLE, hence after `is_archived`. */
+  drift_dismissed_transaction_id: string | null;
   created_at: number;
   updated_at: number;
 };
@@ -31,6 +33,11 @@ export function rowToWallet(row: WalletRow): Wallet {
     balance: row.balance,
     currency: "PHP",
     isArchived: row.is_archived === 1,
+    // `?? null`, never a boolean cast: the badge compares this id against the
+    // current reporting transaction's, so collapsing it to "something was
+    // dismissed" would silence every later drift too. It also normalizes the
+    // `undefined` a row selected before 003 existed would carry.
+    driftDismissedTransactionId: row.drift_dismissed_transaction_id ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -44,6 +51,7 @@ export function walletToRow(wallet: Wallet): WalletRow {
     balance: wallet.balance,
     currency: wallet.currency,
     is_archived: wallet.isArchived ? 1 : 0,
+    drift_dismissed_transaction_id: wallet.driftDismissedTransactionId,
     created_at: wallet.createdAt,
     updated_at: wallet.updatedAt,
   };

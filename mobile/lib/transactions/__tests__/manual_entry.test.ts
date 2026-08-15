@@ -31,6 +31,7 @@ function wallet(overrides: Partial<Wallet> = {}): Wallet {
     balance: 100_000,
     currency: "PHP",
     isArchived: false,
+    driftDismissedTransactionId: null,
     createdAt: 1_000,
     updatedAt: 1_000,
     ...overrides,

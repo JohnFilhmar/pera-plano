@@ -3,20 +3,22 @@
 // The detail screen shows one wallet's balance, the drift badge, its matcher
 // chips ("Catches: GCash"), and its transactions.
 //
-// TWO THINGS IT DELIBERATELY DOES NOT SHOW, both asserted below so a later
-// change has to argue with a test rather than with a comment:
+// TWO THINGS IT ONCE DELIBERATELY DID NOT SHOW. Both were asserted here as
+// absences, so that adding either had to argue with a test rather than with a
+// comment, and both have since arrived:
 //
-//   NO LEDGER LIST. Rule 4 says the detail reuses "the ledger list from Task
-//   6", and Task 6 has not happened. The rows here are a plain list from
-//   `useTransactions({ walletId })`; building a second ledger now would mean
-//   deleting it in two tasks' time.
+//   THE LEDGER LIST arrived with Task 6. Rule 4 says the detail reuses "the
+//   ledger list from Task 6"; until that existed the screen carried a plain list
+//   from `useTransactions({ walletId })`, because building a second ledger would
+//   have meant deleting it two tasks later.
 //
-//   NO DRIFT DISMISSAL. Spec rule 3 offers "record the gap as an adjustment,
-//   or dismiss (accept the snap silently)", and there is still no
-//   acknowledged/dismissed flag anywhere in the schema — so a dismissed drift
-//   would re-render on the next open, forever. m1c Task 5 examined this and
-//   left it deferred: doing it properly needs a third migration, which is the
-//   project owner's decision to make, as migration 002 was.
+//   DRIFT DISMISSAL arrived with migration 003 (2026-08-15). Spec rule 3 offers
+//   "record the gap as an adjustment, or dismiss (accept the snap silently)",
+//   and nothing in the schema could remember a dismissal — so a dismissed drift
+//   re-rendered on the next open, forever. Doing it properly needed a third
+//   migration, which was the project owner's decision to make, as 002 was. The
+//   last describe in this file is that feature, and it opens with the full
+//   reasoning the absence-test carried.
 //
 // THE EDIT / RECONCILE / ARCHIVE ACTIONS ARRIVED WITH TASK 5, which owns the
 // wallet form, the cash reconciliation sheet and the archive flow's "what
@@ -29,9 +31,10 @@ jest.mock("expo-router", () => ({
 }));
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react-native";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { ReactNode } from "react";
 
+import { queryKeys } from "@/constants/query_keys";
 import { closeDatabase, getDatabase } from "@/lib/db/database";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
@@ -41,7 +44,7 @@ import { archiveWallet, createWallet } from "@/lib/db/repos/wallets_repo";
 import { DEFAULT_TUNABLES } from "@/lib/ingest/ruleset_types";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
-import type { Wallet } from "@/types/domain";
+import type { Centavos, Wallet } from "@/types/domain";
 
 import WalletDetailScreen from "../wallet/[id]";
 
@@ -61,13 +64,42 @@ function makeTestClient(): QueryClient {
   });
 }
 
-function renderDetail(walletId: string): void {
+/** The screen plus the cache behind it, so a test can wait on a read or close it. */
+type DetailView = ReturnType<typeof render> & { client: QueryClient };
+
+function renderDetail(walletId: string): DetailView {
   mockParams = { id: walletId };
   const client = makeTestClient();
   function Wrapper({ children }: { children: ReactNode }) {
     return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
   }
-  render(<WalletDetailScreen />, { wrapper: Wrapper });
+  return Object.assign(render(<WalletDetailScreen />, { wrapper: Wrapper }), { client });
+}
+
+/**
+ * Waits until the drift read has RESOLVED, which is the only honest anchor for
+ * asserting that no badge is showing: `queryByTestId` on a screen whose drift
+ * query is still in flight passes for the wrong reason, every time.
+ *
+ * `getBalanceDrift` legitimately resolves to `null`, so the cached value cannot
+ * distinguish "no drift" from "not read yet" — only the query state can.
+ */
+async function waitForDriftDecision(view: DetailView, walletId: string): Promise<void> {
+  await waitFor(() =>
+    expect(view.client.getQueryState(queryKeys.wallets.drift(walletId))?.status).toBe("success"),
+  );
+}
+
+/**
+ * Closes a screen the way a user leaving it does, and lets its reads finish
+ * first. An unmount with refetches still in flight lands a React update on a
+ * torn-down tree, which react-test-renderer raises from inside the NEXT render —
+ * an error about the wrong screen entirely.
+ */
+async function closeDetail(view: DetailView): Promise<void> {
+  await waitFor(() => expect(view.client.isFetching()).toBe(0));
+  view.unmount();
+  view.client.clear();
 }
 
 async function insertMatcher(walletId: string, packageName: string, hint: string | null) {
@@ -365,32 +397,158 @@ describe("the actions m1c Task 5 added", () => {
 
     expect(screen.queryByTestId("wallet-detail-delete")).toBeNull();
   });
+});
 
-  test("STILL no dismiss action on the drift — nothing in the schema can remember it", async () => {
-    // Spec rule 3 offers "record the gap as an adjustment, or dismiss". There
-    // is still no acknowledged/dismissed flag anywhere in the schema, so a
-    // dismissed drift would re-render on the next open, forever.
-    //
-    // TASK 5 LOOKED AT THIS AND LEFT IT ALONE, deliberately. The honest fix is
-    // a third migration — most likely `wallets.drift_dismissed_transaction_id`,
-    // so a NEWER drift shows again while the acknowledged one stays quiet; a
-    // bare boolean would silence the next real drift too. That is a schema
-    // decision for the project owner, exactly as migration 002 was, and this
-    // test is what keeps a half-version of it from being added quietly.
-    await insertTransaction({
-      walletId: gcash.id,
+// ---------------------------------------------------------------------------
+// Rule 3's second offer — dismissing a drift (migration 003)
+//
+// THIS BLOCK REPLACES "STILL no dismiss action on the drift — nothing in the
+// schema can remember it", which stood here from Task 5 until 2026-08-15. That
+// test existed to stop a HALF-version of this feature being added quietly, and
+// its reasoning is the reason these tests are shaped the way they are, so it is
+// carried forward rather than deleted:
+//
+//   Spec rule 3 offers "record the gap as an adjustment ..., or dismiss (accept
+//   the snap silently)". Reconciliation shipped; dismissal could not, because
+//   nothing in the schema could remember a dismissal — so a dismissed drift
+//   re-rendered on the next open, forever. The honest fix was a third migration,
+//   and the note left here named the shape it would need:
+//   `wallets.drift_dismissed_transaction_id`, so a NEWER drift shows again while
+//   the acknowledged one stays quiet, because A BARE BOOLEAN WOULD SILENCE THE
+//   NEXT REAL DRIFT TOO. That was a schema decision for the project owner, as
+//   migration 002 was; the owner made it on 2026-08-15 and 003 is that column.
+//
+// So the discriminating test below is "a NEWER reporting transaction brings the
+// badge back". Every other test in this block passes against the boolean the old
+// test was written to prevent.
+// ---------------------------------------------------------------------------
+
+describe("dismissing a balance drift", () => {
+  /** A reporting notification: the provider states `balanceAfter` and disagrees. */
+  async function reportBalance(walletId: string, amount: Centavos, balanceAfter: Centavos) {
+    return insertTransaction({
+      walletId,
       categoryId: UNCATEGORIZED_ID,
-      amount: 15_000,
+      amount,
       direction: "out",
       occurredAt: 1_000,
       source: "notification",
       confidence: 0.9,
-      balanceAfter: 900_000,
+      balanceAfter,
     });
+  }
+
+  async function dismissTheVisibleDrift(): Promise<void> {
+    await screen.findByTestId("wallet-detail-drift");
+    fireEvent.press(screen.getByTestId("wallet-detail-dismiss-drift"));
+    await waitFor(() => expect(screen.queryByTestId("wallet-detail-drift")).toBeNull());
+  }
+
+  test("the action is offered beside the other wallet actions when a drift is showing", async () => {
+    await reportBalance(gcash.id, 15_000, 900_000);
 
     renderDetail(gcash.id);
     await screen.findByTestId("wallet-detail-drift");
 
-    expect(screen.queryByText(/dismiss/i)).toBeNull();
+    expect(screen.getByTestId("wallet-detail-dismiss-drift")).toBeTruthy();
+  });
+
+  test("dismissing hides the badge, and the action with it", async () => {
+    await reportBalance(gcash.id, 15_000, 900_000);
+
+    renderDetail(gcash.id);
+    await dismissTheVisibleDrift();
+
+    // The action goes too. A "Dismiss" button with nothing left to dismiss is a
+    // control that does nothing, on the screen where a user has just learned
+    // that pressing it means something.
+    expect(screen.queryByTestId("wallet-detail-dismiss-drift")).toBeNull();
+  });
+
+  test("the dismissal survives a remount — it is in the database, not in this screen", async () => {
+    // The exact bug being fixed. A dismissal held in component state passes the
+    // test above and comes straight back on the next open of the wallet.
+    await reportBalance(gcash.id, 15_000, 900_000);
+
+    const first = renderDetail(gcash.id);
+    await dismissTheVisibleDrift();
+    await closeDetail(first);
+
+    // A brand-new screen AND a brand-new cache: nothing carries over except the
+    // database, which is the whole claim.
+    const reopened = renderDetail(gcash.id);
+    await waitForDriftDecision(reopened, gcash.id);
+
+    expect(screen.queryByTestId("wallet-detail-drift")).toBeNull();
+  });
+
+  test("A NEWER REPORTING TRANSACTION BRINGS THE BADGE BACK", async () => {
+    // THE test in this task. Everything else here passes against a boolean
+    // `drift_dismissed` column — and a boolean silences the NEXT genuine drift
+    // too, so a real reconciliation problem becomes permanently invisible with
+    // no way for the user to notice.
+    //
+    // The dismissal names the reporting transaction the user actually looked at.
+    // A newer one is a different row with a different id, so it has never been
+    // acknowledged and says so, with no clearing step for anyone to forget.
+    const firstReport = await reportBalance(gcash.id, 15_000, 900_000);
+
+    const first = renderDetail(gcash.id);
+    await dismissTheVisibleDrift();
+    await closeDetail(first);
+
+    // A second notification lands, and the bank disagrees again — by a different
+    // amount, in the opposite direction, about money that is really there.
+    const second = await reportBalance(gcash.id, 20_000, 700_000);
+    expect(second.id).not.toBe(firstReport.id);
+
+    renderDetail(gcash.id);
+
+    expect(await screen.findByTestId("wallet-detail-drift")).toBeTruthy();
+    expect(screen.getByTestId("wallet-detail-drift-reported")).toHaveTextContent("₱7,000.00");
+    expect(screen.getByTestId("wallet-detail-drift-computed")).toHaveTextContent("₱8,800.00");
+    // And it is dismissible in its own right, not stuck on screen.
+    expect(screen.getByTestId("wallet-detail-dismiss-drift")).toBeTruthy();
+  });
+
+  test("dismissing one wallet's drift leaves another wallet's badge alone", async () => {
+    // A flag stored per app rather than per wallet passes every single-wallet
+    // test above and silences a bank the user has never opened.
+    const bpi = await createWallet({ name: "BPI", type: "bank", openingBalance: 100_000 });
+    await reportBalance(gcash.id, 15_000, 900_000);
+    await reportBalance(bpi.id, 15_000, 900_000);
+
+    const first = renderDetail(gcash.id);
+    await dismissTheVisibleDrift();
+    await closeDetail(first);
+
+    renderDetail(bpi.id);
+
+    expect(await screen.findByTestId("wallet-detail-drift")).toBeTruthy();
+  });
+
+  test("a drift WITHIN tolerance is offered no dismissal, and gains no badge from one", async () => {
+    // ₱0.50 against the ₱1.00 default: rounding, not a disagreement. The
+    // dismissal path must never be a way for a quiet wallet to start speaking.
+    await reportBalance(gcash.id, 15_000, 85_050);
+
+    const view = renderDetail(gcash.id);
+    await waitForDriftDecision(view, gcash.id);
+
+    expect(screen.queryByTestId("wallet-detail-drift")).toBeNull();
+    expect(screen.queryByTestId("wallet-detail-dismiss-drift")).toBeNull();
+  });
+
+  test("a wallet that has NEVER reported a balance is offered no dismissal either", async () => {
+    // `drift === null` is not a drift of zero and not a dismissed one. Treating
+    // "never reported" as either would put a control on a cash wallet for a
+    // disagreement no provider has ever claimed.
+    const pocket = await createWallet({ name: "Pocket", type: "cash", openingBalance: 5_000 });
+
+    const view = renderDetail(pocket.id);
+    await waitForDriftDecision(view, pocket.id);
+
+    expect(screen.queryByTestId("wallet-detail-drift")).toBeNull();
+    expect(screen.queryByTestId("wallet-detail-dismiss-drift")).toBeNull();
   });
 });

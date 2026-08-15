@@ -33,6 +33,7 @@ function wallet(
     balance,
     currency: "PHP",
     isArchived,
+    driftDismissedTransactionId: null,
     createdAt: 1_000,
     updatedAt: 1_000,
   };

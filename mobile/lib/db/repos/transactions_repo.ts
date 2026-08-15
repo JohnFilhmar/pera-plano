@@ -348,6 +348,10 @@ export async function updateTransaction(
  * link pointing at nothing and money missing from every total; the caller has to
  * unlink (or unmatch) first and decide that deliberately.
  *
+ * `wallets.drift_dismissed_transaction_id` (003) is the ONE reference this
+ * function clears instead of refusing, because it is a note about what the user
+ * has read rather than a claim about money. See the body.
+ *
  * Spec rule 10 — "committed transactions are never deleted by any queue action"
  * — still holds for the queue's own dismissals: a held (uncommitted) twin has no
  * row for this function to touch, and `mergeDuplicate` reaches it only for the
@@ -363,6 +367,16 @@ export async function deleteTransaction(id: string): Promise<void> {
 
   const now = Date.now();
   await db.withTransactionAsync(async () => {
+    // A dismissal naming this row has to go FIRST — 003 put a foreign key on
+    // `wallets.drift_dismissed_transaction_id`, so leaving it would block the
+    // DELETE and fail a duplicate merge with an error naming neither. Clearing
+    // it is also the right answer on its own terms: a dismissal of a
+    // transaction that no longer exists acknowledges nothing, so whatever drift
+    // governs the wallet afterwards is unacknowledged, which it is.
+    await db.runAsync(
+      "UPDATE wallets SET drift_dismissed_transaction_id = NULL WHERE drift_dismissed_transaction_id = ?",
+      [id],
+    );
     await db.runAsync("DELETE FROM transactions WHERE id = ?", [id]);
     await db.runAsync("UPDATE wallets SET balance = balance - ?, updated_at = ? WHERE id = ?", [
       signedEffect(existing),

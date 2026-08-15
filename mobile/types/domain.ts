@@ -20,6 +20,19 @@ export type Wallet = {
   balance: Centavos;
   currency: "PHP";
   isArchived: boolean;
+  /**
+   * The reporting Transaction whose balance drift the user has already seen and
+   * accepted (migration 003), or `null` when nothing is acknowledged.
+   *
+   * AN ID, NOT A FLAG, and the difference is the whole feature: the drift on
+   * screen is always the newest transaction carrying a `balanceAfter`, so
+   * storing that row's id says which disagreement was dismissed. A newer report
+   * is a different row, so its drift shows again on its own. A boolean would
+   * silence that one too — see lib/db/migrations/003_drift_dismissal.sql.
+   *
+   * Not patchable through `updateWallet`; `dismissBalanceDrift` owns it.
+   */
+  driftDismissedTransactionId: string | null;
   createdAt: EpochMs;
   updatedAt: EpochMs;
 };

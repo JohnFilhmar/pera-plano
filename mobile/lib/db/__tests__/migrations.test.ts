@@ -164,8 +164,9 @@ describe("002_balance_after upgrades a real version-1 database in place", () => 
 
     // Now the real registry, on the real existing database.
     const applied = await runMigrations(db);
-    // ONLY 002. A `[1, 2]` here would mean 001 was replayed over live data.
-    expect(applied).toEqual([2]);
+    // 001 IS NOT IN THIS LIST. A leading `1` would mean 001 was replayed over
+    // live data; every later version is simply everything that has shipped since.
+    expect(applied).toEqual([2, 3]);
 
     const columnsAfter = await db.getAllAsync<{ name: string }>("PRAGMA table_info(transactions)");
     expect(columnsAfter.map((c) => c.name)).toContain("balance_after");
@@ -205,7 +206,7 @@ describe("002_balance_after upgrades a real version-1 database in place", () => 
     expect(wallet?.balance).toBe(250000);
   });
 
-  test("both versions end up recorded, and a third run applies nothing", async () => {
+  test("every shipped version ends up recorded, and a further run applies nothing", async () => {
     const db = await getDatabase();
     await runMigrations(db, [MIGRATIONS[0]]);
     await seedVersionOneRows(db);
@@ -217,6 +218,7 @@ describe("002_balance_after upgrades a real version-1 database in place", () => 
     expect(recorded).toEqual([
       { version: 1, name: "core" },
       { version: 2, name: "balance_after" },
+      { version: 3, name: "drift_dismissal" },
     ]);
 
     // Re-running an ALTER TABLE ADD COLUMN would throw "duplicate column name";
@@ -241,5 +243,132 @@ describe("002_balance_after upgrades a real version-1 database in place", () => 
     // Centavos are exact integers everywhere else in the schema; a REAL
     // affinity here would silently make one money column a float.
     expect(row?.kind).toBe("integer");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 003_drift_dismissal — which drift the user has already seen.
+//
+// The same in-place-upgrade proof 002 gets, plus the two properties that make
+// this column a DISMISSAL RECORD rather than a flag: it holds a real transaction
+// id, and the foreign key means it can only ever name a row that exists. A
+// boolean would pass none of the wallets_repo tests that hang off it and every
+// test in this file — which is why the discriminating assertions live there, and
+// this block sticks to the migration's own job.
+// ---------------------------------------------------------------------------
+
+describe("003_drift_dismissal upgrades a real version-2 database in place", () => {
+  /** Brings a database up to exactly what a shipped v2 device holds, with rows. */
+  async function atVersionTwoWithRows(
+    db: Awaited<ReturnType<typeof getDatabase>>,
+  ): Promise<void> {
+    const [core, balanceAfter] = MIGRATIONS;
+    expect(balanceAfter.version).toBe(2);
+    expect(await runMigrations(db, [core, balanceAfter])).toEqual([1, 2]);
+    await seedVersionOneRows(db);
+  }
+
+  test("a database at 002, already holding wallets, gains the column and keeps every value", async () => {
+    const db = await getDatabase();
+    await atVersionTwoWithRows(db);
+
+    // Genuinely absent first, or "it is there afterwards" would prove nothing
+    // about upgrading — only about a database that always had it.
+    const before = await db.getAllAsync<{ name: string }>("PRAGMA table_info(wallets)");
+    expect(before.map((c) => c.name)).not.toContain("drift_dismissed_transaction_id");
+
+    // ONLY 003. Anything else in this list means an already-applied migration
+    // was replayed over live data.
+    expect(await runMigrations(db)).toEqual([3]);
+
+    const after = await db.getAllAsync<{ name: string }>("PRAGMA table_info(wallets)");
+    expect(after.map((c) => c.name)).toContain("drift_dismissed_transaction_id");
+
+    // Field by field: ADD COLUMN appends and rewrites nothing, so a
+    // drop-and-recreate (or a rebuild through a temp table) fails here.
+    const wallet = await db.getFirstAsync<Record<string, unknown>>(
+      "SELECT * FROM wallets WHERE id = 'w_v1'",
+    );
+    expect(wallet).toMatchObject({
+      id: "w_v1",
+      name: "GCash",
+      type: "e-wallet",
+      balance: 250000,
+      currency: "PHP",
+      is_archived: 0,
+      created_at: V1_TIMESTAMP,
+    });
+    // NULL on every pre-existing wallet — "nothing acknowledged", which is a
+    // different fact from any id and cannot be confused with one.
+    expect(wallet?.drift_dismissed_transaction_id).toBeNull();
+
+    const count = await db.getFirstAsync<{ n: number }>("SELECT COUNT(*) AS n FROM wallets");
+    expect(count?.n).toBe(1);
+  });
+
+  test("all three versions end up recorded, and a fourth run applies nothing", async () => {
+    const db = await getDatabase();
+    await atVersionTwoWithRows(db);
+    await runMigrations(db);
+
+    const recorded = await db.getAllAsync<{ version: number; name: string }>(
+      "SELECT version, name FROM schema_migrations ORDER BY version",
+    );
+    expect(recorded).toEqual([
+      { version: 1, name: "core" },
+      { version: 2, name: "balance_after" },
+      { version: 3, name: "drift_dismissal" },
+    ]);
+
+    // Re-running ALTER TABLE ADD COLUMN throws "duplicate column name"; the
+    // exactly-once guard is what keeps the second launch from crashing.
+    expect(await runMigrations(db)).toEqual([]);
+  });
+
+  test("the column stores a real transaction id and can be cleared back to NULL", async () => {
+    // It has to be an ID, and it has to be WRITABLE on a wallet that predates
+    // the column — a dismissal is recorded on wallets that already exist.
+    const db = await getDatabase();
+    await atVersionTwoWithRows(db);
+    await runMigrations(db);
+
+    await db.runAsync(
+      "UPDATE wallets SET drift_dismissed_transaction_id = 'tx_v1' WHERE id = 'w_v1'",
+    );
+    const dismissed = await db.getFirstAsync<{ id: string | null; kind: string }>(
+      `SELECT drift_dismissed_transaction_id AS id,
+              typeof(drift_dismissed_transaction_id) AS kind
+         FROM wallets WHERE id = 'w_v1'`,
+    );
+    expect(dismissed?.id).toBe("tx_v1");
+    // TEXT, like every other id in the schema. An INTEGER affinity here would
+    // coerce the ids this app actually generates into something else.
+    expect(dismissed?.kind).toBe("text");
+
+    await db.runAsync(
+      "UPDATE wallets SET drift_dismissed_transaction_id = NULL WHERE id = 'w_v1'",
+    );
+    expect(
+      (
+        await db.getFirstAsync<{ id: string | null }>(
+          "SELECT drift_dismissed_transaction_id AS id FROM wallets WHERE id = 'w_v1'",
+        )
+      )?.id,
+    ).toBeNull();
+  });
+
+  test("the foreign key rejects a dismissal naming a transaction that does not exist", async () => {
+    // The REFERENCES clause is the point: a dismissal that names nothing would
+    // never match the current reporting transaction, so the badge would look
+    // undismissed — right answer, wrong reason, and unexplainable in support.
+    const db = await getDatabase();
+    await atVersionTwoWithRows(db);
+    await runMigrations(db);
+
+    await expect(
+      db.runAsync(
+        "UPDATE wallets SET drift_dismissed_transaction_id = 'no_such_tx' WHERE id = 'w_v1'",
+      ),
+    ).rejects.toThrow(/FOREIGN KEY/i);
   });
 });

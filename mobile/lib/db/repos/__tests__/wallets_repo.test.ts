@@ -2,6 +2,7 @@ import { closeDatabase } from "@/lib/db/database";
 import {
   archiveWallet,
   createWallet,
+  dismissBalanceDrift,
   DuplicateNameError,
   getBalanceDrift,
   getWallet,
@@ -9,7 +10,7 @@ import {
   updateWallet,
   WalletNotFoundError,
 } from "../wallets_repo";
-import { insertTransaction } from "../transactions_repo";
+import { deleteTransaction, insertTransaction } from "../transactions_repo";
 import { freshDb } from "@/test_support/db";
 import type { SQLiteDatabase } from "@/lib/db/database";
 
@@ -468,7 +469,7 @@ describe("getBalanceDrift reports the gap between the provider's figure and ours
     // computed = 100000 - 15000 = 85000. reported = 900000. drift = 815000.
     // All three are different numbers, so a transposed field is visible.
     const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
-    await insertTransaction({
+    const report = await insertTransaction({
       walletId: wallet.id, categoryId: CATEGORY_ID, amount: 15000, direction: "out",
       occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 900000,
     });
@@ -477,6 +478,11 @@ describe("getBalanceDrift reports the gap between the provider's figure and ours
       reported: 900000,
       computed: 85000,
       drift: 815000,
+      // 003: WHICH row these figures came from, and which one the user has
+      // already accepted. Both travel with the figures so the badge can compare
+      // them without a second read.
+      reportingTransactionId: report.id,
+      dismissedTransactionId: null,
     });
   });
 
@@ -484,13 +490,16 @@ describe("getBalanceDrift reports the gap between the provider's figure and ours
     // The sign carries meaning the explainer needs: negative means the app
     // over-counted (a spend it missed), positive means it under-counted.
     const wallet = await createWallet({ name: "BPI", type: "bank", openingBalance: 100000 });
-    await insertTransaction({
+    const report = await insertTransaction({
       walletId: wallet.id, categoryId: CATEGORY_ID, amount: 10000, direction: "out",
       occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 60000,
     });
 
     const drift = await getBalanceDrift(wallet.id);
-    expect(drift).toEqual({ reported: 60000, computed: 90000, drift: -30000 });
+    expect(drift).toEqual({
+      reported: 60000, computed: 90000, drift: -30000,
+      reportingTransactionId: report.id, dismissedTransactionId: null,
+    });
     expect(drift!.drift).toBe(drift!.reported - drift!.computed);
   });
 
@@ -499,7 +508,7 @@ describe("getBalanceDrift reports the gap between the provider's figure and ours
     // "checked, and it matches", which is a different statement from "never
     // checked" — and it is the only way the drift tolerance can be applied.
     const wallet = await createWallet({ name: "Maya", type: "e-wallet", openingBalance: 100000 });
-    await insertTransaction({
+    const report = await insertTransaction({
       walletId: wallet.id, categoryId: CATEGORY_ID, amount: 15000, direction: "out",
       occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 85000,
     });
@@ -508,6 +517,8 @@ describe("getBalanceDrift reports the gap between the provider's figure and ours
       reported: 85000,
       computed: 85000,
       drift: 0,
+      reportingTransactionId: report.id,
+      dismissedTransactionId: null,
     });
   });
 
@@ -518,7 +529,7 @@ describe("getBalanceDrift reports the gap between the provider's figure and ours
       occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 700000,
     });
     // The second report lands on the SNAPPED balance: computed = 700000 - 20000.
-    await insertTransaction({
+    const latest = await insertTransaction({
       walletId: wallet.id, categoryId: CATEGORY_ID, amount: 20000, direction: "out",
       occurredAt: 2000, source: "notification", confidence: 0.95, balanceAfter: 650000,
     });
@@ -527,6 +538,10 @@ describe("getBalanceDrift reports the gap between the provider's figure and ours
       reported: 650000,
       computed: 680000,
       drift: -30000,
+      // The id tracks the same row the figures do. It is what makes a dismissal
+      // of the FIRST report stop applying once this one lands.
+      reportingTransactionId: latest.id,
+      dismissedTransactionId: null,
     });
   });
 
@@ -541,7 +556,7 @@ describe("getBalanceDrift reports the gap between the provider's figure and ours
       occurredAt: 2000, source: "manual", confidence: 1,
     });
     // Running balance is now 695000; a ₱50.00 spend takes it to 690000.
-    await insertTransaction({
+    const latest = await insertTransaction({
       walletId: wallet.id, categoryId: CATEGORY_ID, amount: 5000, direction: "out",
       occurredAt: 3000, source: "notification", confidence: 0.95, balanceAfter: 690000,
     });
@@ -550,6 +565,8 @@ describe("getBalanceDrift reports the gap between the provider's figure and ours
       reported: 690000,
       computed: 690000,
       drift: 0,
+      reportingTransactionId: latest.id,
+      dismissedTransactionId: null,
     });
   });
 
@@ -585,5 +602,165 @@ describe("getBalanceDrift reports the gap between the provider's figure and ours
 
     expect(await getBalanceDrift(quiet.id)).toBeNull();
     expect(await getBalanceDrift(reporting.id)).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Migration 003 — dismissBalanceDrift, rule 3's second offer.
+//
+// Rule 3 lets the user "record the gap as an adjustment Transaction ..., or
+// dismiss (accept the snap silently)". Dismissal waited for a schema decision
+// because the obvious shape — a boolean "the user dismissed the drift" — is
+// wrong in a way that only shows up later: it silences the acknowledged drift
+// AND every genuine one after it, so the next real disagreement between the bank
+// and the ledger is invisible with nothing for the user to notice.
+//
+// The column is a nullable TRANSACTION ID instead, because `getBalanceDrift`
+// already keys on exactly one row — the newest reporting transaction — so the
+// drift on screen has an identity. Same id still newest means seen; a newer
+// reporting transaction has a different id, so the badge returns by itself.
+//
+// THE TEST BELOW THAT A BOOLEAN WOULD FAIL is "a NEWER reporting transaction is
+// not covered by the earlier dismissal". Every other test in this block passes
+// against the wrong design.
+// ---------------------------------------------------------------------------
+
+describe("dismissBalanceDrift records WHICH drift the user has seen", () => {
+  const CATEGORY_ID = "cat_dismiss";
+
+  async function seedCategory(): Promise<void> {
+    const now = Date.now();
+    await db.runAsync(
+      `INSERT INTO categories (id, name, parent_id, icon, is_system, is_hidden, created_at, updated_at)
+       VALUES (?, 'Food & Dining', NULL, 'utensils', 1, 0, ?, ?)`,
+      [CATEGORY_ID, now, now],
+    );
+  }
+
+  beforeEach(seedCategory);
+
+  async function report(walletId: string, amount: number, balanceAfter: number) {
+    return insertTransaction({
+      walletId, categoryId: CATEGORY_ID, amount, direction: "out",
+      occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter,
+    });
+  }
+
+  test("a brand-new wallet has dismissed nothing", async () => {
+    // NULL, not a falsy id and not an empty string: "nothing acknowledged" has
+    // to be distinguishable from every id this app can generate.
+    const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
+    expect(wallet.driftDismissedTransactionId).toBeNull();
+    expect((await getWallet(wallet.id))?.driftDismissedTransactionId).toBeNull();
+  });
+
+  test("dismissing reports the same id back as the reporting transaction's", async () => {
+    const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
+    const first = await report(wallet.id, 15000, 900000);
+
+    await dismissBalanceDrift(wallet.id, first.id);
+
+    const drift = await getBalanceDrift(wallet.id);
+    // The figures are untouched — dismissing accepts the snap, it does not
+    // change or hide what the two sides said. The badge's own rule is that the
+    // two ids match.
+    expect(drift).toEqual({
+      reported: 900000,
+      computed: 85000,
+      drift: 815000,
+      reportingTransactionId: first.id,
+      dismissedTransactionId: first.id,
+    });
+  });
+
+  test("a NEWER reporting transaction is not covered by the earlier dismissal", async () => {
+    // THE test. A boolean flag, or a dismissal that stores a timestamp nothing
+    // ever compares, passes every other assertion in this file and fails here —
+    // and the failure it represents in the app is the one that matters: a real
+    // reconciliation problem the user is never told about, with no way to
+    // notice, because they once dismissed an unrelated one.
+    const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
+    const first = await report(wallet.id, 15000, 900000);
+    await dismissBalanceDrift(wallet.id, first.id);
+
+    const second = await report(wallet.id, 20000, 700000);
+
+    const drift = await getBalanceDrift(wallet.id);
+    expect(drift?.reportingTransactionId).toBe(second.id);
+    // Still the OLD id — the dismissal is not cleared by anything, it simply
+    // stops matching. That is what makes the badge come back with no
+    // housekeeping step for anyone to forget.
+    expect(drift?.dismissedTransactionId).toBe(first.id);
+    expect(drift?.dismissedTransactionId).not.toBe(drift?.reportingTransactionId);
+  });
+
+  test("dismissing one wallet's drift leaves another wallet's untouched", async () => {
+    // A flag stored per app rather than per wallet passes every single-wallet
+    // test above and silences a bank the user has never looked at.
+    const gcash = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
+    const bpi = await createWallet({ name: "BPI", type: "bank", openingBalance: 100000 });
+    const gcashReport = await report(gcash.id, 15000, 900000);
+    const bpiReport = await report(bpi.id, 15000, 900000);
+
+    await dismissBalanceDrift(gcash.id, gcashReport.id);
+
+    expect((await getBalanceDrift(gcash.id))?.dismissedTransactionId).toBe(gcashReport.id);
+    expect((await getBalanceDrift(bpi.id))?.dismissedTransactionId).toBeNull();
+    expect((await getBalanceDrift(bpi.id))?.reportingTransactionId).toBe(bpiReport.id);
+  });
+
+  test("the dismissal is stored, not remembered — it survives a re-read from the row", async () => {
+    const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
+    const first = await report(wallet.id, 15000, 900000);
+
+    await dismissBalanceDrift(wallet.id, first.id);
+
+    // Straight off the wallets row, bypassing getBalanceDrift entirely: this is
+    // the whole difference between the fix and the bug it replaces, which was a
+    // dismissal that lived only for as long as the screen did.
+    const row = await db.getFirstAsync<{ id: string | null }>(
+      "SELECT drift_dismissed_transaction_id AS id FROM wallets WHERE id = ?",
+      [wallet.id],
+    );
+    expect(row?.id).toBe(first.id);
+    expect((await getWallet(wallet.id))?.driftDismissedTransactionId).toBe(first.id);
+  });
+
+  test("it bumps updated_at and moves NOTHING else on the wallet", async () => {
+    // Dismissing accepts the snap silently — spec rule 3's own words. A balance
+    // that moved here would be money appearing with no transaction to explain it.
+    const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
+    const first = await report(wallet.id, 15000, 900000);
+    const before = await getWallet(wallet.id);
+
+    await dismissBalanceDrift(wallet.id, first.id);
+
+    const after = await getWallet(wallet.id);
+    expect(after?.balance).toBe(before?.balance);
+    expect(after?.name).toBe(before?.name);
+    expect(after?.isArchived).toBe(before?.isArchived);
+    expect(after?.updatedAt).toBeGreaterThanOrEqual(before!.updatedAt);
+  });
+
+  test("dismissing an unknown wallet is a silent no-op, like archiveWallet", async () => {
+    // A double tap on a screen whose wallet has just been removed must not
+    // throw; nothing about a dismissal is worth failing a user's tap over.
+    await expect(dismissBalanceDrift("does-not-exist", "also-not-real")).resolves.toBeUndefined();
+  });
+
+  test("deleting the dismissed transaction clears the dismissal instead of failing", async () => {
+    // The review queue's "Same transaction" merge deletes a duplicate row. If
+    // that row is the one a dismissal names, the foreign key would block the
+    // delete and the merge would fail with an error naming neither. Clearing it
+    // is also the right answer on its own terms: a dismissal of a transaction
+    // that no longer exists acknowledges nothing.
+    const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
+    const first = await report(wallet.id, 15000, 900000);
+    await dismissBalanceDrift(wallet.id, first.id);
+
+    await expect(deleteTransaction(first.id)).resolves.toBeUndefined();
+
+    expect((await getWallet(wallet.id))?.driftDismissedTransactionId).toBeNull();
+    expect(await getBalanceDrift(wallet.id)).toBeNull();
   });
 });

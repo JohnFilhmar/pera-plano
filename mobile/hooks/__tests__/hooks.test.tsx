@@ -67,6 +67,7 @@ import { useWallets } from "../queries/use_wallets";
 import { useArchiveWallet } from "../mutations/use_archive_wallet";
 import { useCreateTransaction } from "../mutations/use_create_transaction";
 import { useCreateWallet } from "../mutations/use_create_wallet";
+import { useDismissDrift } from "../mutations/use_dismiss_drift";
 import { useLinkTransfer } from "../mutations/use_link_transfer";
 import { useResolveReviewItem } from "../mutations/use_resolve_review_item";
 import { useUnlinkTransfer } from "../mutations/use_unlink_transfer";
@@ -370,8 +371,9 @@ describe("useWallets(includeArchived) and queryKeys.wallets.list(includeArchived
 // ---------------------------------------------------------------------------
 
 describe("useBalanceDrift", () => {
-  async function commitReporting(reported: number): Promise<void> {
-    await insertTransaction({
+  /** Returns the reporting transaction, which IS the drift's identity (003). */
+  async function commitReporting(reported: number): Promise<Transaction> {
+    return insertTransaction({
       walletId: walletA.id,
       categoryId,
       amount: 5_000,
@@ -394,7 +396,7 @@ describe("useBalanceDrift", () => {
   test("returns both figures and the gap between them", async () => {
     // walletA opened at 100_000 and txA took 15_000 out, so the computed
     // expectation after another 5_000 out is 80_000.
-    await commitReporting(900_000);
+    const report = await commitReporting(900_000);
 
     const { result } = renderHook(() => useBalanceDrift(walletA.id), {
       wrapper: wrapperFor(client),
@@ -404,6 +406,10 @@ describe("useBalanceDrift", () => {
       reported: 900_000,
       computed: 80_000,
       drift: 820_000,
+      // 003: the row the figures came from, and the one the user has already
+      // accepted. The badge compares the two rather than reading a flag.
+      reportingTransactionId: report.id,
+      dismissedTransactionId: null,
     });
   });
 
@@ -435,7 +441,7 @@ describe("useBalanceDrift", () => {
   });
 
   test("useBalanceDrifts maps each id to its own drift, or to null", async () => {
-    await commitReporting(900_000);
+    const report = await commitReporting(900_000);
 
     const { result } = renderHook(() => useBalanceDrifts([walletA.id, walletB.id]), {
       wrapper: wrapperFor(client),
@@ -453,6 +459,8 @@ describe("useBalanceDrift", () => {
       reported: 900_000,
       computed: 80_000,
       drift: 820_000,
+      reportingTransactionId: report.id,
+      dismissedTransactionId: null,
     });
     expect(result.current[walletB.id]).toBeNull();
   });
@@ -647,6 +655,62 @@ describe("useArchiveWallet", () => {
     expect((await getTransaction(txA.id))?.walletId).toBe(walletA.id);
     expect(wasInvalidated(client, queryKeys.wallets.list())).toBe(true);
     expect(wasInvalidated(client, queryKeys.wallets.detail(walletA.id))).toBe(true);
+  });
+});
+
+describe("useDismissDrift", () => {
+  async function reportingTransaction(walletId: string): Promise<Transaction> {
+    return insertTransaction({
+      walletId,
+      categoryId,
+      amount: 5_000,
+      direction: "out",
+      occurredAt: 2_000,
+      source: "notification",
+      confidence: 0.9,
+      balanceAfter: 900_000,
+    });
+  }
+
+  test("records the dismissal and refreshes the badge's own cache slot", async () => {
+    // The drift key nests UNDER the wallet's detail key, so naming the detail
+    // key reaches it — and reaches the SAME per-wallet slot `useBalanceDrifts`
+    // uses for the Wallets-tab row, which is why both badges go quiet together.
+    const report = await reportingTransaction(walletA.id);
+    client.setQueryData(queryKeys.wallets.drift(walletA.id), null);
+    client.setQueryData(queryKeys.wallets.detail(walletB.id), walletB);
+
+    const { result } = renderHook(() => useDismissDrift(), { wrapper: wrapperFor(client) });
+    await act(async () => {
+      result.current.mutate({ walletId: walletA.id, transactionId: report.id });
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect((await getWallet(walletA.id))?.driftDismissedTransactionId).toBe(report.id);
+    expect(wasInvalidated(client, queryKeys.wallets.drift(walletA.id))).toBe(true);
+    // Still narrow: another wallet's screen has no reason to refetch because
+    // this one's warning was acknowledged.
+    expect(wasInvalidated(client, queryKeys.wallets.detail(walletB.id))).toBe(false);
+  });
+
+  test("stores the id it was GIVEN, not whatever is newest at the moment it runs", async () => {
+    // The user dismisses the drift they were shown. If a notification commits
+    // between the render and the tap, re-reading here would silence a
+    // disagreement they were never shown; storing the older id they did see
+    // leaves the newer one to speak for itself.
+    const seen = await reportingTransaction(walletA.id);
+    const arrivedAfterTheRender = await reportingTransaction(walletA.id);
+
+    const { result } = renderHook(() => useDismissDrift(), { wrapper: wrapperFor(client) });
+    await act(async () => {
+      result.current.mutate({ walletId: walletA.id, transactionId: seen.id });
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect((await getWallet(walletA.id))?.driftDismissedTransactionId).toBe(seen.id);
+    expect((await getWallet(walletA.id))?.driftDismissedTransactionId).not.toBe(
+      arrivedAfterTheRender.id,
+    );
   });
 });
 
@@ -864,6 +928,7 @@ const MUTATION_HOOK_NAMES = [
   "useCreateWallet",
   "useUpdateWallet",
   "useArchiveWallet",
+  "useDismissDrift",
   "useCreateTransaction",
   "useUpdateTransaction",
   "useResolveReviewItem",
@@ -897,6 +962,19 @@ function mutationCases(): Record<MutationHookName, () => Promise<void>> {
     useCreateWallet: () => fire(useCreateWallet, { name: "Cash on hand", type: "cash" as const }),
     useUpdateWallet: () => fire(useUpdateWallet, { id: walletA.id, patch: { name: "Renamed" } }),
     useArchiveWallet: () => fire(useArchiveWallet, { id: walletB.id }),
+    useDismissDrift: async () => {
+      const report = await insertTransaction({
+        walletId: walletA.id,
+        categoryId,
+        amount: 5_000,
+        direction: "out",
+        occurredAt: 2_000,
+        source: "notification",
+        confidence: 0.9,
+        balanceAfter: 900_000,
+      });
+      await fire(useDismissDrift, { walletId: walletA.id, transactionId: report.id });
+    },
     useCreateTransaction: () =>
       fire(useCreateTransaction, {
         walletId: walletA.id,

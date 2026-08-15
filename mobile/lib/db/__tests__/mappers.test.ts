@@ -35,6 +35,7 @@ describe("wallet mapper", () => {
     balance: 250075,
     currency: "PHP",
     isArchived: true,
+    driftDismissedTransactionId: "5a1d0c22-7e44-4c19-91a6-8f2b0d3e4c55",
     createdAt: 1754060400000,
     updatedAt: 1754060400001,
   };
@@ -54,6 +55,9 @@ describe("wallet mapper", () => {
       balance: 250075,
       currency: "PHP",
       is_archived: 1,
+      // 003_drift_dismissal. APPENDED by ALTER TABLE, so it sits after the
+      // original columns rather than beside `is_archived` where it reads.
+      drift_dismissed_transaction_id: "5a1d0c22-7e44-4c19-91a6-8f2b0d3e4c55",
       created_at: 1754060400000,
       updated_at: 1754060400001,
     });
@@ -61,6 +65,15 @@ describe("wallet mapper", () => {
 
   test("walletToRow encodes isArchived=false as 0 (both boolean directions checked, not just true)", () => {
     expect(walletToRow({ ...wallet, isArchived: false }).is_archived).toBe(0);
+  });
+
+  test("walletToRow carries a null dismissal through as NULL, never as an empty string", () => {
+    // "Nothing acknowledged" has to stay distinguishable from every id the app
+    // can generate — and an empty string would satisfy the foreign key on
+    // nothing at all, so it would fail on write rather than read wrong.
+    expect(
+      walletToRow({ ...wallet, driftDismissedTransactionId: null }).drift_dismissed_transaction_id,
+    ).toBeNull();
   });
 
   test("walletToRow keeps balance an exact integer centavos value — never a float, never a formatted string", () => {
@@ -86,9 +99,35 @@ describe("wallet mapper", () => {
       balance: 500000,
       currency: "PHP",
       isArchived: false,
+      // Never written, so NULL — the state every wallet starts in.
+      driftDismissedTransactionId: null,
       createdAt: 1700000000000,
       updatedAt: 1700000000123,
     });
+  });
+
+  test("rowToWallet decodes a recorded dismissal as the transaction id it is", async () => {
+    // Migration 003. The badge decides by comparing this id against the current
+    // reporting transaction's, so a mapper that dropped it (or coerced it to a
+    // boolean) would silence every later drift as well as the dismissed one.
+    const db = await freshDb();
+    await db.runAsync(
+      "INSERT INTO categories (id, name, parent_id, icon, is_system, is_hidden, created_at, updated_at) VALUES ('c_map', 'Food', NULL, 'utensils', 1, 0, 0, 0)",
+    );
+    await db.runAsync(
+      "INSERT INTO wallets (id, name, type, balance, currency, is_archived, created_at, updated_at) VALUES ('w_seen', 'GCash', 'e-wallet', 100, 'PHP', 0, 1, 1)",
+    );
+    await db.runAsync(
+      "INSERT INTO transactions (id, wallet_id, category_id, amount, direction, occurred_at, source, confidence, created_at, updated_at) VALUES ('tx_seen', 'w_seen', 'c_map', 100, 'out', 1, 'notification', 0.9, 1, 1)",
+    );
+    await db.runAsync(
+      "UPDATE wallets SET drift_dismissed_transaction_id = 'tx_seen' WHERE id = 'w_seen'",
+    );
+
+    const row = await db.getFirstAsync<Record<string, unknown>>(
+      "SELECT * FROM wallets WHERE id = 'w_seen'",
+    );
+    expect(rowToWallet(row as never).driftDismissedTransactionId).toBe("tx_seen");
   });
 
   test("rowToWallet decodes is_archived=1 as true, not the literal number 1", async () => {

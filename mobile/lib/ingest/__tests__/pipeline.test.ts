@@ -202,7 +202,9 @@ test("the drift the snap absorbed is recoverable from the wallet afterwards", as
 
   await processCapture(gcashSend("cap-drift"));
 
-  expect(await getBalanceDrift(wallet.id)).toEqual({
+  // The FIGURES are this test's claim; 003 also returns the reporting and
+  // dismissed transaction ids, which the repository's own suite pins exactly.
+  expect(await getBalanceDrift(wallet.id)).toMatchObject({
     reported: 125000,
     computed: 850000,
     drift: -725000,

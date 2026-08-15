@@ -59,6 +59,10 @@ export async function createWallet(input: NewWallet): Promise<Wallet> {
     balance: input.openingBalance ?? 0,
     currency: "PHP",
     isArchived: false,
+    // Nothing acknowledged. The INSERT below never names the column, so the
+    // schema default (NULL) applies — a new wallet cannot have dismissed a
+    // drift it has not been shown.
+    driftDismissedTransactionId: null,
     createdAt: now,
     updatedAt: now,
   };
@@ -115,7 +119,8 @@ export async function listWallets(opts?: { includeArchived?: boolean }): Promise
  * excluded from that check, so re-casing a wallet's own name, or saving the
  * form without touching the name, is always allowed.
  *
- * `balance` IS NOT PATCHABLE, and neither is `currency` or `isArchived`. The
+ * `balance` IS NOT PATCHABLE, and neither is `currency`, `isArchived` or
+ * `driftDismissedTransactionId` (that one belongs to `dismissBalanceDrift`). The
  * balance is the ledger's running total, moved only by `insertTransaction` /
  * `updateTransaction` as part of committing the transaction that explains the
  * move. A wallet-edit form that could set it directly would let a user write a
@@ -215,16 +220,39 @@ export async function archiveWallet(id: string): Promise<void> {
  * Both figures are read off the transaction row rather than recomputed: the snap
  * overwrote the computed balance the instant it happened, and re-deriving it
  * would need the anchor walk that is reconciliation work.
+ *
+ * IT ALSO RETURNS TWO IDS (migration 003). `reportingTransactionId` is the row
+ * the figures came from — the identity of THIS drift — and
+ * `dismissedTransactionId` is whichever drift the user has already accepted, or
+ * `null`. Callers compare them; equal means seen, and a newer report is a
+ * different row, so its drift is unacknowledged by construction. The verdict is
+ * deliberately NOT computed here, for the same reason the tolerance is not: this
+ * function reports what the two sides said and what the user has acknowledged,
+ * and `components/wallets/balance_mismatch_badge.tsx` turns that into a badge or
+ * silence in exactly one place.
  */
-export async function getBalanceDrift(
-  walletId: string,
-): Promise<{ reported: Centavos; computed: Centavos; drift: Centavos } | null> {
+export async function getBalanceDrift(walletId: string): Promise<{
+  reported: Centavos;
+  computed: Centavos;
+  drift: Centavos;
+  reportingTransactionId: string;
+  dismissedTransactionId: string | null;
+} | null> {
   const db = await getDatabase();
-  const row = await db.getFirstAsync<{ balance_after: number; computed_balance: number }>(
-    `SELECT balance_after, computed_balance
-       FROM transactions
-      WHERE wallet_id = ? AND balance_after IS NOT NULL
-      ORDER BY created_at DESC, rowid DESC
+  // Joined rather than read in a second query: the dismissal is only meaningful
+  // against the reporting row it is compared with, and two reads could be
+  // separated by a commit that changes which row that is.
+  const row = await db.getFirstAsync<{
+    id: string;
+    balance_after: number;
+    computed_balance: number;
+    drift_dismissed_transaction_id: string | null;
+  }>(
+    `SELECT t.id, t.balance_after, t.computed_balance, w.drift_dismissed_transaction_id
+       FROM transactions t
+       JOIN wallets w ON w.id = t.wallet_id
+      WHERE t.wallet_id = ? AND t.balance_after IS NOT NULL
+      ORDER BY t.created_at DESC, t.rowid DESC
       LIMIT 1`,
     [walletId],
   );
@@ -235,5 +263,43 @@ export async function getBalanceDrift(
   // reported figure reports no drift rather than inventing one out of a null.
   const reported = row.balance_after;
   const computed = row.computed_balance ?? reported;
-  return { reported, computed, drift: reported - computed };
+  return {
+    reported,
+    computed,
+    drift: reported - computed,
+    reportingTransactionId: row.id,
+    dismissedTransactionId: row.drift_dismissed_transaction_id ?? null,
+  };
+}
+
+/**
+ * Records that the user has seen the drift reported by `transactionId` and
+ * accepted it — spec rule 3's "or dismiss (accept the snap silently)".
+ *
+ * IT STORES AN ID, NOT A FLAG, and that is the entire design (see
+ * lib/db/migrations/003_drift_dismissal.sql). `getBalanceDrift` keys on exactly
+ * one row, so the drift on screen already has an identity; storing it means the
+ * badge goes quiet for THAT disagreement and returns by itself when a newer
+ * reporting transaction lands, with nothing to clear. A boolean would silence
+ * the next genuine drift too, turning a real reconciliation problem into one the
+ * user has no way to notice.
+ *
+ * IT MOVES NO MONEY. Dismissing accepts the snap that already happened; the
+ * other half of rule 3 — recording the gap as an adjustment — is the write that
+ * changes a balance, and it goes through `insertTransaction` like every other
+ * peso in the app.
+ *
+ * Idempotent and silent on an unknown wallet, like `archiveWallet`: a stray tap
+ * on a screen whose wallet has just been removed is not worth an error, and
+ * nothing downstream depends on the row count.
+ */
+export async function dismissBalanceDrift(
+  walletId: string,
+  transactionId: string,
+): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync(
+    "UPDATE wallets SET drift_dismissed_transaction_id = ?, updated_at = ? WHERE id = ?",
+    [transactionId, Date.now(), walletId],
+  );
 }

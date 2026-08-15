@@ -17,12 +17,19 @@
 // tab-wide one, and it is true even when the rest of the ledger is full.
 //
 // THE THREE ACTIONS ARRIVED WITH m1c TASK 5 (rule 4: edit, reconcile, archive),
-// each behind the thing that makes it safe:
+// each behind the thing that makes it safe, and DISMISS joined them with
+// migration 003:
 //
 //   EDIT opens app/wallet/[id]/edit.tsx.
 //   RECONCILE is offered for `type: "cash"` ONLY (Task 5 rule 6). A wallet with
 //     a provider re-anchors itself from the reported balance-after; a typed
 //     adjustment there would fight the next snap.
+//   DISMISS is the other half of balance-handling rule 3 ("record the gap as an
+//     adjustment, or dismiss") and appears ONLY while the drift badge is
+//     actually showing — decided by the badge's own `isDriftWorthShowing`, so a
+//     button can never appear beside a badge that is not there. It names the
+//     reporting transaction the user is looking at, which is what lets a NEWER
+//     report raise the badge again instead of being silenced by an old tap.
 //   ARCHIVE opens the sheet that asks what happens to this wallet's
 //     transactions — never a bare confirm, because archiving without that
 //     question is how history gets orphaned or silently relocated.
@@ -42,11 +49,15 @@ import { Chip } from "@/components/ui/chip";
 import { EmptyState } from "@/components/ui/empty_state";
 import { SectionHeader } from "@/components/ui/section_header";
 import { ArchiveWalletSheet } from "@/components/wallets/archive_wallet_sheet";
-import { BalanceMismatchBadge } from "@/components/wallets/balance_mismatch_badge";
+import {
+  BalanceMismatchBadge,
+  isDriftWorthShowing,
+} from "@/components/wallets/balance_mismatch_badge";
 import { CashReconcileSheet } from "@/components/wallets/cash_reconcile_sheet";
 import { MatcherChipList } from "@/components/wallets/matcher_chip_list";
 import { WalletTypeIcon } from "@/components/wallets/wallet_type_icon";
 import { useArchiveWallet } from "@/hooks/mutations/use_archive_wallet";
+import { useDismissDrift } from "@/hooks/mutations/use_dismiss_drift";
 import { useBalanceDrift } from "@/hooks/queries/use_balance_drift";
 import { useCategories } from "@/hooks/queries/use_categories";
 import { useRuleset } from "@/hooks/queries/use_ruleset";
@@ -70,6 +81,7 @@ export default function WalletDetailScreen() {
   const { data: wallets } = useWallets();
   const { data: categories } = useCategories();
   const archiveWallet = useArchiveWallet();
+  const dismissDrift = useDismissDrift();
 
   if (isPending) {
     return <View testID="wallet-detail-loading" className="flex-1 bg-bg dark:bg-bg-dark" />;
@@ -93,6 +105,10 @@ export default function WalletDetailScreen() {
   // Read from the ruleset, never inlined — see components/wallets/balance_mismatch_badge.tsx.
   const toleranceCentavos = ruleset?.tunables.balanceDriftToleranceCentavos;
   const isCash = wallet.type === "cash";
+  // The badge's own predicate, so the action and the badge cannot disagree about
+  // whether there is a drift to dismiss. Narrowed to the drift itself, because
+  // the mutation needs the reporting transaction's id off it.
+  const dismissibleDrift = isDriftWorthShowing(drift, toleranceCentavos) ? drift : null;
 
   return (
     <ScrollView testID="wallet-detail" className="flex-1 bg-bg dark:bg-bg-dark">
@@ -152,6 +168,26 @@ export default function WalletDetailScreen() {
                   title="Reconcile"
                   variant="secondary"
                   onPress={() => setReconciling(true)}
+                />
+              </View>
+            ) : null}
+            {dismissibleDrift ? (
+              <View className="flex-1">
+                <Button
+                  testID="wallet-detail-dismiss-drift"
+                  title="Dismiss"
+                  variant="secondary"
+                  loading={dismissDrift.isPending}
+                  // The id from the drift ON SCREEN, never a fresh read: this
+                  // records what the user actually looked at and accepted. A
+                  // report that lands between this render and the tap keeps its
+                  // own drift, and the badge comes back for it.
+                  onPress={() =>
+                    dismissDrift.mutate({
+                      walletId: wallet.id,
+                      transactionId: dismissibleDrift.reportingTransactionId,
+                    })
+                  }
                 />
               </View>
             ) : null}

@@ -356,8 +356,11 @@ describe("balance drift", () => {
     await screen.findByTestId(`wallet-card-${bpi.id}`);
     await waitForDriftDecision(client, bpi.id);
 
-    // The drift itself is real and loaded — only the threshold changed.
-    expect(client.getQueryData(queryKeys.wallets.drift(bpi.id))).toEqual({
+    // The drift itself is real and loaded — only the threshold changed. Matched
+    // on the FIGURES alone: 003 added the reporting/dismissed transaction ids to
+    // this payload, and this test is about the tolerance, not the shape (which
+    // lib/db/repos/__tests__/wallets_repo.test.ts pins exactly).
+    expect(client.getQueryData(queryKeys.wallets.drift(bpi.id))).toMatchObject({
       reported: 900_000,
       computed: 85_000,
       drift: 815_000,

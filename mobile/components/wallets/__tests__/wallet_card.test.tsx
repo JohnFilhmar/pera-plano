@@ -25,8 +25,9 @@
 import { fireEvent, render, screen } from "@testing-library/react-native";
 import { Banknote, CreditCard, Landmark, PiggyBank, Smartphone } from "lucide-react-native";
 
+import type { BalanceDrift } from "@/hooks/queries/use_balance_drift";
 import type { ProviderRuleset } from "@/lib/ingest/ruleset_types";
-import type { Wallet, WalletMatcher, WalletType } from "@/types/domain";
+import type { Centavos, Wallet, WalletMatcher, WalletType } from "@/types/domain";
 
 import { BalanceMismatchBadge } from "../balance_mismatch_badge";
 import { MatcherChipList } from "../matcher_chip_list";
@@ -41,10 +42,27 @@ function wallet(overrides: Partial<Wallet> = {}): Wallet {
     balance: 123_456,
     currency: "PHP",
     isArchived: false,
+    driftDismissedTransactionId: null,
     createdAt: 1_000,
     updatedAt: 1_000,
     ...overrides,
   };
+}
+
+/** The row `getBalanceDrift` read these figures off — migration 003. */
+const REPORTING_TX = "tx_reporting";
+
+/**
+ * A drift the user has dismissed NOTHING about, which is the state every case
+ * below is about except the dismissal block itself. Pass a second argument to
+ * say which reporting transaction has been acknowledged; passing REPORTING_TX
+ * means "this very one", which is the only combination that silences the badge.
+ */
+function undismissed(
+  figures: { reported: Centavos; computed: Centavos; drift: Centavos },
+  dismissedTransactionId: string | null = null,
+): BalanceDrift {
+  return { ...figures, reportingTransactionId: REPORTING_TX, dismissedTransactionId };
 }
 
 // ---------------------------------------------------------------------------
@@ -90,7 +108,7 @@ describe("BalanceMismatchBadge", () => {
   test("a drift beyond tolerance renders BOTH figures", () => {
     render(
       <BalanceMismatchBadge
-        drift={{ reported: 900_000, computed: 850_00, drift: 900_000 - 850_00 }}
+        drift={undismissed({ reported: 900_000, computed: 850_00, drift: 900_000 - 850_00 })}
         toleranceCentavos={100}
       />,
     );
@@ -107,7 +125,7 @@ describe("BalanceMismatchBadge", () => {
   test("a drift WITHIN tolerance renders nothing at all", () => {
     render(
       <BalanceMismatchBadge
-        drift={{ reported: 85_050, computed: 85_000, drift: 50 }}
+        drift={undismissed({ reported: 85_050, computed: 85_000, drift: 50 })}
         toleranceCentavos={100}
       />,
     );
@@ -117,7 +135,7 @@ describe("BalanceMismatchBadge", () => {
   test("a drift exactly AT tolerance renders nothing (the boundary is inclusive)", () => {
     render(
       <BalanceMismatchBadge
-        drift={{ reported: 85_100, computed: 85_000, drift: 100 }}
+        drift={undismissed({ reported: 85_100, computed: 85_000, drift: 100 })}
         toleranceCentavos={100}
       />,
     );
@@ -127,7 +145,7 @@ describe("BalanceMismatchBadge", () => {
   test("a zero drift renders nothing — the figures agree", () => {
     render(
       <BalanceMismatchBadge
-        drift={{ reported: 85_000, computed: 85_000, drift: 0 }}
+        drift={undismissed({ reported: 85_000, computed: 85_000, drift: 0 })}
         toleranceCentavos={100}
       />,
     );
@@ -148,7 +166,7 @@ describe("BalanceMismatchBadge", () => {
     // the app never saw. That is the direction that matters most.
     render(
       <BalanceMismatchBadge
-        drift={{ reported: 80_000, computed: 85_000, drift: -5_000 }}
+        drift={undismissed({ reported: 80_000, computed: 85_000, drift: -5_000 })}
         toleranceCentavos={100}
       />,
     );
@@ -162,7 +180,7 @@ describe("BalanceMismatchBadge", () => {
     // threshold would flash a warning that may vanish a frame later.
     render(
       <BalanceMismatchBadge
-        drift={{ reported: 900_000, computed: 85_000, drift: 815_000 }}
+        drift={undismissed({ reported: 900_000, computed: 85_000, drift: 815_000 })}
         toleranceCentavos={undefined}
       />,
     );
@@ -174,7 +192,7 @@ describe("BalanceMismatchBadge", () => {
     // hard-codes DEFAULT_TUNABLES' 100 passes the first and fails the second —
     // which is the whole point of shipping the tolerance as retunable ruleset
     // data (docs/04-features/02-wallets.md §14 open question 1).
-    const drift = { reported: 85_500, computed: 85_000, drift: 500 };
+    const drift = undismissed({ reported: 85_500, computed: 85_000, drift: 500 });
 
     test("tolerance ₱1.00 — the ₱5.00 drift is reported", () => {
       render(<BalanceMismatchBadge drift={drift} toleranceCentavos={100} />);
@@ -187,19 +205,65 @@ describe("BalanceMismatchBadge", () => {
     });
   });
 
-  test("offers no dismiss action — there is nowhere to record one (Task 5)", () => {
-    // Spec rule 3 offers "record the gap as an adjustment, or dismiss", but no
-    // acknowledged/dismissed flag exists in the schema, so a dismissed drift
-    // would re-render forever. The badge is display-only until Task 5 designs
-    // what reconciliation writes.
+  test("STILL carries no dismiss action of its own — it renders, it does not act", () => {
+    // Migration 003 gave the schema somewhere to record a dismissal, and rule
+    // 3's second offer now exists — but it lives on app/wallet/[id].tsx beside
+    // the other wallet actions, not in here. This component is rendered on the
+    // Wallets tab too, where the drift explainer's actions do not belong: a
+    // button on every row of a list is a tap away from silencing a warning the
+    // user has not read. What the badge learned from 003 is when to go QUIET,
+    // which is the block below.
     render(
       <BalanceMismatchBadge
-        drift={{ reported: 900_000, computed: 85_000, drift: 815_000 }}
+        drift={undismissed({ reported: 900_000, computed: 85_000, drift: 815_000 })}
         toleranceCentavos={100}
       />,
     );
     expect(screen.queryByText(/dismiss/i)).toBeNull();
     expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  describe("a drift the user has already dismissed (migration 003)", () => {
+    const FIGURES = { reported: 900_000, computed: 85_000, drift: 815_000 };
+
+    test("the dismissed reporting transaction renders nothing", () => {
+      // The bug this fixes: a drift the user acknowledged coming back on every
+      // single open of the wallet, forever, with no way to make it stop.
+      render(
+        <BalanceMismatchBadge
+          drift={undismissed(FIGURES, REPORTING_TX)}
+          toleranceCentavos={100}
+        />,
+      );
+      expect(screen.queryByTestId("balance-mismatch")).toBeNull();
+    });
+
+    test("A NEWER REPORTING TRANSACTION RENDERS AGAIN — the dismissal was of one drift", () => {
+      // THE test at this layer. The badge compares the two ids; a boolean
+      // "dismissed" prop would render nothing here and hide a genuine, current
+      // disagreement between the bank and the ledger behind an unrelated tap
+      // the user made days ago.
+      render(
+        <BalanceMismatchBadge
+          drift={undismissed(FIGURES, "tx_an_older_report")}
+          toleranceCentavos={100}
+        />,
+      );
+      expect(screen.getByTestId("balance-mismatch")).toBeTruthy();
+      expect(screen.getByTestId("balance-mismatch-reported")).toHaveTextContent("₱9,000.00");
+    });
+
+    test("a dismissal never RESURRECTS a badge that tolerance had silenced", () => {
+      // Dismissed and within tolerance at the same time. The comparison is an
+      // extra reason to stay quiet, never a reason to speak.
+      render(
+        <BalanceMismatchBadge
+          drift={undismissed({ reported: 85_050, computed: 85_000, drift: 50 }, "tx_older")}
+          toleranceCentavos={100}
+        />,
+      );
+      expect(screen.queryByTestId("balance-mismatch")).toBeNull();
+    });
   });
 });
 
@@ -242,7 +306,7 @@ describe("WalletCard", () => {
     render(
       <WalletCard
         wallet={wallet()}
-        drift={{ reported: 900_000, computed: 85_000, drift: 815_000 }}
+        drift={undismissed({ reported: 900_000, computed: 85_000, drift: 815_000 })}
         toleranceCentavos={100}
       />,
     );
@@ -253,6 +317,21 @@ describe("WalletCard", () => {
 
   test("renders no badge when the wallet has never reported a balance", () => {
     render(<WalletCard wallet={wallet()} drift={null} toleranceCentavos={100} />);
+    expect(screen.queryByTestId("wallet-card-w1-drift")).toBeNull();
+  });
+
+  test("a drift dismissed on the detail screen is quiet on the LIST row too", () => {
+    // Both badges read the same per-wallet cache slot (`useBalanceDrifts` shares
+    // `queryKeys.wallets.drift(id)` deliberately), so a dismissal that only
+    // silenced the detail screen would leave the warning glyph sitting on the
+    // Wallets tab — the user tapping "Dismiss" and watching nothing happen.
+    render(
+      <WalletCard
+        wallet={wallet()}
+        drift={undismissed({ reported: 900_000, computed: 85_000, drift: 815_000 }, REPORTING_TX)}
+        toleranceCentavos={100}
+      />,
+    );
     expect(screen.queryByTestId("wallet-card-w1-drift")).toBeNull();
   });
 
