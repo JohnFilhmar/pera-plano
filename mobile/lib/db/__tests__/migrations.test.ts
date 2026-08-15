@@ -166,7 +166,7 @@ describe("002_balance_after upgrades a real version-1 database in place", () => 
     const applied = await runMigrations(db);
     // 001 IS NOT IN THIS LIST. A leading `1` would mean 001 was replayed over
     // live data; every later version is simply everything that has shipped since.
-    expect(applied).toEqual([2, 3]);
+    expect(applied).toEqual([2, 3, 4]);
 
     const columnsAfter = await db.getAllAsync<{ name: string }>("PRAGMA table_info(transactions)");
     expect(columnsAfter.map((c) => c.name)).toContain("balance_after");
@@ -219,6 +219,7 @@ describe("002_balance_after upgrades a real version-1 database in place", () => 
       { version: 1, name: "core" },
       { version: 2, name: "balance_after" },
       { version: 3, name: "drift_dismissal" },
+      { version: 4, name: "limit_alert_state" },
     ]);
 
     // Re-running an ALTER TABLE ADD COLUMN would throw "duplicate column name";
@@ -277,9 +278,10 @@ describe("003_drift_dismissal upgrades a real version-2 database in place", () =
     const before = await db.getAllAsync<{ name: string }>("PRAGMA table_info(wallets)");
     expect(before.map((c) => c.name)).not.toContain("drift_dismissed_transaction_id");
 
-    // ONLY 003. Anything else in this list means an already-applied migration
-    // was replayed over live data.
-    expect(await runMigrations(db)).toEqual([3]);
+    // 1 AND 2 MUST NOT BE IN THIS LIST — either would mean an already-applied
+    // migration was replayed over live data. 4 is here because it shipped after
+    // 003 and a v2 device is behind by both.
+    expect(await runMigrations(db)).toEqual([3, 4]);
 
     const after = await db.getAllAsync<{ name: string }>("PRAGMA table_info(wallets)");
     expect(after.map((c) => c.name)).toContain("drift_dismissed_transaction_id");
@@ -306,7 +308,7 @@ describe("003_drift_dismissal upgrades a real version-2 database in place", () =
     expect(count?.n).toBe(1);
   });
 
-  test("all three versions end up recorded, and a fourth run applies nothing", async () => {
+  test("every shipped version ends up recorded, and a further run applies nothing", async () => {
     const db = await getDatabase();
     await atVersionTwoWithRows(db);
     await runMigrations(db);
@@ -318,6 +320,7 @@ describe("003_drift_dismissal upgrades a real version-2 database in place", () =
       { version: 1, name: "core" },
       { version: 2, name: "balance_after" },
       { version: 3, name: "drift_dismissal" },
+      { version: 4, name: "limit_alert_state" },
     ]);
 
     // Re-running ALTER TABLE ADD COLUMN throws "duplicate column name"; the
@@ -370,5 +373,112 @@ describe("003_drift_dismissal upgrades a real version-2 database in place", () =
         "UPDATE wallets SET drift_dismissed_transaction_id = 'no_such_tx' WHERE id = 'w_v1'",
       ),
     ).rejects.toThrow(/FOREIGN KEY/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 004_limit_alert_state — the limit engine's per-period working memory.
+//
+// Same shape of proof as 002 and 003: a database already carrying a user's
+// limits at an older version gains the column WITHOUT losing a row. A limit is
+// a configuration the user typed in, so losing one is losing their work.
+// ---------------------------------------------------------------------------
+describe("004_limit_alert_state upgrades a real version-3 database in place", () => {
+  const V3_LIMIT_ID = "lim_v3";
+
+  /** Brings a database up to exactly what a shipped v3 device holds, with a limit. */
+  async function atVersionThreeWithLimit(
+    db: Awaited<ReturnType<typeof getDatabase>>,
+  ): Promise<void> {
+    const [core, balanceAfter, driftDismissal] = MIGRATIONS;
+    expect(driftDismissal.version).toBe(3);
+    expect(await runMigrations(db, [core, balanceAfter, driftDismissal])).toEqual([1, 2, 3]);
+
+    await db.runAsync(
+      `INSERT INTO limits (id, scope, basis, value, category_filter_json, wallet_filter_json,
+                           rollover, is_active, thresholds_fired_json, created_at, updated_at)
+       VALUES (?, 'monthly', 'fixed', 800000, '["cat_food"]', NULL, 1, 1, '[50]', ?, ?)`,
+      [V3_LIMIT_ID, V1_TIMESTAMP, V1_TIMESTAMP],
+    );
+  }
+
+  test("a database at 003, already holding limits, gains the column and keeps every value", async () => {
+    const db = await getDatabase();
+    await atVersionThreeWithLimit(db);
+
+    const before = await db.getAllAsync<{ name: string }>("PRAGMA table_info(limits)");
+    expect(before.map((c) => c.name)).not.toContain("limit_alert_state_json");
+
+    expect(await runMigrations(db)).toEqual([4]);
+
+    const after = await db.getAllAsync<{ name: string }>("PRAGMA table_info(limits)");
+    expect(after.map((c) => c.name)).toContain("limit_alert_state_json");
+
+    const limit = await db.getFirstAsync<Record<string, unknown>>(
+      "SELECT * FROM limits WHERE id = ?",
+      [V3_LIMIT_ID],
+    );
+    expect(limit).toMatchObject({
+      id: V3_LIMIT_ID,
+      scope: "monthly",
+      basis: "fixed",
+      value: 800000,
+      category_filter_json: '["cat_food"]',
+      rollover: 1,
+      is_active: 1,
+      created_at: V1_TIMESTAMP,
+    });
+    // NULL on every pre-existing limit — "the engine has never evaluated this
+    // one". Distinct from the '[50]' already in thresholds_fired_json, which
+    // survives untouched: the two columns carry different facts.
+    expect(limit?.limit_alert_state_json).toBeNull();
+    expect(limit?.thresholds_fired_json).toBe("[50]");
+
+    const count = await db.getFirstAsync<{ n: number }>("SELECT COUNT(*) AS n FROM limits");
+    expect(count?.n).toBe(1);
+  });
+
+  test("the column holds JSON text and can be cleared back to NULL", async () => {
+    const db = await getDatabase();
+    await atVersionThreeWithLimit(db);
+    await runMigrations(db);
+
+    const state = JSON.stringify({
+      periodStart: V1_TIMESTAMP,
+      base: 800000,
+      carryover: 0,
+      muted: false,
+      lastSpend: 12345,
+    });
+    await db.runAsync("UPDATE limits SET limit_alert_state_json = ? WHERE id = ?", [
+      state,
+      V3_LIMIT_ID,
+    ]);
+
+    const row = await db.getFirstAsync<{ json: string | null; kind: string }>(
+      `SELECT limit_alert_state_json AS json, typeof(limit_alert_state_json) AS kind
+         FROM limits WHERE id = ?`,
+      [V3_LIMIT_ID],
+    );
+    expect(row?.json).toBe(state);
+    // TEXT affinity. An INTEGER or REAL affinity would silently coerce a JSON
+    // object that happens to be all digits, and the state would come back wrong
+    // rather than come back broken.
+    expect(row?.kind).toBe("text");
+
+    // Clearable, because the engine has to be able to say "never evaluated"
+    // again — a scope change restarts a limit with carryover reset (limits
+    // rule 2).
+    await db.runAsync("UPDATE limits SET limit_alert_state_json = NULL WHERE id = ?", [
+      V3_LIMIT_ID,
+    ]);
+    expect(
+      (
+        await db.getFirstAsync<{ json: string | null }>(
+          "SELECT limit_alert_state_json AS json FROM limits WHERE id = ?",
+          [V3_LIMIT_ID],
+        )
+      )?.json,
+    ).toBeNull();
   });
 });

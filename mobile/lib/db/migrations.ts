@@ -2,13 +2,15 @@ import type { SQLiteDatabase } from "./database";
 import coreSql from "./migrations/001_core.sql";
 import balanceAfterSql from "./migrations/002_balance_after.sql";
 import driftDismissalSql from "./migrations/003_drift_dismissal.sql";
+import limitAlertStateSql from "./migrations/004_limit_alert_state.sql";
 
 export type Migration = { version: number; name: string; sql: string };
 
 /**
  * Registry of numbered migrations, ascending. Task 7 registers 001_core;
  * m1c Task 3b registers 002_balance_after; 003_drift_dismissal lands with
- * wallets rule 3's dismissal flow.
+ * wallets rule 3's dismissal flow; 004_limit_alert_state lands with m2 Task 3's
+ * limits repository.
  * NEVER edit a shipped migration — add a new numbered one instead.
  *
  * Jest cache gotcha: babel-plugin-inline-import inlines each `*.sql` file's contents into
@@ -22,6 +24,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 1, name: "core", sql: coreSql },
   { version: 2, name: "balance_after", sql: balanceAfterSql },
   { version: 3, name: "drift_dismissal", sql: driftDismissalSql },
+  { version: 4, name: "limit_alert_state", sql: limitAlertStateSql },
 ];
 
 /**

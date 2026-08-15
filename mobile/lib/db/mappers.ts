@@ -2,6 +2,10 @@
 // covers the aggregates its repos use; feature plans extend THIS file for theirs.
 import type {
   Category,
+  Limit,
+  LimitBasis,
+  LimitScope,
+  LimitThreshold,
   ReviewItemPayload,
   ReviewKind,
   ReviewQueueItem,
@@ -197,4 +201,55 @@ export function reviewQueueItemToRow(item: ReviewQueueItem): ReviewQueueItemRow 
     expires_at: item.expiresAt,
     resolved_at: item.resolvedAt,
   };
+}
+
+export type LimitRow = {
+  id: string;
+  scope: string;
+  basis: string;
+  value: number;
+  category_filter_json: string | null;
+  wallet_filter_json: string | null;
+  rollover: number;
+  is_active: number;
+  thresholds_fired_json: string;
+  created_at: number;
+  updated_at: number;
+  /** 004_limit_alert_state — appended by ALTER TABLE, hence last. */
+  limit_alert_state_json: string | null;
+};
+
+/**
+ * Note what is NOT here: `limit_alert_state_json`. A `Limit` is the user's
+ * configuration; the engine's working memory is not part of it, and putting it
+ * on the domain object would put five fields on every screen that renders a
+ * limit for the benefit of one engine. `limits_repo`'s `getLimitAlertState`
+ * reads that column directly.
+ */
+export function rowToLimit(row: LimitRow): Limit {
+  return {
+    id: row.id,
+    scope: row.scope as LimitScope,
+    basis: row.basis as LimitBasis,
+    value: row.value,
+    // A stored "[]" and a NULL both mean "no filter", but only NULL is ever
+    // written (see limits_repo's `encodeFilter`). Parsing is guarded anyway
+    // because a hand-edited or pre-repo row is not worth crashing a screen for.
+    categoryFilter: parseFilter(row.category_filter_json),
+    walletFilter: parseFilter(row.wallet_filter_json),
+    rollover: row.rollover === 1,
+    isActive: row.is_active === 1,
+    // NOT NULL DEFAULT '[]' in 001_core.sql, so the `??` is for rows selected
+    // by an older code path rather than for the schema.
+    thresholdsFired: JSON.parse(row.thresholds_fired_json ?? "[]") as LimitThreshold[],
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/** `null` and an empty array both collapse to `null` — see `rowToLimit`. */
+function parseFilter(json: string | null): string[] | null {
+  if (json === null) return null;
+  const parsed = JSON.parse(json) as string[];
+  return parsed.length > 0 ? parsed : null;
 }
