@@ -60,29 +60,38 @@ afterEach(async () => {
 // ---------------------------------------------------------------------------
 // The hub — rules 1 and 4
 // ---------------------------------------------------------------------------
-test("GOALS AND LOANS ARE LIVE; BILLS IS STILL SOON", async () => {
-  // Rule 1's flip, seen from the outside. `bills` belongs to m2c Task 6 per the
-  // foundation plan's rollout table, and no other plan may flip it.
+test("EVERY PLAN SECTION IS LIVE, AND NOTHING IS SOON", async () => {
+  // m2c Task 6 rule 1: with Limits, Income, Goals, Loans and Bills all shipped
+  // "the Plan tab has no Soon items left". This is the M2 control features
+  // finished, asserted from the outside.
   renderScreen(<PlanScreen />);
 
-  expect(screen.getAllByTestId("soon-chip")).toHaveLength(1);
+  expect(screen.queryAllByTestId("soon-chip")).toHaveLength(0);
 
-  fireEvent.press(screen.getByTestId("plan-section-goals"));
-  expect(mockPush).toHaveBeenCalledWith("/plan/goals");
-
-  mockPush.mockClear();
-  fireEvent.press(screen.getByTestId("plan-section-loans"));
-  expect(mockPush).toHaveBeenCalledWith("/plan/loans");
+  for (const [section, route] of [
+    ["limits", "/plan/limits"],
+    ["goals", "/plan/goals"],
+    ["loans", "/plan/loans"],
+    ["bills", "/plan/bills"],
+  ] as const) {
+    mockPush.mockClear();
+    fireEvent.press(screen.getByTestId(`plan-section-${section}`));
+    expect(mockPush).toHaveBeenCalledWith(route);
+  }
 });
 
-test("the Bills card renders but does not navigate", async () => {
-  // `SoonGate` sets pointerEvents="none" — the roadmap is visible, the dead end
-  // is not reachable.
+test("EVERY SECTION HAS A ROUTE, SO NONE CAN BE A DEAD END", async () => {
+  // `SoonGate` is still wrapped around every section — a later plan adding one
+  // must not have to rediscover where the gate goes — but with nothing soon it
+  // no longer blocks anything, and a section whose `href` was forgotten would
+  // now be a card that swallows taps in silence rather than an honest Soon chip.
   renderScreen(<PlanScreen />);
 
-  screen.getByText("Bills");
-  fireEvent.press(screen.getByTestId("plan-section-bills"));
-  expect(mockPush).not.toHaveBeenCalled();
+  for (const section of ["limits", "goals", "loans", "bills"]) {
+    mockPush.mockClear();
+    fireEvent.press(screen.getByTestId(`plan-section-${section}`));
+    expect(mockPush).toHaveBeenCalledTimes(1);
+  }
 });
 
 test("the hub still lists the IA's four sections, not five", async () => {

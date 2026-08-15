@@ -130,6 +130,25 @@ test("EVERY RESCHEDULE CANCELS THE PREVIOUS RUN FIRST", async () => {
   expect(mockCancel.mock.calls.map(([id]) => id)).toEqual(queued);
 });
 
+test("RUNNING TWICE DOES NOT STACK DUPLICATE NOTIFICATIONS", async () => {
+  // m2c Task 6 rule 3: the launch path calls this on every start, so two runs
+  // in one session must leave exactly one set queued. The failure it guards
+  // against is silent and compounding — a user who opens the app four times
+  // before a due date would otherwise get four reminders for one bill.
+  await scheduleBillReminders([statusOf()], NOW);
+  const first = Object.values(await getSetting("bill_reminder_ids")).flat();
+
+  await scheduleBillReminders([statusOf()], NOW);
+  const second = Object.values(await getSetting("bill_reminder_ids")).flat();
+
+  // Every id from the first run was cancelled, and the store holds only the
+  // second run's — the same COUNT, not the same ids, because rescheduling
+  // re-queues rather than reusing an OS handle.
+  expect(second).toHaveLength(first.length);
+  expect(second.some((id) => first.includes(id))).toBe(false);
+  for (const id of first) expect(mockCancel).toHaveBeenCalledWith(id);
+});
+
 test("IDS ARE KEYED PER CYCLE, SO ONE CYCLE CAN BE SILENCED ALONE", async () => {
   // Rule 25 has two cycles of one bill open at once; a per-bill key could not
   // cancel one without silencing the other's reminders too.

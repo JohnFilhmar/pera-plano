@@ -347,7 +347,7 @@ test("Chip tone soon is the exact chip SoonGate ships — one grey, not two", ()
 
   // Every FeatureKey is "soon" in M1 (constants/shipped_features.ts).
   render(
-    <SoonGate feature="bills">
+    <SoonGate feature="safe_to_spend">
       <Text>Monthly limit</Text>
     </SoonGate>,
   );

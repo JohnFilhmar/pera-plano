@@ -61,6 +61,7 @@ const SECTIONS: readonly Section[] = [
   },
   {
     feature: "bills",
+    href: "/plan/bills",
     title: "Bills",
     blurb: "Due-date reminders, matched to payments automatically.",
   },

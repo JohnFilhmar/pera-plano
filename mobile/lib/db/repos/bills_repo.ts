@@ -41,6 +41,7 @@
 //   `reminderOffsetsDays` counting positive days before — types/domain.ts pins
 //   "negative = before (e.g., [-3, 0])". Stored ascending, which is FIRING
 //   order.
+import { DEFAULT_BILL_CATEGORY_ID, DEFAULT_REMINDER_OFFSETS } from "@/constants/bills";
 import { getDatabase } from "@/lib/db/database";
 import { newId } from "@/lib/ids";
 import type {
@@ -55,11 +56,6 @@ import type {
   IsoDate,
 } from "@/types/domain";
 
-/** Spec rule 10 and an acceptance criterion: created without configuration. */
-export const DEFAULT_REMINDER_OFFSETS = [-3, 0];
-
-/** The create flow's default (spec's create-bill flow, step 6). */
-export const DEFAULT_BILL_CATEGORY_ID = "cat_bills_utilities";
 
 export type NewBill = {
   name: string;

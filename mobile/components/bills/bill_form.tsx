@@ -21,7 +21,7 @@ import { Pressable, Text, TextInput, View } from "react-native";
 import { DueRulePicker } from "@/components/bills/due_rule_picker";
 import { centavosFromDigits, formatCentavos } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
-import { DEFAULT_REMINDER_OFFSETS } from "@/lib/db/repos/bills_repo";
+import { DEFAULT_REMINDER_OFFSETS } from "@/constants/bills";
 import type { BillAmountMode, DueRule } from "@/types/domain";
 
 export type BillFormValues = {

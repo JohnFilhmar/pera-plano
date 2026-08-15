@@ -53,7 +53,10 @@ import { applyGlobalFont } from "@/lib/fonts";
 import { bootstrapApp } from "@/lib/bootstrap";
 import { useApplyAllocations } from "@/hooks/mutations/use_apply_allocations";
 import { usePaydayAllocations } from "@/hooks/use_payday_allocations";
+import { BILL_HORIZON_DAYS } from "@/hooks/queries/use_bills";
 import { startIncomeLedgerSubscriber } from "@/lib/income/income_ledger_subscriber";
+import { listBillStatuses } from "@/lib/bills/bills_service";
+import { postOverdueNotices, scheduleBillReminders } from "@/lib/bills/bill_reminders";
 import { listLoanStatuses } from "@/lib/loans/loans_service";
 import { scheduleLoanReminders } from "@/lib/loans/loan_reminders";
 import { startIngest } from "@/lib/ingest/pipeline";
@@ -227,6 +230,28 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
       .then((statuses) => scheduleLoanReminders(statuses, now))
       .catch((error: unknown) => {
         console.warn("loan reminders could not be scheduled", error);
+      });
+  }, [bootstrapState]);
+
+  // Bill reminders and overdue escalation, once per launch (m2c Task 6 rules 2
+  // and 3). Here rather than inside bootstrapApp() for the same reason as the
+  // loans above, and IDEMPOTENT BY CONSTRUCTION: `scheduleBillReminders`
+  // cancels every previously stored id before queueing, so running twice in one
+  // launch cannot stack two notifications for the same occurrence.
+  //
+  // The overdue pass comes SECOND and posts immediately — spec rule 22's
+  // escalation is about a state that is true right now, and its per-cycle count
+  // lives in the database, so a relaunch does not restart the nagging.
+  useEffect(() => {
+    if (bootstrapState !== "ready") return;
+    const now = systemClock.now();
+    listBillStatuses(now, BILL_HORIZON_DAYS)
+      .then(async (statuses) => {
+        await scheduleBillReminders(statuses, now);
+        await postOverdueNotices(statuses);
+      })
+      .catch((error: unknown) => {
+        console.warn("bill reminders could not be scheduled", error);
       });
   }, [bootstrapState]);
 

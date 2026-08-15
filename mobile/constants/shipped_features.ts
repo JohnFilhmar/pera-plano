@@ -35,7 +35,9 @@ export const SHIPPED_FEATURES: Readonly<Record<FeatureKey, ShipState>> = {
   // no other.
   goals: "shipped",
   loans: "shipped",
-  bills: "soon",
+  // Flipped by m2c Task 6, the last of the M2 control features. The Plan tab
+  // now has no Soon items at all; every key still "soon" below belongs to M3.
+  bills: "shipped",
   safe_to_spend: "soon",
   recurring: "soon",
   reports: "soon",
