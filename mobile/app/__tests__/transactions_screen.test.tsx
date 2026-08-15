@@ -69,8 +69,15 @@ async function settled(): Promise<void> {
   // suite's parallelism that has overrun a one-second budget. A longer wait
   // costs nothing when the read is fast and is the difference between a
   // deterministic assertion and a flake that reads as a filter bug.
+  //
+  // RAISED AGAIN, 10s -> 30s (m2c Task 2). Ten seconds was still not enough:
+  // this suite runs in ~18s in isolation and 59-135s inside a saturated full
+  // run, and it failed three consecutive full runs here while passing every
+  // time on its own. The wait is starved of event-loop time, not waiting on a
+  // slow query — so the fix is a budget that survives the worst observed
+  // scheduling, not a faster read.
   await waitFor(() => expect(screen.queryByTestId("ledger-list-loading")).toBeNull(), {
-    timeout: 10_000,
+    timeout: 30_000,
   });
 }
 
