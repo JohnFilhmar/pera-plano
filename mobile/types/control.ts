@@ -8,7 +8,14 @@
 // two spellings of the same union that drift the moment one is edited. What
 // belongs in this file is state no aggregate exposes: the engine's own working
 // memory, and the input shapes its repositories accept.
-import type { Centavos, EpochMs, LimitBasis, LimitScope, LimitThreshold } from "./domain";
+import type {
+  Centavos,
+  EpochMs,
+  IncomeCadence,
+  LimitBasis,
+  LimitScope,
+  LimitThreshold,
+} from "./domain";
 
 /**
  * Everything the limit engine must remember between two ledger commits.
@@ -111,4 +118,62 @@ export type LimitAlert = {
   /** base + carryover, the figure every threshold is measured against (rule 15). */
   effectiveLimit: Centavos;
   daysLeft: number;
+};
+
+// ===========================================================================
+// Income (m2 Task 9) — docs/04-features/04-income.md
+// ===========================================================================
+
+/**
+ * How far detection has got, and what it currently believes.
+ *
+ * SEPARATE FROM THE `IncomeProfile` ROW, and the split is the point. The
+ * profile is what the app ACTS on — the figure a percent-of-income limit is
+ * measured against (limits rule 12). This is detection's working notes: what it
+ * has matched, what it has been told to stop suggesting, how many expected
+ * paydays have gone by with nothing. Writing the notes into the profile would
+ * mean every provisional guess immediately changed the user's limits.
+ *
+ * Persisted as ONE JSON value in `app_settings` under `income_detection_state`,
+ * which is what m2 Global Constraint 9 prescribes for auxiliary state with no
+ * dedicated column — and it fits here in a way it did not for the limit alert
+ * state, because there is exactly ONE income profile (invariant I9). No
+ * per-entity map, no orphan on delete.
+ *
+ * NOTE: the m2 plan also asks for a `Cadence` alias here. `types/domain.ts`
+ * already exports `IncomeCadence` with the same four members, and two spellings
+ * of one union drift the moment either is edited. `IncomeCadence` is used.
+ */
+export type IncomeDetectionState = {
+  /**
+   * `unknown` → nothing detected yet · `provisional` → a stream is forming but
+   * the user has not confirmed it · `confirmed` → usable, which is what limits
+   * rule 12 requires · `lapsed` → was confirmed, then the expected windows
+   * stopped arriving (rule 13).
+   */
+  status: "unknown" | "provisional" | "confirmed" | "lapsed";
+  cadence: IncomeCadence | null;
+  averageAmount: Centavos | null;
+  sourceWalletIds: string[];
+  /** The ledger rows the current belief is built from. */
+  matchedTransactionIds: string[];
+  /**
+   * Signature of the last suggestion the user dismissed (income flow 2), so the
+   * same one is not offered again. A signature rather than a boolean: a
+   * genuinely different stream should still be allowed to ask.
+   */
+  suggestionDismissedSignature: string | null;
+  /** Consecutive expected windows with no match (rule 13's lapse counter). */
+  missedWindows: number;
+};
+
+/** The state of a device where detection has never run. */
+export const UNKNOWN_INCOME_DETECTION: IncomeDetectionState = {
+  status: "unknown",
+  cadence: null,
+  averageAmount: null,
+  sourceWalletIds: [],
+  matchedTransactionIds: [],
+  suggestionDismissedSignature: null,
+  missedWindows: 0,
 };

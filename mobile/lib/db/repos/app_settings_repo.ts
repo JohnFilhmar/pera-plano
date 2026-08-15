@@ -14,6 +14,7 @@
 // boolean `false`/`null` round-trips as the truthy strings "false"/"null".
 import { getDatabase } from "@/lib/db/database";
 import { newId } from "@/lib/ids";
+import { UNKNOWN_INCOME_DETECTION, type IncomeDetectionState } from "@/types/control";
 
 export type ThemePreference = "auto" | "light" | "dark";
 
@@ -24,6 +25,19 @@ export type AppSettings = {
   theme_preference: ThemePreference;
   last_parser_ruleset_version: number;
   cash_reconcile_prompt_at: number | null;
+  /**
+   * Income detection's working notes (m2 Task 9). The first OBJECT-valued
+   * setting, and it works unchanged because every value here has always been
+   * JSON-encoded into `value_json` — the rule at the top of this file exists
+   * for exactly this.
+   *
+   * Here rather than in a column because m2 Global Constraint 9 says auxiliary
+   * state with no dedicated column belongs in `app_settings`, and unlike the
+   * limit alert state it genuinely fits: there is exactly ONE income profile
+   * (invariant I9), so there is no per-entity map to rewrite and nothing to
+   * orphan. Read and written through `income_repo`, which is the only caller.
+   */
+  income_detection_state: IncomeDetectionState;
 };
 
 /** Values returned by `getSetting`/`getAllSettings` for a key with no row yet. */
@@ -34,6 +48,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme_preference: "auto",
   last_parser_ruleset_version: 0,
   cash_reconcile_prompt_at: null,
+  income_detection_state: UNKNOWN_INCOME_DETECTION,
 };
 
 type SettingValueRow = { value_json: string };

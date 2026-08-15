@@ -207,25 +207,23 @@ describe("setSetting upsert leaves exactly one row per key, with the latest valu
 });
 
 describe("getAllSettings merge is per-key, not all-or-nothing", () => {
-  test("setting one key leaves the other five at their defaults in the same read", async () => {
+  test("setting one key leaves EVERY other key at its default in the same read", async () => {
     await setSetting("onboarding_complete", true);
 
     const all = await getAllSettings();
     expect(all.onboarding_complete).toBe(true);
-    const rest: Omit<AppSettings, "onboarding_complete"> = {
-      capture_enabled: all.capture_enabled,
-      telemetry_enabled: all.telemetry_enabled,
-      theme_preference: all.theme_preference,
-      last_parser_ruleset_version: all.last_parser_ruleset_version,
-      cash_reconcile_prompt_at: all.cash_reconcile_prompt_at,
-    };
-    expect(rest).toEqual({
-      capture_enabled: DEFAULT_SETTINGS.capture_enabled,
-      telemetry_enabled: DEFAULT_SETTINGS.telemetry_enabled,
-      theme_preference: DEFAULT_SETTINGS.theme_preference,
-      last_parser_ruleset_version: DEFAULT_SETTINGS.last_parser_ruleset_version,
-      cash_reconcile_prompt_at: DEFAULT_SETTINGS.cash_reconcile_prompt_at,
-    });
+
+    // Destructured rather than hand-listed. The original spelled out the other
+    // five keys, which meant m2 Task 9's `income_detection_state` broke this
+    // test rather than being covered by it — and the next key would too. The
+    // `Omit` annotations keep it exhaustive: a key missing from either side is
+    // still a compile error, but neither side has to name any of them.
+    const { onboarding_complete: _set, ...rest }: AppSettings = all;
+    const { onboarding_complete: _default, ...restDefaults }: AppSettings = DEFAULT_SETTINGS;
+
+    const observed: Omit<AppSettings, "onboarding_complete"> = rest;
+    const expected: Omit<AppSettings, "onboarding_complete"> = restDefaults;
+    expect(observed).toEqual(expected);
   });
 
   test("getAllSettings on a fresh db (no rows at all) equals DEFAULT_SETTINGS exactly", async () => {
