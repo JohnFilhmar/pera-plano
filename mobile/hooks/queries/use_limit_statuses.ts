@@ -18,10 +18,13 @@ import { getLimitStatuses } from "@/lib/limits/limit_service";
 export function useLimitStatuses() {
   return useQuery({
     queryKey: queryKeys.limits.statuses(),
-    queryFn: async () =>
-      getLimitStatuses({
-        now: systemClock.now(),
-        monthlyIncome: await getMonthlyEquivalentIncome(),
-      }),
+    queryFn: async () => {
+      // Read ONCE and pass the same instant to both. Two separate reads can
+      // straddle a period boundary — midnight, or the 1st of a month — and
+      // resolve the window against one period while resolving income against
+      // the next.
+      const now = systemClock.now();
+      return getLimitStatuses({ now, monthlyIncome: await getMonthlyEquivalentIncome(now) });
+    },
   });
 }

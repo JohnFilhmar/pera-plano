@@ -223,17 +223,28 @@ test("no events at all is irregular and unconfirmed, not a throw", () => {
   expect(evidence.expectedNextAt).toBeNull();
 });
 
-test("two kinsenas windows are PROVISIONAL, not confirmed", () => {
-  // Rule 6: provisional is 3 consecutive matched windows, confirmed is 4 of the
-  // last 5. Two matches is neither — but it is also not nothing, and reporting
-  // it as confirmed would auto-apply an income figure from a fortnight of data
-  // (income flow 3).
-  const events = [at("e1", 2026, 6, 15), at("e2", 2026, 6, 31)];
+test("THREE consecutive kinsenas windows are PROVISIONAL, not confirmed", () => {
+  // Rule 6 gives kinsenas two different thresholds: provisional at "3
+  // consecutive matched windows", confirmed at "4 of the last 5 expected
+  // windows". Reporting a 3-run as confirmed would auto-apply an income figure
+  // (income flow 3) — and, worse, would never stop being true, so a profile
+  // that went silent for months could not lapse (rule 13).
+  const events = [at("e1", 2026, 5, 30), at("e2", 2026, 6, 15), at("e3", 2026, 6, 31)];
 
   const evidence = detectCadence(events, on(2026, 7, 5));
 
   expect(evidence.cadence).toBe("kinsenas");
   expect(evidence.confidence).toBe(PROVISIONAL_CONFIDENCE);
+});
+
+test("TWO kinsenas windows are below the threshold entirely", () => {
+  // Not provisional either. Rule 4: never guess a cadence from too little.
+  const events = [at("e1", 2026, 6, 15), at("e2", 2026, 6, 31)];
+
+  const evidence = detectCadence(events, on(2026, 7, 5));
+
+  expect(evidence.cadence).toBe("irregular");
+  expect(evidence.confidence).toBe(UNCONFIRMED_CONFIDENCE);
 });
 
 // ---------------------------------------------------------------------------

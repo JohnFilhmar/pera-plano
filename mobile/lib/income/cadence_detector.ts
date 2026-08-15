@@ -144,17 +144,22 @@ function tryKinsenas(events: CandidateEvent[], now: number): Attempt | null {
     longestRun = Math.max(longestRun, run);
   }
 
-  const lastFive = matchedWindows.slice(-5);
-  const matchedOfLastFive = lastFive.filter(Boolean).length;
+  // Rule 6's two kinsenas thresholds are DIFFERENT MEASURES, not one measure
+  // at two levels, and collapsing them breaks the lapse in rule 13.
+  // Confirmed asks about the RECENT past — "4 of the last 5 expected windows" —
+  // so it stops being true as soon as paydays stop arriving. Provisional asks
+  // whether a run ever happened — "3 consecutive matched windows" — which stays
+  // true forever once it has. Treating a 3-run as confirmation means a profile
+  // that has been silent for two months still reads as confirmed and never
+  // lapses.
+  const matchedOfLastFive = matchedWindows.slice(-5).filter(Boolean).length;
 
   const confidence =
     matchedOfLastFive >= 4
       ? CONFIRMED_CONFIDENCE
       : longestRun >= 3
-        ? CONFIRMED_CONFIDENCE
-        : longestRun >= 2
-          ? PROVISIONAL_CONFIDENCE
-          : null;
+        ? PROVISIONAL_CONFIDENCE
+        : null;
 
   if (confidence === null) return null;
   return {

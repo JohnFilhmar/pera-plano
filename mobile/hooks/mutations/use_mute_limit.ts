@@ -27,8 +27,11 @@ export function useMuteLimit() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (id: string): Promise<void> =>
-      muteLimitForPeriod(id, systemClock.now(), await getMonthlyEquivalentIncome()),
+    mutationFn: async (id: string): Promise<void> => {
+      // One clock read, shared — see `use_limit_statuses` for why.
+      const now = systemClock.now();
+      await muteLimitForPeriod(id, now, await getMonthlyEquivalentIncome(now));
+    },
     onSuccess: () => invalidateKeys(queryClient, [queryKeys.limits.all]),
   });
 }

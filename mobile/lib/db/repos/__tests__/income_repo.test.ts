@@ -154,6 +154,7 @@ test("detection state round-trips every field", async () => {
     matchedTransactionIds: ["t1", "t2", "t3"],
     suggestionDismissedSignature: null,
     missedWindows: 0,
+    emittedPaydayTransactionIds: [],
   };
 
   await setIncomeDetectionState(next);
@@ -189,6 +190,7 @@ test("a lapsed state keeps its figures — lapsed is not forgotten", async () =>
     matchedTransactionIds: ["t9"],
     suggestionDismissedSignature: "sig-abc",
     missedWindows: 2,
+    emittedPaydayTransactionIds: ["tx-emitted"],
   };
 
   await setIncomeDetectionState(lapsed);

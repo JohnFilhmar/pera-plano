@@ -1,0 +1,422 @@
+// lib/income/__tests__/income_service.test.ts — m2-part2 Task 12.
+//
+// Integration, against the REAL migrations through freshDb() and the REAL event
+// bus. Nothing is mocked: the bus is a plain in-process registry, and asserting
+// against it directly is what proves the payload subscribers will actually
+// receive.
+//
+// The clock is pinned. Detection reads a trailing 120 days, so a live clock
+// would silently change which fixtures are in the window as the file ages.
+import { closeDatabase } from "@/lib/db/database";
+import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
+import { createLimit, getLimitAlertState } from "@/lib/db/repos/limits_repo";
+import { getIncomeDetectionState, getIncomeProfile } from "@/lib/db/repos/income_repo";
+import { insertTransaction } from "@/lib/db/repos/transactions_repo";
+import { createWallet } from "@/lib/db/repos/wallets_repo";
+import { onAppEvent } from "@/lib/events/app_events";
+import type { AppEventMap } from "@/lib/events/app_events";
+import { freshDb } from "@/test_support/db";
+import type { Wallet } from "@/types/domain";
+
+import {
+  clearManualIncome,
+  confirmDetectedIncome,
+  dismissDetectedIncome,
+  getIncomeSummary,
+  getMonthlyEquivalentIncome,
+  maybeEmitPayday,
+  PAYDAY_EVENT,
+  refreshIncomeDetection,
+  setManualIncome,
+} from "../income_service";
+
+/** Aug 5 2026, noon — just past a July 31 payday, before the Aug 15 one. */
+const NOW = new Date(2026, 7, 5, 12, 0).getTime();
+/** Local instant. The hour matters where a test drives `now` past a credit. */
+const on = (y: number, m: number, d: number, hour = 10) => new Date(y, m, d, hour, 0).getTime();
+
+let payroll: Wallet;
+
+async function credit(amount: number, at: number, walletId?: string): Promise<string> {
+  const row = await insertTransaction({
+    walletId: walletId ?? payroll.id,
+    categoryId: UNCATEGORIZED_ID,
+    amount,
+    direction: "in",
+    occurredAt: at,
+    merchant: "ACME PAYROLL",
+    source: "notification",
+    confidence: 1,
+  });
+  return row.id;
+}
+
+/** Six kinsenas paydays ending Jul 31 — enough for rule 6's confirmed threshold. */
+async function seedConfirmedKinsenas(): Promise<void> {
+  await credit(1850000, on(2026, 4, 15));
+  await credit(1850000, on(2026, 4, 31));
+  await credit(1850000, on(2026, 5, 15));
+  await credit(1850000, on(2026, 5, 30));
+  await credit(1850000, on(2026, 6, 15));
+  await credit(1850000, on(2026, 6, 31));
+}
+
+/** Captures every payday the bus carries for the duration of one test. */
+function capturePaydays(): { seen: AppEventMap["income:payday"][]; stop: () => void } {
+  const seen: AppEventMap["income:payday"][] = [];
+  const stop = onAppEvent(PAYDAY_EVENT, (payload) => {
+    seen.push(payload);
+  });
+  return { seen, stop };
+}
+
+beforeEach(async () => {
+  await freshDb();
+  await seedDefaultCategories();
+  payroll = await createWallet({ name: "BPI Payroll", type: "bank" });
+});
+
+afterEach(async () => {
+  await closeDatabase();
+});
+
+// ---------------------------------------------------------------------------
+// Detection and status transitions (rule 2)
+// ---------------------------------------------------------------------------
+test("no history at all reads as unknown, with a null monthly equivalent", () => {
+  return (async () => {
+    const summary = await getIncomeSummary(NOW);
+
+    expect(summary.status).toBe("unknown");
+    expect(summary.cadence).toBeNull();
+    expect(summary.averageAmount).toBeNull();
+    // Rule 6 of the plan: "Never substitute zero — a zero base reads as 'you
+    // have spent infinity percent of your limit'."
+    expect(summary.monthlyEquivalent).toBeNull();
+  })();
+});
+
+/** Three consecutive kinsenas windows — rule 6's PROVISIONAL threshold. */
+async function seedProvisionalKinsenas(): Promise<void> {
+  await credit(1850000, on(2026, 5, 30));
+  await credit(1850000, on(2026, 6, 15));
+  await credit(1850000, on(2026, 6, 31));
+}
+
+test("three consecutive windows reach the evidence threshold and set status PROVISIONAL", async () => {
+  await seedProvisionalKinsenas();
+
+  const summary = await refreshIncomeDetection(NOW);
+
+  expect(summary.status).toBe("provisional");
+  expect(summary.cadence).toBe("kinsenas");
+});
+
+test("a single deposit does NOT reach the threshold", async () => {
+  await credit(1850000, on(2026, 6, 31));
+
+  const summary = await refreshIncomeDetection(NOW);
+
+  expect(summary.status).toBe("unknown");
+});
+
+test("six kinsenas paydays auto-apply as CONFIRMED with a doubled monthly equivalent", async () => {
+  // Income flow 3: "detection that reaches confirmed status auto-applies ...
+  // but only when no manual override exists". Rule 16: M = 2 x averageAmount.
+  await seedConfirmedKinsenas();
+
+  const summary = await refreshIncomeDetection(NOW);
+
+  expect(summary.status).toBe("confirmed");
+  expect(summary.cadence).toBe("kinsenas");
+  expect(summary.averageAmount).toBe(1850000);
+  expect(summary.monthlyEquivalent).toBe(3700000);
+  expect(summary.isManualOverride).toBe(false);
+  // Auto-applied: the profile row exists, not just the detection notes.
+  expect((await getIncomeProfile())?.cadence).toBe("kinsenas");
+});
+
+test("confirmDetectedIncome moves provisional to confirmed and writes the profile", async () => {
+  await seedProvisionalKinsenas();
+  await refreshIncomeDetection(NOW);
+
+  const summary = await confirmDetectedIncome(NOW);
+
+  expect(summary.status).toBe("confirmed");
+  expect(summary.isManualOverride).toBe(false); // accepting detection is not an override
+  expect((await getIncomeProfile())?.averageAmount).toBe(1850000);
+});
+
+test("MISSING TWO EXPECTED WINDOWS LAPSES THE PROFILE BUT KEEPS ITS VALUES", async () => {
+  // Rule 13: "Percent-of-income Limits keep using the last known values while
+  // lapsed — they pause only if the profile is cleared entirely." A lapse that
+  // wiped the figures would collapse every percent limit to Paused the moment
+  // an employer was a fortnight late.
+  await seedConfirmedKinsenas();
+  await refreshIncomeDetection(NOW);
+
+  // Six weeks later, with nothing further deposited: two kinsenas windows gone.
+  const later = new Date(2026, 8, 20, 12, 0).getTime();
+  const summary = await refreshIncomeDetection(later);
+
+  expect(summary.status).toBe("lapsed");
+  expect(summary.cadence).toBe("kinsenas");
+  expect(summary.averageAmount).toBe(1850000);
+  expect(summary.monthlyEquivalent).toBe(3700000);
+});
+
+// ---------------------------------------------------------------------------
+// Manual override (rules 14, 15)
+// ---------------------------------------------------------------------------
+test("A MANUAL OVERRIDE WINS OVER A CONFLICTING DETECTION", async () => {
+  // Rule 14: "Manual override always wins ... detection then never modifies the
+  // profile." Detection here confirms kinsenas at ₱18,500; the user says
+  // monthly ₱30,000 and that is what every consumer must see.
+  await seedConfirmedKinsenas();
+  await refreshIncomeDetection(NOW);
+
+  await setManualIncome(
+    { cadence: "monthly", averageAmount: 3000000, sourceWalletIds: [payroll.id] },
+    NOW,
+  );
+  // Detection runs again and still believes kinsenas.
+  await refreshIncomeDetection(NOW);
+
+  const summary = await getIncomeSummary(NOW);
+  expect(summary.isManualOverride).toBe(true);
+  expect(summary.cadence).toBe("monthly");
+  expect(summary.averageAmount).toBe(3000000);
+  expect(summary.monthlyEquivalent).toBe(3000000); // NOT 2 x 18,500
+  // Detection kept its own notes, silently, for suggestion purposes (rule 10).
+  expect((await getIncomeDetectionState()).cadence).toBe("kinsenas");
+});
+
+test("clearManualIncome reverts to the detected values", async () => {
+  // Rule 15: "'Switch to automatic' clears isManualOverride and adopts the
+  // current confirmed detection".
+  await seedConfirmedKinsenas();
+  await refreshIncomeDetection(NOW);
+  await setManualIncome(
+    { cadence: "monthly", averageAmount: 3000000, sourceWalletIds: [payroll.id] },
+    NOW,
+  );
+
+  const summary = await clearManualIncome(NOW);
+
+  expect(summary.isManualOverride).toBe(false);
+  expect(summary.cadence).toBe("kinsenas");
+  expect(summary.monthlyEquivalent).toBe(3700000);
+});
+
+test("clearing with no confirmed detection returns to unknown, not to zero", async () => {
+  // Rule 15's second half: "if none exists, the profile returns to
+  // Unknown/Detecting (and percent-of-income Limits pause ...)".
+  await setManualIncome(
+    { cadence: "monthly", averageAmount: 3000000, sourceWalletIds: [payroll.id] },
+    NOW,
+  );
+
+  const summary = await clearManualIncome(NOW);
+
+  expect(summary.status).toBe("unknown");
+  expect(summary.monthlyEquivalent).toBeNull();
+});
+
+// ---------------------------------------------------------------------------
+// Suggestions (rule 3 / income flow 2)
+// ---------------------------------------------------------------------------
+test("a provisional detection proposes a suggestion", async () => {
+  await seedProvisionalKinsenas();
+
+  expect((await refreshIncomeDetection(NOW)).hasPendingSuggestion).toBe(true);
+});
+
+test("A DISMISSED SUGGESTION IS NOT RE-PROPOSED FOR THE SAME SIGNATURE", async () => {
+  // Plan rule 3: "Re-prompting a user who already said no is how apps get
+  // uninstalled."
+  await seedProvisionalKinsenas();
+  await refreshIncomeDetection(NOW);
+
+  await dismissDetectedIncome(NOW);
+
+  expect((await refreshIncomeDetection(NOW)).hasPendingSuggestion).toBe(false);
+  expect((await getIncomeSummary(NOW)).hasPendingSuggestion).toBe(false);
+});
+
+test("a CHANGED signature does propose again", async () => {
+  // A genuine change — a raise, a new employer — is a different suggestion, and
+  // the user never said no to it. A boolean flag instead of a signature would
+  // silence this one too.
+  await seedProvisionalKinsenas();
+  await refreshIncomeDetection(NOW);
+  await dismissDetectedIncome(NOW);
+
+  // A raise, landing in the two most recent windows a couple of days early —
+  // the same three windows still match, so the detection stays PROVISIONAL,
+  // but the median of the matched events moves from ₱18,500 to ₱23,000 and the
+  // suggestion is no longer the one the user turned down.
+  await credit(2300000, on(2026, 6, 13));
+  await credit(2300000, on(2026, 6, 29));
+
+  const summary = await refreshIncomeDetection(NOW);
+  expect(summary.status).toBe("provisional");
+  expect(summary.averageAmount).toBe(2300000);
+  expect(summary.hasPendingSuggestion).toBe(true);
+});
+
+// ---------------------------------------------------------------------------
+// The limits hand-off (rule 5)
+// ---------------------------------------------------------------------------
+test("SETTING INCOME RE-SNAPSHOTS EVERY PERCENT-OF-INCOME LIMIT IMMEDIATELY", async () => {
+  // Limits rule 11's exception: "a manual edit to the IncomeProfile or to the
+  // Limit recomputes the base immediately". Without it the user declares their
+  // income and their percent limit keeps measuring against nothing until the
+  // next period boundary — with nothing on screen saying why.
+  const percentLimit = await createLimit({
+    scope: "monthly",
+    basis: "percent-of-income",
+    value: 2000, // 20%, in the domain's percent x 100 encoding
+  });
+  const fixedLimit = await createLimit({ scope: "monthly", basis: "fixed", value: 800000 });
+
+  await setManualIncome(
+    { cadence: "monthly", averageAmount: 3000000, sourceWalletIds: [payroll.id] },
+    NOW,
+  );
+
+  // 20% of ₱30,000.00 = ₱6,000.00.
+  expect((await getLimitAlertState(percentLimit.id))?.base).toBe(600000);
+  // A fixed limit has nothing to recompute and must not be touched.
+  expect(await getLimitAlertState(fixedLimit.id)).toBeNull();
+});
+
+test("clearing income leaves a percent limit paused rather than at zero", async () => {
+  const percentLimit = await createLimit({
+    scope: "monthly",
+    basis: "percent-of-income",
+    value: 2000,
+  });
+  await setManualIncome(
+    { cadence: "monthly", averageAmount: 3000000, sourceWalletIds: [payroll.id] },
+    NOW,
+  );
+
+  await clearManualIncome(NOW);
+
+  // `refreshLimitBase` returns early for a paused limit, so the last known base
+  // stays on the row — but `getMonthlyEquivalentIncome` now reports null, which
+  // is what makes `baseFor` report Paused.
+  expect(await getMonthlyEquivalentIncome(NOW)).toBeNull();
+  void percentLimit;
+});
+
+test("getMonthlyEquivalentIncome is the figure limits consume", async () => {
+  await seedConfirmedKinsenas();
+  await refreshIncomeDetection(NOW);
+
+  expect(await getMonthlyEquivalentIncome(NOW)).toBe(3700000);
+});
+
+// ---------------------------------------------------------------------------
+// Payday events (rules 11, 12; plan rule 4)
+// ---------------------------------------------------------------------------
+test("maybeEmitPayday emits once for a credit inside the expected window", async () => {
+  await seedConfirmedKinsenas();
+  await refreshIncomeDetection(NOW);
+  const { seen, stop } = capturePaydays();
+
+  // Aug 15, inside the 15th window, right amount, right wallet.
+  const paydayId = await credit(1850000, on(2026, 7, 15));
+  const emitted = await maybeEmitPayday(on(2026, 7, 15, 11));
+  stop();
+
+  expect(emitted).toBe(true);
+  expect(seen).toHaveLength(1);
+  expect(seen[0]).toEqual({
+    transactionId: paydayId,
+    walletId: payroll.id,
+    amount: 1850000,
+    occurredAt: on(2026, 7, 15),
+  });
+});
+
+test("MAYBEEMITPAYDAY DOES NOT EMIT TWICE FOR THE SAME PAYDAY", async () => {
+  // Plan rule 4: "a retry or a re-render must not double-fire and cause a
+  // double auto-allocation" — the subscriber moves real money into a goal.
+  await seedConfirmedKinsenas();
+  await refreshIncomeDetection(NOW);
+  await credit(1850000, on(2026, 7, 15));
+  const { seen, stop } = capturePaydays();
+
+  const first = await maybeEmitPayday(on(2026, 7, 15, 11));
+  const second = await maybeEmitPayday(on(2026, 7, 15, 12));
+  const third = await maybeEmitPayday(on(2026, 7, 16));
+  stop();
+
+  expect([first, second, third]).toEqual([true, false, false]);
+  expect(seen).toHaveLength(1);
+});
+
+test("maybeEmitPayday does not emit outside the expected window", async () => {
+  // Rule 11 requires the timestamp to fall "in the current expected window" for
+  // kinsenas/weekly/monthly. The 8th is neither the 15th ±3 nor katapusan ±3.
+  await seedConfirmedKinsenas();
+  await refreshIncomeDetection(NOW);
+  await credit(1850000, on(2026, 7, 8));
+  const { seen, stop } = capturePaydays();
+
+  const emitted = await maybeEmitPayday(on(2026, 7, 9));
+  stop();
+
+  expect(emitted).toBe(false);
+  expect(seen).toEqual([]);
+});
+
+test("maybeEmitPayday ignores a credit far from the average amount", async () => {
+  // Rule 11: "its amount is within ±30% of averageAmount". A ₱500 reimbursement
+  // landing in the payroll account on the 15th is not a payday, and treating it
+  // as one would auto-allocate against it.
+  await seedConfirmedKinsenas();
+  await refreshIncomeDetection(NOW);
+  await credit(50000, on(2026, 7, 15));
+  const { seen, stop } = capturePaydays();
+
+  const emitted = await maybeEmitPayday(on(2026, 7, 15, 11));
+  stop();
+
+  expect(emitted).toBe(false);
+  expect(seen).toEqual([]);
+});
+
+test("maybeEmitPayday ignores a credit into a wallet that is not an income source", async () => {
+  // Rule 11's first clause: "its walletId is in sourceWalletIds[]".
+  await seedConfirmedKinsenas();
+  await refreshIncomeDetection(NOW);
+  const other = await createWallet({ name: "GCash", type: "e-wallet" });
+  await credit(1850000, on(2026, 7, 15), other.id);
+  const { seen, stop } = capturePaydays();
+
+  const emitted = await maybeEmitPayday(on(2026, 7, 15, 11));
+  stop();
+
+  expect(emitted).toBe(false);
+  expect(seen).toEqual([]);
+});
+
+test("maybeEmitPayday emits nothing while income is unknown", async () => {
+  const { seen, stop } = capturePaydays();
+
+  const emitted = await maybeEmitPayday(NOW);
+  stop();
+
+  expect(emitted).toBe(false);
+  expect(seen).toEqual([]);
+});
+
+test("PAYDAY_EVENT is the bus key m2 Task 1 already shipped", async () => {
+  // The m2-part2 plan names a new event, `"payday:detected"`. `income:payday`
+  // was already in lib/events/app_events.ts and is pinned by the interface
+  // contract; a second key would leave the goals plan subscribing to one and
+  // this service publishing the other, with nothing failing anywhere.
+  expect(PAYDAY_EVENT).toBe("income:payday");
+});

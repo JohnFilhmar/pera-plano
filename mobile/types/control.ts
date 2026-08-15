@@ -165,6 +165,22 @@ export type IncomeDetectionState = {
   suggestionDismissedSignature: string | null;
   /** Consecutive expected windows with no match (rule 13's lapse counter). */
   missedWindows: number;
+  /**
+   * Transactions a payday event has ALREADY been emitted for (m2-part2 Task 12,
+   * rule 4: "at most once per expected payday window, deduplicated by the
+   * matched transaction id").
+   *
+   * ITS OWN FIELD, NOT `matchedTransactionIds`. Those two look
+   * interchangeable and are not: `matchedTransactionIds` is detection evidence
+   * and gets overwritten wholesale on every refresh, so deduplicating against
+   * it would either forget an emission the moment the window slid or suppress
+   * the very first payday of a stream. A subscriber to this event moves real
+   * money into a Goal, so a double-fire is a double allocation.
+   *
+   * Bounded — only the most recent ids are kept. A payday that aged out cannot
+   * re-fire anyway, because it also aged out of the detection window.
+   */
+  emittedPaydayTransactionIds: string[];
 };
 
 /** The state of a device where detection has never run. */
@@ -176,4 +192,5 @@ export const UNKNOWN_INCOME_DETECTION: IncomeDetectionState = {
   matchedTransactionIds: [],
   suggestionDismissedSignature: null,
   missedWindows: 0,
+  emittedPaydayTransactionIds: [],
 };

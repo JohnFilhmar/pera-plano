@@ -36,7 +36,8 @@ export function useUpdateLimit() {
   return useMutation({
     mutationFn: async ({ id, patch }: UpdateLimitVariables): Promise<Limit> => {
       const limit = await updateLimit(id, patch);
-      await refreshLimitBase(id, systemClock.now(), await getMonthlyEquivalentIncome());
+      const now = systemClock.now();
+      await refreshLimitBase(id, now, await getMonthlyEquivalentIncome(now));
       return limit;
     },
     onSuccess: () => invalidateKeys(queryClient, [queryKeys.limits.all]),
