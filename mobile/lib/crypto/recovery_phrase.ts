@@ -68,13 +68,37 @@ const CHECKSUM_BITS = 4; // BIP-39: ENT / 32, for ENT = 128
 // overhead alone, not from the underlying compute). Do not use a Jest
 // timing as a stand-in for on-device timing in either direction. These
 // values were tuned by benchmarking directly inside Jest (not extrapolated
-// from Node) to land at roughly 1.2-1.6 seconds there; expect a real
-// mid-range Android device running the compiled Hermes bundle, with no
-// Babel/ts-jest instrumentation, to come in under that. This has NOT been
-// measured on physical Android hardware — this task was pure TypeScript
-// with no device available. Re-measure on a real mid-range device before
-// shipping and treat a bad result as a gate on these constants, not a
-// follow-up.
+// from Node) to land at roughly 1.2-1.6 seconds there.
+//
+// MEASURED ON HARDWARE 2026-08-15 (encryption Gate A, docs/13). Samsung
+// SM-A546E / Exynos 1380 / Android 16, Hermes: **3,351 ms median** over five
+// runs after a warm-up ([3351, 3506, 3526, 3263, 3207]).
+//
+// THE PREDICTION THIS COMMENT USED TO MAKE WAS BACKWARDS. It said to expect a
+// real device "to come in under" the Jest figure. Hermes is 2-3x SLOWER than
+// Jest for this workload, not faster. Do not treat a Jest timing as a ceiling
+// when next tuning these.
+//
+// KEPT AT 3.35 s ANYWAY, by the project owner's decision on 2026-08-15, on
+// two grounds:
+//
+//   1. It is not on any hot path. `deriveRecoveryKey` has exactly two callers
+//      (key_manager.ts's wrap/unwrap) — onboarding, and a recovery unlock.
+//      Normal unlock uses the Keystore device KEK and never comes here. A
+//      user meets this once at setup and again only if they lose their screen
+//      lock, while typing twelve words by hand.
+//   2. The work factor does not buy the narrowed-search defense described
+//      above, AT ANY VALUE REACHABLE IN PURE JS. An attacker runs native
+//      Argon2id: at m=2 MiB, t=2 that is single-digit milliseconds a guess, so
+//      the 2,048 candidates left by a lost twelfth word fall in under a
+//      minute. Raising to the OWASP floor (m=19456) would cost ~30 SECONDS per
+//      derivation here and still leave that search trivial for the attacker.
+//      The asymmetry runs the wrong way and cannot be closed without a native
+//      Argon2id (JSI) implementation, which was considered and declined.
+//
+// So these constants are close to a free variable, and the 128 bits of phrase
+// entropy — as the top of this comment already says — is what the scheme
+// actually rests on.
 const ARGON2ID_TIME_COST = 2; // iterations
 const ARGON2ID_MEMORY_COST_KIB = 2048; // 2 MiB
 const ARGON2ID_PARALLELISM = 1;

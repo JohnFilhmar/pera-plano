@@ -1,5 +1,37 @@
 # On-Device Verification — one session, two plans
 
+> ## Session 2 results — 2026-08-15 · same SM-A546E, Android 16 / SDK 36
+>
+> | Check | Result |
+> |---|---|
+> | **Instrumented Keystore suite** | **10/10 PASS** (was 7/7; the 3 new are the two prefs-KEK assertions + Gate B's own case) |
+> | `prefsKekIsNotUserAuthenticationBound` | **PASS — first execution ever** |
+> | `prefsValueSealsAndOpensWithNoAuthenticationAtAll` | **PASS — first execution ever**, unattended |
+> | **Gate B** re-run after provider-selection | **4,920 ms** / 500 records = **9.84 ms/record**, 5,080 ms headroom |
+> | Part 3a package-name pre-check (adb) | **6 of 15 CONFIRMED**, 1 disproven, 8 unknown — see Part 3a |
+> | Route-table "release blocker" | **DISPROVEN** — production export carries no test code at all |
+>
+> **Gate B did not regress, it improved.** Session 1 measured 5,265 ms / 10.53 ms per record;
+> this run is 4,920 ms / 9.84 ms, on a build carrying everything M1b, M1c and the whole
+> provider-selection plan added to the capture path. The drain is dominated by 500 Keystore RSA
+> operations, and nothing this quarter touched that.
+>
+> **How the auth-gated tests were actually driven**, since "run them inside the 10-second window"
+> is easier said than done and cost two failed attempts:
+>
+> - Screen state is readable with `adb shell dumpsys nfc | grep mScreenState` → `ON_UNLOCKED` /
+>   `ON_LOCKED` / `OFF_LOCKED`. Poll it, and fire `am instrument` the instant it flips.
+> - **The window runs from the last AUTHENTICATION, not from screen-on.** A phone sitting
+>   unlocked on the desk does not satisfy it. Lock it first (`adb shell input keyevent 26`) so
+>   the next unlock is a fresh one.
+> - Budget the wait in **wall-clock**, not loop iterations — 2,400 adb round-trips sound like a
+>   long wait and elapse in about three minutes.
+> - For Gate B, whose harness itself waits up to 120 s for a lock→unlock cycle, start the test
+>   first and let the script lock the screen ~4 s later. The human then has exactly one thing to
+>   do, and 120 s in which to do it. Asking a person to lock *and* unlock inside that window
+>   fails on message latency alone; it did, twice.
+
+
 > ## Session 1 results — 2026-08-10 · Samsung Galaxy A54 5G (SM-A546E), Android 16 / SDK 36
 >
 > | Check | Result |
@@ -117,9 +149,33 @@ means the recovery phrase is cheaper to brute-force than intended.
 
 Time `deriveRecoveryKey` on a mid-range device. **Target ≈ 500 ms – 1 s.**
 
-- Measured: `________ ms`
-- Device / chipset: `________________`
-- If far off target, retune **now**, while no user has a phrase.
+- Measured: **3,351 ms median** — 5 runs after one warm-up: `[3351, 3506, 3526, 3263, 3207]`,
+  min 3,207 / max 3,526. Hermes, dev-client bundle, `m=2048 KiB, t=2, p=1`.
+- Device / chipset: **Samsung SM-A546E (Galaxy A54 5G), Exynos 1380, Android 16** — 2026-08-15
+- **RUN. The prediction in `recovery_phrase.ts` was backwards.**
+
+> **The device is 2–3× SLOWER than Jest, not faster.** The constants were tuned inside Jest to
+> land at 1.2–1.6 s on the stated expectation that "a real mid-range Android device running the
+> compiled Hermes bundle, with no Babel/ts-jest instrumentation, [will] come in under that."
+> It came in at 3.35 s. Do not carry that assumption into any future tuning: for this workload
+> Hermes is the slower environment, and a Jest timing is not a ceiling.
+>
+> **This is not a UX problem.** `deriveRecoveryKey` has exactly two call sites
+> (`key_manager.ts:153`, `:186`) — wrapping the DEK during onboarding, and unwrapping it during a
+> recovery unlock. Neither is the normal unlock path, which uses the Keystore device KEK. A user
+> meets this once at setup and again only if they lose their screen lock, while typing twelve
+> words by hand.
+>
+> **The work factor does not buy what the constants were chosen to buy, at any reachable value.**
+> The header's rationale keeps a work factor for the *narrowed* search — eleven of twelve words
+> recovered, leaving 2,048 candidates. But an attacker runs native Argon2id, not Hermes: at
+> `m=2 MiB, t=2` that is single-digit milliseconds per guess, so 2,048 candidates fall in well
+> under a minute. Raising memory to the OWASP floor (`m=19 MiB`) would cost roughly 30 s per
+> derivation **here** and still leave that search trivial for the attacker. The asymmetry runs
+> the wrong way and cannot be closed in pure JS.
+>
+> What actually protects the phrase is its **128 bits of entropy**, exactly as the header says.
+> The Argon2id layer is defense in depth, and its parameters are close to a free variable.
 
 ### Gate B — Full-buffer drain against the 10-second key window
 
@@ -148,22 +204,28 @@ cd mobile/android
 
 - [ ] Result → `________________`
 
-### Added 2026-08-14 — the prefs KEK. **NOT RUN.**
+### Added 2026-08-14 — the prefs KEK. **RUN 2026-08-15 — BOTH PASS.**
 
 Provider-selection Task 1 added two assertions to `KeyStoreBridgeInstrumentedTest`. They were
-written, they compile (`compileDebugAndroidTestKotlin`), and they have **never been executed** —
-the 7/7 in Session 1's table predates them and does not cover them. Do not read that row as
-covering these.
+compile-verified only until Session 2; the 7/7 in Session 1's table predates them and never
+covered them.
 
 Neither can be moved to the JVM. Robolectric has no Android Keystore, and `FakeKeyVault` is plain
 JCE — it never constructs a `KeyGenParameterSpec`, so `isUserAuthenticationRequired` is not merely
 untested there, it does not exist. A JVM assertion on it would be asserting nothing.
 
-- [ ] `prefsKekIsNotUserAuthenticationBound` — the prefs KEK reports
-      **`isUserAuthenticationRequired == false`**, 256-bit, encrypt+decrypt → `________________`
-- [ ] `prefsValueSealsAndOpensWithNoAuthenticationAtAll` — a prefs value seals and opens in an
-      unauthenticated instrumentation session, with no fresh unlock and no 10-second window
-      → `________________`
+- [x] `prefsKekIsNotUserAuthenticationBound` — the prefs KEK reports
+      **`isUserAuthenticationRequired == false`**, 256-bit, encrypt+decrypt →
+      **PASS, 2026-08-15, SM-A546E / Android 16**
+- [x] `prefsValueSealsAndOpensWithNoAuthenticationAtAll` — a prefs value seals and opens in an
+      unauthenticated instrumentation session, with no fresh unlock and no 10-second window →
+      **PASS, 2026-08-15, SM-A546E / Android 16**
+
+> **The second one passed in a fully unattended run**, with no unlock anywhere near it and the
+> other three auth-gated tests in the same suite failing `UserNotAuthenticatedException` around
+> it. That contrast is the result, not an inconvenience: the same session that proves the
+> auth-bound keys really are auth-bound proves this one really is not. A provider filter the
+> listener can read at 3am with the phone locked is what the whole key exists for.
 
 > **Read the polarity before recording a result.** Every other Keystore assertion in that file
 > wants `isUserAuthenticationRequired == true`. This one wants **false**, deliberately — the
@@ -267,7 +329,38 @@ adb reboot
 
 ## Part 3a — Do the picker's package names match the real apps?
 
-Added 2026-08-14 by the provider-selection plan (Task 5, plan rule 3). **NOT RUN.**
+Added 2026-08-14 by the provider-selection plan (Task 5, plan rule 3). **PARTIALLY RUN
+2026-08-15 — see the adb pre-check below. The picker itself is still NOT RUN.**
+
+> ### Pre-check done 2026-08-15 without the app — `adb shell pm list packages`
+>
+> The picker needs the dev client, but the *names* do not. Six of the fifteen are now confirmed to
+> exist verbatim on real hardware (SM-A546E, Android 16):
+>
+> | Seed name | Provider | Result |
+> |---|---|---|
+> | `com.globe.gcash.android` | gcash | **CONFIRMED** |
+> | `com.paymaya` | maya | **CONFIRMED** |
+> | `com.shopee.ph` | shopeepay | **CONFIRMED** |
+> | `com.grabtaxi.passenger` | grabpay | **CONFIRMED** |
+> | `com.google.android.apps.messaging` | sms_relay | **CONFIRMED** |
+> | `com.samsung.android.messaging` | sms_relay | **CONFIRMED** |
+> | `com.android.mms` | sms_relay | **ABSENT — and a near-miss, see below** |
+> | the remaining 8 bank apps | bpi, bdo, unionbank, metrobank, seabank, gotyme, cimb, landbank | **UNKNOWN** — not installed on this device |
+>
+> **`pm list packages <name>` matches on SUBSTRING, and it produced a false positive.** Querying
+> `com.android.mms` returns a hit, but the installed package is `com.android.mms.service` — a
+> different system component, not the AOSP messaging app. `com.android.mms` itself is **not
+> installed here**. Always print the matched name and compare it for equality; a bare
+> "did it return anything" check reports this one as confirmed.
+>
+> **Absence is not disproof.** The eight bank apps are simply not held by this device's owner.
+> Nothing here says those names are wrong — only that this device cannot speak to them. They need
+> a tester who banks with each one.
+>
+> This pre-check does **not** replace Step 2 below. It proves the strings match installed
+> packages; only the picker proves the listener actually *observes* them and that the selection
+> survives into `shouldCapture`.
 
 **This is the check that retires the guesses.** Seven of the seed's package names were constructed
 from app names and have never been seen anywhere — `com.bpi.ng.app`, `com.bdo.digitalbanking`,
