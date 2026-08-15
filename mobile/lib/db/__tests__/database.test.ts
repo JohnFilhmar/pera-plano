@@ -102,7 +102,7 @@ test("after closeDatabase(), unlockDatabase() can open a fresh handle again (not
 // fallback handle.
 // ---------------------------------------------------------------------------
 
-test("migrations run after unlockDatabase() and produce all 19 contract tables", async () => {
+test("migrations run after unlockDatabase() and build the schema on the decrypted handle", async () => {
   await unlockDatabase(DEK);
   const db = await getDatabase();
   await runMigrations(db);
@@ -110,7 +110,15 @@ test("migrations run after unlockDatabase() and produce all 19 contract tables",
   const tables = await db.getAllAsync<{ name: string }>(
     "SELECT name FROM sqlite_master WHERE type = 'table' AND name != 'schema_migrations' AND name NOT LIKE 'sqlite_%'",
   );
-  expect(tables).toHaveLength(19);
+
+  // A SPOT CHECK, not the exhaustive list — lib/db/__tests__/schema.test.ts
+  // owns that, and owns the distinction between 001_core's nineteen and the
+  // tables later migrations add. This test's subject is the ORDERING (migrate
+  // after unlock, never against a fallback handle), and a hardcoded count here
+  // meant every new migration broke a test that was not about it.
+  expect(tables.map((table) => table.name)).toEqual(
+    expect.arrayContaining(["wallets", "transactions", "loans", "loan_adjustments", "app_settings"]),
+  );
 });
 
 test("attempting to get a handle before unlock fails closed, not against a silent fallback handle", async () => {

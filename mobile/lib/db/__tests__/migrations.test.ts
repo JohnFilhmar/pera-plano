@@ -166,7 +166,7 @@ describe("002_balance_after upgrades a real version-1 database in place", () => 
     const applied = await runMigrations(db);
     // 001 IS NOT IN THIS LIST. A leading `1` would mean 001 was replayed over
     // live data; every later version is simply everything that has shipped since.
-    expect(applied).toEqual([2, 3, 4]);
+    expect(applied).toEqual([2, 3, 4, 5]);
 
     const columnsAfter = await db.getAllAsync<{ name: string }>("PRAGMA table_info(transactions)");
     expect(columnsAfter.map((c) => c.name)).toContain("balance_after");
@@ -220,6 +220,7 @@ describe("002_balance_after upgrades a real version-1 database in place", () => 
       { version: 2, name: "balance_after" },
       { version: 3, name: "drift_dismissal" },
       { version: 4, name: "limit_alert_state" },
+      { version: 5, name: "loan_adjustments" },
     ]);
 
     // Re-running an ALTER TABLE ADD COLUMN would throw "duplicate column name";
@@ -281,7 +282,7 @@ describe("003_drift_dismissal upgrades a real version-2 database in place", () =
     // 1 AND 2 MUST NOT BE IN THIS LIST — either would mean an already-applied
     // migration was replayed over live data. 4 is here because it shipped after
     // 003 and a v2 device is behind by both.
-    expect(await runMigrations(db)).toEqual([3, 4]);
+    expect(await runMigrations(db)).toEqual([3, 4, 5]);
 
     const after = await db.getAllAsync<{ name: string }>("PRAGMA table_info(wallets)");
     expect(after.map((c) => c.name)).toContain("drift_dismissed_transaction_id");
@@ -321,6 +322,7 @@ describe("003_drift_dismissal upgrades a real version-2 database in place", () =
       { version: 2, name: "balance_after" },
       { version: 3, name: "drift_dismissal" },
       { version: 4, name: "limit_alert_state" },
+      { version: 5, name: "loan_adjustments" },
     ]);
 
     // Re-running ALTER TABLE ADD COLUMN throws "duplicate column name"; the
@@ -409,7 +411,7 @@ describe("004_limit_alert_state upgrades a real version-3 database in place", ()
     const before = await db.getAllAsync<{ name: string }>("PRAGMA table_info(limits)");
     expect(before.map((c) => c.name)).not.toContain("limit_alert_state_json");
 
-    expect(await runMigrations(db)).toEqual([4]);
+    expect(await runMigrations(db)).toEqual([4, 5]);
 
     const after = await db.getAllAsync<{ name: string }>("PRAGMA table_info(limits)");
     expect(after.map((c) => c.name)).toContain("limit_alert_state_json");

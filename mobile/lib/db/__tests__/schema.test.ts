@@ -3,7 +3,8 @@ import { runMigrations } from "../migrations";
 import { freshDb } from "@/test_support/db";
 import type { SQLiteDatabase } from "../database";
 
-const EXPECTED_TABLES = [
+/** The nineteen tables 001_core creates (interface contract §3). */
+const CORE_TABLES = [
   "app_settings", "bill_payments", "bills", "categories", "goals",
   "income_profile_sources", "income_profiles", "limits", "loan_payments",
   "loans", "parser_rulesets", "raw_notifications", "recurring_patterns",
@@ -11,17 +12,31 @@ const EXPECTED_TABLES = [
   "wallet_matchers", "wallets",
 ];
 
+/**
+ * Tables added by later migrations. Kept SEPARATE from `CORE_TABLES` rather
+ * than merged into it, because the contract's nineteen is a fact about
+ * 001_core specifically — folding a later table in would quietly redefine what
+ * the assertion below is claiming.
+ *
+ * m2b Task 5 adds `loan_adjustments` (migration 005).
+ */
+const MIGRATED_TABLES = ["loan_adjustments"];
+
+const EXPECTED_TABLES = [...CORE_TABLES, ...MIGRATED_TABLES].sort();
+
 afterEach(async () => {
   await closeDatabase();
 });
 
-test("001_core creates exactly the 19 contract tables", async () => {
+test("the schema holds the 19 contract tables plus every later migration's", async () => {
   const db = await freshDb();
   const rows = await db.getAllAsync<{ name: string }>(
     "SELECT name FROM sqlite_master WHERE type = 'table' AND name != 'schema_migrations' AND name NOT LIKE 'sqlite_%' ORDER BY name",
   );
   expect(rows.map((r) => r.name)).toEqual(EXPECTED_TABLES);
-  expect(EXPECTED_TABLES).toHaveLength(19);
+  // The contract's own count, asserted against the core list alone so a later
+  // migration cannot inflate it.
+  expect(CORE_TABLES).toHaveLength(19);
 });
 
 test("transactions has the exact contract §3 columns in order, with 002's pair appended after them", async () => {
@@ -244,6 +259,14 @@ function buildValidRows(ids: SeedIds, now: number): Record<string, Row> {
     loan_payments: {
       id: "row_loan_payments", loan_id: ids.loanId, transaction_id: ids.freeTxId,
       created_at: now, updated_at: now,
+    },
+    // migration 005. `amount` is SIGNED — an adjustment can increase what is
+    // owed (accrued interest, a penalty) or reduce it (a lender-side
+    // correction) — so unlike every other money column here it carries no
+    // CHECK. `note` is NOT NULL by loans rule 13.
+    loan_adjustments: {
+      id: "row_loan_adjustments", loan_id: ids.loanId, amount: -5000,
+      occurred_at: now, note: "Lender waived a fee", created_at: now, updated_at: now,
     },
     bills: {
       id: "row_bills", name: "Test Bill", amount: 1000, amount_mode: "fixed",
