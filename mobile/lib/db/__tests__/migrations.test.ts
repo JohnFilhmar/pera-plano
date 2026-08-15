@@ -165,8 +165,11 @@ describe("002_balance_after upgrades a real version-1 database in place", () => 
     // Now the real registry, on the real existing database.
     const applied = await runMigrations(db);
     // 001 IS NOT IN THIS LIST. A leading `1` would mean 001 was replayed over
-    // live data; every later version is simply everything that has shipped since.
-    expect(applied).toEqual([2, 3, 4, 5]);
+    // live data; every later version is simply everything that has shipped
+    // since, derived from the registry so a new migration does not break a
+    // test about upgrading from version 1.
+    expect(applied).toEqual(MIGRATIONS.filter((m) => m.version > 1).map((m) => m.version));
+    expect(applied).not.toContain(1);
 
     const columnsAfter = await db.getAllAsync<{ name: string }>("PRAGMA table_info(transactions)");
     expect(columnsAfter.map((c) => c.name)).toContain("balance_after");
@@ -215,13 +218,11 @@ describe("002_balance_after upgrades a real version-1 database in place", () => 
     const recorded = await db.getAllAsync<{ version: number; name: string }>(
       "SELECT version, name FROM schema_migrations ORDER BY version",
     );
-    expect(recorded).toEqual([
-      { version: 1, name: "core" },
-      { version: 2, name: "balance_after" },
-      { version: 3, name: "drift_dismissal" },
-      { version: 4, name: "limit_alert_state" },
-      { version: 5, name: "loan_adjustments" },
-    ]);
+    // DERIVED FROM THE REGISTRY. The subject is that EVERY shipped version ends
+    // up recorded, in order and exactly once, with the name it was registered
+    // under — not how many there happen to be. Spelled out as a literal it
+    // broke on migration 006, in two places, neither of which is about bills.
+    expect(recorded).toEqual(MIGRATIONS.map((m) => ({ version: m.version, name: m.name })));
 
     // Re-running an ALTER TABLE ADD COLUMN would throw "duplicate column name";
     // the exactly-once guard is what keeps a second launch from crashing.
@@ -282,7 +283,9 @@ describe("003_drift_dismissal upgrades a real version-2 database in place", () =
     // 1 AND 2 MUST NOT BE IN THIS LIST — either would mean an already-applied
     // migration was replayed over live data. 4 is here because it shipped after
     // 003 and a v2 device is behind by both.
-    expect(await runMigrations(db)).toEqual([3, 4, 5]);
+    expect(await runMigrations(db)).toEqual(
+      MIGRATIONS.filter((m) => m.version > 2).map((m) => m.version),
+    );
 
     const after = await db.getAllAsync<{ name: string }>("PRAGMA table_info(wallets)");
     expect(after.map((c) => c.name)).toContain("drift_dismissed_transaction_id");
@@ -317,13 +320,11 @@ describe("003_drift_dismissal upgrades a real version-2 database in place", () =
     const recorded = await db.getAllAsync<{ version: number; name: string }>(
       "SELECT version, name FROM schema_migrations ORDER BY version",
     );
-    expect(recorded).toEqual([
-      { version: 1, name: "core" },
-      { version: 2, name: "balance_after" },
-      { version: 3, name: "drift_dismissal" },
-      { version: 4, name: "limit_alert_state" },
-      { version: 5, name: "loan_adjustments" },
-    ]);
+    // DERIVED FROM THE REGISTRY. The subject is that EVERY shipped version ends
+    // up recorded, in order and exactly once, with the name it was registered
+    // under — not how many there happen to be. Spelled out as a literal it
+    // broke on migration 006, in two places, neither of which is about bills.
+    expect(recorded).toEqual(MIGRATIONS.map((m) => ({ version: m.version, name: m.name })));
 
     // Re-running ALTER TABLE ADD COLUMN throws "duplicate column name"; the
     // exactly-once guard is what keeps the second launch from crashing.
@@ -411,7 +412,13 @@ describe("004_limit_alert_state upgrades a real version-3 database in place", ()
     const before = await db.getAllAsync<{ name: string }>("PRAGMA table_info(limits)");
     expect(before.map((c) => c.name)).not.toContain("limit_alert_state_json");
 
-    expect(await runMigrations(db)).toEqual([4, 5]);
+    // DERIVED, NOT HARDCODED. This test's subject is that a database sitting
+    // at 003 catches up and keeps its data — not how many migrations exist by
+    // now. Written as `[4, 5]` it broke on migration 006, which has nothing to
+    // do with limits, and would break again on every migration after it.
+    const pending = MIGRATIONS.filter((m) => m.version > 3).map((m) => m.version);
+    expect(await runMigrations(db)).toEqual(pending);
+    expect(pending).toContain(4);
 
     const after = await db.getAllAsync<{ name: string }>("PRAGMA table_info(limits)");
     expect(after.map((c) => c.name)).toContain("limit_alert_state_json");
@@ -482,5 +489,132 @@ describe("004_limit_alert_state upgrades a real version-3 database in place", ()
         )
       )?.json,
     ).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// m2c Task 1 — 006_bill_cycles. The first migration to alter TWO already-shipped
+// tables in one step (`bills` and `recurring_patterns`) as well as adding one,
+// which is precisely the case this file's upgrade-in-place tests exist for.
+// ---------------------------------------------------------------------------
+const V5_BILL_ID = "bill_v5";
+const V5_PATTERN_ID = "pattern_v5";
+
+describe("006_bill_cycles upgrades a real version-5 database in place", () => {
+  /** Brings a database to 005 and seeds the two tables 006 alters. */
+  async function atVersionFiveWithBills(
+    db: Awaited<ReturnType<typeof getDatabase>>,
+  ): Promise<void> {
+    const upToFive = MIGRATIONS.filter((m) => m.version <= 5);
+    expect(upToFive.length).toBe(5);
+    await runMigrations(db, upToFive);
+
+    await db.runAsync(
+      `INSERT INTO categories (id, name, parent_id, icon, is_system, is_hidden, created_at, updated_at)
+       VALUES ('c_v5', 'Bills & Utilities', NULL, 'receipt', 1, 0, ?, ?)`,
+      [V1_TIMESTAMP, V1_TIMESTAMP],
+    );
+    await db.runAsync(
+      `INSERT INTO bills (id, name, amount, amount_mode, due_rule_json, reminder_offsets_json,
+         auto_match_rule_json, category_id, created_at, updated_at)
+       VALUES (?, 'Meralco', 235000, 'estimated', '{"kind":"day-of-month","day":20}', '[-3,0]',
+               NULL, 'c_v5', ?, ?)`,
+      [V5_BILL_ID, V1_TIMESTAMP, V1_TIMESTAMP],
+    );
+    await db.runAsync(
+      `INSERT INTO recurring_patterns (id, merchant, amount, period, confidence, acknowledged,
+         created_at, updated_at)
+       VALUES (?, 'NETFLIX', 54900, 'monthly', 0.9, 0, ?, ?)`,
+      [V5_PATTERN_ID, V1_TIMESTAMP, V1_TIMESTAMP],
+    );
+  }
+
+  test("a database at 005, already holding a bill and a pattern, gains both columns and keeps every value", async () => {
+    const db = await getDatabase();
+    await atVersionFiveWithBills(db);
+
+    // Genuinely absent first, or "it is there afterwards" would prove nothing.
+    const billsBefore = await db.getAllAsync<{ name: string }>("PRAGMA table_info(bills)");
+    expect(billsBefore.map((c) => c.name)).not.toContain("archived_at");
+
+    expect(await runMigrations(db)).toEqual(
+      MIGRATIONS.filter((m) => m.version > 5).map((m) => m.version),
+    );
+
+    const billsAfter = await db.getAllAsync<{ name: string }>("PRAGMA table_info(bills)");
+    expect(billsAfter.map((c) => c.name)).toContain("archived_at");
+    const patternsAfter = await db.getAllAsync<{ name: string }>(
+      "PRAGMA table_info(recurring_patterns)",
+    );
+    expect(patternsAfter.map((c) => c.name)).toContain("bill_id");
+
+    // Rule 27 keeps history untouched, which starts with the bill surviving its
+    // own migration — and archived_at NULL, not 0, because a live bill is not
+    // one archived at the epoch.
+    const bill = await db.getFirstAsync<Record<string, unknown>>(
+      "SELECT * FROM bills WHERE id = ?",
+      [V5_BILL_ID],
+    );
+    expect(bill).toMatchObject({
+      id: V5_BILL_ID,
+      name: "Meralco",
+      amount: 235000,
+      amount_mode: "estimated",
+      due_rule_json: '{"kind":"day-of-month","day":20}',
+      category_id: "c_v5",
+    });
+    expect(bill?.archived_at).toBeNull();
+
+    const pattern = await db.getFirstAsync<Record<string, unknown>>(
+      "SELECT * FROM recurring_patterns WHERE id = ?",
+      [V5_PATTERN_ID],
+    );
+    expect(pattern).toMatchObject({ merchant: "NETFLIX", amount: 54900, acknowledged: 0 });
+    // An UNPROMOTED pattern, which is what every existing row is: acknowledged
+    // and linked are different facts (rules 28-29), and the migration must not
+    // guess that an old acknowledged pattern belongs to some bill.
+    expect(pattern?.bill_id).toBeNull();
+  });
+
+  test("THE PAID CHECK IS ENFORCED BY THE SCHEMA, BOTH WAYS", async () => {
+    // A cycle claiming to be paid with nothing behind it, and a moneyless
+    // resolution carrying a payment, are both impossible at the storage layer —
+    // not merely avoided by the repository.
+    const db = await getDatabase();
+    await atVersionFiveWithBills(db);
+    await runMigrations(db);
+
+    await expect(
+      db.runAsync(
+        `INSERT INTO bill_cycles (id, bill_id, due_date, state, bill_payment_id,
+           overdue_notices_sent, resolved_at, created_at, updated_at)
+         VALUES ('bc_bad_paid', ?, '2026-08-20', 'paid', NULL, 0, ?, ?, ?)`,
+        [V5_BILL_ID, V1_TIMESTAMP, V1_TIMESTAMP, V1_TIMESTAMP],
+      ),
+    ).rejects.toThrow();
+
+    // And 'open' is a real state, so rule 22's counter has somewhere to live
+    // without pretending an overdue cycle was skipped.
+    await db.runAsync(
+      `INSERT INTO bill_cycles (id, bill_id, due_date, state, bill_payment_id,
+         overdue_notices_sent, resolved_at, created_at, updated_at)
+       VALUES ('bc_open', ?, '2026-08-20', 'open', NULL, 2, NULL, ?, ?)`,
+      [V5_BILL_ID, V1_TIMESTAMP, V1_TIMESTAMP],
+    );
+    const open = await db.getFirstAsync<{ state: string; overdue_notices_sent: number }>(
+      "SELECT state, overdue_notices_sent FROM bill_cycles WHERE id = 'bc_open'",
+    );
+    expect(open).toMatchObject({ state: "open", overdue_notices_sent: 2 });
+
+    // One row per occurrence: re-resolving a due date is a correction of the
+    // existing row, never a second row disagreeing with the first.
+    await expect(
+      db.runAsync(
+        `INSERT INTO bill_cycles (id, bill_id, due_date, state, bill_payment_id,
+           overdue_notices_sent, resolved_at, created_at, updated_at)
+         VALUES ('bc_dupe', ?, '2026-08-20', 'skipped', NULL, 0, ?, ?, ?)`,
+        [V5_BILL_ID, V1_TIMESTAMP, V1_TIMESTAMP, V1_TIMESTAMP],
+      ),
+    ).rejects.toThrow();
   });
 });

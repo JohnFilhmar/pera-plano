@@ -280,11 +280,29 @@ export type LoanPayment = {
 // ---------- Bill ----------
 export type BillAmountMode = "fixed" | "estimated";
 
-export type DueRule =
+/**
+ * A Saturday/Sunday due date moves to the preceding Friday (`earlier`) or the
+ * following Monday (`later`). Per bill, applies to month-based rules only
+ * (bills spec, "Weekday adjustment"). Reminders and the auto-match window are
+ * computed from the ADJUSTED date; rule 3 keeps the unadjusted one visible in
+ * the bill detail, recomputed from the rule rather than stored.
+ */
+export type WeekdayAdjust = "none" | "earlier" | "later";
+
+export type DueRule = {
+  weekdayAdjust?: WeekdayAdjust; // defaults to "none"
+} & (
   | { kind: "day-of-month"; day: number } // months lacking the day use the last day
-  | { kind: "semi-monthly" } // 15th and 30th (kinsenas/katapusan)
+  | { kind: "semi-monthly" } // the 15th and katapusan — the last day, not the 30th
   | { kind: "every-n-weeks"; n: number; weekday: number } // weekday 0 = Sunday
-  | { kind: "last-day-of-month" };
+  | { kind: "last-day-of-month" }
+  /**
+   * Quarterly (n=3), semi-annual (n=6), annual (n=12) — insurance premiums and
+   * tuition. `anchorMonth` is 1-12 and fixes WHICH quarter: every 3 months on
+   * the 10th is a different bill starting in January than starting in February.
+   */
+  | { kind: "every-n-months"; n: number; day: number; anchorMonth: number }
+);
 
 export type BillAutoMatchRule = {
   merchantPattern: string;
@@ -303,6 +321,38 @@ export type Bill = {
   reminderOffsets: number[];
   autoMatchRule: BillAutoMatchRule | null;
   categoryId: string;
+  /**
+   * Set when the bill stops producing cycles (rule 27). A timestamp, not a
+   * flag: occurrence generation needs to know WHEN to stop, or an archived
+   * bill keeps conjuring due dates after the date it was archived.
+   */
+  archivedAt: EpochMs | null;
+  createdAt: EpochMs;
+  updatedAt: EpochMs;
+};
+
+/**
+ * `"open"` is an unresolved cycle that needed a row anyway — only rule 22's
+ * overdue-notice count creates one. Every other unresolved cycle has NO ROW.
+ */
+export type BillCycleState = "open" | "paid" | "skipped" | "resolved_external";
+
+/**
+ * One occurrence of a Bill that the user has resolved (bill_cycles, migration
+ * 006). Distinct from `BillPayment`: a cycle can be skipped (rule 21) or paid
+ * outside every tracked wallet, neither of which has a ledger transaction.
+ */
+export type BillCycle = {
+  id: string;
+  billId: string;
+  /** The ADJUSTED due date — every downstream date is computed from it. */
+  dueDate: IsoDate;
+  state: BillCycleState;
+  /** Non-null exactly when `state` is `"paid"`. */
+  billPaymentId: string | null;
+  /** Rule 22 caps overdue notifications at three per cycle. */
+  overdueNoticesSent: number;
+  resolvedAt: EpochMs | null;
   createdAt: EpochMs;
   updatedAt: EpochMs;
 };
@@ -327,6 +377,13 @@ export type RecurringPattern = {
   period: RecurringPeriod;
   confidence: number;
   acknowledged: boolean;
+  /**
+   * The Bill this pattern was promoted into, or that was created manually over
+   * the same merchant (bills rules 28-29). `acknowledged` alone cannot say
+   * WHICH bill already counts this money, and a linked pattern is excluded from
+   * "locked in" totals so one obligation is not double-counted in two surfaces.
+   */
+  billId: string | null;
   createdAt: EpochMs;
   updatedAt: EpochMs;
 };

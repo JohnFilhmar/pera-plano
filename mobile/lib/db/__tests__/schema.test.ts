@@ -18,9 +18,10 @@ const CORE_TABLES = [
  * 001_core specifically — folding a later table in would quietly redefine what
  * the assertion below is claiming.
  *
- * m2b Task 5 adds `loan_adjustments` (migration 005).
+ * m2b Task 5 adds `loan_adjustments` (migration 005); m2c Task 1 adds
+ * `bill_cycles` (migration 006).
  */
-const MIGRATED_TABLES = ["loan_adjustments"];
+const MIGRATED_TABLES = ["bill_cycles", "loan_adjustments"];
 
 const EXPECTED_TABLES = [...CORE_TABLES, ...MIGRATED_TABLES].sort();
 
@@ -276,6 +277,14 @@ function buildValidRows(ids: SeedIds, now: number): Record<string, Row> {
     bill_payments: {
       id: "row_bill_payments", bill_id: ids.billId, transaction_id: ids.freeTxId2,
       cycle_due_date: "2026-08-01", created_at: now, updated_at: now,
+    },
+    // migration 006. A resolved cycle that is NOT paid — the spec's skip — so
+    // this row also exercises the CHECK tying `state = 'paid'` to a non-null
+    // `bill_payment_id`, from the side that must be null.
+    bill_cycles: {
+      id: "row_bill_cycles", bill_id: ids.billId, due_date: "2026-08-01",
+      state: "skipped", bill_payment_id: null, overdue_notices_sent: 0,
+      resolved_at: now, created_at: now, updated_at: now,
     },
     recurring_patterns: {
       id: "row_recurring_patterns", merchant: "Netflix", amount: 500, period: "monthly",
