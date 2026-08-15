@@ -485,8 +485,17 @@ Record the actual outcome in each box. "OK" is not an outcome.
   *source app*; `countOpen()` counts rows, so one chatty unrecognised app inflates the number.
 - **Balance drift has no dismiss.** The badge is display-only until a schema decision is made
   (see below).
-- **Seven test files are in the route table.** `app/__tests__/*.test.tsx` are real Expo Router
-  routes and would ship. Confirm they are absent from a production build before release.
+- ~~**Seven test files are in the route table.**~~ **CHECKED AND DISPROVEN, 2026-08-15 — not a
+  blocker, and no device needed.** `npx expo export --platform android` produces the real
+  production bundle; it contains **no test content at all** — zero hits for any test name, for
+  `testing-library`, for `renderRouter`, for `beforeEach`. The single `__tests__` occurrence in the
+  bundle is the literal glob `**/__tests__`, which is expo-router 6's own **exclusion** pattern, so
+  the router is filtering these out by default rather than routing them.
+
+  Two corrections while we are here: there are **twelve** files in `app/__tests__/`, not seven,
+  plus `app/(onboarding)/__tests__/` — so the original count was wrong as well as the conclusion.
+  Re-run the export check if expo-router is ever majored, since this rests on the router's default
+  ignore list rather than on anything this repo controls.
 
 ## Commit the results
 
