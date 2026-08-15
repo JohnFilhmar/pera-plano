@@ -59,6 +59,24 @@ export function hasRecurringDetection(): boolean {
   return getTier() === "plus";
 }
 
+/**
+ * Payday auto-allocation for Goals with a `contributionRule`
+ * (docs/05-monetization.md §2's tier matrix: "Unlimited + payday auto-allocate").
+ *
+ * Free keeps the RULE and loses only the PROMPT — §3.2 is explicit: "payday
+ * auto-allocation stops entirely (it is a Plus capability): `contributionRule`
+ * settings are retained but no prompts fire and no planned contributions are
+ * created." That is gate principle 1 again: a cap blocks a new action, it never
+ * deletes what the user already configured, so a downgrade-then-upgrade returns
+ * them to exactly the rules they had.
+ *
+ * Added by m2b Task 3, whose rule 5 requires the gate go through this file
+ * rather than a `getTier() === "plus"` written at the call site.
+ */
+export function hasPaydayAutoAllocation(): boolean {
+  return getTier() === "plus";
+}
+
 export function hasBackup(): boolean {
   return getTier() === "plus";
 }
