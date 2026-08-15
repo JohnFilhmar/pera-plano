@@ -10,7 +10,8 @@ export type PlusCapability =
   | "recurring"
   | "backup"
   | "projection"
-  | "amortization";
+  | "amortization"
+  | "goals";
 
 // Free-vs-Plus comparison rows, verbatim from the canonical tier matrix
 // (docs/05-monetization.md §2) — one row per capability PlusGate can show.
@@ -38,6 +39,15 @@ const CAPABILITY_COPY: Record<
     label: "Safe-to-Spend",
     free: "Today only",
     plus: "Projected to end of period",
+  },
+  // Added by m2b Task 4, whose rule 5 wraps the contribution-rule field in a
+  // PlusGate. Free keeps the goal and its live progress — only the payday
+  // auto-allocation prompt is gated (docs/05-monetization.md §3.2), so the row
+  // says what Plus ADDS rather than what free loses.
+  goals: {
+    label: "Goals",
+    free: "1, progress tracking",
+    plus: "Unlimited + payday auto-allocate",
   },
   amortization: {
     label: "Loans",
