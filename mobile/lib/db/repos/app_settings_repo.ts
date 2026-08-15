@@ -51,6 +51,13 @@ export type AppSettings = {
    * screen.
    */
   loan_reminder_ids: Record<string, string[]>;
+  /**
+   * Scheduled bill-reminder ids, keyed by `billId|dueDate` — per CYCLE, not per
+   * bill. Spec rule 11 cancels "that cycle's remaining reminders" the moment it
+   * is paid, and rule 25 has two cycles of one bill open at once; a per-bill key
+   * could not cancel one without cancelling the other's too.
+   */
+  bill_reminder_ids: Record<string, string[]>;
 };
 
 /** Values returned by `getSetting`/`getAllSettings` for a key with no row yet. */
@@ -63,6 +70,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   cash_reconcile_prompt_at: null,
   income_detection_state: UNKNOWN_INCOME_DETECTION,
   loan_reminder_ids: {},
+  bill_reminder_ids: {},
 };
 
 type SettingValueRow = { value_json: string };

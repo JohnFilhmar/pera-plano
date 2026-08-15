@@ -107,6 +107,33 @@ export function billDueAlertCopy(params: {
 }
 
 // ---------------------------------------------------------------------------
+// Bill overdue escalation (M2c). Bills rule 22 caps this at THREE per cycle —
+// "nagging forever erodes trust" — so the copy names the lateness rather than
+// repeating the same sentence louder.
+//   locked:   "Meralco was due 3 days ago."
+//   unlocked: "Meralco, around ₱2,100, was due 3 days ago."
+// ---------------------------------------------------------------------------
+export function billOverdueAlertCopy(params: {
+  billName: string;
+  daysOverdue: number;
+  amount: Centavos;
+}): AlertCopy {
+  const { billName, daysOverdue, amount } = params;
+  const title = "Bill overdue";
+  const days = dayPhrase(daysOverdue);
+  return {
+    locked: {
+      title,
+      body: `${billName} was due ${days} ago.`,
+    },
+    unlocked: {
+      title,
+      body: `${billName}, around ${formatPeso(amount)}, was due ${days} ago.`,
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Loan reminder (M2b). A counterparty is explicitly NOT a name the user
 // configured the way a bill or wallet is (rule 4) — it names another person,
 // so it is withheld locked even though a bill's own name is not.
@@ -256,6 +283,10 @@ export const ALERT_COPY_CATALOGUE: Array<{ name: string; copy: AlertCopy }> = [
   {
     name: "billDue",
     copy: billDueAlertCopy({ billName: "Meralco", daysUntilDue: 3, amount: 210000 }),
+  },
+  {
+    name: "billOverdue",
+    copy: billOverdueAlertCopy({ billName: "Meralco", daysOverdue: 3, amount: 210000 }),
   },
   {
     name: "loanDue-i-owe",

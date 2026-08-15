@@ -315,6 +315,21 @@ export type BillAutoMatchRule = {
   amountTolerancePct?: number;
   amountToleranceCentavos?: Centavos;
   dateWindowDays: number;
+  /**
+   * How many matches in a row the user has confirmed without rejecting one.
+   *
+   * Bills rule 13's confirmation ladder: matches 1 and 2 ask, from 3 onward
+   * matching is silent with undo, and ANY rejection resets to zero. Stored here
+   * rather than anywhere else because rule 20 says exactly that — "confirming
+   * or rejecting a match edits only the bill's own autoMatchRule".
+   */
+  confirmedStreak?: number;
+  /**
+   * Keywords the user rejected. The auto-match flow's "No" branch: "rejects;
+   * the offending keyword is excluded from the rule". A transaction whose
+   * merchant contains one of these is never offered for this bill again.
+   */
+  excludedKeywords?: string[];
 };
 
 export type Bill = {
