@@ -137,6 +137,30 @@ export const queryKeys = {
     detail: (id: string) => ["bills", "detail", id] as const,
   },
   /**
+   * The home screen's headline number (lib/safe_to_spend_service.ts).
+   *
+   * ITS OWN ROOT, not a child of `limits`, even though a limit drives it.
+   * Safe-to-Spend is derived from limits AND bills AND goals AND income AND
+   * the ledger, so nesting it under any one of those would mean the other four
+   * have to remember to reach across and invalidate a foreign prefix. A root
+   * of its own is invalidated explicitly by everything that moves it — spec
+   * rule 13 lists nine such triggers, and an unlisted one showing a stale
+   * headline is the single most visible bug this app can have.
+   */
+  safeToSpend: {
+    all: ["safe_to_spend"] as const,
+    today: () => ["safe_to_spend", "today"] as const,
+  },
+  /**
+   * Native listener health (modules/notification_listener). Not persisted and
+   * not derived from the database — it is a live read of whether capture is
+   * actually working, which is what makes the tracking banner trustworthy.
+   */
+  listenerHealth: {
+    all: ["listener_health"] as const,
+    current: () => ["listener_health", "current"] as const,
+  },
+  /**
    * The installed parser ruleset (lib/db/repos/parser_rulesets_repo.ts).
    *
    * Not a "settings" key: this is server-owned data the device installs and
