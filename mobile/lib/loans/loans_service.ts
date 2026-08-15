@@ -16,8 +16,16 @@
 // `expo-notifications` and the `NotificationListener` native module, and this
 // module is what a screen calls to draw a list. m2 Task 8 learned that the hard
 // way when the Plan tab could not render under Jest.
-import { getLoan, listLoans, listPayments, outstandingBalance, recordPayment } from "@/lib/db/repos/loans_repo";
-import { listTransactions } from "@/lib/db/repos/transactions_repo";
+import {
+  getLoan,
+  listLoans,
+  listPayments,
+  LoanNotFoundError,
+  outstandingBalance,
+  recordPayment,
+} from "@/lib/db/repos/loans_repo";
+import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions_repo";
+import { withUnitOfWork } from "@/lib/db/unit_of_work";
 import { startOfLocalDay } from "@/lib/dates";
 import type { Centavos, Loan, LoanPayment, Transaction } from "@/types/domain";
 
@@ -38,9 +46,20 @@ export type PaymentCandidate = {
   merchant: string | null;
   /** 0..1. Above `CANDIDATE_FLOOR` to be offered at all. */
   score: number;
+  /**
+   * WHY this transaction was offered, in the user's words. Not in the m2b
+   * plan's type, and its own Task 8 rule 5 needs it: the match sheet shows each
+   * candidate "with its amount, date, and WHY IT MATCHED". A bare score is not
+   * a reason — it asks the user to trust a number they cannot check, on a
+   * decision that moves their loan balance.
+   */
+  reasons: string[];
 };
 
 const DAY_MS = 86_400_000;
+
+/** Loans rule 18's default category for a payment the app creates itself. */
+const UTANG_CATEGORY_ID = "cat_utang_loan_payments";
 
 /** How far back to look for a payment the user has not matched yet. */
 const CANDIDATE_WINDOW_DAYS = 60;
@@ -137,8 +156,9 @@ function scoreCandidate(
   transaction: Transaction,
   expectedAmount: Centavos | null,
   dueDate: string | null,
-): number {
+): { score: number; reasons: string[] } {
   let score = 0;
+  const reasons: string[] = [];
 
   const counterparty = normalizeName(loan.counterparty);
   if (counterparty !== "") {
@@ -146,25 +166,33 @@ function scoreCandidate(
     const recipient = normalizeName(transaction.counterparty);
     if (merchant.includes(counterparty) || recipient.includes(counterparty)) {
       score += SIGNAL_WEIGHT.counterparty;
+      reasons.push(`Paid to ${loan.counterparty}`);
     }
   }
 
   if (expectedAmount !== null && expectedAmount > 0) {
     const drift = Math.abs(transaction.amount - expectedAmount) / expectedAmount;
-    if (drift <= AMOUNT_TOLERANCE) score += SIGNAL_WEIGHT.amount;
+    if (drift <= AMOUNT_TOLERANCE) {
+      score += SIGNAL_WEIGHT.amount;
+      reasons.push("Matches the amount due");
+    }
   }
 
   if (dueDate !== null) {
     const due = new Date(`${dueDate}T00:00:00`).getTime();
     const days = Math.abs(startOfLocalDay(transaction.occurredAt) - startOfLocalDay(due)) / DAY_MS;
-    if (days <= TIMING_WINDOW_DAYS) score += SIGNAL_WEIGHT.timing;
+    if (days <= TIMING_WINDOW_DAYS) {
+      score += SIGNAL_WEIGHT.timing;
+      reasons.push("Around the due date");
+    }
   }
 
   if (loan.linkedWalletId !== null && transaction.walletId === loan.linkedWalletId) {
     score += SIGNAL_WEIGHT.wallet;
+    reasons.push("From this loan's usual account");
   }
 
-  return score;
+  return { score, reasons };
 }
 
 /**
@@ -211,7 +239,7 @@ export async function findPaymentCandidates(
       amount: transaction.amount,
       occurredAt: transaction.occurredAt,
       merchant: transaction.merchant ?? null,
-      score: scoreCandidate(
+      ...scoreCandidate(
         loan,
         transaction,
         due.amount > 0 ? due.amount : null,
@@ -237,4 +265,43 @@ export async function confirmPaymentMatch(
   transactionId: string,
 ): Promise<LoanPayment> {
   return recordPayment({ loanId, transactionId });
+}
+
+/**
+ * The spec's "Record payment" flow (loans, flow §Record a payment, step 2):
+ * "The app creates a `source: manual` Transaction in that Wallet (direction
+ * `out` for I-owe, `in` for owed-to-me), categorized Utang & Loan Payments,
+ * and appends it to `paymentHistory[]`."
+ *
+ * BOTH WRITES OR NEITHER. A transaction created without its loan link is a
+ * mystery outflow in the ledger AND a loan that still looks unpaid — the user
+ * would record the payment twice trying to fix it.
+ *
+ * The category is applied because this transaction is BEING CREATED here; rule
+ * 18's "never overwrites a category the user set by hand" is about MATCHING an
+ * existing transaction, which `confirmPaymentMatch` does and deliberately does
+ * not recategorize.
+ */
+export async function recordManualPayment(input: {
+  loanId: string;
+  amount: Centavos;
+  occurredAt: number;
+  walletId: string;
+}): Promise<LoanPayment> {
+  const loan = await getLoan(input.loanId);
+  if (loan === null) throw new LoanNotFoundError(input.loanId);
+
+  return withUnitOfWork(async () => {
+    const transaction = await insertTransaction({
+      walletId: input.walletId,
+      categoryId: UTANG_CATEGORY_ID,
+      amount: input.amount,
+      direction: payingDirection(loan),
+      occurredAt: input.occurredAt,
+      merchant: loan.counterparty,
+      source: "manual",
+      confidence: 1,
+    });
+    return recordPayment({ loanId: input.loanId, transactionId: transaction.id });
+  });
 }
