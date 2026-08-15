@@ -294,7 +294,13 @@ export type DueRule = {
 } & (
   | { kind: "day-of-month"; day: number } // months lacking the day use the last day
   | { kind: "semi-monthly" } // the 15th and katapusan — the last day, not the 30th
-  | { kind: "every-n-weeks"; n: number; weekday: number } // weekday 0 = Sunday
+  /**
+   * `weekday` 0 = Sunday. `anchorDate` fixes WHICH week: "every 2 weeks on
+   * Friday" names two different schedules depending on the Friday it starts
+   * from, and the pinned variant had nowhere to say. Required rather than
+   * optional so the create form cannot forget to ask.
+   */
+  | { kind: "every-n-weeks"; n: number; weekday: number; anchorDate: IsoDate }
   | { kind: "last-day-of-month" }
   /**
    * Quarterly (n=3), semi-annual (n=6), annual (n=12) — insurance premiums and

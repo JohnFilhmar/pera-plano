@@ -73,7 +73,7 @@ const DUE_RULES: DueRule[] = [
   { kind: "day-of-month", day: 31, weekdayAdjust: "earlier" },
   { kind: "semi-monthly" },
   { kind: "last-day-of-month" },
-  { kind: "every-n-weeks", n: 2, weekday: 5 },
+  { kind: "every-n-weeks", n: 2, weekday: 5, anchorDate: "2026-01-02" },
   { kind: "every-n-months", n: 3, day: 10, anchorMonth: 1 },
 ];
 
