@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { centavosFromDigits, formatCentavos } from "@/components/ui/amount_text";
 import { useCreateLimit } from "@/hooks/mutations/use_create_limit";
+import { useIncomeSummary } from "@/hooks/queries/use_income_summary";
 import { percentToValue } from "@/lib/limits/limit_input";
 import type { LimitBasis, LimitScope } from "@/types/domain";
 
@@ -33,6 +34,7 @@ export default function NewLimitScreen() {
   const router = useRouter();
   const { gated } = useLocalSearchParams<{ gated?: string }>();
   const create = useCreateLimit();
+  const { data: income } = useIncomeSummary();
 
   const [scope, setScope] = useState<LimitScope>("monthly");
   const [basis, setBasis] = useState<LimitBasis>("fixed");
@@ -40,11 +42,12 @@ export default function NewLimitScreen() {
   const [percentText, setPercentText] = useState("");
   const [rollover, setRollover] = useState(false);
 
-  // Wired to the IncomeProfile in m2-part2 Task 12. Until then a
-  // percent-of-income limit cannot be created at all, which is the correct
-  // conservative state: spec step 3 says it "cannot be saved as active without"
-  // a usable income, and the app cannot yet tell whether one exists.
-  const incomeUsable = false;
+  // Limits rule 12's "usable IncomeProfile": a monthly-equivalent figure the
+  // app can actually multiply. Anything else — unknown, or an amount it has not
+  // worked out yet — means a percent limit cannot be saved as active (spec
+  // step 3). Replaces the hardcoded `false` this screen shipped with in m2
+  // Task 8, before the income service existed.
+  const incomeUsable = (income?.monthlyEquivalent ?? null) !== null;
 
   if (gated === "1") {
     return (
@@ -173,9 +176,19 @@ export default function NewLimitScreen() {
         {percentBlocked ? (
           <Card variant="flat">
             <Text testID="limit-percent-blocked" className="text-fg dark:text-fg-dark">
-              Percent-of-income needs a declared income. Switch to a fixed amount for now — you
-              can change this limit once your income is set up.
+              Percent-of-income needs to know what you earn. Set your income now, or use a fixed
+              amount instead — you can change this limit later either way.
             </Text>
+            {/* Spec step 3 offers exactly two ways out: "declare income now
+                (opens the income flow) or switch to fixed". Both are here. */}
+            <View className="mt-3">
+              <Button
+                title="Set my income"
+                variant="secondary"
+                testID="limit-declare-income"
+                onPress={() => router.push("/plan/income")}
+              />
+            </View>
           </Card>
         ) : null}
       </View>

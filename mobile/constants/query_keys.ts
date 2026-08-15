@@ -101,6 +101,26 @@ export const queryKeys = {
     statuses: () => ["limits", "statuses"] as const,
     detail: (id: string) => ["limits", "detail", id] as const,
   },
+  /**
+   * The IncomeProfile and what detection currently believes about it
+   * (m2-part2 Task 13).
+   *
+   * ONE ENTRY, because there is exactly one income profile (invariant I9) —
+   * there is no list to page and no id to key on. `summary()` is the derived
+   * view `getIncomeSummary` returns, which folds the profile row, the detection
+   * notes and the monthly-equivalent conversion into the single shape the
+   * screen renders.
+   *
+   * EVERY LIMIT MUTATION SHOULD NOT INVALIDATE THIS, and this family should not
+   * invalidate limits by prefix — but income changes DO move a
+   * percent-of-income limit's base, so the income mutations name
+   * `queryKeys.limits.all` explicitly alongside their own root. Nesting one
+   * family under the other instead would make every limit edit refetch income.
+   */
+  income: {
+    all: ["income"] as const,
+    summary: () => ["income", "summary"] as const,
+  },
   goals: {
     all: ["goals"] as const,
     list: () => ["goals", "list"] as const,
