@@ -127,9 +127,45 @@ resetSettings(): Promise<void>
 > | `parser_rulesets(..., providers_json, updated_at)`, singleton `id='current'` | `parser_rulesets(id, **version** UNIQUE, **payload_json**, **installed_at**)` — "current" is the highest `version`, there is no singleton row |
 > | `wallet_matchers(..., provider_key, package_name, ...)` | `wallet_matchers(id, wallet_id, **package_name**, hint, ...)` — **no `provider_key` column**; match on `package_name` (+ optional `hint` when one provider feeds two wallets) |
 > | `ReviewKind` with underscores; 5-variant tagged `ReviewResolution` | hyphenated kinds (`low-confidence`, `unknown-provider`, `ambiguous-transfer`, `possible-duplicate`); `ReviewResolution = "confirmed" \| "dismissed"` |
+> | `limits(..., category_filter, wallet_filter, thresholds_fired, ...)` | `limits(id, scope, basis, value, **category_filter_json**, **wallet_filter_json**, rollover, is_active, **thresholds_fired_json**, created_at, updated_at)` — added 2026-08-15 from m2 Task 3 |
 >
 > Also settled by implementation: date ranges are **`[from, to)`** — `from` inclusive, `to`
 > exclusive — everywhere. Transfer exclusion keys on `transactions.transfer_link_id IS NULL`.
+
+> **Migration 004 amendment (2026-08-15).** `limits` gains a nullable
+> `limit_alert_state_json TEXT` column, by the project owner's explicit decision through the m2
+> plan's own escalation path ("if a column is entirely MISSING, STOP and escalate").
+>
+> m2 Task 3 planned to store the limit engine's whole per-period state
+> (`{ periodStart, base, carryover, fired[], muted, lastSpend }`) as JSON inside
+> `thresholds_fired_json`. That column is an **array** with a `NOT NULL DEFAULT '[]'`, the domain
+> type pins `Limit.thresholdsFired: LimitThreshold[]`, and `docs/02-domain-model.md` §3.5 types it
+> `list<enum: 50 | 80 | 100>` — so the object would have contradicted all three, silently, in a
+> column still named for an array.
+>
+> **The state is split across two columns and written in ONE `UPDATE`.** `fired[]` stays in
+> `thresholds_fired_json` (it is the domain field the rest of the app reads); the other five live
+> in `limit_alert_state_json`. A period boundary resets `fired` and re-snapshots `base` together
+> and must never half-apply. `limits_repo`'s `getLimitAlertState` / `setLimitAlertState` reassemble
+> and split them, so no caller sees the seam.
+>
+> **`NULL` in `limit_alert_state_json` means "never evaluated", and it is the ONLY presence
+> signal.** Emptiness in `thresholds_fired_json` cannot carry that meaning — being `NOT NULL
+> DEFAULT '[]'`, it reads the same for a limit the engine has never seen and for a period whose
+> first evaluation fired nothing. Confusing them makes the engine re-snapshot `base` on every
+> ledger commit, which for a percent-of-income limit means the base tracking income mid-period
+> instead of being fixed at the boundary (limits rule 11).
+>
+> The alternative — one `app_settings` key holding `Record<limitId, state>`, which m2's Global
+> Constraint 9 would otherwise prescribe — was rejected: every recompute would rewrite every
+> limit's state, atomicity with `thresholds_fired_json` would need a second write, and
+> `app_settings` has no foreign key to `limits`, so `deleteLimit` would orphan the entry forever.
+
+> **`Limit.value` for `percent-of-income` is percent × 100 (12.5% → 1250)**, per
+> `types/domain.ts` — *not* whole percent 0–100 as the m2 plan's `NewLimit` comment says. An engine
+> written to the plan computes limits 100× too small. M2 types live in `mobile/types/control.ts`
+> (`LimitAlertState`, `NewLimit`); `LimitScope`, `LimitBasis` and `LimitThreshold` are **not**
+> redefined there — they are domain types and are imported.
 
 Domain types in `mobile/types/domain.ts` (foundation owns): `Wallet`, `Transaction`,
 `TransferLink`, `Category`, `Limit`, `IncomeProfile`, `Goal`, `Loan`, `Bill`,
@@ -425,4 +461,55 @@ Owned by `2026-08-07-encryption-foundation.md`.
 - `lock()` clears the DEK **and** closes the database handle, so no plaintext page cache survives.
 - The root layout's render gate has **four** conditions: fonts, theme, bootstrap, and unlocked.
 - **The listener keeps capturing while locked** (§4). Tracking never stops because the app is locked.
-- **Alerts carry two copy variants.** With the keyguard on, no amount, balance, counterparty, or parsed merchant may appear — a bill or wallet name the user chose is fine. Selected at **post** time via `selectAlertCopy(copy, await isKeyguardLocked())`, never at schedule time. This binds M2, M2b, M2c and M3: a task supplying one string instead of two is incomplete.
+- **Alerts carry two copy variants.** With the keyguard on, no amount, balance, counterparty, or parsed merchant may appear — a bill or wallet name the user chose is fine. Selected at **post** time via `selectAlertCopy(copy, await isKeyguardLocked())`, never at schedule time. This binds M2, M2b, M2c and M3: a task supplying one string instead of two is incomplete. See §11 for the two cases the rule actually resolves to.
+
+## 11. Alerts transport — `mobile/lib/alerts/`
+
+Owned by `2026-08-02-mobile-control-m2.md` Task 2 (shipped 2026-08-15). Copy builders are in
+`alert_copy.ts` (encryption plan); this is the delivery half. Every M2/M2b/M2c/M3 notification
+goes through it.
+
+```ts
+// channels.ts — Android channel ids. PERMANENT: once a channel exists on a device the OS
+// allows changing only its name and description, and a user who disables one has disabled
+// that id forever. Renaming a constant abandons the old channel on every device that has it.
+export const CHANNEL_LIMITS = "limits";        // AndroidImportance.HIGH — interrupts
+export const CHANNEL_REMINDERS = "reminders";  // AndroidImportance.DEFAULT — quiet
+export type AlertChannel = typeof CHANNEL_LIMITS | typeof CHANNEL_REMINDERS;
+
+// alerts_service.ts
+ensureNotificationChannels(): Promise<void>            // idempotent; call on launch
+requestAlertPermission(): Promise<boolean>             // returns early when already granted
+postAlert(input: { channel: AlertChannel; copy: AlertCopy; data?: Record<string, unknown> }): Promise<string | null>
+scheduleReminder(input: { channel: AlertChannel; copy: AlertCopy; fireAt: number; data?: Record<string, unknown> }): Promise<string | null>
+cancelScheduled(identifier: string): Promise<void>
+```
+
+- **`copy: AlertCopy`, never `title` + `body`.** The m2 plan's Task 2 body predates the encryption
+  amendment and specifies two strings; the amendment wins. A single string lets a caller post an
+  amount without ever learning it did.
+- **`null` return = notification permission denied.** Never throws for it. The in-app surface still
+  shows the event (limits r24, loans r15, bills r12); only the system notification is lost. Posting
+  paths read the grant **without** prompting — a permission dialog raised from a background
+  recompute lands in front of a user who is not looking at the app.
+- **`postAlert` checks `isKeyguardLocked()` per call**, never cached. `scheduleReminder` **always
+  sends the locked variant and never checks at all** — the OS renders it days later with this
+  process dead, so there is no post-time hook to check in. That is a platform limit, not an
+  oversight; not calling it is deliberate, so the answer cannot later be misused at schedule time.
+- **Known residual, left open by the owner (2026-08-15):** `postAlert`'s check is right at the
+  instant it posts, and the notification then stays in the shade. Unlocked when it arrives, phone
+  locked a moment later, and the amount is on the lock screen. The only real fix is Android's
+  `publicVersion`, which expo-notifications does not expose; channel-level `lockscreenVisibility =
+  PRIVATE` renders "Contents hidden" for *both* variants and destroys the actionability §7a asks
+  for. Revisit if the library gains `publicVersion`.
+- **`trigger: null` is not usable.** `channelId` lives on the **trigger** in expo-notifications, so
+  an immediate notification has nowhere to name a channel and lands on the app default at default
+  importance — `CHANNEL_LIMITS` would exist, be visible in Android settings, and route nothing.
+  Invisible in JS: the post succeeds and returns an id. Immediate alerts therefore use
+  `{ type: TIME_INTERVAL, seconds: 1, channelId }`.
+- **No `Platform` branch.** The app is Android-only in the strong sense (a
+  `NotificationListenerService` has no iOS equivalent) and `Platform` appears nowhere else in
+  `lib/`, `app/` or `components/`.
+- `expo-notifications` is **not** registered in `app.json` `plugins` — it autolinks and merges its
+  own `POST_NOTIFICATIONS` entry. Its plugin's real job is the Android notification icon and
+  colour, and no monochrome asset exists yet; without one Android draws a white square.
