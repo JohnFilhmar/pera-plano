@@ -84,15 +84,21 @@ function kinsenasAnchors(year: number, monthIndex: number): number[] {
   ];
 }
 
-/** Every kinsenas anchor from `from` up to and including `now`, oldest first. */
-function kinsenasAnchorsBetween(from: number, now: number): number[] {
+/**
+ * Every kinsenas anchor in `[from, to]`, oldest first.
+ *
+ * EXPORTED so `lib/goals/goal_math.ts` can count the paydays remaining before a
+ * goal's deadline (goals rule 9) without writing a second copy of "the 15th and
+ * the last calendar day". Two copies of that would drift on the first February.
+ */
+export function kinsenasAnchorsBetween(from: number, to: number): number[] {
   const anchors: number[] = [];
   const start = new Date(from);
   const cursor = new Date(start.getFullYear(), start.getMonth(), 1);
 
-  while (cursor.getTime() <= now) {
+  while (cursor.getTime() <= to) {
     for (const anchor of kinsenasAnchors(cursor.getFullYear(), cursor.getMonth())) {
-      if (anchor >= from && anchor <= now) anchors.push(anchor);
+      if (anchor >= from && anchor <= to) anchors.push(anchor);
     }
     cursor.setMonth(cursor.getMonth() + 1);
   }
