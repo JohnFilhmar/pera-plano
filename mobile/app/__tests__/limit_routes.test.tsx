@@ -15,9 +15,9 @@
 //   never passes the category filter — so a filtered limit lists transactions
 //   the total does not count, and the screen contradicts itself on screen.
 //
-//   THE HUB DOES NOT INVITE ANYONE INTO AN UNSHIPPED SECTION. Every section is
-//   still `"soon"` (the rollout table gives the `limits` flip to M2 Part 2
-//   Task 14), so the cards render and none of them navigates.
+//   THE HUB DOES NOT INVITE ANYONE INTO AN UNSHIPPED SECTION. Limits went
+//   "shipped" in m2-part2 Task 14 and now navigates; Goals, Loans and Bills
+//   belong to m2b/m2c and stay grey and inert until those plans flip them.
 //
 //   A LIMIT IS NAMED THE SAME WAY EVERYWHERE. The list and the detail header
 //   both go through `limitDisplayName`.
@@ -127,14 +127,21 @@ test("the hub lists the IA's four sections", async () => {
   expect(screen.queryByText("Income")).toBeNull();
 });
 
-test("every hub section is still Soon-gated, so none of them navigates", async () => {
-  // `constants/shipped_features.ts` has all four as "soon"; the foundation
-  // plan's rollout table gives the `limits` flip to M2 Part 2 Task 14, where it
-  // ships together with income. `SoonGate` sets pointerEvents="none".
+test("LIMITS IS LIVE AND THE UNBUILT SECTIONS ARE STILL SOON", async () => {
+  // m2-part2 Task 14 flipped `limits` (and `income`) to "shipped" in
+  // constants/shipped_features.ts, per the foundation plan's rollout table.
+  // Goals, Loans and Bills belong to m2b and m2c and stay grey until then —
+  // `SoonGate` renders their children with pointerEvents="none", so a press
+  // does nothing.
   renderScreen(<PlanScreen />);
 
-  expect(screen.getAllByTestId("soon-chip")).toHaveLength(4);
+  expect(screen.getAllByTestId("soon-chip")).toHaveLength(3);
+
   fireEvent.press(screen.getByTestId("plan-section-limits"));
+  expect(mockPush).toHaveBeenCalledWith("/plan/limits");
+
+  mockPush.mockClear();
+  fireEvent.press(screen.getByTestId("plan-section-goals"));
   expect(mockPush).not.toHaveBeenCalled();
 });
 

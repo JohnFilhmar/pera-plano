@@ -13,6 +13,7 @@ import { getSetting } from "@/lib/db/repos/app_settings_repo";
 import { seedDefaultCategories } from "@/lib/db/repos/categories_repo";
 import { purgeExpired } from "@/lib/db/repos/review_queue_repo";
 import { purgeExpiredRawCaptures } from "@/lib/db/repos/raw_notifications_repo";
+import { runIncomePass } from "@/lib/income/income_ledger_subscriber";
 import { seedParserRules } from "@/lib/ingest/seed_rules";
 
 export type BootstrapResult = { onboardingComplete: boolean };
@@ -48,6 +49,13 @@ export async function bootstrapApp(): Promise<BootstrapResult> {
   await seedDefaultCategories();
   await seedParserRules();
   await runRetention(Date.now());
+  // Income detection, once per launch (m2-part2 Task 14 rule 1). AFTER the
+  // migrations and the seeds, because it reads the ledger and the loan
+  // payments; BEFORE the settings read only because nothing depends on the
+  // order there. `runIncomePass` swallows its own failures for the same reason
+  // `runRetention` does — income is derived convenience, and a launch is not
+  // worth failing over it (rule 3).
+  await runIncomePass(Date.now());
   const onboardingComplete = await getSetting("onboarding_complete");
   lastResult = { onboardingComplete };
   return lastResult;

@@ -38,9 +38,28 @@ describe("SHIPPED_FEATURES", () => {
     }
   });
 
-  test("M1 baseline: every key starts soon (no plan has flipped any yet)", () => {
+  /**
+   * WHERE THE ROLLOUT HAS ACTUALLY GOT TO.
+   *
+   * This replaces an "every key starts soon" baseline, which was true only
+   * until the first plan flipped anything and then simply broke. The rollout
+   * table (2026-08-02-mobile-foundation-part2.md Task 15) assigns every key to
+   * exactly one plan, so the honest invariant is the current position — and a
+   * plan that flips a key it does not own, or forgets one it does, fails here
+   * rather than being noticed on a device.
+   *
+   * m2-part2 Task 14 flipped `limits` and `income`. Still to come: m2b Task 9
+   * (`goals`, `loans`), m2c Task 6 (`bills`), M3 Part 2 Task 7
+   * (`safe_to_spend`, `recurring`), M3b Task 8 (the remaining five).
+   */
+  const SHIPPED_SO_FAR: readonly FeatureKey[] = ["limits", "income"];
+
+  test("exactly the keys the shipped plans own are flipped", () => {
     for (const key of ALL_KEYS) {
-      expect(SHIPPED_FEATURES[key]).toBe("soon");
+      expect([key, SHIPPED_FEATURES[key]]).toEqual([
+        key,
+        SHIPPED_SO_FAR.includes(key) ? "shipped" : "soon",
+      ]);
     }
   });
 });

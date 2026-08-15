@@ -14,6 +14,8 @@ import { TEST_DEK } from "@/test_support/db";
 import { enqueue, listOpen } from "@/lib/db/repos/review_queue_repo";
 import { getRawCapture, RAW_CAPTURE_TTL_MS, storeRawCapture } from "@/lib/db/repos/raw_notifications_repo";
 import { runMigrations } from "@/lib/db/migrations";
+import { getIncomeDetectionState } from "@/lib/db/repos/income_repo";
+import * as incomeService from "@/lib/income/income_service";
 import type { RawCapture } from "@/types/domain";
 import type { SQLiteDatabase } from "@/lib/db/database";
 
@@ -181,3 +183,56 @@ function rawFixture(id: string): RawCapture {
     capturedAt: 1,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Income detection on startup — m2-part2 Task 14, rules 1 and 3.
+// ---------------------------------------------------------------------------
+describe("income detection runs once per launch", () => {
+  test("bootstrapApp runs a detection pass, and it happens AFTER the migrations", async () => {
+    // Rule 1. The ordering is the point: detection reads the ledger and the
+    // loan-payment rows, so a pass before `runMigrations` would query tables
+    // that do not exist yet — and, because its failures are swallowed, would
+    // fail silently on every fresh install.
+    await unlockDatabase(TEST_DEK);
+    // Deliberately NOT read before the call: `app_settings` does not exist yet,
+    // which is the very hazard this test is about. Reading it here throws "no
+    // such table" — the same failure a detection pass placed before
+    // `runMigrations` would hit, silently, because its errors are swallowed.
+    const spy = jest.spyOn(incomeService, "refreshIncomeDetection");
+
+    await expect(bootstrapApp()).resolves.toEqual({ onboardingComplete: false });
+
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    // It ran against a migrated schema and WROTE its notes, rather than being
+    // swallowed on a missing table. On an empty ledger the detector's honest
+    // answer is `irregular` with no evidence, so the notes record that while
+    // `status` stays "unknown" — and `getIncomeSummary` gates on the status, so
+    // a percent-of-income Limit still reads as Paused rather than picking up a
+    // cadence nobody has any evidence for.
+    const state = await getIncomeDetectionState();
+    expect(state.status).toBe("unknown");
+    expect(state.averageAmount).toBeNull();
+    expect(state.matchedTransactionIds).toEqual([]);
+    spy.mockRestore();
+  });
+
+  test("A THROWING DETECTION DOES NOT PREVENT BOOTSTRAP FROM RESOLVING", async () => {
+    // Rule 3: "Income work must never block or break startup". The user can
+    // still read their ledger and fix things by hand; an app that will not open
+    // cannot be fixed at all. Same asymmetry `runRetention` already has.
+    await unlockDatabase(TEST_DEK);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    const spy = jest
+      .spyOn(incomeService, "refreshIncomeDetection")
+      .mockRejectedValue(new Error("detection exploded"));
+
+    await expect(bootstrapApp()).resolves.toEqual({ onboardingComplete: false });
+
+    // The rest of the sequence still happened — this is not "bootstrap gave up
+    // quietly", it is "bootstrap finished without income".
+    expect(await getActiveVersion()).toBeGreaterThan(0);
+    spy.mockRestore();
+    warn.mockRestore();
+  });
+});

@@ -43,11 +43,16 @@ import { useCallback, useEffect, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
+import { PaydayDetectedSheet } from "@/components/income/payday_detected_sheet";
 import { palette } from "@/constants/colors";
 import { ThemeProvider, useTheme } from "@/contexts/theme_context";
 import { LockProvider, useLock } from "@/contexts/lock_context";
 import { applyGlobalFont } from "@/lib/fonts";
 import { bootstrapApp } from "@/lib/bootstrap";
+import type { AppEventMap } from "@/lib/events/app_events";
+import { onAppEvent } from "@/lib/events/app_events";
+import { PAYDAY_EVENT } from "@/lib/income/income_service";
+import { startIncomeLedgerSubscriber } from "@/lib/income/income_ledger_subscriber";
 import { startIngest } from "@/lib/ingest/pipeline";
 import { persistOptions, queryClient } from "@/lib/query_client";
 import LockScreen from "./lock";
@@ -90,6 +95,7 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
   const { resolved, isReady: themeReady } = useTheme();
   const { status: lockStatus } = useLock();
   const [bootstrapState, setBootstrapState] = useState<BootstrapState>("pending");
+  const [payday, setPayday] = useState<AppEventMap["income:payday"] | null>(null);
 
   const runBootstrap = useCallback(() => {
     setBootstrapState("pending");
@@ -153,6 +159,24 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
     };
   }, [bootstrapState]);
 
+  // Income detection re-runs on ledger commits, debounced (m2-part2 Task 14
+  // rule 2). Same gate and the same fire-and-forget discipline as ingest above:
+  // the subscriber swallows its own failures, so nothing here can keep the UI
+  // from rendering.
+  useEffect(() => {
+    if (bootstrapState !== "ready") return;
+    return startIncomeLedgerSubscriber();
+  }, [bootstrapState]);
+
+  // The payday sheet (rule 4). Presented by the SHELL rather than by any one
+  // screen, because a payday can land while the user is anywhere in the app —
+  // and it is cleared on dismiss so a re-render cannot resurrect it.
+  useEffect(() => {
+    return onAppEvent(PAYDAY_EVENT, (event) => {
+      setPayday(event);
+    });
+  }, []);
+
   // Fonts, theme, and the lock's own "checking" phase all render nothing —
   // the same bucket pre-Task-9 fonts/theme/bootstrap already shared.
   if (!fontsLoaded || !themeReady || lockStatus === "checking") {
@@ -176,6 +200,7 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
         <>
           <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: bg } }} />
           <StatusBar style="auto" />
+          <PaydayDetectedSheet payday={payday} onDismiss={() => setPayday(null)} />
         </>
       )}
     </PersistQueryClientProvider>

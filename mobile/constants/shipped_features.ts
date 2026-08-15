@@ -24,8 +24,12 @@ export type FeatureKey =
 export type ShipState = "shipped" | "soon";
 
 export const SHIPPED_FEATURES: Readonly<Record<FeatureKey, ShipState>> = {
-  limits: "soon",
-  income: "soon",
+  // Flipped by m2-part2 Task 14. M2 Tasks 1-8 built Limits and Tasks 9-13
+  // built Income; the foundation plan's rollout table (Part 2, Task 15)
+  // assigns BOTH keys to this plan and to no other. They ship together
+  // because a percent-of-income Limit is not usable until income is known.
+  limits: "shipped",
+  income: "shipped",
   goals: "soon",
   loans: "soon",
   bills: "soon",
