@@ -30,8 +30,11 @@ export const SHIPPED_FEATURES: Readonly<Record<FeatureKey, ShipState>> = {
   // because a percent-of-income Limit is not usable until income is known.
   limits: "shipped",
   income: "shipped",
-  goals: "soon",
-  loans: "soon",
+  // Flipped by m2b Task 9. Tasks 1-4 built Goals and Tasks 5-8 built Loans;
+  // the foundation plan's rollout table assigns both keys to this plan and to
+  // no other.
+  goals: "shipped",
+  loans: "shipped",
   bills: "soon",
   safe_to_spend: "soon",
   recurring: "soon",

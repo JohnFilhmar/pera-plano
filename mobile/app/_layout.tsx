@@ -43,16 +43,19 @@ import { useCallback, useEffect, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
+import { AllocationSheet } from "@/components/goals/allocation_sheet";
 import { PaydayDetectedSheet } from "@/components/income/payday_detected_sheet";
 import { palette } from "@/constants/colors";
 import { ThemeProvider, useTheme } from "@/contexts/theme_context";
 import { LockProvider, useLock } from "@/contexts/lock_context";
+import { systemClock } from "@/lib/clock";
 import { applyGlobalFont } from "@/lib/fonts";
 import { bootstrapApp } from "@/lib/bootstrap";
-import type { AppEventMap } from "@/lib/events/app_events";
-import { onAppEvent } from "@/lib/events/app_events";
-import { PAYDAY_EVENT } from "@/lib/income/income_service";
+import { useApplyAllocations } from "@/hooks/mutations/use_apply_allocations";
+import { usePaydayAllocations } from "@/hooks/use_payday_allocations";
 import { startIncomeLedgerSubscriber } from "@/lib/income/income_ledger_subscriber";
+import { listLoanStatuses } from "@/lib/loans/loans_service";
+import { scheduleLoanReminders } from "@/lib/loans/loan_reminders";
 import { startIngest } from "@/lib/ingest/pipeline";
 import { persistOptions, queryClient } from "@/lib/query_client";
 import LockScreen from "./lock";
@@ -88,6 +91,48 @@ function BootstrapErrorScreen({ onRetry }: { onRetry: () => void }) {
   );
 }
 
+/**
+ * The payday summary and the goals prompt it hands off to (m2b Task 9 rule 2).
+ *
+ * ITS OWN COMPONENT BECAUSE OF WHERE THE PROVIDER IS. `useApplyAllocations`
+ * calls `useQueryClient()`, and PersistQueryClientProvider deliberately mounts
+ * INSIDE AppShell, below the lock gate (see this file's header). Calling the
+ * hook in AppShell itself throws "No QueryClient set" on every cold start,
+ * before the lock screen gets a chance to render — which is what the shell
+ * tests caught.
+ *
+ * Mounting the subscription down here costs nothing: payday events originate
+ * from the income ledger subscriber, which does not start until bootstrap has
+ * resolved either.
+ */
+function PaydaySheets() {
+  // Extracted into a hook so the rule can be tested without a
+  // fonts/theme/lock/bootstrap shell (app/__tests__/plan_hub.test.tsx).
+  const { payday, proposals, paydayAmount, acknowledgePayday, dismissAllocations } =
+    usePaydayAllocations();
+  const applyAllocations = useApplyAllocations();
+
+  return (
+    <>
+      {/* A payday summary first, then the allocation prompt it hands off to
+          (m2-part2 Task 13 rule 5). Two sheets open at once would cover each
+          other. */}
+      <PaydayDetectedSheet payday={payday} onDismiss={acknowledgePayday} />
+      <AllocationSheet
+        visible={proposals.length > 0}
+        proposals={proposals}
+        paydayAmount={paydayAmount}
+        busy={applyAllocations.isPending}
+        onDismiss={dismissAllocations}
+        onConfirm={async (accepted) => {
+          await applyAllocations.mutateAsync(accepted);
+          dismissAllocations();
+        }}
+      />
+    </>
+  );
+}
+
 /** Mounted unconditionally inside ThemeProvider/LockProvider so bootstrapApp()
  * starts as soon as (and only once) the lock reports "unlocked" — see this
  * file's header comment for why bootstrap cannot run any earlier. */
@@ -95,7 +140,6 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
   const { resolved, isReady: themeReady } = useTheme();
   const { status: lockStatus } = useLock();
   const [bootstrapState, setBootstrapState] = useState<BootstrapState>("pending");
-  const [payday, setPayday] = useState<AppEventMap["income:payday"] | null>(null);
 
   const runBootstrap = useCallback(() => {
     setBootstrapState("pending");
@@ -168,14 +212,23 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
     return startIncomeLedgerSubscriber();
   }, [bootstrapState]);
 
-  // The payday sheet (rule 4). Presented by the SHELL rather than by any one
-  // screen, because a payday can land while the user is anywhere in the app —
-  // and it is cleared on dismiss so a re-render cannot resurrect it.
+  // Loan reminders, rescheduled once per launch (m2b Task 9 rule 3) so they
+  // survive a reinstall or an OS reboot, which drop every queued notification.
+  //
+  // HERE RATHER THAN INSIDE bootstrapApp(), which the plan asks for: scheduling
+  // reaches `expo-notifications` and the `NotificationListener` native module,
+  // and `lib/bootstrap.ts` is imported by tests that mock nothing. Same gate
+  // and the same fire-and-forget discipline as ingest above — a failed
+  // reminder must never keep the app from rendering.
   useEffect(() => {
-    return onAppEvent(PAYDAY_EVENT, (event) => {
-      setPayday(event);
-    });
-  }, []);
+    if (bootstrapState !== "ready") return;
+    const now = systemClock.now();
+    listLoanStatuses(now)
+      .then((statuses) => scheduleLoanReminders(statuses, now))
+      .catch((error: unknown) => {
+        console.warn("loan reminders could not be scheduled", error);
+      });
+  }, [bootstrapState]);
 
   // Fonts, theme, and the lock's own "checking" phase all render nothing —
   // the same bucket pre-Task-9 fonts/theme/bootstrap already shared.
@@ -200,7 +253,7 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
         <>
           <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: bg } }} />
           <StatusBar style="auto" />
-          <PaydayDetectedSheet payday={payday} onDismiss={() => setPayday(null)} />
+          <PaydaySheets />
         </>
       )}
     </PersistQueryClientProvider>

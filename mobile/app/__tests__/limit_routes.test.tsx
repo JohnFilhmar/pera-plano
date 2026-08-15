@@ -127,22 +127,18 @@ test("the hub lists the IA's four sections", async () => {
   expect(screen.queryByText("Income")).toBeNull();
 });
 
-test("LIMITS IS LIVE AND THE UNBUILT SECTIONS ARE STILL SOON", async () => {
+test("THE HUB REACHES LIMITS", async () => {
   // m2-part2 Task 14 flipped `limits` (and `income`) to "shipped" in
   // constants/shipped_features.ts, per the foundation plan's rollout table.
-  // Goals, Loans and Bills belong to m2b and m2c and stay grey until then —
-  // `SoonGate` renders their children with pointerEvents="none", so a press
-  // does nothing.
+  //
+  // ONLY THE LIMITS ROW IS ASSERTED HERE, deliberately. Which OTHER sections
+  // are live changes with every rollout flip, and pinning that here as well
+  // would make one assertion have to be edited in two files on every plan —
+  // app/__tests__/plan_hub.test.tsx owns the hub-wide picture.
   renderScreen(<PlanScreen />);
-
-  expect(screen.getAllByTestId("soon-chip")).toHaveLength(3);
 
   fireEvent.press(screen.getByTestId("plan-section-limits"));
   expect(mockPush).toHaveBeenCalledWith("/plan/limits");
-
-  mockPush.mockClear();
-  fireEvent.press(screen.getByTestId("plan-section-goals"));
-  expect(mockPush).not.toHaveBeenCalled();
 });
 
 // ---------------------------------------------------------------------------

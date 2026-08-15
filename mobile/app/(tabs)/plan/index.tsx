@@ -8,13 +8,13 @@
 // needs it from here is the percent-of-income create flow, which links to it
 // inline.
 //
-// EVERY SECTION IS STILL SoonGated, INCLUDING LIMITS, and that is deliberate
-// rather than an oversight. `constants/shipped_features.ts` is the single
-// per-build rollout switch, and the foundation plan's rollout table assigns the
-// `limits` and `income` flips to M2 Part 2 Task 14 — the two ship together,
-// because a percent-of-income limit is not usable until income is. Until that
-// flip the screens below exist and are routable; the hub just does not invite
-// anyone into them yet.
+// SECTIONS GO LIVE AS THEIR PLANS FLIP THEM. `constants/shipped_features.ts`
+// is the single per-build rollout switch and the foundation plan's rollout
+// table assigns each key to exactly one plan: `limits` with `income` (M2 Part 2
+// Task 14, since a percent-of-income limit is not usable until income is),
+// `goals` and `loans` together (m2b Task 9), and `bills` last (m2c Task 6).
+// A section with no `href` yet is one whose screens do not exist — the type
+// says so, and `SoonGate` makes the card inert either way.
 //
 // This file replaced the M1 placeholder at `app/(tabs)/plan.tsx`. The route is
 // unchanged (`/plan`) and the tab registration in `(tabs)/_layout.tsx` did not
@@ -49,11 +49,13 @@ const SECTIONS: readonly Section[] = [
   },
   {
     feature: "goals",
+    href: "/plan/goals",
     title: "Goals",
     blurb: "Savings targets backed by a real wallet.",
   },
   {
     feature: "loans",
+    href: "/plan/loans",
     title: "Loans",
     blurb: "Utang both ways — balances and what is due next.",
   },

@@ -25,13 +25,12 @@ beforeAll(() => {
   `);
 });
 
-// The "soon" fixture. NOT "limits" any more: m2-part2 Task 14 flipped `limits`
-// and `income` to "shipped" per the foundation plan's rollout table, so those
-// two are no longer soon and cannot stand in for one. `goals` is flipped by
-// m2b Task 9 — when that lands, this fixture moves again, to whichever key is
-// still soon. Mutated directly in one test below and restored here, since the
-// map has no test seam of its own.
-const FEATURE = "goals" as const;
+// The "soon" fixture — whichever Plan-tab key is still soon. It has moved twice
+// as the rollout table advanced: `limits` (m2-part2 Task 14), then `goals`
+// (m2b Task 9), now `bills`. m2c Task 6 flips that one, and this moves again.
+// Mutated directly in one test below and restored here, since the map has no
+// test seam of its own.
+const FEATURE = "bills" as const;
 
 // SHIPPED_FEATURES is exported readonly — app code must never mutate the
 // single per-build rollout switch at runtime. Tests cast away readonly at
