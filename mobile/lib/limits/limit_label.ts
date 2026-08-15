@@ -67,3 +67,33 @@ function countPhrase(count: number, noun: "category" | "wallet"): string {
   if (count === 1) return `1 ${noun}`;
   return `${count} ${noun === "category" ? "categories" : "wallets"}`;
 }
+
+/**
+ * Just the FILTER part of a limit's name — "Food & Dining", "3 categories",
+ * "2 wallets" — or `null` when the limit is unfiltered.
+ *
+ * Separate from `limitDisplayName` because the two are read in different
+ * sentences. That one names the limit ("Monthly limit · Food & Dining"); this
+ * one fills a slot in Safe-to-Spend's caption, which the spec writes as "from
+ * your Food & Dining Limit" (rule 3). Splicing the full display name in would
+ * produce "from your Monthly limit · Food & Dining Limit".
+ *
+ * Shares `countPhrase` with the function above so the two can never disagree
+ * about the plural of "category".
+ */
+export function limitFilterLabel(
+  limit: LimitLabelInput,
+  categoryNames?: ReadonlyMap<string, string>,
+): string | null {
+  const categories = limit.categoryFilter ?? [];
+  const wallets = limit.walletFilter ?? [];
+
+  if (categories.length === 1) {
+    // An id the map does not know is a category deleted since the limit was
+    // made: the count is still true, where a raw uuid would be noise.
+    return categoryNames?.get(categories[0]) ?? countPhrase(1, "category");
+  }
+  if (categories.length > 1) return countPhrase(categories.length, "category");
+  if (wallets.length > 0) return countPhrase(wallets.length, "wallet");
+  return null;
+}

@@ -1,0 +1,347 @@
+// lib/__tests__/safe_to_spend_service.test.ts — M3 Part 2 Task 2.
+//
+// Assembly only. The arithmetic is Task 1's and is tested there; what can go
+// wrong HERE is a term gathered from the wrong place, filtered by the wrong
+// predicate, or quietly recomputed — the last of which would make Task 1's
+// worked-example tests stop protecting the number users actually see.
+import { closeDatabase } from "@/lib/db/database";
+import { createBill, recordBillPayment, skipCycle } from "@/lib/db/repos/bills_repo";
+import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
+import { createGoal } from "@/lib/db/repos/goals_repo";
+import { createLimit, updateLimit } from "@/lib/db/repos/limits_repo";
+import { enqueue } from "@/lib/db/repos/review_queue_repo";
+import { insertTransaction } from "@/lib/db/repos/transactions_repo";
+import { linkTransfer } from "@/lib/db/repos/transfer_links_repo";
+import { createWallet } from "@/lib/db/repos/wallets_repo";
+import { setManualIncome } from "@/lib/income/income_service";
+import { computeSafeToSpend } from "@/lib/safe_to_spend";
+import { buildSafeToSpendInput, getSafeToSpend } from "@/lib/safe_to_spend_service";
+import { freshDb } from "@/test_support/db";
+import type { Wallet } from "@/types/domain";
+
+/** 2026-08-12 is a Wednesday, matching the spec's worked example. */
+const TODAY = "2026-08-12";
+const NOW = new Date(2026, 7, 12, 10, 0).getTime();
+const DAY_MS = 86_400_000;
+
+let cash: Wallet;
+
+beforeEach(async () => {
+  await freshDb();
+  await seedDefaultCategories();
+  cash = await createWallet({ name: "GCash", type: "e-wallet" });
+});
+
+afterEach(async () => {
+  await closeDatabase();
+});
+
+async function spend(amount: number, occurredAt: number, categoryId = UNCATEGORIZED_ID) {
+  return insertTransaction({
+    walletId: cash.id,
+    categoryId,
+    amount,
+    direction: "out",
+    occurredAt,
+    merchant: "SM SUPERMARKET",
+    source: "notification",
+    confidence: 0.9,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Rule 6 — the empty app
+// ---------------------------------------------------------------------------
+test("AN EMPTY APP YIELDS no_limit AND DOES NOT THROW", async () => {
+  // The state every user starts in, on the first screen they ever see. A throw
+  // here is a blank home tab with no way forward.
+  const result = await getSafeToSpend(TODAY, NOW);
+
+  expect(result.state).toBe("no_limit");
+  expect(result.drivingLimitId).toBeNull();
+});
+
+// ---------------------------------------------------------------------------
+// Limits — rules 2, 4, 10
+// ---------------------------------------------------------------------------
+test("AN ACTIVE FIXED LIMIT BECOMES A CANDIDATE CARRYING ITS SPEND", async () => {
+  const limit = await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
+  await spend(620_000, NOW - 3 * DAY_MS);
+
+  const input = await buildSafeToSpendInput(TODAY, NOW);
+
+  expect(input.limits).toHaveLength(1);
+  expect(input.limits[0]).toMatchObject({
+    id: limit.id,
+    scope: "monthly",
+    effectiveValue: 1_500_000,
+    spendInPeriod: 620_000,
+    filtered: false,
+    filterLabel: null,
+  });
+});
+
+test("SPEND COMES FROM THE LIMIT ENGINE, TRANSFERS ALREADY EXCLUDED", async () => {
+  // Rule 8 and rule 1 together: the exclusion is the engine's, and reproducing
+  // it here would be the duplication that makes the two drift.
+  await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
+  const savings = await createWallet({ name: "GSave", type: "savings" });
+  const out = await spend(200_000, NOW - 2 * DAY_MS);
+  const into = await insertTransaction({
+    walletId: savings.id,
+    categoryId: UNCATEGORIZED_ID,
+    amount: 200_000,
+    direction: "in",
+    occurredAt: NOW - 2 * DAY_MS,
+    merchant: "FROM GCASH",
+    source: "notification",
+    confidence: 0.9,
+  });
+  await linkTransfer(out.id, into.id, 0);
+
+  const input = await buildSafeToSpendInput(TODAY, NOW);
+
+  expect(input.limits[0].spendInPeriod).toBe(0);
+});
+
+test("A PAUSED LIMIT IS EXCLUDED — A SWITCH MUST ACTUALLY SWITCH", async () => {
+  // Plan rule 2. A paused limit that still capped the headline would be a
+  // control the user turned off and that kept working.
+  const limit = await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
+  await updateLimit(limit.id, { isActive: false });
+
+  const input = await buildSafeToSpendInput(TODAY, NOW);
+
+  expect(input.limits).toEqual([]);
+  expect(computeSafeToSpend(input).state).toBe("no_limit");
+});
+
+test("A PERCENT-OF-INCOME LIMIT WITH NO INCOME IS EXCLUDED", async () => {
+  // Rule 10: it has no usable value, so it cannot drive the number, and the
+  // prompt to fix it belongs on the limit itself. Including it with a value of
+  // zero would show ₱0.00 spendable to a user who has set no real cap.
+  await createLimit({ scope: "monthly", basis: "percent-of-income", value: 2000 }); // 20%
+
+  const input = await buildSafeToSpendInput(TODAY, NOW);
+
+  expect(input.limits).toEqual([]);
+});
+
+test("THE SAME PERCENT LIMIT BECOMES A CANDIDATE ONCE INCOME IS DECLARED", async () => {
+  // The other half of rule 10, and proof the assembly actually threads income
+  // into `getLimitStatuses` rather than defaulting it away.
+  await createLimit({ scope: "monthly", basis: "percent-of-income", value: 2000 }); // 20%
+  await setManualIncome({ cadence: "monthly", averageAmount: 5_000_000, sourceWalletIds: [cash.id] }, NOW);
+
+  const input = await buildSafeToSpendInput(TODAY, NOW);
+
+  expect(input.limits).toHaveLength(1);
+  expect(input.limits[0].effectiveValue).toBe(1_000_000); // 20% of ₱50,000.00
+});
+
+test("A FILTERED LIMIT IS MARKED AND ITS FILTER NAMED", async () => {
+  // Rule 3 needs both: the flag to keep it from driving the headline, and the
+  // label for the caption when it is the only limit there is.
+  await createLimit({
+    scope: "monthly",
+    basis: "fixed",
+    value: 300_000,
+    categoryFilter: ["cat_food_dining"],
+  });
+
+  const input = await buildSafeToSpendInput(TODAY, NOW);
+
+  expect(input.limits[0].filtered).toBe(true);
+  expect(input.limits[0].filterLabel).toBe("Food & Dining");
+});
+
+// ---------------------------------------------------------------------------
+// Bills — rule 5
+// ---------------------------------------------------------------------------
+async function meralco(day: number, amount = 230_000) {
+  return createBill({
+    name: "Meralco",
+    amount,
+    amountMode: "fixed",
+    dueRule: { kind: "day-of-month", day },
+    categoryId: "cat_bills_utilities",
+  });
+}
+
+test("UPCOMING BILLS INSIDE THE PERIOD ARE INCLUDED WITH THEIR AMOUNTS", async () => {
+  await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
+  await meralco(20);
+
+  const input = await buildSafeToSpendInput(TODAY, NOW);
+
+  expect(input.unpaidBills).toContainEqual(
+    expect.objectContaining({ name: "Meralco", amount: 230_000, dueDate: "2026-08-20" }),
+  );
+});
+
+test("AN OVERDUE UNPAID BILL IS INCLUDED — IT STILL HAS TO BE PAID", async () => {
+  // Rule 5(a). The bill due on the 5th is three days past and unresolved; it
+  // keeps subtracting until the user does something about it.
+  await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
+  await meralco(5, 90_000);
+
+  const input = await buildSafeToSpendInput(TODAY, NOW);
+
+  expect(input.unpaidBills.map((bill) => bill.dueDate)).toContain("2026-08-05");
+});
+
+test("A PAID CYCLE IS EXCLUDED — ITS MONEY IS ALREADY IN COMMITTED SPEND", async () => {
+  // Rule 5: counting it twice would make the user's spendable figure wrong in
+  // both terms at once.
+  await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
+  const bill = await meralco(5, 90_000);
+  const tx = await spend(90_000, NOW - 7 * DAY_MS, "cat_bills_utilities");
+  await recordBillPayment({ billId: bill.id, dueDate: "2026-08-05", transactionId: tx.id });
+
+  const input = await buildSafeToSpendInput(TODAY, NOW);
+
+  expect(input.unpaidBills.map((b) => b.dueDate)).not.toContain("2026-08-05");
+});
+
+test("a skipped cycle is excluded too", async () => {
+  await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
+  const bill = await meralco(20);
+  await skipCycle({ billId: bill.id, dueDate: "2026-08-20" });
+
+  const input = await buildSafeToSpendInput(TODAY, NOW);
+
+  expect(input.unpaidBills.map((b) => b.dueDate)).not.toContain("2026-08-20");
+});
+
+// ---------------------------------------------------------------------------
+// Contributions — rule 6
+// ---------------------------------------------------------------------------
+test("A GOAL WITH A FIXED RULE FORECASTS ON EVERY PAYDAY IN THE PERIOD", async () => {
+  await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
+  await setManualIncome({ cadence: "kinsenas", averageAmount: 1_500_000, sourceWalletIds: [cash.id] }, NOW);
+  const savings = await createWallet({ name: "GSave", type: "savings" });
+  const goal = await createGoal({
+    name: "Emergency Fund",
+    targetAmount: 5_000_000,
+    linkedWalletId: savings.id,
+    contributionRule: { kind: "fixed", amount: 100_000 },
+  });
+
+  const input = await buildSafeToSpendInput(TODAY, NOW);
+
+  // Kinsenas pays on the 15th and the last day: two anchors in August.
+  expect(input.plannedContributions).toEqual([
+    { goalId: goal.id, amount: 100_000, date: "2026-08-15" },
+    { goalId: goal.id, amount: 100_000, date: "2026-08-31" },
+  ]);
+});
+
+test("A PERCENT RULE TAKES ITS SHARE OF ONE PAY PACKET, NOT OF MONTHLY INCOME", async () => {
+  // The rule fires on a payday and takes a cut of what arrived. Using the
+  // monthly figure would reserve double on a kinsenas earner.
+  await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
+  await setManualIncome({ cadence: "kinsenas", averageAmount: 1_000_000, sourceWalletIds: [cash.id] }, NOW);
+  const savings = await createWallet({ name: "GSave", type: "savings" });
+  await createGoal({
+    name: "Emergency Fund",
+    targetAmount: 5_000_000,
+    linkedWalletId: savings.id,
+    contributionRule: { kind: "percent", percent: 10 },
+  });
+
+  const input = await buildSafeToSpendInput(TODAY, NOW);
+
+  expect(input.plannedContributions[0].amount).toBe(100_000); // 10% of ₱10,000.00
+});
+
+test("A GOAL WITH NO CONTRIBUTION RULE FORECASTS NOTHING", async () => {
+  // Rule 6: "Manual, unscheduled Goal contributions are not forecast; they
+  // simply appear as spend/transfers when they happen."
+  await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
+  await setManualIncome({ cadence: "kinsenas", averageAmount: 1_500_000, sourceWalletIds: [cash.id] }, NOW);
+  const savings = await createWallet({ name: "GSave", type: "savings" });
+  await createGoal({ name: "Emergency Fund", targetAmount: 5_000_000, linkedWalletId: savings.id });
+
+  const input = await buildSafeToSpendInput(TODAY, NOW);
+
+  expect(input.plannedContributions).toEqual([]);
+});
+
+test("AN UNPREDICTABLE CADENCE FORECASTS NOTHING RATHER THAN GUESSING", async () => {
+  // A gig worker's next payday is not knowable, and inventing one would reserve
+  // money against a date the app made up.
+  await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
+  await setManualIncome({ cadence: "irregular", averageAmount: 1_500_000, sourceWalletIds: [cash.id] }, NOW);
+  const savings = await createWallet({ name: "GSave", type: "savings" });
+  await createGoal({
+    name: "Emergency Fund",
+    targetAmount: 5_000_000,
+    linkedWalletId: savings.id,
+    contributionRule: { kind: "fixed", amount: 100_000 },
+  });
+
+  const input = await buildSafeToSpendInput(TODAY, NOW);
+
+  expect(input.plannedContributions).toEqual([]);
+});
+
+test("A CONTRIBUTION EARLIER IN THE PERIOD IS STILL FORECAST", async () => {
+  // Rule 6 counts "from the start of the period", not from today. On the 20th
+  // the 15th's allocation is money already moved, and dropping it would hand it
+  // back to the user's spendable figure.
+  await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
+  await setManualIncome({ cadence: "kinsenas", averageAmount: 1_500_000, sourceWalletIds: [cash.id] }, NOW);
+  const savings = await createWallet({ name: "GSave", type: "savings" });
+  await createGoal({
+    name: "Emergency Fund",
+    targetAmount: 5_000_000,
+    linkedWalletId: savings.id,
+    contributionRule: { kind: "fixed", amount: 100_000 },
+  });
+
+  const input = await buildSafeToSpendInput("2026-08-20", new Date(2026, 7, 20, 10, 0).getTime());
+
+  expect(input.plannedContributions.map((c) => c.date)).toContain("2026-08-15");
+});
+
+// ---------------------------------------------------------------------------
+// Review queue — rule 12
+// ---------------------------------------------------------------------------
+test("THE REVIEW QUEUE COUNT IS CARRIED, NEVER SUBTRACTED", async () => {
+  await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
+  await spend(50_000, NOW - DAY_MS);
+  await enqueue({ kind: "low-confidence", payload: { amount: 12_000 } });
+
+  const input = await buildSafeToSpendInput(TODAY, NOW);
+  const result = computeSafeToSpend(input);
+
+  expect(input.reviewQueueCount).toBe(1);
+  expect(result.reviewQueueCount).toBe(1);
+  // The number reflects the spend, not the queue: headroom is 1,500,000 −
+  // 50,000 over the 20 days from the 12th.
+  expect(result.headroom).toBe(1_450_000);
+});
+
+// ---------------------------------------------------------------------------
+// Rule 1 — no duplicate arithmetic
+// ---------------------------------------------------------------------------
+test("getSafeToSpend IS EXACTLY computeSafeToSpend OVER THE ASSEMBLED INPUT", async () => {
+  // The test that keeps this module honest. If assembly ever starts computing
+  // anything of its own, these two diverge — and Task 1's worked-example tests
+  // would still pass while the home screen showed a different number.
+  await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
+  await setManualIncome({ cadence: "kinsenas", averageAmount: 1_500_000, sourceWalletIds: [cash.id] }, NOW);
+  await meralco(20);
+  await spend(620_000, NOW - 3 * DAY_MS);
+  const savings = await createWallet({ name: "GSave", type: "savings" });
+  await createGoal({
+    name: "Emergency Fund",
+    targetAmount: 5_000_000,
+    linkedWalletId: savings.id,
+    contributionRule: { kind: "fixed", amount: 100_000 },
+  });
+
+  const input = await buildSafeToSpendInput(TODAY, NOW);
+
+  expect(await getSafeToSpend(TODAY, NOW)).toEqual(computeSafeToSpend(input));
+});
