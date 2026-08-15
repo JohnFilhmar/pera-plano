@@ -38,6 +38,19 @@ export type AppSettings = {
    * orphan. Read and written through `income_repo`, which is the only caller.
    */
   income_detection_state: IncomeDetectionState;
+  /**
+   * OS notification identifiers for scheduled loan reminders, keyed by loan id
+   * (m2b Task 7). `scheduleReminder` returns an id and `cancelScheduled` needs
+   * it back; nothing else in the app remembers them.
+   *
+   * Here rather than in a column because m2 Global Constraint 9 names
+   * "reminder ids" as an app_settings case outright — and unlike the limit
+   * alert state, nothing financial depends on it. A stale entry for a deleted
+   * loan costs one `cancelScheduled` call for an id the OS no longer knows,
+   * which is a no-op; a stale limit base would have been a wrong number on
+   * screen.
+   */
+  loan_reminder_ids: Record<string, string[]>;
 };
 
 /** Values returned by `getSetting`/`getAllSettings` for a key with no row yet. */
@@ -49,6 +62,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   last_parser_ruleset_version: 0,
   cash_reconcile_prompt_at: null,
   income_detection_state: UNKNOWN_INCOME_DETECTION,
+  loan_reminder_ids: {},
 };
 
 type SettingValueRow = { value_json: string };
