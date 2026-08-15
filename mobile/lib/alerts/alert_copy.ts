@@ -23,6 +23,7 @@
 //      tracking-interrupted notice) — so those tasks have a tested,
 //      reusable place to get an `AlertCopy` instead of hand-rolling the
 //      "no amount locked" discipline five separate times.
+import type { LimitAlert } from "@/types/control";
 import type { Centavos, LimitScope, LimitThreshold, LoanDirection } from "@/types/domain";
 
 type AlertCopyVariant = { title: string; body: string };
@@ -172,6 +173,70 @@ export function trackingInterruptedAlertCopy(params: { pendingCount: number }): 
 }
 
 // ---------------------------------------------------------------------------
+// Coalesced multi-limit alert (M2 Task 6). Limits rule 22: "If a single commit
+// trips thresholds on multiple Limits, the alerts coalesce into one
+// notification summarizing each affected Limit, ordered most-severe first."
+//
+// The ORDERING is `coalesceAlerts` in lib/limits/limit_engine.ts, not here —
+// this renders whatever order it is handed, so a caller that forgets to
+// coalesce produces a badly ordered notification rather than a wrong one.
+//
+// THE COUNT IS WITHHELD LOCKED, for `trackingInterruptedAlertCopy`'s reason
+// exactly: "how many of your limits are in trouble" is not an amount, but it is
+// still a figure about the user's finances that a stranger reading the lock
+// screen has no business seeing. The catalogue scan enforces it independently —
+// a bare digit in a locked variant fails `looksLikeAnAmount`.
+// ---------------------------------------------------------------------------
+
+/** One limit's line in the coalesced body. Whole pesos, like every figure here. */
+function limitLine(alert: LimitAlert): string {
+  if (alert.spend > alert.effectiveLimit) {
+    return `${alert.limitName}: over by ${formatPeso(alert.spend - alert.effectiveLimit)}`;
+  }
+  const remaining = alert.effectiveLimit - alert.spend;
+  return `${alert.limitName}: ${formatPeso(remaining)} left, ${dayPhrase(alert.daysLeft)} to go`;
+}
+
+/**
+ * Copy for one or more limits that just tripped a threshold.
+ *
+ * A SINGLE alert delegates to `limitThresholdAlertCopy`, which is docs §7a's
+ * own canonical example and therefore the wording the spec actually names.
+ * Re-deriving it here would give the commonest alert in the app two spellings.
+ *
+ * Throws on an empty list rather than returning empty copy: a notification with
+ * nothing to say is a caller bug, and posting it would put a blank line on the
+ * user's lock screen.
+ */
+export function limitAlertsCopy(alerts: LimitAlert[]): AlertCopy {
+  if (alerts.length === 0) {
+    throw new Error("limitAlertsCopy: no alerts to describe");
+  }
+
+  if (alerts.length === 1) {
+    const [only] = alerts;
+    return limitThresholdAlertCopy({
+      threshold: only.threshold,
+      scope: only.scope,
+      spent: only.spend,
+      limit: only.effectiveLimit,
+    });
+  }
+
+  return {
+    locked: {
+      title: "Spending limit alert",
+      // "Several", not the count — see this section's header.
+      body: "Several of your limits need a look.",
+    },
+    unlocked: {
+      title: `${alerts.length} limits need a look`,
+      body: alerts.map(limitLine).join("\n"),
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // The catalogue. Every alert kind above, built once with representative —
 // deliberately amount-laden — sample parameters, so the test suite can
 // iterate this array and scan every locked variant programmatically rather
@@ -207,5 +272,28 @@ export const ALERT_COPY_CATALOGUE: Array<{ name: string; copy: AlertCopy }> = [
   {
     name: "trackingInterrupted",
     copy: trackingInterruptedAlertCopy({ pendingCount: 4 }),
+  },
+  {
+    name: "limitAlerts-coalesced",
+    copy: limitAlertsCopy([
+      {
+        limitId: "l-breached",
+        limitName: "GCash daily",
+        scope: "daily",
+        threshold: 100,
+        spend: 110000,
+        effectiveLimit: 100000,
+        daysLeft: 1,
+      },
+      {
+        limitId: "l-warned",
+        limitName: "Food & Dining",
+        scope: "monthly",
+        threshold: 80,
+        spend: 850000,
+        effectiveLimit: 1000000,
+        daysLeft: 9,
+      },
+    ]),
   },
 ];

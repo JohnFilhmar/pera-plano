@@ -9,9 +9,12 @@
 // EVERY entry in ALERT_COPY_CATALOGUE programmatically rather than
 // hand-checking each one, so a twelfth alert added next year cannot quietly
 // slip a peso figure into copy the lock screen renders.
+import type { LimitAlert } from "@/types/control";
+
 import {
   ALERT_COPY_CATALOGUE,
   billDueAlertCopy,
+  limitAlertsCopy,
   limitThresholdAlertCopy,
   loanReminderAlertCopy,
   paydaySummaryAlertCopy,
@@ -146,5 +149,99 @@ describe("trackingInterruptedAlertCopy", () => {
     expect(copy.locked.body.length).toBeGreaterThan(0);
     expect(looksLikeAnAmount(copy.locked.body)).toBe(false);
     expect(copy.unlocked.body).toContain("4");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// limitAlertsCopy — m2 Task 6, limits rules 21-22.
+//
+// The ORDER of the lines is `coalesceAlerts`' job (lib/limits/limit_engine.ts,
+// tested there); this renders whatever order it is handed.
+// ---------------------------------------------------------------------------
+describe("limitAlertsCopy", () => {
+  const warned: LimitAlert = {
+    limitId: "l-warned",
+    limitName: "Food & Dining",
+    scope: "monthly",
+    threshold: 80,
+    spend: 800000,
+    effectiveLimit: 1000000,
+    daysLeft: 9,
+  };
+  const breached: LimitAlert = {
+    limitId: "l-breached",
+    limitName: "GCash daily",
+    scope: "daily",
+    threshold: 100,
+    spend: 110000,
+    effectiveLimit: 100000,
+    daysLeft: 1,
+  };
+
+  it("a single alert IS limitThresholdAlertCopy — one alert kind, one wording", () => {
+    // docs §7a's canonical example is that function's output. Two spellings of
+    // the commonest alert in the app is how they drift apart.
+    expect(limitAlertsCopy([warned])).toEqual(
+      limitThresholdAlertCopy({
+        threshold: 80,
+        scope: "monthly",
+        spent: 800000,
+        limit: 1000000,
+      }),
+    );
+  });
+
+  it("several alerts coalesce into ONE notification listing each (rule 22)", () => {
+    const copy = limitAlertsCopy([breached, warned]);
+
+    expect(copy.unlocked.title).toContain("2 limits");
+    expect(copy.unlocked.body).toContain("GCash daily");
+    expect(copy.unlocked.body).toContain("Food & Dining");
+  });
+
+  it("renders the lines in the order given, most-severe first when coalesced", () => {
+    const copy = limitAlertsCopy([breached, warned]);
+    const breachedIndex = copy.unlocked.body.indexOf("GCash daily");
+    const warnedIndex = copy.unlocked.body.indexOf("Food & Dining");
+
+    expect(breachedIndex).toBeGreaterThanOrEqual(0);
+    expect(warnedIndex).toBeGreaterThan(breachedIndex);
+  });
+
+  it("states the OVERAGE for a breached limit and the REMAINDER for a warned one", () => {
+    const copy = limitAlertsCopy([breached, warned]);
+
+    // "over by ₱100" — a user who is past their cap does not need to be told
+    // how much room is left, because there is none.
+    expect(copy.unlocked.body).toContain("over by ₱100");
+    expect(copy.unlocked.body).toContain("₱2,000 left, 9 days to go");
+  });
+
+  it("keys overage on the SPEND, not on the threshold label", () => {
+    // A 100 threshold fires the instant spend reaches the limit exactly, where
+    // the overage is ₱0 and "over by ₱0" is nonsense. Exactly-at-the-limit is
+    // the remainder wording, with ₱0 left.
+    const exactlyAtLimit: LimitAlert = { ...breached, spend: 100000 };
+    const copy = limitAlertsCopy([exactlyAtLimit, warned]);
+
+    expect(copy.unlocked.body).toContain("GCash daily: ₱0 left");
+    expect(copy.unlocked.body).not.toContain("over by");
+  });
+
+  it("withholds the COUNT from the locked variant, not just the amounts", () => {
+    // trackingInterruptedAlertCopy's rule, applied again: how many of your
+    // limits are in trouble is a figure about your finances.
+    const copy = limitAlertsCopy([breached, warned]);
+
+    expect(copy.locked.body.length).toBeGreaterThan(0);
+    expect(looksLikeAnAmount(copy.locked.body)).toBe(false);
+    expect(looksLikeAnAmount(copy.locked.title)).toBe(false);
+    expect(copy.locked.body).not.toContain("2");
+    expect(copy.locked.body).not.toContain("GCash daily");
+    expect(copy.locked.body).not.toContain("Food & Dining");
+  });
+
+  it("throws on an empty list rather than posting a blank notification", () => {
+    expect(() => limitAlertsCopy([])).toThrow();
   });
 });

@@ -11,7 +11,8 @@
 // any UTC-anchored window would start and end at 8am and put the first eight
 // hours of every period in the previous one.
 import { endOfLocalDay, startOfLocalDay } from "@/lib/dates";
-import type { Centavos, LimitBasis, LimitScope } from "@/types/domain";
+import type { LimitAlert } from "@/types/control";
+import type { Centavos, LimitBasis, LimitScope, LimitThreshold } from "@/types/domain";
 
 /**
  * One period of a limit, as a half-open interval.
@@ -220,4 +221,123 @@ export function carryoverFor(args: {
 /** `effectiveLimit(N) = base(N) + carryover(N)` (limits rule 15). */
 export function effectiveLimitFor(base: Centavos, carryover: Centavos): Centavos {
   return base + carryover;
+}
+
+// ===========================================================================
+// Threshold crossing and alert ordering — limits rules 19-23 (m2 Task 6)
+//
+// LOGIC ONLY. The copy these alerts turn into lives in lib/alerts/alert_copy.ts
+// with every other alert kind in the app, for two reasons worth stating: the
+// m2 plan's own encryption amendment requires BOTH a locked and an unlocked
+// variant (the plan's Task 6 returns one `{ title, body }` pair, which the
+// amendment itself calls incomplete), and alert_copy.ts's catalogue is scanned
+// programmatically by its test for any peso figure that reached a locked
+// variant. Copy written here would sit outside that scan.
+// ===========================================================================
+
+/** Highest first — rule 21 fires the highest crossed threshold, so order matters. */
+const THRESHOLDS_DESC: LimitThreshold[] = [100, 80, 50];
+
+/**
+ * The threshold this commit newly crossed, or `null` for silence.
+ *
+ * A threshold fires when spend moves from BELOW the mark to AT-OR-ABOVE it
+ * (rule 19) — which is why both `prevSpend` and `newSpend` are needed; a single
+ * current total cannot express a crossing.
+ *
+ * NOTHING AT OR BELOW THE HIGHEST ALREADY FIRED CAN FIRE. This is stronger
+ * than the m2 plan's per-threshold `!alreadyFired.includes(t)`, and the
+ * difference is a real user-visible bug. `alreadyFired: [80]` without 50 is
+ * ordinary — one commit jumped 0 → 85% and rule 21 fired only 80. If spend then
+ * dips (a deletion, an edit, a transfer link) and climbs back, the per-threshold
+ * check finds 80 already fired, falls through to 50, sees 50 never fired, and
+ * notifies "50% of your limit used" to someone sitting at 85% who was already
+ * told about 80%. Rule 23 states the principle for the 100 case ("one breach
+ * alert, then silence"); rule 20 and IA §6.2's anti-spam rule generalise it.
+ * An alert that walks backwards is never right.
+ *
+ * That single rule also subsumes the plan's `alreadyFired.includes(100)` early
+ * return: 100 is the maximum, so once it has fired nothing can exceed it.
+ */
+export function crossedThreshold(args: {
+  prevSpend: Centavos;
+  newSpend: Centavos;
+  effectiveLimit: Centavos;
+  alreadyFired: LimitThreshold[];
+}): LimitThreshold | null {
+  // Reachable while a percent-of-income limit is paused mid-recompute. Every
+  // mark would be 0, so every commit would instantly "cross" 100%.
+  if (args.effectiveLimit <= 0) return null;
+
+  const highestFired = args.alreadyFired.length > 0 ? Math.max(...args.alreadyFired) : 0;
+
+  for (const threshold of THRESHOLDS_DESC) {
+    if (threshold <= highestFired) continue;
+    const mark = (args.effectiveLimit * threshold) / 100;
+    if (args.prevSpend < mark && args.newSpend >= mark) return threshold;
+  }
+  return null;
+}
+
+/** Usage as a fraction, guarded so a paused limit cannot poison a comparator. */
+function usageRatio(alert: LimitAlert): number {
+  return alert.effectiveLimit > 0 ? alert.spend / alert.effectiveLimit : 0;
+}
+
+/**
+ * Most-severe first (limits rule 22): threshold descending, then usage ratio
+ * descending.
+ *
+ * RATIO, NOT RAW SPEND. ₱2,000 against a ₱2,000 limit is more severe than
+ * ₱9,000 against ₱20,000, and sorting on the amount gets that backwards.
+ *
+ * The guard in `usageRatio` matters here specifically: `spend / 0` is
+ * `Infinity`, and `Infinity - Infinity` is `NaN`. A comparator that returns
+ * `NaN` leaves the order unspecified, so the notification's headline limit
+ * would be whatever the sort happened to land on.
+ *
+ * Copies before sorting — the caller still holds its own recompute list, and
+ * reordering it in place would reorder whatever else it does with it.
+ */
+export function coalesceAlerts(alerts: LimitAlert[]): LimitAlert[] {
+  return [...alerts].sort(
+    (a, b) => b.threshold - a.threshold || usageRatio(b) - usageRatio(a),
+  );
+}
+
+/**
+ * A selection plus every descendant of every selected category (limits rule 4:
+ * "picking a parent includes all its descendants").
+ *
+ * Walks to arbitrary DEPTH, not one level: a one-level implementation misses a
+ * grandchild and silently stops counting spend the user believes is capped.
+ *
+ * The `seen` guard doubles as a cycle brake. Nothing should ever write a cyclic
+ * category tree, but a walk that trusts its input freezes the app on a corrupt
+ * row instead of failing visibly.
+ *
+ * An empty selection expands to nothing, NOT to every category — an empty
+ * filter means "no filter" upstream, where `limits_repo` stores it as NULL.
+ */
+export function expandCategoryIds(
+  selected: string[],
+  all: { id: string; parentId: string | null }[],
+): string[] {
+  const childrenOf = new Map<string, string[]>();
+  for (const category of all) {
+    if (category.parentId === null) continue;
+    const siblings = childrenOf.get(category.parentId) ?? [];
+    siblings.push(category.id);
+    childrenOf.set(category.parentId, siblings);
+  }
+
+  const seen = new Set<string>();
+  const stack = [...selected];
+  while (stack.length > 0) {
+    const id = stack.pop() as string;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    stack.push(...(childrenOf.get(id) ?? []));
+  }
+  return [...seen];
 }

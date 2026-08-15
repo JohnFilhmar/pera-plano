@@ -71,3 +71,30 @@ export type NewLimit = {
   rollover?: boolean;
   isActive?: boolean;
 };
+
+/**
+ * One limit that just tripped a threshold, ready to be ordered and turned into
+ * copy (limits rules 21–22).
+ *
+ * Lives here rather than in `limit_engine.ts` (where the m2 plan puts it)
+ * because BOTH sides need it and neither should import the other:
+ * `lib/limits/limit_engine.ts` produces and orders these, and
+ * `lib/alerts/alert_copy.ts` renders them. A shape in the engine would make the
+ * copy catalogue depend on the engine for a record type.
+ *
+ * `scope` is here, and the plan omits it, because the single-alert copy is
+ * phrased around it — docs/12 §7a's canonical example is "You've reached 80% of
+ * your **monthly** limit." `limitName` is the human label for the multi-limit
+ * list ("Food & Dining", "GCash daily"); the `limits` table has no name column,
+ * so whoever builds a `LimitAlert` derives it from the scope and filters.
+ */
+export type LimitAlert = {
+  limitId: string;
+  limitName: string;
+  scope: LimitScope;
+  threshold: LimitThreshold;
+  spend: Centavos;
+  /** base + carryover, the figure every threshold is measured against (rule 15). */
+  effectiveLimit: Centavos;
+  daysLeft: number;
+};
