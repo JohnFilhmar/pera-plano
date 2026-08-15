@@ -6,6 +6,7 @@ import {
   getCategory,
   hideCategory,
   listCategories,
+  listCategoryRefs,
   seedDefaultCategories,
   SystemCategoryDeleteError,
   UncategorizedProtectedError,
@@ -404,5 +405,35 @@ describe("deleteCategory's reparent + transaction-reassign + delete are atomic",
       ["tx-doomed"],
     );
     expect(row).toEqual({ category_id: custom.id });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// listCategoryRefs — m2 Task 7. The tree edges the limits engine walks
+// (limits rule 4: picking a parent includes all its descendants).
+// ---------------------------------------------------------------------------
+describe("listCategoryRefs", () => {
+  it("returns every category as an id/parentId pair, roots with a null parent", async () => {
+    await seedDefaultCategories();
+    const parent = await createCategory({ name: "Side Hustle", icon: "briefcase" });
+    const child = await createCategory({ name: "Delivery", icon: "bike", parentId: parent.id });
+
+    const refs = await listCategoryRefs();
+
+    expect(refs).toContainEqual({ id: parent.id, parentId: null });
+    expect(refs).toContainEqual({ id: child.id, parentId: parent.id });
+    // Every row, seeded defaults included — the engine walks the whole tree.
+    expect(refs).toHaveLength((await listCategories({ includeHidden: true })).length);
+  });
+
+  it("INCLUDES hidden categories", async () => {
+    // A transaction can still sit in a hidden category, and its spend counts
+    // toward the parent the user actually selected for their limit. Filtering
+    // them out here would silently stop counting that spend.
+    const parent = await createCategory({ name: "Food & Dining", icon: "utensils" });
+    const child = await createCategory({ name: "Delivery", icon: "bike", parentId: parent.id });
+    await hideCategory(child.id);
+
+    expect(await listCategoryRefs()).toContainEqual({ id: child.id, parentId: parent.id });
   });
 });

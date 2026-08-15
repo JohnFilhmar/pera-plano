@@ -336,3 +336,22 @@ export async function deleteCategory(id: string): Promise<void> {
     await db.runAsync("DELETE FROM categories WHERE id = ?", [id]);
   });
 }
+
+/**
+ * Every category as a bare id/parent pair — the shape the limits engine's
+ * `expandCategoryIds` walks (limits rule 4: picking a parent includes all its
+ * descendants). Added by m2 Task 7.
+ *
+ * Deliberately NOT `listCategories()`. A limit recompute runs on every ledger
+ * commit and needs only the tree edges; pulling names, icons and flags for
+ * every category on each commit is work nothing reads. Hidden categories are
+ * included on purpose — a transaction can still sit in one, and its spend
+ * counts toward the parent the user actually selected.
+ */
+export async function listCategoryRefs(): Promise<{ id: string; parentId: string | null }[]> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<{ id: string; parent_id: string | null }>(
+    "SELECT id, parent_id FROM categories",
+  );
+  return rows.map((row) => ({ id: row.id, parentId: row.parent_id }));
+}
