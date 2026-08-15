@@ -8,14 +8,22 @@
 // detection or the Today screen exist — it commits a row and says so. Everything
 // that has to recompute subscribes.
 //
-// The map starts with the one event that has a producer. The control plane (m2
-// Task 1) widens it — `ledger:changed` for edits and deletes, `income:payday`
-// for the goals sheet — against these exact signatures, which that plan pins.
-// Adding a key is the whole change; nothing here is per-event.
+// The map started with the one event that had a producer; m2 Task 1 widened it
+// with `ledger:changed` and `income:payday`, against the exact signatures that
+// plan pins. Adding a key was the whole change — nothing here is per-event, and
+// the widening needed no change to `onAppEvent` or `emitAppEvent` at all.
+//
+// A KEY IS ADDED FOR ITS *SUBSCRIBERS*, NOT ITS PRODUCER. Both new events are
+// declared here before the code that fires them exists, because the map is the
+// seam: the control plane can be built and tested against `ledger:changed`
+// while transactions_repo still only emits `ledger:committed`. What that costs
+// is a window where a subscriber is wired to an event nothing sends yet — so a
+// feature that looks inert is worth checking against its producer first.
 //
 // SCOPE, DELIBERATELY SMALL. No wildcards, no once(), no event history, no
 // cross-process delivery. A subscriber that needs the payload again reads the
 // database, which is the only thing that is actually true after the fact.
+import type { Centavos, EpochMs } from "@/types/domain";
 
 /**
  * Every event and the payload it carries. Payloads are IDENTIFIERS, not
@@ -26,6 +34,38 @@
 export type AppEventMap = {
   /** A new row reached the ledger. Fired by `lib/ingest/pipeline.ts` after the write. */
   "ledger:committed": { transactionId: string };
+
+  /**
+   * An EXISTING row moved: edited, deleted, recategorised, or linked as a
+   * transfer leg.
+   *
+   * Separate from `ledger:committed` rather than folded into it, because the
+   * two mean opposite things to a total. A commit can only add to a period's
+   * spend, so a subscriber may add incrementally; a change can add, subtract,
+   * move spend between two periods, or remove it from every total at once (a
+   * transfer link excludes both legs). A handler that treated the two alike
+   * would double-count an edit and never notice a delete.
+   */
+  "ledger:changed": { transactionId: string };
+
+  /**
+   * Income landed that the detector recognised as a payday, per
+   * `docs/04-features/04-income.md`. Consumed by the goals sheet.
+   *
+   * THE ONE PAYLOAD HERE THAT IS NOT PURELY IDENTIFIERS, and deliberately so.
+   * A payday handler allocates against the amount that just arrived; re-reading
+   * it from the row would make an allocation depend on the transaction still
+   * being unchanged whenever the handler happened to run, which is exactly the
+   * staleness the identifier rule above exists to prevent — inverted, because
+   * here the historical figure IS the correct one. `occurredAt` likewise: an
+   * allocation belongs to the payday's own instant, not to processing time.
+   */
+  "income:payday": {
+    transactionId: string;
+    walletId: string;
+    amount: Centavos;
+    occurredAt: EpochMs;
+  };
 };
 
 type AppEventName = keyof AppEventMap;

@@ -1,5 +1,6 @@
 // lib/events/__tests__/app_events.test.ts — the bus the ingest pipeline
-// announces a commit on (plan Task 10 rule 7).
+// announces a commit on (plan Task 10 rule 7), widened by m2 Task 1 with
+// `ledger:changed` and `income:payday`.
 import { emitAppEvent, onAppEvent } from "../app_events";
 
 test("delivers payloads to subscribers and stops on unsubscribe", async () => {
@@ -76,4 +77,123 @@ test("a handler that unsubscribes during an emit still lets the rest run", async
 
   expect(seen).toEqual(["first", "second"]);
   second();
+});
+
+// ---------------------------------------------------------------------------
+// The m2 Task 1 widening. `ledger:changed` fires on an edit, a delete, a
+// recategorisation or a transfer link — anything that moves a row a limit total
+// already counted. `income:payday` is what the goals sheet waits on.
+// ---------------------------------------------------------------------------
+
+test("ledger:changed carries the transaction that moved", async () => {
+  const seen: string[] = [];
+  const off = onAppEvent("ledger:changed", (payload) => {
+    seen.push(payload.transactionId);
+  });
+
+  await emitAppEvent("ledger:changed", { transactionId: "tx-edited" });
+  off();
+
+  expect(seen).toEqual(["tx-edited"]);
+});
+
+test("income:payday carries the wallet, amount and instant, not just an id", async () => {
+  // The only payload on the bus that is not purely identifiers: a payday
+  // handler allocates against the amount that just landed, and re-deriving it
+  // from the row would make the goals sheet depend on the transaction still
+  // existing unchanged by the time the handler runs.
+  const seen: unknown[] = [];
+  const occurredAt = new Date(2026, 7, 15, 8, 0).getTime();
+  const off = onAppEvent("income:payday", (payload) => {
+    seen.push(payload);
+  });
+
+  await emitAppEvent("income:payday", {
+    transactionId: "tx-9",
+    walletId: "w-1",
+    amount: 1_850_000,
+    occurredAt,
+  });
+  off();
+
+  expect(seen).toEqual([
+    { transactionId: "tx-9", walletId: "w-1", amount: 1_850_000, occurredAt },
+  ]);
+});
+
+test("the three events are delivered independently of one another", async () => {
+  // A registry that collapsed into one handler list — or a widening that reused
+  // the committed key for changes — would fan every emit out to all three, and
+  // a limit engine would recompute on a payday it has no interest in.
+  const committed: string[] = [];
+  const changed: string[] = [];
+  const payday: string[] = [];
+
+  const offCommitted = onAppEvent("ledger:committed", (p) => {
+    committed.push(p.transactionId);
+  });
+  const offChanged = onAppEvent("ledger:changed", (p) => {
+    changed.push(p.transactionId);
+  });
+  const offPayday = onAppEvent("income:payday", (p) => {
+    payday.push(p.transactionId);
+  });
+
+  await emitAppEvent("ledger:changed", { transactionId: "tx-a" });
+  await emitAppEvent("income:payday", {
+    transactionId: "tx-b",
+    walletId: "w-1",
+    amount: 100,
+    occurredAt: new Date(2026, 7, 15, 8, 0).getTime(),
+  });
+
+  expect(committed).toEqual([]);
+  expect(changed).toEqual(["tx-a"]);
+  expect(payday).toEqual(["tx-b"]);
+
+  offCommitted();
+  offChanged();
+  offPayday();
+});
+
+test("unsubscribing from one event leaves the others subscribed", async () => {
+  const changed: string[] = [];
+  const payday: string[] = [];
+
+  const offChanged = onAppEvent("ledger:changed", (p) => {
+    changed.push(p.transactionId);
+  });
+  const offPayday = onAppEvent("income:payday", (p) => {
+    payday.push(p.transactionId);
+  });
+
+  offChanged();
+
+  await emitAppEvent("ledger:changed", { transactionId: "tx-c" });
+  await emitAppEvent("income:payday", {
+    transactionId: "tx-d",
+    walletId: "w-1",
+    amount: 100,
+    occurredAt: new Date(2026, 7, 15, 8, 0).getTime(),
+  });
+
+  expect(changed).toEqual([]);
+  expect(payday).toEqual(["tx-d"]);
+  offPayday();
+});
+
+test("a throwing ledger:changed handler does not stop the rest", async () => {
+  const seen: string[] = [];
+  const thrower = onAppEvent("ledger:changed", () => {
+    throw new Error("boom");
+  });
+  const survivor = onAppEvent("ledger:changed", (p) => {
+    seen.push(p.transactionId);
+  });
+
+  await expect(emitAppEvent("ledger:changed", { transactionId: "tx-e" })).resolves.toBeUndefined();
+
+  expect(seen).toEqual(["tx-e"]);
+  thrower();
+  survivor();
 });
