@@ -83,6 +83,22 @@ export const queryKeys = {
   limits: {
     all: ["limits"] as const,
     list: () => ["limits", "list"] as const,
+    /**
+     * The limits AS THE PLAN TAB SEES THEM — each one resolved against the
+     * current period, with its spend, effective limit and UX state
+     * (`getLimitStatuses`, m2 Task 7).
+     *
+     * A SIBLING OF `list()`, not a replacement for it. `list()` is the raw
+     * configuration rows; this is a derived view that also depends on the
+     * ledger and on the IncomeProfile, so a screen showing progress bars and a
+     * screen showing an edit form go stale for different reasons. Both nest
+     * under `limits.all`, which every limit mutation invalidates.
+     *
+     * NOT KEYED ON `now`. The window is resolved inside the query function from
+     * the system clock; putting the instant in the key would make every render
+     * a cache miss.
+     */
+    statuses: () => ["limits", "statuses"] as const,
     detail: (id: string) => ["limits", "detail", id] as const,
   },
   goals: {

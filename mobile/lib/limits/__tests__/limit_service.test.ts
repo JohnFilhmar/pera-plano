@@ -1,20 +1,16 @@
 // lib/limits/__tests__/limit_service.test.ts — m2 Task 7.
 //
 // The integration test for the limits feature: engine + limits_repo +
-// transactions_repo.sumSpend + the alerts service, against the REAL migrations
-// through freshDb(). Everything below is seeded with the actual 001_core.sql
-// columns — the m2 plan's own seed helper writes a `matchers` column into
-// `wallets`, which does not exist (matchers are their own table).
-// Only `postAlert` is mocked. `CHANNEL_LIMITS` is deliberately NOT stubbed here
-// and comes from the real lib/alerts/channels.ts: a mock that hands back a
-// symbol the real module does not export keeps jest green while `tsc` fails,
-// which is exactly what happened on the first pass of this file.
-jest.mock("@/lib/alerts/alerts_service", () => ({
-  postAlert: jest.fn().mockResolvedValue("os-1"),
-}));
-
-import { postAlert } from "@/lib/alerts/alerts_service";
-import { limitAlertsCopy } from "@/lib/alerts/alert_copy";
+// transactions_repo.sumSpend, against the REAL migrations through freshDb().
+// Everything below is seeded with the actual 001_core.sql columns — the m2
+// plan's own seed helper writes a `matchers` column into `wallets`, which does
+// not exist (matchers are their own table).
+//
+// NOTHING IS MOCKED HERE, and that is the point of the m2 Task 8 split.
+// `notifyLimitAlerts` moved to lib/limits/limit_notifier.ts (tested next door)
+// because it was the only thing dragging expo-notifications and the
+// `NotificationListener` native module into every consumer of this module —
+// including the Plan tab, which only wanted a progress bar.
 import { closeDatabase } from "@/lib/db/database";
 import type { SQLiteDatabase } from "@/lib/db/database";
 import {
@@ -29,7 +25,6 @@ import { freshDb } from "@/test_support/db";
 import {
   getLimitStatuses,
   muteLimitForPeriod,
-  notifyLimitAlerts,
   recomputeLimits,
   refreshLimitBase,
 } from "../limit_service";
@@ -37,7 +32,6 @@ import {
 const ms = (y: number, m: number, d: number, hh = 12) => new Date(y, m, d, hh).getTime();
 
 let db: SQLiteDatabase;
-const mockPostAlert = postAlert as jest.MockedFunction<typeof postAlert>;
 
 async function seedWallet(id: string): Promise<void> {
   await db.runAsync(
@@ -509,111 +503,6 @@ test("refreshLimitBase on an unknown or paused limit does not throw", async () =
 
   await expect(refreshLimitBase("no-such-limit", ms(2026, 7, 2), null)).resolves.toBeUndefined();
   await expect(refreshLimitBase(paused.id, ms(2026, 7, 2), null)).resolves.toBeUndefined();
-});
-
-// ---------------------------------------------------------------------------
-// notifyLimitAlerts — rule 22, one notification
-// ---------------------------------------------------------------------------
-test("posts exactly ONE coalesced notification for several alerts", async () => {
-  await notifyLimitAlerts([
-    {
-      limitId: "a",
-      limitName: "Overall",
-      scope: "monthly",
-      threshold: 80,
-      spend: 850000,
-      effectiveLimit: 1000000,
-      daysLeft: 9,
-    },
-    {
-      limitId: "b",
-      limitName: "GCash",
-      scope: "daily",
-      threshold: 100,
-      spend: 1100000,
-      effectiveLimit: 1000000,
-      daysLeft: 1,
-    },
-  ]);
-
-  expect(mockPostAlert).toHaveBeenCalledTimes(1);
-  const call = mockPostAlert.mock.calls[0][0];
-  expect(call.channel).toBe("limits");
-  expect(call.data).toEqual({ limitIds: ["b", "a"] });
-});
-
-test("the posted copy carries BOTH variants, and the locked one leaks nothing", async () => {
-  // Task 2 takes an AlertCopy, not a title and a body — the m2 plan's
-  // `postAlert({ channel, title, body })` predates its own encryption amendment.
-  await notifyLimitAlerts([
-    {
-      limitId: "a",
-      limitName: "Overall",
-      scope: "monthly",
-      threshold: 80,
-      spend: 850000,
-      effectiveLimit: 1000000,
-      daysLeft: 9,
-    },
-    {
-      limitId: "b",
-      limitName: "GCash",
-      scope: "daily",
-      threshold: 100,
-      spend: 1100000,
-      effectiveLimit: 1000000,
-      daysLeft: 1,
-    },
-  ]);
-
-  const { copy } = mockPostAlert.mock.calls[0][0];
-  expect(copy.locked.body).not.toContain("₱");
-  expect(copy.locked.body).not.toContain("GCash");
-  // Most severe first inside the unlocked body (rule 22).
-  expect(copy.unlocked.body.indexOf("GCash")).toBeLessThan(copy.unlocked.body.indexOf("Overall"));
-});
-
-test("coalesces before rendering, so an unsorted caller still gets severity order", async () => {
-  const alerts = [
-    {
-      limitId: "a",
-      limitName: "Overall",
-      scope: "monthly" as const,
-      threshold: 80 as const,
-      spend: 850000,
-      effectiveLimit: 1000000,
-      daysLeft: 9,
-    },
-    {
-      limitId: "b",
-      limitName: "GCash",
-      scope: "daily" as const,
-      threshold: 100 as const,
-      spend: 1100000,
-      effectiveLimit: 1000000,
-      daysLeft: 1,
-    },
-  ];
-
-  await notifyLimitAlerts(alerts);
-
-  const { copy } = mockPostAlert.mock.calls[0][0];
-  expect(copy).toEqual(limitAlertsCopy([alerts[1], alerts[0]]));
-});
-
-test("posts nothing at all when there are no alerts", async () => {
-  await notifyLimitAlerts([]);
-
-  expect(mockPostAlert).not.toHaveBeenCalled();
-});
-
-test("a recompute that fires nothing posts nothing", async () => {
-  await createLimit({ scope: "monthly", basis: "fixed", value: 1000000 });
-  await seedTx({ walletId: "w1", categoryId: "food", amount: 100000, occurredAt: ms(2026, 7, 5) });
-
-  await notifyLimitAlerts(await recomputeLimits({ now: ms(2026, 7, 10), monthlyIncome: null }));
-
-  expect(mockPostAlert).not.toHaveBeenCalled();
 });
 
 // ---------------------------------------------------------------------------

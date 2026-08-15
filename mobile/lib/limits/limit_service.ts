@@ -25,9 +25,12 @@
 // 2. CARRYOVER IS ONLY EVER TAKEN FROM A PERIOD THIS LIMIT ACTUALLY TRACKED.
 //    Limits rule 18: a limit "does not retroactively receive any" headroom from
 //    before it existed. See `resolveState`.
-import { limitAlertsCopy } from "@/lib/alerts/alert_copy";
-import { postAlert } from "@/lib/alerts/alerts_service";
-import { CHANNEL_LIMITS } from "@/lib/alerts/channels";
+//
+// POSTING LIVES IN `limit_notifier.ts`, NOT HERE. `getLimitStatuses` is what a
+// screen calls to draw a progress bar, and when the notifier sat beside it,
+// importing this module pulled in `alerts_service` → `expo-notifications` →
+// the `NotificationListener` native module. Recompute returns alerts; something
+// else decides to post them.
 import { listCategoryRefs } from "@/lib/db/repos/categories_repo";
 import {
   getLimit,
@@ -36,7 +39,7 @@ import {
   setLimitAlertState,
 } from "@/lib/db/repos/limits_repo";
 import { sumSpend } from "@/lib/db/repos/transactions_repo";
-import type { LimitAlert, LimitAlertState } from "@/types/control";
+import type { LimitAlert, LimitAlertState, LimitUiState } from "@/types/control";
 import type { Centavos, Limit } from "@/types/domain";
 
 import {
@@ -50,6 +53,10 @@ import {
   previousPeriodWindow,
   type PeriodWindow,
 } from "./limit_engine";
+// Called with NO category map on purpose: this path runs on every ledger commit,
+// and loading the category table to phrase a notification would be a query per
+// alert. Screens pass the map and get the richer form of the same name.
+import { limitDisplayName } from "./limit_label";
 
 /**
  * One limit as a screen needs it. `uiState` mirrors the limits spec's UX states
@@ -67,7 +74,7 @@ export type LimitStatus = {
   effectiveLimit: Centavos | null;
   spend: Centavos;
   window: PeriodWindow;
-  uiState: "on_track" | "caution" | "warning" | "over" | "paused" | "inactive";
+  uiState: LimitUiState;
 };
 
 type SpendFilters = { categoryIds?: string[]; walletIds?: string[] };
@@ -161,15 +168,6 @@ function effectiveLimitOf(limit: Limit, state: LimitAlertState): Centavos {
 }
 
 /**
- * The engine's fallback label for a limit. The `limits` table has no name
- * column, so a limit is identified by what it caps; screens that know the
- * category and wallet names pass something richer into `LimitAlert`.
- */
-function limitDisplayName(limit: Limit): string {
-  return `${limit.scope.charAt(0).toUpperCase()}${limit.scope.slice(1)} limit`;
-}
-
-/**
  * Evaluates every ACTIVE limit against `now` and returns the alerts that just
  * fired, most-severe first (limits rules 19-23).
  *
@@ -231,29 +229,8 @@ export async function recomputeLimits(args: {
   return coalesceAlerts(alerts);
 }
 
-/**
- * Posts ONE notification for however many limits tripped (limits rule 22).
- *
- * Coalesces again rather than trusting the caller's order — `recomputeLimits`
- * already returns sorted alerts, and re-sorting a sorted list is free, but a
- * caller that assembled alerts some other way still gets severity order.
- *
- * Supplies an `AlertCopy`, not a title and a body: `postAlert` chooses the
- * locked or unlocked variant at post time (docs/12 §7a). The m2 plan's version
- * passes two strings, which predates its own encryption amendment.
- */
-export async function notifyLimitAlerts(alerts: LimitAlert[]): Promise<void> {
-  if (alerts.length === 0) return;
-  const ordered = coalesceAlerts(alerts);
-  await postAlert({
-    channel: CHANNEL_LIMITS,
-    copy: limitAlertsCopy(ordered),
-    data: { limitIds: ordered.map((alert) => alert.limitId) },
-  });
-}
-
 /** The spec's UX states table, as a function. */
-function uiStateFor(spend: Centavos, effectiveLimit: Centavos): LimitStatus["uiState"] {
+function uiStateFor(spend: Centavos, effectiveLimit: Centavos): LimitUiState {
   // A zero effective limit is reachable — `floorToPeso` can round a tiny
   // percentage of a small income down to nothing. `spend / 0` is Infinity, and
   // `0 / 0` is NaN, which fails every comparison and would silently report

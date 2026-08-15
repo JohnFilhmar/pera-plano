@@ -73,6 +73,20 @@ export type NewLimit = {
 };
 
 /**
+ * The limits spec's UX states table, as a union — one member per row.
+ *
+ * DECIDED ONCE, BY `getLimitStatuses`. A card that recomputed the 50/80/100
+ * boundaries from `spend` and `effectiveLimit` would be a second opinion about
+ * whether the user is over their limit, and the two would drift the first time
+ * a boundary moved. The service decides; the card renders.
+ *
+ * `paused` is rule 12 (percent-of-income with no usable income). `inactive` is
+ * the table's "Inactive (gated)" row — a limit the free tier is not enforcing,
+ * whose card is kept and dimmed rather than hidden.
+ */
+export type LimitUiState = "on_track" | "caution" | "warning" | "over" | "paused" | "inactive";
+
+/**
  * One limit that just tripped a threshold, ready to be ordered and turned into
  * copy (limits rules 21–22).
  *
