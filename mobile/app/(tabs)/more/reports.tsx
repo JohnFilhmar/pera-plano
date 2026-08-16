@@ -12,6 +12,7 @@ import { useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 
 import { DonutChart } from "@/components/reports/donut_chart";
+import { ExportButton } from "@/components/reports/export_button";
 import { RangePicker } from "@/components/reports/range_picker";
 import { RankedBars } from "@/components/reports/ranked_bars";
 import { SummaryTiles } from "@/components/reports/summary_tiles";
@@ -25,12 +26,20 @@ import type { ReportScope } from "@/lib/reports/reports_service";
 /** Rule 6, verbatim. */
 const EMPTY_TITLE = "No transactions in this period.";
 
+/** Shown when the share sheet fails to open — export_button.tsx rule 6's
+ * "onError" is silent by design (it just calls the prop); a share sheet that
+ * quietly does nothing is indistinguishable from a broken button, so this
+ * screen is the composition edge that turns the callback into something the
+ * user can actually see. */
+const EXPORT_ERROR_MESSAGE = "Could not export or share the CSV. Try again.";
+
 export default function ReportsScreen() {
   // Screens are a composition edge too (app/(tabs)/plan/bills.tsx reads the
   // clock the same way) — the default scope needs today's month before any
   // query has resolved, so it cannot wait on one.
   const today = toDateIso(new Date(systemClock.now()));
   const [scope, setScope] = useState<ReportScope>({ kind: "month", month: today.slice(0, 7) });
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const scopesQuery = useAvailableScopes();
   const reportQuery = useReport(scope);
@@ -65,6 +74,30 @@ export default function ReportsScreen() {
           </Text>
         </View>
       ) : null}
+
+      {/* `summary.range` is the SCOPE'S resolved range, not a hardcoded one —
+          the same clamped/custom range every chart on this screen is already
+          drawing from, so the exported CSV always matches what's on screen.
+          ExportButton is self-gated (wraps its own PlusGate) — mounted bare,
+          never wrapped in a second PlusGate, or two `plus-badge` views would
+          render at once. `testID` on the wrapper gives tests a scope of just
+          this button — RangePicker above has its own independent PlusGate
+          (the custom-range row), so a bare screen-wide "plus-badge" query
+          would count both and could not tell one gate's badge from the
+          other's. */}
+      <View testID="reports-export">
+        <ExportButton
+          range={summary.range}
+          today={today}
+          onExported={() => setExportError(null)}
+          onError={() => setExportError(EXPORT_ERROR_MESSAGE)}
+        />
+        {exportError ? (
+          <Text testID="reports-export-error" className="text-danger dark:text-danger-dark">
+            {exportError}
+          </Text>
+        ) : null}
+      </View>
 
       {summary.transactionCount === 0 ? (
         <EmptyState testID="reports-empty" title={EMPTY_TITLE} body="Nothing was tracked in this range yet." />

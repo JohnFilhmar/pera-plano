@@ -6,7 +6,7 @@
 // chart, and whether a scope the current tier can no longer honor explains
 // itself instead of silently dropping the request.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
 import type { ReactNode } from "react";
 
 import { queryKeys } from "@/constants/query_keys";
@@ -84,4 +84,42 @@ test("A SCOPE THE TIER CAN NO LONGER HONOR EXPLAINS ITSELF RATHER THAN FAILING S
   await client.invalidateQueries({ queryKey: queryKeys.reports.all });
 
   await screen.findByTestId("reports-truncated-notice", {}, { timeout: 30_000 });
+});
+
+// ---------------------------------------------------------------------------
+// The export button — components/reports/export_button.tsx is self-gated
+// (wraps its own PlusGate); this screen must mount it bare, never wrap it in
+// a second PlusGate, or two `plus-badge` views would render at once.
+// ---------------------------------------------------------------------------
+test("THE EXPORT BUTTON RENDERS ON THE SCREEN", async () => {
+  renderScreen(<ReportsScreen />);
+
+  await screen.findByTestId("reports-empty", {}, { timeout: 30_000 });
+  screen.getByTestId("export-csv-button");
+});
+
+test("FREE TIER SEES EXACTLY ONE PLUS BADGE ON THE EXPORT BUTTON, NOT TWO", async () => {
+  // Scoped to the `reports-export` wrapper, not the whole screen — RangePicker
+  // above renders its OWN independent `plus-badge` on Free for the custom-range
+  // row, so a screen-wide count would always read >= 2 regardless of whether
+  // ExportButton itself is double-wrapped. Two badges *inside this wrapper*
+  // would mean this screen wrapped an already self-gated ExportButton in a
+  // second PlusGate — the exact mistake the task brief calls out.
+  __setTierForTests("free");
+  renderScreen(<ReportsScreen />);
+
+  await screen.findByTestId("reports-empty", {}, { timeout: 30_000 });
+  const exportSection = within(screen.getByTestId("reports-export"));
+  exportSection.getByTestId("export-csv-button");
+  expect(exportSection.getAllByTestId("plus-badge")).toHaveLength(1);
+});
+
+test("PLUS TIER SEES THE EXPORT BUTTON WITH NO PLUS BADGE", async () => {
+  __setTierForTests("plus");
+  renderScreen(<ReportsScreen />);
+
+  await screen.findByTestId("reports-empty", {}, { timeout: 30_000 });
+  const exportSection = within(screen.getByTestId("reports-export"));
+  exportSection.getByTestId("export-csv-button");
+  expect(exportSection.queryByTestId("plus-badge")).toBeNull();
 });

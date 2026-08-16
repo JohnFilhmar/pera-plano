@@ -20,7 +20,7 @@ jest.mock("@/modules/notification_listener", () => ({
 }));
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
 import type { ReactNode } from "react";
 
 import { ThemeProvider } from "@/contexts/theme_context";
@@ -139,11 +139,14 @@ test("SAFE-TO-SPEND AND RECURRING ARE SHIPPED, AND NEITHER SURFACE SITS BEHIND A
 
   // The More tab's Subscriptions row is gated by `PlusGate` (a tier paywall),
   // never by `SoonGate` — MVP_TIER defaults to "plus", so the row must be
-  // reachable and no grey "Soon" chip should be anywhere in the tree.
+  // reachable and carry no grey "Soon" chip of its own. Scoped to the
+  // Subscriptions row specifically, not "nowhere in the tree": the More hub's
+  // Reports row is a genuinely separate feature (constants/shipped_features.ts's
+  // `reports` key) still "soon" as of this task, and it legitimately shows one.
   renderScreen(<MoreScreen />);
   fireEvent.press(screen.getByTestId("more-subscriptions"));
   expect(mockPush).toHaveBeenCalledWith("/more/subscriptions");
-  expect(screen.queryByText("Soon")).toBeNull();
+  expect(within(screen.getByTestId("more-subscriptions")).queryByText("Soon")).toBeNull();
 });
 
 // ---------------------------------------------------------------------------
