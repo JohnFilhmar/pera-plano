@@ -64,6 +64,8 @@ export default function PrivacyScreen() {
   const [exporting, setExporting] = useState(false);
   const [wiping, setWiping] = useState(false);
   const [busyProviderKey, setBusyProviderKey] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [wipeError, setWipeError] = useState<string | null>(null);
 
   const providers = useMemo(() => bundle?.providers ?? [], [bundle]);
   const allPackageNames = useMemo(
@@ -105,8 +107,12 @@ export default function PrivacyScreen() {
 
   const handleExport = async () => {
     setExporting(true);
+    setExportError(null);
     try {
       await exportAllData(Date.now());
+    } catch (error) {
+      console.warn("privacy: export failed", error);
+      setExportError("Export failed. Please try again.");
     } finally {
       setExporting(false);
     }
@@ -124,13 +130,28 @@ export default function PrivacyScreen() {
    * onboarding, not merely empty. `router.replace("/")` then remounts
    * app/index.tsx, which re-reads `onboarding_complete` (now `false`, from
    * `resetSettings()`) and redirects to `/(onboarding)` on its own.
+   *
+   * THE CATCH BELOW IS NOT OPTIONAL. `wipeAllData()`'s own DELETEs are
+   * already committed by the time this function can throw — `bootstrapApp()`
+   * and the native `clearCaptureBuffer()` inside `wipeAllData()` itself both
+   * run AFTER the database is irreversibly wiped (see that function's own
+   * header). Without this catch, either one throwing would leave
+   * `router.replace("/")` never called: the user sits on this screen with a
+   * stopped spinner, no error, and an un-reseeded app — the single most
+   * dangerous silent failure this feature could have.
    */
   const handleWipeConfirmed = async () => {
     setWiping(true);
+    setWipeError(null);
     try {
       await wipeAllData();
       await bootstrapApp();
       router.replace("/");
+    } catch (error) {
+      console.warn("privacy: wipe could not finish after the database was cleared", error);
+      setWipeError(
+        "Your data was erased, but PeraPlano could not finish resetting. Please close and reopen the app.",
+      );
     } finally {
       setWiping(false);
     }
@@ -179,7 +200,17 @@ export default function PrivacyScreen() {
           onPress={() => void handleExport()}
           loading={exporting}
         />
+        {exportError ? (
+          <Text testID="privacy-export-error" className="text-sm text-danger dark:text-danger-dark">
+            {exportError}
+          </Text>
+        ) : null}
         <WipeFlow onConfirmed={handleWipeConfirmed} busy={wiping} />
+        {wipeError ? (
+          <Text testID="privacy-wipe-error" className="text-sm text-danger dark:text-danger-dark">
+            {wipeError}
+          </Text>
+        ) : null}
       </View>
     </ScrollView>
   );

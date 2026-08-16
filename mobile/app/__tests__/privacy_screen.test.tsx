@@ -261,6 +261,48 @@ test("export calls exportAllData", async () => {
   await waitFor(() => expect(mockExportAllData).toHaveBeenCalledWith(expect.any(Number)));
 });
 
+test("an export failure surfaces an error and releases the busy spinner", async () => {
+  // Coordinator finding: handleExport's original `try { ... } finally { ... }`
+  // had no `catch`, so a rejection here propagated as an unhandled promise
+  // rejection with nothing shown on screen — only the `finally` ever ran.
+  mockExportAllData.mockRejectedValueOnce(new Error("disk full"));
+  await renderPrivacyScreen();
+
+  fireEvent.press(screen.getByTestId("export-everything"));
+
+  await waitFor(() => expect(screen.getByTestId("privacy-export-error")).toBeTruthy());
+  screen.getByText("Export failed. Please try again.");
+  expect(screen.getByTestId("export-everything").props.accessibilityState.busy).toBe(false);
+});
+
+// ---------------------------------------------------------------------------
+// The wipe's failure path (coordinator finding). `clearCaptureBuffer()` and
+// `bootstrapApp()` both run AFTER `wipeAllData()`'s own DELETEs are already
+// committed — see privacy.tsx's own doc on `handleWipeConfirmed`. Before this
+// fix, a rejection from either left `router.replace("/")` never called: a
+// stopped spinner, no error, and an un-reseeded app.
+// ---------------------------------------------------------------------------
+
+test("a wipe failure after the database is cleared surfaces an error instead of leaving the spinner stuck", async () => {
+  mockBootstrapApp.mockRejectedValueOnce(new Error("bootstrap: seed write failed"));
+  await renderPrivacyScreen();
+
+  fireEvent.press(screen.getByTestId("wipe-everything-trigger"));
+  fireEvent.press(screen.getByTestId("confirm-dialog-confirm"));
+  fireEvent.changeText(screen.getByTestId("wipe-confirm-input"), "DELETE");
+  fireEvent.press(screen.getByTestId("wipe-confirm-erase"));
+
+  await waitFor(() => expect(mockWipeAllData).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(screen.getByTestId("privacy-wipe-error")).toBeTruthy());
+  screen.getByText(
+    "Your data was erased, but PeraPlano could not finish resetting. Please close and reopen the app.",
+  );
+  // Never reached "/" — the user is not silently left on a half-reset app
+  // that LOOKS like it navigated away when it did not.
+  expect(mockReplace).not.toHaveBeenCalled();
+  expect(screen.getByTestId("wipe-confirm-erase").props.accessibilityState.busy).toBe(false);
+});
+
 // ---------------------------------------------------------------------------
 // Wipe (rule 5) — the double confirmation
 // ---------------------------------------------------------------------------
