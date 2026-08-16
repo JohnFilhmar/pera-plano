@@ -1,0 +1,121 @@
+// app/(onboarding)/done.tsx — the M3c onboarding flow's last step
+// (m3c-onboarding-client plan Task 3, rule 6; docs/04-features/01-onboarding.md
+// step 10).
+//
+// THE ONLY WRITER OF `onboarding_complete`. `completeOnboarding()`
+// (lib/onboarding/onboarding_state.ts) is the single place in the app that
+// ever flips a brand-new user into "/(tabs)" — every other step screen in
+// this flow funnels through here rather than writing the setting itself.
+//
+// NO SKIP LINK. OnboardingFrame's own header comment is explicit that "done"
+// has nothing left to skip — this is the step being skipped past lands on,
+// not one more thing to skip. `onSkip` is simply never passed.
+//
+// SELF-SUFFICIENT, NOT FED THROUGH PROPS. Like app/(onboarding)/wallets.tsx,
+// this screen re-reads what actually landed in the database (Wallets, income,
+// the first Limit) rather than trusting a chain of props carried across five
+// screens — the summary is only ever as honest as the ledger it is reading
+// from, which is also the number Home is about to show.
+//
+// COMPONENTS NEVER IMPORT A REPOSITORY (release-gate grep). This file does,
+// through hooks/queries/use_wallets.ts, use_income_summary.ts and
+// use_limit_statuses.ts only.
+import { useCallback, useState } from "react";
+import { Text, View } from "react-native";
+
+import { OnboardingFrame } from "@/components/onboarding/onboarding_frame";
+import { AmountText } from "@/components/ui/amount_text";
+import { Card } from "@/components/ui/card";
+import { useIncomeSummary } from "@/hooks/queries/use_income_summary";
+import { useLimitStatuses } from "@/hooks/queries/use_limit_statuses";
+import { useWallets } from "@/hooks/queries/use_wallets";
+import { completeOnboarding } from "@/lib/onboarding/onboarding_state";
+
+const CADENCE_LABEL: Record<string, string> = {
+  kinsenas: "kinsenas (15th and month-end)",
+  weekly: "weekly",
+  monthly: "monthly",
+  irregular: "no fixed schedule",
+};
+
+export default function DoneScreen({
+  onDone,
+  onBack,
+}: { onDone?: () => void; onBack?: () => void } = {}) {
+  const { data: wallets } = useWallets();
+  const { data: income } = useIncomeSummary();
+  const { data: limitStatuses } = useLimitStatuses();
+  const [finishing, setFinishing] = useState(false);
+
+  const walletCount = wallets?.length ?? 0;
+  const incomeKnown = income !== undefined && income.cadence !== null;
+  const firstLimit = limitStatuses?.[0] ?? null;
+
+  const finish = useCallback(async () => {
+    if (finishing) return;
+    setFinishing(true);
+    try {
+      await completeOnboarding();
+      onDone?.();
+    } finally {
+      setFinishing(false);
+    }
+  }, [finishing, onDone]);
+
+  return (
+    <OnboardingFrame
+      step="done"
+      title="You're all set"
+      onPrimary={finish}
+      primaryLabel="Go to Home"
+      primaryBusy={finishing}
+      onBack={onBack}
+    >
+      <Text testID="done-step-intro" className="text-fg-2 dark:text-fg-2-dark">
+        Here&apos;s what PeraPlano set up for you. Everything here can be changed any time.
+      </Text>
+
+      <Card testID="done-wallets-summary">
+        <Text className="font-semibold text-fg dark:text-fg-dark">
+          {walletCount === 0
+            ? "No wallets yet"
+            : walletCount === 1
+              ? "1 wallet ready"
+              : `${walletCount} wallets ready`}
+        </Text>
+        <Text className="mt-1 text-fg-2 dark:text-fg-2-dark">
+          {walletCount === 0
+            ? "Add one any time from the Wallets tab."
+            : "PeraPlano will pick up transactions from these automatically."}
+        </Text>
+      </Card>
+
+      <Card testID="done-income-summary">
+        <Text className="font-semibold text-fg dark:text-fg-dark">
+          {incomeKnown ? "Income declared" : "Income not set yet"}
+        </Text>
+        <Text className="mt-1 text-fg-2 dark:text-fg-2-dark">
+          {incomeKnown
+            ? `Paid ${CADENCE_LABEL[income!.cadence as string] ?? income!.cadence}.`
+            : "PeraPlano will work this out from your transactions over the next few paydays."}
+        </Text>
+      </Card>
+
+      <Card testID="done-limit-summary">
+        <Text className="font-semibold text-fg dark:text-fg-dark">
+          {firstLimit ? "Your first Limit is active" : "No Limit set yet"}
+        </Text>
+        {firstLimit && firstLimit.effectiveLimit !== null ? (
+          <View className="mt-1 flex-row items-center gap-1">
+            <Text className="text-fg-2 dark:text-fg-2-dark">Monthly limit:</Text>
+            <AmountText amount={firstLimit.effectiveLimit} size="sm" showSign={false} />
+          </View>
+        ) : (
+          <Text className="mt-1 text-fg-2 dark:text-fg-2-dark">
+            Add one any time from the Plan tab — Safe-to-Spend works better with one.
+          </Text>
+        )}
+      </Card>
+    </OnboardingFrame>
+  );
+}
