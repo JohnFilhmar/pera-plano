@@ -9,9 +9,8 @@
 // tier-history floor (lib/db/repos/transactions_repo.ts) reads the real
 // clock, not this service's `today` parameter — the same thing
 // transactions_repo.test.ts does for its own history-window test. Nothing in
-// reports_service.ts itself reads Date.now() (clock discipline, brief note
-// 8); this mock only keeps the REPO layer's own clock-dependent gate
-// deterministic.
+// reports_service.ts itself reads Date.now() (clock discipline); this mock
+// only keeps the REPO layer's own clock-dependent gate deterministic.
 import { closeDatabase } from "@/lib/db/database";
 import {
   getTransaction,
@@ -102,9 +101,17 @@ test("a custom range on free silently clamps to the current month and sets trunc
   expect(result.summary.spend).toBe(12000);
 });
 
-test("plus honors a custom range verbatim, unclamped", async () => {
+test("plus honors a custom range verbatim, unclamped — inclusive on both calendar ends", async () => {
   __setTierForTests("plus");
   await insertTransaction(baseTx({ date: "2026-07-10", amount: 5000, direction: "out" }));
+  // Both boundary days count. (This alone does NOT pin fetchTransactions's
+  // endOfLocalDay conversion — Plus also widens the underlying DB fetch to
+  // cover the trailing trend window (up to August here), which happens to
+  // extend past this range's own `to` and would mask that specific
+  // regression. See the dedicated Free-tier test below, where nothing widens
+  // the fetch, for the one that actually catches it.)
+  await insertTransaction(baseTx({ date: "2026-07-01", amount: 100, direction: "out" })); // range.from
+  await insertTransaction(baseTx({ date: "2026-07-31", amount: 200, direction: "out" })); // range.to
   // Outside the requested range — proves the range is exact, not padded.
   await insertTransaction(baseTx({ date: "2026-08-10", amount: 7000, direction: "out" }));
 
@@ -113,7 +120,24 @@ test("plus honors a custom range verbatim, unclamped", async () => {
 
   expect(result.truncatedByTier).toBe(false);
   expect(result.summary.range).toEqual(range);
-  expect(result.summary.spend).toBe(5000);
+  expect(result.summary.spend).toBe(5300);
+});
+
+test("the last calendar day of the range is not dropped by the half-open conversion", async () => {
+  // Free, deliberately: rule 3 makes Free's trend collapse to exactly
+  // `range` (lib/reports/reports_service.ts, `getReport`), so
+  // fetchTransactions's DB window is exactly [range.from, range.to] with
+  // nothing else widening it — unlike the Plus test above, where the
+  // trailing trend window can accidentally cover this same boundary bug.
+  // This is the tier that would actually go dark if fetchTransactions's
+  // `endOfLocalDay` conversion regressed to a bare `parseDateIso`.
+  __setTierForTests("free");
+  await insertTransaction(baseTx({ date: "2026-08-01", amount: 100, direction: "out" })); // range.from
+  await insertTransaction(baseTx({ date: "2026-08-31", amount: 200, direction: "out" })); // range.to
+
+  const result = await getReport({ kind: "month", month: "2026-08" }, TODAY);
+
+  expect(result.summary.spend).toBe(300);
 });
 
 // ---------------------------------------------------------------------------
@@ -140,10 +164,17 @@ test("plus's trend spans the trailing 6 months ending at today's month", async (
 // Rule 2 — History gating hides, it never deletes.
 // ---------------------------------------------------------------------------
 
-test("the 90-day window on free excludes older data from figures", async () => {
+test("old data does not reach free-tier figures", async () => {
   await insertTransaction(baseTx({ date: "2026-08-05", amount: 8000, direction: "out" }));
   // ~120 days before TODAY: outside both the current month AND the 90-day
-  // visibility floor, so it must not move this figure either way.
+  // visibility floor, so it must not move this figure either way. NOTE: this
+  // cannot isolate WHICH gate is doing the excluding — rule 1 always clamps
+  // Free's range to the current month (≤31 days), so anything old enough to
+  // trip the 90-day floor is also automatically outside the month, and this
+  // test would pass identically if the floor did not exist. It pins the
+  // end-to-end promise ("old data stays out of a Free report"), not the
+  // floor specifically — see the task report's Decisions section for why
+  // that isolation is structurally impossible under rule 1 as written.
   await insertTransaction(
     baseTx({ occurredAt: NOW_MS - 120 * DAY_MS, amount: 999999, direction: "out" }),
   );

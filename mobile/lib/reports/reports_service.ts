@@ -190,8 +190,9 @@ export async function getReport(scope: ReportScope, today: IsoDate): Promise<Rep
 
   const [transactions, categories] = await Promise.all([
     fetchTransactions([range, ...trendRanges]),
-    // Hidden included (brief interface note 5): a report can outlive a
-    // category's visibility, and naming it beats showing a raw id.
+    // Hidden included: a report can reference a category the user has since
+    // archived, and naming it here beats categoryBreakdown falling back to a
+    // raw uuid (its own `?? categoryId`) when it can't find one.
     listCategories({ includeHidden: true }),
   ]);
 
