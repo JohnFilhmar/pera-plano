@@ -17,6 +17,7 @@ import { formatCentavos } from "@/components/ui/amount_text";
 import { Card } from "@/components/ui/card";
 import { Chip } from "@/components/ui/chip";
 import type { ChipTone } from "@/components/ui/chip";
+import { palette } from "@/constants/colors";
 import { useTheme } from "@/contexts/theme_context";
 import { formatDate } from "@/lib/datetime";
 import { parseDateIso } from "@/lib/dates";
@@ -54,7 +55,11 @@ const PACE_LABEL: Record<GoalProgress["pace"], string> = {
 export function GoalCard({ name, progress, targetDate, testID }: GoalCardProps) {
   const { resolved } = useTheme();
   const ringColor = PACE_RING_COLOR[resolved === "dark" ? "dark" : "light"][progress.pace];
-  const trackColor = resolved === "dark" ? "#14261C" : "#DCFCE7"; // brand-soft pair
+  // The ring is react-native-svg: `stroke` takes a literal colour, not a
+  // NativeWind class, so the token has to be read rather than applied. Read it
+  // from the palette — the same `brand-soft` pair Tailwind is generated from —
+  // so there is exactly one definition of the colour to keep in step.
+  const trackColor = palette[resolved === "dark" ? "brand-soft-dark" : "brand-soft"];
 
   return (
     <Card testID={testID}>

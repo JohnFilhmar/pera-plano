@@ -16,6 +16,7 @@
 //   - THE SCORE ARITHMETIC. The categorizer returns a penalty for this file to
 //     subtract, which makes this the one place float dust can push a clean
 //     auto-commit into the Review Queue. See `applyPenalty`.
+import { systemClock } from "@/lib/clock";
 import { categorize } from "@/lib/ingest/categorizer";
 import { checkDuplicate } from "@/lib/ingest/dedupe_gate";
 import { decideRoute } from "@/lib/ingest/confidence_gate";
@@ -183,7 +184,7 @@ async function queue(
  */
 export async function processCapture(
   capture: RawCapture,
-  now: number = Date.now(),
+  now: number = systemClock.now(),
 ): Promise<PipelineOutcome> {
   if ((await getSetting("capture_enabled")) === false) {
     return { kind: "ignored", reason: "paused" };
@@ -494,7 +495,7 @@ export async function startIngest(): Promise<() => void> {
     // Rule 10: durable first, all of it, before any processing. One clock read
     // for the whole batch, so every capture drained together shares a TTL
     // anchor rather than drifting apart by however long the writes took.
-    const storedAt = Date.now();
+    const storedAt = systemClock.now();
     const fresh: RawCapture[] = [];
     for (const capture of ordered) {
       if (await hasRawCapture(capture.id)) continue;
