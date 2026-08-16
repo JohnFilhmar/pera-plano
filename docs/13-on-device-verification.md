@@ -568,6 +568,44 @@ depend on data the earlier ones create and a mid-pass rebuild invalidates everyt
 
 ---
 
+## Part 7 — Confirm the three blocked permissions are gone from the built manifest
+
+`26497ad` added `android.blockedPermissions` to `app.json` and pinned it with a test that calls
+Expo's **real installed** `withInternalBlockedPermissions` and was proven non-vacuous by a negative
+control (emptying the list makes the test fail).
+
+That test proves the necessary precondition: the three permissions get tagged `tools:node="remove"`
+in the base manifest. **It cannot prove they are absent from a shipped APK**, because the actual
+stripping is done by the Android Gradle Plugin's manifest merger, which only runs in a real native
+build. So this is a build-time check, not a unit test, and it belongs here.
+
+Run it once before the first Play submission:
+
+```bash
+cd mobile
+npx expo prebuild --platform android --clean
+grep -c "READ_EXTERNAL_STORAGE\|WRITE_EXTERNAL_STORAGE\|SYSTEM_ALERT_WINDOW" \
+  android/app/src/main/AndroidManifest.xml     # expect 0 in the SOURCE manifest
+
+./gradlew :app:processDebugMainManifest
+grep -c "READ_EXTERNAL_STORAGE\|WRITE_EXTERNAL_STORAGE\|SYSTEM_ALERT_WINDOW" \
+  android/app/build/intermediates/merged_manifest/debug/AndroidManifest.xml   # expect 0 in the MERGED one
+```
+
+- [ ] Source manifest count is 0 → `________________`
+- [ ] **Merged** manifest count is 0 → `________________`
+
+The merged one is the check that matters. The source manifest can be clean while a library
+re-injects a permission during the merge — that is the entire failure mode this exists to catch.
+
+> An `android/` directory already exists locally (generated 2026-08-15, gitignored, predating the
+> fix) whose manifest still lists all three as plain entries with no `tools:node` markers. That is
+> expected and is not evidence of failure — it was generated before the change. `--clean`
+> regenerates it. Afterwards: `rm -rf android` and `git checkout -- package.json`, because prebuild
+> re-adds an `"ios"` script every run (see Closing the session).
+
+---
+
 ## Closing the session
 
 ```bash
@@ -588,10 +626,14 @@ nothing is worth nothing.
 
 ## Known items that will surface later, not blockers for this session
 
-- **Play Store permissions.** The generated manifest carries `READ_EXTERNAL_STORAGE`,
+- **Play Store permissions. LEVER PULLED 2026-08-17 (`26497ad`) — but confirmation is a build
+  step, see Part 7 below.** The generated manifest carried `READ_EXTERNAL_STORAGE`,
   `WRITE_EXTERNAL_STORAGE` and `SYSTEM_ALERT_WINDOW`, pulled in by *libraries* rather than by
-  `app.json` (whose `android.permissions` is `[]`). All three draw review scrutiny for a finance
-  app. `android.blockedPermissions` is the lever.
+  `app.json` (whose own `android.permissions` declares only the two biometric ones). All three
+  draw review scrutiny for a finance app, and `SYSTEM_ALERT_WINDOW` disproportionately so — a
+  draw-over-other-apps grant is the signature permission of overlay credential stealers, which is
+  exactly the threat a banking-adjacent app is screened for. `android.blockedPermissions` now
+  lists all three.
 - **No manual "Lock now" action** is exposed yet; only the 5-minute background timer reaches
   `lockNow()`. The Settings screen (M3b) is its natural home.
 - **Two money formatters exist** — `formatPeso()` in `lib/alerts/alert_copy.ts` versus the
