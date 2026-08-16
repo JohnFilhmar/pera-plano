@@ -87,6 +87,8 @@ export type AppSettings = {
    * trusts its caller rather than re-validating in this file.
    */
   recurring_forget_multiplier: number;
+
+  /**
    * Android package names the user has individually paused from the Privacy
    * centre's per-provider switch list (m3b Task 6 rule 2; docs
    * §04-features/11-settings-privacy.md Flow B). An EMPTY array is the
