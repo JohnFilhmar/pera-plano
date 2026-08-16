@@ -194,6 +194,53 @@ test("CHILD CATEGORIES ROLL INTO THEIR PARENT BY DEFAULT", () => {
   expect(expanded.map((row) => row.categoryId).sort()).toEqual(["cat_fastfood", "cat_food"]);
 });
 
+test("ROLLUP WALKS TO THE TOP-LEVEL ANCESTOR, NOT JUST ONE PARENT LEVEL UP", () => {
+  // A regression that clipped the walk to a single `parentId` hop would still
+  // pass the two-level test above (child's parent IS the root there). This
+  // pins the three-level case: grandchild -> child -> root, where a
+  // one-level rollup would wrongly stop at "child".
+  const categories = [
+    category({ id: "cat_food", name: "Food & Dining", parentId: null }),
+    category({ id: "cat_fastfood", name: "Fast Food", parentId: "cat_food" }),
+    category({ id: "cat_burgers", name: "Burgers", parentId: "cat_fastfood" }),
+  ];
+  const transactions = [tx({ date: "2026-08-05", categoryId: "cat_burgers", amount: 7500 })];
+
+  const breakdown = categoryBreakdown(transactions, categories, AUGUST);
+
+  expect(breakdown).toEqual([
+    { categoryId: "cat_food", categoryName: "Food & Dining", total: 7500, share: 1 },
+  ]);
+});
+
+test("A DANGLING PARENT STOPS THE ROLLUP AT THE LAST CATEGORY ACTUALLY FOUND", () => {
+  // "cat_fastfood" names a parent ("cat_food") that is not in the passed
+  // `categories` array — e.g. a parent deleted out from under a still-live
+  // child. The walk must stop AT "cat_fastfood" (a real, named Category),
+  // not advance onto the missing "cat_food" id: the alternative surfaces a
+  // raw, nameless id as both categoryId and categoryName in the row.
+  const categories = [category({ id: "cat_fastfood", name: "Fast Food", parentId: "cat_food" })];
+  const transactions = [tx({ date: "2026-08-05", categoryId: "cat_fastfood", amount: 6000 })];
+
+  const breakdown = categoryBreakdown(transactions, categories, AUGUST);
+
+  expect(breakdown).toEqual([
+    { categoryId: "cat_fastfood", categoryName: "Fast Food", total: 6000, share: 1 },
+  ]);
+});
+
+test("categoryBreakdown returns an empty array, not NaN shares, when there is no spend", () => {
+  // Rule 6's "zeroed, not thrown" for the breakdown: a set that is entirely
+  // transfer-linked (or entirely out of range) must reach the
+  // totalSpend === 0 guard rather than divide by it.
+  const categories = [category({ id: "cat_food", name: "Food & Dining" })];
+  const transactions = [
+    tx({ date: "2026-08-05", categoryId: "cat_food", amount: 500000, transferLinkId: "link_5" }),
+  ];
+
+  expect(categoryBreakdown(transactions, categories, AUGUST)).toEqual([]);
+});
+
 test("UNCATEGORIZED APPEARS AS ITS OWN ROW, NEVER HIDDEN", () => {
   // Rule 5. Uncategorized is passed in like any other Category — this module
   // never special-cases an id, so hiding it is structurally impossible here,
@@ -254,5 +301,25 @@ test("topMerchants orders by total descending and respects the limit", () => {
   expect(top).toEqual([
     { merchant: "Shopee", total: 80000, count: 1 },
     { merchant: "Jollibee", total: 50000, count: 2 },
+  ]);
+});
+
+test("TRANSFER LEGS ARE EXCLUDED FROM TOP MERCHANTS", () => {
+  // Rule 1 applies here too, and the brief calls it "the single rule that
+  // decides whether the reports are true" across every one of the five
+  // surfaces — this is the last of the five without its own regression.
+  // A huge transfer-linked leg to Grab must neither inflate Grab's total nor
+  // vault it past Shopee's rank.
+  const transactions = [
+    tx({ date: "2026-08-01", merchant: "Shopee", amount: 80000 }),
+    tx({ date: "2026-08-02", merchant: "Grab", amount: 10000 }),
+    tx({ date: "2026-08-03", merchant: "Grab", amount: 900000, transferLinkId: "link_6" }),
+  ];
+
+  const top = topMerchants(transactions, AUGUST, 5);
+
+  expect(top).toEqual([
+    { merchant: "Shopee", total: 80000, count: 1 },
+    { merchant: "Grab", total: 10000, count: 1 },
   ]);
 });

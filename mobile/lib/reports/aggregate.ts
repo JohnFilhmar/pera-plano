@@ -149,9 +149,17 @@ export function summarizePeriod(transactions: Transaction[], range: DateRange): 
  * The `seen` guard doubles as a cycle brake for the same reason it does
  * there: nothing should ever write a cyclic category tree, but a walk that
  * trusts its input freezes the report on a corrupt row instead of failing
- * visibly. A dangling `parentId` (points at a category not in `byId`) stops
- * the walk at the last id actually found, rather than losing the
- * transaction's total.
+ * visibly.
+ *
+ * A DANGLING `parentId` — one that points at a category absent from `byId`
+ * — stops the walk at `current`, the last id the walk actually found A
+ * CATEGORY FOR, rather than advancing onto the missing id and returning
+ * that. Advancing would still keep the transaction's total (nothing here
+ * drops the money), but the row it lands on would show a raw, nameless id
+ * as both `categoryId` and `categoryName` (via `categoryBreakdown`'s
+ * `?? categoryId` fallback) — a uuid where a Category name belongs. Stopping
+ * one step early keeps the total attached to the nearest Category the user
+ * can actually see.
  */
 function rootCategoryId(categoryId: string, byId: Map<string, Category>): string {
   const seen = new Set<string>();
@@ -160,6 +168,8 @@ function rootCategoryId(categoryId: string, byId: Map<string, Category>): string
     seen.add(current);
     const category = byId.get(current);
     if (!category || category.parentId === null) return current;
+    // Don't walk onto a parent this map doesn't know about — see above.
+    if (!byId.has(category.parentId)) return current;
     current = category.parentId;
   }
   return current;
