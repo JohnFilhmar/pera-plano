@@ -14,8 +14,10 @@
 // a hook, or `recurring_ledger_subscriber.ts`.
 import { DEFAULT_BILL_CATEGORY_ID } from "@/constants/bills";
 import { promoteRecurringPatternToBill } from "@/lib/bills/bills_service";
+import { getSetting } from "@/lib/db/repos/app_settings_repo";
 import { getBill } from "@/lib/db/repos/bills_repo";
 import {
+  deletePattern,
   dismissPattern as repoDismissPattern,
   findMatchingPattern,
   getPattern,
@@ -45,8 +47,13 @@ const DAY_MS = 86_400_000;
 const LEDGER_WINDOW_DAYS = 800;
 
 /**
- * Nominal length of each `period` bucket, for the rare row that predates
- * migration 007 and so has no `periodDays` of its own to promote from.
+ * Nominal length of each `period` bucket. Two callers:
+ *
+ *   `promotePatternToBill`, for the rare row that predates migration 007 and
+ *   so has no `periodDays` of its own to promote from.
+ *
+ *   `decayStalePatterns`, which scales the forget threshold by this rather
+ *   than by `periodDays` on purpose — see that function's own doc.
  */
 const PERIOD_NOMINAL_DAYS: Record<RecurringPeriod, number> = {
   weekly: 7,
@@ -94,6 +101,14 @@ const MONTHLY_FACTOR: Record<RecurringPeriod, number> = {
  * `pattern_detector.ts`'s own clustering already uses, so a candidate with no
  * existing pattern row at all (the case the column literally cannot cover)
  * is still skipped.
+ *
+ * FINALLY, A CONFIDENCE-DECAY REMOVAL PASS RUNS, AFTER the merge above —
+ * see `decayStalePatterns`'s own doc for the full reasoning (M3b Task 5;
+ * Reports rule 18; domain §3.10). Ordered last so a charge that arrived
+ * THIS SAME PASS (and just refreshed a pattern's `lastSeenAt` via the merge
+ * above) is judged against its own fresh silence, not the stale value from
+ * before this call — a subscription that just charged must never be forgotten
+ * in the same breath.
  */
 export async function refreshPatterns(now: number): Promise<RecurringPattern[]> {
   const from = now - LEDGER_WINDOW_DAYS * DAY_MS;
@@ -116,7 +131,92 @@ export async function refreshPatterns(now: number): Promise<RecurringPattern[]> 
     await upsertPattern(candidate);
   }
 
+  await decayStalePatterns(now);
+
   return listPatterns({ includeAcknowledged: true });
+}
+
+/**
+ * DECISIONS — confidence-decay removal (Settings screen, M3b Task 5; Reports
+ * rule 18: "a pattern whose confidence decays below the floor is removed
+ * silently"; domain §3.10's "Deleted by ... automatic removal when confidence
+ * decays below the floor after repeated missed periods"; owner ruling
+ * 2026-08-16, recorded in full at `app_settings_repo.ts`'s
+ * `recurring_forget_multiplier` JSDoc — read that first, this is its
+ * implementation).
+ *
+ * THE MECHANISM IS SILENCE, NOT CANCELLATION. The notification listener only
+ * ever sees a charge ARRIVE — it cannot observe "the user cancelled this". So
+ * "gone" is inferred from an absence: no matching charge for more than
+ * `recurring_forget_multiplier` × the pattern's OWN cadence, measured from its
+ * stored `lastSeenAt`.
+ *
+ * SCALED BY `period`, THE STABLE ENUM — NOT `periodDays`. Same reasoning
+ * `recurring_patterns_repo.ts`'s own file header gives for keeping
+ * `periodDays` out of pattern IDENTITY: it is `Math.round(meanGap)` over a
+ * sliding window and legitimately wobbles pass to pass for one real,
+ * unchanged subscription (31 -> 30, that file's own worked example). A
+ * silence THRESHOLD built on a wobbling number would make a pattern's forget
+ * date jitter with no material change in the user's actual behaviour — the
+ * exact defect the identity key was fixed to avoid, avoided here too by using
+ * the same stable `PERIOD_NOMINAL_DAYS[period]` this file already defines for
+ * `promotePatternToBill`'s fallback. A FIXED day count (the owner's own first
+ * draft, explicitly rejected) fails for a related reason: flat 45 days is 1.5
+ * missed cycles for a monthly subscription but would delete an ANNUAL one six
+ * weeks after it charged, then re-detect it the next time it actually
+ * charged — flickering in and out of the locked-in total all year. The
+ * multiplier framing is what keeps "1.5" meaning "one and a half missed
+ * payments" regardless of cadence: monthly -> 45 days, weekly -> ~10 days,
+ * annual -> ~18 months, all from the same stored `1.5`.
+ *
+ * ACKNOWLEDGED PATTERNS DECAY ON THE SAME TERMS AS UNACKNOWLEDGED ONES. Rule
+ * 17's headline "locked in" figure counts only ACKNOWLEDGED, not-bill-linked
+ * patterns — an acknowledged pattern going silent is exactly the case that
+ * corrupts that number (this feature's own motivating example: cancel
+ * Netflix, and an unremoved acknowledged pattern keeps counting ₱549 a month
+ * forever). Rule 18 says the removal is SILENT with no carve-out for
+ * acknowledged rows, and domain §3.10's lifecycle clause is the same blanket
+ * statement. Sparing acknowledged patterns would leave the headline bug this
+ * feature exists to fix completely unfixed — a stronger act than removal is
+ * exactly what "silently" rules out, so both acknowledged and unacknowledged
+ * live patterns are eligible, on the identical threshold.
+ *
+ * A BILL-LINKED PATTERN (`billId !== null`) IS NEVER REMOVED BY THIS PASS.
+ * Bills rules 28-29 make the pattern -> bill link load-bearing: it is what
+ * keeps one obligation from being double-counted across two surfaces (the
+ * same reason a linked pattern is already excluded from `monthlyLockedIn`
+ * below). Deleting the row out from under a live `bill_id` would orphan that
+ * relationship for no benefit — the Bill has its own cycle tracking
+ * (bills_service.ts) and is not silenced by a quiet notification listener, so
+ * the pattern's silence says nothing about whether the underlying obligation
+ * is still real. If the bill itself is later archived or deleted, that is
+ * bills rule 27's lifecycle to own, not this one's.
+ *
+ * A DISMISSED PATTERN IS NEVER CONSIDERED. `listPatterns` below already
+ * excludes every `dismissed_at IS NOT NULL` row unconditionally — the same
+ * clause the merge loop above relies on — so a dismissed row never reaches
+ * this pass at all. That is intentional, not incidental: dismissal's
+ * suppression lives in the UserRule `dismissPattern` writes alongside
+ * `dismissed_at`, and that UserRule outlives the row either way (fix round 2,
+ * this file's own `dismissPattern` doc). There is nothing this pass could
+ * usefully clean up by touching a dismissed row, and every dismissed row
+ * already reads as "gone" to every caller that matters.
+ */
+async function decayStalePatterns(now: number): Promise<void> {
+  const multiplier = await getSetting("recurring_forget_multiplier");
+  const live = await listPatterns({ includeAcknowledged: true });
+
+  for (const pattern of live) {
+    if (pattern.billId !== null) continue;
+    // No confirmed sighting to measure silence from — nothing to decay yet.
+    if (pattern.lastSeenAt === null) continue;
+
+    const thresholdDays = multiplier * PERIOD_NOMINAL_DAYS[pattern.period];
+    const silentDays = (now - pattern.lastSeenAt) / DAY_MS;
+    if (silentDays > thresholdDays) {
+      await deletePattern(pattern.id);
+    }
+  }
 }
 
 /**

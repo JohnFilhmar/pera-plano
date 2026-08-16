@@ -18,9 +18,11 @@ jest.mock("@/lib/db/repos/user_rules_repo", () => {
   };
 });
 
+import { setSetting } from "@/lib/db/repos/app_settings_repo";
 import { listBills } from "@/lib/db/repos/bills_repo";
 import { seedDefaultCategories } from "@/lib/db/repos/categories_repo";
 import {
+  acknowledgePattern,
   dismissPattern,
   findMatchingPattern,
   getPattern,
@@ -454,5 +456,188 @@ describe("refreshPatterns honours an existing suppress-recurring UserRule", () =
 
     expect(result).toHaveLength(1);
     expect(result[0]).toMatchObject({ merchant: "SPOTIFY", amount: 14_900 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// refreshPatterns — confidence-decay removal (Reports rule 18: "a pattern
+// whose confidence decays below the floor is removed silently"; domain
+// §3.10's "automatic removal when confidence decays below the floor after
+// repeated missed periods"). The owner's rule: "1.5 missed payments, scaled
+// to the pattern's own cadence" — recurring_forget_multiplier (default 1.5)
+// times PERIOD_NOMINAL_DAYS[period], measured from the pattern's stored
+// lastSeenAt. NOT periodDays (recurring_patterns_repo.ts's header explains
+// why that wobbles pass to pass), and NOT a flat day count (a flat 45 days
+// would forget an annual subscription six weeks after it charged).
+// ---------------------------------------------------------------------------
+describe("refreshPatterns removes patterns that have gone silent past the forget threshold", () => {
+  test("a monthly pattern silent for 46 days is forgotten (1.5 x 30 = 45-day threshold)", async () => {
+    const created = await upsertPattern({
+      merchant: "NETFLIX",
+      amount: 54_900,
+      periodDays: 30,
+      occurrences: 6,
+      confidence: 0.9,
+      firstSeenAt: NOW - 200 * DAY_MS,
+      lastSeenAt: NOW - 46 * DAY_MS,
+      nextExpectedAt: NOW - 16 * DAY_MS,
+      transactionIds: [],
+    });
+
+    const result = await refreshPatterns(NOW);
+
+    expect(result.some((p) => p.id === created.id)).toBe(false);
+    expect(await getPattern(created.id)).toBeNull();
+  });
+
+  test("a monthly pattern silent for only 44 days is kept", async () => {
+    const created = await upsertPattern({
+      merchant: "NETFLIX",
+      amount: 54_900,
+      periodDays: 30,
+      occurrences: 6,
+      confidence: 0.9,
+      firstSeenAt: NOW - 200 * DAY_MS,
+      lastSeenAt: NOW - 44 * DAY_MS,
+      nextExpectedAt: NOW - 14 * DAY_MS,
+      transactionIds: [],
+    });
+
+    const result = await refreshPatterns(NOW);
+
+    expect(result.some((p) => p.id === created.id)).toBe(true);
+    expect(await getPattern(created.id)).not.toBeNull();
+  });
+
+  test("an ANNUAL pattern silent for 46 days is KEPT — the case a fixed day count would have broken", async () => {
+    const created = await upsertPattern({
+      merchant: "AMAZON PRIME",
+      amount: 200_000,
+      periodDays: 365,
+      occurrences: 3,
+      confidence: 0.8,
+      firstSeenAt: NOW - 800 * DAY_MS,
+      lastSeenAt: NOW - 46 * DAY_MS,
+      nextExpectedAt: NOW + 319 * DAY_MS,
+      transactionIds: [],
+    });
+
+    const result = await refreshPatterns(NOW);
+
+    expect(result.some((p) => p.id === created.id)).toBe(true);
+    expect(await getPattern(created.id)).not.toBeNull();
+  });
+
+  test("a weekly pattern is forgotten on its own much shorter threshold (1.5 x 7 = 10.5 days)", async () => {
+    const created = await upsertPattern({
+      merchant: "LOAD PROMO",
+      amount: 5_000,
+      periodDays: 7,
+      occurrences: 4,
+      confidence: 0.7,
+      firstSeenAt: NOW - 60 * DAY_MS,
+      lastSeenAt: NOW - 11 * DAY_MS,
+      nextExpectedAt: NOW - 4 * DAY_MS,
+      transactionIds: [],
+    });
+
+    const result = await refreshPatterns(NOW);
+
+    expect(result.some((p) => p.id === created.id)).toBe(false);
+    expect(await getPattern(created.id)).toBeNull();
+  });
+
+  test("changing the multiplier changes the threshold: 3x survives what 1.5x would have forgotten", async () => {
+    await setSetting("recurring_forget_multiplier", 3);
+    const created = await upsertPattern({
+      merchant: "NETFLIX",
+      amount: 54_900,
+      periodDays: 30,
+      occurrences: 6,
+      confidence: 0.9,
+      firstSeenAt: NOW - 200 * DAY_MS,
+      // 46 days silent — past the default 1.5x (45-day) threshold, but well
+      // inside the 3x (90-day) threshold this test sets instead.
+      lastSeenAt: NOW - 46 * DAY_MS,
+      nextExpectedAt: NOW - 16 * DAY_MS,
+      transactionIds: [],
+    });
+
+    const result = await refreshPatterns(NOW);
+
+    expect(result.some((p) => p.id === created.id)).toBe(true);
+    expect(await getPattern(created.id)).not.toBeNull();
+  });
+
+  test("an acknowledged pattern decays on the same terms as an unacknowledged one", async () => {
+    // Rule 17 counts only ACKNOWLEDGED, not-bill-linked patterns into the
+    // headline — an acknowledged pattern going silent is exactly the case
+    // that corrupts that figure, so decay must not spare it.
+    const created = await upsertPattern({
+      merchant: "NETFLIX",
+      amount: 54_900,
+      periodDays: 30,
+      occurrences: 6,
+      confidence: 0.9,
+      firstSeenAt: NOW - 200 * DAY_MS,
+      lastSeenAt: NOW - 46 * DAY_MS,
+      nextExpectedAt: NOW - 16 * DAY_MS,
+      transactionIds: [],
+    });
+    await acknowledgePattern(created.id);
+
+    const result = await refreshPatterns(NOW);
+
+    expect(result.some((p) => p.id === created.id)).toBe(false);
+    expect(await getPattern(created.id)).toBeNull();
+  });
+
+  test("a pattern linked to a Bill is never removed by decay, no matter how stale (bills rules 28-29)", async () => {
+    const created = await upsertPattern({
+      merchant: "SPOTIFY",
+      amount: 14_900,
+      periodDays: 30,
+      occurrences: 6,
+      confidence: 0.9,
+      firstSeenAt: NOW - 500 * DAY_MS,
+      // Wildly past any monthly threshold this setting could produce.
+      lastSeenAt: NOW - 400 * DAY_MS,
+      nextExpectedAt: NOW - 370 * DAY_MS,
+      transactionIds: [],
+    });
+    await promotePatternToBill(created.id, NOW);
+
+    const result = await refreshPatterns(NOW);
+
+    const stillThere = await getPattern(created.id);
+    expect(stillThere).not.toBeNull();
+    expect(stillThere?.billId).not.toBeNull();
+    expect(result.some((p) => p.id === created.id)).toBe(true);
+  });
+
+  test("the locked-in headline drops when a pattern is forgotten", async () => {
+    const created = await upsertPattern({
+      merchant: "NETFLIX",
+      amount: 54_900,
+      periodDays: 30,
+      occurrences: 6,
+      confidence: 0.9,
+      firstSeenAt: NOW - 200 * DAY_MS,
+      // Fresh enough to survive the first pass.
+      lastSeenAt: NOW - 30 * DAY_MS,
+      nextExpectedAt: NOW,
+      transactionIds: [],
+    });
+    await acknowledgePattern(created.id);
+
+    const before = await refreshPatterns(NOW);
+    expect(monthlyLockedIn(before)).toBe(54_900);
+
+    // 16 days later, still no new charge: 46 days of total silence, past the
+    // 45-day monthly threshold.
+    const after = await refreshPatterns(NOW + 16 * DAY_MS);
+
+    expect(after.some((p) => p.id === created.id)).toBe(false);
+    expect(monthlyLockedIn(after)).toBe(0);
   });
 });

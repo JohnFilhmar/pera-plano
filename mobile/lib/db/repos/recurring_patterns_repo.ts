@@ -306,3 +306,28 @@ export async function linkPatternToBill(id: string, billId: string): Promise<voi
     [billId, Date.now(), id],
   );
 }
+
+/**
+ * Hard-deletes a pattern row. The primitive behind the CONFIDENCE-DECAY
+ * removal pass in `recurring_service.ts` (Reports rule 18: "a pattern whose
+ * confidence decays below the floor is removed silently"; domain §3.10's
+ * "Deleted by ... automatic removal when confidence decays below the floor
+ * after repeated missed periods"). RecurringPattern is derived data (domain
+ * invariant 1) — an actual DELETE loses nothing a future `refreshPatterns`
+ * pass could not recompute from the ledger the moment matching evidence
+ * arrives again.
+ *
+ * DELIBERATELY NOT STICKY, unlike `dismissPattern`. Dismissal writes a
+ * suppressing UserRule that outlives the row on purpose (Reports rule 18's
+ * "never re-surfaced"); decay writes no such rule, because the user never
+ * said no here — the app simply stopped seeing evidence. A merchant that
+ * charges again after being forgotten is free to be detected and proposed
+ * fresh, exactly like a merchant seen for the first time.
+ *
+ * Idempotent: deleting an id with no matching row is a no-op, same as every
+ * other mutator in this file.
+ */
+export async function deletePattern(id: string): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync("DELETE FROM recurring_patterns WHERE id = ?", [id]);
+}
