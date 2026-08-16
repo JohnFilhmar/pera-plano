@@ -6,6 +6,7 @@ import {
   canCreateWallet,
   getTier,
   hasBackup,
+  hasCsvExport,
   hasProjection,
   hasRecurringDetection,
   historyWindowDays,
@@ -54,6 +55,7 @@ describe("free tier caps (docs/05-monetization.md §2)", () => {
     expect(hasRecurringDetection()).toBe(false);
     expect(hasBackup()).toBe(false);
     expect(hasProjection()).toBe(false);
+    expect(hasCsvExport()).toBe(false);
   });
 });
 
@@ -81,6 +83,7 @@ describe("plus tier", () => {
     expect(hasRecurringDetection()).toBe(true);
     expect(hasBackup()).toBe(true);
     expect(hasProjection()).toBe(true);
+    expect(hasCsvExport()).toBe(true);
   });
 });
 

@@ -81,6 +81,22 @@ export function hasBackup(): boolean {
   return getTier() === "plus";
 }
 
+/**
+ * Reports' CSV export (docs/04-features/10-reports.md Flow D: "CSV export is
+ * Plus. Free users see the Export action disabled with the Plus prompt.").
+ *
+ * DELIBERATELY ITS OWN FUNCTION, not a reuse of `hasBackup`. Export and cloud
+ * backup both happen to gate on bare `getTier() === "plus"` in MVP, but they
+ * are unrelated capabilities in the tier matrix (docs/05-monetization.md §2)
+ * that only coincide today — collapsing them into one check would make a
+ * future split (or a MVP_TIER experiment that flips one but not the other)
+ * require finding every accidental caller of the wrong name instead of
+ * changing one function body.
+ */
+export function hasCsvExport(): boolean {
+  return getTier() === "plus";
+}
+
 /** Safe-to-Spend end-of-period projection (Free sees today only). */
 export function hasProjection(): boolean {
   return getTier() === "plus";
