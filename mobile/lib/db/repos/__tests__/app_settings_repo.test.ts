@@ -259,6 +259,32 @@ describe("resetSettings clears the underlying rows, verified directly against th
 // instead of propagating the SyntaxError.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// M3b Task 5 — the subscription forget threshold (owner decision 2026-08-16).
+// `recurring_forget_multiplier` is read only, never decayed, by this file;
+// `lib/recurring/recurring_service.ts` owns the scaling math. This just pins
+// the round-trip the Settings screen depends on.
+// ---------------------------------------------------------------------------
+
+describe("recurring_forget_multiplier — the subscription forget threshold", () => {
+  test("defaults to 1.5 when unset", async () => {
+    expect(await getSetting("recurring_forget_multiplier")).toBe(1.5);
+  });
+
+  test("setSetting then getSetting round-trips a chosen multiplier", async () => {
+    await setSetting("recurring_forget_multiplier", 2.25);
+    const value = await getSetting("recurring_forget_multiplier");
+    expect(value).toBe(2.25);
+    expect(typeof value).toBe("number");
+  });
+
+  test("getAllSettings surfaces the stored multiplier alongside every other default", async () => {
+    await setSetting("recurring_forget_multiplier", 3);
+    const all = await getAllSettings();
+    expect(all).toEqual({ ...DEFAULT_SETTINGS, recurring_forget_multiplier: 3 });
+  });
+});
+
 describe("a corrupt value_json cell is decoded defensively, never thrown", () => {
   test("getSetting returns the key's documented default when its stored value_json is malformed", async () => {
     await db.runAsync(

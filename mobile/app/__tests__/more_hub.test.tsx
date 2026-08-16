@@ -70,17 +70,28 @@ test("BOTH ROWS RENDER", () => {
   screen.getByText("Subscriptions");
 });
 
-test("REPORTS IS STILL SOON, AND ONLY ITS ROW CARRIES THE GREY CHIP", () => {
+test("REPORTS IS STILL SOON, AND ONLY SOONGATE ROWS CARRY THE GREY CHIP", () => {
   // `reports` stays "soon" in constants/shipped_features.ts — a later task
   // owns flipping it. SoonGate keeps the row visible (rule: roadmap visible,
   // never hidden) but desaturated and inert. `soon-chip` is SoonGate's own
   // sibling to its children (components/gates/soon_gate.tsx), not nested
-  // inside the Pressable itself, so this checks it exists exactly once (only
-  // Reports uses SoonGate here — Subscriptions is PlusGate) rather than
+  // inside the Pressable itself, so this checks a total count rather than
   // scoping inside a testID it isn't nested under.
+  //
+  // FOUR, NOT ONE — updated by M3b Task 5, which added three more SoonGate
+  // rows to this hub (Privacy centre, Listener health, Parser diagnostics;
+  // `privacy_center`/`listener_health`/`parser_diagnostics` are all "soon" in
+  // constants/shipped_features.ts alongside `reports`). This test still owns
+  // proving Reports' own gate and the cross-gate invariant below; the three
+  // new rows' own coverage lives in app/__tests__/more_tab.test.tsx.
   renderScreen(<MoreScreen />);
 
-  expect(screen.getAllByTestId("soon-chip")).toHaveLength(1);
+  expect(screen.getAllByTestId("soon-chip")).toHaveLength(4);
+  // The cross-gate invariant that does NOT depend on how many SoonGate rows
+  // exist: Subscriptions is PlusGate, never SoonGate, so it never gets the
+  // grey chip — the two gates are deliberately coloured opposite ways
+  // (SoonGate's own header comment) so a user can never confuse "not built
+  // yet" with "needs Plus".
   expect(within(screen.getByTestId("more-subscriptions")).queryByTestId("soon-chip")).toBeNull();
 });
 
@@ -99,7 +110,12 @@ test("ONCE REPORTS SHIPS, ITS ROW NAVIGATES TO /more/reports", () => {
   setShipState("reports", "shipped");
   renderScreen(<MoreScreen />);
 
-  expect(screen.queryByTestId("soon-chip")).toBeNull();
+  // Reports' own chip is gone; the three OTHER SoonGate rows M3b Task 5 added
+  // (Privacy centre, Listener health, Parser diagnostics) still carry
+  // theirs — this hub has more than one still-soon feature now, so "no chip
+  // anywhere" is no longer the right assertion for "reports specifically
+  // shipped".
+  expect(screen.getAllByTestId("soon-chip")).toHaveLength(3);
   fireEvent.press(screen.getByTestId("more-reports"));
   expect(mockPush).toHaveBeenCalledWith("/more/reports");
 });

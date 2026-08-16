@@ -58,6 +58,35 @@ export type AppSettings = {
    * could not cancel one without cancelling the other's too.
    */
   bill_reminder_ids: Record<string, string[]>;
+  /**
+   * The subscription forget threshold (Settings screen, M3b Task 5; owner
+   * decision 2026-08-16). The listener only ever sees a charge ARRIVE, never a
+   * cancellation, so `lib/recurring/recurring_service.ts` has to infer "this
+   * subscription is gone" from silence — and the owner's rule for how much
+   * silence is enough is "1.5 MISSED PAYMENTS, scaled to that subscription's
+   * own cadence."
+   *
+   * A MULTIPLIER, not a day count, and that is the whole reason this is its
+   * own setting rather than a literal baked into the decay math: the user's
+   * subscriptions run on different cadences (weekly, monthly, annual), and one
+   * fixed day count means a different number of missed cycles for each of
+   * them — a flat 45 days is 1.5 missed *months* but would forget an *annual*
+   * subscription six weeks after it charged. Storing the multiplier and
+   * letting the decay logic scale it by each pattern's own `period` is what
+   * keeps "1.5" meaning the same thing (one and a half missed payments) no
+   * matter which cadence a given RecurringPattern is on.
+   *
+   * This file only stores the number the user chose (Settings rule 2's "alert
+   * preferences"-adjacent control) — it does NOT implement the decay/removal
+   * logic itself. That reads this key and owns the scaling math in
+   * `lib/recurring/recurring_service.ts` (a later task).
+   *
+   * Default 1.5, matching the owner's stated default; the Settings screen
+   * clamps user input to the owner's stated range of [1, 3] before it ever
+   * reaches `setSetting`, the same way every other numeric setting here
+   * trusts its caller rather than re-validating in this file.
+   */
+  recurring_forget_multiplier: number;
 };
 
 /** Values returned by `getSetting`/`getAllSettings` for a key with no row yet. */
@@ -71,6 +100,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   income_detection_state: UNKNOWN_INCOME_DETECTION,
   loan_reminder_ids: {},
   bill_reminder_ids: {},
+  recurring_forget_multiplier: 1.5,
 };
 
 type SettingValueRow = { value_json: string };
