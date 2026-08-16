@@ -20,6 +20,18 @@
 // does not, which is exactly the trap `lib/privacy/data_wipe.ts`'s "wipe
 // everything" fell into: it resets this table and would have left the theme
 // behind while claiming to have erased "every setting".
+//
+// NO `last_parser_ruleset_version` KEY HERE EITHER, ANYMORE (removed M3c
+// Task 6 telemetry fix, 2026-08). It was an inherited Foundation-era key —
+// nothing in production ever called `setSetting("last_parser_ruleset_version",
+// ...)`; only test files did, by hand, which masked the bug. The real
+// source of truth for "which ruleset is installed" is
+// `parser_rulesets_repo.getActiveVersion()` (`MAX(version)` over
+// `parser_rulesets`) — the same expression `checkForRulesetUpdate`'s
+// `since_version` and `upsertRuleset`'s no-downgrade guard already use.
+// `services/telemetry.ts` now reads that instead. A settings row nothing
+// reads or writes is exactly the `theme_preference` trap above: it makes a
+// table look like it covers a value it does not.
 import { getDatabase } from "@/lib/db/database";
 import { newId } from "@/lib/ids";
 import { UNKNOWN_INCOME_DETECTION, type IncomeDetectionState } from "@/types/control";
@@ -28,7 +40,6 @@ export type AppSettings = {
   onboarding_complete: boolean;
   capture_enabled: boolean;
   telemetry_enabled: boolean;
-  last_parser_ruleset_version: number;
   cash_reconcile_prompt_at: number | null;
   /**
    * When `services/parser_rules.ts`'s `checkForRulesetUpdate` last actually
@@ -148,7 +159,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   onboarding_complete: false,
   capture_enabled: true,
   telemetry_enabled: true,
-  last_parser_ruleset_version: 0,
   cash_reconcile_prompt_at: null,
   parser_rules_checked_at: null,
   income_detection_state: UNKNOWN_INCOME_DETECTION,

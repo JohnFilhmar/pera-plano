@@ -44,50 +44,47 @@ test("getSetting returns the documented default for every key when nothing is st
   expect(await getSetting("onboarding_complete")).toBe(false);
   expect(await getSetting("capture_enabled")).toBe(true);
   expect(await getSetting("telemetry_enabled")).toBe(true);
-  expect(await getSetting("last_parser_ruleset_version")).toBe(0);
   expect(await getSetting("cash_reconcile_prompt_at")).toBeNull();
 });
 
-test("setSetting then getSetting round-trips each of the five value types", async () => {
+test("setSetting then getSetting round-trips each of the four value types", async () => {
   await setSetting("onboarding_complete", true);
   await setSetting("capture_enabled", false);
   await setSetting("telemetry_enabled", false);
-  await setSetting("last_parser_ruleset_version", 7);
   await setSetting("cash_reconcile_prompt_at", 1_700_000_000_000);
 
   expect(await getSetting("onboarding_complete")).toBe(true);
   expect(await getSetting("capture_enabled")).toBe(false);
   expect(await getSetting("telemetry_enabled")).toBe(false);
-  expect(await getSetting("last_parser_ruleset_version")).toBe(7);
   expect(await getSetting("cash_reconcile_prompt_at")).toBe(1_700_000_000_000);
 });
 
 test("setSetting called twice on the same key upserts, not duplicates", async () => {
-  await setSetting("last_parser_ruleset_version", 1);
-  await setSetting("last_parser_ruleset_version", 2);
+  await setSetting("recurring_forget_multiplier", 1);
+  await setSetting("recurring_forget_multiplier", 2);
 
   const rows = await db.getAllAsync<{ value_json: string }>(
     "SELECT value_json FROM app_settings WHERE key = ?",
-    ["last_parser_ruleset_version"],
+    ["recurring_forget_multiplier"],
   );
   expect(rows).toHaveLength(1);
-  expect(await getSetting("last_parser_ruleset_version")).toBe(2);
+  expect(await getSetting("recurring_forget_multiplier")).toBe(2);
 });
 
 test("getAllSettings merges stored values over defaults for the rest", async () => {
-  await setSetting("last_parser_ruleset_version", 7);
+  await setSetting("recurring_forget_multiplier", 7);
 
   const all = await getAllSettings();
   expect(all).toEqual({
     ...DEFAULT_SETTINGS,
-    last_parser_ruleset_version: 7,
+    recurring_forget_multiplier: 7,
   });
 });
 
 test("resetSettings restores every default", async () => {
   await setSetting("onboarding_complete", true);
   await setSetting("capture_enabled", false);
-  await setSetting("last_parser_ruleset_version", 9);
+  await setSetting("recurring_forget_multiplier", 9);
   await setSetting("cash_reconcile_prompt_at", 123);
 
   await resetSettings();
@@ -140,7 +137,7 @@ describe("getSetting preserves the exact runtime type for every key, not just th
     ["onboarding_complete", true, "boolean"],
     ["capture_enabled", true, "boolean"],
     ["telemetry_enabled", false, "boolean"],
-    ["last_parser_ruleset_version", 42, "number"],
+    ["recurring_forget_multiplier", 42, "number"],
   ] as const)("%s = %p round-trips typeof %s", async (key, value, expectedType) => {
     await setSetting(key, value);
     const result = await getSetting(key);
@@ -168,7 +165,7 @@ describe("reading an unset key returns exactly its documented default, per key",
     ["onboarding_complete", false],
     ["capture_enabled", true],
     ["telemetry_enabled", true],
-    ["last_parser_ruleset_version", 0],
+    ["recurring_forget_multiplier", 1.5],
   ] as const)("%s defaults to %p", async (key, expected) => {
     const value = await getSetting(key);
     expect(value).toBe(expected);
@@ -186,31 +183,31 @@ describe("reading an unset key returns exactly its documented default, per key",
   });
 
   test("an unset key never throws", async () => {
-    await expect(getSetting("last_parser_ruleset_version")).resolves.not.toThrow();
+    await expect(getSetting("recurring_forget_multiplier")).resolves.not.toThrow();
   });
 });
 
 describe("setSetting upsert leaves exactly one row per key, with the latest value persisted", () => {
   test("two writes to the same key: one row, value_json reflects the second write", async () => {
-    await setSetting("last_parser_ruleset_version", 1);
-    await setSetting("last_parser_ruleset_version", 2);
+    await setSetting("recurring_forget_multiplier", 1);
+    await setSetting("recurring_forget_multiplier", 2);
 
     const rows = await db.getAllAsync<{ value_json: string }>(
       "SELECT value_json FROM app_settings WHERE key = ?",
-      ["last_parser_ruleset_version"],
+      ["recurring_forget_multiplier"],
     );
     expect(rows).toHaveLength(1);
     expect(JSON.parse(rows[0].value_json)).toBe(2);
   });
 
   test("writing two different keys produces two rows, not one shared row", async () => {
-    await setSetting("last_parser_ruleset_version", 2);
+    await setSetting("recurring_forget_multiplier", 2);
     await setSetting("onboarding_complete", true);
 
     const rows = await db.getAllAsync<{ key: string }>("SELECT key FROM app_settings");
     expect(rows.map((r) => r.key).sort()).toEqual([
-      "last_parser_ruleset_version",
       "onboarding_complete",
+      "recurring_forget_multiplier",
     ]);
   });
 });
@@ -243,7 +240,7 @@ describe("getAllSettings merge is per-key, not all-or-nothing", () => {
 describe("resetSettings clears the underlying rows, verified directly against the table", () => {
   test("after resetSettings, app_settings has zero rows", async () => {
     await setSetting("onboarding_complete", true);
-    await setSetting("last_parser_ruleset_version", 5);
+    await setSetting("recurring_forget_multiplier", 5);
 
     await resetSettings();
 
@@ -309,9 +306,9 @@ describe("a corrupt value_json cell is decoded defensively, never thrown", () =>
   test("getAllSettings falls back to the default for a corrupt key without poisoning the other stored values", async () => {
     // Two healthy stored values, then one row corrupted via raw SQL — proves
     // the fallback is scoped to the one bad key, not a whole-read failure
-    // that would also wipe out onboarding_complete/last_parser_ruleset_version.
+    // that would also wipe out onboarding_complete/recurring_forget_multiplier.
     await setSetting("onboarding_complete", true);
-    await setSetting("last_parser_ruleset_version", 3);
+    await setSetting("recurring_forget_multiplier", 3);
     await db.runAsync(
       "INSERT INTO app_settings (id, key, value_json, updated_at) VALUES (?, ?, ?, ?)",
       ["corrupt-2", "telemetry_enabled", "{not json", Date.now()],
@@ -322,8 +319,8 @@ describe("a corrupt value_json cell is decoded defensively, never thrown", () =>
     expect(typeof all.telemetry_enabled).toBe("boolean");
     expect(all.onboarding_complete).toBe(true);
     expect(typeof all.onboarding_complete).toBe("boolean");
-    expect(all.last_parser_ruleset_version).toBe(3);
-    expect(typeof all.last_parser_ruleset_version).toBe("number");
+    expect(all.recurring_forget_multiplier).toBe(3);
+    expect(typeof all.recurring_forget_multiplier).toBe("number");
     expect(all.capture_enabled).toBe(DEFAULT_SETTINGS.capture_enabled);
     expect(all.cash_reconcile_prompt_at).toBe(DEFAULT_SETTINGS.cash_reconcile_prompt_at);
   });
@@ -333,13 +330,13 @@ describe("a corrupt value_json cell is decoded defensively, never thrown", () =>
     try {
       await db.runAsync(
         "INSERT INTO app_settings (id, key, value_json, updated_at) VALUES (?, ?, ?, ?)",
-        ["corrupt-3", "last_parser_ruleset_version", "not json at all", Date.now()],
+        ["corrupt-3", "recurring_forget_multiplier", "not json at all", Date.now()],
       );
 
-      await getSetting("last_parser_ruleset_version");
+      await getSetting("recurring_forget_multiplier");
 
       expect(warnSpy).toHaveBeenCalledTimes(1);
-      expect(warnSpy.mock.calls[0][0]).toContain("last_parser_ruleset_version");
+      expect(warnSpy.mock.calls[0][0]).toContain("recurring_forget_multiplier");
     } finally {
       warnSpy.mockRestore();
     }

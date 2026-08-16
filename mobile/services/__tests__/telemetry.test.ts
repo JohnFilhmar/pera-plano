@@ -14,16 +14,58 @@
 // actually fail before this file reached its final state: a merchant name
 // and a device id were temporarily added to the request body, both tests
 // went red, then the addition was reverted. See task-6-report.md.
+//
+// `rulesetVersion` FIXTURE NOTE. Test 1 used to seed the wire value with
+// `setSetting("last_parser_ruleset_version", 4)` — a key nothing in
+// production ever wrote (`app_settings_repo.ts`'s header explains why the
+// key is gone now). That made the test pass while the real code reported a
+// constant 0 forever. It now installs a ruleset through
+// `parser_rulesets_repo.upsertRuleset`, the same repo `sendParseStats`
+// actually reads via `getActiveVersion()` — the production path, not a
+// stand-in for it. The dedicated test below ("rulesetVersion tracks...")
+// proves the tracking behaviour on its own, independent of the whitelist.
 import { closeDatabase } from "@/lib/db/database";
 import { getSetting, setSetting } from "@/lib/db/repos/app_settings_repo";
+import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { getParseStats, recordParseResult } from "@/lib/diagnostics/parse_stats_repo";
+import type { RulesetBundleInput } from "@/lib/ingest/ruleset_types";
 import { freshDb } from "@/test_support/db";
 
 import { apiClient } from "../api";
 import { sendParseStats } from "../telemetry";
 
 const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
 const NOW = new Date(2026, 7, 15, 12, 0).getTime();
+
+/**
+ * A minimal, valid ruleset bundle at `version` — installable via
+ * `upsertRuleset`. ILLUSTRATIVE ONLY, same disclaimer as every other
+ * invented-shape fixture in this codebase (docs/03-ingest-pipeline.md §11.4):
+ * not a verified provider format, just enough shape for
+ * `parser_rulesets_repo` to accept and version it.
+ */
+function minimalRuleset(version: number): RulesetBundleInput {
+  return {
+    version,
+    providers: [
+      {
+        providerKey: "gcash",
+        packageNames: ["com.globe.gcash.android"],
+        version,
+        channel: "push",
+        templates: [
+          {
+            id: "t1",
+            match: "(?<amount>(?:₱|PHP\\s?)[\\d,]+\\.\\d{2})",
+            direction: "out",
+            confidence: 1,
+          },
+        ],
+      },
+    ],
+  };
+}
 
 /** Exactly the seven contract §6 fields — the whitelist this suite must never loosen. */
 const ALLOWED_BODY_KEYS = [
@@ -78,7 +120,7 @@ afterEach(async () => {
 });
 
 test("body keys are exactly the seven contract fields — whitelist assertion, must never be deleted or loosened", async () => {
-  await setSetting("last_parser_ruleset_version", 4);
+  await upsertRuleset(minimalRuleset(4));
   await recordParseResult("gcash", true, NOW);
 
   const result = await sendParseStats(NOW);
@@ -97,6 +139,27 @@ test("body keys are exactly the seven contract fields — whitelist assertion, m
     periodStart: 0,
     periodEnd: NOW,
   });
+});
+
+test("rulesetVersion tracks the version actually installed via parser_rulesets_repo, not a stale default", async () => {
+  // Nothing installed yet — the honest default is 0 (parser_rulesets_repo's
+  // own documented behaviour for an empty table), not a value seeded by hand.
+  await recordParseResult("gcash", true, NOW);
+  const beforeInstall = await sendParseStats(NOW);
+  expect(beforeInstall).toEqual({ sent: true });
+  const bodyBefore = postSpy.mock.calls[0]![1] as { rulesetVersion: number };
+  expect(bodyBefore.rulesetVersion).toBe(0);
+
+  // Install ruleset version 9 through the real repo — the same path
+  // `checkForRulesetUpdate`/`seedParserRules` use in production — then send
+  // again once the resend interval has passed.
+  await upsertRuleset(minimalRuleset(9));
+  await recordParseResult("gcash", true, NOW + DAY_MS);
+  const afterInstall = await sendParseStats(NOW + DAY_MS);
+
+  expect(afterInstall).toEqual({ sent: true });
+  const bodyAfter = postSpy.mock.calls[1]![1] as { rulesetVersion: number };
+  expect(bodyAfter.rulesetVersion).toBe(9);
 });
 
 test("PRIVACY REGRESSION: no merchant, amount, text, or identifier appears anywhere in the serialized body", async () => {

@@ -46,6 +46,7 @@
 import Constants from "expo-constants";
 
 import { getSetting, setSetting } from "@/lib/db/repos/app_settings_repo";
+import { getActiveVersion } from "@/lib/db/repos/parser_rulesets_repo";
 import { clearParseStats, getParseStats } from "@/lib/diagnostics/parse_stats_repo";
 
 import { apiClient } from "./api";
@@ -107,7 +108,16 @@ export async function sendParseStats(now: number): Promise<{ sent: boolean }> {
   }
 
   const appVersion = Constants.expoConfig?.version ?? "unknown";
-  const rulesetVersion = await getSetting("last_parser_ruleset_version");
+  // The installed ruleset's version, straight from `parser_rulesets_repo` —
+  // the same `MAX(version)` expression `checkForRulesetUpdate` compares
+  // against and `upsertRuleset`'s no-downgrade guard uses. NOT
+  // `app_settings.last_parser_ruleset_version`: nothing in production ever
+  // wrote that key (an inherited Foundation-era column that predates this
+  // repo becoming the real source of truth), so reading it here reported a
+  // constant 0 forever — silently breaking the parser-rot correlation this
+  // field exists for. See app_settings_repo.ts's header for why the key
+  // itself was removed rather than left as a second, driftable copy.
+  const rulesetVersion = await getActiveVersion();
 
   try {
     const responses = await Promise.all(
