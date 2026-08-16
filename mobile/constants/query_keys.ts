@@ -222,4 +222,19 @@ export const queryKeys = {
     all: ["recurring"] as const,
     list: () => ["recurring", "list"] as const,
   },
+  /**
+   * Reports (M3b Task 3). `report(scope)` is keyed on the scope object itself
+   * — a month or a custom range — the same way `transactions.list(filters)`
+   * already keys on a plain filter object: React Query's default hash
+   * function compares by structural equality, so an equal (not identical)
+   * scope shares one cache entry and a DIFFERENT month or range is a genuine
+   * miss rather than a stale reuse. `scopes()` is a sibling, not a child of
+   * `report()` — the range picker's month list and `customAllowed` flag
+   * depend only on tier and today, never on which scope is currently open.
+   */
+  reports: {
+    all: ["reports"] as const,
+    scopes: () => ["reports", "scopes"] as const,
+    report: (scope: object) => ["reports", "report", scope] as const,
+  },
 } as const;

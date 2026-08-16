@@ -11,7 +11,8 @@ export type PlusCapability =
   | "backup"
   | "projection"
   | "amortization"
-  | "goals";
+  | "goals"
+  | "reports";
 
 // Free-vs-Plus comparison rows, verbatim from the canonical tier matrix
 // (docs/05-monetization.md §2) — one row per capability PlusGate can show.
@@ -53,6 +54,13 @@ const CAPABILITY_COPY: Record<
     label: "Loans",
     free: "1, basic tracking (balance + next due)",
     plus: "Unlimited + full amortization schedule",
+  },
+  // Added by M3b Task 3 for the range picker's "Custom range" row
+  // (docs/04-features/10-reports.md's Free-vs-Plus table, verbatim).
+  reports: {
+    label: "Reports",
+    free: "Basic monthly",
+    plus: "Full + trends + custom range",
   },
 };
 
