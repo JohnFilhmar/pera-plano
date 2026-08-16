@@ -50,8 +50,10 @@ describe("SHIPPED_FEATURES", () => {
    *
    * m2-part2 Task 14 flipped `limits` and `income`; m2b Task 9 flipped `goals`
    * and `loans`; m2c Task 6 flipped `bills` and with it finished the whole
-   * Plan tab; M3 Part 2 Task 7 flipped `safe_to_spend` and `recurring`. Still
-   * to come: m3b Task 8 (the remaining five).
+   * Plan tab; M3 Part 2 Task 7 flipped `safe_to_spend` and `recurring`; m3b
+   * Task 8 flipped the last five — `reports`, `csv_export`, `privacy_center`,
+   * `listener_health` and `parser_diagnostics` — which finishes the rollout
+   * table. Every FeatureKey is now "shipped"; there is nothing left to flip.
    */
   const SHIPPED_SO_FAR: readonly FeatureKey[] = [
     "limits",
@@ -61,6 +63,11 @@ describe("SHIPPED_FEATURES", () => {
     "bills",
     "safe_to_spend",
     "recurring",
+    "reports",
+    "csv_export",
+    "privacy_center",
+    "listener_health",
+    "parser_diagnostics",
   ];
 
   test("exactly the keys the shipped plans own are flipped", () => {

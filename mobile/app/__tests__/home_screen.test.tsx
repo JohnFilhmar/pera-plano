@@ -145,9 +145,10 @@ test("SAFE-TO-SPEND AND RECURRING ARE SHIPPED, AND NEITHER SURFACE SITS BEHIND A
   // The More tab's Subscriptions row is gated by `PlusGate` (a tier paywall),
   // never by `SoonGate` — MVP_TIER defaults to "plus", so the row must be
   // reachable and carry no grey "Soon" chip of its own. Scoped to the
-  // Subscriptions row specifically, not "nowhere in the tree": the More hub's
-  // Reports row is a genuinely separate feature (constants/shipped_features.ts's
-  // `reports` key) still "soon" as of this task, and it legitimately shows one.
+  // Subscriptions row specifically rather than a screen-wide "no Soon
+  // anywhere" claim, since that broader claim belongs to
+  // app/__tests__/more_tab.test.tsx and app/__tests__/more_hub.test.tsx, not
+  // this file's job of proving the hero and this one row.
   renderScreen(<MoreScreen />);
   fireEvent.press(screen.getByTestId("more-subscriptions"));
   expect(mockPush).toHaveBeenCalledWith("/more/subscriptions");

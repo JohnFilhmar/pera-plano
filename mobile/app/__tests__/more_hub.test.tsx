@@ -1,11 +1,19 @@
 // app/__tests__/more_hub.test.tsx — chart-colours-and-integration task
-// (2026-08-16). Reports and Subscriptions were both finished, working
-// screens with no way to reach them from the UI; this file is about the
-// wiring the More hub adds — both rows render, and pressing each reaches the
-// route it names (or, for Reports while still "soon", reaches nothing at
-// all). Each screen's OWN behavior (Reports' charts, Subscriptions' locked
-// preview) is covered next door — this file stops at "does the hub get you
-// there".
+// (2026-08-16); updated by m3b Task 8, which flipped `reports` (along with
+// the rest of the rollout table) to "shipped" for good. Reports and
+// Subscriptions were both finished, working screens with no way to reach
+// them from the UI; this file is about the wiring the More hub adds — both
+// rows render, and pressing each reaches the route it names. Each screen's
+// OWN behavior (Reports' charts, Subscriptions' locked preview) is covered
+// next door — this file stops at "does the hub get you there".
+//
+// Reports' SoonGate wrapping stays in the row even though `reports` now
+// ships (app/(tabs)/more/index.tsx's header comment records why, following
+// the same call m2c Task 6 made on the Plan hub). One test below still
+// forces the key back to "soon" to prove that composition would correctly
+// block a press if a feature ever shipped ahead of its own rollout again —
+// SHIPPED_FEATURES is exported readonly, so it uses the same contained
+// "cast away readonly" seam components/gates/__tests__/gates.test.tsx uses.
 jest.mock("expo-router", () => ({
   useRouter: () => ({ push: (...args: unknown[]) => mockPush(...args) }),
 }));
@@ -57,7 +65,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  setShipState("reports", "soon");
+  // The real, current default — every FeatureKey is "shipped" as of m3b
+  // Task 8 — not "soon", which was only ever this file's OLD default.
+  setShipState("reports", "shipped");
   __setTierForTests(null);
 });
 
@@ -70,52 +80,44 @@ test("BOTH ROWS RENDER", () => {
   screen.getByText("Subscriptions");
 });
 
-test("REPORTS IS STILL SOON, AND ONLY SOONGATE ROWS CARRY THE GREY CHIP", () => {
-  // `reports` stays "soon" in constants/shipped_features.ts — a later task
-  // owns flipping it. SoonGate keeps the row visible (rule: roadmap visible,
-  // never hidden) but desaturated and inert. `soon-chip` is SoonGate's own
-  // sibling to its children (components/gates/soon_gate.tsx), not nested
+test("NOTHING ON THIS HUB IS SOON — no row carries the grey chip", () => {
+  // Every FeatureKey is "shipped" as of m3b Task 8, so SoonGate renders every
+  // wrapped row's children verbatim, with no chip. `soon-chip` is SoonGate's
+  // own sibling to its children (components/gates/soon_gate.tsx), not nested
   // inside the Pressable itself, so this checks a total count rather than
   // scoping inside a testID it isn't nested under.
-  //
-  // FOUR, NOT ONE — updated by M3b Task 5, which added three more SoonGate
-  // rows to this hub (Privacy centre, Listener health, Parser diagnostics;
-  // `privacy_center`/`listener_health`/`parser_diagnostics` are all "soon" in
-  // constants/shipped_features.ts alongside `reports`). This test still owns
-  // proving Reports' own gate and the cross-gate invariant below; the three
-  // new rows' own coverage lives in app/__tests__/more_tab.test.tsx.
   renderScreen(<MoreScreen />);
 
-  expect(screen.getAllByTestId("soon-chip")).toHaveLength(4);
-  // The cross-gate invariant that does NOT depend on how many SoonGate rows
-  // exist: Subscriptions is PlusGate, never SoonGate, so it never gets the
-  // grey chip — the two gates are deliberately coloured opposite ways
-  // (SoonGate's own header comment) so a user can never confuse "not built
-  // yet" with "needs Plus".
+  expect(screen.queryAllByTestId("soon-chip")).toHaveLength(0);
+  // The cross-gate invariant that does NOT depend on rollout state at all:
+  // Subscriptions is PlusGate, never SoonGate, so it never gets the grey
+  // chip — the two gates are deliberately coloured opposite ways (SoonGate's
+  // own header comment) so a user can never confuse "not built yet" with
+  // "needs Plus".
   expect(within(screen.getByTestId("more-subscriptions")).queryByTestId("soon-chip")).toBeNull();
 });
 
-test("PRESSING REPORTS WHILE STILL SOON DOES NOT NAVIGATE", () => {
+test("IF REPORTS WERE EVER SOON AGAIN, ITS ROW WOULD STILL BLOCK THE PRESS", () => {
+  // Reports' SoonGate wrapping is left in the row on purpose even though the
+  // key ships today (app/(tabs)/more/index.tsx's header comment) — so this
+  // proves that wrapping still does its job through the real hub
+  // composition, not only in components/gates/__tests__/gates.test.tsx's
+  // isolated unit test. `reports` is forced back to "soon" for this one test
+  // and restored by the file's own afterEach. `soon-chip` is SoonGate's own
+  // sibling to its children, not nested inside the Pressable itself (see the
+  // note on the test above), so this checks the chip exists at all rather
+  // than scoping inside a testID it isn't nested under.
+  setShipState("reports", "soon");
   renderScreen(<MoreScreen />);
 
+  expect(screen.getByTestId("soon-chip")).toBeTruthy();
   fireEvent.press(screen.getByTestId("more-reports"));
   expect(mockPush).not.toHaveBeenCalled();
 });
 
-test("ONCE REPORTS SHIPS, ITS ROW NAVIGATES TO /more/reports", () => {
-  // Proves the route wiring itself, independent of the gate — SoonGate
-  // renders children verbatim (no wrapper, no chip) once the key ships, the
-  // same behavior components/gates/__tests__/gates.test.tsx pins for any
-  // SoonGate-wrapped row.
-  setShipState("reports", "shipped");
+test("REPORTS ROW NAVIGATES TO /more/reports", () => {
   renderScreen(<MoreScreen />);
 
-  // Reports' own chip is gone; the three OTHER SoonGate rows M3b Task 5 added
-  // (Privacy centre, Listener health, Parser diagnostics) still carry
-  // theirs — this hub has more than one still-soon feature now, so "no chip
-  // anywhere" is no longer the right assertion for "reports specifically
-  // shipped".
-  expect(screen.getAllByTestId("soon-chip")).toHaveLength(3);
   fireEvent.press(screen.getByTestId("more-reports"));
   expect(mockPush).toHaveBeenCalledWith("/more/reports");
 });

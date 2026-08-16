@@ -24,6 +24,8 @@ import { Modal, Text } from "react-native";
 import { Send, Wallet } from "lucide-react-native";
 
 import { SoonGate } from "@/components/gates/soon_gate";
+import { SHIPPED_FEATURES } from "@/constants/shipped_features";
+import type { FeatureKey, ShipState } from "@/constants/shipped_features";
 import { BottomSheet } from "../bottom_sheet";
 import { Button } from "../button";
 import { Card } from "../card";
@@ -345,14 +347,24 @@ test("Chip tone soon is the exact chip SoonGate ships — one grey, not two", ()
   const chipClasses = classListOf("chip");
   screen.unmount();
 
-  // `reports` is still "soon" (constants/shipped_features.ts) — an m3b Task 8
-  // key, unaffected by this plan's rollout flip.
-  render(
-    <SoonGate feature="reports">
-      <Text>Monthly limit</Text>
-    </SoonGate>,
-  );
-  expect(classListOf("soon-chip")).toEqual(chipClasses);
+  // Every FeatureKey is "shipped" as of m3b Task 8 (constants/shipped_features.ts)
+  // — SoonGate only renders its chip for an unshipped feature, and there is no
+  // such key left in the real app. SHIPPED_FEATURES is exported readonly (app
+  // code must never mutate the single per-build rollout switch at runtime),
+  // so this test casts away readonly at this one contained call site — the
+  // same seam components/gates/__tests__/gates.test.tsx already pokes — to
+  // force `reports` back to "soon" for just this assertion, then restores it.
+  (SHIPPED_FEATURES as Record<FeatureKey, ShipState>).reports = "soon";
+  try {
+    render(
+      <SoonGate feature="reports">
+        <Text>Monthly limit</Text>
+      </SoonGate>,
+    );
+    expect(classListOf("soon-chip")).toEqual(chipClasses);
+  } finally {
+    (SHIPPED_FEATURES as Record<FeatureKey, ShipState>).reports = "shipped";
+  }
 });
 
 test("Chip tone warn takes dark ink — white on amber is unreadable outdoors", () => {

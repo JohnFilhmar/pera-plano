@@ -6,6 +6,11 @@
 // "shipped" is the ONLY change a later plan makes to this file; no key is ever
 // flipped back. See the Task 15 plan's rollout table for which plan flips
 // which key.
+//
+// As of m3b Task 8 every key below is "shipped" — the rollout table's last
+// row. `SoonGate` and `ShipState`'s "soon" branch stay in the codebase (a
+// future feature can still be built ahead of its own rollout), but nothing
+// currently gated by this map renders that state.
 
 export type FeatureKey =
   | "limits"
@@ -46,11 +51,18 @@ export const SHIPPED_FEATURES: Readonly<Record<FeatureKey, ShipState>> = {
   // them so this map stays the single source of truth for "is this plan out".
   safe_to_spend: "shipped",
   recurring: "shipped",
-  reports: "soon",
-  csv_export: "soon",
-  privacy_center: "soon",
-  listener_health: "soon",
-  parser_diagnostics: "soon",
+  // Flipped by m3b Task 8, the last plan in the rollout table. Reports (m3b
+  // Task 3), the CSV export capability (Task 4), the Privacy centre (Task 6)
+  // and Listener health / Parser diagnostics (Task 7) were all built ahead of
+  // this flip; Task 8 is only the switch plus the More-hub wiring those four
+  // screens needed once SoonGate stopped blocking their rows. Every
+  // FeatureKey is now "shipped" — there is no key left for a future plan to
+  // flip.
+  reports: "shipped",
+  csv_export: "shipped",
+  privacy_center: "shipped",
+  listener_health: "shipped",
+  parser_diagnostics: "shipped",
 };
 
 export function isShipped(key: FeatureKey): boolean {

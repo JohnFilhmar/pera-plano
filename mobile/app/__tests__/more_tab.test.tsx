@@ -8,6 +8,16 @@
 // TWO SCREENS, ONE FILE, because the brief's six named tests split three and
 // three across them (the More hub's entries/gates; the Settings screen's
 // theme/telemetry behavior) and both screens are this one task's subject.
+//
+// m3b Task 8 flipped `privacy_center`, `listener_health` and
+// `parser_diagnostics` (along with `reports` and `csv_export`) to "shipped"
+// and wired their rows to the real routes those screens now live at
+// (app/(tabs)/more/privacy.tsx, .../listener_health.tsx,
+// .../parser_diagnostics.tsx). The rows' SoonGate wrapping stays in place
+// (app/(tabs)/more/index.tsx's header comment records why), but with nothing
+// soon left in the app it no longer blocks anything, so this file now
+// asserts each row navigates for real rather than only "renders the Soon
+// chip".
 jest.mock("expo-router", () => ({
   useRouter: () => ({ push: (...args: unknown[]) => mockPush(...args) }),
 }));
@@ -85,20 +95,31 @@ describe("the More hub", () => {
     screen.getByText("About");
   });
 
-  test("unshipped entries render the Soon chip", () => {
-    // reports, privacy_center, listener_health and parser_diagnostics are all
-    // "soon" in constants/shipped_features.ts today — four SoonGate rows,
-    // four chips. Settings, Subscriptions and About carry none.
+  test("no entry renders a Soon chip — every FeatureKey ships as of m3b Task 8", () => {
     renderScreen(<MoreScreen />);
 
-    expect(screen.getAllByTestId("soon-chip")).toHaveLength(4);
-    expect(
-      within(screen.getByTestId("more-settings")).queryByTestId("soon-chip"),
-    ).toBeNull();
-    expect(
-      within(screen.getByTestId("more-subscriptions")).queryByTestId("soon-chip"),
-    ).toBeNull();
-    expect(within(screen.getByTestId("more-about")).queryByTestId("soon-chip")).toBeNull();
+    expect(screen.queryAllByTestId("soon-chip")).toHaveLength(0);
+  });
+
+  test("Privacy centre navigates to /more/privacy", () => {
+    renderScreen(<MoreScreen />);
+
+    fireEvent.press(screen.getByTestId("more-privacy-center"));
+    expect(mockPush).toHaveBeenCalledWith("/more/privacy");
+  });
+
+  test("Listener health navigates to /more/listener_health", () => {
+    renderScreen(<MoreScreen />);
+
+    fireEvent.press(screen.getByTestId("more-listener-health"));
+    expect(mockPush).toHaveBeenCalledWith("/more/listener_health");
+  });
+
+  test("Parser diagnostics navigates to /more/parser_diagnostics", () => {
+    renderScreen(<MoreScreen />);
+
+    fireEvent.press(screen.getByTestId("more-parser-diagnostics"));
+    expect(mockPush).toHaveBeenCalledWith("/more/parser_diagnostics");
   });
 
   test("the Plus-only entry renders the Plus badge on Free", () => {

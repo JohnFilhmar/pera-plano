@@ -4,12 +4,15 @@
 // FOUR SECTIONS, MATCHING WHAT IS ACTUALLY SHIPPED TODAY, not the doc's full
 // five-section structure. docs/04-features/11-settings-privacy.md's
 // "Settings structure" table also names Tracking (health indicator, per-
-// provider pause) and Backup (Plus cloud sync) — both depend on features this
-// build does not have yet (`listener_health`/`privacy_center` are "soon" in
-// constants/shipped_features.ts; cloud backup has no service behind it at
-// all). Building rows for either would be dead UI wired to nothing, so this
-// screen covers exactly the brief's three: theme (Appearance), alert
-// preferences (Alerts), and the telemetry opt-out (Data & privacy) — plus the
+// provider pause) and Backup (Plus cloud sync). Tracking and per-provider
+// pause are real, shipped screens as of m3b Task 8 — Listener health
+// (app/(tabs)/more/listener_health.tsx) and the Privacy centre's provider
+// switches (app/(tabs)/more/privacy.tsx) — reached from their own rows on the
+// More hub rather than duplicated as a Settings section; cloud backup still
+// has no service behind it at all. Building a Settings row for backup would
+// be dead UI wired to nothing, so this screen covers exactly the brief's
+// three: theme (Appearance), alert preferences (Alerts), and the telemetry
+// opt-out (Data & privacy) — plus the
 // owner's 2026-08-16 addition, the subscription-forget multiplier
 // (Recurring), which belongs here rather than on the gated Subscriptions
 // screen because it is a preference, not a view of detected patterns.

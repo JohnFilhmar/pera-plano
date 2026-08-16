@@ -1,7 +1,9 @@
 // app/(tabs)/more/index.tsx — the More tab hub (M3 Part 2 Task 6; Reports row
 // added by the M3b chart-colours-and-integration task; Settings, Privacy
 // centre, Listener health, Parser diagnostics and About-and-tier rows added
-// by M3b Task 5).
+// by M3b Task 5; Reports, Privacy centre, Listener health and Parser
+// diagnostics all wired to their now-built screens by M3b Task 8, which also
+// flipped the last five `SHIPPED_FEATURES` keys).
 //
 // Converted from the M1 placeholder at app/(tabs)/more.tsx, the same move
 // plan/index.tsx made for its own sub-screens: expo-router treats `more.tsx`
@@ -11,16 +13,23 @@
 // would collide with this one, the same mistake m2b Tasks 4 and 8 and m2c
 // Task 5 already made once each.
 //
-// STILL NOT A DATA-DRIVEN LIST like app/(tabs)/plan/index.tsx's `SECTIONS` —
-// now for a THIRD reason on top of the original two. Reports is `SoonGate`
-// (phased rollout) and Subscriptions is `PlusGate` (tier paywall); Privacy
-// centre, Listener health and Parser diagnostics are `SoonGate` too but,
-// unlike Reports, their screens do not exist yet — so their `onPress` has no
-// route to reference at all, where Reports' does (see the comment on that
-// row). Settings is ungated and navigates for real. About-and-tier is not a
-// gate or a navigating row at all — it is a static line. A single table shape
-// would have to smuggle four different row behaviours through one field,
-// which is more machinery than seven rows need.
+// STILL NOT A DATA-DRIVEN LIST like app/(tabs)/plan/index.tsx's `SECTIONS`.
+// Reports, Privacy centre, Listener health and Parser diagnostics are all
+// `SoonGate` rows that navigate for real now that every key ships;
+// Subscriptions is `PlusGate` (tier paywall) instead; Settings is ungated and
+// navigates for real; About-and-tier is not a gate or a navigating row at all
+// — it is a static line. Four distinct row behaviours through one field is
+// more machinery than seven rows need.
+//
+// `SoonGate` STAYS WRAPPED on all four rows below even though every feature
+// key it names is now "shipped" — the same call m2c Task 6 made on the Plan
+// hub once `bills` shipped (app/(tabs)/plan/index.tsx's own comment, and
+// app/__tests__/plan_hub.test.tsx's "SoonGate is still wrapped around every
+// section" test). A later feature can still land ahead of its own rollout, so
+// a future plan adding one should not have to rediscover where the gate
+// goes; with nothing soon it no longer blocks anything, which is exactly why
+// every row below is asserted to actually navigate, not just "no Soon chip
+// renders" (app/__tests__/more_tab.test.tsx, app/__tests__/more_hub.test.tsx).
 import { useRouter } from "expo-router";
 import { Pressable, ScrollView, Text, View } from "react-native";
 
@@ -41,11 +50,10 @@ export default function MoreScreen() {
       className="flex-1 bg-bg dark:bg-bg-dark"
       contentContainerClassName="gap-3 p-4"
     >
-      {/* `reports` is still "soon" — SoonGate keeps the row visible and
-          desaturated with its grey chip rather than hiding it outright, the
-          same phased-rollout convention Plan hub's sections use. Once a
-          later task flips the key, this row becomes fully interactive with
-          no code change here. */}
+      {/* `reports` is "shipped" as of m3b Task 8 — SoonGate now renders
+          `children` verbatim, with no wrapper and no chip, so this row is
+          fully interactive. The gate itself is left in place rather than
+          removed (see this file's header comment for why). */}
       <SoonGate feature="reports">
         <Pressable
           testID="more-reports"
@@ -99,15 +107,13 @@ export default function MoreScreen() {
         </Card>
       </Pressable>
 
-      {/* `privacy_center` is "soon" — no screen exists yet, so `onPress` is a
-          no-op rather than a route literal `typedRoutes` cannot validate
-          (the same reason app/(tabs)/plan/index.tsx's `SECTIONS` leave `href`
-          `undefined` until a section's screens are built). SoonGate already
-          blocks the touch via `pointerEvents="none"` either way. */}
+      {/* `privacy_center` is "shipped" as of m3b Task 8, and its screen
+          (app/(tabs)/more/privacy.tsx) now exists — same real `push` as
+          Settings and Reports above. */}
       <SoonGate feature="privacy_center">
         <Pressable
           testID="more-privacy-center"
-          onPress={() => {}}
+          onPress={() => router.push("/more/privacy")}
           accessibilityRole="button"
           accessibilityLabel="Privacy centre"
         >
@@ -122,10 +128,12 @@ export default function MoreScreen() {
         </Pressable>
       </SoonGate>
 
+      {/* `listener_health` is "shipped" as of m3b Task 8, and its screen
+          (app/(tabs)/more/listener_health.tsx) now exists. */}
       <SoonGate feature="listener_health">
         <Pressable
           testID="more-listener-health"
-          onPress={() => {}}
+          onPress={() => router.push("/more/listener_health")}
           accessibilityRole="button"
           accessibilityLabel="Listener health"
         >
@@ -140,10 +148,12 @@ export default function MoreScreen() {
         </Pressable>
       </SoonGate>
 
+      {/* `parser_diagnostics` is "shipped" as of m3b Task 8, and its screen
+          (app/(tabs)/more/parser_diagnostics.tsx) now exists. */}
       <SoonGate feature="parser_diagnostics">
         <Pressable
           testID="more-parser-diagnostics"
-          onPress={() => {}}
+          onPress={() => router.push("/more/parser_diagnostics")}
           accessibilityRole="button"
           accessibilityLabel="Parser diagnostics"
         >

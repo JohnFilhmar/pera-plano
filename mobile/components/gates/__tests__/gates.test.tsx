@@ -25,12 +25,16 @@ beforeAll(() => {
   `);
 });
 
-// The "soon" fixture — whichever key is still soon. It has moved four times as
-// the rollout table advanced: `limits` (m2-part2 Task 14), `goals` (m2b Task 9),
-// `bills` (m2c Task 6), `safe_to_spend` (M3 Part 2 Task 7). It now names an M3b
-// key; m3b Task 8 retires this fixture along with the rest of the Soon list.
-// Mutated directly in one test below and restored here, since the map has no
-// test seam of its own.
+// The "soon" fixture. Every FeatureKey is "shipped" as of m3b Task 8 — the
+// rollout table's last row — so there is no longer a key whose REAL state is
+// "soon" for SoonGate's own tests to exercise against. SoonGate's
+// soon-vs-shipped contract still needs coverage (a future feature can land
+// ahead of its own rollout and go through exactly this path), so this
+// `describe` block forces one shipped key back to "soon" for its own
+// duration via `beforeEach`/`afterEach`, independent of whatever
+// `constants/shipped_features.ts` currently says in the real app. Which key
+// is arbitrary; `reports` is kept only because it is a name every prior
+// revision of this fixture already used.
 const FEATURE = "reports" as const;
 
 // SHIPPED_FEATURES is exported readonly — app code must never mutate the
@@ -39,6 +43,10 @@ const FEATURE = "reports" as const;
 function setShipState(key: FeatureKey, state: ShipState): void {
   (SHIPPED_FEATURES as Record<FeatureKey, ShipState>)[key] = state;
 }
+
+beforeEach(() => {
+  setShipState(FEATURE, "soon");
+});
 
 afterEach(() => {
   setShipState(FEATURE, "soon");
