@@ -50,7 +50,7 @@ import { ThemeProvider, useTheme } from "@/contexts/theme_context";
 import { LockProvider, useLock } from "@/contexts/lock_context";
 import { systemClock } from "@/lib/clock";
 import { applyGlobalFont } from "@/lib/fonts";
-import { bootstrapApp } from "@/lib/bootstrap";
+import { bootstrapApp, startNetworkSyncSubscriber } from "@/lib/bootstrap";
 import { useApplyAllocations } from "@/hooks/mutations/use_apply_allocations";
 import { usePaydayAllocations } from "@/hooks/use_payday_allocations";
 import { BILL_HORIZON_DAYS } from "@/hooks/queries/use_bills";
@@ -224,6 +224,19 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
   useEffect(() => {
     if (bootstrapState !== "ready") return;
     return startRecurringLedgerSubscriber();
+  }, [bootstrapState]);
+
+  // Ruleset check and telemetry send, re-fired on every foreground (M3c Task
+  // 7 rule 3 — the initial fire-and-forget call runs once in bootstrapApp()
+  // instead; this is the ongoing half, same split as recurring detection's
+  // one-shot-in-bootstrap vs. ongoing-subscriber-here above). Same gate as
+  // every effect in this shell: `startNetworkSyncSubscriber`
+  // (lib/bootstrap.ts) subscribes to AppState itself and does its own
+  // fire-and-forget, so nothing here can block or break rendering, and
+  // neither call is awaited on a foreground any more than it was at launch.
+  useEffect(() => {
+    if (bootstrapState !== "ready") return;
+    return startNetworkSyncSubscriber();
   }, [bootstrapState]);
 
   // Loan reminders, rescheduled once per launch (m2b Task 9 rule 3) so they

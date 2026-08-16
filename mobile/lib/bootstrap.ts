@@ -7,6 +7,7 @@
 // upserts through a guard that ignores an equal-or-lower version; getSetting is
 // a pure read) so bootstrapApp() itself is safe to call on every launch
 // (brief's ordering-hazard rule 3).
+import { AppState, type AppStateStatus } from "react-native";
 import { getDatabase } from "@/lib/db/database";
 import { runMigrations } from "@/lib/db/migrations";
 import { getSetting } from "@/lib/db/repos/app_settings_repo";
@@ -16,6 +17,8 @@ import { purgeExpiredRawCaptures } from "@/lib/db/repos/raw_notifications_repo";
 import { runIncomePass } from "@/lib/income/income_ledger_subscriber";
 import { seedParserRules } from "@/lib/ingest/seed_rules";
 import { runRecurringPass } from "@/lib/recurring/recurring_ledger_subscriber";
+import { checkForRulesetUpdate } from "@/services/parser_rules";
+import { sendParseStats } from "@/services/telemetry";
 
 export type BootstrapResult = { onboardingComplete: boolean };
 
@@ -49,6 +52,21 @@ export async function bootstrapApp(): Promise<BootstrapResult> {
   await runMigrations(db);
   await seedDefaultCategories();
   await seedParserRules();
+  // The two server calls (M3c Task 7 rule 1). Fired here — after migrations
+  // and seeding, so `getActiveVersion()` and `getParseStats()` have a
+  // migrated, seeded schema to read — but DELIBERATELY NOT AWAITED, unlike
+  // every other line in this function. Those are local database work;
+  // `checkForRulesetUpdate` and `sendParseStats` are network calls, and on
+  // Philippine mobile data a request can hang the better part of a minute.
+  // Awaiting either would mean a bad signal on a jeepney holds the very
+  // first frame hostage — exactly what STACK_BASIS §8 rules out. Both
+  // already resolve `{ updated: false }` / `{ sent: false }` on every
+  // failure mode they know about (offline, non-2xx, opted out, within their
+  // own 24h interval) rather than throwing, so `fireNetworkSync`'s `.catch`
+  // below is belt-and-braces for the one they don't: a bug in either
+  // service that throws instead of resolving should not be able to reach
+  // here and turn into an unhandled rejection.
+  fireNetworkSync(Date.now());
   await runRetention(Date.now());
   // Income detection, once per launch (m2-part2 Task 14 rule 1). AFTER the
   // migrations and the seeds, because it reads the ledger and the loan
@@ -99,6 +117,51 @@ async function runRetention(now: number): Promise<void> {
   } catch {
     // Housekeeping only — never worth failing a launch over.
   }
+}
+
+/**
+ * Fires the ruleset check and the telemetry send, neither awaited (M3c Task 7
+ * rule 1 — see the call site in bootstrapApp() for the full reasoning).
+ * `.catch` on each is rule 2: both services already resolve rather than
+ * reject on every failure mode documented in their own files, so a rejection
+ * reaching here means one of them broke that contract — logged with
+ * `console.error` (not the `console.warn` the services themselves use for
+ * expected, offline-is-normal failures) precisely because it should never
+ * happen, and swallowed regardless, because neither a stale ruleset nor a
+ * missed telemetry window is worth doing anything more disruptive than
+ * logging about.
+ */
+function fireNetworkSync(now: number): void {
+  checkForRulesetUpdate(now).catch((error: unknown) => {
+    console.error("checkForRulesetUpdate rejected — this should never happen; ruleset unchanged", error);
+  });
+  sendParseStats(now).catch((error: unknown) => {
+    console.error("sendParseStats rejected — this should never happen; telemetry skipped this period", error);
+  });
+}
+
+/**
+ * Re-checks for a ruleset update and re-sends telemetry on every foreground
+ * (M3c Task 7 rule 3), subscribing to `AppState` the same way
+ * `contexts/lock_context.tsx` already does. Returns the teardown, the same
+ * shape `app/_layout.tsx`'s other `bootstrapState === "ready"` effects
+ * (ingest, income, recurring) already return.
+ *
+ * NO INTERVAL LOGIC LIVES HERE. `checkForRulesetUpdate` and `sendParseStats`
+ * already gate themselves against `app_settings` (`parser_rules_checked_at`,
+ * `last_telemetry_sent_at`) — a second, independently-written 24h check in
+ * this file would eventually disagree with theirs about what "too soon"
+ * means, the same reasoning `bootstrapApp()`'s doc already gives for not
+ * re-implementing `runIncomePass`/`runRecurringPass`'s own try/catch. Every
+ * foreground calls `fireNetworkSync` unconditionally; the services decide,
+ * every time, whether that turns into an actual request.
+ */
+export function startNetworkSyncSubscriber(): () => void {
+  const subscription = AppState.addEventListener("change", (state: AppStateStatus) => {
+    if (state !== "active") return;
+    fireNetworkSync(Date.now());
+  });
+  return () => subscription.remove();
 }
 
 /**
