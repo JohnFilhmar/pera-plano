@@ -8,13 +8,19 @@
 // preference lives ONLY in AsyncStorage, owned end to end by
 // `contexts/theme_context.tsx` (key "peraplano.theme_preference", proven by
 // contexts/__tests__/theme_context.
-// test.tsx) and already applies it immediately (`nativewindColorScheme.set`
-// runs synchronously inside `setPreference`, before this component re-renders
-// at all). Routing the SAME preference through `app_settings` as well would
-// be a second persistence path for one value — two stores that can disagree
-// about which theme is active, for zero benefit. This component's whole job
-// is exposing the CHOICE `useTheme()` already knows how to keep, not
-// re-implementing how it is kept.
+// test.tsx) and already applies it immediately. NOT synchronously inside
+// `setPreference` itself, though — that function only calls
+// `setPreferenceState` and `AsyncStorage.setItem`. `nativewindColorScheme.set`
+// runs from a SEPARATE `useEffect` keyed on `[preference]`, which fires after
+// React commits the state update and this component (and every `dark:`
+// consumer) has already re-rendered once on the new `preference` value — not
+// before. The net effect is still "applies without a restart", which is all
+// brief rule 4 requires; it is simply two steps, not one. Routing the SAME
+// preference through `app_settings` as well would be a second persistence
+// path for one value — two stores that can disagree about which theme is
+// active, for zero benefit. This component's whole job is exposing the
+// CHOICE `useTheme()` already knows how to keep, not re-implementing how it
+// is kept.
 import { Pressable, Text, View } from "react-native";
 
 import { useTheme, type ThemePreference } from "@/contexts/theme_context";

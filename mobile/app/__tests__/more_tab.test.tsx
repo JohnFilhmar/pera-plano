@@ -217,4 +217,39 @@ describe("the Settings screen", () => {
         .disabled,
     ).toBe(true);
   });
+
+  test("the subscription-forget multiplier clamps to the ceiling at 3 and disables further increment", async () => {
+    // The symmetric counterpart of the floor test above. Only the floor (1)
+    // and the decrement's disabled state were exercised before this test —
+    // a regression in MULTIPLIER_MAX could silently let a user exceed the
+    // owner's stated [1, 3] range with nothing to catch it.
+    renderScreen(<SettingsScreen />);
+    await screen.findByTestId("settings-recurring-forget-row");
+
+    const valueText = () =>
+      screen.getByTestId("settings-forget-multiplier-value").props.children;
+
+    async function press(testID: string, expected: string): Promise<void> {
+      fireEvent.press(screen.getByTestId(testID));
+      await waitFor(() => expect(valueText()).toBe(expected));
+    }
+
+    await press("settings-forget-multiplier-increment", "1.75");
+    await press("settings-forget-multiplier-increment", "2");
+    await press("settings-forget-multiplier-increment", "2.25");
+    await press("settings-forget-multiplier-increment", "2.5");
+    await press("settings-forget-multiplier-increment", "2.75");
+    await press("settings-forget-multiplier-increment", "3");
+
+    expect(await getSetting("recurring_forget_multiplier")).toBe(3);
+    expect(
+      screen.getByTestId("settings-forget-multiplier-increment").props.accessibilityState
+        .disabled,
+    ).toBe(true);
+
+    // One more press past the ceiling must not move the value or the setting.
+    fireEvent.press(screen.getByTestId("settings-forget-multiplier-increment"));
+    expect(valueText()).toBe("3");
+    expect(await getSetting("recurring_forget_multiplier")).toBe(3);
+  });
 });
