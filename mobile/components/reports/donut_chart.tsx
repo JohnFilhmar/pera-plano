@@ -28,14 +28,27 @@ export type DonutChartProps = {
 };
 
 /**
- * Every non-neutral hue the palette defines (constants/colors.ts) — rule 2
- * forbids inventing new hex values, so this list IS the ceiling on how many
- * categories can look visually distinct in one donut at once. Past six
- * simultaneous slices the hash below cycles back through the same colors;
- * that is a token-budget limit worth flagging to a designer, not a bug in
- * the hash (see the Task 3 report).
+ * The dedicated chart ramp (constants/colors.ts, `chart-1`..`chart-8`) —
+ * NOT the semantic tokens (`brand`/`danger`/`warn`/`ph-*`), which mean good,
+ * wrong, careful, and flag accent respectively and must never double as a
+ * category colour (see that file's own comment on the ramp block). Eight
+ * hues is the ceiling on how many categories look visually distinct in one
+ * donut at once; past eight simultaneous slices the hash below cycles back
+ * through the same colors, same as the old six-token ceiling did, just
+ * raised — owner-approved 2026-08-16 after the 15-seeded-category, ~5-usable
+ * -colour collision problem the old six-token version had (two of those six,
+ * `danger` and `ph-red`, read as near-identical reds).
  */
-const CATEGORY_COLOR_KEYS = ["brand", "warn", "danger", "ph-blue", "ph-red", "ph-yellow"] as const;
+const CATEGORY_COLOR_KEYS = [
+  "chart-1",
+  "chart-2",
+  "chart-3",
+  "chart-4",
+  "chart-5",
+  "chart-6",
+  "chart-7",
+  "chart-8",
+] as const;
 
 /**
  * A small, deterministic string hash (djb2-family). `Math.imul` keeps every

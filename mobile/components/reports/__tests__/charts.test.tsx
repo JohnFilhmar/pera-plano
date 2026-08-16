@@ -8,6 +8,7 @@
 import { fireEvent, render, screen } from "@testing-library/react-native";
 import type { ReactNode } from "react";
 
+import { palette } from "@/constants/colors";
 import { ThemeProvider } from "@/contexts/theme_context";
 import { __setTierForTests } from "@/lib/entitlements";
 import type {
@@ -78,6 +79,52 @@ test("CATEGORY COLORS ARE STABLE ACROSS RENDERS FOR THE SAME ID", () => {
   renderB.unmount();
 
   expect(strokeA).toEqual(strokeB);
+});
+
+// A fixed, arbitrary set of distinct ids — large enough that a well-spread
+// djb2-family hash (see donut_chart.tsx's own header) visits all 8 ramp
+// slots. Fixed strings, not random ones, so this stays a deterministic,
+// non-flaky assertion rather than a coin flip on rerun.
+const SAMPLE_CATEGORY_IDS = Array.from({ length: 200 }, (_, index) => `sample-category-${index}`);
+
+test("THE RAMP HAS ALL EIGHT CHART SLOTS REACHABLE, NOT THE OLD SIX-COLOUR CEILING", () => {
+  // Owner-approved chart ramp (2026-08-16): `chart-1`..`chart-8` replaced
+  // hashing into 6 borrowed semantic tokens, which left ~5 usable colors
+  // against 15 seeded categories. 200 distinct ids sampled through the same
+  // hash the component uses should land in every one of the 8 slots.
+  const lightColors = new Set(SAMPLE_CATEGORY_IDS.map((id) => categoryColor(id, false)));
+  const darkColors = new Set(SAMPLE_CATEGORY_IDS.map((id) => categoryColor(id, true)));
+  expect(lightColors.size).toBe(8);
+  expect(darkColors.size).toBe(8);
+});
+
+test("A CHART COLOUR IS NEVER ONE OF THE SEMANTIC TOKENS", () => {
+  // Guards constants/colors.ts's own rule: the chart ramp is a SEPARATE
+  // block from `brand`/`danger`/`warn`/`ph-*`, which each carry a status
+  // meaning a chart slice must not borrow. If a future edit folds the two
+  // groups back together (e.g. reusing `danger` as a chart slot again), this
+  // fails.
+  const semanticValues = new Set<string>([
+    palette.brand,
+    palette["brand-dark"],
+    palette["brand-soft"],
+    palette["brand-soft-dark"],
+    palette.danger,
+    palette["danger-dark"],
+    palette.warn,
+    palette["warn-dark"],
+    palette["ph-blue"],
+    palette["ph-blue-dark"],
+    palette["ph-red"],
+    palette["ph-red-dark"],
+    palette["ph-yellow"],
+    palette["ph-yellow-dark"],
+  ]);
+
+  for (const id of SAMPLE_CATEGORY_IDS) {
+    expect(semanticValues.has(categoryColor(id, false))).toBe(false);
+    expect(semanticValues.has(categoryColor(id, true))).toBe(false);
+  }
 });
 
 // ---------------------------------------------------------------------------
