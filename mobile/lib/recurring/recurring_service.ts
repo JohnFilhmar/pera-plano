@@ -16,16 +16,15 @@ import { DEFAULT_BILL_CATEGORY_ID } from "@/constants/bills";
 import { promoteRecurringPatternToBill } from "@/lib/bills/bills_service";
 import { getBill } from "@/lib/db/repos/bills_repo";
 import {
-  clearDismissal,
+  findMatchingPattern,
   getPattern,
-  getPatternByMerchantAndPeriod,
   linkPatternToBill,
   listPatterns,
-  periodFor,
+  RecurringPatternNotFoundError,
   upsertPattern,
 } from "@/lib/db/repos/recurring_patterns_repo";
 import { listTransactions } from "@/lib/db/repos/transactions_repo";
-import { detectPatterns, type DetectedPattern } from "@/lib/recurring/pattern_detector";
+import { detectPatterns } from "@/lib/recurring/pattern_detector";
 import type { Bill, Centavos, RecurringPattern, RecurringPeriod } from "@/types/domain";
 
 const DAY_MS = 86_400_000;
@@ -60,53 +59,26 @@ const MONTHLY_FACTOR: Record<RecurringPeriod, number> = {
 };
 
 /**
- * How far amount may drift before a DISMISSED pattern counts as a different
- * commitment from the one the user already said no to (plan rule 3).
- *
- * Independent of the detector's own clustering tolerance (not exported by
- * pattern_detector.ts, and answering a different question — "is this the same
- * subscription" there, versus "has this dismissed one changed enough to ask
- * again" here) but chosen at the same generosity for the same reason: Netflix
- * raising ₱549 to ₱599 should not reopen a suggestion the user already
- * dismissed.
- */
-const MATERIAL_AMOUNT_CHANGE_PCT = 15;
-
-export class RecurringPatternNotFoundError extends Error {
-  constructor(public readonly patternId: string) {
-    super(`recurring pattern not found: ${patternId}`);
-    this.name = "RecurringPatternNotFoundError";
-  }
-}
-
-/**
- * Amount moved by more than the tolerance, OR the cadence bucket itself
- * changed (weekly became monthly, etc.) — a coarser signal than an exact
- * `periodDays` comparison, but `period` is the bucket the user actually reads
- * on the row they dismissed.
- */
-function isMaterialChange(existing: RecurringPattern, candidate: DetectedPattern): boolean {
-  const amountChanged =
-    existing.amount > 0 &&
-    (Math.abs(candidate.amount - existing.amount) / existing.amount) * 100 >
-      MATERIAL_AMOUNT_CHANGE_PCT;
-  const cadenceChanged = periodFor(candidate.periodDays) !== existing.period;
-  return amountChanged || cadenceChanged;
-}
-
-/**
  * Re-runs detection over the ledger and merges the result into storage.
  * Returns every live (non-dismissed) pattern afterward, acknowledged and
  * suggested alike — the same read `listPatterns({ includeAcknowledged: true })`
  * gives a caller directly, returned here too so a caller that just triggered a
  * refresh does not have to make a second call to see its result.
  *
- * A DISMISSED-AND-UNCHANGED PATTERN IS SKIPPED ENTIRELY (rule 3) — not merely
- * hidden by `listPatterns`. Upserting its confidence and `lastSeenAt` on every
- * pass would let the stored row drift silently out of sync with what the user
- * actually saw and said no to; it stays exactly as dismissed until the
- * evidence changes enough to be a different question, at which point it is
- * upserted AND re-armed in the same pass.
+ * A DISMISSED PATTERN THAT STILL MATCHES IS SKIPPED ENTIRELY (rule 3) — not
+ * merely hidden by `listPatterns`. Upserting its confidence and `lastSeenAt`
+ * on every pass would let the stored row drift silently out of sync with what
+ * the user actually saw and said no to, so it stays exactly as dismissed for
+ * as long as `findMatchingPattern` still considers it the same commitment.
+ *
+ * MATERIAL CHANGE NEEDS NO SEPARATE CHECK HERE (fix round 1). Once a
+ * candidate's amount has drifted past `findMatchingPattern`'s own tolerance —
+ * or its cadence bucket has changed — the dismissed row simply stops
+ * matching, `existing` comes back `null`, and the ordinary `upsertPattern`
+ * branch below creates a fresh, non-dismissed row for it. That is rule 3's
+ * "unless … changes materially" clause, arrived at by the same tolerance the
+ * repository already uses to decide identity, rather than a second,
+ * independently-tuned threshold that could disagree with it.
  */
 export async function refreshPatterns(now: number): Promise<RecurringPattern[]> {
   const from = now - LEDGER_WINDOW_DAYS * DAY_MS;
@@ -114,15 +86,10 @@ export async function refreshPatterns(now: number): Promise<RecurringPattern[]> 
   const detected = detectPatterns(transactions, now);
 
   for (const candidate of detected) {
-    const existing = await getPatternByMerchantAndPeriod(candidate.merchant, candidate.periodDays);
-    const wasDismissed = existing !== null && existing.dismissedAt !== null;
+    const existing = await findMatchingPattern(candidate.merchant, candidate.periodDays, candidate.amount);
+    if (existing !== null && existing.dismissedAt !== null) continue;
 
-    if (wasDismissed && existing !== null && !isMaterialChange(existing, candidate)) {
-      continue;
-    }
-
-    const saved = await upsertPattern(candidate);
-    if (wasDismissed) await clearDismissal(saved.id);
+    await upsertPattern(candidate);
   }
 
   return listPatterns({ includeAcknowledged: true });

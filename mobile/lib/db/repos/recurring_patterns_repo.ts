@@ -3,17 +3,38 @@
 // bills_repo.ts / loans_repo.ts.
 //
 // ---------------------------------------------------------------------------
-// UPSERT IS KEYED ON NORMALIZED MERCHANT + periodDays, NOT THE LITERAL STRING
+// THE IDENTITY KEY IS NORMALIZED MERCHANT + PERIOD BUCKET + AMOUNT TOLERANCE —
+// NOT periodDays, and NOT the literal merchant string. (Fix round 1, reviewer
+// ruling — overrides the plan's original "keyed on merchant + periodDays".)
 // ---------------------------------------------------------------------------
-// `DetectedPattern.merchant` (lib/recurring/pattern_detector.ts) is the label
-// seen MOST OFTEN in the current evidence, per that file's own
-// `mostCommonMerchant` — which can shift between refresh passes as more
-// transactions land ("Netflix.com" is most-common today, "Netflix" once a few
-// more instances arrive). Matching on the literal string would read that shift
-// as a brand-new merchant and duplicate the row instead of updating it, so
-// every lookup here goes through the detector's own `normalizeMerchant`
-// first — reused rather than re-implemented, so the two cannot drift apart on
-// what "the same merchant" means.
+// Two reasons, one per component that ISN'T in the key:
+//
+//   NOT THE LITERAL MERCHANT STRING. `DetectedPattern.merchant`
+//   (lib/recurring/pattern_detector.ts) is the label seen MOST OFTEN in the
+//   current evidence, per that file's own `mostCommonMerchant` — which can
+//   shift between refresh passes as more transactions land ("Netflix.com" is
+//   most-common today, "Netflix" once a few more instances arrive). Every
+//   lookup here goes through the detector's own `normalizeMerchant` instead.
+//
+//   NOT periodDays. It is `Math.round(meanGap)` over a SLIDING WINDOW,
+//   recomputed fresh on every `refreshPatterns` pass — so it legitimately
+//   wobbles for one real, unchanged subscription (gaps [31, 31] round to 31;
+//   a fourth occurrence arrives and the same subscription's gaps round to
+//   30). It is least stable right at `MIN_OCCURRENCES`, which is exactly when
+//   a pattern first gets a row. Keying on it meant a dismissed pattern could
+//   silently un-key itself and resurface as a "new" suggestion with zero
+//   material change — Reports rule 18's "never re-surfaced" has no exception
+//   for an integer that wobbled, so an exact-periodDays key cannot deliver it.
+//
+// What IS in the key instead: the stable `period` BUCKET (weekly / monthly /
+// annual — the same enum Reports rule 17 already normalizes from, so it is
+// the project's own unit of cadence, not a bespoke tolerance) and the
+// candidate's amount within `AMOUNT_TOLERANCE_PCT` of the existing row's
+// current amount, reusing pattern_detector.ts's own clustering constant so
+// this identity check cannot disagree with the clustering that produced the
+// candidate in the first place. `period_days` is still WRITTEN to the row —
+// `promotePatternToBill` needs the exact cadence — it has simply stopped
+// being part of who the row IS.
 //
 // ---------------------------------------------------------------------------
 // A DISMISSED ROW IS NEVER TOUCHED BY THE ORDINARY UPDATE PATH
@@ -27,7 +48,11 @@
 // WHEN a dismissal should be lifted; this file only provides the primitive.
 import { getDatabase } from "@/lib/db/database";
 import { newId } from "@/lib/ids";
-import { normalizeMerchant, type DetectedPattern } from "@/lib/recurring/pattern_detector";
+import {
+  AMOUNT_TOLERANCE_PCT,
+  normalizeMerchant,
+  type DetectedPattern,
+} from "@/lib/recurring/pattern_detector";
 import type { RecurringPattern, RecurringPeriod } from "@/types/domain";
 
 const DAY_MS = 86_400_000;
@@ -49,6 +74,20 @@ export function periodFor(periodDays: number): RecurringPeriod {
   if (periodDays <= WEEKLY_MONTHLY_BOUNDARY_DAYS) return "weekly";
   if (periodDays <= MONTHLY_ANNUAL_BOUNDARY_DAYS) return "monthly";
   return "annual";
+}
+
+/**
+ * Whether two amounts are close enough to be the same subscription, per
+ * pattern_detector.ts's own `AMOUNT_TOLERANCE_PCT`. The SMALLER of the two is
+ * the reference, mirroring `clusterByAmount`'s own ascending-sorted
+ * comparison (there the earlier, smaller amount in the cluster is always the
+ * reference); here either side could be the smaller one, so `Math.min` picks
+ * it explicitly rather than assuming an order.
+ */
+function amountsMatch(a: number, b: number): boolean {
+  const reference = Math.min(a, b);
+  if (reference <= 0) return a === b;
+  return Math.abs(a - b) <= (reference * AMOUNT_TOLERANCE_PCT) / 100;
 }
 
 type RecurringPatternRow = {
@@ -112,30 +151,41 @@ export async function getPattern(id: string): Promise<RecurringPattern | null> {
  * state (the service's "is this dismissed row still the same commitment"
  * check) go through this rather than `listPatterns`, which hides dismissed
  * rows on purpose.
+ *
+ * Matches on normalized merchant + `period` BUCKET + amount within tolerance
+ * (see file header for why periodDays itself is not part of this). Filtered
+ * in SQL by the cheap, stable bucket column first; merchant normalization and
+ * the amount comparison run in JS over that narrowed set, the same
+ * find-then-filter shape `getPatternByMerchantAndPeriod`'s predecessor used.
  */
-export async function getPatternByMerchantAndPeriod(
+export async function findMatchingPattern(
   merchant: string,
   periodDays: number,
+  amount: number,
 ): Promise<RecurringPattern | null> {
   const db = await getDatabase();
+  const bucket = periodFor(periodDays);
   const rows = await db.getAllAsync<RecurringPatternRow>(
-    "SELECT * FROM recurring_patterns WHERE period_days = ?",
-    [periodDays],
+    "SELECT * FROM recurring_patterns WHERE period = ?",
+    [bucket],
   );
-  const match = rows.find((row) => normalizeMerchant(row.merchant) === normalizeMerchant(merchant));
+  const match = rows.find(
+    (row) =>
+      normalizeMerchant(row.merchant) === normalizeMerchant(merchant) && amountsMatch(row.amount, amount),
+  );
   return match ? rowToPattern(match) : null;
 }
 
 /**
  * Inserts a freshly detected pattern, or merges it into the existing row for
- * the same merchant + periodDays (see file header). Never touches
- * `acknowledged`, `bill_id` or `dismissed_at` — those are state this function
- * has no opinion about.
+ * the same identity (see file header). Never touches `acknowledged`,
+ * `bill_id` or `dismissed_at` — those are state this function has no opinion
+ * about.
  */
 export async function upsertPattern(p: DetectedPattern): Promise<RecurringPattern> {
   const db = await getDatabase();
   const now = Date.now();
-  const existing = await getPatternByMerchantAndPeriod(p.merchant, p.periodDays);
+  const existing = await findMatchingPattern(p.merchant, p.periodDays, p.amount);
   const period = periodFor(p.periodDays);
 
   if (existing !== null) {
@@ -219,9 +269,14 @@ export async function dismissPattern(id: string): Promise<void> {
 }
 
 /**
- * Un-suppresses a dismissed pattern — the service's re-arm path when a
- * refresh finds the dismissed row's amount or cadence has changed materially.
- * Idempotent: clearing an already-clear `dismissed_at` is a no-op in effect.
+ * Un-suppresses a dismissed pattern. Not currently called by
+ * `refreshPatterns` — a candidate materially different from a dismissed row
+ * simply fails `findMatchingPattern`'s tolerance check and is upserted as a
+ * NEW row instead (see recurring_service.ts), which is what naturally
+ * re-proposes it without needing this to run. Kept as a repository primitive
+ * (symmetric to `dismissPattern`) for a future explicit "undo dismiss"
+ * action. Idempotent: clearing an already-clear `dismissed_at` is a no-op in
+ * effect.
  */
 export async function clearDismissal(id: string): Promise<void> {
   const db = await getDatabase();

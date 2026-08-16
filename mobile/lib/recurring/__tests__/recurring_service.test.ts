@@ -1,22 +1,20 @@
-// lib/recurring/__tests__/recurring_service.test.ts — M3 Part 2 Task 6, step 2.
+// lib/recurring/__tests__/recurring_service.test.ts — M3 Part 2 Task 6, step 2
+// (fix round 1: identity match moved to merchant + period bucket + amount
+// tolerance; see recurring_patterns_repo.ts's header).
 import { listBills } from "@/lib/db/repos/bills_repo";
 import { seedDefaultCategories } from "@/lib/db/repos/categories_repo";
 import {
   dismissPattern,
+  findMatchingPattern,
   getPattern,
-  getPatternByMerchantAndPeriod,
   listPatterns,
+  RecurringPatternNotFoundError,
   upsertPattern,
 } from "@/lib/db/repos/recurring_patterns_repo";
 import { insertTransaction } from "@/lib/db/repos/transactions_repo";
 import { createWallet } from "@/lib/db/repos/wallets_repo";
 import { closeDatabase } from "@/lib/db/database";
-import {
-  monthlyLockedIn,
-  promotePatternToBill,
-  RecurringPatternNotFoundError,
-  refreshPatterns,
-} from "@/lib/recurring/recurring_service";
+import { monthlyLockedIn, promotePatternToBill, refreshPatterns } from "@/lib/recurring/recurring_service";
 import { freshDb } from "@/test_support/db";
 import type { RecurringPattern, Wallet } from "@/types/domain";
 
@@ -82,11 +80,12 @@ describe("monthlyLockedIn", () => {
   }
 
   test("normalizes weekly (x52/12) and monthly (x1) and sums them", () => {
-    const weekly = locked({ id: "w1", period: "weekly", amount: 20_000 }); // ~86,666.67
+    // 20,000 x 52 / 12 = 86,666.67; + 50,000 = 136,666.67, rounded once.
+    const weekly = locked({ id: "w1", period: "weekly", amount: 20_000 });
     const monthly = locked({ id: "m1", period: "monthly", amount: 50_000 });
 
     const total = monthlyLockedIn([weekly, monthly]);
-    expect(total).toBe(Math.round((20_000 * 52) / 12 + 50_000));
+    expect(total).toBe(136_667);
   });
 
   test("annual normalizes by /12", () => {
@@ -185,14 +184,20 @@ describe("refreshPatterns and dismissal (plan rule 3)", () => {
     await refreshPatterns(NOW);
 
     expect(await listPatterns()).toHaveLength(0);
-    const stored = await getPatternByMerchantAndPeriod("NETFLIX", 30);
+    const stored = await findMatchingPattern("NETFLIX", 30, 54_900);
+    expect(stored?.id).toBe(created.id);
     expect(stored?.dismissedAt).not.toBeNull();
     // Untouched — refreshPatterns must not even refresh confidence/lastSeenAt
     // on a dismissed-and-unchanged row.
     expect(stored?.amount).toBe(54_900);
   });
 
-  test("a materially changed dismissed pattern is proposed again", async () => {
+  test("a materially changed dismissed pattern is proposed again, as a fresh row", async () => {
+    // Fix round 1 (I-2): a candidate whose amount has moved past
+    // findMatchingPattern's own tolerance simply no longer MATCHES the old
+    // dismissed row, so it is upserted as a distinct, undismissed row rather
+    // than un-dismissing the original. The old row is untouched and stays
+    // dismissed forever — it genuinely was a different (now stale) figure.
     const created = await upsertPattern({
       merchant: "NETFLIX",
       amount: 54_900,
@@ -211,10 +216,14 @@ describe("refreshPatterns and dismissal (plan rule 3)", () => {
 
     const result = await refreshPatterns(NOW);
 
-    const stored = await getPatternByMerchantAndPeriod("NETFLIX", 30);
-    expect(stored?.dismissedAt).toBeNull();
-    expect(stored?.amount).toBe(99_900);
-    expect(result.some((p) => p.id === created.id && p.amount === 99_900)).toBe(true);
+    const oldRow = await findMatchingPattern("NETFLIX", 30, 54_900);
+    expect(oldRow?.id).toBe(created.id);
+    expect(oldRow?.dismissedAt).not.toBeNull();
+
+    const newRow = await findMatchingPattern("NETFLIX", 30, 99_900);
+    expect(newRow?.id).not.toBe(created.id);
+    expect(newRow?.dismissedAt).toBeNull();
+    expect(result.some((p) => p.id === newRow?.id && p.amount === 99_900)).toBe(true);
   });
 
   test("a fresh (never-dismissed) pattern refreshes normally", async () => {
@@ -224,5 +233,98 @@ describe("refreshPatterns and dismissal (plan rule 3)", () => {
 
     expect(result).toHaveLength(1);
     expect(result[0]).toMatchObject({ merchant: "SPOTIFY", amount: 14_900, periodDays: 30 });
+  });
+
+  // -------------------------------------------------------------------------
+  // I-2 — periodDays is Math.round(meanGap) over a sliding window and legitimately
+  // wobbles pass to pass for one unchanged subscription; the identity match must
+  // not be fooled by that wobble.
+  // -------------------------------------------------------------------------
+  test("a periodDays wobble (31 -> 30) across two refreshPatterns passes stays ONE row, updated not duplicated", async () => {
+    const first = NOW - 90 * DAY_MS;
+    const second = first + 31 * DAY_MS;
+    const third = second + 31 * DAY_MS;
+
+    for (const at of [first, second, third]) {
+      await insertTransaction({
+        walletId: cash.id,
+        categoryId: DEFAULT_BILL_CATEGORY_ID,
+        amount: 100_000,
+        direction: "out",
+        occurredAt: at,
+        merchant: "GYM",
+        source: "notification",
+        confidence: 0.9,
+      });
+    }
+
+    const pass1 = await refreshPatterns(third);
+    expect(pass1).toHaveLength(1);
+    expect(pass1[0]).toMatchObject({ merchant: "GYM", periodDays: 31 });
+    const patternId = pass1[0].id;
+
+    // A fourth occurrence 28 days later shifts the mean gap from 31 to 30 —
+    // Math.round((31 + 31 + 28) / 3) = 30 — with the merchant and amount
+    // otherwise completely unchanged.
+    const fourth = third + 28 * DAY_MS;
+    await insertTransaction({
+      walletId: cash.id,
+      categoryId: DEFAULT_BILL_CATEGORY_ID,
+      amount: 100_000,
+      direction: "out",
+      occurredAt: fourth,
+      merchant: "GYM",
+      source: "notification",
+      confidence: 0.9,
+    });
+
+    const pass2 = await refreshPatterns(fourth);
+    expect(pass2).toHaveLength(1);
+    expect(pass2[0].id).toBe(patternId);
+    expect(pass2[0].periodDays).toBe(30);
+  });
+
+  test("the same periodDays wobble on a DISMISSED pattern stays dismissed and is not re-proposed", async () => {
+    const first = NOW - 90 * DAY_MS;
+    const second = first + 31 * DAY_MS;
+    const third = second + 31 * DAY_MS;
+
+    for (const at of [first, second, third]) {
+      await insertTransaction({
+        walletId: cash.id,
+        categoryId: DEFAULT_BILL_CATEGORY_ID,
+        amount: 100_000,
+        direction: "out",
+        occurredAt: at,
+        merchant: "GYM",
+        source: "notification",
+        confidence: 0.9,
+      });
+    }
+
+    const pass1 = await refreshPatterns(third);
+    const patternId = pass1[0].id;
+    await dismissPattern(patternId);
+
+    const fourth = third + 28 * DAY_MS;
+    await insertTransaction({
+      walletId: cash.id,
+      categoryId: DEFAULT_BILL_CATEGORY_ID,
+      amount: 100_000,
+      direction: "out",
+      occurredAt: fourth,
+      merchant: "GYM",
+      source: "notification",
+      confidence: 0.9,
+    });
+
+    const pass2 = await refreshPatterns(fourth);
+
+    expect(pass2).toHaveLength(0);
+    expect(await listPatterns()).toHaveLength(0);
+    const stored = await getPattern(patternId);
+    expect(stored?.dismissedAt).not.toBeNull();
+    // Skipped entirely, not merely re-hidden: the wobble never got written.
+    expect(stored?.periodDays).toBe(31);
   });
 });

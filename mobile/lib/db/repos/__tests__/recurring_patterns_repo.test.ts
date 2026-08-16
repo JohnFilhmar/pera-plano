@@ -1,5 +1,6 @@
 // lib/db/repos/__tests__/recurring_patterns_repo.test.ts — M3 Part 2 Task 6,
-// step 1.
+// step 1 (fix round 1: identity match moved to merchant + period bucket +
+// amount tolerance; see this repo's own header comment for why).
 import { closeDatabase } from "@/lib/db/database";
 import { createBill } from "@/lib/db/repos/bills_repo";
 import { seedDefaultCategories } from "@/lib/db/repos/categories_repo";
@@ -7,8 +8,8 @@ import {
   acknowledgePattern,
   clearDismissal,
   dismissPattern,
+  findMatchingPattern,
   getPattern,
-  getPatternByMerchantAndPeriod,
   linkPatternToBill,
   listPatterns,
   periodFor,
@@ -85,13 +86,45 @@ describe("upsertPattern", () => {
     expect(rows[0].merchant).toBe("NETFLIX");
   });
 
-  test("a different periodDays is a DIFFERENT pattern, even for the same merchant", async () => {
+  test("a different period BUCKET is a DIFFERENT pattern, even for the same merchant", async () => {
     // A telco can bill a weekly load promo and a separate annual top-up.
+    // periodDays 7 and 365 land in different buckets (weekly vs. annual), so
+    // this is unaffected by fix round 1's move away from exact periodDays.
     await upsertPattern(pattern({ merchant: "GLOBE", periodDays: 7, amount: 5_000 }));
     await upsertPattern(pattern({ merchant: "GLOBE", periodDays: 365, amount: 120_000 }));
 
     const rows = await listPatterns({ includeAcknowledged: true });
     expect(rows).toHaveLength(2);
+  });
+
+  test("I-2: the SAME bucket with amounts far apart is still TWO distinct rows", async () => {
+    // A telco billing a ₱149 monthly plan and a separate ₱1,200 monthly
+    // top-up must not merge just because both round to the "monthly" bucket —
+    // the detector already keeps these apart by amount, and the identity key
+    // must not re-merge what it deliberately split.
+    await upsertPattern(
+      pattern({ merchant: "GLOBE", periodDays: 30, amount: 14_900 }),
+    );
+    await upsertPattern(
+      pattern({ merchant: "GLOBE", periodDays: 30, amount: 120_000 }),
+    );
+
+    const rows = await listPatterns({ includeAcknowledged: true });
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.amount).sort((a, b) => a - b)).toEqual([14_900, 120_000]);
+  });
+
+  test("I-2: a periodDays wobble (31 -> 30) with the amount unchanged still merges into one row", async () => {
+    // The exact scenario the reviewer found: periodDays is Math.round(meanGap)
+    // over a sliding window and legitimately shifts pass to pass for one real,
+    // unchanged subscription. The bucket (monthly, for both 30 and 31) and the
+    // amount are what decide identity now, not the wobbling integer.
+    const created = await upsertPattern(pattern({ periodDays: 31 }));
+    const merged = await upsertPattern(pattern({ periodDays: 30 }));
+
+    expect(merged.id).toBe(created.id);
+    expect(merged.periodDays).toBe(30);
+    expect(await listPatterns({ includeAcknowledged: true })).toHaveLength(1);
   });
 
   test("upsert never touches acknowledged, bill_id or dismissed_at on an existing row", async () => {
@@ -156,14 +189,20 @@ describe("acknowledge and dismiss filter listPatterns correctly", () => {
     expect((await getPattern(created.id))?.dismissedAt).toBeNull();
   });
 
-  test("getPatternByMerchantAndPeriod finds a dismissed row that listPatterns hides", async () => {
+  test("findMatchingPattern finds a dismissed row that listPatterns hides", async () => {
     const created = await upsertPattern(pattern({ merchant: "SPOTIFY" }));
     await dismissPattern(created.id);
 
     expect(await listPatterns({ includeAcknowledged: true })).toHaveLength(0);
-    const found = await getPatternByMerchantAndPeriod("SPOTIFY", 30);
+    const found = await findMatchingPattern("SPOTIFY", 30, 54_900);
     expect(found?.id).toBe(created.id);
     expect(found?.dismissedAt).not.toBeNull();
+  });
+
+  test("findMatchingPattern returns null once the amount is past tolerance", async () => {
+    const created = await upsertPattern(pattern({ merchant: "SPOTIFY", amount: 54_900 }));
+    expect(await findMatchingPattern("SPOTIFY", 30, 99_900)).toBeNull();
+    expect((await findMatchingPattern("SPOTIFY", 30, 54_900))?.id).toBe(created.id);
   });
 });
 

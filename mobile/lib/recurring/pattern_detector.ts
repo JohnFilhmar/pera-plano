@@ -35,8 +35,14 @@ export const MIN_OCCURRENCES = 3;
  * The cost of being too tight is a subscription the user never gets told about,
  * which is the entire point of the feature; the cost of being too loose is a
  * suggestion they dismiss in one tap.
+ *
+ * Exported: recurring_patterns_repo.ts reuses this exact number to decide
+ * whether a freshly detected candidate is "the same pattern" as an existing
+ * row (M3 Part 2 Task 6, fix round 1) — the identity check must use the same
+ * tolerance the clustering that PRODUCED the candidate already used, not a
+ * second, independently-chosen number that could disagree with it.
  */
-const AMOUNT_TOLERANCE_PCT = 15;
+export const AMOUNT_TOLERANCE_PCT = 15;
 
 /**
  * How far a gap may drift from the cluster's mean, in days.
