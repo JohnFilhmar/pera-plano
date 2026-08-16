@@ -81,7 +81,7 @@ describe("BatteryScreen", () => {
     expect(screen.getByText("Battery settings for Your device")).toBeTruthy();
   });
 
-  test("pressing the primary action fires the battery settings intent and advances to providers", () => {
+  test("pressing the primary action fires the battery settings intent and advances to wallets", () => {
     render(<BatteryScreen brand={null} />);
 
     fireEvent.press(screen.getByTestId("onboarding-primary-button"));
@@ -89,16 +89,16 @@ describe("BatteryScreen", () => {
     expect(mockSendIntent).toHaveBeenCalledWith(
       "android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS",
     );
-    expect(mockPush).toHaveBeenCalledWith("/(onboarding)/providers");
+    expect(mockPush).toHaveBeenCalledWith("/(onboarding)/wallets");
   });
 
-  test("skipping advances to providers without opening the intent", () => {
+  test("skipping advances to wallets without opening the intent", () => {
     render(<BatteryScreen brand={null} />);
 
     fireEvent.press(screen.getByTestId("onboarding-skip-link"));
 
     expect(mockSendIntent).not.toHaveBeenCalled();
-    expect(mockPush).toHaveBeenCalledWith("/(onboarding)/providers");
+    expect(mockPush).toHaveBeenCalledWith("/(onboarding)/wallets");
   });
 
   test("pressing back returns to the previous step", () => {

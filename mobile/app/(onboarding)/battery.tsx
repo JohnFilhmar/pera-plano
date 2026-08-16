@@ -2,7 +2,18 @@
 // client plan Task 2, rule 4; docs/04-features/01-onboarding.md step 5).
 // Fourth of the numbered flow's nine routed steps
 // (lib/onboarding/onboarding_state.ts). Reached from access.tsx; advances to
-// providers.tsx.
+// wallets.tsx.
+//
+// ADVANCES TO wallets.tsx, NOT app/(onboarding)/providers.tsx, EVEN THOUGH
+// `nextStep("battery")` LITERALLY RETURNS `"providers"`. That name in
+// ONBOARDING_STEPS is reserved, not routed (onboarding_state.ts's own header
+// and task-3-report.md's Decision 5): app/(onboarding)/providers.tsx already
+// ran once, earlier in this same session, inside app/(onboarding)/index.tsx's
+// pre-flow sequencer, where its `onDone` prop was wired. Pushing here a
+// second time mounts it fresh with no props -- `onDone` is `undefined`, so
+// `commit()`'s `.finally(() => onDone?.())` silently does nothing and the
+// user is stranded with no forward action. Skip straight to the next
+// actually-rendered numbered-flow screen instead.
 //
 // REUSES oem_guidance.tsx RATHER THAN DUPLICATING IT (rule 4: "shows the
 // matching guidance from oem_guidance ... rather than generic advice").
@@ -54,11 +65,12 @@ const BATTERY_SETTINGS_INTENT = "android.settings.IGNORE_BATTERY_OPTIMIZATION_SE
 export default function BatteryScreen({ brand }: { brand?: string | null } = {}) {
   const router = useRouter();
 
-  // nextStep("battery") === "providers" (lib/onboarding/onboarding_state.ts)
-  // — hardcoded for the same reason access.tsx's advance() is: the literal
-  // has to match a real file for expo-router to resolve it.
+  // NOT nextStep("battery") ("providers" -- see this file's header: that
+  // name is reserved, not a second rendering of app/(onboarding)/providers.tsx).
+  // Hardcoded, like every other routed step in this task: the literal has to
+  // match a real file for expo-router to resolve it.
   const advance = useCallback(() => {
-    router.push("/(onboarding)/providers");
+    router.push("/(onboarding)/wallets");
   }, [router]);
 
   const handlePrimary = useCallback(() => {
