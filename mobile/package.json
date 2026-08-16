@@ -75,6 +75,7 @@
   "jest": {
     "preset": "jest-expo",
     "testTimeout": 30000,
+    "maxWorkers": "60%",
     "setupFiles": [
       "<rootDir>/test_support/jest_setup.ts"
     ],
