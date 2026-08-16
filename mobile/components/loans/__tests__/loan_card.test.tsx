@@ -8,7 +8,9 @@ import { LoanCard } from "../loan_card";
 
 const NOW = new Date(2026, 8, 15, 12, 0).getTime(); // Sep 15 2026
 
-function statusOf(over: Partial<LoanStatus> = {}): LoanStatus {
+type LoanStatusOverride = Partial<Omit<LoanStatus, "loan">> & { loan?: Partial<Loan> };
+
+function statusOf(over: LoanStatusOverride = {}): LoanStatus {
   const loan: Loan = {
     id: "l1",
     direction: "i-owe",
@@ -25,12 +27,19 @@ function statusOf(over: Partial<LoanStatus> = {}): LoanStatus {
     ...over.loan,
   };
   return {
-    loan,
     outstanding: 600000,
     nextDue: { dueDate: "2026-09-18", amount: 100000 },
     overdue: false,
     paidCount: 0,
     ...over,
+    // LAST, DELIBERATELY (same footgun as lib/loans/__tests__/loan_reminders.test.ts's
+    // statusOf). `over.loan` is a PATCH merged into the defaults above, not a
+    // full replacement — spreading `...over` first and `loan` after keeps
+    // that merged value from being clobbered by a raw partial `over.loan`.
+    // No test here passes `over.loan` today, so this was inert; the next
+    // required field added to `Loan` would have made it bite exactly the way
+    // it did next door.
+    loan,
   };
 }
 
