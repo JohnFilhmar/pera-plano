@@ -131,6 +131,11 @@ describe("exact key contents (STACK_BASIS §6 shape)", () => {
   test("settings — all key only, no list()/detail()", () => {
     expect(queryKeys.settings.all).toEqual(["settings"]);
   });
+
+  test("recurring", () => {
+    expect(queryKeys.recurring.all).toEqual(["recurring"]);
+    expect(queryKeys.recurring.list()).toEqual(["recurring", "list"]);
+  });
 });
 
 describe("hierarchy: every generated key nests under its family's `all` key", () => {

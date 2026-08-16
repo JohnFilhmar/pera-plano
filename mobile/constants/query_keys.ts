@@ -209,4 +209,17 @@ export const queryKeys = {
   settings: {
     all: ["settings"] as const,
   },
+  /**
+   * RecurringPatterns — the Subscriptions screen and the locked-in figure
+   * (M3 Part 2 Task 6). ONE list, not split by acknowledged/dismissed: the
+   * screen needs both the suggested and the already-locked-in patterns to
+   * compute Reports rule 17's total, and `listPatterns({ includeAcknowledged })`
+   * is a query-time filter over the same underlying rows rather than a
+   * separately-cached view — splitting the key would let the two disagree
+   * about the same pattern the moment one write updates it.
+   */
+  recurring: {
+    all: ["recurring"] as const,
+    list: () => ["recurring", "list"] as const,
+  },
 } as const;

@@ -618,3 +618,95 @@ describe("006_bill_cycles upgrades a real version-5 database in place", () => {
     ).rejects.toThrow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// M3 Part 2 Task 6 — 007_recurring_detail. `recurring_patterns` gains three
+// nullable columns; a row written before this migration must keep every value
+// it already had and simply read NULL for the three new ones.
+// ---------------------------------------------------------------------------
+const V6_PATTERN_ID = "pattern_v6";
+
+describe("007_recurring_detail upgrades a real version-6 database in place", () => {
+  /** Brings a database to 006 and seeds a pattern the way a v6 device would have one. */
+  async function atVersionSixWithPattern(
+    db: Awaited<ReturnType<typeof getDatabase>>,
+  ): Promise<void> {
+    const upToSix = MIGRATIONS.filter((m) => m.version <= 6);
+    expect(upToSix.length).toBe(6);
+    await runMigrations(db, upToSix);
+
+    await db.runAsync(
+      `INSERT INTO recurring_patterns (id, merchant, amount, period, confidence, acknowledged,
+         bill_id, created_at, updated_at)
+       VALUES (?, 'NETFLIX', 54900, 'monthly', 0.9, 0, NULL, ?, ?)`,
+      [V6_PATTERN_ID, V1_TIMESTAMP, V1_TIMESTAMP],
+    );
+  }
+
+  test("a database at 006, already holding a pattern, gains the three columns and keeps every value", async () => {
+    const db = await getDatabase();
+    await atVersionSixWithPattern(db);
+
+    // Genuinely absent first, or "it is there afterwards" would prove nothing.
+    const before = await db.getAllAsync<{ name: string }>("PRAGMA table_info(recurring_patterns)");
+    expect(before.map((c) => c.name)).not.toContain("period_days");
+
+    expect(await runMigrations(db)).toEqual(
+      MIGRATIONS.filter((m) => m.version > 6).map((m) => m.version),
+    );
+
+    const after = await db.getAllAsync<{ name: string }>("PRAGMA table_info(recurring_patterns)");
+    expect(after.map((c) => c.name)).toEqual(
+      expect.arrayContaining(["period_days", "first_seen_at", "last_seen_at", "dismissed_at"]),
+    );
+
+    const pattern = await db.getFirstAsync<Record<string, unknown>>(
+      "SELECT * FROM recurring_patterns WHERE id = ?",
+      [V6_PATTERN_ID],
+    );
+    expect(pattern).toMatchObject({
+      id: V6_PATTERN_ID,
+      merchant: "NETFLIX",
+      amount: 54900,
+      period: "monthly",
+      acknowledged: 0,
+    });
+    // NULL on every pre-existing row — a v6 pattern has no exact cadence or
+    // dismissal recorded, and 0 would be a real (and wrong) value for each.
+    expect(pattern?.period_days).toBeNull();
+    expect(pattern?.first_seen_at).toBeNull();
+    expect(pattern?.last_seen_at).toBeNull();
+    expect(pattern?.dismissed_at).toBeNull();
+  });
+
+  test("the new columns are writable on a row that predates them", async () => {
+    const db = await getDatabase();
+    await atVersionSixWithPattern(db);
+    await runMigrations(db);
+
+    await db.runAsync(
+      `UPDATE recurring_patterns
+          SET period_days = 30, first_seen_at = ?, last_seen_at = ?, dismissed_at = ?
+        WHERE id = ?`,
+      [V1_TIMESTAMP, V1_TIMESTAMP, V1_TIMESTAMP, V6_PATTERN_ID],
+    );
+    const row = await db.getFirstAsync<{ period_days: number; kind: string }>(
+      "SELECT period_days, typeof(period_days) AS kind FROM recurring_patterns WHERE id = ?",
+      [V6_PATTERN_ID],
+    );
+    expect(row?.period_days).toBe(30);
+    expect(row?.kind).toBe("integer");
+  });
+
+  test("every shipped version ends up recorded, and a further run applies nothing", async () => {
+    const db = await getDatabase();
+    await atVersionSixWithPattern(db);
+    await runMigrations(db);
+
+    const recorded = await db.getAllAsync<{ version: number; name: string }>(
+      "SELECT version, name FROM schema_migrations ORDER BY version",
+    );
+    expect(recorded).toEqual(MIGRATIONS.map((m) => ({ version: m.version, name: m.name })));
+    expect(await runMigrations(db)).toEqual([]);
+  });
+});

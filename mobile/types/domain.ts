@@ -396,6 +396,14 @@ export type RecurringPattern = {
   merchant: string;
   amount: Centavos;
   period: RecurringPeriod;
+  /**
+   * The exact cadence in days (migration 007) — `period`'s three-bucket enum
+   * cannot express a 14-day fortnightly charge and carries no date at all.
+   * `null` only on a row written before migration 007 shipped; every new
+   * write fills it in. `promotePatternToBill` (lib/recurring/recurring_service.ts)
+   * needs this to derive a Bill's DueRule.
+   */
+  periodDays: number | null;
   confidence: number;
   acknowledged: boolean;
   /**
@@ -405,6 +413,23 @@ export type RecurringPattern = {
    * "locked in" totals so one obligation is not double-counted in two surfaces.
    */
   billId: string | null;
+  /** When this cadence's earliest occurrence in the current evidence was posted. */
+  firstSeenAt: EpochMs | null;
+  /** ...and the most recent — `nextExpectedAt` below is projected from this. */
+  lastSeenAt: EpochMs | null;
+  /**
+   * Recurring plan rule 3: a dismissed pattern stays dismissed and is not
+   * re-proposed unless its amount or cadence changes materially. `null` until
+   * dismissed; `refreshPatterns` clears it when a re-detected candidate has
+   * drifted enough to be a different question.
+   */
+  dismissedAt: EpochMs | null;
+  /**
+   * `lastSeenAt + periodDays` — DERIVED, never a stored column, so it can
+   * never drift out of sync with the two fields it is computed from. `null`
+   * whenever either input is `null`.
+   */
+  nextExpectedAt: EpochMs | null;
   createdAt: EpochMs;
   updatedAt: EpochMs;
 };

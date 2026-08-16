@@ -5,6 +5,7 @@ import driftDismissalSql from "./migrations/003_drift_dismissal.sql";
 import limitAlertStateSql from "./migrations/004_limit_alert_state.sql";
 import loanAdjustmentsSql from "./migrations/005_loan_adjustments.sql";
 import billCyclesSql from "./migrations/006_bill_cycles.sql";
+import recurringDetailSql from "./migrations/007_recurring_detail.sql";
 
 export type Migration = { version: number; name: string; sql: string };
 
@@ -29,6 +30,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 4, name: "limit_alert_state", sql: limitAlertStateSql },
   { version: 5, name: "loan_adjustments", sql: loanAdjustmentsSql },
   { version: 6, name: "bill_cycles", sql: billCyclesSql },
+  { version: 7, name: "recurring_detail", sql: recurringDetailSql },
 ];
 
 /**
