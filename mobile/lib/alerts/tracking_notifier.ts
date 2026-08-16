@@ -83,6 +83,19 @@ export async function notifyTrackingInterrupted(
     // `kind` is the tap-routing discriminant `lib/alerts/alert_routes.ts`
     // switches on — IA §6.1: "Listener health → recovery screen (4.8)".
     data: { kind: "trackingInterrupted" },
+    // IA §6.2 rule 7's ONE EXEMPTION, and this is the only call site in the
+    // app that sets it: "everything EXCEPT listener-health warnings is held
+    // and delivered after quiet hours end". It is right that this alert is
+    // exempt — the listener being dead means the app is capturing nothing at
+    // all, and a user who finds that out at 8am has lost a night of
+    // transactions that no later notice can recover.
+    //
+    // FLAGGED HERE RATHER THAN INFERRED FROM `CHANNEL_LIMITS`. This notice
+    // deliberately shares that channel with limit alerts (see the header
+    // above), so a channel-based exemption in `alerts_service.ts` would exempt
+    // every limit alert too — including the 100% breach rule 7 names by hand
+    // as the thing that must wait for morning.
+    bypassQuietHours: true,
   });
   await setSetting("tracking_interrupted_last_notified_at", now);
   return id;

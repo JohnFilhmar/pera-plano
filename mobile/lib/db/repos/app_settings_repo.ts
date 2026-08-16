@@ -35,6 +35,11 @@
 import { getDatabase } from "@/lib/db/database";
 import { newId } from "@/lib/ids";
 import { UNKNOWN_INCOME_DETECTION, type IncomeDetectionState } from "@/types/control";
+// TYPE-ONLY, so this repository picks up no runtime dependency on the alerts
+// layer at all — the import is erased by the compiler. `HeldPeriod` is defined
+// beside the rule that reads it (IA §6.2 rule 7) rather than duplicated here,
+// the same way `IncomeDetectionState` above is defined beside income's own.
+import type { HeldPeriod } from "@/lib/alerts/notification_policy";
 
 export type AppSettings = {
   onboarding_complete: boolean;
@@ -171,6 +176,67 @@ export type AppSettings = {
    * unsent, in the table, silently dropping them from every future report.
    */
   last_telemetry_sent_at: number | null;
+  /**
+   * Whether quiet hours are observed at all (IA §6.2 rule 7). Default `true` —
+   * the rule states a default WINDOW ("default 21:00-08:00, user-adjustable"),
+   * which only means anything if the window is on to begin with; a user who
+   * wants alerts at 3am turns this off.
+   */
+  quiet_hours_enabled: boolean;
+  /**
+   * Start of the quiet window, in MINUTES FROM LOCAL MIDNIGHT. Default 1260 =
+   * 21:00, the first half of rule 7's stated default.
+   *
+   * MINUTES, NOT `"HH:MM"` AND NOT AN EPOCH INSTANT. The window is a
+   * wall-clock concept: it has to keep meaning 9pm on whatever day it is,
+   * across a DST transition and across a device timezone change. An instant
+   * would freeze one particular evening; a formatted string would have to be
+   * parsed at every single comparison. `lib/alerts/notification_policy.ts`
+   * owns the arithmetic and takes exactly this unit.
+   */
+  quiet_hours_start_minute: number;
+  /**
+   * End of the quiet window, same unit. Default 480 = 08:00.
+   *
+   * NOTE THAT end < start FOR THE DEFAULT, because the window WRAPS midnight —
+   * see `isWithinQuietHours` in `lib/alerts/notification_policy.ts` for why a
+   * naive `start <= m && m < end` comparison against these two numbers is
+   * empty for every minute of the day, and silently disables the whole rule.
+   */
+  quiet_hours_end_minute: number;
+  /**
+   * OS notification identifiers currently scheduled for delivery at the end of
+   * the quiet period named by `quiet_hours_held_period` (IA §6.2 rule 7's
+   * "held and delivered after quiet hours end").
+   *
+   * Either the individually-held alerts (at most three) or, once a fourth
+   * arrives, exactly one summary id that replaced them — rule 6 applies to the
+   * overnight catch-up too, and six alerts held from 2am must not arrive as
+   * six notifications at 8am.
+   *
+   * DURABLE, NOT IN-MEMORY, and that is the point. The app will usually be
+   * killed at some point overnight; module state would not survive it, and the
+   * held alerts would then arrive individually — or, under a design that kept
+   * them in a JS timer instead of the OS scheduler, would be lost entirely,
+   * which is precisely what rule 7's "not dropped" forbids.
+   */
+  quiet_hours_held_ids: string[];
+  /**
+   * WHICH quiet period `quiet_hours_held_ids` belongs to (`endAt`, the instant
+   * they are all scheduled for) and HOW MANY alerts they stand for (`count`).
+   * `null` when nothing is held.
+   *
+   * A COMPANION TO THE IDS RATHER THAN PART OF THEM, because neither number
+   * survives in the array once a burst collapses. After the fourth held alert
+   * the three individual ids are cancelled and replaced by one summary, so the
+   * array's length is 1 while the true count is 4 — the summary's own copy
+   * ("6 updates while you were away") would be wrong on every subsequent
+   * alert. `endAt` is what makes the record self-expiring: without it, alerts
+   * held on Monday night keep counting into Tuesday night on a device that
+   * posted nothing in between. The two keys are always written together, in
+   * the same step, the way `bill_reminder_ids` and its cycle keys are.
+   */
+  quiet_hours_held_period: HeldPeriod | null;
 };
 
 /** Values returned by `getSetting`/`getAllSettings` for a key with no row yet. */
@@ -188,6 +254,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
   payday_summary_enabled: false,
   tracking_interrupted_last_notified_at: null,
   last_telemetry_sent_at: null,
+  // IA §6.2 rule 7's stated default window, in minutes from local midnight:
+  // 21:00 (1260) to 08:00 (480). `end < start` is not a typo — it wraps.
+  quiet_hours_enabled: true,
+  quiet_hours_start_minute: 1260,
+  quiet_hours_end_minute: 480,
+  quiet_hours_held_ids: [],
+  quiet_hours_held_period: null,
 };
 
 type SettingValueRow = { value_json: string };

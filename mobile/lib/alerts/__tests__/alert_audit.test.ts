@@ -29,8 +29,10 @@ import type { LimitAlert } from "@/types/control";
 import type { Bill, Loan } from "@/types/domain";
 
 import { cancelScheduled, postAlert, scheduleReminder } from "../alerts_service";
+import { coalescedUpdatesAlertCopy } from "../alert_copy";
 import { resolveAlertRoute } from "../alert_routes";
 import { CHANNEL_LIMITS, CHANNEL_REMINDERS } from "../channels";
+import { EMPTY_BURST, planBurst, type BurstState } from "../notification_policy";
 import { canNotifyTrackingInterrupted, notifyTrackingInterrupted } from "../tracking_notifier";
 
 import { closeDatabase } from "@/lib/db/database";
@@ -337,26 +339,115 @@ describe("anti-spam: listener-health warnings cap at one per day (docs §6.2 rul
 });
 
 // ===========================================================================
-// The global daily notification cap
+// The two GLOBAL, cross-channel rules — §6.2 rules 6 and 7
 // ===========================================================================
-describe("anti-spam: a global daily cap on ALL app notifications", () => {
-  // AUDIT FINDING, REPORTED RATHER THAN INVENTED (per this task's own
-  // instructions: a cap is a product decision, not an audit task's to make).
-  // Searched: lib/alerts/*, lib/limits/limit_notifier.ts,
-  // lib/bills/bill_reminders.ts, lib/loans/loan_reminders.ts,
-  // lib/income/payday_notifier.ts, lib/alerts/tracking_notifier.ts. The only
-  // caps that exist are SCOPED ones: bills rule 22 (max 3 overdue notices per
-  // CYCLE, `MAX_OVERDUE_NOTICES`), limits rule 20/21 (max ONE alert per
-  // THRESHOLD per period), and this file's own `tracking_notifier.ts` (max
-  // one listener-health notice per DAY). Docs §6.2 rule 6 describes
-  // "coalescing" — more than 3 notifications within a few minutes collapse
-  // into one summary — which is a BURST-window merge rule, not a per-day
-  // ceiling on the total COUNT the app may send, and nothing in the codebase
-  // implements even that burst-merge across channels (each channel's
-  // coalescing, e.g. `coalesceAlerts` in limit_engine.ts, only combines
-  // several LIMIT alerts into one notification — it does not look at bills,
-  // loans, or any other channel's queue).
-  test.todo(
-    "GAP: no cross-channel daily notification cap exists anywhere in this codebase — reported per task instructions, not invented here",
-  );
+//
+// THE AUDIT FINDING THAT USED TO LIVE HERE IS NOW CLOSED. The m3c Task 8 audit
+// reported (as a `test.todo`, since a product rule is not an audit task's to
+// invent) that nothing in the codebase implemented any CROSS-CHANNEL
+// governance: the only caps that existed were scoped ones — bills rule 22's
+// three overdue notices per CYCLE, limits rules 20/21's one alert per
+// THRESHOLD per period, `tracking_notifier.ts`'s one listener-health notice
+// per DAY — and each channel's own coalescing (`coalesceAlerts` in
+// limit_engine.ts) only ever combined several LIMIT alerts, never looking at
+// bills, loans or anything else. §6.2 rules 6 and 7 are exactly the two rules
+// that DO look across every channel, and neither had been built.
+//
+// `lib/alerts/notification_policy.ts` is where they live now, and
+// `lib/alerts/__tests__/notification_policy.test.ts` is their exhaustive proof
+// (the wrapping midnight window, both boundaries in both directions; the burst
+// threshold; the overnight collapse) with
+// `lib/alerts/__tests__/alerts_service.test.ts` proving the transport carries
+// them out against a real database. What belongs HERE, in the audit, is the
+// cross-cutting part those two files cannot see: that the rules reach every
+// notifier in the app through the one choke point, and that the single
+// exemption is claimed by exactly the call site §6.2 grants it to.
+describe("anti-spam: global coalescing applies ACROSS channels (§6.2 rule 6)", () => {
+  test("three notifications stand alone; a fourth inside the window collapses them", () => {
+    const start = NOW;
+    let state: BurstState = EMPTY_BURST;
+
+    const decisions = [0, 1000, 2000, 3000].map((offset) => {
+      const plan = planBurst(state, start + offset);
+      state = { ...plan.carry, individualIds: [...plan.carry.individualIds, `os-${offset}`] };
+      return plan;
+    });
+
+    expect(decisions.map((d) => d.mode)).toEqual([
+      "individual",
+      "individual",
+      "individual",
+      "summary",
+    ]);
+    expect(decisions[3].count).toBe(4);
+    // The three already in the shade are cleared — the summary REPLACES them
+    // rather than being a fourth notification about the other three.
+    expect(decisions[3].dismiss).toHaveLength(3);
+  });
+
+  test("the rule is blind to which channel produced each alert", () => {
+    // This is the whole difference from `coalesceAlerts` in limit_engine.ts,
+    // which only ever merges LIMIT alerts with each other. `planBurst` counts
+    // posts, not kinds: a limit alert, two bill reminders and a payday summary
+    // arriving together are four notifications, and rule 6 says four in a few
+    // minutes is one.
+    const state: BurstState = {
+      postedAt: [NOW - 3000, NOW - 2000, NOW - 1000],
+      individualIds: ["limit-1", "bill-1", "loan-1"],
+      summaryId: null,
+    };
+
+    const plan = planBurst(state, NOW);
+
+    expect(plan.mode).toBe("summary");
+    expect(plan.dismiss).toEqual(["limit-1", "bill-1", "loan-1"]);
+  });
+
+  test("the summary is producible and routes somewhere sensible when tapped", () => {
+    const copy = coalescedUpdatesAlertCopy({ count: 4 });
+
+    expect(copy.unlocked.title).toBe("4 updates while you were away");
+    expect(copy.locked.title.length).toBeGreaterThan(0);
+    // §6.1's deep-link table names no target for a digest of mixed channels;
+    // Home is where the payday summary already goes for the same reason.
+    expect(resolveAlertRoute({ kind: "coalescedUpdates" })).toBe("/");
+  });
+});
+
+describe("anti-spam: quiet hours exempt listener-health and NOTHING else (§6.2 rule 7)", () => {
+  test("notifyTrackingInterrupted sets bypassQuietHours; the other notifiers do not", async () => {
+    await notifyTrackingInterrupted(3, NOW);
+    expect(mockPost).toHaveBeenCalledWith(expect.objectContaining({ bypassQuietHours: true }));
+
+    mockPost.mockClear();
+    await notifyLimitAlerts([
+      {
+        limitId: "l-1",
+        limitName: "Food & Dining",
+        scope: "monthly",
+        threshold: 100,
+        spend: 1000000,
+        effectiveLimit: 1000000,
+        daysLeft: 9,
+      },
+    ]);
+    await setSetting("payday_summary_enabled", true);
+    await notifyPaydaySummary({ amount: 1_800_000 });
+
+    // A 100% limit breach is the one rule 7 names by hand as the thing that
+    // must be HELD until morning rather than posted at 2am. If it ever starts
+    // claiming the exemption, rule 7 is dead and nothing else would notice.
+    for (const call of mockPost.mock.calls) {
+      expect(call[0].bypassQuietHours).toBeUndefined();
+    }
+  });
+
+  test("the exemption cannot be inferred from the channel, because the two share one", () => {
+    // `tracking_notifier.ts` posts on CHANNEL_LIMITS deliberately (§6.1 lists
+    // listener health as High importance, which is what that channel already
+    // carries, and channel ids are permanent). So "exempt the interrupting
+    // channel" would exempt every limit alert as well — the exact failure R5
+    // names. The audit-level guard is that both really do use that channel.
+    expect(CHANNEL_LIMITS).toBe("limits");
+  });
 });

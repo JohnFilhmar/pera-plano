@@ -14,6 +14,7 @@ import type { LimitAlert } from "@/types/control";
 import {
   ALERT_COPY_CATALOGUE,
   billDueAlertCopy,
+  coalescedUpdatesAlertCopy,
   limitAlertsCopy,
   limitThresholdAlertCopy,
   loanReminderAlertCopy,
@@ -243,5 +244,43 @@ describe("limitAlertsCopy", () => {
 
   it("throws on an empty list rather than posting a blank notification", () => {
     expect(() => limitAlertsCopy([])).toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// coalescedUpdatesAlertCopy — docs/06 §6.2 rule 6's cross-channel summary.
+// ---------------------------------------------------------------------------
+describe("coalescedUpdatesAlertCopy", () => {
+  it("reproduces the spec's own wording, unlocked", () => {
+    // Rule 6 writes the copy as "3 updates while you were away".
+    expect(coalescedUpdatesAlertCopy({ count: 3 }).unlocked.title).toBe(
+      "3 updates while you were away",
+    );
+    expect(coalescedUpdatesAlertCopy({ count: 7 }).unlocked.title).toBe(
+      "7 updates while you were away",
+    );
+  });
+
+  it("withholds the count locked, exactly as limitAlertsCopy does", () => {
+    // The spec's sentence carries a bare count, and this catalogue has said
+    // since the encryption amendment that a figure about the user's finances
+    // does not reach a lock screen even when it is not an amount
+    // (`trackingInterruptedAlertCopy`, `limitAlertsCopy`). Rendering rule 6's
+    // sentence locked would make this the one entry the scan above has to be
+    // weakened to admit — so the count goes unlocked and the locked variant
+    // says the same thing without it.
+    const copy = coalescedUpdatesAlertCopy({ count: 6 });
+
+    expect(looksLikeAnAmount(copy.locked.title)).toBe(false);
+    expect(looksLikeAnAmount(copy.locked.body)).toBe(false);
+    expect(copy.locked.title).not.toContain("6");
+  });
+
+  it("still says enough locked to be worth a tap", () => {
+    const copy = coalescedUpdatesAlertCopy({ count: 4 });
+
+    expect(copy.locked.title.length).toBeGreaterThan(0);
+    expect(copy.locked.body.length).toBeGreaterThan(0);
+    expect(copy.locked).not.toEqual(copy.unlocked);
   });
 });

@@ -264,6 +264,41 @@ export function limitAlertsCopy(alerts: LimitAlert[]): AlertCopy {
 }
 
 // ---------------------------------------------------------------------------
+// Coalesced cross-channel summary (IA §6.2 rule 6). The one notification that
+// stands in for a whole burst — a live catch-up after reconnecting, or a
+// night's worth of alerts held through quiet hours (rule 7) and released in
+// the morning. `lib/alerts/notification_policy.ts` decides WHEN this replaces
+// a set of individual alerts; this only says what it reads.
+//
+// THE SPEC'S OWN EXAMPLE STRING IS THE UNLOCKED VARIANT, NOT BOTH. Rule 6
+// writes the copy as "3 updates while you were away", and that sentence
+// carries a bare count — which `trackingInterruptedAlertCopy` and
+// `limitAlertsCopy` both already withhold from a lock screen for a stated
+// reason ("not an amount, but still a figure about the user's finances"), and
+// which alert_copy.test.ts's catalogue scan rejects outright. Rendering the
+// spec's sentence locked would be the only entry in the catalogue that leaks a
+// digit, and the scan that exists to catch exactly that would have to be
+// weakened to let it through. So the count goes unlocked, where the spec's
+// wording is reproduced verbatim, and the locked variant says the same thing
+// without the number — the identical split `limitAlertsCopy` makes with
+// "Several of your limits need a look."
+// ---------------------------------------------------------------------------
+export function coalescedUpdatesAlertCopy(params: { count: number }): AlertCopy {
+  // Only ever built past the coalescing threshold (rule 6's "more than 3"), so
+  // the count is always at least 4 and the plural is never wrong.
+  return {
+    locked: {
+      title: "Updates while you were away",
+      body: "Several updates arrived — tap to catch up.",
+    },
+    unlocked: {
+      title: `${params.count} updates while you were away`,
+      body: "Tap to catch up.",
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // The catalogue. Every alert kind above, built once with representative —
 // deliberately amount-laden — sample parameters, so the test suite can
 // iterate this array and scan every locked variant programmatically rather
@@ -326,5 +361,9 @@ export const ALERT_COPY_CATALOGUE: Array<{ name: string; copy: AlertCopy }> = [
         daysLeft: 9,
       },
     ]),
+  },
+  {
+    name: "coalescedUpdates",
+    copy: coalescedUpdatesAlertCopy({ count: 6 }),
   },
 ];

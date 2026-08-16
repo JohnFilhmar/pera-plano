@@ -37,16 +37,36 @@ export function formatDate(at: EpochMs): string {
 /**
  * "2:05 PM" — twelve-hour, because that is how the Philippines reads a clock,
  * and because every provider notification this app parses is written that way.
- *
- * Midnight and noon are the two hours that break a naive `% 12`: both come out
- * as `0`, which renders "0:05 AM". They are handled explicitly.
  */
 export function formatTime(at: EpochMs): string {
   const date = new Date(at);
-  const hours = date.getHours();
+  return clockLabel(date.getHours(), date.getMinutes());
+}
+
+/**
+ * "9:00 PM" from 1260 — a wall-clock time held as MINUTES FROM MIDNIGHT
+ * rather than as an instant.
+ *
+ * The quiet-hours window (IA §6.2 rule 7, stored by
+ * `lib/db/repos/app_settings_repo.ts`) is the one setting in the app shaped
+ * that way, because "21:00" has to keep meaning 9pm on whatever day it is
+ * rather than freezing one particular evening — so it has no instant to hand
+ * `formatTime`. Both go through the same twelve-hour rendering below so the
+ * Settings screen and a transaction detail can never disagree about how a
+ * time is spelled.
+ */
+export function formatMinuteOfDay(minuteOfDay: number): string {
+  return clockLabel(Math.floor(minuteOfDay / 60), minuteOfDay % 60);
+}
+
+/**
+ * Midnight and noon are the two hours that break a naive `% 12`: both come out
+ * as `0`, which renders "0:05 AM". They are handled explicitly.
+ */
+function clockLabel(hours: number, minutes: number): string {
   const suffix = hours < 12 ? "AM" : "PM";
   const twelve = hours % 12 === 0 ? 12 : hours % 12;
-  return `${twelve}:${String(date.getMinutes()).padStart(2, "0")} ${suffix}`;
+  return `${twelve}:${String(minutes).padStart(2, "0")} ${suffix}`;
 }
 
 /** "Aug 11, 2026 at 2:05 PM" — the transaction detail's date-and-time field. */

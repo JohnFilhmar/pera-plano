@@ -291,6 +291,99 @@ describe("recurring_forget_multiplier — the subscription forget threshold", ()
   });
 });
 
+// ---------------------------------------------------------------------------
+// docs/06-information-architecture.md §6.2 rule 7 — the quiet-hours window.
+// `lib/alerts/notification_policy.ts` owns the arithmetic; this pins the
+// stored shape it reads, and in particular that the DEFAULT window is the one
+// the spec states.
+// ---------------------------------------------------------------------------
+
+describe("quiet hours — the window §6.2 rule 7 states", () => {
+  test("defaults to enabled, 21:00-08:00, expressed in minutes from local midnight", () => {
+    expect(DEFAULT_SETTINGS.quiet_hours_enabled).toBe(true);
+    // 1260 = 21 * 60 and 480 = 8 * 60. Spelled as the arithmetic rather than
+    // as bare literals, so a transposed default fails here rather than
+    // silently shifting everyone's quiet hours by an hour.
+    expect(DEFAULT_SETTINGS.quiet_hours_start_minute).toBe(21 * 60);
+    expect(DEFAULT_SETTINGS.quiet_hours_end_minute).toBe(8 * 60);
+  });
+
+  test("the default END is BEFORE the default START — the window wraps midnight", () => {
+    // Not a typo, and the single most important property of these two numbers:
+    // an implementation that assumes start < end is empty for this window and
+    // silently disables rule 7 entirely.
+    expect(DEFAULT_SETTINGS.quiet_hours_end_minute).toBeLessThan(
+      DEFAULT_SETTINGS.quiet_hours_start_minute,
+    );
+  });
+
+  test("an unset install reads the defaults rather than null", async () => {
+    expect(await getSetting("quiet_hours_enabled")).toBe(true);
+    expect(await getSetting("quiet_hours_start_minute")).toBe(1260);
+    expect(await getSetting("quiet_hours_end_minute")).toBe(480);
+  });
+
+  test("a user-chosen window round-trips as numbers, not strings", async () => {
+    await setSetting("quiet_hours_start_minute", 1350);
+    await setSetting("quiet_hours_end_minute", 390);
+
+    expect(await getSetting("quiet_hours_start_minute")).toBe(1350);
+    expect(typeof (await getSetting("quiet_hours_end_minute"))).toBe("number");
+  });
+
+  test("quiet_hours_enabled false round-trips as boolean false, not the string \"false\"", async () => {
+    await setSetting("quiet_hours_enabled", false);
+    const value = await getSetting("quiet_hours_enabled");
+    expect(value).toBe(false);
+    expect(typeof value).toBe("boolean");
+  });
+});
+
+describe("quiet hours — the durable held record §6.2 rule 7 depends on", () => {
+  test("starts empty on a fresh install", async () => {
+    expect(await getSetting("quiet_hours_held_ids")).toEqual([]);
+    expect(await getSetting("quiet_hours_held_period")).toBeNull();
+  });
+
+  test("the ids and the period they belong to both survive a round trip", async () => {
+    // DURABILITY IS THE POINT. A 100% limit breach raised at 2am is scheduled
+    // with the OS for the morning and its id recorded here, because the app
+    // will usually be killed overnight — module state would not survive it and
+    // rule 7 says the alert is "not dropped".
+    const morning = new Date(2026, 7, 20, 8, 0).getTime();
+    await setSetting("quiet_hours_held_ids", ["os-1", "os-2"]);
+    await setSetting("quiet_hours_held_period", { endAt: morning, count: 2 });
+
+    expect(await getSetting("quiet_hours_held_ids")).toEqual(["os-1", "os-2"]);
+    expect(await getSetting("quiet_hours_held_period")).toEqual({ endAt: morning, count: 2 });
+  });
+
+  test("the count is stored separately because the ids stop carrying it once collapsed", async () => {
+    // After a burst collapses, three individual ids are cancelled and replaced
+    // by ONE summary — so the array's length is 1 while the true count is 4.
+    // Deriving the count from the array would put "1 update while you were
+    // away" on a screen standing in for four.
+    const morning = new Date(2026, 7, 20, 8, 0).getTime();
+    await setSetting("quiet_hours_held_ids", ["os-summary"]);
+    await setSetting("quiet_hours_held_period", { endAt: morning, count: 4 });
+
+    const period = await getSetting("quiet_hours_held_period");
+    expect(period?.count).toBe(4);
+    expect(await getSetting("quiet_hours_held_ids")).toHaveLength(1);
+  });
+
+  test("clearing the record puts back exactly the fresh-install shape", async () => {
+    await setSetting("quiet_hours_held_ids", ["os-1"]);
+    await setSetting("quiet_hours_held_period", { endAt: 1, count: 1 });
+
+    await setSetting("quiet_hours_held_ids", []);
+    await setSetting("quiet_hours_held_period", null);
+
+    expect(await getSetting("quiet_hours_held_ids")).toEqual([]);
+    expect(await getSetting("quiet_hours_held_period")).toBeNull();
+  });
+});
+
 describe("a corrupt value_json cell is decoded defensively, never thrown", () => {
   test("getSetting returns the key's documented default when its stored value_json is malformed", async () => {
     await db.runAsync(

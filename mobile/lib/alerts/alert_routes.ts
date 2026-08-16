@@ -31,7 +31,8 @@ export type AlertRouteData =
   | { kind: "billReminder"; billId: string; dueDate: string }
   | { kind: "loanReminder"; loanId: string }
   | { kind: "paydaySummary" }
-  | { kind: "trackingInterrupted" };
+  | { kind: "trackingInterrupted" }
+  | { kind: "coalescedUpdates" };
 
 /**
  * Home — the fallback for a payload this build does not recognise (an older
@@ -86,6 +87,15 @@ export function resolveAlertRoute(data: unknown): Href {
       return { pathname: "/plan/loans/[id]", params: { id: loanId } };
     }
     case "paydaySummary":
+      return HOME_ROUTE;
+    case "coalescedUpdates":
+      // IA §6.1's deep-link table names no target for the §6.2 rule 6 summary,
+      // because §6.1 lists channels and this notification belongs to none of
+      // them — it stands in for a MIX of limit alerts, reminders and payday
+      // notices that were collapsed into one. There is no single detail screen
+      // that represents that set. Home is where the payday summary already
+      // goes for the same "it's a digest" reason, and it is the one screen
+      // that surfaces every one of those things in-app.
       return HOME_ROUTE;
     case "trackingInterrupted":
       // IA §6.1: "Listener health → recovery screen (4.8)" — the same

@@ -34,6 +34,14 @@
 // existed. Rather than build six toggles that write settings nothing reads,
 // this row is honest about where that control lives today: the system
 // notification settings screen, one tap away.
+//
+// IT DOES CARRY QUIET HOURS, THOUGH. docs/06-information-architecture.md §6.2
+// rule 7 says the window is "user-adjustable", and a default the user cannot
+// change is not adjustable — so unlike the per-channel toggles above, this one
+// has a real setting behind it (`quiet_hours_*` in
+// `lib/db/repos/app_settings_repo.ts`) that `lib/alerts/alerts_service.ts`
+// reads on every post. Android's own notification settings cannot provide it:
+// this is an app-level hold-and-redeliver rule, not a channel property.
 import { Linking, ScrollView, Switch, Text, View } from "react-native";
 
 import { SettingRow } from "@/components/settings/setting_row";
@@ -43,6 +51,8 @@ import { Card } from "@/components/ui/card";
 import { SectionHeader } from "@/components/ui/section_header";
 import { useSetSetting } from "@/hooks/mutations/use_set_setting";
 import { useSettings } from "@/hooks/queries/use_settings";
+import { MINUTES_PER_DAY } from "@/lib/alerts/notification_policy";
+import { formatMinuteOfDay } from "@/lib/datetime";
 
 /** Owner decision 2026-08-16: the multiplier's editable range and step. */
 const MULTIPLIER_MIN = 1;
@@ -58,10 +68,67 @@ function formatMultiplier(value: number): string {
   return String(value);
 }
 
+/**
+ * Half-hour steps for the quiet-hours bounds (IA §6.2 rule 7's
+ * "user-adjustable"). Both ends of the window are the kind of thing people
+ * express to the nearest half hour — "about nine", "about eight" — and a
+ * 30-minute step keeps the whole 24 hours reachable in 48 taps from either
+ * direction without a picker component the app does not have.
+ */
+const QUIET_STEP_MINUTES = 30;
+
+/**
+ * WRAPS instead of clamping, unlike the multiplier stepper above. The window
+ * itself wraps midnight — that is the entire subtlety of rule 7 — so a start
+ * time that could not step from 23:30 to 00:00 would make the most ordinary
+ * settings (a window starting late) unreachable from one direction.
+ */
+function stepMinuteOfDay(minute: number, delta: number): number {
+  return (minute + delta + MINUTES_PER_DAY) % MINUTES_PER_DAY;
+}
+
+/**
+ * A ± stepper over one wall-clock time, rendered as the right-hand control of
+ * a `SettingRow`. Same shape as the multiplier stepper below it — this is a
+ * component only because there are two of them (start and end) and a copy of
+ * the same six lines is how the two ends drift apart.
+ */
+function TimeStepper(props: {
+  testID: string;
+  label: string;
+  onStep: (delta: number) => void;
+}) {
+  return (
+    <View className="flex-row items-center gap-2">
+      <Button
+        testID={`${props.testID}-decrement`}
+        title="−"
+        variant="secondary"
+        onPress={() => props.onStep(-QUIET_STEP_MINUTES)}
+      />
+      <Text
+        testID={`${props.testID}-value`}
+        className="w-20 text-center text-base font-semibold text-fg dark:text-fg-dark"
+      >
+        {props.label}
+      </Text>
+      <Button
+        testID={`${props.testID}-increment`}
+        title="+"
+        variant="secondary"
+        onPress={() => props.onStep(QUIET_STEP_MINUTES)}
+      />
+    </View>
+  );
+}
+
 export default function SettingsScreen() {
   const { data: settings } = useSettings();
   const setTelemetryEnabled = useSetSetting<"telemetry_enabled">();
   const setForgetMultiplier = useSetSetting<"recurring_forget_multiplier">();
+  const setQuietEnabled = useSetSetting<"quiet_hours_enabled">();
+  const setQuietStart = useSetSetting<"quiet_hours_start_minute">();
+  const setQuietEnd = useSetSetting<"quiet_hours_end_minute">();
 
   // Render nothing until the store has loaded — same convention as
   // app/(tabs)/plan/income.tsx: a settings screen that flashes defaults
@@ -73,6 +140,9 @@ export default function SettingsScreen() {
 
   const multiplier = settings.recurring_forget_multiplier;
   const paymentsWord = multiplier === 1 ? "missed payment" : "missed payments";
+  const quietEnabled = settings.quiet_hours_enabled;
+  const quietStart = settings.quiet_hours_start_minute;
+  const quietEnd = settings.quiet_hours_end_minute;
 
   function stepMultiplier(delta: number): void {
     const next = clampMultiplier(multiplier + delta);
@@ -110,6 +180,58 @@ export default function SettingsScreen() {
           />
         }
       />
+      <SettingRow
+        testID="settings-quiet-hours-row"
+        title="Quiet hours"
+        subtitle="Alerts raised while you're asleep wait until the window ends and arrive together — nothing is dropped. Warnings that tracking has stopped still come through."
+        control={
+          <Switch
+            testID="settings-quiet-hours-toggle"
+            value={quietEnabled}
+            onValueChange={(value) =>
+              setQuietEnabled.mutate({ key: "quiet_hours_enabled", value })
+            }
+          />
+        }
+      />
+      {/* The bounds only exist when the window does — showing two steppers
+          that change nothing is worse than showing none. */}
+      {quietEnabled ? (
+        <>
+          <SettingRow
+            testID="settings-quiet-hours-start-row"
+            title="Quiet from"
+            control={
+              <TimeStepper
+                testID="settings-quiet-start"
+                label={formatMinuteOfDay(quietStart)}
+                onStep={(delta) =>
+                  setQuietStart.mutate({
+                    key: "quiet_hours_start_minute",
+                    value: stepMinuteOfDay(quietStart, delta),
+                  })
+                }
+              />
+            }
+          />
+          <SettingRow
+            testID="settings-quiet-hours-end-row"
+            title="Quiet until"
+            control={
+              <TimeStepper
+                testID="settings-quiet-end"
+                label={formatMinuteOfDay(quietEnd)}
+                onStep={(delta) =>
+                  setQuietEnd.mutate({
+                    key: "quiet_hours_end_minute",
+                    value: stepMinuteOfDay(quietEnd, delta),
+                  })
+                }
+              />
+            }
+          />
+        </>
+      ) : null}
 
       <SectionHeader title="Recurring" />
       <SettingRow

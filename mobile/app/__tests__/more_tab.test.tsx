@@ -29,7 +29,7 @@ import type { ReactNode } from "react";
 
 import { ThemeProvider } from "@/contexts/theme_context";
 import { closeDatabase } from "@/lib/db/database";
-import { getSetting } from "@/lib/db/repos/app_settings_repo";
+import { getSetting, setSetting } from "@/lib/db/repos/app_settings_repo";
 import { __setTierForTests } from "@/lib/entitlements";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
@@ -272,5 +272,74 @@ describe("the Settings screen", () => {
     fireEvent.press(screen.getByTestId("settings-forget-multiplier-increment"));
     expect(valueText()).toBe("3");
     expect(await getSetting("recurring_forget_multiplier")).toBe(3);
+  });
+
+  // -------------------------------------------------------------------------
+  // Quiet hours — docs/06-information-architecture.md §6.2 rule 7 says the
+  // window is "user-adjustable", and a default nobody can change is not
+  // adjustable. These rows are what makes that word true.
+  // -------------------------------------------------------------------------
+
+  test("quiet hours shows the spec's default window, on, 9:00 PM to 8:00 AM", async () => {
+    renderScreen(<SettingsScreen />);
+    await screen.findByTestId("settings-quiet-hours-row");
+
+    expect(screen.getByTestId("settings-quiet-hours-toggle").props.value).toBe(true);
+    expect(screen.getByTestId("settings-quiet-start-value").props.children).toBe("9:00 PM");
+    expect(screen.getByTestId("settings-quiet-end-value").props.children).toBe("8:00 AM");
+  });
+
+  test("the toggle persists, and hides the two bounds when the window is off", async () => {
+    renderScreen(<SettingsScreen />);
+    const toggle = await screen.findByTestId("settings-quiet-hours-toggle");
+
+    fireEvent(toggle, "valueChange", false);
+
+    await waitFor(async () => expect(await getSetting("quiet_hours_enabled")).toBe(false));
+    // Two steppers that change nothing while the window is off are worse than
+    // none — the setting they edit is not being consulted.
+    await waitFor(() => expect(screen.queryByTestId("settings-quiet-hours-start-row")).toBeNull());
+  });
+
+  test("stepping the start time persists minutes from midnight, not a label", async () => {
+    renderScreen(<SettingsScreen />);
+    await screen.findByTestId("settings-quiet-start-value");
+
+    fireEvent.press(screen.getByTestId("settings-quiet-start-increment"));
+
+    await waitFor(async () => expect(await getSetting("quiet_hours_start_minute")).toBe(1290));
+    await waitFor(() =>
+      expect(screen.getByTestId("settings-quiet-start-value").props.children).toBe("9:30 PM"),
+    );
+  });
+
+  test("the start time WRAPS past midnight rather than sticking at 11:30 PM", async () => {
+    // The window itself wraps midnight — that is the whole subtlety of rule 7
+    // — so a stepper that clamped at the end of the day would make an ordinary
+    // late-start window unreachable from one direction.
+    await setSetting("quiet_hours_start_minute", 1410); // 11:30 PM
+    renderScreen(<SettingsScreen />);
+    await waitFor(() =>
+      expect(screen.getByTestId("settings-quiet-start-value").props.children).toBe("11:30 PM"),
+    );
+
+    fireEvent.press(screen.getByTestId("settings-quiet-start-increment"));
+
+    await waitFor(async () => expect(await getSetting("quiet_hours_start_minute")).toBe(0));
+    await waitFor(() =>
+      expect(screen.getByTestId("settings-quiet-start-value").props.children).toBe("12:00 AM"),
+    );
+  });
+
+  test("stepping the end time backwards wraps the other way", async () => {
+    await setSetting("quiet_hours_end_minute", 0); // midnight
+    renderScreen(<SettingsScreen />);
+    await waitFor(() =>
+      expect(screen.getByTestId("settings-quiet-end-value").props.children).toBe("12:00 AM"),
+    );
+
+    fireEvent.press(screen.getByTestId("settings-quiet-end-decrement"));
+
+    await waitFor(async () => expect(await getSetting("quiet_hours_end_minute")).toBe(1410));
   });
 });
