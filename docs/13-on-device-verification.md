@@ -500,6 +500,74 @@ This is the point of the entire encryption plan. Each line is falsifiable.
 
 ---
 
+## Part 6 — MVP end-to-end walkthrough (m3c Task 9, step 6)
+
+This is the last gate on the mobile MVP. Steps 1–5 of that task are automated and already
+green; **this part cannot be automated and must not be marked done by inference.** Every
+box here is a claim about the product that only a human holding the phone can make.
+
+Run it on a **fresh install** — uninstall first, do not merely clear data. Several of these
+checks are specifically about first-run state, and a reused install silently skips them.
+
+Work top to bottom. The order is not decorative: later steps depend on data earlier ones create.
+
+### Onboarding
+- [ ] Complete onboarding end to end, including granting notification access and the battery
+      exemption. It finishes without a force-quit → `________________`
+- [ ] The provider picker seeded both wallets and matchers → `________________`
+- [ ] Now repeat on a second fresh install, **skipping every optional step**. Skipping always
+      lands in a usable app, never a dead end → `________________`
+
+> Why the second pass: two defects found on 2026-08-17 made first-run impossible to complete —
+> setup screens whose Continue silently did nothing *after* writing real wallet rows, and a
+> fresh install that dead-ended until force-quit. Both passed every per-screen test. Only a
+> full tap-through catches this class, which is exactly what this section is.
+
+### Capture — the core promise
+- [ ] Trigger or post an illustrative provider notification. It appears in the ledger within
+      seconds → `________________`
+- [ ] Open "Why was this recorded?" — the captured text and the expiry countdown are both
+      shown and correct → `________________`
+- [ ] Post a twin SMS-style notification for the same payment. **No double count.**
+      → `________________`
+
+### Money movement
+- [ ] Move money between two wallets. It links as a transfer and is excluded from spend
+      → `________________`
+- [ ] Spend past a limit's 50% threshold. **Exactly one** alert fires — not zero, not two
+      → `________________`
+- [ ] Safe-to-Spend on Home updates after that spend → `________________`
+
+### Plan surfaces
+- [ ] Add a bill due in three days. The reminder schedules → `________________`
+- [ ] Add a loan. Payment matching proposes the right transaction → `________________`
+
+### Reports and export
+- [ ] Open Reports. Transfers are excluded from **every** figure → `________________`
+- [ ] Export a CSV and open it in a real spreadsheet. Check specifically: a merchant containing
+      a comma stays in one column, and the peso column reads as numbers, not text
+      → `________________`
+
+### Privacy — the promises the product is sold on
+- [ ] Pause capture. The paused pill appears and nothing is captured while paused
+      → `________________`
+- [ ] Open the privacy centre. The captured list shows **real rows with live countdowns**,
+      not placeholders → `________________`
+- [ ] Export all data. The JSON bundle is complete and readable → `________________`
+- [ ] Wipe everything. The app returns to onboarding with **no data left** — check the ledger,
+      wallets, and the privacy centre, not just the home screen → `________________`
+
+### Dark mode
+- [ ] Repeat the core flow (capture → ledger → home) in dark mode. Nothing is unreadable and
+      no colour reads as the wrong status → `________________`
+
+### If something fails here
+Record it and keep going — finish the walkthrough before fixing anything. A failure list from
+one complete pass is worth more than a fix applied halfway through, because the later steps
+depend on data the earlier ones create and a mid-pass rebuild invalidates everything after it.
+
+---
+
 ## Closing the session
 
 ```bash
@@ -510,6 +578,7 @@ git status                       # must be clean
 
 git commit --allow-empty -m "test(security): record on-device encryption verification results"
 git commit --allow-empty -m "test(mobile): record on-device notification listener verification results"
+git commit --allow-empty -m "test(mobile): record MVP end-to-end verification results"   # Part 6
 ```
 
 Paste the recorded numbers into those commit messages — an empty commit whose message says
