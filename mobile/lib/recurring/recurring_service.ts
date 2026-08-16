@@ -16,6 +16,7 @@ import { DEFAULT_BILL_CATEGORY_ID } from "@/constants/bills";
 import { promoteRecurringPatternToBill } from "@/lib/bills/bills_service";
 import { getBill } from "@/lib/db/repos/bills_repo";
 import {
+  dismissPattern as repoDismissPattern,
   findMatchingPattern,
   getPattern,
   linkPatternToBill,
@@ -24,7 +25,9 @@ import {
   upsertPattern,
 } from "@/lib/db/repos/recurring_patterns_repo";
 import { listTransactions } from "@/lib/db/repos/transactions_repo";
-import { detectPatterns } from "@/lib/recurring/pattern_detector";
+import { createUserRule, listUserRules } from "@/lib/db/repos/user_rules_repo";
+import { withUnitOfWork } from "@/lib/db/unit_of_work";
+import { detectPatterns, normalizeMerchant } from "@/lib/recurring/pattern_detector";
 import type { Bill, Centavos, RecurringPattern, RecurringPeriod } from "@/types/domain";
 
 const DAY_MS = 86_400_000;
@@ -79,13 +82,34 @@ const MONTHLY_FACTOR: Record<RecurringPeriod, number> = {
  * "unless … changes materially" clause, arrived at by the same tolerance the
  * repository already uses to decide identity, rather than a second,
  * independently-tuned threshold that could disagree with it.
+ *
+ * A `suppress-recurring` USERRULE IS CHECKED TOO, ahead of the row-level check
+ * above (fix round 2; Reports rule 18, its Data-touched table, and domain
+ * §3.10 invariant 2 all name this rule as what makes a dismissal permanent).
+ * `dismissPattern` below writes one alongside `dismissed_at` for exactly this
+ * reason: `dismissed_at` lives on a DERIVED row that this same function is
+ * free to delete and rebuild from scratch (confidence-decay removal, domain
+ * §3.10's "Deleted by" clause) — the UserRule is what makes the suppression
+ * survive that. Checked by normalized merchant only, the same identity
+ * `pattern_detector.ts`'s own clustering already uses, so a candidate with no
+ * existing pattern row at all (the case the column literally cannot cover)
+ * is still skipped.
  */
 export async function refreshPatterns(now: number): Promise<RecurringPattern[]> {
   const from = now - LEDGER_WINDOW_DAYS * DAY_MS;
   const transactions = await listTransactions({ from, to: now + 1 });
   const detected = detectPatterns(transactions, now);
 
+  const suppressRules = await listUserRules("suppress-recurring");
+  const suppressedMerchants = new Set<string>();
+  for (const rule of suppressRules) {
+    if (rule.action.kind !== "suppress-recurring") continue;
+    suppressedMerchants.add(normalizeMerchant(rule.action.merchant));
+  }
+
   for (const candidate of detected) {
+    if (suppressedMerchants.has(normalizeMerchant(candidate.merchant))) continue;
+
     const existing = await findMatchingPattern(candidate.merchant, candidate.periodDays, candidate.amount);
     if (existing !== null && existing.dismissedAt !== null) continue;
 
@@ -93,6 +117,44 @@ export async function refreshPatterns(now: number): Promise<RecurringPattern[]> 
   }
 
   return listPatterns({ includeAcknowledged: true });
+}
+
+/**
+ * Dismisses a suggested pattern (plan rule 3; Reports rule 18) — and, per the
+ * spec's own wording in three places (Reports rule 18 and its Data-touched
+ * table; domain §3.10 invariant 2), also writes the suppressing UserRule that
+ * makes the dismissal outlive this derived row. Both mechanisms coexist by
+ * design: `dismissed_at` stays because it is what makes the dismissal cheap
+ * to query on the pattern's own row (the check `refreshPatterns` above makes
+ * first); the UserRule is what a later Settings screen can list and undo, and
+ * what `refreshPatterns` above ALSO consults so the dismissal survives even a
+ * pattern row that gets deleted and rebuilt from scratch.
+ *
+ * BOTH WRITES OR NEITHER — same shape as `loans_service.ts`'s
+ * `recordManualPayment`. A pattern marked dismissed with no backing UserRule
+ * is a suggestion that resurfaces the moment its row is rebuilt; a UserRule
+ * with no dismissed pattern to justify it is a suppression the user never
+ * asked for landing on whatever candidate matches its merchant next.
+ *
+ * The rule's `action.merchant` is the pattern's NORMALIZED merchant — the same
+ * `normalizeMerchant` `refreshPatterns` above compares against, so the two
+ * ends of this mechanism cannot disagree on what "the same merchant" means.
+ */
+export async function dismissPattern(patternId: string, now: number): Promise<void> {
+  const pattern = await getPattern(patternId);
+  if (pattern === null) throw new RecurringPatternNotFoundError(patternId);
+
+  await withUnitOfWork(async () => {
+    await repoDismissPattern(patternId);
+    await createUserRule(
+      {
+        matcher: { merchantPattern: pattern.merchant },
+        action: { kind: "suppress-recurring", merchant: normalizeMerchant(pattern.merchant) },
+        createdFrom: pattern.id,
+      },
+      now,
+    );
+  });
 }
 
 /**

@@ -1,6 +1,23 @@
 // lib/recurring/__tests__/recurring_service.test.ts — M3 Part 2 Task 6, step 2
 // (fix round 1: identity match moved to merchant + period bucket + amount
-// tolerance; see recurring_patterns_repo.ts's header).
+// tolerance; see recurring_patterns_repo.ts's header. Fix round 2: dismissal
+// also writes a suppressing UserRule — Reports rule 18, its Data-touched
+// table, and domain §3.10 invariant 2.)
+//
+// `createUserRule` is wrapped so exactly one test can force its rejection —
+// the LAST step of `dismissPattern`'s unit of work — and prove the pattern's
+// own `dismissed_at` write rolls back with it. Same shape as
+// `lib/review/__tests__/resolve_actions.test.ts`'s `resolve` wrap.
+jest.mock("@/lib/db/repos/user_rules_repo", () => {
+  const actual = jest.requireActual("@/lib/db/repos/user_rules_repo");
+  return {
+    ...actual,
+    createUserRule: jest.fn((...args: unknown[]) =>
+      (actual.createUserRule as (...a: unknown[]) => Promise<unknown>)(...args),
+    ),
+  };
+});
+
 import { listBills } from "@/lib/db/repos/bills_repo";
 import { seedDefaultCategories } from "@/lib/db/repos/categories_repo";
 import {
@@ -12,9 +29,16 @@ import {
   upsertPattern,
 } from "@/lib/db/repos/recurring_patterns_repo";
 import { insertTransaction } from "@/lib/db/repos/transactions_repo";
+import { createUserRule, listUserRules } from "@/lib/db/repos/user_rules_repo";
 import { createWallet } from "@/lib/db/repos/wallets_repo";
 import { closeDatabase } from "@/lib/db/database";
-import { monthlyLockedIn, promotePatternToBill, refreshPatterns } from "@/lib/recurring/recurring_service";
+import { normalizeMerchant } from "@/lib/recurring/pattern_detector";
+import {
+  dismissPattern as dismissPatternService,
+  monthlyLockedIn,
+  promotePatternToBill,
+  refreshPatterns,
+} from "@/lib/recurring/recurring_service";
 import { freshDb } from "@/test_support/db";
 import type { RecurringPattern, Wallet } from "@/types/domain";
 
@@ -326,5 +350,109 @@ describe("refreshPatterns and dismissal (plan rule 3)", () => {
     expect(stored?.dismissedAt).not.toBeNull();
     // Skipped entirely, not merely re-hidden: the wobble never got written.
     expect(stored?.periodDays).toBe(31);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// dismissPattern (service) — fix round 2: the spec's suppressing UserRule
+// coexists with dismissed_at, not instead of it (Reports rule 18, its
+// Data-touched table, and domain §3.10 invariant 2).
+// ---------------------------------------------------------------------------
+describe("dismissPattern (service) writes a suppressing UserRule", () => {
+  test("dismissing a pattern writes a suppress-recurring UserRule carrying the merchant", async () => {
+    const pattern = await upsertPattern({
+      merchant: "Netflix.com",
+      amount: 54_900,
+      periodDays: 30,
+      occurrences: 6,
+      confidence: 0.9,
+      firstSeenAt: NOW - 150 * DAY_MS,
+      lastSeenAt: NOW,
+      nextExpectedAt: NOW + 30 * DAY_MS,
+      transactionIds: [],
+    });
+
+    await dismissPatternService(pattern.id, NOW);
+
+    // `dismissed_at` is repo bookkeeping (recurring_patterns_repo's own
+    // `Date.now()`, not the injected `now` — same as every other timestamp
+    // column that repo stamps); only that it got SET is this test's concern.
+    const stored = await getPattern(pattern.id);
+    expect(stored?.dismissedAt).not.toBeNull();
+
+    const rules = await listUserRules("suppress-recurring");
+    expect(rules).toHaveLength(1);
+    expect(rules[0].action).toEqual({
+      kind: "suppress-recurring",
+      merchant: normalizeMerchant("Netflix.com"),
+    });
+    expect(rules[0].createdFrom).toBe(pattern.id);
+  });
+
+  test("throws for an unknown pattern id and writes nothing", async () => {
+    await expect(dismissPatternService("no-such-pattern", NOW)).rejects.toThrow(
+      RecurringPatternNotFoundError,
+    );
+    expect(await listUserRules("suppress-recurring")).toEqual([]);
+  });
+
+  test("dismissal is atomic: a UserRule write failure leaves the pattern un-dismissed", async () => {
+    const pattern = await upsertPattern({
+      merchant: "SPOTIFY",
+      amount: 14_900,
+      periodDays: 30,
+      occurrences: 6,
+      confidence: 0.9,
+      firstSeenAt: NOW - 150 * DAY_MS,
+      lastSeenAt: NOW,
+      nextExpectedAt: NOW + 30 * DAY_MS,
+      transactionIds: [],
+    });
+    (createUserRule as jest.Mock).mockRejectedValueOnce(new Error("db went away"));
+
+    await expect(dismissPatternService(pattern.id, NOW)).rejects.toThrow("db went away");
+
+    // Neither write landed: `repoDismissPattern` runs BEFORE `createUserRule`
+    // inside the same unit of work, so if they were not in the same SQL
+    // transaction the pattern would be left dismissed with no rule to back it
+    // up — exactly the half-done state this test exists to catch.
+    const stored = await getPattern(pattern.id);
+    expect(stored?.dismissedAt).toBeNull();
+    expect(await listUserRules("suppress-recurring")).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// refreshPatterns honours a suppress-recurring UserRule directly — fix round
+// 2's whole point: the rule outlives the pattern row, so this must hold even
+// when NO row exists for the merchant at all (dismissed_at alone cannot).
+// ---------------------------------------------------------------------------
+describe("refreshPatterns honours an existing suppress-recurring UserRule", () => {
+  test("a merchant suppressed by UserRule is not proposed even with no prior pattern row", async () => {
+    await createUserRule({
+      matcher: { merchantPattern: "NETFLIX" },
+      action: { kind: "suppress-recurring", merchant: normalizeMerchant("NETFLIX") },
+    });
+
+    await series("NETFLIX", 54_900, 6, 30);
+
+    const result = await refreshPatterns(NOW);
+
+    expect(result).toHaveLength(0);
+    expect(await findMatchingPattern("NETFLIX", 30, 54_900)).toBeNull();
+  });
+
+  test("an unrelated merchant is unaffected by another merchant's suppression", async () => {
+    await createUserRule({
+      matcher: { merchantPattern: "NETFLIX" },
+      action: { kind: "suppress-recurring", merchant: normalizeMerchant("NETFLIX") },
+    });
+
+    await series("SPOTIFY", 14_900, 6, 30);
+
+    const result = await refreshPatterns(NOW);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ merchant: "SPOTIFY", amount: 14_900 });
   });
 });
