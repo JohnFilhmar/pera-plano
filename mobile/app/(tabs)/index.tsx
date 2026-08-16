@@ -21,6 +21,7 @@ import { TrackingBanner } from "@/components/home/tracking_banner";
 import { UpcomingBillsStrip } from "@/components/home/upcoming_bills_strip";
 import { PlusGate } from "@/components/gates/plus_gate";
 import { queryKeys } from "@/constants/query_keys";
+import { useSetCaptureEnabled } from "@/hooks/mutations/use_set_capture_enabled";
 import { useBills } from "@/hooks/queries/use_bills";
 import { useCategories } from "@/hooks/queries/use_categories";
 import { useLimitStatuses } from "@/hooks/queries/use_limit_statuses";
@@ -29,7 +30,6 @@ import { useSafeToSpend } from "@/hooks/queries/use_safe_to_spend";
 import { useSafeToSpendInput } from "@/hooks/queries/use_safe_to_spend_input";
 import { onAppEvent } from "@/lib/events/app_events";
 import { projectToPeriodEnd } from "@/lib/safe_to_spend_projection";
-import { setSetting } from "@/lib/db/repos/app_settings_repo";
 
 const SCOPE_LABEL: Record<string, string> = {
   daily: "daily",
@@ -47,6 +47,7 @@ export default function HomeScreen() {
   const { data: bills } = useBills();
   const { data: health } = useListenerHealth();
   const { data: categories } = useCategories();
+  const setCaptureEnabled = useSetCaptureEnabled();
 
   const categoryNames = useMemo(
     () => new Map((categories ?? []).map((category) => [category.id, category.name])),
@@ -95,10 +96,14 @@ export default function HomeScreen() {
     >
       <TrackingBanner
         health={health}
-        onResume={async () => {
-          await setSetting("capture_enabled", true);
-          await queryClient.invalidateQueries({ queryKey: queryKeys.listenerHealth.all });
-        }}
+        // THE SAME PATH THE PRIVACY TOGGLE USES, not a direct `setSetting`
+        // write. `useSetCaptureEnabled` is native-first, settings-second (see
+        // its own doc): it calls the native `setCaptureEnabled` before
+        // touching `app_settings`, which is what keeps this resume button
+        // from reporting capture ON everywhere while the native listener's
+        // SharedPreferences flag stays OFF underneath it — exactly what a
+        // direct `setSetting("capture_enabled", true)` here used to risk.
+        onResume={() => setCaptureEnabled.mutate(true)}
         // The listener-health screen (m3b Task 7) is the destination this
         // action always wanted — the detailed view behind this exact banner.
         onFix={() => router.push("/more/listener_health")}

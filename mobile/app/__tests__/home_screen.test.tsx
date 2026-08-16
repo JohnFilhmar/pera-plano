@@ -15,8 +15,12 @@ jest.mock("expo-router", () => ({
 // `useListenerHealth` reaches the NotificationListener native module, which
 // cannot be required under Jest at all. Mocked here rather than anywhere
 // deeper — this is the only bills/home file that touches the native side.
+// `setCaptureEnabled` is mocked too: Resume now goes through the same
+// `useSetCaptureEnabled` mutation the Privacy toggle uses, and that hook
+// calls the native switch before it ever touches `app_settings`.
 jest.mock("@/modules/notification_listener", () => ({
   getListenerHealth: jest.fn(),
+  setCaptureEnabled: jest.fn().mockResolvedValue(undefined),
 }));
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -34,7 +38,7 @@ import { insertTransaction } from "@/lib/db/repos/transactions_repo";
 import { createWallet } from "@/lib/db/repos/wallets_repo";
 import { __setTierForTests } from "@/lib/entitlements";
 import { emitAppEvent } from "@/lib/events/app_events";
-import { getListenerHealth } from "@/modules/notification_listener";
+import { getListenerHealth, setCaptureEnabled } from "@/modules/notification_listener";
 import { systemClock } from "@/lib/clock";
 import { addDaysIso, toDateIso } from "@/lib/dates";
 import { queryClient as appQueryClient } from "@/lib/query_client";
@@ -46,6 +50,7 @@ import MoreScreen from "../(tabs)/more";
 
 const mockPush = jest.fn();
 const mockHealth = getListenerHealth as jest.MockedFunction<typeof getListenerHealth>;
+const mockSetCaptureEnabled = setCaptureEnabled as jest.Mock;
 
 /** Clock-relative, like every other screen test: these read `systemClock`. */
 const TODAY = toDateIso(new Date(systemClock.now()));
@@ -206,6 +211,21 @@ test("resuming re-enables capture", async () => {
   await waitFor(async () => expect(await getSetting("capture_enabled")).toBe(true), {
     timeout: 30_000,
   });
+});
+
+test("resuming from Home calls the native switch, not just the setting — the same path the Privacy toggle uses", async () => {
+  // Regression: Resume used to write `capture_enabled` straight to
+  // `app_settings` and never touch the native listener. Every surface would
+  // then report capture ON while `NotificationListener`'s SharedPreferences
+  // flag stayed OFF underneath it, and nothing would actually be captured.
+  await setSetting("capture_enabled", false);
+
+  renderScreen(<HomeScreen />);
+  await screen.findByTestId("tracking-resume");
+
+  fireEvent.press(screen.getByTestId("tracking-resume"));
+
+  await waitFor(() => expect(mockSetCaptureEnabled).toHaveBeenCalledWith(true));
 });
 
 // ---------------------------------------------------------------------------
