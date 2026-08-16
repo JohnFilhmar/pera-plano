@@ -161,6 +161,14 @@ async function seedOneRowPerTable(): Promise<void> {
      VALUES ('ruleset1', 1, '{}', ?)`,
     [NOW],
   );
+  // migration 009 (m3b Task 7) — the parser diagnostics counters. Content-free
+  // by construction (see that migration's own header), which is exactly why a
+  // row here has nowhere to put a merchant or an amount even as a fixture.
+  await db.runAsync(
+    `INSERT INTO parse_stats (id, provider_key, day_start_at, parsed_count, failed_count, updated_at)
+     VALUES ('ps1', 'gcash', ?, 1, 0, ?)`,
+    [NOW, NOW],
+  );
   await setSetting("capture_enabled", false);
 }
 
@@ -200,6 +208,7 @@ test("listWipeableTables enumerates every data table this test seeds — nothing
     "user_rules",
     "review_queue_items",
     "parser_rulesets",
+    "parse_stats",
   ];
 
   for (const table of seeded) {
