@@ -45,7 +45,21 @@
 // hooks/mutations/use_create_wallet.ts and use_set_wallet_matchers.ts, per the
 // task brief; `buildProviderChoices`/`listObservedPackages` are read-only and
 // side-effect-free, the same read path providers.tsx already uses.
-import { useEffect, useRef, useState } from "react";
+//
+// IT NAVIGATES ITSELF (m3c-onboarding-client fix). This file is a ROUTE:
+// expo-router mounts it from app/(onboarding)/battery.tsx's
+// `router.push("/(onboarding)/wallets")` with no props at all. It shipped
+// written as if it were a child component — `onDone`/`onBack` supplied by a
+// parent that does not exist — so "Continue" ran the creation loop, wrote real
+// Wallet rows, then called `onDone?.()`, which was `undefined`: a silent no-op
+// AFTER the database had already been mutated. `advance` below therefore
+// falls back to the same `router.push` idiom welcome/how_it_works/access/
+// battery already use. The props are KEPT and still take precedence, because
+// the step suites (components/onboarding/__tests__/providers_step.test.tsx)
+// drive this screen directly and assert on them; nothing in the app supplies
+// them, so nothing in the app depends on them either.
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "expo-router";
 import { Text, View } from "react-native";
 
 import { OnboardingFrame } from "@/components/onboarding/onboarding_frame";
@@ -146,6 +160,7 @@ export default function WalletsScreen({
   onDone,
   onBack,
 }: { onDone?: () => void; onBack?: () => void } = {}) {
+  const router = useRouter();
   const { data: ruleset } = useRuleset();
   const { data: existingWallets } = useWallets();
   const createWallet = useCreateWallet();
@@ -159,6 +174,26 @@ export default function WalletsScreen({
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [capExceeded, setCapExceeded] = useState(false);
+
+  // nextStep("wallets") === "income" (lib/onboarding/onboarding_state.ts) —
+  // hardcoded rather than computed, the same reasoning every routed step in
+  // this flow gives: the literal has to match a real file
+  // (app/(onboarding)/income.tsx) for expo-router to resolve it.
+  const advance = useCallback(() => {
+    if (onDone) {
+      onDone();
+      return;
+    }
+    router.push("/(onboarding)/income");
+  }, [onDone, router]);
+
+  const goBack = useCallback(() => {
+    if (onBack) {
+      onBack();
+      return;
+    }
+    router.back();
+  }, [onBack, router]);
 
   useEffect(() => {
     let cancelled = false;
@@ -215,7 +250,7 @@ export default function WalletsScreen({
     const included = proposals.filter((p) => p.included && p.name.trim() !== "");
 
     if (included.length === 0) {
-      onDone?.();
+      advance();
       return;
     }
 
@@ -248,14 +283,6 @@ export default function WalletsScreen({
         }
         runningCount += 1;
       }
-
-      if (wouldExceedCap) {
-        // The explanation renders below; onDone fires only once the user has
-        // actually seen it (its own "Continue" button).
-        setCapExceeded(true);
-      } else {
-        onDone?.();
-      }
     } catch {
       // Wallets already created stay created (gate principle 1: never delete
       // on a failure either) — only the ones that did not get created yet are
@@ -263,9 +290,22 @@ export default function WalletsScreen({
       setSubmitError(
         "Some wallets couldn't be saved. The ones that worked are ready — add any others later from the Wallets tab.",
       );
+      return;
     } finally {
       setSubmitting(false);
     }
+
+    // ADVANCING IS DELIBERATELY OUTSIDE THE try ABOVE. That catch means one
+    // thing — "a wallet could not be saved" — and it says so on screen. Moving
+    // on is not a save, and a navigation that threw from inside it would be
+    // reported to the user as data loss that did not happen.
+    if (wouldExceedCap) {
+      // The explanation renders below; the flow only advances once the user
+      // has actually seen it (its own "Continue" button).
+      setCapExceeded(true);
+      return;
+    }
+    advance();
   }
 
   if (capExceeded) {
@@ -273,7 +313,7 @@ export default function WalletsScreen({
       <OnboardingFrame
         step="wallets"
         title="Wallets are set up"
-        onPrimary={() => onDone?.()}
+        onPrimary={advance}
         primaryLabel="Continue"
       >
         <Card testID="wallet-cap-note">
@@ -298,8 +338,8 @@ export default function WalletsScreen({
       primaryLabel="Continue"
       primaryDisabled={!proposals || submitting}
       primaryBusy={submitting}
-      onBack={onBack}
-      onSkip={() => onDone?.()}
+      onBack={goBack}
+      onSkip={advance}
     >
       <Text testID="wallets-step-intro" className="text-fg-2 dark:text-fg-2-dark">
         PeraPlano sets up a wallet for each app you use, plus cash for what you spend by hand. Edit

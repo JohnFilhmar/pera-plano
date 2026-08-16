@@ -1,0 +1,276 @@
+// app/(onboarding)/__tests__/setup_flow_e2e.test.tsx — the whole numbered
+// onboarding flow, driven through the REAL expo-router, from "welcome" to the
+// tap that ends onboarding.
+//
+// WHY THIS FILE EXISTS. Every one of the nine steps already had a passing
+// per-screen suite, and the flow was still impossible to finish: the last four
+// routed screens (wallets, income, first_limit, done) were written as if they
+// were child components of a sequencer that does not exist -- they took
+// `onDone`/`onBack` props, and expo-router mounts a route with no props at all.
+// So on a real device "Continue" on the wallet step ran the creation loop,
+// wrote real Wallet rows, and then called `onDone?.()`, which was `undefined`:
+// nothing happened, after the database had already been mutated. Every
+// per-screen test passed throughout, because each one SUPPLIED the prop the
+// app never supplies. The only test that can catch that is one that mounts
+// these screens the way the router does -- by route, with no props -- and
+// walks the chain BETWEEN them.
+//
+// components/onboarding/__tests__/numbered_flow_e2e.test.tsx is the earlier,
+// narrower version of this idea (welcome -> battery, asserting on a mocked
+// `router.push`). This file deliberately does NOT mock expo-router: a mocked
+// push proves a screen ASKED to navigate, not that anything arrived. The
+// assertions below are on what is actually on screen after each tap, and on
+// the rows the flow actually wrote.
+//
+// A REAL DATABASE, exactly like the per-step suites use (test_support/db.ts's
+// freshDb + the sqlite mock): the last four steps write Wallets, an
+// IncomeProfile, a Limit and finally `onboarding_complete`, and "the flow
+// finished" is only worth asserting against the rows it claims to have made.
+jest.mock("@/modules/notification_listener", () => ({
+  listObservedPackages: jest.fn(),
+  isAccessGranted: jest.fn(),
+  openAccessSettings: jest.fn(),
+}));
+
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, fireEvent, waitFor } from "@testing-library/react-native";
+import { renderRouter, screen } from "expo-router/testing-library";
+import { Stack } from "expo-router";
+import { AppState, Linking, Text, type AppStateStatus } from "react-native";
+
+import { closeDatabase } from "@/lib/db/database";
+import { getSetting } from "@/lib/db/repos/app_settings_repo";
+import { getIncomeProfile } from "@/lib/db/repos/income_repo";
+import { listLimits } from "@/lib/db/repos/limits_repo";
+import { listWallets } from "@/lib/db/repos/wallets_repo";
+import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
+import { queryClient as appQueryClient } from "@/lib/query_client";
+import { freshDb } from "@/test_support/db";
+import { isAccessGranted, listObservedPackages } from "@/modules/notification_listener";
+import type { ObservedPackage } from "@/modules/notification_listener";
+
+import OnboardingLayout from "../_layout";
+import WelcomeScreen from "../welcome";
+import HowItWorksScreen from "../how_it_works";
+import AccessScreen from "../access";
+import BatteryScreen from "../battery";
+import WalletsScreen from "../wallets";
+import IncomeScreen from "../income";
+import FirstLimitScreen from "../first_limit";
+import DoneScreen from "../done";
+
+const mockIsAccessGranted = isAccessGranted as jest.Mock;
+const mockListObservedPackages = listObservedPackages as jest.Mock;
+
+const GCASH = "com.globe.gcash.android";
+
+let client: QueryClient;
+
+/**
+ * Stands in for app/_layout.tsx's post-unlock subtree: a QueryClientProvider
+ * around the root Stack. The real one is PersistQueryClientProvider, which
+ * additionally restores an ENCRYPTED cache from AsyncStorage — irrelevant to
+ * navigation and unavailable without a DEK, so a plain provider around the
+ * same Stack is the honest stand-in here.
+ */
+function TestRoot() {
+  return (
+    <QueryClientProvider client={client}>
+      <Stack screenOptions={{ headerShown: false }} />
+    </QueryClientProvider>
+  );
+}
+
+/** Where the flow's last hop is supposed to land. A stub, so this file never
+ * pulls the whole Home screen in just to prove onboarding let go of the user. */
+function HomeStub() {
+  return <Text testID="home-stub">home</Text>;
+}
+
+function renderFlow() {
+  return renderRouter(
+    {
+      _layout: TestRoot,
+      "(onboarding)/_layout": OnboardingLayout,
+      "(onboarding)/welcome": WelcomeScreen,
+      "(onboarding)/how_it_works": HowItWorksScreen,
+      "(onboarding)/access": AccessScreen,
+      "(onboarding)/battery": BatteryScreen,
+      "(onboarding)/wallets": WalletsScreen,
+      "(onboarding)/income": IncomeScreen,
+      "(onboarding)/first_limit": FirstLimitScreen,
+      "(onboarding)/done": DoneScreen,
+      "(tabs)/index": HomeStub,
+    },
+    { initialUrl: "/(onboarding)/welcome" },
+  );
+}
+
+let appStateListeners: Array<(state: AppStateStatus) => void> = [];
+
+function emitAppState(state: AppStateStatus) {
+  for (const cb of [...appStateListeners]) cb(state);
+}
+
+function pressPrimary() {
+  fireEvent.press(screen.getByTestId("onboarding-primary-button"));
+}
+
+function pressSkip() {
+  fireEvent.press(screen.getByTestId("onboarding-skip-link"));
+}
+
+beforeEach(async () => {
+  await freshDb();
+  // The catalogue bootstrapApp() seeds on a real launch — the wallet step
+  // proposes one Wallet per OBSERVED provider found in the active ruleset.
+  await upsertRuleset({
+    version: 1,
+    providers: [
+      { providerKey: "gcash", packageNames: [GCASH], version: 1, channel: "push", templates: [] },
+    ],
+  });
+
+  jest.clearAllMocks();
+  mockListObservedPackages.mockResolvedValue([
+    { packageName: GCASH, count: 3, lastSeenAt: 1_755_000_000_000 } satisfies ObservedPackage,
+  ]);
+  mockIsAccessGranted.mockResolvedValue(true);
+
+  // react-native's AppState/Linking are spied on the REAL module rather than
+  // replaced with jest.mock("react-native", ...) — see
+  // components/onboarding/__tests__/numbered_flow_e2e.test.tsx's header for
+  // the reentrant-require crash that technique causes once every step screen
+  // is imported into one file, as they are here.
+  appStateListeners = [];
+  jest.spyOn(AppState, "addEventListener").mockImplementation((_type, listener) => {
+    appStateListeners.push(listener);
+    return {
+      remove: jest.fn(() => {
+        const idx = appStateListeners.indexOf(listener);
+        if (idx >= 0) appStateListeners.splice(idx, 1);
+      }),
+    };
+  });
+  jest.spyOn(Linking, "sendIntent").mockResolvedValue(undefined);
+
+  const defaults = appQueryClient.getDefaultOptions();
+  client = new QueryClient({
+    defaultOptions: {
+      ...defaults,
+      queries: { ...defaults.queries, retry: 0, gcTime: Infinity },
+      mutations: { ...defaults.mutations, gcTime: 0 },
+    },
+  });
+});
+
+afterEach(async () => {
+  jest.restoreAllMocks();
+  await closeDatabase();
+});
+
+test("a user who taps through every step reaches the end, and onboarding actually completes", async () => {
+  renderFlow();
+
+  // 1. welcome -> 2. how_it_works
+  expect(screen.getByTestId("welcome-promise")).toBeTruthy();
+  pressPrimary();
+  await waitFor(() => expect(screen.getByTestId("how-it-works-mechanism")).toBeTruthy());
+
+  // 2. how_it_works -> 3. access
+  pressPrimary();
+  await waitFor(() => expect(screen.getByTestId("access-explainer")).toBeTruthy());
+
+  // 3. access -> 4. battery. The primary action opens the system screen; the
+  // step advances on the way back once the permission reads as granted.
+  pressPrimary();
+  await act(async () => {
+    emitAppState("active");
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  await waitFor(() => expect(screen.getByTestId("battery-explainer")).toBeTruthy());
+
+  // 4. battery -> 5. wallets (NOT the provider picker — that name in
+  // ONBOARDING_STEPS is reserved, not routed).
+  pressPrimary();
+  await waitFor(() => expect(screen.getByTestId("quick-wallet-list")).toBeTruthy());
+
+  // 5. wallets -> 6. income. THE DEFECT THIS FILE WAS WRITTEN FOR: this tap
+  // creates real rows and then has to advance. It used to do only the first
+  // half.
+  pressPrimary();
+  await waitFor(() => expect(screen.getByTestId("income-quick-form-intro")).toBeTruthy());
+  expect((await listWallets()).map((wallet) => wallet.name).sort()).toEqual(["Cash", "GCash"]);
+
+  // 6. income -> 7. first_limit, via the form's own save button (the path the
+  // mutation takes, distinct from the frame's "figure it out" primary).
+  fireEvent.changeText(screen.getByTestId("income-quick-amount"), "1200000");
+  fireEvent.press(screen.getByTestId("income-quick-save"));
+  await waitFor(() => expect(screen.getByTestId("first-limit-form-intro")).toBeTruthy());
+  expect((await getIncomeProfile())?.averageAmount).toBe(1_200_000);
+
+  // 7. first_limit -> 8. done, again through the write path.
+  fireEvent.changeText(screen.getByTestId("first-limit-amount"), "1000000");
+  fireEvent.press(screen.getByTestId("first-limit-save"));
+  await waitFor(() => expect(screen.getByTestId("done-step-intro")).toBeTruthy());
+  expect(await listLimits()).toHaveLength(1);
+
+  // 8. done -> out of onboarding entirely.
+  expect(await getSetting("onboarding_complete")).toBe(false);
+  pressPrimary();
+
+  await waitFor(async () => expect(await getSetting("onboarding_complete")).toBe(true));
+  // Landed OUTSIDE the onboarding group, and the last step is gone rather
+  // than stacked underneath (done.tsx replaces rather than pushes, so a back
+  // gesture from Home cannot re-enter a step that would re-run its writes).
+  await waitFor(() => expect(screen.getByTestId("home-stub")).toBeTruthy());
+  expect(screen.queryByTestId("done-step-intro")).toBeNull();
+  expect(screen.queryByTestId("onboarding-frame")).toBeNull();
+});
+
+test("a user who skips everything skippable still reaches the end, and onboarding actually completes", async () => {
+  renderFlow();
+
+  // welcome and how_it_works have no skip link — nothing is asked of the user
+  // on either, so their primary action is the only forward affordance.
+  expect(screen.queryByTestId("onboarding-skip-link")).toBeNull();
+  pressPrimary();
+  await waitFor(() => expect(screen.getByTestId("how-it-works-mechanism")).toBeTruthy());
+
+  expect(screen.queryByTestId("onboarding-skip-link")).toBeNull();
+  pressPrimary();
+  await waitFor(() => expect(screen.getByTestId("access-explainer")).toBeTruthy());
+
+  pressSkip();
+  await waitFor(() => expect(screen.getByTestId("battery-explainer")).toBeTruthy());
+
+  pressSkip();
+  await waitFor(() => expect(screen.getByTestId("quick-wallet-list")).toBeTruthy());
+
+  pressSkip();
+  await waitFor(() => expect(screen.getByTestId("income-quick-form-intro")).toBeTruthy());
+
+  pressSkip();
+  await waitFor(() => expect(screen.getByTestId("first-limit-form-intro")).toBeTruthy());
+
+  pressSkip();
+  await waitFor(() => expect(screen.getByTestId("done-step-intro")).toBeTruthy());
+
+  // Skipping wrote nothing at all — and still has to end somewhere.
+  expect(await listWallets()).toEqual([]);
+  expect(await getIncomeProfile()).toBeNull();
+  expect(await listLimits()).toEqual([]);
+
+  // "done" is what a skipped flow lands on, so it has nothing left to skip.
+  expect(screen.queryByTestId("onboarding-skip-link")).toBeNull();
+  pressPrimary();
+
+  await waitFor(async () => expect(await getSetting("onboarding_complete")).toBe(true));
+  // Landed OUTSIDE the onboarding group, and the last step is gone rather
+  // than stacked underneath (done.tsx replaces rather than pushes, so a back
+  // gesture from Home cannot re-enter a step that would re-run its writes).
+  await waitFor(() => expect(screen.getByTestId("home-stub")).toBeTruthy());
+  expect(screen.queryByTestId("done-step-intro")).toBeNull();
+  expect(screen.queryByTestId("onboarding-frame")).toBeNull();
+});

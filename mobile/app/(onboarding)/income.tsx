@@ -16,7 +16,14 @@
 // COMPONENTS NEVER IMPORT A REPOSITORY (release-gate grep). This file does,
 // through hooks/mutations/use_set_manual_income.ts and
 // hooks/queries/use_wallets.ts only — never lib/db/repos/** directly.
+//
+// IT NAVIGATES ITSELF — see app/(onboarding)/wallets.tsx's header for the
+// whole story. Reached from wallets.tsx; advances to first_limit.tsx. The
+// `onDone`/`onBack` props stay and still win when a caller supplies them (the
+// step suite drives this screen directly), but the route no longer DEPENDS on
+// anyone supplying them.
 import { useCallback } from "react";
+import { useRouter } from "expo-router";
 
 import { IncomeQuickForm } from "@/components/onboarding/income_quick_form";
 import type { IncomeQuickFormValues } from "@/components/onboarding/income_quick_form";
@@ -28,10 +35,27 @@ export default function IncomeScreen({
   onDone,
   onBack,
 }: { onDone?: () => void; onBack?: () => void } = {}) {
+  const router = useRouter();
   const { data: wallets } = useWallets();
   const setManual = useSetManualIncome();
 
-  const advance = useCallback(() => onDone?.(), [onDone]);
+  // nextStep("income") === "first_limit" (lib/onboarding/onboarding_state.ts),
+  // hardcoded so the literal matches a real file for expo-router to resolve.
+  const advance = useCallback(() => {
+    if (onDone) {
+      onDone();
+      return;
+    }
+    router.push("/(onboarding)/first_limit");
+  }, [onDone, router]);
+
+  const goBack = useCallback(() => {
+    if (onBack) {
+      onBack();
+      return;
+    }
+    router.back();
+  }, [onBack, router]);
 
   const submit = useCallback(
     async (values: IncomeQuickFormValues) => {
@@ -51,7 +75,7 @@ export default function IncomeScreen({
       // figure the user does not have yet (see income_quick_form.tsx's header).
       onPrimary={advance}
       primaryLabel="Let PeraPlano figure it out"
-      onBack={onBack}
+      onBack={goBack}
       onSkip={advance}
     >
       <IncomeQuickForm wallets={wallets ?? []} busy={setManual.isPending} onSubmit={submit} />

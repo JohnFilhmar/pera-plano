@@ -20,7 +20,21 @@
 // COMPONENTS NEVER IMPORT A REPOSITORY (release-gate grep). This file does,
 // through hooks/queries/use_wallets.ts, use_income_summary.ts and
 // use_limit_statuses.ts only.
+//
+// IT NAVIGATES ITSELF — see app/(onboarding)/wallets.tsx's header for the
+// whole story. This screen is where that defect bit hardest: with no caller to
+// supply `onDone`, "Go to Home" wrote `onboarding_complete` and then went
+// nowhere, so the one action that ends onboarding could never be observed to
+// end it.
+//
+// `replace`, NOT `push`, FOR THE LAST HOP. Every other step pushes, so Back
+// walks the flow backwards. This one leaves the flow for good: onboarding is
+// finished and `onboarding_complete` is already written, so a back gesture
+// from Home must not land the user on a setup step that would re-run its
+// writes. Replacing drops "done" from the history instead of stacking Home on
+// top of it.
 import { useCallback, useState } from "react";
+import { useRouter } from "expo-router";
 import { Text, View } from "react-native";
 
 import { OnboardingFrame } from "@/components/onboarding/onboarding_frame";
@@ -42,6 +56,7 @@ export default function DoneScreen({
   onDone,
   onBack,
 }: { onDone?: () => void; onBack?: () => void } = {}) {
+  const router = useRouter();
   const { data: wallets } = useWallets();
   const { data: income } = useIncomeSummary();
   const { data: limitStatuses } = useLimitStatuses();
@@ -56,11 +71,23 @@ export default function DoneScreen({
     setFinishing(true);
     try {
       await completeOnboarding();
-      onDone?.();
+      if (onDone) {
+        onDone();
+      } else {
+        router.replace("/(tabs)");
+      }
     } finally {
       setFinishing(false);
     }
-  }, [finishing, onDone]);
+  }, [finishing, onDone, router]);
+
+  const goBack = useCallback(() => {
+    if (onBack) {
+      onBack();
+      return;
+    }
+    router.back();
+  }, [onBack, router]);
 
   return (
     <OnboardingFrame
@@ -69,7 +96,7 @@ export default function DoneScreen({
       onPrimary={finish}
       primaryLabel="Go to Home"
       primaryBusy={finishing}
-      onBack={onBack}
+      onBack={goBack}
     >
       <Text testID="done-step-intro" className="text-fg-2 dark:text-fg-2-dark">
         Here&apos;s what PeraPlano set up for you. Everything here can be changed any time.

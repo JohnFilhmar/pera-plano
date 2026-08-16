@@ -54,6 +54,20 @@
 // user would display a brand-new, unrelated random phrase that has nothing
 // to do with the one actually protecting their data, which is worse than
 // unhelpful.
+//
+// THE HANDOFF OUT OF BRANCH 1 (`onKeysReady`). Everything above is true of
+// the three pre-flow screens, none of which touches the database. It stops
+// being true the moment this sequencer runs out of them: the numbered flow
+// navigates with `router.push` and its last four steps read and write the
+// ledger, so it needs BOTH a mounted Stack and an unlocked database, and
+// branch 1 has neither. The `<Redirect>` below was therefore only ever
+// reachable-in-effect from branch 2 -- fired from branch 1 it updated router
+// state nothing was rendering, and a first-session user was stranded until
+// they force-quit and relaunched. `onKeysReady` (supplied only by
+// app/lock.tsx, which is branch 1 by definition) hands control back to the
+// lock gate instead; see contexts/lock_context.tsx's keysProvisioned for why
+// "locked" is the correct and only destination. Branch 2 supplies no
+// callback and keeps the redirect, which is right: there a navigator exists.
 import { Redirect } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import { getKeyState } from "@/lib/crypto/key_manager";
@@ -69,7 +83,9 @@ type Step =
   | "done"
   | "already_keyed";
 
-export default function OnboardingIndexScreen() {
+export default function OnboardingIndexScreen({
+  onKeysReady,
+}: { onKeysReady?: () => void } = {}) {
   const [step, setStep] = useState<Step>("checking");
 
   useEffect(() => {
@@ -91,12 +107,30 @@ export default function OnboardingIndexScreen() {
   const handlePhraseDone = useCallback(() => setStep("providers"), []);
   const handleProvidersDone = useCallback(() => setStep("done"), []);
 
+  // Both terminal steps mean the same thing to a caller: this sequencer has
+  // nothing left to run and the keys it exists to create are on the device.
+  const finished = step === "already_keyed" || step === "done";
+
+  // In an effect rather than in the branch below, because `onKeysReady` sets
+  // state in another component -- doing that during this one's render is the
+  // "Cannot update a component while rendering a different component"
+  // warning, and worse, it would run again on every re-render. `finished`
+  // only ever flips false -> true, and keysProvisioned is itself idempotent
+  // (it only moves "needs_onboarding"), so this fires exactly once.
+  useEffect(() => {
+    if (finished) onKeysReady?.();
+  }, [finished, onKeysReady]);
+
   if (step === "checking") {
     return null;
   }
 
-  if (step === "already_keyed" || step === "done") {
-    return <Redirect href="/(onboarding)/welcome" />;
+  if (finished) {
+    // With a callback, the caller (app/lock.tsx) is mid-handoff and there is
+    // no navigator for a Redirect to move -- rendering one would be the same
+    // no-op this file's header describes. Without one, this component was
+    // reached by routing, so the Redirect is the real forward action.
+    return onKeysReady ? null : <Redirect href="/(onboarding)/welcome" />;
   }
 
   if (step === "device_lock") {

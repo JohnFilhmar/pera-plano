@@ -612,6 +612,65 @@ describe("wipeAndStartOver()", () => {
 });
 
 // ---------------------------------------------------------------------------
+// keysProvisioned() -- onboarding's first-run handoff. The whole reason it
+// exists is app/(onboarding)/index.tsx's pre-flow running ABOVE the render
+// gate, with no Stack mounted and no open database (see that file's header and
+// this context's own keysProvisioned doc); the end-to-end walk lives in
+// app/(onboarding)/__tests__/first_run_handoff.test.tsx. What is pinned HERE
+// is the property that keeps it from being a back door: it can only ever move
+// "needs_onboarding" to "locked".
+// ---------------------------------------------------------------------------
+
+describe("keysProvisioned()", () => {
+  test("moves a freshly-keyed first-run device to locked, so the ordinary unlock still has to happen", async () => {
+    mockGetKeyState.mockResolvedValue("uninitialized");
+    const { result } = renderHook(() => useLock(), { wrapper });
+    await waitFor(() => expect(result.current.status).toBe("needs_onboarding"));
+
+    act(() => {
+      result.current.keysProvisioned();
+    });
+
+    expect(result.current.status).toBe("locked");
+    // It opens NOTHING on its own -- no DEK is fetched, no database handle,
+    // no cache key. Only unlock() does that, and only after authenticating.
+    expect(mockUnlockWithDeviceKey).not.toHaveBeenCalled();
+    expect(mockUnlockDatabase).not.toHaveBeenCalled();
+    expect(mockSetCacheEncryptionKey).not.toHaveBeenCalled();
+  });
+
+  test("cannot pull a user out of needs_recovery -- a dead device key still needs the phrase", async () => {
+    mockUnlockWithDeviceKey.mockRejectedValue(new DeviceKeyInvalidatedError());
+    const { result } = renderHook(() => useLock(), { wrapper });
+    await waitFor(() => expect(result.current.status).toBe("locked"));
+    await act(async () => {
+      await result.current.unlock();
+    });
+    await waitFor(() => expect(result.current.status).toBe("needs_recovery"));
+
+    act(() => {
+      result.current.keysProvisioned();
+    });
+
+    expect(result.current.status).toBe("needs_recovery");
+  });
+
+  test("never reports unlocked, however many times it is called", async () => {
+    mockGetKeyState.mockResolvedValue("uninitialized");
+    const { result } = renderHook(() => useLock(), { wrapper });
+    await waitFor(() => expect(result.current.status).toBe("needs_onboarding"));
+
+    act(() => {
+      result.current.keysProvisioned();
+      result.current.keysProvisioned();
+      result.current.keysProvisioned();
+    });
+
+    expect(result.current.status).toBe("locked");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Background timeout -- five minutes, measured from when the app
 // backgrounded, never from "last interaction" (there is no such signal
 // anywhere in this file).

@@ -4,6 +4,24 @@
 // components/onboarding/income_quick_form.tsx (presentational) and
 // app/(onboarding)/income.tsx (the route that owns the write), the same split
 // every other step in this suite uses.
+//
+// expo-router IS MOCKED HERE NOW. The screen is a ROUTE: expo-router mounts it
+// with no props at all, so its forward action can no longer be a bare
+// `onDone?.()` that silently does nothing when nobody supplies one (see
+// app/(onboarding)/wallets.tsx's header for the defect that shipped). It
+// navigates for itself, which means the real `useRouter().push` asserts a
+// mounted navigator — the same mock welcome_step.test.tsx has always used.
+// The `onDone` tests below still pass the prop and still pin it: a supplied
+// callback continues to win over navigation.
+const mockPush = jest.fn();
+const mockBack = jest.fn();
+jest.mock("expo-router", () => ({
+  useRouter: () => ({
+    push: (...args: unknown[]) => mockPush(...args),
+    back: () => mockBack(),
+  }),
+}));
+
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { ReactNode } from "react";
@@ -38,6 +56,7 @@ async function renderScreen(props: { onDone?: () => void } = {}): Promise<void> 
 }
 
 beforeEach(async () => {
+  jest.clearAllMocks();
   await freshDb();
 });
 
@@ -110,6 +129,9 @@ describe("IncomeScreen", () => {
     expect(profile!.averageAmount).toBe(1_200_000);
     expect(profile!.sourceWalletIds).toEqual([gcash.id]);
     expect(profile!.isManualOverride).toBe(true);
+    // With no `onDone` supplied — which is how the router mounts it — saving
+    // still has to move the flow on by itself.
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith("/(onboarding)/first_limit"));
   });
 
   test('"let PeraPlano figure it out" skips to detection: no IncomeProfile is created', async () => {

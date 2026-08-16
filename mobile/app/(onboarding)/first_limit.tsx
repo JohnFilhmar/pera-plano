@@ -15,7 +15,13 @@
 // COMPONENTS NEVER IMPORT A REPOSITORY (release-gate grep). This file does,
 // through hooks/mutations/use_create_limit.ts and
 // hooks/queries/use_income_summary.ts only.
+//
+// IT NAVIGATES ITSELF — see app/(onboarding)/wallets.tsx's header for the
+// whole story. Reached from income.tsx; advances to done.tsx, which is the
+// transition onboarding_state.ts's own `nextStep` doc singles out as the one
+// a wrong answer strands the user on.
 import { useCallback } from "react";
+import { useRouter } from "expo-router";
 
 import { FirstLimitForm } from "@/components/onboarding/first_limit_form";
 import type { FirstLimitFormValues } from "@/components/onboarding/first_limit_form";
@@ -27,10 +33,27 @@ export default function FirstLimitScreen({
   onDone,
   onBack,
 }: { onDone?: () => void; onBack?: () => void } = {}) {
+  const router = useRouter();
   const { data: income } = useIncomeSummary();
   const createLimit = useCreateLimit();
 
-  const advance = useCallback(() => onDone?.(), [onDone]);
+  // nextStep("first_limit") === "done" (lib/onboarding/onboarding_state.ts),
+  // hardcoded so the literal matches a real file for expo-router to resolve.
+  const advance = useCallback(() => {
+    if (onDone) {
+      onDone();
+      return;
+    }
+    router.push("/(onboarding)/done");
+  }, [onDone, router]);
+
+  const goBack = useCallback(() => {
+    if (onBack) {
+      onBack();
+      return;
+    }
+    router.back();
+  }, [onBack, router]);
 
   const submit = useCallback(
     async (values: FirstLimitFormValues) => {
@@ -50,7 +73,7 @@ export default function FirstLimitScreen({
       step="first_limit"
       title="Set your first Limit"
       onPrimary={advance}
-      onBack={onBack}
+      onBack={goBack}
       onSkip={advance}
     >
       <FirstLimitForm

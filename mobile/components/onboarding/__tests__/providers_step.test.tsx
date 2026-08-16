@@ -15,6 +15,23 @@
 // provider selection, plus rule 2's free-tier cap bypass, tested against a
 // real (in-memory) database exactly the way app/__tests__/wallet_routes.test.tsx
 // tests app/wallet/new.tsx.
+//
+// expo-router IS MOCKED HERE NOW. The wallet step is a ROUTE, mounted by
+// expo-router with no props — so "Continue" can no longer end in a bare
+// `onDone?.()` that does nothing (it wrote real Wallet rows first, which is
+// what made that no-op so much worse than a dead button; see that file's
+// header). It navigates for itself now, and the real `useRouter().push`
+// asserts a mounted navigator. The `onDone` tests below still pass the prop
+// and still pin it: a supplied callback continues to win over navigation.
+const mockPush = jest.fn();
+const mockBack = jest.fn();
+jest.mock("expo-router", () => ({
+  useRouter: () => ({
+    push: (...args: unknown[]) => mockPush(...args),
+    back: () => mockBack(),
+  }),
+}));
+
 jest.mock("@/modules/notification_listener", () => ({
   listObservedPackages: jest.fn(),
 }));
@@ -150,6 +167,11 @@ describe("creating wallets", () => {
     await waitFor(async () => expect(await listWallets()).toHaveLength(2));
     const names = (await listWallets()).map((w) => w.name).sort();
     expect(names).toEqual(["Cash", "GCash"].sort());
+    // With no `onDone` supplied — which is how the router mounts it — the tap
+    // that wrote those rows also has to move the flow on. This exact pairing
+    // is what failed on a device: rows written, screen frozen.
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith("/(onboarding)/income"));
+    expect(screen.queryByTestId("wallets-step-error")).toBeNull();
   });
 
   test("an edited name and type are what gets saved, not the default", async () => {

@@ -99,6 +99,8 @@ type LockContextValue = {
   unlock: () => Promise<void>;
   /** The recovery-phrase path for needs_recovery: rewrapAfterInvalidation, then the same three-step sequence. */
   submitRecoveryPhrase: (phrase: string[]) => Promise<void>;
+  /** Onboarding's first-run handoff: "keys now exist on this device" — moves "needs_onboarding" to "locked", and nothing else. See its implementation for why this is the only correct destination. */
+  keysProvisioned: () => void;
   /** The §11a escape hatch. Callers (RecoveryUnlockForm) own the double-confirmation UI; this only runs the actual destruction once invoked. */
   wipeAndStartOver: () => Promise<void>;
 };
@@ -210,6 +212,45 @@ export function LockProvider({ children }: { children: ReactNode }) {
     return () => subscription.remove();
   }, [lockNow, recheckDeviceLock]);
 
+  /**
+   * THE FIRST-RUN HANDOFF. app/(onboarding)/index.tsx's pre-flow sequencer
+   * (device lock -> recovery phrase -> provider picker) is rendered DIRECTLY
+   * by app/lock.tsx while this context reports "needs_onboarding", which is
+   * to say: above the render gate, with no Stack mounted. That is correct
+   * for those three screens -- none of them touches the database. It is a
+   * dead end for everything after them. The nine numbered steps that follow
+   * (app/(onboarding)/welcome.tsx onward) navigate with `router.push`, and
+   * the last four of them read and write the ledger; without a mounted
+   * navigator every push goes nowhere, and without an unlocked database
+   * every write throws DatabaseLockedError. Before this handoff existed, a
+   * first-session user reached the end of the provider step and simply
+   * stopped: `<Redirect href="/(onboarding)/welcome">` updated router state
+   * that nothing was rendering, and only force-quitting the app (which
+   * restarts at getKeyState() === "locked") ever got them any further.
+   *
+   * MOVES TO "locked", NEVER TO "unlocked" -- this function cannot open
+   * anything. initializeKeys() has by then minted a DEK and left it in
+   * key_manager's module-level `dek` (see performInitializeKeys's own
+   * comment), so getKeyState() would already answer "unlocked"; this file's
+   * header explains at length why that is exactly the answer this context
+   * refuses to trust. "locked" sends the user through the ordinary
+   * UnlockPrompt and the ordinary three-step unlock() sequence -- one
+   * authentication, immediately after they set up the screen lock the device
+   * key depends on -- which is the only thing that both proves the freshly
+   * created Keystore key actually works and leaves the database genuinely
+   * open for the wallet/income/limit steps ahead. The transition can only
+   * ADD an authentication requirement, never remove one.
+   *
+   * GUARDED TO ONE SOURCE STATUS so it can never be a back door. Called from
+   * any other status it is a no-op: it cannot pull a user out of
+   * "needs_recovery" or "needs_device_lock" (both of which mean the device
+   * key is dead and only the recovery phrase can help), and it cannot
+   * short-circuit "authenticating".
+   */
+  const keysProvisioned = useCallback(() => {
+    setStatus((current) => (current === "needs_onboarding" ? "locked" : current));
+  }, []);
+
   const unlock = useCallback(async () => {
     if (unlockInFlightRef.current) return;
     unlockInFlightRef.current = true;
@@ -307,8 +348,15 @@ export function LockProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<LockContextValue>(
-    () => ({ status, errorMessage, unlock, submitRecoveryPhrase, wipeAndStartOver }),
-    [status, errorMessage, unlock, submitRecoveryPhrase, wipeAndStartOver],
+    () => ({
+      status,
+      errorMessage,
+      unlock,
+      submitRecoveryPhrase,
+      keysProvisioned,
+      wipeAndStartOver,
+    }),
+    [status, errorMessage, unlock, submitRecoveryPhrase, keysProvisioned, wipeAndStartOver],
   );
 
   return <LockContext.Provider value={value}>{children}</LockContext.Provider>;

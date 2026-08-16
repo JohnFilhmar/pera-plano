@@ -26,14 +26,24 @@ import { useLock } from "@/contexts/lock_context";
 import { openSecuritySettings } from "@/modules/notification_listener";
 
 export default function LockScreen() {
-  const { status, errorMessage, unlock, submitRecoveryPhrase, wipeAndStartOver } = useLock();
+  const { status, errorMessage, unlock, submitRecoveryPhrase, keysProvisioned, wipeAndStartOver } =
+    useLock();
 
   if (status === "checking") {
     return null;
   }
 
   if (status === "needs_onboarding") {
-    return <OnboardingIndexScreen />;
+    // `onKeysReady` is the first-run handoff (contexts/lock_context.tsx's
+    // keysProvisioned): the pre-flow above renders here with no navigator
+    // mounted, so the moment it has nothing left to run, something has to
+    // move the app on -- and the only correct destination is the ordinary
+    // lock gate, since everything after this point needs both a mounted
+    // Stack and an open database. Supplied ONLY here: the same component
+    // reached by routing (app/index.tsx, once already unlocked) gets no
+    // callback and keeps redirecting into the numbered flow, which is
+    // exactly right when a navigator does exist.
+    return <OnboardingIndexScreen onKeysReady={keysProvisioned} />;
   }
 
   if (status === "needs_device_lock") {

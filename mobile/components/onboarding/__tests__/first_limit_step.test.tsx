@@ -5,6 +5,20 @@
 // app/(onboarding)/first_limit.tsx (the route that owns the write), the same
 // split provider_picker.test.tsx and wallet_routes.test.tsx already use for
 // their own pairs.
+//
+// expo-router IS MOCKED HERE NOW, for the reason income_step.test.tsx's header
+// gives at length: the screen is a route, so its forward action navigates for
+// itself rather than relying on an `onDone` the router never supplies. The
+// `onDone` tests below still pin that a supplied callback wins.
+const mockPush = jest.fn();
+const mockBack = jest.fn();
+jest.mock("expo-router", () => ({
+  useRouter: () => ({
+    push: (...args: unknown[]) => mockPush(...args),
+    back: () => mockBack(),
+  }),
+}));
+
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { ReactNode } from "react";
@@ -42,6 +56,7 @@ async function renderScreen(props: { onDone?: () => void } = {}): Promise<void> 
 }
 
 beforeEach(async () => {
+  jest.clearAllMocks();
   await freshDb();
 });
 
@@ -117,6 +132,11 @@ describe("FirstLimitScreen", () => {
     expect(limit!.value).toBe(1_000_000);
     expect(limit!.rollover).toBe(false);
     expect(limit!.thresholdsFired).toEqual([]);
+    // With no `onDone` supplied — which is how the router mounts it — saving
+    // still has to move the flow on by itself, and "done" is the one
+    // transition onboarding_state.ts's `nextStep` doc calls out as stranding
+    // the user if it is wrong.
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith("/(onboarding)/done"));
   });
 
   test("percent-of-income is unavailable until an income has actually been declared", async () => {
