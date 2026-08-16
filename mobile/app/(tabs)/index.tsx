@@ -99,10 +99,9 @@ export default function HomeScreen() {
           await setSetting("capture_enabled", true);
           await queryClient.invalidateQueries({ queryKey: queryKeys.listenerHealth.all });
         }}
-        // The listener-health screen is m3b Task 7. Until it exists, the More
-        // tab is where tracking controls live and is a real destination — a
-        // banner whose action goes nowhere is worse than one with no action.
-        onFix={() => router.push("/more")}
+        // The listener-health screen (m3b Task 7) is the destination this
+        // action always wanted — the detailed view behind this exact banner.
+        onFix={() => router.push("/more/listener_health")}
       />
 
       <SafeToSpendHero

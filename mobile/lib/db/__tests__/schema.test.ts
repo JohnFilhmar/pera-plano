@@ -19,9 +19,9 @@ const CORE_TABLES = [
  * the assertion below is claiming.
  *
  * m2b Task 5 adds `loan_adjustments` (migration 005); m2c Task 1 adds
- * `bill_cycles` (migration 006).
+ * `bill_cycles` (migration 006); m3b Task 7 adds `parse_stats` (migration 009).
  */
-const MIGRATED_TABLES = ["bill_cycles", "loan_adjustments"];
+const MIGRATED_TABLES = ["bill_cycles", "loan_adjustments", "parse_stats"];
 
 const EXPECTED_TABLES = [...CORE_TABLES, ...MIGRATED_TABLES].sort();
 
@@ -306,6 +306,13 @@ function buildValidRows(ids: SeedIds, now: number): Record<string, Row> {
     app_settings: {
       id: "row_app_settings", key: "test_key_unique", value_json: "{}", updated_at: now,
     },
+    // migration 009. Content-free by construction — see that migration's
+    // header — so the template deliberately has nowhere to put a merchant or
+    // an amount even as a fixture.
+    parse_stats: {
+      id: "row_parse_stats", provider_key: "gcash", day_start_at: now,
+      parsed_count: 1, failed_count: 0, updated_at: now,
+    },
   };
 }
 
@@ -430,6 +437,8 @@ describe("NOT NULL is enforced on every required column in the schema", () => {
       .map((column) => ({ table: "parser_rulesets", column })),
     ...["id", "key", "value_json", "updated_at"]
       .map((column) => ({ table: "app_settings", column })),
+    ...["id", "provider_key", "day_start_at", "parsed_count", "failed_count", "updated_at"]
+      .map((column) => ({ table: "parse_stats", column })),
   ];
 
   test.each(NOT_NULL_COLUMNS.map(({ table, column }) => [table, column]))(
@@ -485,6 +494,13 @@ describe("UNIQUE constraints are enforced", () => {
     await insertRow(db, "app_settings", { ...validRows.app_settings, id: "as1" });
     await expect(
       insertRow(db, "app_settings", { ...validRows.app_settings, id: "as2" }),
+    ).rejects.toThrow(/UNIQUE/i);
+  });
+
+  test("parse_stats rejects a duplicate (provider_key, day_start_at) — one bucket per provider per day", async () => {
+    await insertRow(db, "parse_stats", { ...validRows.parse_stats, id: "ps1" });
+    await expect(
+      insertRow(db, "parse_stats", { ...validRows.parse_stats, id: "ps2" }),
     ).rejects.toThrow(/UNIQUE/i);
   });
 

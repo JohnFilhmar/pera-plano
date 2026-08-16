@@ -176,7 +176,9 @@ test("A DISCONNECTED LISTENER STATES THE GAP AND OFFERS A FIX", async () => {
   await screen.findByTestId("tracking-interrupted");
   screen.getByText("Tracking stopped");
   fireEvent.press(screen.getByTestId("tracking-fix"));
-  expect(mockPush).toHaveBeenCalledWith("/more");
+  // The listener-health screen (m3b Task 7) is the destination this action
+  // always wanted — the detailed view behind this exact banner.
+  expect(mockPush).toHaveBeenCalledWith("/more/listener_health");
 });
 
 test("PAUSED IS A NEUTRAL PILL, NOT A FAULT — THE USER CHOSE IT", async () => {

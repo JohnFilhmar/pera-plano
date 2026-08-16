@@ -237,4 +237,17 @@ export const queryKeys = {
     scopes: () => ["reports", "scopes"] as const,
     report: (scope: object) => ["reports", "report", scope] as const,
   },
+  /**
+   * Parse-outcome counts behind the Parser diagnostics screen (m3b Task 7,
+   * `lib/diagnostics/parse_stats_repo.ts`).
+   *
+   * NOT KEYED ON `sinceMs`, the same reasoning as `limits.statuses()`: the
+   * rolling window's start is resolved inside the query function from the
+   * system clock, so putting the instant in the key would make every render
+   * a cache miss instead of a cache hit that occasionally goes stale.
+   */
+  parseStats: {
+    all: ["parse_stats"] as const,
+    stats: () => ["parse_stats", "stats"] as const,
+  },
 } as const;

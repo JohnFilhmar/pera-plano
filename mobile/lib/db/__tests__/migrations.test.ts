@@ -802,3 +802,78 @@ describe("008_loan_reminders upgrades a real version-7 database in place", () =>
     expect(await runMigrations(db)).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// m3b Task 7 — 009_parse_stats. A brand-new table with no prior column to
+// alter, so there is nothing pre-existing for the migration to preserve — the
+// upgrade-in-place question here is narrower than 006/008's: does a device
+// already at 008 gain the table cleanly, with the UNIQUE pair enforced from
+// the moment it exists.
+// ---------------------------------------------------------------------------
+describe("009_parse_stats upgrades a real version-8 database in place", () => {
+  async function atVersionEight(db: Awaited<ReturnType<typeof getDatabase>>): Promise<void> {
+    const upToEight = MIGRATIONS.filter((m) => m.version <= 8);
+    expect(upToEight.length).toBe(8);
+    await runMigrations(db, upToEight);
+  }
+
+  test("a database at 008 gains the table, empty, with the counts-only column set", async () => {
+    const db = await getDatabase();
+    await atVersionEight(db);
+
+    // Genuinely absent first, or "it is there afterwards" would prove nothing.
+    const before = await db.getAllAsync<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'parse_stats'",
+    );
+    expect(before).toEqual([]);
+
+    expect(await runMigrations(db)).toEqual(
+      MIGRATIONS.filter((m) => m.version > 8).map((m) => m.version),
+    );
+
+    const columns = await db.getAllAsync<{ name: string }>("PRAGMA table_info(parse_stats)");
+    // Exactly these six, in this order — a seventh column, especially a TEXT
+    // one, is exactly the shape a stray "let's also keep the title" edit would
+    // take, and rule 3's promise ("counts only, never content") depends on
+    // there being nowhere for one to go.
+    expect(columns.map((c) => c.name)).toEqual([
+      "id", "provider_key", "day_start_at", "parsed_count", "failed_count", "updated_at",
+    ]);
+
+    const count = await db.getFirstAsync<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM parse_stats",
+    );
+    expect(count?.n).toBe(0);
+  });
+
+  test("the UNIQUE (provider_key, day_start_at) pair is enforced from the moment the table exists", async () => {
+    const db = await getDatabase();
+    await atVersionEight(db);
+    await runMigrations(db);
+
+    await db.runAsync(
+      `INSERT INTO parse_stats (id, provider_key, day_start_at, parsed_count, failed_count, updated_at)
+       VALUES ('ps1', 'gcash', ?, 1, 0, ?)`,
+      [V1_TIMESTAMP, V1_TIMESTAMP],
+    );
+    await expect(
+      db.runAsync(
+        `INSERT INTO parse_stats (id, provider_key, day_start_at, parsed_count, failed_count, updated_at)
+         VALUES ('ps2', 'gcash', ?, 0, 1, ?)`,
+        [V1_TIMESTAMP, V1_TIMESTAMP],
+      ),
+    ).rejects.toThrow(/UNIQUE/i);
+  });
+
+  test("every shipped version ends up recorded, and a further run applies nothing", async () => {
+    const db = await getDatabase();
+    await atVersionEight(db);
+    await runMigrations(db);
+
+    const recorded = await db.getAllAsync<{ version: number; name: string }>(
+      "SELECT version, name FROM schema_migrations ORDER BY version",
+    );
+    expect(recorded).toEqual(MIGRATIONS.map((m) => ({ version: m.version, name: m.name })));
+    expect(await runMigrations(db)).toEqual([]);
+  });
+});

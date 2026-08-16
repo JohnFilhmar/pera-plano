@@ -22,6 +22,7 @@ import { decideRoute } from "@/lib/ingest/confidence_gate";
 import { detectTransfer } from "@/lib/ingest/transfer_detector";
 import { emitAppEvent } from "@/lib/events/app_events";
 import { getActiveRuleset } from "@/lib/db/repos/parser_rulesets_repo";
+import { recordParseResult } from "@/lib/diagnostics/parse_stats_repo";
 import { getSetting } from "@/lib/db/repos/app_settings_repo";
 import { getRawCapture, hasRawCapture, storeRawCapture } from "@/lib/db/repos/raw_notifications_repo";
 import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions_repo";
@@ -223,7 +224,7 @@ export async function processCapture(
     });
   }
 
-  return runStages(capture, routed.provider, bundle);
+  return runStages(capture, routed.provider, bundle, now);
 }
 
 /** The seven stages, for a capture already stored and known to be from a real provider. */
@@ -231,10 +232,19 @@ async function runStages(
   capture: RawCapture,
   provider: ProviderRuleset,
   bundle: RulesetBundle,
+  now: number,
 ): Promise<PipelineOutcome> {
   const { tunables } = bundle;
 
   const parsed = parseCapture(capture, [provider], tunables);
+
+  // Diagnostics rule 4 (m3b Task 7): a local, content-free count of whether
+  // THIS provider's text was readable — never the text itself, never the
+  // parsed fields. `now` rather than a fresh clock read, so a batch of
+  // buffered captures drained together records against the instant they were
+  // drained, not whenever the loop happens to reach each one.
+  await recordParseResult(provider.providerKey, parsed !== null, now);
+
   if (parsed === null) {
     // Matched a provider but nothing readable in the text. The user still gets
     // a card, with nothing presented as parsed.
@@ -480,7 +490,7 @@ export async function startIngest(): Promise<() => void> {
     }
 
     for (const capture of fresh) {
-      await processStored(capture);
+      await processStored(capture, storedAt);
     }
   })();
 
@@ -498,7 +508,7 @@ export async function startIngest(): Promise<() => void> {
  * `ignored: "duplicate"` — the replay check doing its job against the durable
  * write rule 10 just made. So the batch path skips straight to the stages.
  */
-async function processStored(capture: RawCapture): Promise<void> {
+async function processStored(capture: RawCapture, now: number): Promise<void> {
   try {
     const bundle = await getActiveRuleset();
     if (bundle === null) return;
@@ -514,7 +524,7 @@ async function processStored(capture: RawCapture): Promise<void> {
       return;
     }
 
-    await runStages(capture, routed.provider, bundle);
+    await runStages(capture, routed.provider, bundle, now);
   } catch {
     // One malformed capture must not take the rest of the batch with it. The
     // raw row is already durable, so this one can be reprocessed later.
