@@ -46,29 +46,48 @@ const WRONG_COMBINATION_PHRASE = [
 ];
 
 // A configuration this fast would indicate the KDF was accidentally left at
-// trivial parameters (t=1, m=8 KiB derives in single-digit milliseconds
-// under this same Jest environment — see recovery_phrase.ts's parameter
-// comment for the benchmark). The real parameters measure ~1.2-1.6s here,
-// so this floor has wide margin below the real value and wide margin above
-// a trivially-configured one.
+// trivial parameters (t=1, m=8 KiB costs ~31ms of CPU time under this same
+// Jest environment — see recovery_phrase.ts's parameter comment for the
+// wall-clock benchmark). The real parameters cost roughly 2.6-4.1s of CPU
+// time here (see the comment on MAX_REASONABLE_DERIVATION_MS below), so this
+// floor has wide margin below the real value and wide margin above a
+// trivially-configured one.
 const TRIVIAL_KDF_FLOOR_MS = 300;
 
 // An upper bound so a future change can't silently restore something like
 // the 55-80 SECOND-per-derivation configuration this task tried before
-// retuning — that isn't a slow test, it's an unusable recovery flow.
+// retuning (m=19456 instead of 2048) — that isn't a slow test, it's an
+// unusable recovery flow.
 //
-// RAISED from 5s to 20s on 2026-08-14. This assertion measures WALL CLOCK, so
-// it is really measuring the machine as much as the KDF: under a full-suite run
-// with parallel workers competing for CPU it began failing at ~1.4s of real
-// work, and it fails on any slow CI box for the same reason. A ceiling that
-// flags a busy laptop is a ceiling that gets deleted the third time it cries
-// wolf, and then the 55-second regression it exists to catch ships unnoticed.
+// MEASURES CPU TIME, NOT WALL CLOCK (changed 2026-08-16; was raised 5s->20s
+// on 2026-08-14 as a stopgap on the wall-clock version, which is why the
+// name says "reasonable" rather than "cpu"). The wall-clock version was
+// flaky by design, not by bad luck: under a full 144-suite parallel `jest
+// --ci` run, the OS scheduler starves this worker of timeslices, and
+// Date.now() counts that starvation as if it were KDF work. Observed
+// directly: one run measured 20058ms against the then-20000ms ceiling and
+// failed by 58ms; a run seconds later on the same machine, same code,
+// finished in ~1.5s. The test was measuring how busy the laptop was, not
+// whether the parameters are sane.
 //
-// 20s still catches that regression by a factor of three while leaving room for
-// a loaded machine. The floor is the sharper half of this test anyway: a
-// trivially-configured KDF returns in microseconds, and no amount of load makes
-// a real one that fast.
-const MAX_REASONABLE_DERIVATION_MS = 20_000;
+// process.cpuUsage() only counts CPU time this process actually consumed
+// (user + system), not time spent waiting to be scheduled. Verified by
+// reproduction: deriving under a deliberately CPU-saturated machine (16
+// busy processes pinned across all 16 cores) moved wall-clock from ~4.2-6.0s
+// to ~8.9s for the identical call, while CPU time for that same call stayed
+// in a 2.6-4.1s band throughout — CPU time did not track the contention at
+// all. That is the metric this guard actually wants: the KDF's own cost,
+// not the scheduler's mood.
+//
+// 10000ms is calibrated against direct measurement of both ends, taken with
+// this exact call path in this Jest environment: real params (t=2, m=2048)
+// cost 2.6-4.1s of CPU time across five separate measurements (idle and
+// contended); the exact historical regression this comment describes (t=2,
+// m=19456) cost 32078ms of CPU time under the identical harness. 10s sits
+// with >2.4x margin above the highest real figure observed and >3x margin
+// below the regression figure, so it stays sensitive to a genuine parameter
+// mistake without caring how many other Jest workers are running.
+const MAX_REASONABLE_DERIVATION_MS = 10_000;
 
 describe("BIP39_WORDLIST", () => {
   it("has exactly 2048 unique entries", () => {
@@ -214,13 +233,18 @@ describe("deriveRecoveryKey", () => {
   }, 10000);
 
   it("takes longer than a floor that would flag trivial KDF parameters, and less than a ceiling that would flag an unusable one", async () => {
-    const start = Date.now();
+    // CPU time, not wall-clock — see the comment on MAX_REASONABLE_DERIVATION_MS
+    // above for why. process.cpuUsage(prior) returns a delta since `prior`.
+    const cpuStart = process.cpuUsage();
     await deriveRecoveryKey(ZERO_ENTROPY_PHRASE, saltA);
-    const elapsed = Date.now() - start;
+    const cpuElapsed = process.cpuUsage(cpuStart);
+    const cpuElapsedMs = (cpuElapsed.user + cpuElapsed.system) / 1000;
 
-    expect(elapsed).toBeGreaterThan(TRIVIAL_KDF_FLOOR_MS);
-    expect(elapsed).toBeLessThan(MAX_REASONABLE_DERIVATION_MS);
-    // No per-test timeout override: it would have to exceed the ceiling above,
-    // or Jest kills the test before the assertion it exists for can run.
+    expect(cpuElapsedMs).toBeGreaterThan(TRIVIAL_KDF_FLOOR_MS);
+    expect(cpuElapsedMs).toBeLessThan(MAX_REASONABLE_DERIVATION_MS);
+    // No per-test timeout override: the global 30s testTimeout (package.json's
+    // jest.testTimeout) is still a wall-clock backstop against a genuine hang
+    // — a derivation that never resolves fails that way, well before this
+    // assertion would ever get to run.
   });
 });
