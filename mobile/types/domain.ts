@@ -264,6 +264,14 @@ export type Loan = {
   linkedWalletId: string | null;
   nextDueDate: IsoDate | null;
   nextDueAmount: Centavos | null;
+  /**
+   * Day offsets relative to `nextDueDate`; negative = before, positive =
+   * after (e.g. the spec default `[-3, 0, 3]`). An EMPTY array means
+   * reminders are off for this loan (migration 008; loans rule 15 — "many 5-6
+   * borrowers do not want a due-date reminder for a collector who simply
+   * shows up"), the same convention `Bill.reminderOffsets` already uses.
+   */
+  reminderOffsets: number[];
   createdAt: EpochMs;
   updatedAt: EpochMs;
 };

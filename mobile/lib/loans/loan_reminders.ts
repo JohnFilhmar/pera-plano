@@ -1,5 +1,5 @@
 // lib/loans/loan_reminders.ts — due-date reminders for loans (m2b Task 7
-// rule 6; docs/04-features/06-loans.md rule 15).
+// rule 6; docs/04-features/06-loans.md rule 15; migration 008).
 //
 // SPLIT OUT OF loans_service.ts DELIBERATELY. `scheduleReminder` reaches
 // `expo-notifications`, which reaches the `NotificationListener` native module
@@ -11,6 +11,18 @@
 // A REMINDER FOR AN ALREADY-PAID INSTALLMENT IS WORSE THAN NO REMINDER (rule
 // 6). Every reschedule therefore CANCELS FIRST and re-derives from the current
 // balance, rather than adding to what is already queued.
+//
+// PER-LOAN OFFSETS, CLOSED (owner-approved 2026-08-16). Rule 15: "Offsets are
+// adjustable per loan, and reminders can be turned off entirely (many 5-6
+// borrowers do not want a due-date reminder for a collector who simply shows
+// up)." This used to hardcode the spec's default three for every loan — now it
+// reads `status.loan.reminderOffsets` (migration 008), the same way
+// `scheduleBillReminders` reads `status.bill.reminderOffsets`. An EMPTY array
+// schedules nothing, which is what "turned off entirely" means for this loan;
+// `createLoan`/`updateLoan` (lib/db/repos/loans_repo.ts) are what keep a loan
+// that "specifies none" on the spec's default three — this file has no
+// fallback of its own to apply, because by the time a Loan is read back from
+// the database its offsets are already resolved one way or the other.
 import { getSetting, setSetting } from "@/lib/db/repos/app_settings_repo";
 import { loanReminderAlertCopy } from "@/lib/alerts/alert_copy";
 import { cancelScheduled, scheduleReminder } from "@/lib/alerts/alerts_service";
@@ -18,18 +30,6 @@ import { CHANNEL_REMINDERS } from "@/lib/alerts/channels";
 import { atLocalTime } from "@/lib/dates";
 
 import type { LoanStatus } from "./loans_service";
-
-/**
- * Spec rule 15's defaults: "3 days before nextDueDate, on the due date, and 3
- * days after if still unpaid."
- *
- * NOT PER-LOAN YET. The same rule says offsets are adjustable per loan and that
- * reminders can be turned off entirely — "many 5-6 borrowers do not want a
- * due-date reminder for a collector who simply shows up" — and `loans` has no
- * column for either. Recorded as a gap rather than invented here: a per-loan
- * offset stored somewhere ad hoc would be worse than a documented default.
- */
-const REMINDER_OFFSET_DAYS = [-3, 0, 3] as const;
 
 /** Reminders fire in the morning rather than at midnight. */
 const REMINDER_HOUR = 9;
@@ -54,13 +54,20 @@ export async function scheduleLoanReminders(statuses: LoanStatus[], now: number)
   const scheduled: Record<string, string[]> = {};
 
   for (const status of statuses) {
-    // Nothing to remind about: settled, or no date to remind against. A
-    // free-form loan with no user-set `nextDueDate` is the 5-6 case rule 15
-    // describes — "reminders only if the user sets a nextDueDate".
-    if (status.outstanding <= 0 || status.nextDue === null) continue;
+    // Nothing to remind about: settled, no date to remind against, or the
+    // loan's own reminders are off. A free-form loan with no user-set
+    // `nextDueDate` is the 5-6 case rule 15 describes — "reminders only if the
+    // user sets a nextDueDate" — and an empty `reminderOffsets` is the OTHER
+    // half of that same rule, the collector who just shows up.
+    if (
+      status.outstanding <= 0 ||
+      status.nextDue === null ||
+      status.loan.reminderOffsets.length === 0
+    )
+      continue;
 
     const ids: string[] = [];
-    for (const offset of REMINDER_OFFSET_DAYS) {
+    for (const offset of status.loan.reminderOffsets) {
       const fireAt = atLocalTime(status.nextDue.dueDate, REMINDER_HOUR, 0) + offset * 86_400_000;
       // A reminder in the past would fire immediately on some Android builds
       // and never on others; either way it is not a reminder.

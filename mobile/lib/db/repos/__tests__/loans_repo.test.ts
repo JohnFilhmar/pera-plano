@@ -189,6 +189,74 @@ test("updateLoan throws LoanNotFoundError for an unknown id", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// Reminder offsets — rule 15, migration 008
+// ---------------------------------------------------------------------------
+test("A LOAN SPECIFYING NONE STILL GETS THE SPEC'S DEFAULT THREE", async () => {
+  // Rule 15: "3 days before nextDueDate, on the due date, and 3 days after."
+  const loan = await createLoan({
+    direction: "i-owe",
+    counterparty: "GLoan",
+    principal: 500000,
+  });
+
+  expect(loan.reminderOffsets).toEqual([-3, 0, 3]);
+  expect((await getLoan(loan.id))?.reminderOffsets).toEqual([-3, 0, 3]);
+});
+
+test("createLoan stores custom offsets, sorted ascending and deduplicated", async () => {
+  const loan = await createLoan({
+    direction: "i-owe",
+    counterparty: "Home Credit",
+    principal: 500000,
+    reminderOffsets: [0, -7, -7, -1],
+  });
+
+  expect(loan.reminderOffsets).toEqual([-7, -1, 0]);
+});
+
+test("AN EXPLICIT EMPTY ARRAY TURNS REMINDERS OFF ENTIRELY", async () => {
+  // Rule 15: "many 5-6 borrowers do not want a due-date reminder for a
+  // collector who simply shows up."
+  const loan = await createLoan({
+    direction: "i-owe",
+    counterparty: "Aling Nena",
+    principal: 500000,
+    reminderOffsets: [],
+  });
+
+  expect(loan.reminderOffsets).toEqual([]);
+  expect((await getLoan(loan.id))?.reminderOffsets).toEqual([]);
+});
+
+test("updateLoan can turn reminders off, and later back on", async () => {
+  const loan = await createLoan({
+    direction: "i-owe",
+    counterparty: "Aling Nena",
+    principal: 500000,
+  });
+  expect(loan.reminderOffsets).toEqual([-3, 0, 3]);
+
+  const off = await updateLoan(loan.id, { reminderOffsets: [] });
+  expect(off.reminderOffsets).toEqual([]);
+
+  const backOn = await updateLoan(loan.id, { reminderOffsets: [-1] });
+  expect(backOn.reminderOffsets).toEqual([-1]);
+});
+
+test("updateLoan without mentioning reminderOffsets leaves them untouched", async () => {
+  const loan = await createLoan({
+    direction: "i-owe",
+    counterparty: "Aling Nena",
+    principal: 500000,
+    reminderOffsets: [-1],
+  });
+
+  const updated = await updateLoan(loan.id, { counterparty: "Aling Nena (updated)" });
+
+  expect(updated.reminderOffsets).toEqual([-1]);
+});
+
+// ---------------------------------------------------------------------------
 // Payments — rules 4 and 5
 // ---------------------------------------------------------------------------
 test("PAYMENTS REDUCE THE OUTSTANDING BALANCE", async () => {

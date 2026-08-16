@@ -27,6 +27,7 @@
 // exactly as a Goal's Reached is derived from its wallet balance. Rule 6's
 // "closing is reversible, because people repay and re-borrow" then costs
 // nothing: change the balance and the loan is open again.
+import { DEFAULT_LOAN_REMINDER_OFFSETS } from "@/constants/loans";
 import { getDatabase } from "@/lib/db/database";
 import { newId } from "@/lib/ids";
 import type { Centavos, Installment, Loan, LoanDirection, LoanPayment } from "@/types/domain";
@@ -55,6 +56,14 @@ export type NewLoan = {
   linkedWalletId?: string | null;
   nextDueDate?: string | null;
   nextDueAmount?: Centavos | null;
+  /**
+   * Negative = before `nextDueDate`, positive = after; `[]` turns reminders
+   * off (migration 008). Omitted (`undefined`) falls back to
+   * `DEFAULT_LOAN_REMINDER_OFFSETS` — a loan that "specifies none" keeps the
+   * spec's default three (loans rule 15), same fallback shape as
+   * `NewBill.reminderOffsets`.
+   */
+  reminderOffsets?: number[];
 };
 
 export type LoanAdjustment = {
@@ -78,9 +87,19 @@ type LoanRow = {
   linked_wallet_id: string | null;
   next_due_date: string | null;
   next_due_amount: number | null;
+  reminder_offsets_json: string;
   created_at: number;
   updated_at: number;
 };
+
+/**
+ * Ascending (firing order), deduplicated. Same shape as bills_repo.ts's
+ * `normalizeOffsets` — kept local rather than shared, matching how each repo
+ * file here is otherwise self-contained.
+ */
+function normalizeOffsets(offsets: number[]): number[] {
+  return [...new Set(offsets)].sort((a, b) => a - b);
+}
 
 export class LoanNotFoundError extends Error {
   constructor(public readonly loanId: string) {
@@ -116,6 +135,7 @@ function rowToLoan(row: LoanRow): Loan {
     linkedWalletId: row.linked_wallet_id,
     nextDueDate: row.next_due_date,
     nextDueAmount: row.next_due_amount,
+    reminderOffsets: JSON.parse(row.reminder_offsets_json) as number[],
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -128,8 +148,8 @@ export async function createLoan(input: NewLoan): Promise<Loan> {
 
   await db.runAsync(
     `INSERT INTO loans (id, direction, counterparty, principal, interest_rate, schedule_json,
-       linked_wallet_id, next_due_date, next_due_amount, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       linked_wallet_id, next_due_date, next_due_amount, reminder_offsets_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       input.direction,
@@ -140,6 +160,7 @@ export async function createLoan(input: NewLoan): Promise<Loan> {
       input.linkedWalletId ?? null,
       input.nextDueDate ?? null,
       input.nextDueAmount ?? null,
+      JSON.stringify(normalizeOffsets(input.reminderOffsets ?? DEFAULT_LOAN_REMINDER_OFFSETS)),
       now,
       now,
     ],
@@ -218,13 +239,19 @@ export async function updateLoan(id: string, patch: Partial<NewLoan>): Promise<L
       patch.linkedWalletId !== undefined ? patch.linkedWalletId : current.linkedWalletId,
     nextDueDate: patch.nextDueDate !== undefined ? patch.nextDueDate : current.nextDueDate,
     nextDueAmount: patch.nextDueAmount !== undefined ? patch.nextDueAmount : current.nextDueAmount,
+    // `??`, not `!== undefined`: an explicit `[]` means "turn reminders off"
+    // and must stick, exactly as `updateBill` treats its own reminderOffsets —
+    // only an omitted patch (`undefined`) falls back to what the loan already
+    // had.
+    reminderOffsets: normalizeOffsets(patch.reminderOffsets ?? current.reminderOffsets),
   };
 
   const db = await getDatabase();
   await db.runAsync(
     `UPDATE loans
         SET direction = ?, counterparty = ?, principal = ?, interest_rate = ?, schedule_json = ?,
-            linked_wallet_id = ?, next_due_date = ?, next_due_amount = ?, updated_at = ?
+            linked_wallet_id = ?, next_due_date = ?, next_due_amount = ?, reminder_offsets_json = ?,
+            updated_at = ?
       WHERE id = ?`,
     [
       merged.direction,
@@ -235,6 +262,7 @@ export async function updateLoan(id: string, patch: Partial<NewLoan>): Promise<L
       merged.linkedWalletId,
       merged.nextDueDate,
       merged.nextDueAmount,
+      JSON.stringify(merged.reminderOffsets),
       Date.now(),
       id,
     ],

@@ -113,7 +113,48 @@ test("a free-form loan saves with no schedule and no rate", () => {
     interestRate: null,
     schedule: null,
     nextDueDate: null,
+    // Rule 15's default three — a loan that specifies nothing keeps them.
+    reminderOffsets: [-3, 0, 3],
   });
+});
+
+// ---------------------------------------------------------------------------
+// Reminders — rule 15, migration 008. Same picker as bill_form.tsx.
+// ---------------------------------------------------------------------------
+test("THE REMINDER CONTROL RENDERS WITH THE SPEC'S THREE OFFSETS PRE-SELECTED", () => {
+  renderForm();
+
+  for (const testID of ["loan-offset--3", "loan-offset-0", "loan-offset-3"]) {
+    expect(screen.getByTestId(testID).props.accessibilityState.selected).toBe(true);
+  }
+});
+
+test("DESELECTING EVERY OFFSET SHOWS THE NO-NOTIFICATIONS COPY AND SUBMITS AN EMPTY ARRAY", () => {
+  // Rule 15: "many 5-6 borrowers do not want a due-date reminder for a
+  // collector who simply shows up" — turning reminders off is a real choice.
+  const { onSubmit } = renderForm();
+
+  fireEvent.press(screen.getByTestId("loan-offset--3"));
+  fireEvent.press(screen.getByTestId("loan-offset-0"));
+  fireEvent.press(screen.getByTestId("loan-offset-3"));
+  screen.getByText("No notifications. The loan still shows its due date in the app.");
+
+  fireEvent.changeText(screen.getByTestId("loan-counterparty"), "Aling Nena");
+  fireEvent.changeText(screen.getByTestId("loan-principal"), "500000");
+  fireEvent.press(screen.getByTestId("loan-save"));
+
+  expect(submitted(onSubmit).reminderOffsets).toEqual([]);
+});
+
+test("TOGGLING TO A CUSTOM SUBSET SUBMITS EXACTLY THAT SUBSET", () => {
+  const { onSubmit } = renderForm();
+
+  fireEvent.press(screen.getByTestId("loan-offset-3")); // deselect "3 days after"
+  fireEvent.changeText(screen.getByTestId("loan-counterparty"), "Aling Nena");
+  fireEvent.changeText(screen.getByTestId("loan-principal"), "500000");
+  fireEvent.press(screen.getByTestId("loan-save"));
+
+  expect(submitted(onSubmit).reminderOffsets).toEqual([-3, 0]);
 });
 
 test("an amortized loan saves a MATERIALIZED schedule with its splits", () => {

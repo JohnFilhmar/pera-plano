@@ -19,6 +19,7 @@ function statusOf(over: Partial<LoanStatus> = {}): LoanStatus {
     linkedWalletId: null,
     nextDueDate: "2026-09-18",
     nextDueAmount: 100000,
+    reminderOffsets: [-3, 0, 3],
     createdAt: 0,
     updatedAt: 0,
     ...over.loan,

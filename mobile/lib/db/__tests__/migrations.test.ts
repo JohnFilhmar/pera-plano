@@ -710,3 +710,95 @@ describe("007_recurring_detail upgrades a real version-6 database in place", () 
     expect(await runMigrations(db)).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 008_loan_reminders — the per-loan reminder gap closed (owner-approved
+// 2026-08-16). `loans` gains ONE column; a loan written before this migration
+// must keep every value it already had and read the spec's default three
+// offsets for the new one, not NULL and not empty — an already-tracked loan
+// "specifies none" and rule 15's default is the out-of-box behaviour for
+// exactly that case.
+// ---------------------------------------------------------------------------
+const V7_LOAN_ID = "loan_v7";
+
+describe("008_loan_reminders upgrades a real version-7 database in place", () => {
+  /** Brings a database to 007 and seeds a loan the way a v7 device would have one. */
+  async function atVersionSevenWithLoan(
+    db: Awaited<ReturnType<typeof getDatabase>>,
+  ): Promise<void> {
+    const upToSeven = MIGRATIONS.filter((m) => m.version <= 7);
+    expect(upToSeven.length).toBe(7);
+    await runMigrations(db, upToSeven);
+
+    await db.runAsync(
+      `INSERT INTO loans (id, direction, counterparty, principal, interest_rate, schedule_json,
+         linked_wallet_id, next_due_date, next_due_amount, created_at, updated_at)
+       VALUES (?, 'i-owe', 'Aling Nena', 500000, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+      [V7_LOAN_ID, V1_TIMESTAMP, V1_TIMESTAMP],
+    );
+  }
+
+  test("a database at 007, already holding a loan, gains the column and defaults it to the spec's three offsets", async () => {
+    const db = await getDatabase();
+    await atVersionSevenWithLoan(db);
+
+    // Genuinely absent first, or "it is there afterwards" would prove nothing.
+    const before = await db.getAllAsync<{ name: string }>("PRAGMA table_info(loans)");
+    expect(before.map((c) => c.name)).not.toContain("reminder_offsets_json");
+
+    expect(await runMigrations(db)).toEqual(
+      MIGRATIONS.filter((m) => m.version > 7).map((m) => m.version),
+    );
+
+    const after = await db.getAllAsync<{ name: string }>("PRAGMA table_info(loans)");
+    expect(after.map((c) => c.name)).toContain("reminder_offsets_json");
+
+    const loan = await db.getFirstAsync<Record<string, unknown>>(
+      "SELECT * FROM loans WHERE id = ?",
+      [V7_LOAN_ID],
+    );
+    expect(loan).toMatchObject({
+      id: V7_LOAN_ID,
+      direction: "i-owe",
+      counterparty: "Aling Nena",
+      principal: 500000,
+      created_at: V1_TIMESTAMP,
+    });
+    // NOT NULL and NOT an empty array — a pre-existing loan "specifies none"
+    // and rule 15's default three is the out-of-box behaviour for that case,
+    // the one deliberate divergence from bills' CREATE-TABLE-time '[]' default.
+    expect(loan?.reminder_offsets_json).toBe("[-3,0,3]");
+
+    const count = await db.getFirstAsync<{ n: number }>("SELECT COUNT(*) AS n FROM loans");
+    expect(count?.n).toBe(1);
+  });
+
+  test("the column is writable on a row that predates it, including turning reminders off", async () => {
+    const db = await getDatabase();
+    await atVersionSevenWithLoan(db);
+    await runMigrations(db);
+
+    await db.runAsync("UPDATE loans SET reminder_offsets_json = ? WHERE id = ?", [
+      "[]",
+      V7_LOAN_ID,
+    ]);
+    const row = await db.getFirstAsync<{ json: string; kind: string }>(
+      "SELECT reminder_offsets_json AS json, typeof(reminder_offsets_json) AS kind FROM loans WHERE id = ?",
+      [V7_LOAN_ID],
+    );
+    expect(row?.json).toBe("[]");
+    expect(row?.kind).toBe("text");
+  });
+
+  test("every shipped version ends up recorded, and a further run applies nothing", async () => {
+    const db = await getDatabase();
+    await atVersionSevenWithLoan(db);
+    await runMigrations(db);
+
+    const recorded = await db.getAllAsync<{ version: number; name: string }>(
+      "SELECT version, name FROM schema_migrations ORDER BY version",
+    );
+    expect(recorded).toEqual(MIGRATIONS.map((m) => ({ version: m.version, name: m.name })));
+    expect(await runMigrations(db)).toEqual([]);
+  });
+});

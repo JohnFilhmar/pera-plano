@@ -23,7 +23,9 @@ const mockCancel = cancelScheduled as jest.MockedFunction<typeof cancelScheduled
 /** Sep 1 2026 — comfortably before a Sep 15 due date, so all three fire. */
 const NOW = new Date(2026, 8, 1, 8, 0).getTime();
 
-function statusOf(over: Partial<LoanStatus> = {}): LoanStatus {
+type LoanStatusOverride = Partial<Omit<LoanStatus, "loan">> & { loan?: Partial<Loan> };
+
+function statusOf(over: LoanStatusOverride = {}): LoanStatus {
   const loan: Loan = {
     id: "l1",
     direction: "i-owe",
@@ -34,17 +36,24 @@ function statusOf(over: Partial<LoanStatus> = {}): LoanStatus {
     linkedWalletId: null,
     nextDueDate: "2026-09-15",
     nextDueAmount: 100000,
+    // Rule 15's default three — most fixtures want the out-of-box behaviour;
+    // the off/custom tests override this explicitly.
+    reminderOffsets: [-3, 0, 3],
     createdAt: 0,
     updatedAt: 0,
     ...over.loan,
   };
   return {
-    loan,
     outstanding: 600000,
     nextDue: { dueDate: "2026-09-15", amount: 100000 },
     overdue: false,
     paidCount: 0,
     ...over,
+    // LAST, DELIBERATELY. `over.loan` is a PATCH merged into the defaults
+    // above, not a full replacement — spreading `...over` first and `loan`
+    // after keeps that merged value from being clobbered by the raw partial
+    // object a test passed in `over.loan`.
+    loan,
   };
 }
 
@@ -128,6 +137,28 @@ test("a loan with NO due date schedules nothing", async () => {
   expect(mockSchedule).not.toHaveBeenCalled();
 });
 
+test("A LOAN WITH REMINDERS OFF SCHEDULES NOTHING", async () => {
+  // Rule 15, the other half: "reminders can be turned off entirely" — an empty
+  // `reminderOffsets` (migration 008), even though the loan has a due date.
+  await scheduleLoanReminders(
+    [statusOf({ loan: { reminderOffsets: [] } })],
+    NOW,
+  );
+
+  expect(mockSchedule).not.toHaveBeenCalled();
+});
+
+test("A LOAN WITH CUSTOM OFFSETS SCHEDULES EXACTLY THOSE", async () => {
+  // Rule 15: "Offsets are adjustable per loan."
+  await scheduleLoanReminders(
+    [statusOf({ loan: { reminderOffsets: [-1] } })],
+    NOW,
+  );
+
+  expect(mockSchedule).toHaveBeenCalledTimes(1);
+  expect(mockSchedule.mock.calls[0][0].fireAt).toBe(new Date(2026, 8, 14, 9, 0).getTime());
+});
+
 test("AN OFFSET ALREADY IN THE PAST IS SKIPPED", async () => {
   // A reminder scheduled for a moment that has gone fires immediately on some
   // Android builds and never on others; either way it is not a reminder.
@@ -150,7 +181,7 @@ test("A DENIED PERMISSION IS NOT REMEMBERED AS A SCHEDULED REMINDER", async () =
 });
 
 test("several loans each keep their own reminder ids", async () => {
-  const second = statusOf({ loan: { id: "l2", counterparty: "GLoan" } as Loan });
+  const second = statusOf({ loan: { id: "l2", counterparty: "GLoan" } });
 
   await scheduleLoanReminders([statusOf(), second], NOW);
 
@@ -161,7 +192,7 @@ test("several loans each keep their own reminder ids", async () => {
 });
 
 test("cancelLoanReminders drops one loan's reminders and leaves the rest", async () => {
-  const second = statusOf({ loan: { id: "l2", counterparty: "GLoan" } as Loan });
+  const second = statusOf({ loan: { id: "l2", counterparty: "GLoan" } });
   await scheduleLoanReminders([statusOf(), second], NOW);
   jest.clearAllMocks();
 

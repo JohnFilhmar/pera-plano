@@ -14,11 +14,18 @@
 // OWED-TO-ME DEFAULTS TO FREE-FORM (rule 3): personal lending rarely has terms,
 // and defaulting a loan to your cousin into an amortization schedule asks a
 // question nobody agreed on.
+//
+// REMINDERS — same picker as components/bills/bill_form.tsx, on purpose (m2b
+// gap closed by migration 008). A user should not meet two different reminder
+// pickers in one app. It offers the spec's own three offsets (rule 15) rather
+// than bills' five, because rule 15 names exactly those three and no others —
+// unlike bills rule 10, which enumerates a wider menu.
 import { useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 
 import { centavosFromDigits, formatCentavos } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
+import { DEFAULT_LOAN_REMINDER_OFFSETS } from "@/constants/loans";
 import { buildAmortizationSchedule, buildFlatSchedule, monthlyPayment } from "@/lib/loans/loan_math";
 import type { Installment, LoanDirection } from "@/types/domain";
 
@@ -32,7 +39,15 @@ export type LoanFormValues = {
   schedule: Installment[] | null;
   nextDueDate: string | null;
   nextDueAmount: number | null;
+  reminderOffsets: number[];
 };
+
+/** Rule 15's own three offsets. Negative-is-before, matching types/domain.ts. */
+const REMINDER_OFFSETS: readonly { value: number; label: string }[] = [
+  { value: -3, label: "3 days before" },
+  { value: 0, label: "On the due date" },
+  { value: 3, label: "3 days after" },
+];
 
 export type LoanFormProps = {
   onSubmit: (values: LoanFormValues) => void;
@@ -61,6 +76,9 @@ export function LoanForm({ onSubmit, busy = false }: LoanFormProps) {
   const [countText, setCountText] = useState("");
   const [intervalText, setIntervalText] = useState("7");
   const [firstDue, setFirstDue] = useState("");
+  const [reminderOffsets, setReminderOffsets] = useState<number[]>([
+    ...DEFAULT_LOAN_REMINDER_OFFSETS,
+  ]);
 
   const principal = centavosFromDigits(principalDigits);
   const rate = Number(rateText) || 0;
@@ -90,6 +108,14 @@ export function LoanForm({ onSubmit, busy = false }: LoanFormProps) {
     // — a user who picks "Owed to me" after setting up an amortized loan is
     // telling us this is personal lending.
     if (next === "owed-to-me") setKind("free-form");
+  };
+
+  const toggleReminderOffset = (offset: number) => {
+    setReminderOffsets((current) =>
+      current.includes(offset)
+        ? current.filter((value) => value !== offset)
+        : [...current, offset].sort((a, b) => a - b),
+    );
   };
 
   return (
@@ -247,6 +273,36 @@ export function LoanForm({ onSubmit, busy = false }: LoanFormProps) {
         </View>
       )}
 
+      <View className="gap-2">
+        <Text className="text-sm font-medium text-fg-2 dark:text-fg-2-dark">Remind me</Text>
+        <View className="flex-row flex-wrap gap-2">
+          {REMINDER_OFFSETS.map((offset) => (
+            <Pressable
+              key={offset.value}
+              testID={`loan-offset-${offset.value}`}
+              accessibilityRole="button"
+              accessibilityState={{ selected: reminderOffsets.includes(offset.value) }}
+              onPress={() => toggleReminderOffset(offset.value)}
+              className={`rounded-lg px-3 py-2 ${
+                reminderOffsets.includes(offset.value)
+                  ? "bg-brand-soft dark:bg-brand-soft-dark"
+                  : "bg-surface dark:bg-surface-dark"
+              }`}
+            >
+              <Text className="text-sm text-fg dark:text-fg-dark">{offset.label}</Text>
+            </Pressable>
+          ))}
+        </View>
+        {reminderOffsets.length === 0 ? (
+          // Rule 15: many 5-6 borrowers do not want a due-date reminder for a
+          // collector who simply shows up — so no reminders is a real choice,
+          // not a mistake to block, and the due state still shows in-app.
+          <Text className="text-xs text-fg-2 dark:text-fg-2-dark">
+            No notifications. The loan still shows its due date in the app.
+          </Text>
+        ) : null}
+      </View>
+
       <Button
         title="Save loan"
         testID="loan-save"
@@ -287,6 +343,7 @@ export function LoanForm({ onSubmit, busy = false }: LoanFormProps) {
             schedule,
             nextDueDate: schedule?.[0]?.dueDate ?? null,
             nextDueAmount: schedule?.[0]?.amountDue ?? null,
+            reminderOffsets,
           });
         }}
       />

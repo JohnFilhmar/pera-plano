@@ -6,6 +6,7 @@ import limitAlertStateSql from "./migrations/004_limit_alert_state.sql";
 import loanAdjustmentsSql from "./migrations/005_loan_adjustments.sql";
 import billCyclesSql from "./migrations/006_bill_cycles.sql";
 import recurringDetailSql from "./migrations/007_recurring_detail.sql";
+import loanRemindersSql from "./migrations/008_loan_reminders.sql";
 
 export type Migration = { version: number; name: string; sql: string };
 
@@ -13,7 +14,11 @@ export type Migration = { version: number; name: string; sql: string };
  * Registry of numbered migrations, ascending. Task 7 registers 001_core;
  * m1c Task 3b registers 002_balance_after; 003_drift_dismissal lands with
  * wallets rule 3's dismissal flow; 004_limit_alert_state lands with m2 Task 3's
- * limits repository; 005_loan_adjustments lands with m2b Task 5.
+ * limits repository; 005_loan_adjustments lands with m2b Task 5;
+ * 006_bill_cycles lands with m2c Task 1; 007_recurring_detail lands with M3
+ * Part 2 Task 6; 008_loan_reminders closes the per-loan reminder gap recorded
+ * in lib/loans/loan_reminders.ts (docs/04-features/06-loans.md rule 15,
+ * owner-approved 2026-08-16).
  * NEVER edit a shipped migration — add a new numbered one instead.
  *
  * Jest cache gotcha: babel-plugin-inline-import inlines each `*.sql` file's contents into
@@ -31,6 +36,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 5, name: "loan_adjustments", sql: loanAdjustmentsSql },
   { version: 6, name: "bill_cycles", sql: billCyclesSql },
   { version: 7, name: "recurring_detail", sql: recurringDetailSql },
+  { version: 8, name: "loan_reminders", sql: loanRemindersSql },
 ];
 
 /**

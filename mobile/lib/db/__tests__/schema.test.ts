@@ -255,7 +255,8 @@ function buildValidRows(ids: SeedIds, now: number): Record<string, Row> {
     loans: {
       id: "row_loans", direction: "i-owe", counterparty: "Someone", principal: 1000,
       interest_rate: null, schedule_json: null, linked_wallet_id: null,
-      next_due_date: null, next_due_amount: null, created_at: now, updated_at: now,
+      next_due_date: null, next_due_amount: null, reminder_offsets_json: "[-3,0,3]",
+      created_at: now, updated_at: now,
     },
     loan_payments: {
       id: "row_loan_payments", loan_id: ids.loanId, transaction_id: ids.freeTxId,
@@ -407,7 +408,11 @@ describe("NOT NULL is enforced on every required column in the schema", () => {
       .map((column) => ({ table: "income_profile_sources", column })),
     ...["id", "name", "target_amount", "linked_wallet_id", "created_at", "updated_at"]
       .map((column) => ({ table: "goals", column })),
-    ...["id", "direction", "counterparty", "principal", "created_at", "updated_at"]
+    // reminder_offsets_json (migration 008): NOT NULL DEFAULT '[-3,0,3]' — the
+    // one column here whose NOT NULL is backed by a DEFAULT rather than always
+    // being supplied by the caller, so this is the assertion that an explicit
+    // NULL is still rejected regardless.
+    ...["id", "direction", "counterparty", "principal", "reminder_offsets_json", "created_at", "updated_at"]
       .map((column) => ({ table: "loans", column })),
     ...["id", "loan_id", "transaction_id", "created_at", "updated_at"]
       .map((column) => ({ table: "loan_payments", column })),
