@@ -55,6 +55,52 @@ function rowToRawCapture(row: RawNotificationRow): RawCapture {
 }
 
 /**
+ * A `RawCapture` plus the ONE extra fact the Privacy centre's captured list
+ * needs to render its countdown: when this row expires.
+ *
+ * A SEPARATE TYPE, not a widened `RawCapture` — same reasoning as
+ * `getRawCaptureExpiry`'s own doc: `RawCapture` is interface-contract §4, the
+ * shape the Kotlin listener hands across the bridge, and it has no
+ * `expiresAt` because the native side never assigns one. This type exists
+ * only on this side of that boundary, for callers that already need the
+ * expiry alongside the text (m3b Task 6) and would otherwise pay a second
+ * per-row query for it.
+ */
+export type StoredRawCapture = RawCapture & { expiresAt: EpochMs };
+
+function rowToStoredRawCapture(row: RawNotificationRow & { expires_at: number }): StoredRawCapture {
+  return { ...rowToRawCapture(row), expiresAt: row.expires_at };
+}
+
+/**
+ * Every capture that has not yet expired, newest-captured first — the exact
+ * rows behind "What PeraPlano captured" (m3b Task 6 rule 3; docs
+ * §04-features/11-settings-privacy.md Flow C).
+ *
+ * FILTERED BY THE CALLER'S `now`, NOT BY WHETHER A PURGE HAS RUN YET.
+ * `purgeExpiredRawCaptures` only runs at bootstrap (lib/bootstrap.ts), so a
+ * long session can hold rows whose `expires_at` passed hours ago and have not
+ * been swept yet. This list is the proof behind the 30-day promise — showing
+ * one of those rows would show text the user was told is already gone, which
+ * is the one thing this screen must never do. `now` is a parameter rather
+ * than read from the clock here for the same reason every other function in
+ * this repository that touches retention takes it as one: a caller that
+ * cannot pin the instant cannot test the promise at all.
+ *
+ * NEWEST-CAPTURED-FIRST, matching `listObservedPackages`'s own ordering
+ * convention: recency is what a user scanning "what did you record" actually
+ * wants to see first.
+ */
+export async function listRawCaptures(now: EpochMs): Promise<StoredRawCapture[]> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<RawNotificationRow & { expires_at: number }>(
+    "SELECT * FROM raw_notifications WHERE expires_at > ? ORDER BY captured_at DESC",
+    [now],
+  );
+  return rows.map(rowToStoredRawCapture);
+}
+
+/**
  * Persists one capture and returns its id — which is the capture's own id, so
  * a caller can use it as `transactions.raw_notification_id` without a second
  * read.

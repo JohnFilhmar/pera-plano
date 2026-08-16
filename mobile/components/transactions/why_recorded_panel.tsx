@@ -115,8 +115,14 @@ export function captureExpiryLabel(expiresAt: EpochMs, now: EpochMs): string {
  * actually read, which is the one thing it must not do. Duplicates are
  * collapsed, because Android frequently repeats `text` in `bigText` and the
  * same sentence printed twice reads as a rendering bug.
+ *
+ * EXPORTED so the Privacy centre's captured list (m3b Task 6 rule 3) renders
+ * the SAME lines from the SAME rows this panel does — two surfaces reading
+ * `raw_notifications` and independently deciding what counts as "the
+ * captured text" is exactly how they end up disagreeing about what the app
+ * stored, which is the one thing neither is allowed to get wrong.
  */
-function captureLines(capture: RawCapture): string[] {
+export function captureLines(capture: RawCapture): string[] {
   const seen = new Set<string>();
   const lines: string[] = [];
   for (const field of [capture.title, capture.text, capture.bigText, capture.subText]) {

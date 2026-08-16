@@ -12,6 +12,7 @@ import {
   getRawCapture,
   getRawCaptureExpiry,
   hasRawCapture,
+  listRawCaptures,
   purgeExpiredRawCaptures,
   RAW_CAPTURE_TTL_MS,
   storeRawCapture,
@@ -216,4 +217,42 @@ test("purging a capture a committed transaction points at clears the ref instead
     [item.id],
   );
   expect(queued?.raw_notification_id).toBeNull();
+});
+
+// ---------------------------------------------------------------------------
+// listRawCaptures — the Privacy centre's "What PeraPlano captured" list
+// (m3b Task 6 rule 3).
+// ---------------------------------------------------------------------------
+
+test("listRawCaptures returns unexpired rows newest-captured first", async () => {
+  await storeRawCapture(capture({ id: "older", capturedAt: NOW - 1_000 }), NOW - 1_000);
+  await storeRawCapture(capture({ id: "newer", capturedAt: NOW }), NOW);
+
+  const rows = await listRawCaptures(NOW);
+
+  expect(rows.map((row) => row.id)).toEqual(["newer", "older"]);
+});
+
+test("listRawCaptures excludes a capture at or past its expiry", async () => {
+  await storeRawCapture(capture({ id: "expired" }), NOW - THIRTY_DAYS_MS);
+  await storeRawCapture(capture({ id: "fresh" }), NOW);
+
+  const rows = await listRawCaptures(NOW);
+
+  // This is the proof behind the 30-day promise — a row the promise says is
+  // already gone must never appear here, whether or not the bootstrap purge
+  // has swept it yet.
+  expect(rows.map((row) => row.id)).toEqual(["fresh"]);
+});
+
+test("listRawCaptures carries the STORED expiry, not a derived one", async () => {
+  await storeRawCapture(capture({ id: "cap-1" }), NOW);
+
+  const [row] = await listRawCaptures(NOW);
+
+  expect(row.expiresAt).toBe(NOW + RAW_CAPTURE_TTL_MS);
+});
+
+test("listRawCaptures is empty when nothing has been captured", async () => {
+  expect(await listRawCaptures(NOW)).toEqual([]);
 });

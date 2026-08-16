@@ -190,6 +190,16 @@ export const queryKeys = {
     all: ["raw_captures"] as const,
     detail: (id: string) => ["raw_captures", "detail", id] as const,
     expiry: (id: string) => ["raw_captures", "detail", id, "expiry"] as const,
+    /**
+     * Every unexpired capture, newest-captured first — the Privacy centre's
+     * "What PeraPlano captured" list (m3b Task 6 rule 3). A SIBLING of
+     * `detail`, not a parent of it: the two `WhyRecordedPanel` keys above are
+     * per-Transaction reads keyed on a Transaction's `rawNotificationRef`,
+     * while this is every raw_notifications row on the device — different
+     * questions over the same table, so nesting one under the other would
+     * make either's own invalidation over-reach into the other's cache.
+     */
+    list: () => ["raw_captures", "list"] as const,
   },
   /**
    * The corrections the user has taught the pipeline
@@ -208,6 +218,21 @@ export const queryKeys = {
   },
   settings: {
     all: ["settings"] as const,
+    /**
+     * The master capture pause (m3b Task 6 rule 1). Its OWN key rather than a
+     * bare read off `settings.all` because the Privacy centre's capture
+     * toggle and the Home tracking banner (`useListenerHealth`) both need to
+     * invalidate precisely this value without refetching every other setting
+     * on the same write.
+     */
+    captureEnabled: () => ["settings", "capture_enabled"] as const,
+    /**
+     * The per-provider pause list (m3b Task 6 rule 2; docs
+     * §04-features/11-settings-privacy.md Flow B) — package names, not
+     * provider keys; see `AppSettings.paused_provider_packages`'s own doc in
+     * lib/db/repos/app_settings_repo.ts for why.
+     */
+    pausedProviderPackages: () => ["settings", "paused_provider_packages"] as const,
   },
   /**
    * RecurringPatterns — the Subscriptions screen and the locked-in figure

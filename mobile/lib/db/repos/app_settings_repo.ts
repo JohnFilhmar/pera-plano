@@ -87,6 +87,31 @@ export type AppSettings = {
    * trusts its caller rather than re-validating in this file.
    */
   recurring_forget_multiplier: number;
+   * Android package names the user has individually paused from the Privacy
+   * centre's per-provider switch list (m3b Task 6 rule 2; docs
+   * §04-features/11-settings-privacy.md Flow B). An EMPTY array is the
+   * fresh-install default and matches `setProviderFilter([])`'s own "allow
+   * every package" default on the native side (`CapturePrefs.kt`) — there is
+   * nothing here for a new install to disagree with before the user has
+   * touched a single switch.
+   *
+   * PACKAGE NAMES, NOT PROVIDER KEYS. One provider in the ruleset can own
+   * several packages (`sms_relay` carries three), and `setProviderFilter`
+   * only ever understands packages — so the settings row that has to be
+   * turned back into a `setProviderFilter` argument on every app launch has
+   * to already speak that language, not one this repository would have to
+   * re-resolve through the ruleset every time it is read.
+   *
+   * HERE, NOT ON THE NATIVE SIDE, because the native module exposes a
+   * SETTER (`setProviderFilter`) but no GETTER — `CapturePrefs.getProviderFilter()`
+   * is never wired to an `AsyncFunction` in `NotificationListenerModule.kt`.
+   * Without a row to read back, the switch list would have no way to know
+   * which providers are currently paused after a cold start; this key is
+   * that readable copy, and every write to it is paired with the matching
+   * `setProviderFilter` call so the two can never disagree about which
+   * packages capture.
+   */
+  paused_provider_packages: string[];
 };
 
 /** Values returned by `getSetting`/`getAllSettings` for a key with no row yet. */
@@ -101,6 +126,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   loan_reminder_ids: {},
   bill_reminder_ids: {},
   recurring_forget_multiplier: 1.5,
+  paused_provider_packages: [],
 };
 
 type SettingValueRow = { value_json: string };

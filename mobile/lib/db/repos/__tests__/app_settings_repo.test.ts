@@ -159,6 +159,13 @@ describe("getSetting preserves the exact runtime type for every key, not just th
     expect(result).toBe(1_690_000_000_000);
     expect(typeof result).toBe("number");
   });
+
+  test("paused_provider_packages round-trips an array of package names", async () => {
+    await setSetting("paused_provider_packages", ["com.globe.gcash.android"]);
+    const result = await getSetting("paused_provider_packages");
+    expect(result).toEqual(["com.globe.gcash.android"]);
+    expect(Array.isArray(result)).toBe(true);
+  });
 });
 
 describe("reading an unset key returns exactly its documented default, per key", () => {
@@ -172,6 +179,11 @@ describe("reading an unset key returns exactly its documented default, per key",
     const value = await getSetting(key);
     expect(value).toBe(expected);
     expect(value).not.toBeNull();
+  });
+
+  test("paused_provider_packages defaults to an empty array", async () => {
+    const value = await getSetting("paused_provider_packages");
+    expect(value).toEqual([]);
   });
 
   test("cash_reconcile_prompt_at defaults to null specifically, not merely falsy", async () => {
