@@ -128,6 +128,19 @@ export type AppSettings = {
    * packages capture.
    */
   paused_provider_packages: string[];
+  /**
+   * Epoch ms of the last SUCCESSFUL aggregate-telemetry send (m3c Task 6),
+   * or `null` before the first one ever completes. This one value does two
+   * jobs at once, deliberately: it is the interval gate ("don't send again
+   * for TELEMETRY_INTERVAL_MS") AND the local stats window's `periodStart`
+   * for the *next* send — see `services/telemetry.ts`'s header for why
+   * those two must always move together. It is written ONLY in the same
+   * step that clears `parse_stats` (`lib/diagnostics/parse_stats_repo.ts`),
+   * never on a skipped, opted-out, or failed send — advancing it on a
+   * failure would move `periodStart` past counts that are still sitting,
+   * unsent, in the table, silently dropping them from every future report.
+   */
+  last_telemetry_sent_at: number | null;
 };
 
 /** Values returned by `getSetting`/`getAllSettings` for a key with no row yet. */
@@ -143,6 +156,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   bill_reminder_ids: {},
   recurring_forget_multiplier: 1.5,
   paused_provider_packages: [],
+  last_telemetry_sent_at: null,
 };
 
 type SettingValueRow = { value_json: string };
