@@ -46,6 +46,22 @@ import { freshDb } from "@/test_support/db";
 import type { Wallet } from "@/types/domain";
 
 import HomeScreen from "../(tabs)/index";
+
+// A `waitFor` budget must be STRICTLY LESS than the test budget it runs inside.
+//
+// Every wait in this file allows 30 s, which was also the global `testTimeout`
+// in package.json — so the two deadlines expired together. Under worker
+// contention (a full run on a cold cache) that is a race the test can only win
+// by finishing early: Jest kills the test at the same instant `waitFor` would
+// have reported what it was still waiting for, so the failure arrives as a bare
+// "Exceeded timeout" naming no element. It cost one 117 s cold-cache run here
+// and passed on every warm run afterwards, which is the signature of a flake
+// that will reappear in CI rather than one that got fixed.
+//
+// Raising only this file's budget keeps the waits at 30 s — long enough for the
+// real work, which is a full screen render over an in-memory database — while
+// leaving Jest 30 s of headroom to let `waitFor` lose first and say why.
+jest.setTimeout(60_000);
 import MoreScreen from "../(tabs)/more";
 
 const mockPush = jest.fn();
