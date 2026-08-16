@@ -33,6 +33,26 @@ function monthLabel(month: string): string {
   return `${MONTHS[Number(monthNumber) - 1]} ${year}`;
 }
 
+/**
+ * Guards the custom-range Apply button. Without this, `from`/`to` default to
+ * `""` and a press with nothing typed (or `from` after `to`) produces a
+ * query that degrades to zero rows — the report then shows "No transactions
+ * in this period," which reads as the user's DATA being missing when it was
+ * actually their INPUT that was never valid. Nothing downstream crashes
+ * (`Number.isFinite`/SQLite's NaN comparisons close the range on their own),
+ * so this is purely about not showing a misleading empty state.
+ *
+ * Format only — `YYYY-MM-DD` shape, not calendar validity (no Feb-30 check).
+ * String comparison for `from <= to` is safe because a `YYYY-MM-DD` string
+ * that matches the pattern is zero-padded, the same trick aggregate.ts's
+ * `inRange` relies on for calendar order.
+ */
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+function isValidCustomRange(from: string, to: string): boolean {
+  return DATE_PATTERN.test(from) && DATE_PATTERN.test(to) && from <= to;
+}
+
 export function RangePicker({
   scope,
   availableScopes,
@@ -112,12 +132,21 @@ export function RangePicker({
             placeholder="YYYY-MM-DD"
             className="rounded-lg border border-fg-2 px-3 py-2 text-fg dark:border-fg-2-dark dark:text-fg-dark"
           />
+          {/* Tone matches cash_reconcile_sheet.tsx's field hints: say what is
+              needed, not what is wrong with what was typed. */}
+          <Text testID="range-picker-custom-hint" className="text-fg-2 dark:text-fg-2-dark">
+            Enter both dates as YYYY-MM-DD, with the start on or before the end.
+          </Text>
           <Pressable
             testID="range-picker-custom-apply"
             onPress={() => onSelectCustom({ from, to })}
             accessibilityRole="button"
             accessibilityLabel="Apply custom range"
-            className="rounded-lg bg-brand px-3 py-2 dark:bg-brand-dark"
+            disabled={!isValidCustomRange(from, to)}
+            accessibilityState={{ disabled: !isValidCustomRange(from, to) }}
+            className={`rounded-lg bg-brand px-3 py-2 dark:bg-brand-dark ${
+              isValidCustomRange(from, to) ? "" : "opacity-50"
+            }`}
           >
             <Text className="text-center font-semibold text-surface dark:text-surface-dark">Apply</Text>
           </Pressable>
