@@ -88,7 +88,9 @@ test("reminders go on the REMINDERS channel and carry the loan id", async () => 
 
   const call = mockSchedule.mock.calls[0][0];
   expect(call.channel).toBe("reminders");
-  expect(call.data).toEqual({ loanId: "l1" });
+  // `kind` is the tap-routing discriminant lib/alerts/alert_routes.ts
+  // switches on (m3c Task 8 audit).
+  expect(call.data).toEqual({ kind: "loanReminder", loanId: "l1" });
 });
 
 test("THE LOCKED COPY WITHHOLDS THE COUNTERPARTY", async () => {

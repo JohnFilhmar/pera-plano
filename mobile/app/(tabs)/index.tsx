@@ -20,6 +20,8 @@ import { SafeToSpendHero } from "@/components/home/safe_to_spend_hero";
 import { TrackingBanner } from "@/components/home/tracking_banner";
 import { UpcomingBillsStrip } from "@/components/home/upcoming_bills_strip";
 import { PlusGate } from "@/components/gates/plus_gate";
+import { EmptyState } from "@/components/ui/empty_state";
+import { getEmptyStateCopy } from "@/components/ui/empty_states";
 import { queryKeys } from "@/constants/query_keys";
 import { useSetCaptureEnabled } from "@/hooks/mutations/use_set_capture_enabled";
 import { useBills } from "@/hooks/queries/use_bills";
@@ -28,8 +30,11 @@ import { useLimitStatuses } from "@/hooks/queries/use_limit_statuses";
 import { useListenerHealth } from "@/hooks/queries/use_listener_health";
 import { useSafeToSpend } from "@/hooks/queries/use_safe_to_spend";
 import { useSafeToSpendInput } from "@/hooks/queries/use_safe_to_spend_input";
+import { useTransactions } from "@/hooks/queries/use_transactions";
 import { onAppEvent } from "@/lib/events/app_events";
 import { projectToPeriodEnd } from "@/lib/safe_to_spend_projection";
+
+const HOME_EMPTY = getEmptyStateCopy("home");
 
 const SCOPE_LABEL: Record<string, string> = {
   daily: "daily",
@@ -48,6 +53,11 @@ export default function HomeScreen() {
   const { data: health } = useListenerHealth();
   const { data: categories } = useCategories();
   const setCaptureEnabled = useSetCaptureEnabled();
+  // IA §5's "Home" row: only reached for its OWN reason — a healthy listener
+  // with nothing captured yet — never for a stopped one, which TrackingBanner
+  // already owns above. `{}` matches the Transactions tab's own unfiltered
+  // query key, so this shares that cache entry rather than opening a second.
+  const { data: transactions } = useTransactions({});
 
   const categoryNames = useMemo(
     () => new Map((categories ?? []).map((category) => [category.id, category.name])),
@@ -61,6 +71,11 @@ export default function HomeScreen() {
     return onAppEvent("ledger:committed", async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.safeToSpend.all });
       await queryClient.invalidateQueries({ queryKey: queryKeys.limits.all });
+      // AND TRANSACTIONS, so the "watching for your first transaction" empty
+      // state above clears itself the moment one actually lands — without
+      // this the first capture of a session would leave that card showing
+      // stale, since nothing else on this screen re-reads the ledger.
+      await queryClient.invalidateQueries({ queryKey: queryKeys.transactions.all });
     });
   }, [queryClient]);
 
@@ -108,6 +123,27 @@ export default function HomeScreen() {
         // action always wanted — the detailed view behind this exact banner.
         onFix={() => router.push("/more/listener_health")}
       />
+
+      {/* IA §5's "Home" row, reached ONLY when the listener is healthy — a
+          stopped or paused listener is TrackingBanner's story above, not
+          this one, per the row's own "if Notification Access missing: setup
+          card instead" clause. */}
+      {health?.granted === true &&
+      health.serviceConnected &&
+      health.captureEnabled &&
+      transactions !== undefined &&
+      transactions.length === 0 ? (
+        <EmptyState
+          testID="home-empty"
+          title={HOME_EMPTY.title}
+          body={HOME_EMPTY.body}
+          action={
+            HOME_EMPTY.actionLabel === undefined
+              ? undefined
+              : { label: HOME_EMPTY.actionLabel, onPress: () => router.push("/transaction/new") }
+          }
+        />
+      ) : null}
 
       <SafeToSpendHero
         result={result}

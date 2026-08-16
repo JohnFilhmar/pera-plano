@@ -83,7 +83,9 @@ export async function scheduleBillReminders(statuses: BillStatus[], now: number)
           amount: status.estimate.amount,
         }),
         fireAt,
-        data: { billId: status.bill.id, dueDate: status.dueDate },
+        // `kind` is the tap-routing discriminant `lib/alerts/alert_routes.ts`
+        // switches on (m3c Task 8 audit).
+        data: { kind: "billReminder", billId: status.bill.id, dueDate: status.dueDate },
       });
 
       // `null` means notification permission is denied. Rule 12: nothing is
@@ -156,7 +158,9 @@ export async function postOverdueNotices(statuses: BillStatus[]): Promise<string
         daysOverdue,
         amount: status.estimate.amount,
       }),
-      data: { billId: status.bill.id, dueDate: status.dueDate },
+      // Same `kind` as the due reminder above — both open the same Bill
+      // detail, so a tap does not need to distinguish "due" from "overdue".
+      data: { kind: "billReminder", billId: status.bill.id, dueDate: status.dueDate },
     });
     await recordOverdueNotice(status.bill.id, status.dueDate);
     notified.push(cycleKey(status.bill.id, status.dueDate));

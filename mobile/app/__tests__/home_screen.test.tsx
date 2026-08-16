@@ -168,6 +168,43 @@ test("A HEALTHY LISTENER SHOWS NO BANNER AT ALL", async () => {
   expect(screen.queryByTestId("tracking-paused")).toBeNull();
 });
 
+// ---------------------------------------------------------------------------
+// The Home empty state — IA §5's row this task's audit found missing
+// ---------------------------------------------------------------------------
+test("A HEALTHY LISTENER WITH NOTHING CAPTURED YET SHOWS THE WATCHING CARD", async () => {
+  renderScreen(<HomeScreen />);
+
+  await screen.findByTestId("home-empty");
+  screen.getByText("Watching for your first transaction");
+});
+
+test("THE WATCHING CARD CLEARS ONCE A TRANSACTION LANDS, WITHOUT A MANUAL PULL", async () => {
+  renderScreen(<HomeScreen />);
+  await screen.findByTestId("home-empty");
+
+  const tx = await spend(200_000, systemClock.now() - 60_000);
+  await emitAppEvent("ledger:committed", { transactionId: tx.id });
+
+  await waitFor(() => expect(screen.queryByTestId("home-empty")).toBeNull(), {
+    timeout: 30_000,
+  });
+});
+
+test("A DISCONNECTED LISTENER SHOWS ITS OWN BANNER, NOT THE WATCHING CARD", async () => {
+  // IA §5: "If Notification Access missing: setup card instead" — the two
+  // never both apply at once, and TrackingBanner's fault state wins.
+  mockHealth.mockResolvedValue({
+    granted: true,
+    serviceConnected: false,
+    lastCaptureAt: systemClock.now() - 2 * DAY_MS,
+  });
+
+  renderScreen(<HomeScreen />);
+
+  await screen.findByTestId("tracking-interrupted");
+  expect(screen.queryByTestId("home-empty")).toBeNull();
+});
+
 test("A DISCONNECTED LISTENER STATES THE GAP AND OFFERS A FIX", async () => {
   // Rule 5: "Silence about a tracking gap would make every number on the
   // screen a lie." The banner precedes the hero for that reason.

@@ -140,6 +140,25 @@ export type AppSettings = {
    */
   paused_provider_packages: string[];
   /**
+   * Whether the payday-summary push notification is turned on (m3c Task 8
+   * audit fix; docs/06-information-architecture.md §6.1: "Default,
+   * **opt-in**"). Default `false` — unlike every other channel in the app,
+   * this one starts silent, matching the doc's own default column exactly.
+   * `income:payday` (lib/events/app_events.ts) already fires regardless of
+   * this flag, deduplicated per transaction; this key only gates whether the
+   * system notification is posted, not whether the in-app payday sheet
+   * (`components/income/payday_detected_sheet.tsx`) appears.
+   */
+  payday_summary_enabled: boolean;
+  /**
+   * Epoch ms `notifyTrackingInterrupted` last actually posted (m3c Task 8
+   * audit fix; IA §6.2 rule 4: "at most one per distinct interruption, and no
+   * more than one per day even across repeated interruptions"). `null` means
+   * never — a fresh install's default, matching every other
+   * `*_at: number | null` key's own "never yet" convention in this file.
+   */
+  tracking_interrupted_last_notified_at: number | null;
+  /**
    * Epoch ms of the last SUCCESSFUL aggregate-telemetry send (m3c Task 6),
    * or `null` before the first one ever completes. This one value does two
    * jobs at once, deliberately: it is the interval gate ("don't send again
@@ -166,6 +185,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   bill_reminder_ids: {},
   recurring_forget_multiplier: 1.5,
   paused_provider_packages: [],
+  payday_summary_enabled: false,
+  tracking_interrupted_last_notified_at: null,
   last_telemetry_sent_at: null,
 };
 

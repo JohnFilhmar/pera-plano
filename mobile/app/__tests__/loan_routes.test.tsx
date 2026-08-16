@@ -11,12 +11,25 @@ jest.mock("expo-router", () => ({
   }),
 }));
 
+// The detail route now reaches `cancelLoanReminders` through its payment
+// mutation hooks (m3c Task 8 audit fix: a paid installment must not leave a
+// stale reminder queued), which reaches expo-notifications. Mocked here
+// rather than in the service, which is exactly why the two were split — same
+// pattern as `app/__tests__/bills_screen.test.tsx`.
+jest.mock("@/lib/alerts/alerts_service", () => ({
+  scheduleReminder: jest.fn().mockResolvedValue(null),
+  cancelScheduled: jest.fn().mockResolvedValue(undefined),
+  postAlert: jest.fn().mockResolvedValue(undefined),
+}));
+
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { ReactNode } from "react";
 
+import { cancelScheduled } from "@/lib/alerts/alerts_service";
 import { ThemeProvider } from "@/contexts/theme_context";
 import { closeDatabase } from "@/lib/db/database";
+import { getSetting, setSetting } from "@/lib/db/repos/app_settings_repo";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { createLoan, listLoans, outstandingBalance } from "@/lib/db/repos/loans_repo";
 import { insertTransaction } from "@/lib/db/repos/transactions_repo";
@@ -29,6 +42,8 @@ import type { Wallet } from "@/types/domain";
 import LoansScreen from "../(tabs)/plan/loans";
 import NewLoanScreen from "../(tabs)/plan/loans/new";
 import LoanDetailScreen from "../(tabs)/plan/loans/[id]";
+
+const mockCancelScheduled = cancelScheduled as jest.Mock;
 
 const mockPush = jest.fn();
 const mockBack = jest.fn();
@@ -248,6 +263,45 @@ test("CONFIRMING A MATCH RECORDS IT AND MOVES THE BALANCE", async () => {
   await waitFor(async () =>
     expect(await outstandingBalance(loan.id)).toBe(5000000 - 444244),
   );
+});
+
+test("CONFIRMING A MATCH CANCELS THE LOAN'S STALE QUEUED REMINDERS (m3c Task 8 audit fix)", async () => {
+  // Regression: before this fix, a reminder scheduled for the OLD due date
+  // stayed queued after the installment was paid — the same failure mode
+  // `bills` rule 11 exists to prevent, just missing on the loans side.
+  const loan = await createLoan({
+    direction: "i-owe",
+    counterparty: "GLoan",
+    principal: 5000000,
+    linkedWalletId: cash.id,
+    nextDueDate: TODAY_ISO,
+    nextDueAmount: 444244,
+  });
+  // Seeds the state a real `scheduleLoanReminders` bootstrap pass would have
+  // left behind, so this test does not depend on that unrelated code path.
+  await setSetting("loan_reminder_ids", { [loan.id]: ["os-id-stale-1", "os-id-stale-2"] });
+  const tx = await insertTransaction({
+    walletId: cash.id,
+    categoryId: UNCATEGORIZED_ID,
+    amount: 444244,
+    direction: "out",
+    occurredAt: YESTERDAY,
+    merchant: "GLOAN PAYMENT",
+    source: "manual",
+    confidence: 1,
+  });
+  mockParams = { id: loan.id };
+
+  renderScreen(<LoanDetailScreen />);
+  await screen.findByTestId("loan-open-matches");
+  fireEvent.press(screen.getByTestId("loan-open-matches"));
+  await screen.findByTestId(`match-confirm-${tx.id}`);
+
+  fireEvent.press(screen.getByTestId(`match-confirm-${tx.id}`));
+
+  await waitFor(() => expect(mockCancelScheduled).toHaveBeenCalledWith("os-id-stale-1"));
+  expect(mockCancelScheduled).toHaveBeenCalledWith("os-id-stale-2");
+  await waitFor(async () => expect(await getSetting("loan_reminder_ids")).toEqual({}));
 });
 
 test("no candidates means no match button at all", async () => {

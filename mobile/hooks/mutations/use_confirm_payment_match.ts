@@ -1,7 +1,14 @@
 // hooks/mutations/use_confirm_payment_match.ts — m2b Task 8, rule 5.
+//
+// CANCELS THE LOAN'S QUEUED REMINDERS AFTER CONFIRMING (m3c Task 8 audit
+// fix) — see `use_record_payment.ts`'s header for the full reasoning. A
+// matched payment advances the due the same way a manually recorded one
+// does, so it needs the same immediate cancellation of the now-stale
+// per-loan reminder ids.
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { queryKeys } from "@/constants/query_keys";
+import { cancelLoanReminders } from "@/lib/loans/loan_reminders";
 import { confirmPaymentMatch } from "@/lib/loans/loans_service";
 import type { LoanPayment } from "@/types/domain";
 
@@ -21,8 +28,20 @@ export function useConfirmPaymentMatch() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ loanId, transactionId }: ConfirmPaymentMatchVariables): Promise<LoanPayment> =>
-      confirmPaymentMatch(loanId, transactionId),
+    mutationFn: async ({
+      loanId,
+      transactionId,
+    }: ConfirmPaymentMatchVariables): Promise<LoanPayment> => {
+      const payment = await confirmPaymentMatch(loanId, transactionId);
+      // Deliberately AFTER the match is recorded and deliberately not fatal:
+      // a cancellation that fails must not undo a match the user confirmed.
+      try {
+        await cancelLoanReminders(loanId);
+      } catch (error) {
+        console.warn("loan reminders could not be cancelled", error);
+      }
+      return payment;
+    },
     onSuccess: () =>
       invalidateKeys(queryClient, [
         queryKeys.loans.all,

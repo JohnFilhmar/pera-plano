@@ -52,7 +52,9 @@ test("posts exactly ONE coalesced notification for several alerts", async () => 
   const call = mockPostAlert.mock.calls[0][0];
   expect(call.channel).toBe("limits");
   // Most severe first, and the ids travel with it so a tap can open the right one.
-  expect(call.data).toEqual({ limitIds: ["b", "a"] });
+  // `kind` is the tap-routing discriminant lib/alerts/alert_routes.ts
+  // switches on (m3c Task 8 audit).
+  expect(call.data).toEqual({ kind: "limitAlerts", limitIds: ["b", "a"] });
 });
 
 test("the posted copy carries BOTH variants, and the locked one leaks nothing", async () => {

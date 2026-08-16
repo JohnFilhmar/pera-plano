@@ -85,7 +85,9 @@ export async function scheduleLoanReminders(statuses: LoanStatus[], now: number)
           amount: status.nextDue.amount,
         }),
         fireAt,
-        data: { loanId: status.loan.id },
+        // `kind` is the tap-routing discriminant `lib/alerts/alert_routes.ts`
+        // switches on (m3c Task 8 audit).
+        data: { kind: "loanReminder", loanId: status.loan.id },
       });
 
       // `null` means notification permission is denied — loans rule 15: "if it

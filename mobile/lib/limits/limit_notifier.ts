@@ -42,6 +42,10 @@ export async function notifyLimitAlerts(alerts: LimitAlert[]): Promise<void> {
   await postAlert({
     channel: CHANNEL_LIMITS,
     copy: limitAlertsCopy(ordered),
-    data: { limitIds: ordered.map((alert) => alert.limitId) },
+    // `kind` is the tap-routing discriminant `lib/alerts/alert_routes.ts`
+    // switches on (m3c Task 8 audit) — added alongside the ids rather than
+    // inferred from their shape, so a route resolver never has to guess what
+    // produced a given payload.
+    data: { kind: "limitAlerts", limitIds: ordered.map((alert) => alert.limitId) },
   });
 }
