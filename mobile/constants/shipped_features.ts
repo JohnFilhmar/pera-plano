@@ -38,8 +38,14 @@ export const SHIPPED_FEATURES: Readonly<Record<FeatureKey, ShipState>> = {
   // Flipped by m2c Task 6, the last of the M2 control features. The Plan tab
   // now has no Soon items at all; every key still "soon" below belongs to M3.
   bills: "shipped",
-  safe_to_spend: "soon",
-  recurring: "soon",
+  // Flipped by M3 Part 2 Task 7. Task 4 built the Home hero and Task 6 built
+  // recurring-pattern detection; the foundation plan's rollout table assigns
+  // both keys to this plan and to no other. Neither key gates anything with a
+  // SoonGate in practice — Home's hero and the Subscriptions row are gated by
+  // `PlusGate` (a tier paywall) instead — but the rollout table still tracks
+  // them so this map stays the single source of truth for "is this plan out".
+  safe_to_spend: "shipped",
+  recurring: "shipped",
   reports: "soon",
   csv_export: "soon",
   privacy_center: "soon",

@@ -24,6 +24,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react-nativ
 import type { ReactNode } from "react";
 
 import { ThemeProvider } from "@/contexts/theme_context";
+import { isShipped } from "@/constants/shipped_features";
 import { closeDatabase, getDatabase } from "@/lib/db/database";
 import { setSetting } from "@/lib/db/repos/app_settings_repo";
 import { createBill } from "@/lib/db/repos/bills_repo";
@@ -41,6 +42,7 @@ import { freshDb } from "@/test_support/db";
 import type { Wallet } from "@/types/domain";
 
 import HomeScreen from "../(tabs)/index";
+import MoreScreen from "../(tabs)/more";
 
 const mockPush = jest.fn();
 const mockHealth = getListenerHealth as jest.MockedFunction<typeof getListenerHealth>;
@@ -118,6 +120,30 @@ test("A LIMIT AND SOME SPEND PRODUCE A REAL NUMBER AND ITS CAPTION", async () =>
 
   await screen.findByText("Safe to spend today");
   screen.getByText("from your monthly limit");
+});
+
+// ---------------------------------------------------------------------------
+// Ship gate — M3 Part 2 Task 7 rule 1
+// ---------------------------------------------------------------------------
+test("SAFE-TO-SPEND AND RECURRING ARE SHIPPED, AND NEITHER SURFACE SITS BEHIND A SOON CHIP", async () => {
+  // "Home renders without a Soon wrapper" is trivially true taken literally —
+  // the hero was never SoonGate-wrapped (Task 4 shipped it ungated) — so the
+  // assertion that actually moves if the flip is wrong is the flag itself,
+  // plus the two screens this plan unblocks.
+  expect(isShipped("safe_to_spend")).toBe(true);
+  expect(isShipped("recurring")).toBe(true);
+
+  renderScreen(<HomeScreen />);
+  await screen.findByTestId("home");
+  screen.unmount();
+
+  // The More tab's Subscriptions row is gated by `PlusGate` (a tier paywall),
+  // never by `SoonGate` — MVP_TIER defaults to "plus", so the row must be
+  // reachable and no grey "Soon" chip should be anywhere in the tree.
+  renderScreen(<MoreScreen />);
+  fireEvent.press(screen.getByTestId("more-subscriptions"));
+  expect(mockPush).toHaveBeenCalledWith("/more/subscriptions");
+  expect(screen.queryByText("Soon")).toBeNull();
 });
 
 // ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@ import { purgeExpired } from "@/lib/db/repos/review_queue_repo";
 import { purgeExpiredRawCaptures } from "@/lib/db/repos/raw_notifications_repo";
 import { runIncomePass } from "@/lib/income/income_ledger_subscriber";
 import { seedParserRules } from "@/lib/ingest/seed_rules";
+import { runRecurringPass } from "@/lib/recurring/recurring_ledger_subscriber";
 
 export type BootstrapResult = { onboardingComplete: boolean };
 
@@ -56,6 +57,18 @@ export async function bootstrapApp(): Promise<BootstrapResult> {
   // `runRetention` does — income is derived convenience, and a launch is not
   // worth failing over it (rule 3).
   await runIncomePass(Date.now());
+  // Recurring-pattern detection, once per launch (M3 Part 2 Task 7 rule 2).
+  // Same placement as income above, for the same reason: it reads the ledger
+  // those migrations and seeds just made queryable, and nothing else here
+  // depends on running before or after it. `runRecurringPass`
+  // (lib/recurring/recurring_ledger_subscriber.ts) already wraps
+  // `refreshPatterns` in the one try/catch this app should have for it — a
+  // second, independently-written copy here would eventually disagree with
+  // that one about what "failed safely" means, the same reasoning that keeps
+  // this file calling `runIncomePass` instead of `refreshIncomeDetection`
+  // directly. Patterns are derived from the ledger, same as income, so a
+  // launch is not worth failing over them either (rule 3).
+  await runRecurringPass(Date.now());
   const onboardingComplete = await getSetting("onboarding_complete");
   lastResult = { onboardingComplete };
   return lastResult;

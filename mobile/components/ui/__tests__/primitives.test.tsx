@@ -345,9 +345,10 @@ test("Chip tone soon is the exact chip SoonGate ships — one grey, not two", ()
   const chipClasses = classListOf("chip");
   screen.unmount();
 
-  // Every FeatureKey is "soon" in M1 (constants/shipped_features.ts).
+  // `reports` is still "soon" (constants/shipped_features.ts) — an m3b Task 8
+  // key, unaffected by this plan's rollout flip.
   render(
-    <SoonGate feature="safe_to_spend">
+    <SoonGate feature="reports">
       <Text>Monthly limit</Text>
     </SoonGate>,
   );

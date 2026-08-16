@@ -50,10 +50,18 @@ describe("SHIPPED_FEATURES", () => {
    *
    * m2-part2 Task 14 flipped `limits` and `income`; m2b Task 9 flipped `goals`
    * and `loans`; m2c Task 6 flipped `bills` and with it finished the whole
-   * Plan tab. Still to come: M3 Part 2 Task 7 (`safe_to_spend`, `recurring`),
-   * M3b Task 8 (the remaining five).
+   * Plan tab; M3 Part 2 Task 7 flipped `safe_to_spend` and `recurring`. Still
+   * to come: m3b Task 8 (the remaining five).
    */
-  const SHIPPED_SO_FAR: readonly FeatureKey[] = ["limits", "income", "goals", "loans", "bills"];
+  const SHIPPED_SO_FAR: readonly FeatureKey[] = [
+    "limits",
+    "income",
+    "goals",
+    "loans",
+    "bills",
+    "safe_to_spend",
+    "recurring",
+  ];
 
   test("exactly the keys the shipped plans own are flipped", () => {
     for (const key of ALL_KEYS) {

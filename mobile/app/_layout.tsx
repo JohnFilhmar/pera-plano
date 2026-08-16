@@ -55,6 +55,7 @@ import { useApplyAllocations } from "@/hooks/mutations/use_apply_allocations";
 import { usePaydayAllocations } from "@/hooks/use_payday_allocations";
 import { BILL_HORIZON_DAYS } from "@/hooks/queries/use_bills";
 import { startIncomeLedgerSubscriber } from "@/lib/income/income_ledger_subscriber";
+import { startRecurringLedgerSubscriber } from "@/lib/recurring/recurring_ledger_subscriber";
 import { listBillStatuses } from "@/lib/bills/bills_service";
 import { postOverdueNotices, scheduleBillReminders } from "@/lib/bills/bill_reminders";
 import { listLoanStatuses } from "@/lib/loans/loans_service";
@@ -213,6 +214,16 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
   useEffect(() => {
     if (bootstrapState !== "ready") return;
     return startIncomeLedgerSubscriber();
+  }, [bootstrapState]);
+
+  // Recurring-pattern detection re-runs on ledger commits, debounced (M3 Part
+  // 2 Task 7 rule 2 — the one-shot pass runs once in bootstrapApp() instead;
+  // this is the ongoing half). Same gate and the same fire-and-forget
+  // discipline as income right above: the subscriber swallows its own
+  // failures, so nothing here can keep the UI from rendering.
+  useEffect(() => {
+    if (bootstrapState !== "ready") return;
+    return startRecurringLedgerSubscriber();
   }, [bootstrapState]);
 
   // Loan reminders, rescheduled once per launch (m2b Task 9 rule 3) so they

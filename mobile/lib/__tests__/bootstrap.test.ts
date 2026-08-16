@@ -16,6 +16,7 @@ import { getRawCapture, RAW_CAPTURE_TTL_MS, storeRawCapture } from "@/lib/db/rep
 import { runMigrations } from "@/lib/db/migrations";
 import { getIncomeDetectionState } from "@/lib/db/repos/income_repo";
 import * as incomeService from "@/lib/income/income_service";
+import * as recurringService from "@/lib/recurring/recurring_service";
 import type { RawCapture } from "@/types/domain";
 import type { SQLiteDatabase } from "@/lib/db/database";
 
@@ -231,6 +232,39 @@ describe("income detection runs once per launch", () => {
 
     // The rest of the sequence still happened — this is not "bootstrap gave up
     // quietly", it is "bootstrap finished without income".
+    expect(await getActiveVersion()).toBeGreaterThan(0);
+    spy.mockRestore();
+    warn.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Recurring-pattern detection on startup — M3 Part 2 Task 7, rules 2 and 3.
+// ---------------------------------------------------------------------------
+describe("recurring detection runs once per launch", () => {
+  test("bootstrapApp runs a refresh pass", async () => {
+    await unlockDatabase(TEST_DEK);
+    const spy = jest.spyOn(recurringService, "refreshPatterns");
+
+    await expect(bootstrapApp()).resolves.toEqual({ onboardingComplete: false });
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
+  });
+
+  test("A THROWING REFRESH DOES NOT PREVENT BOOTSTRAP FROM RESOLVING", async () => {
+    // Rule 3: patterns are derived from the ledger, recomputable at any time,
+    // so a launch is not worth failing over them — same asymmetry `runRetention`
+    // and income detection already have.
+    await unlockDatabase(TEST_DEK);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    const spy = jest
+      .spyOn(recurringService, "refreshPatterns")
+      .mockRejectedValue(new Error("detection exploded"));
+
+    await expect(bootstrapApp()).resolves.toEqual({ onboardingComplete: false });
+
+    // The rest of the sequence still happened.
     expect(await getActiveVersion()).toBeGreaterThan(0);
     spy.mockRestore();
     warn.mockRestore();

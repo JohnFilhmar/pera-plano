@@ -25,13 +25,13 @@ beforeAll(() => {
   `);
 });
 
-// The "soon" fixture — whichever key is still soon. It has moved three times as
+// The "soon" fixture — whichever key is still soon. It has moved four times as
 // the rollout table advanced: `limits` (m2-part2 Task 14), `goals` (m2b Task 9),
-// `bills` (m2c Task 6). With the Plan tab complete it now names an M3 key, and
-// M3 Part 2 Task 7 will move it again.
+// `bills` (m2c Task 6), `safe_to_spend` (M3 Part 2 Task 7). It now names an M3b
+// key; m3b Task 8 retires this fixture along with the rest of the Soon list.
 // Mutated directly in one test below and restored here, since the map has no
 // test seam of its own.
-const FEATURE = "safe_to_spend" as const;
+const FEATURE = "reports" as const;
 
 // SHIPPED_FEATURES is exported readonly — app code must never mutate the
 // single per-build rollout switch at runtime. Tests cast away readonly at
