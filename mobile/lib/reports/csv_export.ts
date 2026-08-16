@@ -1,13 +1,51 @@
 // lib/reports/csv_export.ts — Plus-gated CSV export of the transaction ledger
-// (M3b Task 4; docs/04-features/10-reports.md Flow D and rules 10-13, 16).
+// (M3b Task 4; docs/04-features/10-reports.md Flow D, §"CSV column
+// specification", and rules 10-13, 16).
 //
-// THE HEADER BELOW IS THE TASK-4 BRIEF'S, VERBATIM, NOT docs/04-features/
-// 10-reports.md's older 14-column table (`id`, `timestamp`, `wallet_type`,
-// `category_parent`, `is_transfer`, `transfer_link_id`, ...). The brief is
-// the newer, authoritative source for this task; the docs table is stale and
-// gets reconciled separately. Everything the docs table still governs and
-// the brief does not override — RFC 4180 quoting, CRLF + UTF-8 BOM,
+// HEADER RECONCILIATION RULING: where the Task-4 brief's header and
+// docs/04-features/10-reports.md's "CSV column specification" table
+// conflict, THE SPEC WINS — the spec is this project's binding authority and
+// the plan/brief is its argument, applied consistently elsewhere in this
+// codebase. Two spec columns the brief had dropped are restored because the
+// brief's own case for them doesn't survive scrutiny:
+//
+//   - `transfer_link_id` is DECISIVE. The spec's acceptance criterion reads
+//     "Transfer-linked rows appear in the CSV with `is_transfer = true` and
+//     matching `transfer_link_id` values on both legs" — a bare yes/no flag
+//     cannot satisfy that. It also undercuts the brief's own reason for
+//     including transfer rows at all (decision 2 below): bank reconciliation
+//     needs to pair the two legs of an internal transfer, which a flag alone
+//     can't do.
+//   - `id` is the spec's own stated purpose: "stable identifier for dedupe
+//     on re-import elsewhere." The brief offered no substitute.
+//
+// `wallet_type` and `category_parent` are restored too, as plain spec
+// columns the brief simply omitted with no counter-argument.
+//
+// Where the brief's additions do NOT conflict with the spec, they survive:
+// `currency`, `counterparty`, and `reference` are additive columns the spec
+// doesn't have and cost nothing.
+//
+// TWO DELIBERATE DEVIATIONS FROM THE SPEC TABLE, KEPT ON PURPOSE:
+//
+//   - `date` + `time` instead of the spec's single `timestamp` (ISO 8601
+//     with offset). The spec itself says the Philippines is a single time
+//     zone with "no cross-time-zone handling in MVP," so a `timestamp`
+//     column's UTC offset would carry no information this file doesn't
+//     already have. Two sortable columns serve the spreadsheet user (this
+//     export's stated consumer) better than one ISO string.
+//   - `is_transfer` keeps the brief's `yes`/`no` values rather than the
+//     spec's `true`/`false`. The acceptance criterion only requires the
+//     column to identify transfer rows, and `yes`/`no` reads better in a
+//     spreadsheet cell than `true`/`false` does.
+//
+// Everything else the spec governs — RFC 4180 quoting, CRLF + UTF-8 BOM,
 // ascending timestamp order, no thousands separators — is followed exactly.
+//
+// `wallet_type` and `category_parent` are resolved the same way
+// reports_service.ts and aggregate.ts resolve wallet/category data: a
+// `listWallets`/`listCategories` read up front, folded into id-keyed Maps
+// (`categoryBreakdown`'s `byId` pattern) rather than a new access path.
 //
 // ---------------------------------------------------------------------------
 // FOUR DECISIONS THAT ARE EASY TO GET WRONG
@@ -25,9 +63,10 @@
 //    header) is EXCLUDING transfer-linked rows from every reports figure. An
 //    export is a record of everything a Wallet touched, and dropping a
 //    transfer leg would make the file irreconcilable with the bank
-//    statement it exists to be checked against (brief rule 2) — so
-//    `excludeTransferLinked` is never set on the `listTransactions` call
-//    below, and every row simply reports `transfer: yes/no`.
+//    statement it exists to be checked against (brief rule 2; spec rule 10)
+//    — so `excludeTransferLinked` is never set on the `listTransactions`
+//    call below, and every row simply reports `is_transfer: yes/no` plus its
+//    `transfer_link_id`.
 //
 // 3. THE HALF-OPEN CONVERSION mirrors reports_service.ts's
 //    `fetchTransactions` exactly. `range` is aggregate.ts's `DateRange` —
@@ -53,14 +92,25 @@ import { listWallets } from "@/lib/db/repos/wallets_repo";
 import { endOfLocalDay, parseDateIso, toDateIso } from "@/lib/dates";
 import { formatTime } from "@/lib/datetime";
 import type { DateRange } from "@/lib/reports/aggregate";
-import type { Centavos, IsoDate, Transaction, TxDirection, TxSource } from "@/types/domain";
+import type {
+  Category,
+  Centavos,
+  IsoDate,
+  Transaction,
+  TxDirection,
+  TxSource,
+  Wallet,
+} from "@/types/domain";
 
 /**
  * One export row, already resolved to display-ready strings/values — every
- * lookup (wallet name, category name, local date/time) happens before a row
- * reaches `buildTransactionsCsv`, which stays pure and synchronous.
+ * lookup (wallet name/type, category name/parent, local date/time) happens
+ * before a row reaches `buildTransactionsCsv`, which stays pure and
+ * synchronous.
  */
 export type TransactionExportRow = {
+  /** The Transaction's own id — spec: "stable identifier for dedupe on re-import elsewhere." */
+  id: string;
   date: IsoDate;
   time: string;
   direction: TxDirection;
@@ -68,7 +118,11 @@ export type TransactionExportRow = {
   amount: Centavos;
   currency: string;
   wallet: string;
+  /** `""` when the wallet id has no matching row. */
+  walletType: string;
   category: string;
+  /** The parent category's name, or `""` for a top-level category. */
+  categoryParent: string;
   /** `""` when the Transaction's field is `null`. */
   merchant: string;
   counterparty: string;
@@ -76,13 +130,19 @@ export type TransactionExportRow = {
   source: TxSource;
   /** 0..1. */
   confidence: number;
-  transfer: boolean;
+  isTransfer: boolean;
+  /** `""` when not a transfer leg; both legs of one Transfer Link share the same value. */
+  transferLinkId: string;
   note: string;
 };
 
-// Column order is the brief's spec, VERBATIM — do not reorder or rename.
+// Column order is docs/04-features/10-reports.md's "CSV column
+// specification" table, with the brief's additive `currency`, `counterparty`,
+// `reference` folded in and `timestamp` kept split as `date`+`time` — see
+// this file's header for the full reconciliation. Do not reorder or rename
+// without updating that comment.
 const CSV_HEADER =
-  "date,time,direction,amount,currency,wallet,category,merchant,counterparty,reference,source,confidence,transfer,note";
+  "id,date,time,direction,amount,currency,wallet,wallet_type,category,category_parent,merchant,counterparty,reference,source,confidence,is_transfer,transfer_link_id,note";
 const CRLF = "\r\n";
 // U+FEFF via fromCharCode, not a pasted literal — a literal BOM glyph is
 // invisible in source and an editor or future edit could silently mangle or
@@ -117,19 +177,23 @@ function formatConfidence(confidence: number): string {
 
 function rowToCsvLine(row: TransactionExportRow): string {
   const fields = [
+    row.id,
     row.date,
     row.time,
     row.direction,
     formatAmount(row.amount),
     row.currency,
     row.wallet,
+    row.walletType,
     row.category,
+    row.categoryParent,
     row.merchant,
     row.counterparty,
     row.reference,
     row.source,
     formatConfidence(row.confidence),
-    row.transfer ? "yes" : "no",
+    row.isTransfer ? "yes" : "no",
+    row.transferLinkId,
     row.note,
   ];
   return fields.map(escapeField).join(",");
@@ -150,25 +214,43 @@ function orEmpty(value: string | null): string {
   return value ?? "";
 }
 
+/**
+ * The category's own parent's NAME, or `""` for a top-level category or a
+ * dangling `parentId` — the immediate parent, unlike aggregate.ts's
+ * `rootCategoryId` walk to the top-level ancestor; the spec column wants the
+ * one level up, not the roll-up root.
+ */
+function categoryParentName(category: Category | undefined, byId: Map<string, Category>): string {
+  if (!category || category.parentId === null) return "";
+  return byId.get(category.parentId)?.name ?? "";
+}
+
 function toExportRow(
   transaction: Transaction,
-  walletNames: Map<string, string>,
-  categoryNames: Map<string, string>,
+  walletsById: Map<string, Wallet>,
+  categoriesById: Map<string, Category>,
 ): TransactionExportRow {
+  const wallet = walletsById.get(transaction.walletId);
+  const category = categoriesById.get(transaction.categoryId);
+
   return {
+    id: transaction.id,
     date: toDateIso(new Date(transaction.occurredAt)),
     time: formatTime(transaction.occurredAt),
     direction: transaction.direction,
     amount: transaction.amount,
     currency: "PHP",
-    wallet: walletNames.get(transaction.walletId) ?? transaction.walletId,
-    category: categoryNames.get(transaction.categoryId) ?? transaction.categoryId,
+    wallet: wallet?.name ?? transaction.walletId,
+    walletType: wallet?.type ?? "",
+    category: category?.name ?? transaction.categoryId,
+    categoryParent: categoryParentName(category, categoriesById),
     merchant: orEmpty(transaction.merchant),
     counterparty: orEmpty(transaction.counterparty),
     reference: orEmpty(transaction.referenceNo),
     source: transaction.source,
     confidence: transaction.confidence,
-    transfer: transaction.transferLinkId !== null,
+    isTransfer: transaction.transferLinkId !== null,
+    transferLinkId: orEmpty(transaction.transferLinkId),
     note: orEmpty(transaction.note),
   };
 }
@@ -198,14 +280,16 @@ export async function exportTransactionsCsv(range: DateRange, today: string): Pr
     listCategories({ includeHidden: true }),
   ]);
 
-  const walletNames = new Map(wallets.map((wallet) => [wallet.id, wallet.name]));
-  const categoryNames = new Map(categories.map((category) => [category.id, category.name]));
+  // Id-keyed Maps, the same lookup shape aggregate.ts's `categoryBreakdown`
+  // (`byId`) and reports_service.ts build over listWallets/listCategories.
+  const walletsById = new Map(wallets.map((wallet) => [wallet.id, wallet]));
+  const categoriesById = new Map(categories.map((category) => [category.id, category]));
 
   // Ascending timestamp order (docs rule 12) — listTransactions itself
   // returns newest-first, the ledger screen's own order.
   const rows = [...transactions]
     .sort((a, b) => a.occurredAt - b.occurredAt || a.createdAt - b.createdAt)
-    .map((transaction) => toExportRow(transaction, walletNames, categoryNames));
+    .map((transaction) => toExportRow(transaction, walletsById, categoriesById));
 
   const csv = buildTransactionsCsv(rows);
 

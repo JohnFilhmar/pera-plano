@@ -30,6 +30,11 @@ import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 
 import { closeDatabase } from "@/lib/db/database";
+import { createCategory } from "@/lib/db/repos/categories_repo";
+import { insertTransaction } from "@/lib/db/repos/transactions_repo";
+import { linkTransfer } from "@/lib/db/repos/transfer_links_repo";
+import { createWallet } from "@/lib/db/repos/wallets_repo";
+import { parseDateIso } from "@/lib/dates";
 import { freshDb } from "@/test_support/db";
 import { buildTransactionsCsv, exportTransactionsCsv } from "../csv_export";
 import type { TransactionExportRow } from "../csv_export";
@@ -38,24 +43,40 @@ const mockFileSystem = FileSystem as jest.Mocked<typeof FileSystem>;
 const mockSharing = Sharing as jest.Mocked<typeof Sharing>;
 
 const HEADER =
-  "date,time,direction,amount,currency,wallet,category,merchant,counterparty,reference,source,confidence,transfer,note";
+  "id,date,time,direction,amount,currency,wallet,wallet_type,category,category_parent,merchant,counterparty,reference,source,confidence,is_transfer,transfer_link_id,note";
+
+// Column indices into a data line split on "," — safe for these tests
+// because none of their field values contain a comma (the escaping tests
+// below cover quoting separately, and don't use this helper).
+const COLUMN = {
+  id: 0,
+  walletType: 7,
+  category: 8,
+  categoryParent: 9,
+  isTransfer: 15,
+  transferLinkId: 16,
+} as const;
 
 /** A well-formed row with no special characters, overridable per test. */
 function row(overrides: Partial<TransactionExportRow> = {}): TransactionExportRow {
   return {
+    id: "tx_1",
     date: "2026-08-15",
     time: "2:05 PM",
     direction: "out",
     amount: 12345,
     currency: "PHP",
     wallet: "GCash",
+    walletType: "e-wallet",
     category: "Food & Dining",
+    categoryParent: "",
     merchant: "Jollibee",
     counterparty: "",
     reference: "",
     source: "manual",
     confidence: 1,
-    transfer: false,
+    isTransfer: false,
+    transferLinkId: "",
     note: "",
     ...overrides,
   };
@@ -110,14 +131,66 @@ test("a note containing a newline is quoted", () => {
 
 test("transfer rows are included with yes, non-transfer rows with no", () => {
   const csv = buildTransactionsCsv([
-    row({ merchant: "Own GCash top-up", transfer: true }),
-    row({ merchant: "Landline bill", transfer: false }),
+    row({ merchant: "Own GCash top-up", isTransfer: true, transferLinkId: "link_1" }),
+    row({ merchant: "Landline bill", isTransfer: false }),
   ]);
 
   const lines = csv.trim().split("\r\n");
   expect(lines).toHaveLength(3); // header + two data rows — neither was dropped
   expect(lines[1]).toContain(",yes,");
   expect(lines[2]).toContain(",no,");
+});
+
+// docs/04-features/10-reports.md's decisive acceptance criterion:
+// "Transfer-linked rows appear in the CSV with `is_transfer = true` and
+// matching `transfer_link_id` values on both legs." Read by COLUMN INDEX,
+// not `toContain`, so this fails loudly if `transfer_link_id` is ever
+// dropped from the header again (a `toContain(",yes,")` check alone
+// wouldn't notice a missing column).
+test("both legs of a transfer carry the same non-empty transfer_link_id and is_transfer=yes", () => {
+  const csv = buildTransactionsCsv([
+    row({ id: "tx_out", merchant: "Own GCash top-up", isTransfer: true, transferLinkId: "link_abc" }),
+    row({ id: "tx_in", merchant: "Own GCash top-up (received)", isTransfer: true, transferLinkId: "link_abc" }),
+  ]);
+
+  const [outLeg, inLeg] = csv.trim().split("\r\n").slice(1).map((line) => line.split(","));
+
+  expect(outLeg[COLUMN.transferLinkId]).toBe("link_abc");
+  expect(outLeg[COLUMN.transferLinkId]).not.toBe("");
+  expect(outLeg[COLUMN.transferLinkId]).toBe(inLeg[COLUMN.transferLinkId]);
+  expect(outLeg[COLUMN.isTransfer]).toBe("yes");
+  expect(inLeg[COLUMN.isTransfer]).toBe("yes");
+});
+
+test("a non-transfer row has an empty transfer_link_id and is_transfer=no", () => {
+  const csv = buildTransactionsCsv([row({ isTransfer: false, transferLinkId: "" })]);
+
+  const [line] = csv.trim().split("\r\n").slice(1);
+  const fields = line.split(",");
+
+  expect(fields[COLUMN.isTransfer]).toBe("no");
+  expect(fields[COLUMN.transferLinkId]).toBe("");
+});
+
+test("id round-trips the transaction's own id", () => {
+  const csv = buildTransactionsCsv([row({ id: "tx_real_id_123" })]);
+
+  const [line] = csv.trim().split("\r\n").slice(1);
+  expect(line.split(",")[COLUMN.id]).toBe("tx_real_id_123");
+});
+
+test("a category with a parent emits the parent's name in category_parent; a top-level one emits empty", () => {
+  const csv = buildTransactionsCsv([
+    row({ id: "tx_child", category: "Fast Food", categoryParent: "Food & Dining" }),
+    row({ id: "tx_top", category: "Transport", categoryParent: "" }),
+  ]);
+
+  const [childLine, topLine] = csv.trim().split("\r\n").slice(1).map((line) => line.split(","));
+
+  expect(childLine[COLUMN.category]).toBe("Fast Food");
+  expect(childLine[COLUMN.categoryParent]).toBe("Food & Dining");
+  expect(topLine[COLUMN.category]).toBe("Transport");
+  expect(topLine[COLUMN.categoryParent]).toBe("");
 });
 
 test("line endings are CRLF throughout", () => {
@@ -152,4 +225,92 @@ test("a peso sign in a note survives the round trip", () => {
   const csv = buildTransactionsCsv([row({ note: "Kuya's ₱50 tip" })]);
 
   expect(csv).toContain("Kuya's ₱50 tip");
+});
+
+// The tests above pin buildTransactionsCsv's formatting from pre-resolved
+// rows. The two below exercise the actual repo lookups exportTransactionsCsv
+// performs — the id, wallet_type, and category_parent columns are only as
+// good as those lookups, so they need real Wallets/Categories/Transactions,
+// not hand-built TransactionExportRows.
+test("wallet_type and category_parent are resolved from the real Wallet and Category rows", async () => {
+  await freshDb();
+
+  const wallet = await createWallet({ name: "GCash", type: "e-wallet" });
+  const parent = await createCategory({ name: "Food & Dining", icon: "utensils" });
+  const child = await createCategory({ name: "Fast Food", icon: "burger", parentId: parent.id });
+  const topLevel = await createCategory({ name: "Transport", icon: "car" });
+
+  const childTx = await insertTransaction({
+    walletId: wallet.id,
+    categoryId: child.id,
+    amount: 15000,
+    direction: "out",
+    occurredAt: parseDateIso("2026-08-10").getTime(),
+    source: "manual",
+    confidence: 1,
+  });
+  await insertTransaction({
+    walletId: wallet.id,
+    categoryId: topLevel.id,
+    amount: 5000,
+    direction: "out",
+    occurredAt: parseDateIso("2026-08-11").getTime(),
+    source: "manual",
+    confidence: 1,
+  });
+
+  await exportTransactionsCsv({ from: "2026-08-01", to: "2026-08-31" }, "2026-08-31");
+
+  const [, writtenContent] = mockFileSystem.writeAsStringAsync.mock.calls[0];
+  const lines = (writtenContent as string).trim().split("\r\n").slice(1);
+  const byId = new Map(lines.map((line) => {
+    const fields = line.split(",");
+    return [fields[COLUMN.id], fields];
+  }));
+
+  const childFields = byId.get(childTx.id)!;
+  expect(childFields[COLUMN.category]).toBe("Fast Food");
+  expect(childFields[COLUMN.categoryParent]).toBe("Food & Dining");
+  expect(childFields[COLUMN.walletType]).toBe("e-wallet");
+
+  const topFields = [...byId.values()].find((fields) => fields[COLUMN.category] === "Transport")!;
+  expect(topFields[COLUMN.categoryParent]).toBe("");
+});
+
+test("linked transfer legs export with matching transfer_link_id and is_transfer=yes", async () => {
+  await freshDb();
+
+  const sending = await createWallet({ name: "BPI", type: "bank", openingBalance: 100000 });
+  const receiving = await createWallet({ name: "GCash", type: "e-wallet" });
+  const category = await createCategory({ name: "Transfer", icon: "arrow-right-left" });
+
+  const outLeg = await insertTransaction({
+    walletId: sending.id,
+    categoryId: category.id,
+    amount: 50000,
+    direction: "out",
+    occurredAt: parseDateIso("2026-08-05").getTime(),
+    source: "manual",
+    confidence: 1,
+  });
+  const inLeg = await insertTransaction({
+    walletId: receiving.id,
+    categoryId: category.id,
+    amount: 50000,
+    direction: "in",
+    occurredAt: parseDateIso("2026-08-05").getTime(),
+    source: "manual",
+    confidence: 1,
+  });
+  const link = await linkTransfer(outLeg.id, inLeg.id, 0);
+
+  await exportTransactionsCsv({ from: "2026-08-01", to: "2026-08-31" }, "2026-08-31");
+
+  const [, writtenContent] = mockFileSystem.writeAsStringAsync.mock.calls[0];
+  const lines = (writtenContent as string).trim().split("\r\n").slice(1);
+  expect(lines).toHaveLength(2); // both legs are rows — decision 2, never excluded
+
+  const rows = lines.map((line) => line.split(","));
+  expect(rows.every((fields) => fields[COLUMN.isTransfer] === "yes")).toBe(true);
+  expect(rows.every((fields) => fields[COLUMN.transferLinkId] === link.id)).toBe(true);
 });
