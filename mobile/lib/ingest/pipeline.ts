@@ -243,7 +243,20 @@ async function runStages(
   // parsed fields. `now` rather than a fresh clock read, so a batch of
   // buffered captures drained together records against the instant they were
   // drained, not whenever the loop happens to reach each one.
-  await recordParseResult(provider.providerKey, parsed !== null, now);
+  //
+  // GUARDED, DELIBERATELY. By this point `storeRawCapture` has already run,
+  // so an unguarded throw here (SQLite busy, disk error, anything transient)
+  // would propagate out of `runStages` BEFORE the capture is queued or
+  // committed — and both outer callers (`runGuarded`, `processStored`)
+  // swallow that exception silently, so `hasRawCapture` would then treat any
+  // redelivery of the same notification as a duplicate forever after. A
+  // diagnostics counter is a nice-to-have; the transaction it is about is
+  // not — losing the counter is survivable, losing the row is not.
+  try {
+    await recordParseResult(provider.providerKey, parsed !== null, now);
+  } catch (error) {
+    console.warn("parse stats could not be recorded", error);
+  }
 
   if (parsed === null) {
     // Matched a provider but nothing readable in the text. The user still gets

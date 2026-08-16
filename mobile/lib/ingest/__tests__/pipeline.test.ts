@@ -18,6 +18,7 @@ jest.mock("@/modules/notification_listener", () => ({
 
 import { closeDatabase } from "@/lib/db/database";
 import { addCaptureListener, drainPendingCaptures } from "@/modules/notification_listener";
+import * as parseStatsRepo from "@/lib/diagnostics/parse_stats_repo";
 import { createUserRule } from "@/lib/db/repos/user_rules_repo";
 import { createWallet, getBalanceDrift, getWallet } from "@/lib/db/repos/wallets_repo";
 import { onAppEvent } from "@/lib/events/app_events";
@@ -399,6 +400,53 @@ test("an unmapped wallet is a hard route to the queue however clean the parse", 
   const open = await listOpen();
   expect(open[0].kind).toBe("low-confidence");
   expect(open[0].payload).toMatchObject({ walletId: null, confidence: 0.95 });
+});
+
+// ---------------------------------------------------------------------------
+// Diagnostics must never cost the user a transaction.
+//
+// `recordParseResult` is a local, content-free counter (see
+// lib/diagnostics/parse_stats_repo.ts) — a nice-to-have, never a gate. If its
+// write throws (SQLite busy, disk error, anything transient) the exception
+// must not propagate out of the pipeline: by the time it runs, the capture is
+// already durable in `raw_notifications`, so a caller that swallowed the
+// exception (`runGuarded`, `processStored`) would leave `hasRawCapture`
+// treating any redelivery as a duplicate — the real transaction is lost
+// forever so a counter could be incremented.
+// ---------------------------------------------------------------------------
+
+test("a recordParseResult failure never costs the user their transaction", async () => {
+  const wallet = await createWallet({ name: "GCash", type: "e-wallet" });
+  await addMatcher(wallet.id, GCASH);
+  const spy = jest
+    .spyOn(parseStatsRepo, "recordParseResult")
+    .mockRejectedValueOnce(new Error("disk is busy"));
+
+  const outcome = await processCapture(gcashSend("cap-diag-fail"));
+
+  expect(outcome).toEqual({ kind: "committed", transactionId: expect.any(String) });
+  expect(await ledger()).toHaveLength(1);
+  spy.mockRestore();
+});
+
+test("a recordParseResult failure still lets a low-confidence parse reach the review queue", async () => {
+  const wallet = await createWallet({ name: "BPI", type: "bank" });
+  await addMatcher(wallet.id, MESSAGES);
+  const spy = jest
+    .spyOn(parseStatsRepo, "recordParseResult")
+    .mockRejectedValueOnce(new Error("disk is busy"));
+
+  const outcome = await processCapture(
+    capture({
+      id: "cap-diag-fail-queue",
+      packageName: MESSAGES,
+      title: "BPI",
+      text: "BPI: Your account was debited PHP500.00 at SM Store. Ref No. SMS1234567.",
+    }),
+  );
+
+  expect(outcome).toEqual({ kind: "queued", reviewItemId: expect.any(String) });
+  spy.mockRestore();
 });
 
 // ---------------------------------------------------------------------------
