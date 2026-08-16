@@ -9,11 +9,12 @@
 // which is what keeps `value` narrowed to that key's own type instead of
 // widening to `AppSettings[keyof AppSettings]`.
 //
-// THEME DOES NOT GO THROUGH HERE. `useTheme().setPreference` already
-// persists (AsyncStorage) and applies (nativewind) in one call — routing it
-// through `setSetting("theme_preference", …)` as well would be a second,
-// independently-timed persistence path for the same preference. See
-// `components/settings/theme_picker.tsx`.
+// THEME DOES NOT GO THROUGH HERE, AND `AppSettings` HAS NO `theme_preference`
+// KEY TO ROUTE THROUGH EVEN IF IT DID. `useTheme().setPreference` already
+// persists (AsyncStorage) and applies (nativewind) in one call — a second key
+// here would only be a second, independently-timed persistence path for the
+// same preference. See `components/settings/theme_picker.tsx` and
+// `app_settings_repo.ts`'s own doc.
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { queryKeys } from "@/constants/query_keys";

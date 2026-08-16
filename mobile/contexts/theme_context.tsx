@@ -14,7 +14,12 @@ import { useColorScheme as useSystemColorScheme } from "react-native";
 export type ThemePreference = "auto" | "light" | "dark";
 export type ResolvedTheme = "light" | "dark";
 
-const STORAGE_KEY = "peraplano.theme_preference";
+/**
+ * Exported so `lib/privacy/data_wipe.ts` can clear the persisted theme
+ * without duplicating this string — see that file's own doc for why the
+ * wipe has to reach into AsyncStorage at all.
+ */
+export const THEME_STORAGE_KEY = "peraplano.theme_preference";
 
 type ThemeContextValue = {
   preference: ThemePreference;
@@ -32,7 +37,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   // Restore the persisted preference once on mount.
   useEffect(() => {
-    AsyncStorage.getItem(STORAGE_KEY)
+    AsyncStorage.getItem(THEME_STORAGE_KEY)
       .then((stored) => {
         if (stored === "auto" || stored === "light" || stored === "dark") {
           setPreferenceState(stored);
@@ -53,7 +58,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const setPreference = useCallback((p: ThemePreference) => {
     setPreferenceState(p);
-    void AsyncStorage.setItem(STORAGE_KEY, p);
+    void AsyncStorage.setItem(THEME_STORAGE_KEY, p);
   }, []);
 
   const resolved: ResolvedTheme =

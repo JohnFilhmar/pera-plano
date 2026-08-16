@@ -11,10 +11,13 @@ jest.mock("@/modules/notification_listener", () => ({
   clearCaptureBuffer: jest.fn().mockResolvedValue(undefined),
 }));
 
+import AsyncStorage from "@react-native-async-storage/async-storage";
+
 import { closeDatabase } from "@/lib/db/database";
 import { getSetting, setSetting } from "@/lib/db/repos/app_settings_repo";
 import { freshDb } from "@/test_support/db";
 import { clearCaptureBuffer } from "@/modules/notification_listener";
+import { THEME_STORAGE_KEY } from "@/contexts/theme_context";
 import { listWipeableTables, wipeAllData } from "../data_wipe";
 import type { SQLiteDatabase } from "@/lib/db/database";
 
@@ -273,4 +276,21 @@ test("wipeAllData leaves foreign key enforcement ON afterward", async () => {
 
 test("wipeAllData succeeds even with no data at all — an empty database is a no-op, not a throw", async () => {
   await expect(wipeAllData()).resolves.toBeUndefined();
+});
+
+// ---------------------------------------------------------------------------
+// The theme does not survive a wipe. `app_settings` has no `theme_preference`
+// column at all (see app_settings_repo.ts's own doc); the real value lives in
+// AsyncStorage via contexts/theme_context.tsx, so `resetSettings()` alone
+// cannot touch it — this is the piece docs/04-features/11-settings-privacy.md's
+// "all settings" promise was silently missing before this fix.
+// ---------------------------------------------------------------------------
+
+test("wipeAllData erases the persisted theme preference from AsyncStorage", async () => {
+  await AsyncStorage.setItem(THEME_STORAGE_KEY, "dark");
+  expect(await AsyncStorage.getItem(THEME_STORAGE_KEY)).toBe("dark");
+
+  await wipeAllData();
+
+  expect(await AsyncStorage.getItem(THEME_STORAGE_KEY)).toBeNull();
 });

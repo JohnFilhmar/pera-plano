@@ -28,11 +28,11 @@ afterEach(async () => {
 // doesn't.
 // ---------------------------------------------------------------------------
 async function _typeLevelPin_getSettingNarrowsToItsKey(): Promise<void> {
-  const theme: "auto" | "light" | "dark" = await getSetting("theme_preference");
-  void theme;
-  // @ts-expect-error - AppSettings["theme_preference"] is a string union, never a number.
-  const notANumber: number = await getSetting("theme_preference");
-  void notANumber;
+  const promptAt: number | null = await getSetting("cash_reconcile_prompt_at");
+  void promptAt;
+  // @ts-expect-error - AppSettings["cash_reconcile_prompt_at"] is number | null, never a string.
+  const notAString: string = await getSetting("cash_reconcile_prompt_at");
+  void notAString;
 }
 void _typeLevelPin_getSettingNarrowsToItsKey;
 
@@ -44,23 +44,20 @@ test("getSetting returns the documented default for every key when nothing is st
   expect(await getSetting("onboarding_complete")).toBe(false);
   expect(await getSetting("capture_enabled")).toBe(true);
   expect(await getSetting("telemetry_enabled")).toBe(true);
-  expect(await getSetting("theme_preference")).toBe("auto");
   expect(await getSetting("last_parser_ruleset_version")).toBe(0);
   expect(await getSetting("cash_reconcile_prompt_at")).toBeNull();
 });
 
-test("setSetting then getSetting round-trips each of the six value types", async () => {
+test("setSetting then getSetting round-trips each of the five value types", async () => {
   await setSetting("onboarding_complete", true);
   await setSetting("capture_enabled", false);
   await setSetting("telemetry_enabled", false);
-  await setSetting("theme_preference", "dark");
   await setSetting("last_parser_ruleset_version", 7);
   await setSetting("cash_reconcile_prompt_at", 1_700_000_000_000);
 
   expect(await getSetting("onboarding_complete")).toBe(true);
   expect(await getSetting("capture_enabled")).toBe(false);
   expect(await getSetting("telemetry_enabled")).toBe(false);
-  expect(await getSetting("theme_preference")).toBe("dark");
   expect(await getSetting("last_parser_ruleset_version")).toBe(7);
   expect(await getSetting("cash_reconcile_prompt_at")).toBe(1_700_000_000_000);
 });
@@ -78,19 +75,18 @@ test("setSetting called twice on the same key upserts, not duplicates", async ()
 });
 
 test("getAllSettings merges stored values over defaults for the rest", async () => {
-  await setSetting("theme_preference", "light");
+  await setSetting("last_parser_ruleset_version", 7);
 
   const all = await getAllSettings();
   expect(all).toEqual({
     ...DEFAULT_SETTINGS,
-    theme_preference: "light",
+    last_parser_ruleset_version: 7,
   });
 });
 
 test("resetSettings restores every default", async () => {
   await setSetting("onboarding_complete", true);
   await setSetting("capture_enabled", false);
-  await setSetting("theme_preference", "dark");
   await setSetting("last_parser_ruleset_version", 9);
   await setSetting("cash_reconcile_prompt_at", 123);
 
@@ -144,7 +140,6 @@ describe("getSetting preserves the exact runtime type for every key, not just th
     ["onboarding_complete", true, "boolean"],
     ["capture_enabled", true, "boolean"],
     ["telemetry_enabled", false, "boolean"],
-    ["theme_preference", "light", "string"],
     ["last_parser_ruleset_version", 42, "number"],
   ] as const)("%s = %p round-trips typeof %s", async (key, value, expectedType) => {
     await setSetting(key, value);
@@ -173,7 +168,6 @@ describe("reading an unset key returns exactly its documented default, per key",
     ["onboarding_complete", false],
     ["capture_enabled", true],
     ["telemetry_enabled", true],
-    ["theme_preference", "auto"],
     ["last_parser_ruleset_version", 0],
   ] as const)("%s defaults to %p", async (key, expected) => {
     const value = await getSetting(key);
@@ -198,23 +192,26 @@ describe("reading an unset key returns exactly its documented default, per key",
 
 describe("setSetting upsert leaves exactly one row per key, with the latest value persisted", () => {
   test("two writes to the same key: one row, value_json reflects the second write", async () => {
-    await setSetting("theme_preference", "light");
-    await setSetting("theme_preference", "dark");
+    await setSetting("last_parser_ruleset_version", 1);
+    await setSetting("last_parser_ruleset_version", 2);
 
     const rows = await db.getAllAsync<{ value_json: string }>(
       "SELECT value_json FROM app_settings WHERE key = ?",
-      ["theme_preference"],
+      ["last_parser_ruleset_version"],
     );
     expect(rows).toHaveLength(1);
-    expect(JSON.parse(rows[0].value_json)).toBe("dark");
+    expect(JSON.parse(rows[0].value_json)).toBe(2);
   });
 
   test("writing two different keys produces two rows, not one shared row", async () => {
-    await setSetting("theme_preference", "dark");
+    await setSetting("last_parser_ruleset_version", 2);
     await setSetting("onboarding_complete", true);
 
     const rows = await db.getAllAsync<{ key: string }>("SELECT key FROM app_settings");
-    expect(rows.map((r) => r.key).sort()).toEqual(["onboarding_complete", "theme_preference"]);
+    expect(rows.map((r) => r.key).sort()).toEqual([
+      "last_parser_ruleset_version",
+      "onboarding_complete",
+    ]);
   });
 });
 
@@ -301,12 +298,12 @@ describe("a corrupt value_json cell is decoded defensively, never thrown", () =>
   test("getSetting returns the key's documented default when its stored value_json is malformed", async () => {
     await db.runAsync(
       "INSERT INTO app_settings (id, key, value_json, updated_at) VALUES (?, ?, ?, ?)",
-      ["corrupt-1", "theme_preference", "{not json", Date.now()],
+      ["corrupt-1", "telemetry_enabled", "{not json", Date.now()],
     );
 
-    const value = await getSetting("theme_preference");
-    expect(value).toBe(DEFAULT_SETTINGS.theme_preference);
-    expect(typeof value).toBe("string");
+    const value = await getSetting("telemetry_enabled");
+    expect(value).toBe(DEFAULT_SETTINGS.telemetry_enabled);
+    expect(typeof value).toBe("boolean");
   });
 
   test("getAllSettings falls back to the default for a corrupt key without poisoning the other stored values", async () => {
@@ -317,17 +314,17 @@ describe("a corrupt value_json cell is decoded defensively, never thrown", () =>
     await setSetting("last_parser_ruleset_version", 3);
     await db.runAsync(
       "INSERT INTO app_settings (id, key, value_json, updated_at) VALUES (?, ?, ?, ?)",
-      ["corrupt-2", "theme_preference", "{not json", Date.now()],
+      ["corrupt-2", "telemetry_enabled", "{not json", Date.now()],
     );
 
     const all = await getAllSettings();
-    expect(all.theme_preference).toBe(DEFAULT_SETTINGS.theme_preference);
+    expect(all.telemetry_enabled).toBe(DEFAULT_SETTINGS.telemetry_enabled);
+    expect(typeof all.telemetry_enabled).toBe("boolean");
     expect(all.onboarding_complete).toBe(true);
     expect(typeof all.onboarding_complete).toBe("boolean");
     expect(all.last_parser_ruleset_version).toBe(3);
     expect(typeof all.last_parser_ruleset_version).toBe("number");
     expect(all.capture_enabled).toBe(DEFAULT_SETTINGS.capture_enabled);
-    expect(all.telemetry_enabled).toBe(DEFAULT_SETTINGS.telemetry_enabled);
     expect(all.cash_reconcile_prompt_at).toBe(DEFAULT_SETTINGS.cash_reconcile_prompt_at);
   });
 

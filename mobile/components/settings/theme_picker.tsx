@@ -3,18 +3,18 @@
 // without a restart").
 //
 // READS AND WRITES `useTheme()` DIRECTLY — NOT `app_settings_repo`, and NOT
-// `hooks/mutations/use_set_setting.ts`, even though `AppSettings` happens to
-// declare a `theme_preference` key. `contexts/theme_context.tsx` already
-// owns persistence for this preference (AsyncStorage, key
-// "peraplano.theme_preference", proven by contexts/__tests__/theme_context.
+// `hooks/mutations/use_set_setting.ts`. `AppSettings` deliberately declares
+// no `theme_preference` key at all (see that file's own doc) — this
+// preference lives ONLY in AsyncStorage, owned end to end by
+// `contexts/theme_context.tsx` (key "peraplano.theme_preference", proven by
+// contexts/__tests__/theme_context.
 // test.tsx) and already applies it immediately (`nativewindColorScheme.set`
 // runs synchronously inside `setPreference`, before this component re-renders
-// at all). Writing the SAME preference through `setSetting("theme_preference",
-// …)` as well would be a second persistence path for one value — two stores
-// that can disagree about which theme is active, for zero benefit, since
-// nothing else in the app reads `app_settings.theme_preference`. This
-// component's whole job is exposing the CHOICE `useTheme()` already knows how
-// to keep, not re-implementing how it is kept.
+// at all). Routing the SAME preference through `app_settings` as well would
+// be a second persistence path for one value — two stores that can disagree
+// about which theme is active, for zero benefit. This component's whole job
+// is exposing the CHOICE `useTheme()` already knows how to keep, not
+// re-implementing how it is kept.
 import { Pressable, Text, View } from "react-native";
 
 import { useTheme, type ThemePreference } from "@/contexts/theme_context";

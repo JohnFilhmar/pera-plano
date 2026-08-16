@@ -22,10 +22,13 @@
 // on disk. Reading the live table list from `sqlite_master` instead means
 // the day a migration adds table number twenty-two, this function already
 // wipes it — no second edit required, and nothing to forget.
+import AsyncStorage from "@react-native-async-storage/async-storage";
+
 import { getDatabase } from "@/lib/db/database";
 import { resetSettings } from "@/lib/db/repos/app_settings_repo";
 import { listDataTableNames } from "@/lib/db/table_names";
 import { clearCaptureBuffer } from "@/modules/notification_listener";
+import { THEME_STORAGE_KEY } from "@/contexts/theme_context";
 import type { SQLiteDatabase } from "@/lib/db/database";
 
 /**
@@ -95,6 +98,17 @@ export async function wipeAllData(): Promise<void> {
   }
 
   await resetSettings();
+
+  // The theme preference lives OUTSIDE SQLite entirely — AsyncStorage, via
+  // `contexts/theme_context.tsx` — because `app_settings` deliberately has no
+  // `theme_preference` key for it (see that repository's own doc). Without
+  // this line, `resetSettings()` above would have nothing to clear and the
+  // theme would survive a wipe, contradicting the docs' explicit promise
+  // that "every setting" is erased. `removeItem` rather than writing "auto"
+  // back: an absent key is exactly what `ThemeProvider`'s mount-time read
+  // already treats as "use the default", so this needs no special-casing on
+  // the read side to become true.
+  await AsyncStorage.removeItem(THEME_STORAGE_KEY);
 
   // The native pending-capture buffer (`pending_captures.ndjson`) lives
   // outside SQLite entirely — sealed ciphertext under the capture keypair,

@@ -8,21 +8,26 @@
 //
 // `app_settings` is one row per key (`key TEXT NOT NULL UNIQUE`) with every
 // value JSON-encoded into a single `value_json TEXT` column. That column is
-// shared by booleans, numbers, a string union, and a nullable number — so the
+// shared by booleans, numbers, objects, arrays, and a nullable number — so the
 // one rule that matters here is: encode with JSON.stringify, decode with
 // JSON.parse, always. Never store or read the raw JS value directly, or a
 // boolean `false`/`null` round-trips as the truthy strings "false"/"null".
+//
+// NO `theme_preference` KEY HERE, DELIBERATELY. The theme lives entirely in
+// AsyncStorage via `contexts/theme_context.tsx` (see that file's own doc) —
+// nothing in this app ever reads or writes a `theme_preference` row. A key
+// here with no reader/writer would only imply this table covers a value it
+// does not, which is exactly the trap `lib/privacy/data_wipe.ts`'s "wipe
+// everything" fell into: it resets this table and would have left the theme
+// behind while claiming to have erased "every setting".
 import { getDatabase } from "@/lib/db/database";
 import { newId } from "@/lib/ids";
 import { UNKNOWN_INCOME_DETECTION, type IncomeDetectionState } from "@/types/control";
-
-export type ThemePreference = "auto" | "light" | "dark";
 
 export type AppSettings = {
   onboarding_complete: boolean;
   capture_enabled: boolean;
   telemetry_enabled: boolean;
-  theme_preference: ThemePreference;
   last_parser_ruleset_version: number;
   cash_reconcile_prompt_at: number | null;
   /**
@@ -121,7 +126,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   onboarding_complete: false,
   capture_enabled: true,
   telemetry_enabled: true,
-  theme_preference: "auto",
   last_parser_ruleset_version: 0,
   cash_reconcile_prompt_at: null,
   income_detection_state: UNKNOWN_INCOME_DETECTION,
