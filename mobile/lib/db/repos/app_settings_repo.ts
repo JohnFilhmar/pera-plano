@@ -31,6 +31,15 @@ export type AppSettings = {
   last_parser_ruleset_version: number;
   cash_reconcile_prompt_at: number | null;
   /**
+   * When `services/parser_rules.ts`'s `checkForRulesetUpdate` last actually
+   * reached the server (M3c Task 5, rule 5) — `null` means "never checked",
+   * matching `cash_reconcile_prompt_at`'s own null-means-unset convention.
+   * That module is the only reader/writer; it exists so repeated app
+   * launches/foregrounds don't re-request a ruleset that was already checked
+   * within the spec's interval.
+   */
+  parser_rules_checked_at: number | null;
+  /**
    * Income detection's working notes (m2 Task 9). The first OBJECT-valued
    * setting, and it works unchanged because every value here has always been
    * JSON-encoded into `value_json` — the rule at the top of this file exists
@@ -128,6 +137,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   telemetry_enabled: true,
   last_parser_ruleset_version: 0,
   cash_reconcile_prompt_at: null,
+  parser_rules_checked_at: null,
   income_detection_state: UNKNOWN_INCOME_DETECTION,
   loan_reminder_ids: {},
   bill_reminder_ids: {},
