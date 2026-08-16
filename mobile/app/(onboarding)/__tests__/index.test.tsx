@@ -125,31 +125,32 @@ test("once the device reports secure, advances to the phrase step and drops the 
   expect(screen.queryByTestId("fake-device-lock")).toBeNull();
 });
 
-test("keys already locked (Task 10's steps already done): skips both steps and falls through to the tabs", async () => {
+test("keys already locked (Task 10's steps already done): skips both steps and continues into the numbered flow", async () => {
   mockGetKeyState.mockResolvedValue("locked");
 
   render(<OnboardingIndexScreen />);
 
   await waitFor(() => expect(screen.getByTestId("fake-redirect")).toBeTruthy());
-  expect(capturedHref).toBe("/(tabs)");
+  expect(capturedHref).toBe("/(onboarding)/welcome");
   expect(screen.queryByTestId("fake-device-lock")).toBeNull();
   expect(screen.queryByTestId("fake-recovery-phrase")).toBeNull();
 });
 
-test("keys already unlocked: also falls through to the tabs, never re-shows the phrase capture", async () => {
+test("keys already unlocked: also continues into the numbered flow, never re-shows the phrase capture", async () => {
   mockGetKeyState.mockResolvedValue("unlocked");
 
   render(<OnboardingIndexScreen />);
 
   await waitFor(() => expect(screen.getByTestId("fake-redirect")).toBeTruthy());
-  expect(capturedHref).toBe("/(tabs)");
+  expect(capturedHref).toBe("/(onboarding)/welcome");
   expect(screen.queryByTestId("fake-recovery-phrase")).toBeNull();
 });
 
 // ---------------------------------------------------------------------------
 // The provider step (provider-selection plan Task 4) — the first of the steps
-// that "actually belong after the phrase", filling part of the temporary
-// fall-through to /(tabs) this file's header describes.
+// that "actually belong after the phrase". Completing it now continues into
+// the numbered flow (m3c-onboarding-client plan Task 2) rather than falling
+// through to /(tabs) — see this file's header for the redirect target.
 // ---------------------------------------------------------------------------
 
 test("the provider picker never renders before the recovery phrase is captured", async () => {
@@ -174,7 +175,7 @@ test("once the recovery phrase is captured, advances to the provider picker", as
   expect(screen.queryByTestId("fake-redirect")).toBeNull();
 });
 
-test("completing the provider step falls through to the tabs", async () => {
+test("completing the provider step continues into the numbered flow's first screen", async () => {
   await advanceToPhraseStep();
   await act(async () => {
     capturedOnPhraseDone!();
@@ -187,5 +188,5 @@ test("completing the provider step falls through to the tabs", async () => {
   });
 
   await waitFor(() => expect(screen.getByTestId("fake-redirect")).toBeTruthy());
-  expect(capturedHref).toBe("/(tabs)");
+  expect(capturedHref).toBe("/(onboarding)/welcome");
 });

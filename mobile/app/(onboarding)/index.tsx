@@ -20,24 +20,30 @@
 //      app/index.tsx redirects here (a real "/(onboarding)" navigation)
 //      when `onboarding_complete` is still false. That covers the user who
 //      already finished THIS task's two steps (keys exist) but hasn't
-//      finished the rest of onboarding (M3c, not built yet) -- for that
-//      user isDeviceSecure() is already true and getKeyState() is already
-//      not "uninitialized", so the check below falls through to "/(tabs)",
-//      a deliberate, temporary landing spot until M3c adds the steps that
-//      actually belong after the phrase. Same "falls through" pattern this
-//      codebase already uses for every not-yet-built next step (see
-//      app/index.tsx's and app/lock.tsx's own prior header comments).
+//      finished the rest of onboarding -- for that user isDeviceSecure() is
+//      already true and getKeyState() is already not "uninitialized", so the
+//      check below falls through to the numbered flow's first screen (see
+//      "THE NUMBERED FLOW" below), same as the fresh-install path once its
+//      own pre-flow steps are done.
 //
 // THE PROVIDER STEP (provider-selection plan Task 4) is the first of "the
 // steps that actually belong after the phrase" to exist. It runs in the
-// FRESH-INSTALL sequence only -- branch 1 above -- and branch 2's
-// already-keyed user still falls straight through to "/(tabs)". That
-// asymmetry is deliberate and temporary: NOTHING in the app writes
-// `onboarding_complete` yet (M3c owns that), so routing the already-keyed
-// user into the picker would re-ask them on every single launch with no way
-// to ever stop being asked. Re-prompting forever is a worse bug than the
-// temporary landing spot it would be trying to fix. When M3c lands the
-// setting write, this branch is where the rest of its steps hang.
+// FRESH-INSTALL sequence only -- branch 1 above.
+//
+// THE NUMBERED FLOW (m3c-onboarding-client plan Task 2; docs
+// §04-features/01-onboarding.md) is lib/onboarding/onboarding_state.ts's nine
+// skippable steps, starting at "welcome". Both "already_keyed" and "done"
+// below redirect there now instead of straight to "/(tabs)" -- Task 1 left
+// that wiring for whichever task actually built the "/welcome" route, since
+// pointing a Redirect at a route that does not exist yet is the exact
+// ordering hazard this codebase already hit and fixed once in
+// app/index.tsx's own history (see that file's and app/lock.tsx's header
+// comments). onboarding_state.ts's own header explains why landing BOTH
+// branches on "welcome" specifically is correct rather than merely
+// convenient: onboarding progress is not persisted, so an already-keyed user
+// who never finished the numbered flow restarts it at the top exactly the
+// same way a freshly-provisioned one does -- there is no OTHER correct
+// resume point for either.
 //
 // ORDERING (task-10-brief rule 1 / docs §5a): device-lock renders FIRST and
 // unconditionally, for every entry above. Nothing here calls generatePhrase()
@@ -90,7 +96,7 @@ export default function OnboardingIndexScreen() {
   }
 
   if (step === "already_keyed" || step === "done") {
-    return <Redirect href="/(tabs)" />;
+    return <Redirect href="/(onboarding)/welcome" />;
   }
 
   if (step === "device_lock") {
