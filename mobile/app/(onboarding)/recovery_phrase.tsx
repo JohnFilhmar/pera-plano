@@ -64,7 +64,11 @@ export default function RecoveryPhraseScreen({ onDone }: { onDone?: () => void }
         setWords(generated);
         setStage("display");
       })
-      .catch(() => {
+      .catch((err: unknown) => {
+        // NEVER the phrase itself, only the failure. `generatePhrase` returns
+        // the words; a log line that included them would put a recovery phrase
+        // into logcat, readable by anything holding READ_LOGS.
+        console.error("[recovery_phrase] generatePhrase failed", err);
         if (!cancelled) setStage("error");
       });
     return () => {
@@ -83,7 +87,14 @@ export default function RecoveryPhraseScreen({ onDone }: { onDone?: () => void }
     setStage("initializing");
     initializeKeys(words)
       .then(() => setStage("done"))
-      .catch(() => setStage("error"))
+      .catch((err: unknown) => {
+        // This is the failure that costs a user their data, and until now it
+        // was discarded — the screen said "try again" and logged nothing, so an
+        // on-device failure could not be diagnosed at all. `words` is NOT
+        // logged, only the error.
+        console.error("[recovery_phrase] initializeKeys failed", err);
+        setStage("error");
+      })
       .finally(() => {
         initializingRef.current = false;
       });
