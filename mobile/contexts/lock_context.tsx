@@ -34,6 +34,23 @@
 // credential, NEVER biometric-only, so a user with no enrolled fingerprint
 // can still open their own app with just their PIN/pattern/password.
 //
+// ...AND WHY submitRecoveryPhrase() NOW DOES THE SAME. rewrapAfterInvalidation()
+// runs recreateDeviceKek() and then wrapWithDeviceKek() — the same auth-gated
+// Keystore key, the same ~10s window, the same requirement that something
+// raise the system challenge first. Nothing here ever did: unlike unlock(),
+// which is reached BY authenticating, this path is reached by TYPING TWELVE
+// WORDS, so no challenge has been passed and the window has never been open.
+// On a physical Samsung A54 the identical omission in onboarding
+// (app/(onboarding)/recovery_phrase.tsx, commit e3ec7cb) failed every single
+// time with NotAuthenticatedError; only the fact that this path is reached
+// from "needs_recovery" — a removed screen lock, not a first run — kept that
+// device session from exercising it too. It is the same defect on the one
+// flow whose entire purpose is preventing data loss, so it gets the same
+// resolved shape as that screen: authenticate immediately before the call,
+// treat a cancelled prompt as a step to take again rather than an error, and
+// re-prompt exactly ONCE on a NotAuthenticatedError from the call itself.
+// `disableDeviceFallback: false` for the same reason as everywhere else.
+//
 // WHY NO AUTO-RETRY LOOP ANYWHERE HERE: the plan's own retrospective names
 // "a forever-looping recovery" as one of the bug shapes that has shipped
 // green suites before. Every failure path below (a cancelled prompt,
@@ -108,6 +125,37 @@ type LockContextValue = {
 const LockContext = createContext<LockContextValue | null>(null);
 
 const FIVE_MINUTES_MS = 5 * 60 * 1000;
+
+/**
+ * Says what did not happen and what to do next, and never implies the words
+ * are the problem — the user is looking at the phrase they just typed while
+ * reading this, and "that recovery phrase doesn't match" would send them
+ * hunting for a typo that does not exist.
+ */
+const RECOVERY_AUTH_NOT_COMPLETED_MESSAGE =
+  "We couldn't confirm it's you, so nothing was unlocked. Your words are still here — tap Unlock to try again.";
+
+/**
+ * The system authentication challenge that opens the Keystore's ~10s window
+ * for rewrapAfterInvalidation(). Same options as unlock(), including the one
+ * that matters most:
+ *
+ * `disableDeviceFallback: false` — NEVER biometric-only (task-9-brief rule 2 /
+ * contract §10). This user's screen lock was just removed and re-created;
+ * their fingerprint enrollment went with the old one, so device
+ * PIN/pattern/password is frequently the ONLY credential they still have.
+ *
+ * The prompt message is recovery's, not unlock()'s: "Unlock PeraPlano" is the
+ * copy on a door whose key still works, and this user is here precisely
+ * because theirs stopped working.
+ */
+async function authenticateForRecovery(): Promise<boolean> {
+  const result = await LocalAuthentication.authenticateAsync({
+    promptMessage: "Confirm it's you to restore access to PeraPlano",
+    disableDeviceFallback: false,
+  });
+  return result.success;
+}
 
 export function LockProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<LockStatus>("checking");
@@ -313,13 +361,52 @@ export function LockProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      const dek = await KeyManager.rewrapAfterInvalidation(phrase);
+      // AFTER the screen-lock gate, never before it: a device with no screen
+      // lock has no credential to authenticate against, so a prompt raised
+      // there could only be a dead end in front of the explainer that
+      // actually tells the user what to do.
+      if (!(await authenticateForRecovery())) {
+        // NOT an error, and deliberately NOT a status change. The status
+        // staying "needs_recovery" is what keeps RecoveryUnlockForm mounted
+        // with the words the user typed still in its box — anything else
+        // unmounts it and silently discards them, on the screen where
+        // retyping twelve words from paper is the whole cost of the mistake.
+        setErrorMessage(RECOVERY_AUTH_NOT_COMPLETED_MESSAGE);
+        return;
+      }
+
+      let dek: Uint8Array;
+      try {
+        dek = await KeyManager.rewrapAfterInvalidation(phrase);
+      } catch (error) {
+        if (!(error instanceof NotAuthenticatedError)) throw error;
+        // The window expired between the prompt and the call. One re-prompt,
+        // one retry of the identical call with the identical phrase — the
+        // response this rejection's contract requires
+        // (modules/notification_listener/index.ts).
+        if (!(await authenticateForRecovery())) {
+          setErrorMessage(RECOVERY_AUTH_NOT_COMPLETED_MESSAGE);
+          return;
+        }
+        // A second NotAuthenticatedError falls through to the catch below and
+        // STOPS there. There is no third attempt — see this file's "WHY NO
+        // AUTO-RETRY LOOP ANYWHERE HERE".
+        dek = await KeyManager.rewrapAfterInvalidation(phrase);
+      }
+
       await Database.unlockDatabase(dek);
       QueryCache.setCacheEncryptionKey(dek);
       setStatus("unlocked");
     } catch (error) {
       if (error instanceof KeyManager.RecoveryUnlockFailedError) {
         setErrorMessage("That recovery phrase doesn't match. Check the words and try again.");
+      } else if (error instanceof NotAuthenticatedError) {
+        // Re-promptable, not a failure — the same taxonomy unlock() already
+        // applies. Until this branch existed, a NotAuthenticatedError that
+        // survived the one retry above landed in the generic bucket below
+        // and told the user "something went wrong" about the one failure
+        // whose cause and remedy are both perfectly well known.
+        setErrorMessage("Please authenticate again to continue.");
       } else {
         setErrorMessage("Something went wrong. Try again.");
       }

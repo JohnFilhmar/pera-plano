@@ -552,6 +552,230 @@ describe("submitRecoveryPhrase() routes an insecure device to needs_device_lock 
 });
 
 // ---------------------------------------------------------------------------
+// THE AUTHENTICATION WINDOW ON THE RECOVERY PATH
+// (docs/12-encryption-and-app-lock.md §7; modules/notification_listener's
+// rejection taxonomy). rewrapAfterInvalidation() runs recreateDeviceKek() and
+// then wrapWithDeviceKek() -- the same auth-gated Keystore key, usable only
+// for ~10s after the user passes a system challenge, and nothing raises that
+// challenge just because Kotlin code reaches for the key. unlock() is reached
+// BY authenticating; this path is reached by TYPING TWELVE WORDS, so until
+// this fix nothing had opened the window at all. The identical omission in
+// onboarding (commit e3ec7cb) failed every single time on a physical Samsung
+// A54; only the fact that this path needs a REMOVED SCREEN LOCK to reach kept
+// that device session from finding it here too.
+// ---------------------------------------------------------------------------
+
+describe("submitRecoveryPhrase() authenticates before the auth-gated rewrap", () => {
+  async function arriveAtNeedsRecovery() {
+    mockUnlockWithDeviceKey.mockRejectedValue(new DeviceKeyInvalidatedError());
+    const { result } = renderHook(() => useLock(), { wrapper });
+    await waitFor(() => expect(result.current.status).toBe("locked"));
+    await act(async () => {
+      await result.current.unlock();
+    });
+    await waitFor(() => expect(result.current.status).toBe("needs_recovery"));
+    // unlock() authenticated to GET here; clear that call so every count
+    // below is about the recovery path alone.
+    mockAuthenticateAsync.mockClear();
+    return result;
+  }
+
+  test("raises the system authentication prompt BEFORE rewrapAfterInvalidation, not after it", async () => {
+    const result = await arriveAtNeedsRecovery();
+
+    await act(async () => {
+      await result.current.submitRecoveryPhrase(PHRASE);
+    });
+
+    expect(mockAuthenticateAsync).toHaveBeenCalledTimes(1);
+    expect(mockRewrapAfterInvalidation).toHaveBeenCalledTimes(1);
+    // ORDER, not mere presence. A prompt raised after the call it exists to
+    // open the Keystore window for is exactly as useless as no prompt at
+    // all, and "both were called" cannot tell those two apart.
+    expect(mockAuthenticateAsync.mock.invocationCallOrder[0]).toBeLessThan(
+      mockRewrapAfterInvalidation.mock.invocationCallOrder[0],
+    );
+    expect(result.current.status).toBe("unlocked");
+  });
+
+  test("never asks for biometric-only -- a user whose fingerprint enrollment died with their old screen lock can still recover with their PIN", async () => {
+    const result = await arriveAtNeedsRecovery();
+
+    await act(async () => {
+      await result.current.submitRecoveryPhrase(PHRASE);
+    });
+
+    // Same pin as unlock() (task-9-brief rule 2 / contract §10). This user's
+    // screen lock was just removed and re-created, so a device
+    // PIN/pattern/password is frequently the only credential they have left.
+    expect(mockAuthenticateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ disableDeviceFallback: false }),
+    );
+  });
+
+  test("a cancelled prompt never calls rewrapAfterInvalidation, never reaches unlocked, and never discards the phrase the user typed", async () => {
+    const result = await arriveAtNeedsRecovery();
+    mockAuthenticateAsync.mockResolvedValue({ success: false, error: "user_cancel" });
+
+    await act(async () => {
+      await result.current.submitRecoveryPhrase(PHRASE);
+    });
+
+    expect(mockRewrapAfterInvalidation).not.toHaveBeenCalled();
+    expect(mockUnlockDatabase).not.toHaveBeenCalled();
+    expect(mockSetCacheEncryptionKey).not.toHaveBeenCalled();
+    expect(result.current.status).not.toBe("unlocked");
+    // THE ONE THAT MATTERS FOR THE TYPED WORDS. This context never holds the
+    // phrase -- RecoveryUnlockForm's own TextInput does -- so "the words are
+    // still in the box" IS "the status still renders RecoveryUnlockForm"
+    // (app/lock.tsx). Any other status (needs_device_lock, locked,
+    // needs_onboarding) unmounts that form and silently throws away twelve
+    // words the user just copied off paper.
+    expect(result.current.status).toBe("needs_recovery");
+    expect(result.current.errorMessage).toBeTruthy();
+
+    // And the form is genuinely usable again, not merely still on screen: a
+    // second, successful attempt gets the SAME phrase into the same call.
+    mockAuthenticateAsync.mockResolvedValue({ success: true });
+    await act(async () => {
+      await result.current.submitRecoveryPhrase(PHRASE);
+    });
+    expect(mockRewrapAfterInvalidation).toHaveBeenCalledTimes(1);
+    expect(mockRewrapAfterInvalidation).toHaveBeenCalledWith(PHRASE);
+    expect(result.current.status).toBe("unlocked");
+  });
+
+  test("a NotAuthenticatedError re-prompts once and retries the SAME call with the SAME phrase", async () => {
+    const result = await arriveAtNeedsRecovery();
+    // The ~10s window can expire between the prompt and the call -- a slow or
+    // interrupted user. The module's contract for this rejection is explicit:
+    // re-prompt and retry the same call.
+    mockRewrapAfterInvalidation.mockRejectedValueOnce(new NotAuthenticatedError());
+
+    await act(async () => {
+      await result.current.submitRecoveryPhrase(PHRASE);
+    });
+
+    expect(mockAuthenticateAsync).toHaveBeenCalledTimes(2);
+    expect(mockRewrapAfterInvalidation).toHaveBeenCalledTimes(2);
+    // The identical array instance, not a fresh phrase that happens to
+    // compare equal -- the retry is the SAME call, re-issued.
+    expect(mockRewrapAfterInvalidation.mock.calls[1][0]).toBe(
+      mockRewrapAfterInvalidation.mock.calls[0][0],
+    );
+    expect(mockRewrapAfterInvalidation).toHaveBeenLastCalledWith(PHRASE);
+    // The second prompt is raised BEFORE the retry, for the same reason the
+    // first one is raised before the first attempt.
+    expect(mockAuthenticateAsync.mock.invocationCallOrder[1]).toBeLessThan(
+      mockRewrapAfterInvalidation.mock.invocationCallOrder[1],
+    );
+    expect(result.current.status).toBe("unlocked");
+  });
+
+  test("a cancelled RE-prompt still keeps the phrase and never reaches unlocked", async () => {
+    const result = await arriveAtNeedsRecovery();
+    mockRewrapAfterInvalidation.mockRejectedValueOnce(new NotAuthenticatedError());
+    // A counter rather than mockResolvedValueOnce: a once-queue survives
+    // jest.clearAllMocks() (which only clears usage data), so an unconsumed
+    // entry would leak into the NEXT test's unlock(). A plain
+    // mockImplementation is replaced outright by beforeEach's mockResolvedValue.
+    let prompts = 0;
+    mockAuthenticateAsync.mockImplementation(async () => {
+      prompts += 1;
+      return prompts === 1 ? { success: true } : { success: false, error: "user_cancel" };
+    });
+
+    await act(async () => {
+      await result.current.submitRecoveryPhrase(PHRASE);
+    });
+
+    expect(mockAuthenticateAsync).toHaveBeenCalledTimes(2);
+    expect(mockRewrapAfterInvalidation).toHaveBeenCalledTimes(1);
+    expect(result.current.status).toBe("needs_recovery");
+    expect(result.current.errorMessage).toBeTruthy();
+    expect(mockUnlockDatabase).not.toHaveBeenCalled();
+  });
+
+  test("a second NotAuthenticatedError gives up instead of prompting forever", async () => {
+    const result = await arriveAtNeedsRecovery();
+    mockRewrapAfterInvalidation.mockRejectedValue(new NotAuthenticatedError());
+
+    await act(async () => {
+      await result.current.submitRecoveryPhrase(PHRASE);
+    });
+
+    // Bounded at exactly one re-prompt. "A forever-looping recovery" is a bug
+    // shape this codebase has already shipped once (see lock_context.tsx's
+    // "WHY NO AUTO-RETRY LOOP ANYWHERE HERE"); an unescapable prompt loop on
+    // the screen standing between a user and all of their data is the worst
+    // possible place for a second one.
+    expect(mockAuthenticateAsync).toHaveBeenCalledTimes(2);
+    expect(mockRewrapAfterInvalidation).toHaveBeenCalledTimes(2);
+    expect(result.current.status).toBe("needs_recovery");
+
+    // Nothing re-invokes itself afterwards either -- a third attempt needs a
+    // NEW explicit submit.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(mockAuthenticateAsync).toHaveBeenCalledTimes(2);
+    expect(mockRewrapAfterInvalidation).toHaveBeenCalledTimes(2);
+  });
+
+  test("a NotAuthenticatedError never produces the generic \"Something went wrong\" copy -- it names the one failure whose remedy is known", async () => {
+    const result = await arriveAtNeedsRecovery();
+    mockRewrapAfterInvalidation.mockRejectedValue(new NotAuthenticatedError());
+
+    await act(async () => {
+      await result.current.submitRecoveryPhrase(PHRASE);
+    });
+
+    expect(result.current.errorMessage).toBeTruthy();
+    // The discriminating assertion: this rejection used to fall into the
+    // catch-all bucket, so the user was told "something went wrong" about a
+    // failure whose cause AND remedy are both perfectly well known.
+    expect(result.current.errorMessage).not.toBe("Something went wrong. Try again.");
+    // And it must never be mistaken for the wrong-words message either --
+    // that one sends the user hunting for a typo that does not exist.
+    expect(result.current.errorMessage).not.toBe(
+      "That recovery phrase doesn't match. Check the words and try again.",
+    );
+  });
+
+  test("an insecure device is still routed to needs_device_lock without ever raising a prompt it has no credential to satisfy", async () => {
+    mockIsDeviceSecure.mockResolvedValue(false);
+    const result = await arriveAtNeedsRecovery();
+
+    await act(async () => {
+      await result.current.submitRecoveryPhrase(PHRASE);
+    });
+
+    expect(result.current.status).toBe("needs_device_lock");
+    expect(mockAuthenticateAsync).not.toHaveBeenCalled();
+    expect(mockRewrapAfterInvalidation).not.toHaveBeenCalled();
+  });
+
+  test("every OTHER failure keeps today's copy -- a wrong phrase still says so, and an unexpected error is still generic", async () => {
+    const result = await arriveAtNeedsRecovery();
+
+    mockRewrapAfterInvalidation.mockRejectedValueOnce(new KeyManager.RecoveryUnlockFailedError());
+    await act(async () => {
+      await result.current.submitRecoveryPhrase(PHRASE);
+    });
+    expect(result.current.errorMessage).toBe(
+      "That recovery phrase doesn't match. Check the words and try again.",
+    );
+
+    mockRewrapAfterInvalidation.mockRejectedValueOnce(new Error("some internal detail"));
+    await act(async () => {
+      await result.current.submitRecoveryPhrase(PHRASE);
+    });
+    expect(result.current.errorMessage).toBe("Something went wrong. Try again.");
+    expect(result.current.status).toBe("needs_recovery");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // wipeAndStartOver() -- the §11a unrecoverable-state escape hatch
 // ---------------------------------------------------------------------------
 
