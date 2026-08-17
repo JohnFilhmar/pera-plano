@@ -35,6 +35,18 @@
 // (task-17-brief.md rule 2): it renders a plain, themed recovery screen with
 // a "Try again" action that re-invokes bootstrapApp(), instead of a white
 // void the user has no way to act on.
+// NATIVEWIND'S STYLESHEET. Without this import every `className` in the app is
+// inert: metro.config.js compiles global.css and hands it to withNativeWind,
+// but nothing registers the result unless the app imports it, so the classes
+// resolve to nothing and every screen renders as unstyled primitives.
+//
+// Found on a physical device, not in tests: the recovery-phrase heading is
+// `text-center` yet rendered left-aligned, and its `rounded-lg bg-brand px-6
+// py-3` button rendered as full-width plain text. The dark background looked
+// right only because this file sets colours from `palette` in JS, which
+// disguised the failure.
+import "../global.css";
+
 import { Inter_400Regular } from "@expo-google-fonts/inter";
 import { useFonts } from "expo-font";
 import { Stack } from "expo-router";
