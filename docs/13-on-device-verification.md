@@ -289,7 +289,7 @@ adb shell cmd notification post -S bigtext -t "TEST" tag1 "Sent PHP 100.00 to JU
 
 ### Durability across process death — the core promise
 ```bash
-adb shell am force-stop com.peraplano.app
+adb shell am force-stop com.filldev.peraplano
 ```
 - [ ] Post another notification **while the app is dead**, relaunch, `drainPendingCaptures()`,
       and confirm the notification posted while dead is returned → `________________`
