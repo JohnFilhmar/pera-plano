@@ -29,8 +29,13 @@
 // why that must never be confused with pausing capture.
 import { useCallback, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import type { ProviderChoice } from "@/lib/ingest/provider_catalogue";
+
+/** The `py-8` this screen used to carry, kept as the floor its system-bar
+ * insets are added to (see the root View below). */
+const SCREEN_PADDING = 32;
 
 function ChoiceRow({
   choice,
@@ -101,6 +106,7 @@ export function ProviderPicker({
   busy?: boolean;
 }) {
   const [selected, setSelected] = useState<string[]>([]);
+  const insets = useSafeAreaInsets();
 
   const toggle = useCallback((packageName: string) => {
     setSelected((prev) =>
@@ -119,7 +125,17 @@ export function ProviderPicker({
   const unseen = choices.filter((choice) => !choice.seen);
 
   return (
-    <View testID="provider-picker" className="flex-1 bg-bg px-6 py-8 dark:bg-bg-dark">
+    // Same first-run, no-navigator, edge-to-edge situation as
+    // phrase_display.tsx: this screen's Continue and "Not now" both live at the
+    // bottom of the column, which is where Android's navigation bar is.
+    <View
+      testID="provider-picker"
+      className="flex-1 bg-bg px-6 dark:bg-bg-dark"
+      style={{
+        paddingTop: SCREEN_PADDING + insets.top,
+        paddingBottom: SCREEN_PADDING + insets.bottom,
+      }}
+    >
       <Text className="text-center text-lg font-semibold text-fg dark:text-fg-dark">
         Which apps should PeraPlano listen to?
       </Text>

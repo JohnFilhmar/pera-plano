@@ -19,8 +19,13 @@
 // let a user who wrote down nine of twelve words pass.
 import { useMemo, useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 const CHALLENGE_COUNT = 3;
+
+/** The `py-8` this screen used to carry, kept as the floor its system-bar
+ * insets are added to (see the root View below). */
+const SCREEN_PADDING = 32;
 
 /**
  * Picks CHALLENGE_COUNT distinct positions out of `wordCount`, ascending.
@@ -60,6 +65,8 @@ export function PhraseConfirm({
   // the first place.
   const [confirmed, setConfirmed] = useState(false);
 
+  const insets = useSafeAreaInsets();
+
   const handleChange = (index: number, value: string) => {
     setAnswers((prev) => prev.map((a, i) => (i === index ? value : a)));
   };
@@ -79,7 +86,17 @@ export function PhraseConfirm({
   };
 
   return (
-    <View testID="phrase-confirm" className="flex-1 bg-bg px-6 py-8 dark:bg-bg-dark">
+    // Same first-run, no-navigator, edge-to-edge situation as
+    // phrase_display.tsx: without these insets the "Confirm" button sits under
+    // Android's navigation bar.
+    <View
+      testID="phrase-confirm"
+      className="flex-1 bg-bg px-6 dark:bg-bg-dark"
+      style={{
+        paddingTop: SCREEN_PADDING + insets.top,
+        paddingBottom: SCREEN_PADDING + insets.bottom,
+      }}
+    >
       <Text className="text-center text-lg font-semibold text-fg dark:text-fg-dark">
         Confirm your recovery words
       </Text>

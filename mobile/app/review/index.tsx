@@ -28,6 +28,7 @@ import { ChevronLeft } from "lucide-react-native";
 import { useRouter } from "expo-router";
 import { useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { CorrectSheet } from "@/components/review/correct_sheet";
 import { ReviewCard } from "@/components/review/review_card";
@@ -145,6 +146,7 @@ function secondaryActionFor(item: ReviewQueueItem): ReviewAction | "correct" {
 
 export default function ReviewQueueScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
 
   const { data: items } = useReviewQueue();
   const { data: wallets } = useWallets();
@@ -168,7 +170,18 @@ export default function ReviewQueueScreen() {
   }
 
   return (
-    <View testID="review-queue-screen" className="flex-1 bg-bg dark:bg-bg-dark">
+    // Insets, not a header: this screen runs `headerShown: false` and is NOT
+    // inside the tab navigator, so nothing above it clears either system bar —
+    // its own back button would sit under the status bar and the last review
+    // card under Android's navigation bar (app.json `edgeToEdgeEnabled`). The
+    // inner `pt-4`/`pb-8` stay as design padding on top of the system bars,
+    // which only works because the insets go on this padding-free outer View:
+    // a `style` prop replaces, rather than adds to, what `className` compiles.
+    <View
+      testID="review-queue-screen"
+      className="flex-1 bg-bg dark:bg-bg-dark"
+      style={{ paddingTop: insets.top, paddingBottom: insets.bottom }}
+    >
       <View className="flex-row items-center gap-2 px-2 pb-2 pt-4">
         <Pressable
           testID="review-queue-back"

@@ -18,6 +18,7 @@
 import { useRouter } from "expo-router";
 import { useState } from "react";
 import { ScrollView, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { UpgradeSheet } from "@/components/gates/upgrade_sheet";
 import { WalletForm } from "@/components/wallets/wallet_form";
@@ -33,6 +34,10 @@ import { ownersFrom } from "@/lib/wallets/matchers";
 
 export default function NewWalletScreen() {
   const router = useRouter();
+  // A full-screen route outside the tab navigator: nothing above it clears the
+  // status bar or Android's navigation bar. See app/_layout.tsx's
+  // SafeAreaProvider comment for why each surface pads its own edges.
+  const insets = useSafeAreaInsets();
   const [error, setError] = useState<string | null>(null);
   const [capped, setCapped] = useState(false);
 
@@ -90,7 +95,11 @@ export default function NewWalletScreen() {
   }
 
   return (
-    <ScrollView testID="wallet-new" className="flex-1 bg-bg dark:bg-bg-dark">
+    <ScrollView
+      testID="wallet-new"
+      className="flex-1 bg-bg dark:bg-bg-dark"
+      style={{ paddingTop: insets.top, paddingBottom: insets.bottom }}
+    >
       <WalletForm
         submitLabel="Add wallet"
         onSubmit={save}

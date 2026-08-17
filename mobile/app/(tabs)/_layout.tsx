@@ -13,6 +13,7 @@ import { Ellipsis, House, ReceiptText, Target, Wallet } from "lucide-react-nativ
 import { Tabs } from "expo-router";
 import type { ComponentType } from "react";
 import { View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ReviewCountBadge } from "@/components/review/review_badge";
 import { palette } from "@/constants/colors";
 import { useTheme } from "@/contexts/theme_context";
@@ -46,42 +47,56 @@ export const TAB_CONFIG: readonly TabConfigEntry[] = [
 export default function TabsLayout() {
   const { resolved } = useTheme();
   const isDark = resolved === "dark";
+  const insets = useSafeAreaInsets();
 
   return (
-    <Tabs
-      screenOptions={{
-        headerShown: false,
-        tabBarActiveTintColor: isDark ? palette["brand-dark"] : palette.brand,
-        tabBarInactiveTintColor: isDark ? palette["fg-2-dark"] : palette["fg-2"],
-        tabBarStyle: {
-          backgroundColor: isDark ? palette["surface-dark"] : palette.surface,
-        },
-      }}
-    >
-      {TAB_CONFIG.map(({ name, label, Icon, badged }) => (
-        <Tabs.Screen
-          key={name}
-          name={name}
-          options={{
-            title: label,
-            tabBarAccessibilityLabel: label,
-            tabBarButtonTestID: `tab-${name}`,
-            tabBarIcon: ({ color, size }: TabIconProps) =>
-              badged ? (
-                // The badge is positioned absolutely against this wrapper, so
-                // it rides the glyph without changing the tab bar's layout —
-                // a badge that reflowed the bar would move every other tab
-                // under a thumb already on its way down.
-                <View>
+    // TOP INSET FOR ALL TWELVE TAB SCREENS, IN ONE PLACE. Every tab screen runs
+    // `headerShown: false` and starts its content at y=0, and app.json's
+    // `edgeToEdgeEnabled` puts y=0 behind the status bar — so each screen's own
+    // `pt-4` was being spent on the status bar instead of on margin. Insetting
+    // the navigator rather than each screen means a thirteenth screen added
+    // later cannot forget to do it.
+    //
+    // TOP ONLY. The bottom edge belongs to the tab bar, and
+    // @react-navigation/bottom-tabs already pads itself by `insets.bottom`;
+    // adding it here as well would lift the bar by twice the navigation bar's
+    // height.
+    <View className="flex-1" style={{ paddingTop: insets.top }}>
+      <Tabs
+        screenOptions={{
+          headerShown: false,
+          tabBarActiveTintColor: isDark ? palette["brand-dark"] : palette.brand,
+          tabBarInactiveTintColor: isDark ? palette["fg-2-dark"] : palette["fg-2"],
+          tabBarStyle: {
+            backgroundColor: isDark ? palette["surface-dark"] : palette.surface,
+          },
+        }}
+      >
+        {TAB_CONFIG.map(({ name, label, Icon, badged }) => (
+          <Tabs.Screen
+            key={name}
+            name={name}
+            options={{
+              title: label,
+              tabBarAccessibilityLabel: label,
+              tabBarButtonTestID: `tab-${name}`,
+              tabBarIcon: ({ color, size }: TabIconProps) =>
+                badged ? (
+                  // The badge is positioned absolutely against this wrapper, so
+                  // it rides the glyph without changing the tab bar's layout —
+                  // a badge that reflowed the bar would move every other tab
+                  // under a thumb already on its way down.
+                  <View>
+                    <Icon color={color} size={size} />
+                    <ReviewCountBadge />
+                  </View>
+                ) : (
                   <Icon color={color} size={size} />
-                  <ReviewCountBadge />
-                </View>
-              ) : (
-                <Icon color={color} size={size} />
-              ),
-          }}
-        />
-      ))}
-    </Tabs>
+                ),
+            }}
+          />
+        ))}
+      </Tabs>
+    </View>
   );
 }

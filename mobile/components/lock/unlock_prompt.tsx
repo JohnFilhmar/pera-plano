@@ -7,6 +7,7 @@
 // rule 3) a plain, non-looping user action instead of an automatic retry
 // that could spin forever on a cancelled prompt.
 import { Pressable, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 export function UnlockPrompt({
   isAuthenticating,
@@ -17,10 +18,17 @@ export function UnlockPrompt({
   errorMessage: string | null;
   onUnlock: () => void;
 }) {
+  // app/_layout.tsx renders this OUTSIDE the router's Stack, so there is no
+  // navigator above it to clear the system bars — and with app.json's
+  // `edgeToEdgeEnabled` the column is full-bleed. Centred content is safe
+  // today, but a long error message grows it toward both bars.
+  const insets = useSafeAreaInsets();
+
   return (
     <View
       testID="unlock-prompt"
       className="flex-1 items-center justify-center gap-4 bg-bg px-6 dark:bg-bg-dark"
+      style={{ paddingTop: insets.top, paddingBottom: insets.bottom }}
     >
       <Text className="text-center text-lg font-semibold text-fg dark:text-fg-dark">
         PeraPlano is locked

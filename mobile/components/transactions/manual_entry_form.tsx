@@ -16,6 +16,7 @@
 // (Global Constraints: no repository import inside a component).
 import { useMemo, useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AmountNumpad } from "@/components/transactions/amount_numpad";
 import { CategoryPicker } from "@/components/transactions/category_picker";
@@ -49,6 +50,10 @@ export type ManualEntryFormProps = {
   onCreateCashWallet: () => void;
 };
 
+/** The `p-4` this form used to carry, kept as the floor its system-bar insets
+ * are added to (see the root View below). */
+const FORM_PADDING = 16;
+
 /** `'YYYY-MM-DD'` for a local day — never `toISOString`, which is UTC. */
 function localDayOf(at: EpochMs): string {
   const date = new Date(at);
@@ -72,6 +77,11 @@ export function ManualEntryForm({
   onSubmit,
   onCreateCashWallet,
 }: ManualEntryFormProps) {
+  // This form IS the /transaction/new screen — a full-bleed route outside the
+  // tab navigator, so nothing above it clears the status bar or Android's
+  // navigation bar (app.json `edgeToEdgeEnabled`). Its Save button is the last
+  // thing in the column and was the one landing under ▢ ◁.
+  const insets = useSafeAreaInsets();
   const [digits, setDigits] = useState("");
   const [direction, setDirection] = useState<TxDirection>("out");
   const [day, setDay] = useState(() => localDayOf(now));
@@ -135,7 +145,19 @@ export function ManualEntryForm({
   }
 
   return (
-    <View testID={testID} className="flex-1 gap-6 bg-bg p-4 dark:bg-bg-dark">
+    // `px-4` on the class, the vertical padding in `style`: a `style` prop
+    // REPLACES the padding NativeWind compiles from `className` rather than
+    // adding to it, so `p-4` and a `paddingBottom` inset cannot both be
+    // expressed here. FORM_PADDING is the same 16dp `p-4` was, kept as the
+    // floor a gesture-navigation phone (inset ≈ 0) still gets.
+    <View
+      testID={testID}
+      className="flex-1 gap-6 bg-bg px-4 dark:bg-bg-dark"
+      style={{
+        paddingTop: FORM_PADDING + insets.top,
+        paddingBottom: FORM_PADDING + insets.bottom,
+      }}
+    >
       <View testID="amount-numpad">
         <AmountNumpad digits={digits} onDigitsChange={setDigits} />
       </View>

@@ -40,6 +40,7 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useState } from "react";
 import { ScrollView, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { LedgerList } from "@/components/transactions/ledger_list";
 import { AmountText } from "@/components/ui/amount_text";
@@ -70,6 +71,10 @@ export default function WalletDetailScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
   const walletId = id ?? "";
+  // A full-screen route outside the tab navigator: nothing above it clears the
+  // status bar or Android's navigation bar. See app/_layout.tsx's
+  // SafeAreaProvider comment for why each surface pads its own edges.
+  const insets = useSafeAreaInsets();
   const [reconciling, setReconciling] = useState(false);
   const [archiving, setArchiving] = useState(false);
 
@@ -111,7 +116,11 @@ export default function WalletDetailScreen() {
   const dismissibleDrift = isDriftWorthShowing(drift, toleranceCentavos) ? drift : null;
 
   return (
-    <ScrollView testID="wallet-detail" className="flex-1 bg-bg dark:bg-bg-dark">
+    <ScrollView
+      testID="wallet-detail"
+      className="flex-1 bg-bg dark:bg-bg-dark"
+      style={{ paddingTop: insets.top, paddingBottom: insets.bottom }}
+    >
       <View className="pb-8 pt-4">
         <View className="px-4">
           <Card>

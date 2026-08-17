@@ -21,12 +21,19 @@
 // equally deliberate: it says plainly that the app cannot continue without a
 // screen lock, rather than presenting this as a suggestion.
 import { Pressable, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 export function DeviceLockExplainer({ onOpenSettings }: { onOpenSettings: () => void }) {
+  // Call site 2 (app/lock.tsx) renders this OUTSIDE the router's Stack, so no
+  // navigator above it clears the system bars, and app.json's
+  // `edgeToEdgeEnabled` makes the column full-bleed.
+  const insets = useSafeAreaInsets();
+
   return (
     <View
       testID="device-lock-explainer"
       className="flex-1 items-center justify-center gap-4 bg-bg px-6 dark:bg-bg-dark"
+      style={{ paddingTop: insets.top, paddingBottom: insets.bottom }}
     >
       <Text className="text-center text-lg font-semibold text-fg dark:text-fg-dark">
         Set a screen lock to continue

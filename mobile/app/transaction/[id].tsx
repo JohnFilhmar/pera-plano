@@ -30,6 +30,7 @@
 import { useLocalSearchParams } from "expo-router";
 import { useState } from "react";
 import { ScrollView, Text, TextInput, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { CategoryPicker } from "@/components/transactions/category_picker";
 import {
@@ -80,6 +81,10 @@ function Field({ label, value, testID }: { label: string; value: string; testID:
 export default function TransactionDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const transactionId = id ?? "";
+  // A full-screen route outside the tab navigator: nothing above it clears the
+  // status bar or Android's navigation bar. See app/_layout.tsx's
+  // SafeAreaProvider comment for why each surface pads its own edges.
+  const insets = useSafeAreaInsets();
 
   const [picking, setPicking] = useState(false);
   const [choosingCategory, setChoosingCategory] = useState(false);
@@ -180,7 +185,11 @@ export default function TransactionDetailScreen() {
   }
 
   return (
-    <ScrollView testID="transaction-detail" className="flex-1 bg-bg dark:bg-bg-dark">
+    <ScrollView
+      testID="transaction-detail"
+      className="flex-1 bg-bg dark:bg-bg-dark"
+      style={{ paddingTop: insets.top, paddingBottom: insets.bottom }}
+    >
       <View className="pb-10 pt-4">
         <View className="px-4">
           <Card>

@@ -24,6 +24,11 @@
 // recovery_unlock_form.tsx's copy, written for the DIFFERENT moment of
 // recovering after a settings change).
 import { Pressable, ScrollView, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+
+/** The `py-8` this screen used to carry, kept as the floor its system-bar
+ * insets are added to (see the root View below). */
+const SCREEN_PADDING = 32;
 
 export function PhraseDisplay({
   words,
@@ -34,8 +39,23 @@ export function PhraseDisplay({
   onContinue: () => void;
   onShare: () => void;
 }) {
+  // First-run: app/lock.tsx renders this whole flow OUTSIDE the router's Stack,
+  // so no navigator above it clears the system bars, and app.json's
+  // `edgeToEdgeEnabled` runs the column edge to edge — leaving "I've written
+  // them down" under Android's navigation bar. `py-8` moves into `style`
+  // because a `style` prop replaces, rather than adds to, the padding
+  // NativeWind compiles from `className`.
+  const insets = useSafeAreaInsets();
+
   return (
-    <View testID="phrase-display" className="flex-1 bg-bg px-6 py-8 dark:bg-bg-dark">
+    <View
+      testID="phrase-display"
+      className="flex-1 bg-bg px-6 dark:bg-bg-dark"
+      style={{
+        paddingTop: SCREEN_PADDING + insets.top,
+        paddingBottom: SCREEN_PADDING + insets.bottom,
+      }}
+    >
       <Text className="text-center text-lg font-semibold text-fg dark:text-fg-dark">
         Write down your recovery words
       </Text>

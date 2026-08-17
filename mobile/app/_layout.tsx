@@ -321,6 +321,36 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
   );
 }
 
+/**
+ * DO NOT ADD A `SafeAreaProvider` HERE. THERE IS ALREADY ONE ABOVE THIS FILE.
+ *
+ * app.json sets `edgeToEdgeEnabled: true`, so the app draws BEHIND the status
+ * bar and behind Android's navigation bar, and a dozen surfaces now call
+ * `useSafeAreaInsets()` to pad for them. The provider those calls read is
+ * expo-router's: `expo-router/entry` mounts `ExpoRoot`, which wraps everything
+ * — this layout included — in `<SafeAreaProvider>` (expo-router/build/
+ * ExpoRoot.js). It passes no `initialMetrics` on native, so the provider
+ * renders no children at all until the first real measurement lands, which is
+ * what makes `useSafeAreaInsets()` safe to call from ANY surface here,
+ * including app/lock.tsx's first-run flow that runs with no navigator mounted.
+ *
+ * A second provider nested inside it is not merely redundant: nesting is the
+ * case @react-navigation/elements goes out of its way to avoid
+ * (SafeAreaProviderCompat returns a plain View when a provider is already
+ * present, "to avoid an issue with updates").
+ *
+ * WHAT WAS ACTUALLY MISSING was any CONSUMER. Nothing in the app read an inset,
+ * so every bottom-anchored control sat under the navigation bar — found on a
+ * physical A54, whose navigation bar measured 126px against the 24dp of flat
+ * padding the onboarding footer carried.
+ *
+ * The rule for consumers: an edge is padded exactly once, by whichever
+ * component actually touches it — `(tabs)/_layout.tsx` for the tab screens'
+ * top, `OnboardingFrame` for both of the onboarding steps' edges, `BottomSheet`
+ * for a sheet's bottom, each standalone screen for its own. Padding an edge in
+ * a parent AND in the child that meets it double-counts, which is why there is
+ * no blanket inset on this Stack's `contentStyle`.
+ */
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({ Inter_400Regular });
 

@@ -23,7 +23,7 @@
 // app/__tests__/lock_gate.test.tsx — deliberately NOT folded in here, so a
 // regression in either the pre-existing three or the new fourth condition
 // points at one obvious file.
-import { act, fireEvent, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
 import { renderRouter, screen } from "expo-router/testing-library";
 import { useFonts } from "expo-font";
 import RootLayout from "../_layout";
@@ -34,6 +34,7 @@ import TransactionsScreen from "../(tabs)/transactions";
 import WalletsScreen from "../(tabs)/wallets";
 import PlanScreen from "../(tabs)/plan";
 import MoreScreen from "../(tabs)/more";
+import { UnlockPrompt } from "@/components/lock/unlock_prompt";
 
 jest.mock("@/lib/bootstrap", () => ({
   ...jest.requireActual("@/lib/bootstrap"),
@@ -284,4 +285,55 @@ test("unmounting tears down the live capture subscription", async () => {
   // A subscription surviving its tree keeps delivering captures into a dead
   // listener for the rest of the process.
   await waitFor(() => expect(unsubscribe).toHaveBeenCalledTimes(1));
+});
+
+/**
+ * SAFE-AREA INSETS ARE READABLE FROM A SURFACE WITH NO NAVIGATOR ABOVE IT.
+ *
+ * app.json sets `edgeToEdgeEnabled: true`, so a dozen surfaces now call
+ * `useSafeAreaInsets()` to pad for the status and navigation bars, and that
+ * hook THROWS when nothing above it provides insets. The provider is not
+ * mounted in app code: `expo-router/entry` mounts `ExpoRoot`, which wraps this
+ * whole layout in one. That is an assumption about a dependency, so it is
+ * asserted rather than trusted — an expo-router upgrade that moved it would
+ * otherwise surface as a crash on a user's phone.
+ *
+ * THE LOCKED STATE IS THE ONLY STATE THAT PROVES IT. react-navigation mounts a
+ * fallback provider inside each navigator, which is why the tab bar was
+ * correct all along; an unlocked render is therefore covered whatever
+ * expo-router does. Locked, AppShell renders <LockScreen /> INSTEAD of the
+ * Stack — no navigator, no fallback — and `UnlockPrompt` calls the hook. That
+ * is the honest case rather than a contrived one: app/lock.tsx is also what
+ * renders the entire first-run onboarding flow, the surface the inset defect
+ * was reported against.
+ *
+ * `jest.unmock` is the point of the test. test_support/safe_area_mock.ts
+ * answers zero instead of throwing so that suites mounting a lone component do
+ * not have to care — which would mask exactly the failure being checked here.
+ */
+jest.unmock("react-native-safe-area-context");
+
+test("a screen rendered with no navigator can still read safe-area insets", async () => {
+  mockBootstrapApp.mockResolvedValue({ onboardingComplete: true });
+  mockUseLock.mockReturnValue({
+    status: "locked",
+    errorMessage: null,
+    unlock: jest.fn(),
+    submitRecoveryPhrase: jest.fn(),
+    wipeAndStartOver: jest.fn(),
+  });
+
+  // Proves the unmock above actually took, and that the hook really is the
+  // strict one. Without this the test below could pass for the boring reason
+  // that nothing in the tree can fail — the mock's zeros would satisfy it just
+  // as well as a real provider would.
+  expect(() =>
+    render(<UnlockPrompt isAuthenticating={false} errorMessage={null} onUnlock={jest.fn()} />),
+  ).toThrow(/No safe area value available/);
+
+  renderApp();
+
+  // Reaching the prompt at all is the assertion: UnlockPrompt calls
+  // useSafeAreaInsets(), so an unprovided tree throws during render instead.
+  await waitFor(() => expect(screen.queryByTestId("unlock-prompt")).toBeTruthy());
 });

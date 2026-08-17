@@ -19,6 +19,7 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useState } from "react";
 import { ScrollView, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { EmptyState } from "@/components/ui/empty_state";
 import { WalletForm } from "@/components/wallets/wallet_form";
@@ -37,6 +38,10 @@ export default function EditWalletScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
   const walletId = id ?? "";
+  // A full-screen route outside the tab navigator: nothing above it clears the
+  // status bar or Android's navigation bar. See app/_layout.tsx's
+  // SafeAreaProvider comment for why each surface pads its own edges.
+  const insets = useSafeAreaInsets();
   const [error, setError] = useState<string | null>(null);
 
   const { data: wallet, isPending } = useWallet(walletId);
@@ -86,7 +91,11 @@ export default function EditWalletScreen() {
   }
 
   return (
-    <ScrollView testID="wallet-edit" className="flex-1 bg-bg dark:bg-bg-dark">
+    <ScrollView
+      testID="wallet-edit"
+      className="flex-1 bg-bg dark:bg-bg-dark"
+      style={{ paddingTop: insets.top, paddingBottom: insets.bottom }}
+    >
       <WalletForm
         // Remounts when the wallet's stored matchers arrive, so the form's
         // initial state is the real one. Without it the picker would seed from

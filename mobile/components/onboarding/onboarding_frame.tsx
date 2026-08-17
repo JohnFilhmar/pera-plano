@@ -21,6 +21,7 @@
 import type { ReactNode } from "react";
 import { ChevronLeft } from "lucide-react-native";
 import { Pressable, ScrollView, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Button, registerIcon } from "@/components/ui/button";
 import { SkipLink } from "@/components/onboarding/skip_link";
 import { StepProgress } from "@/components/onboarding/step_progress";
@@ -53,8 +54,29 @@ export function OnboardingFrame({
   onSkip,
   skipLabel,
 }: OnboardingFrameProps) {
+  // THE DEFECT THIS FIXES: the primary button sat UNDER Android's navigation
+  // bar. app.json sets `edgeToEdgeEnabled`, so this frame's flex column runs
+  // edge to edge and its footer's flat `pb-6` (24dp) was all that stood between
+  // "Continue" and the ▢ ◁ strip — measured at 126px on a physical A54. The
+  // owner's words: onboarding is "tricky on reaching that buried button".
+  //
+  // THE INSETS GO ON THIS OUTER VIEW, WHICH HAS NO PADDING CLASSES OF ITS OWN.
+  // A `style` prop wins over the style NativeWind compiles from `className`, so
+  // putting these on the header or footer would REPLACE their `pt-4`/`pb-6`
+  // rather than clear the system bar in addition to it. Here the two compose:
+  // the system bar's height, then the design padding, then the control.
+  //
+  // BOTH EDGES, because this frame is also reached before any navigator exists
+  // (app/lock.tsx renders the first-run flow directly), so nothing above it has
+  // handled the status bar either.
+  const insets = useSafeAreaInsets();
+
   return (
-    <View testID="onboarding-frame" className="flex-1 bg-bg dark:bg-bg-dark">
+    <View
+      testID="onboarding-frame"
+      className="flex-1 bg-bg dark:bg-bg-dark"
+      style={{ paddingTop: insets.top, paddingBottom: insets.bottom }}
+    >
       <View className="flex-row items-center gap-2 px-2 pb-2 pt-4">
         {onBack ? (
           <Pressable

@@ -8,6 +8,18 @@
 // runs after, which is where anything touching RNTL belongs.
 import { configure } from "@testing-library/react-native";
 
+// Safe-area insets, project-wide. See test_support/safe_area_mock.ts for why
+// the two hooks need a no-provider answer here and why only they are replaced.
+// Registered globally rather than per-suite because the surfaces that read
+// insets (every onboarding step through OnboardingFrame, every picker through
+// BottomSheet) are mounted directly by suites that have no interest in the
+// system bars at all.
+jest.mock("react-native-safe-area-context", () => {
+  // Required lazily: `jest.mock` factories run before this file's own imports.
+  const { createSafeAreaMock } = require("./safe_area_mock") as typeof import("./safe_area_mock");
+  return createSafeAreaMock();
+});
+
 // RNTL's async utilities default to a ONE SECOND budget, which this suite has
 // outgrown. A screen test here renders a real component tree over a real
 // SQLite database, and under `--ci` parallelism several run at once competing

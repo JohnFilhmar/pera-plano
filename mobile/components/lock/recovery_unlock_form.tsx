@@ -20,6 +20,7 @@
 // phrase that already passes this check.
 import { useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { normalizePhrase, validatePhrase } from "@/lib/crypto/recovery_phrase";
 
 type WipeStep = "hidden" | "confirm1" | "confirm2";
@@ -36,6 +37,10 @@ export function RecoveryUnlockForm({
   const [rawInput, setRawInput] = useState("");
   const [validationError, setValidationError] = useState<string | null>(null);
   const [wipeStep, setWipeStep] = useState<WipeStep>("hidden");
+  // Rendered by app/lock.tsx OUTSIDE the router's Stack, so no navigator above
+  // it clears the system bars. This one grows: the two-step wipe confirmation
+  // pushes the column toward Android's navigation bar.
+  const insets = useSafeAreaInsets();
 
   const handleSubmit = () => {
     const words = normalizePhrase(rawInput);
@@ -56,6 +61,7 @@ export function RecoveryUnlockForm({
     <View
       testID="recovery-unlock-form"
       className="flex-1 items-center justify-center gap-4 bg-bg px-6 dark:bg-bg-dark"
+      style={{ paddingTop: insets.top, paddingBottom: insets.bottom }}
     >
       <Text className="text-center text-lg font-semibold text-fg dark:text-fg-dark">
         We need your recovery words
