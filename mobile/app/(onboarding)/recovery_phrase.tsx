@@ -33,31 +33,117 @@
 // what keeps the call COUNT at exactly one from the caller's side, which is
 // what this task's own tests pin against a mocked initializeKeys.
 //
-// A failed generatePhrase() or initializeKeys() restarts the WHOLE flow
-// from a freshly generated phrase (via retryKey) rather than trying to
-// resume with stale words -- simpler than tracking which of the two calls
-// failed, and safe: initializeKeys is a no-op if keys already exist
-// (key_manager.ts's hasStoredKeys() check), so re-running from scratch after
-// a partial failure never double-initializes.
+// WHY THIS SCREEN AUTHENTICATES BEFORE initializeKeys(), and why that is not
+// optional: initializeKeys() ends in wrapWithDeviceKek(), which uses an
+// auth-gated Keystore key that is only usable for a ~10s window after the
+// user passes a system authentication challenge (docs §7) -- and nothing
+// invokes that challenge just because Kotlin code reaches for the key.
+// expo-local-authentication's authenticateAsync() is the JS-level trigger,
+// exactly as contexts/lock_context.tsx's unlock() uses it (see that file's
+// "WHY unlock() calls expo-local-authentication BEFORE the native unwrap"
+// note -- this is the same step, on the one path that was missing it).
+// Until it existed here, first-run setup could only ever succeed BY
+// ACCIDENT, on the tail of a device unlock the OS still happened to count;
+// on a physical Samsung A54 it failed every single time with
+// NotAuthenticatedError, and nobody could finish onboarding at all.
+// `disableDeviceFallback: false` is pinned for the same reason unlock()
+// pins it (task-9-brief rule 2 / contract §10): a user with no enrolled
+// fingerprint must still be able to finish setup with their device
+// PIN/pattern/password.
+//
+// THE TWO FAILURES ARE NOT THE SAME FAILURE. A failed generatePhrase()
+// means no words ever reached the user, so starting over from a fresh
+// phrase costs them nothing -- that is "generate_error", and its retry
+// regenerates. A failed initializeKeys() happens AFTER the user has been
+// told to write twelve specific words down; regenerating there hands them a
+// piece of paper that opens nothing while they believe it opens everything,
+// which is strictly worse than the error it would be replacing. So
+// "init_error"'s retry re-runs initializeKeys with the SAME words and never
+// touches generatePhrase(). The two shared one "error" stage and one
+// retryKey bump until this fix, which is precisely how a phrase the user had
+// already written down could be silently replaced.
+//
+// A CANCELLED OR FAILED PROMPT IS NOT AN ERROR AT ALL. The likeliest cause
+// is a user who looked away and let the sheet time out, on the screen where
+// abandoning setup is most expensive -- so it returns to the confirm step
+// with a plain-language notice instead of the dead-end error screen.
+// PhraseConfirm is remounted (via confirmAttempt) because its own one-shot
+// `confirmed` latch would otherwise leave the step permanently disabled:
+// still on screen, no longer usable.
+//
+// EXACTLY ONE RE-PROMPT, NEVER A LOOP. The ~10s window can expire between
+// the prompt and the call, so a NotAuthenticatedError from initializeKeys
+// re-prompts and retries THE SAME call with THE SAME words, once -- the
+// response the module's rejection taxonomy requires
+// (modules/notification_listener/index.ts). A second NotAuthenticatedError
+// gives up to "init_error", where the next attempt needs a fresh, explicit
+// tap; "a forever-looping recovery" is a named bug shape in this codebase
+// (contexts/lock_context.tsx's "WHY NO AUTO-RETRY LOOP ANYWHERE HERE"), and
+// an unescapable prompt loop on a mandatory onboarding step is the worst
+// place to ship one.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Pressable, Share, Text, View } from "react-native";
+import * as LocalAuthentication from "expo-local-authentication";
 import { generatePhrase } from "@/lib/crypto/recovery_phrase";
 import { initializeKeys } from "@/lib/crypto/key_manager";
+import { NotAuthenticatedError } from "@/modules/notification_listener";
 import { PhraseDisplay } from "@/components/onboarding/phrase_display";
 import { PhraseConfirm } from "@/components/onboarding/phrase_confirm";
 
-type Stage = "generating" | "display" | "confirm" | "initializing" | "done" | "error";
+type Stage =
+  | "generating"
+  | "display"
+  | "confirm"
+  | "initializing"
+  | "done"
+  // Deliberately two error stages, not one plus a flag: which call failed
+  // decides whether the retry may regenerate the phrase, and a separate flag
+  // is something that can drift out of sync with the stage it describes.
+  | "generate_error"
+  | "init_error";
+
+/** Says what did not happen and what to do, and never implies the words are
+ * gone -- the user is holding them on paper while reading this. */
+const AUTH_NOT_COMPLETED_NOTICE =
+  "We couldn't confirm it's you, so your keys aren't set up yet. Your recovery words haven't changed — confirm them again to finish.";
+
+/**
+ * The system authentication challenge that opens the Keystore's ~10s window.
+ * Same options as contexts/lock_context.tsx's unlock(), including the one
+ * that matters most:
+ *
+ * `disableDeviceFallback: false` -- NEVER biometric-only (task-9-brief rule 2
+ * / contract §10). A user with no enrolled fingerprint must still be able to
+ * finish setting up their own app with their PIN/pattern/password.
+ *
+ * The prompt message is setup's, not unlock()'s: nothing has been locked yet,
+ * and "Unlock PeraPlano" on a first run would be describing a door the user
+ * has never seen.
+ */
+async function authenticateForKeySetup(): Promise<boolean> {
+  const result = await LocalAuthentication.authenticateAsync({
+    promptMessage: "Confirm it's you to finish setting up PeraPlano",
+    disableDeviceFallback: false,
+  });
+  return result.success;
+}
 
 export default function RecoveryPhraseScreen({ onDone }: { onDone?: () => void } = {}) {
   const [stage, setStage] = useState<Stage>("generating");
   const [words, setWords] = useState<string[] | null>(null);
   const [retryKey, setRetryKey] = useState(0);
+  const [confirmNotice, setConfirmNotice] = useState<string | null>(null);
+  // Bumped only when the confirm step is handed BACK to the user, and used as
+  // PhraseConfirm's key -- see this file's header for why a remount is what
+  // makes that step usable again rather than merely visible.
+  const [confirmAttempt, setConfirmAttempt] = useState(0);
   const initializingRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
     setStage("generating");
     setWords(null);
+    setConfirmNotice(null);
     generatePhrase()
       .then((generated) => {
         if (cancelled) return;
@@ -69,7 +155,7 @@ export default function RecoveryPhraseScreen({ onDone }: { onDone?: () => void }
         // the words; a log line that included them would put a recovery phrase
         // into logcat, readable by anything holding READ_LOGS.
         console.error("[recovery_phrase] generatePhrase failed", err);
-        if (!cancelled) setStage("error");
+        if (!cancelled) setStage("generate_error");
       });
     return () => {
       cancelled = true;
@@ -81,28 +167,83 @@ export default function RecoveryPhraseScreen({ onDone }: { onDone?: () => void }
     void Share.share({ message: words.join(" ") });
   }, [words]);
 
+  /** Hands the confirm step back to the user with the phrase they already
+   * wrote down still intact -- the ONLY response to an incomplete
+   * authentication. */
+  const returnToConfirmStep = useCallback(() => {
+    setConfirmNotice(AUTH_NOT_COMPLETED_NOTICE);
+    setConfirmAttempt((attempt) => attempt + 1);
+    setStage("confirm");
+  }, []);
+
+  /**
+   * Authenticate, then initialize -- in that order, once, with at most one
+   * re-prompt. `phrase` is passed in and threaded through both attempts
+   * rather than read from state, so "retry the SAME call with the SAME
+   * words" is true by construction rather than by care.
+   */
+  const runKeySetup = useCallback(
+    async (phrase: string[]) => {
+      try {
+        if (!(await authenticateForKeySetup())) {
+          returnToConfirmStep();
+          return;
+        }
+
+        try {
+          await initializeKeys(phrase);
+        } catch (err: unknown) {
+          if (!(err instanceof NotAuthenticatedError)) throw err;
+          // The window expired between the prompt and the call. One
+          // re-prompt, one retry of the identical call -- and if the user
+          // declines this prompt too, the phrase is still not destroyed.
+          if (!(await authenticateForKeySetup())) {
+            returnToConfirmStep();
+            return;
+          }
+          // A second NotAuthenticatedError falls through to the catch below
+          // and stops there. There is no third attempt.
+          await initializeKeys(phrase);
+        }
+
+        setStage("done");
+      } catch (err: unknown) {
+        // This is the failure that costs a user their data, and until commit
+        // 5bad9d2 it was discarded — the screen said "try again" and logged
+        // nothing, so an on-device failure could not be diagnosed at all.
+        // `phrase` is NOT logged, only the error.
+        console.error("[recovery_phrase] initializeKeys failed", err);
+        setStage("init_error");
+      }
+    },
+    [returnToConfirmStep],
+  );
+
   const handleConfirmed = useCallback(() => {
     if (initializingRef.current || !words) return;
     initializingRef.current = true;
+    setConfirmNotice(null);
     setStage("initializing");
-    initializeKeys(words)
-      .then(() => setStage("done"))
-      .catch((err: unknown) => {
-        // This is the failure that costs a user their data, and until now it
-        // was discarded — the screen said "try again" and logged nothing, so an
-        // on-device failure could not be diagnosed at all. `words` is NOT
-        // logged, only the error.
-        console.error("[recovery_phrase] initializeKeys failed", err);
-        setStage("error");
-      })
-      .finally(() => {
-        initializingRef.current = false;
-      });
-  }, [words]);
+    void runKeySetup(words).finally(() => {
+      initializingRef.current = false;
+    });
+  }, [words, runKeySetup]);
 
-  const handleRetry = useCallback(() => setRetryKey((k) => k + 1), []);
+  /**
+   * The two error stages retry DIFFERENT things, which is the whole point of
+   * their being two: "init_error" re-runs key setup with the words already on
+   * the user's paper, and only "generate_error" is allowed to mint a new
+   * phrase (nothing was ever displayed, so nothing is invalidated).
+   */
+  const handleRetry = useCallback(() => {
+    if (stage === "init_error") {
+      handleConfirmed();
+      return;
+    }
+    setRetryKey((k) => k + 1);
+  }, [stage, handleConfirmed]);
 
-  if (stage === "error") {
+  if (stage === "generate_error" || stage === "init_error") {
     return (
       <View
         testID="recovery-phrase-error"
@@ -147,7 +288,15 @@ export default function RecoveryPhraseScreen({ onDone }: { onDone?: () => void }
   if (stage === "confirm" || stage === "initializing") {
     return (
       <View className="flex-1">
-        <PhraseConfirm words={words} onConfirmed={handleConfirmed} />
+        <PhraseConfirm key={confirmAttempt} words={words} onConfirmed={handleConfirmed} />
+        {confirmNotice ? (
+          <Text
+            testID="recovery-phrase-auth-notice"
+            className="px-6 pb-4 text-center text-fg-2 dark:text-fg-2-dark"
+          >
+            {confirmNotice}
+          </Text>
+        ) : null}
         {stage === "initializing" ? (
           <Text
             testID="recovery-phrase-initializing"

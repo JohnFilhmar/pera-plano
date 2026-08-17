@@ -5,10 +5,10 @@
 // "screen + its components in one file" shape components/onboarding/__tests__/
 // device_lock.test.tsx already established.
 //
-// generatePhrase()/validatePhrase() run for REAL here (fast — Argon2id only
-// runs inside deriveRecoveryKey, which this screen never calls directly,
+// generatePhrase()/validatePhrase() still run for REAL here (fast — Argon2id
+// only runs inside deriveRecoveryKey, which this screen never calls directly,
 // exactly like components/lock/__tests__/recovery_unlock_form.test.tsx's own
-// note). Only initializeKeys is mocked: both to keep this suite fast, and to
+// note). initializeKeys is mocked: both to keep this suite fast, and to
 // assert on its call COUNT directly — the "exactly once" assertions below
 // are this task's version of the double-tap hazard Task 6 had to serialize
 // key_manager.ts against, and a mock's call count is the only thing that can
@@ -17,6 +17,45 @@
 jest.mock("@/lib/crypto/key_manager", () => ({
   initializeKeys: jest.fn(),
 }));
+
+// A jest.fn() WRAPPING the real generatePhrase, not a stub: every test that
+// predates this mock still gets genuine BIP-39 words (and the real
+// checksum), while the retry tests below can count calls and force a single
+// rejection. That call count is the only thing that can discriminate
+// "retried initialization with the words the user wrote down" from
+// "quietly minted twelve new ones" — the whole point of this file's second
+// half. jest.clearAllMocks() clears calls but not the implementation passed
+// to jest.fn(), so the real generator survives every beforeEach.
+jest.mock("@/lib/crypto/recovery_phrase", () => {
+  const actual = jest.requireActual("@/lib/crypto/recovery_phrase");
+  return { ...actual, generatePhrase: jest.fn(actual.generatePhrase) };
+});
+
+// The screen authenticates before it touches the auth-gated Keystore key,
+// exactly as contexts/lock_context.tsx's unlock() does — so this suite owns
+// the prompt's outcome, the same way contexts/__tests__/lock_context.test.tsx
+// does.
+jest.mock("expo-local-authentication", () => ({
+  authenticateAsync: jest.fn(),
+}));
+
+// The real class's shape (code/name), redeclared here rather than imported
+// from the real module — @/modules/notification_listener's top-level
+// requireNativeModule() call throws under Jest with no native registration,
+// so the module itself must be mocked, and this factory IS that mock (the
+// same note contexts/__tests__/lock_context.test.tsx carries). Both this
+// file's `new NotAuthenticatedError()` and the screen's `instanceof` check
+// resolve to this SAME class.
+jest.mock("@/modules/notification_listener", () => {
+  class NotAuthenticatedError extends Error {
+    code = "NotAuthenticated";
+    constructor(message = "authentication is required to complete this operation") {
+      super(message);
+      this.name = "NotAuthenticatedError";
+    }
+  }
+  return { NotAuthenticatedError };
+});
 
 // A Proxy over jest.requireActual, not a plain `{...actual}` spread — the
 // same reasoning components/onboarding/__tests__/device_lock.test.tsx and
@@ -36,10 +75,15 @@ jest.mock("react-native", () => {
 
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { Share } from "react-native";
+import { authenticateAsync } from "expo-local-authentication";
 import { initializeKeys } from "@/lib/crypto/key_manager";
+import { generatePhrase } from "@/lib/crypto/recovery_phrase";
+import { NotAuthenticatedError } from "@/modules/notification_listener";
 import RecoveryPhraseScreen from "@/app/(onboarding)/recovery_phrase";
 
 const mockInitializeKeys = initializeKeys as jest.Mock;
+const mockGeneratePhrase = generatePhrase as jest.Mock;
+const mockAuthenticateAsync = authenticateAsync as jest.Mock;
 const mockShare = Share.share as jest.Mock;
 
 const WORD_COUNT = 12;
@@ -48,6 +92,10 @@ const CHALLENGE_COUNT = 3;
 beforeEach(() => {
   jest.clearAllMocks();
   mockInitializeKeys.mockResolvedValue(undefined);
+  // A device whose owner passes the system challenge. The tests that care
+  // override this per-case; every test that predates the prompt needs it
+  // only because the screen now refuses to touch the Keystore without one.
+  mockAuthenticateAsync.mockResolvedValue({ success: true });
 });
 
 // The 5000 ms default is not enough for the FIRST render in this file when the
@@ -116,6 +164,19 @@ async function proceedToConfirm(props: { onDone?: () => void } = {}): Promise<st
 function fillConfirmInputs(answers: string[]): void {
   answers.forEach((answer, i) => {
     fireEvent.changeText(screen.getByTestId(`confirm-input-${i}`), answer);
+  });
+}
+
+/** Answers whatever three positions the confirm step is CURRENTLY asking for
+ * and submits. Re-reads the labels every time on purpose: a return to the
+ * confirm step remounts PhraseConfirm (that is what releases its one-shot
+ * `confirmed` latch), so the second attempt quizzes different positions than
+ * the first. */
+async function submitConfirmation(words: string[]): Promise<void> {
+  const positions = getConfirmPositions();
+  fillConfirmInputs(positions.map((p) => words[p]));
+  await act(async () => {
+    fireEvent.press(screen.getByTestId("confirm-submit-button"));
   });
 }
 
@@ -318,11 +379,7 @@ test("a failed initializeKeys does not advance past this step, and going back th
 
 async function confirmPhrase(props: { onDone?: () => void } = {}): Promise<void> {
   const words = await proceedToConfirm(props);
-  const positions = getConfirmPositions();
-  fillConfirmInputs(positions.map((p) => words[p]));
-  await act(async () => {
-    fireEvent.press(screen.getByTestId("confirm-submit-button"));
-  });
+  await submitConfirmation(words);
   await waitFor(() => expect(screen.getByTestId("recovery-phrase-done")).toBeTruthy());
 }
 
@@ -365,4 +422,145 @@ test("renders no onward action at all when no onDone is given, exactly as before
 
   expect(screen.getByTestId("recovery-phrase-done")).toBeTruthy();
   expect(screen.queryByTestId("recovery-phrase-continue-button")).toBeNull();
+});
+
+// ---------------------------------------------------------------------------
+// THE AUTHENTICATION WINDOW (docs/12-encryption-and-app-lock.md §7;
+// modules/notification_listener/index.ts's rejection taxonomy). Found on a
+// physical Samsung A54, not here: initializeKeys() ends in an auth-gated
+// Keystore key that is only usable for ~10s after the user passes a system
+// challenge, and nothing in onboarding ever raised one — so first run failed
+// with NotAuthenticatedError on every attempt, and the retry silently minted
+// a NEW phrase over the twelve words the user had just been told to write
+// down. These tests are the on-device failure, brought back where the Jest
+// harness (which never touches a real Keystore) can see it.
+// ---------------------------------------------------------------------------
+
+test("raises the system authentication prompt BEFORE initializeKeys, not after it", async () => {
+  const words = await proceedToConfirm();
+  await submitConfirmation(words);
+
+  await waitFor(() => expect(mockInitializeKeys).toHaveBeenCalledTimes(1));
+  expect(mockAuthenticateAsync).toHaveBeenCalledTimes(1);
+  // ORDER, not mere presence. A prompt raised after the call it exists to
+  // open the Keystore window for is exactly as useless as no prompt at all,
+  // and "both were called" cannot tell the two apart.
+  expect(mockAuthenticateAsync.mock.invocationCallOrder[0]).toBeLessThan(
+    mockInitializeKeys.mock.invocationCallOrder[0],
+  );
+});
+
+test("never asks for biometric-only -- a user with no enrolled fingerprint can finish setup with their PIN", async () => {
+  const words = await proceedToConfirm();
+  await submitConfirmation(words);
+
+  await waitFor(() => expect(mockAuthenticateAsync).toHaveBeenCalledTimes(1));
+  // Same pin as contexts/lock_context.tsx's unlock() (task-9-brief rule 2 /
+  // contract §10): `disableDeviceFallback: false`, so device
+  // PIN/pattern/password is always an acceptable answer.
+  expect(mockAuthenticateAsync).toHaveBeenCalledWith(
+    expect.objectContaining({ disableDeviceFallback: false }),
+  );
+});
+
+test("a cancelled prompt never calls initializeKeys and never replaces the phrase the user wrote down", async () => {
+  mockAuthenticateAsync.mockResolvedValue({ success: false, error: "user_cancel" });
+
+  const words = await proceedToConfirm();
+  await submitConfirmation(words);
+
+  await waitFor(() => expect(screen.getByTestId("recovery-phrase-auth-notice")).toBeTruthy());
+  expect(mockInitializeKeys).not.toHaveBeenCalled();
+  // Not the dead-end error screen: a prompt the user dismissed is not a
+  // failure, it is a step to take again.
+  expect(screen.queryByTestId("recovery-phrase-error")).toBeNull();
+  expect(mockGeneratePhrase).toHaveBeenCalledTimes(1);
+
+  // And the step is genuinely usable again, not merely still on screen: a
+  // second, successful attempt gets the SAME twelve words into initializeKeys.
+  mockAuthenticateAsync.mockResolvedValue({ success: true });
+  await submitConfirmation(words);
+
+  await waitFor(() => expect(mockInitializeKeys).toHaveBeenCalledTimes(1));
+  expect(mockInitializeKeys).toHaveBeenCalledWith(words);
+  expect(mockGeneratePhrase).toHaveBeenCalledTimes(1);
+});
+
+test("a NotAuthenticatedError re-prompts once and retries the SAME call with the SAME words", async () => {
+  // The ~10s window can expire between the prompt and the call — a slow or
+  // interrupted user. The module's contract for this rejection is explicit:
+  // re-prompt and retry the same call.
+  mockInitializeKeys.mockRejectedValueOnce(new NotAuthenticatedError());
+
+  const words = await proceedToConfirm();
+  await submitConfirmation(words);
+
+  await waitFor(() => expect(screen.getByTestId("recovery-phrase-done")).toBeTruthy());
+  expect(mockAuthenticateAsync).toHaveBeenCalledTimes(2);
+  expect(mockInitializeKeys).toHaveBeenCalledTimes(2);
+  // The identical array instance, not a fresh phrase that happens to compare
+  // equal — the retry is the SAME call, re-issued.
+  expect(mockInitializeKeys.mock.calls[1][0]).toBe(mockInitializeKeys.mock.calls[0][0]);
+  expect(mockInitializeKeys).toHaveBeenLastCalledWith(words);
+  expect(mockGeneratePhrase).toHaveBeenCalledTimes(1);
+});
+
+test("a second NotAuthenticatedError gives up instead of prompting forever", async () => {
+  mockInitializeKeys.mockRejectedValue(new NotAuthenticatedError());
+
+  const words = await proceedToConfirm();
+  await submitConfirmation(words);
+
+  await waitFor(() => expect(screen.getByTestId("recovery-phrase-error")).toBeTruthy());
+  // Bounded at exactly one re-prompt: "a forever-looping recovery" is a bug
+  // shape this codebase has already shipped once (contexts/lock_context.tsx's
+  // "WHY NO AUTO-RETRY LOOP ANYWHERE HERE"), and a prompt loop on the
+  // onboarding screen is unescapable without force-quitting.
+  expect(mockAuthenticateAsync).toHaveBeenCalledTimes(2);
+  expect(mockInitializeKeys).toHaveBeenCalledTimes(2);
+});
+
+test('"Try again" after a failed initializeKeys retries with the SAME words and never regenerates the phrase', async () => {
+  mockInitializeKeys.mockRejectedValueOnce(new Error("native bridge error"));
+
+  const words = await proceedToConfirm();
+  await submitConfirmation(words);
+  await waitFor(() => expect(screen.getByTestId("recovery-phrase-error")).toBeTruthy());
+
+  await act(async () => {
+    fireEvent.press(screen.getByTestId("recovery-phrase-retry-button"));
+  });
+
+  await waitFor(() => expect(screen.getByTestId("recovery-phrase-done")).toBeTruthy());
+  expect(mockInitializeKeys).toHaveBeenCalledTimes(2);
+  expect(mockInitializeKeys.mock.calls[1][0]).toBe(mockInitializeKeys.mock.calls[0][0]);
+  expect(mockInitializeKeys).toHaveBeenLastCalledWith(words);
+  // THE ONE THAT MATTERS. The user has already been told to write these
+  // twelve words down. A retry that generates a fresh phrase leaves them
+  // holding a piece of paper that opens nothing, believing it opens
+  // everything — strictly worse than the error it replaced.
+  expect(mockGeneratePhrase).toHaveBeenCalledTimes(1);
+});
+
+test('"Try again" after a failed generatePhrase DOES generate a new phrase -- nothing was ever shown to invalidate', async () => {
+  mockGeneratePhrase.mockRejectedValueOnce(new Error("no entropy"));
+
+  render(<RecoveryPhraseScreen />);
+  await waitFor(() => expect(screen.getByTestId("recovery-phrase-error")).toBeTruthy(), {
+    timeout: FIRST_RENDER_TIMEOUT_MS,
+  });
+  expect(mockGeneratePhrase).toHaveBeenCalledTimes(1);
+
+  await act(async () => {
+    fireEvent.press(screen.getByTestId("recovery-phrase-retry-button"));
+  });
+
+  await waitFor(() => expect(screen.getByTestId("phrase-display")).toBeTruthy(), {
+    timeout: FIRST_RENDER_TIMEOUT_MS,
+  });
+  // The mirror image of the test above: no words ever reached the user here,
+  // so there is nothing a fresh phrase could invalidate — and there is no
+  // phrase to retry initialization WITH.
+  expect(mockGeneratePhrase).toHaveBeenCalledTimes(2);
+  expect(mockInitializeKeys).not.toHaveBeenCalled();
 });
