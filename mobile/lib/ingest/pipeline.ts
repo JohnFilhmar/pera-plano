@@ -485,8 +485,29 @@ export async function startIngest(): Promise<() => void> {
     let buffered: RawCapture[] = [];
     try {
       buffered = await drainPendingCaptures();
-    } catch {
+    } catch (err) {
       // Still buffered natively; nothing is lost. Keep the subscription.
+      //
+      // SWALLOWING IS CORRECT HERE, SILENCE IS NOT. Recovering is right — this
+      // runs from a mount effect while the user is reading their ledger, so
+      // there is no user intent to hang a system auth prompt on, and
+      // app/_layout.tsx requires the whole effect to be fire-and-forget.
+      //
+      // But a bare `catch {}` made two very different failures identical and
+      // invisible: NotAuthenticatedError (the ~10s Keystore window closed
+      // between unlock and here — reachable, since migrations and ruleset
+      // seeding run in between) and CaptureBufferReadFailedError (a storage
+      // fault). The first is self-healing; the next unlock re-prompts and
+      // re-drains. The second is not, and it is the one path where captures
+      // can eventually be lost, because the native buffer caps at 500.
+      //
+      // Logging costs nothing and is the difference between diagnosing that on
+      // a device and guessing. Commit 5bad9d2 is the precedent: two identical
+      // bare catches on the recovery-phrase screen turned a first-run blocker
+      // into an undiagnosable "try again", and adding one line found the cause
+      // on the next run. Note `transform-remove-console` strips this from
+      // production bundles, so it serves development and dev-client builds.
+      console.error("[ingest] drainPendingCaptures failed; captures left in the native buffer", err);
       buffered = [];
     }
 
