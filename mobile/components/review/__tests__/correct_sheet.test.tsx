@@ -18,6 +18,15 @@ import { fireEvent, render, screen } from "@testing-library/react-native";
 
 import { ALWAYS_BOTH_LABEL, CorrectSheet, alwaysRuleLabel } from "../correct_sheet";
 
+import { closeDatabase } from "@/lib/db/database";
+import { seedDefaultCategories } from "@/lib/db/repos/categories_repo";
+import { enqueue, listOpen } from "@/lib/db/repos/review_queue_repo";
+import { getTransaction } from "@/lib/db/repos/transactions_repo";
+import { listUserRules } from "@/lib/db/repos/user_rules_repo";
+import { createWallet } from "@/lib/db/repos/wallets_repo";
+import { correctItem } from "@/lib/review/resolve_actions";
+import type { CorrectionPatch } from "@/lib/review/resolve_actions";
+import { freshDb } from "@/test_support/db";
 import type { Category, ReviewQueueItem, Wallet } from "@/types/domain";
 
 const FOOD = "cat_food_dining";
@@ -331,6 +340,27 @@ describe("a disabled Save always says why", () => {
     );
   });
 
+  test("does not tell the user to pick from a list it just said is empty", () => {
+    // With zero wallets, `correct-wallet-empty` already says "No wallets yet
+    // — add one to save this entry." (rule 4). "Pick a wallet to save" right
+    // above Save would contradict that in the same screen — the section says
+    // there is nothing to choose from, the reason line says choose one.
+    render(
+      <CorrectSheet
+        visible
+        item={item({ walletId: null })}
+        wallets={[]}
+        categories={CATEGORIES}
+        onDismiss={onDismiss}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    expect(screen.getByTestId("correct-save-reason")).toHaveTextContent(
+      "Add a wallet to save",
+    );
+  });
+
   test("explains why save is disabled when the amount is zero", () => {
     renderSheet(item({ amount: null }));
 
@@ -403,9 +433,16 @@ describe("the wallet picker defaults when the choice is unambiguous", () => {
     });
   });
 
-  test("still reports only the changed fields", () => {
-    // Regression on rule 5: the auto-preselected sole wallet must fold into
-    // the diff's OWN baseline, not read as a user correction.
+  test("leaving the preselected wallet in place still reports it, and offers the rule", () => {
+    // THE PRESELECT IS A CONFIRMABLE DEFAULT, NOT A SUPPRESSED SIGNAL — see
+    // correct_sheet.tsx's header. An earlier version of this fix folded the
+    // preselected wallet into the diff's OWN baseline, so saving an untouched
+    // single-wallet sheet reported no `walletId` at all. That failed
+    // SILENTLY: `resolveCorrect` requires a wallet from patch or payload, the
+    // payload had none, the mutation has no `onError`, and the sheet had
+    // already closed by the time it threw — Save looked like it worked and
+    // nothing was written, for exactly the user this preselect was written
+    // to help.
     render(
       <CorrectSheet
         visible
@@ -419,6 +456,95 @@ describe("the wallet picker defaults when the choice is unambiguous", () => {
 
     fireEvent.press(screen.getByTestId("correct-save"));
 
-    expect(onSubmit).toHaveBeenCalledWith({ createRule: true });
+    // The preselected wallet IS the correction: the parser proposed none, the
+    // sheet ends up holding one, and that difference is exactly what
+    // `resolve_actions.ts` needs to write both the transaction's wallet and
+    // the set-wallet rule — "always route this app's notifications to my
+    // only wallet" is correct, not presumptuous, when there is only one.
+    expect(onSubmit).toHaveBeenCalledWith({
+      walletId: "wallet_gcash",
+      createRule: true,
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THE SEAM. Every test above renders the sheet against hand-built fixtures
+// and checks the shape of the patch by eye. That is exactly how the Critical
+// bug shipped: `onSubmit` was called with `{ createRule: true }`, a test
+// asserted that literal object, and NOTHING checked that the object was one
+// `lib/review/resolve_actions.ts` could actually act on. This block closes
+// that gap by running the sheet's own emitted patch through the REAL
+// resolver, against a REAL database — not a shape assertion, a survival
+// test.
+// ---------------------------------------------------------------------------
+
+describe("the emitted patch actually survives the resolver", () => {
+  const NOW = Date.UTC(2026, 7, 18, 9, 0, 0);
+
+  beforeEach(async () => {
+    await freshDb();
+    await seedDefaultCategories();
+  });
+
+  afterEach(async () => {
+    await closeDatabase();
+  });
+
+  test("a single unmatched wallet is preselected AND actually committed, not silently dropped", async () => {
+    // The exact Critical: one wallet, the payload has none. The pre-fix
+    // baseline swap made this case fail SILENTLY — Save looked like it
+    // worked, `resolveCorrect` threw with nobody catching it, and the item
+    // never left the queue.
+    const gcash = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
+    const queued = await enqueue({
+      kind: "low-confidence",
+      payload: {
+        amount: 20000,
+        direction: "out",
+        merchant: "7-ELEVEN",
+        walletId: null,
+        categoryId: FOOD,
+        confidence: 0.72,
+        // `resolve_actions.ts`'s `providerKeyFor` needs a package to key the
+        // set-wallet rule's matcher on; without one it resolves `null` and
+        // silently skips the rule, which would make this test pass for the
+        // wrong reason if left out.
+        packageName: "com.globe.gcash.android",
+      },
+    });
+
+    render(
+      <CorrectSheet
+        visible
+        item={queued}
+        wallets={[gcash]}
+        categories={CATEGORIES}
+        onDismiss={onDismiss}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    // Nothing touched — the preselect is left exactly as it opened.
+    fireEvent.press(screen.getByTestId("correct-save"));
+
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    const patch = onSubmit.mock.calls[0][0] as CorrectionPatch;
+
+    // THE SEAM: hand the sheet's own patch to the real resolver, not a
+    // stand-in for it. A patch shaped like the old bug (no `walletId`) would
+    // throw `IncompleteReviewItemError` here.
+    const transactionId = await correctItem(queued.id, patch, NOW);
+
+    expect(transactionId).not.toBeNull();
+    expect((await getTransaction(transactionId as string))?.walletId).toBe(gcash.id);
+    // The item actually left the queue — the other half of "Save worked".
+    expect(await listOpen()).toHaveLength(0);
+    // The Important the same baseline bug caused: with `changedWallet` stuck
+    // false, this rule never got written, and every future notification from
+    // this provider re-entered the queue forever.
+    const rules = await listUserRules("set-wallet");
+    expect(rules).toHaveLength(1);
+    expect(rules[0].action).toEqual({ kind: "set-wallet", walletId: gcash.id });
   });
 });

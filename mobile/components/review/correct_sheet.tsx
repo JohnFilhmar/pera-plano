@@ -36,10 +36,23 @@
 // on-screen without any scrolling in the common single-wallet case; (c) the
 // sole wallet is preselected when `wallets.length === 1` (no ambiguity left
 // to ask about), and the section says so explicitly when `wallets.length ===
-// 0` instead of leaving a bare "WALLET" label over dead space. None of this
-// touches `CorrectionPatch` or the diff below — the preselected default is
-// folded into the SAME baseline the diff compares against, so an untouched
-// single-wallet sheet still reports no `walletId`.
+// 0` instead of leaving a bare "WALLET" label over dead space.
+//
+// THE PRESELECT IS A CONFIRMABLE DEFAULT, NOT A SUPPRESSED SIGNAL (fixed
+// 2026-08-18, post-review). A first version of (c) folded the preselected
+// wallet into the diff's OWN baseline, so saving an untouched single-wallet
+// sheet reported no `walletId` at all. That failed SILENTLY: `resolveCorrect`
+// requires a wallet from patch or payload, the payload had none, the mutation
+// has no `onError`, and the sheet had already closed by the time it threw —
+// Save looked like it worked and nothing was written, for exactly the user
+// this fix was written for. `changedWallet` below compares against
+// `proposed.walletId` — what the PARSER proposed — the same as every other
+// field, never against the preselected default. That is the invariant this
+// file relied on before the preselect existed: whenever the payload has no
+// wallet, ANY wallet the state ends up holding (typed, tapped, or
+// preselected) is reported. For a one-wallet user this also means the sheet
+// offers "always route this app's notifications to my only wallet" — correct
+// rather than presumptuous, since there is only one wallet it could mean.
 import { Check } from "lucide-react-native";
 import { useEffect, useState } from "react";
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
@@ -125,10 +138,19 @@ export const NO_WALLETS_MESSAGE = "No wallets yet — add one to save this entry
  * first thing the sheet asks for (the numpad sits above the wallet block);
  * either message names the ONE thing still missing rather than restating
  * "can't save" with no reason, which is the actual bug this fixes.
+ *
+ * `walletCount` special-cases the zero-wallets state: "Pick a wallet" would
+ * tell the user to choose from the list the section above just said is
+ * empty (`NO_WALLETS_MESSAGE`) — two lines on the same screen disagreeing
+ * about whether there is anything to pick.
  */
-function saveDisabledReason(amount: Centavos, walletId: string | null): string | null {
+function saveDisabledReason(
+  amount: Centavos,
+  walletId: string | null,
+  walletCount: number,
+): string | null {
   if (amount <= 0) return "Enter an amount to save";
-  if (walletId === null) return "Pick a wallet to save";
+  if (walletId === null) return walletCount === 0 ? "Add a wallet to save" : "Pick a wallet to save";
   return null;
 }
 
@@ -184,7 +206,13 @@ export function CorrectSheet({
     setMerchant(readString(item.payload, "merchant") ?? "");
     setCreateRule(true);
     setPickingCategory(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `wallets` is
+    // read (via `defaultWalletId`) but deliberately excluded: the sheet
+    // mounts on tap, after the wallets query has already resolved, so this
+    // is benign today. If a wallets refetch ever landed WHILE the sheet was
+    // open, the preselect just wouldn't re-run for it — no worse than not
+    // preselecting, never wrong, so not worth re-running this whole reset
+    // (and re-arming the checkbox) over a background list update.
   }, [visible, itemId]);
 
   const amount = centavosFromDigits(digits);
@@ -194,13 +222,12 @@ export function CorrectSheet({
 
   // The DIFF, field by field. Each is a correction only when it differs from
   // what the parser proposed — see this file's header. The wallet compares
-  // against `walletBaseline`, NOT `proposed.walletId` directly: when a sole
-  // wallet was preselected because there was nothing to choose between, that
-  // default is the baseline, not a user correction — see `defaultWalletId`.
-  const walletBaseline = defaultWalletId(item.payload, wallets);
+  // against `proposed.walletId`, NEVER the preselected default: see "THE
+  // PRESELECT IS A CONFIRMABLE DEFAULT" above for why comparing against the
+  // preselect instead silently dropped `walletId` from the patch.
   const changedAmount = amount > 0 && amount !== proposed.amount;
   const changedDirection = direction !== (proposed.direction ?? "out") || proposed.direction === null;
-  const changedWallet = walletId !== null && walletId !== walletBaseline;
+  const changedWallet = walletId !== null && walletId !== proposed.walletId;
   const changedCategory = categoryId !== null && categoryId !== proposed.categoryId;
   const changedMerchant = trimmedMerchant !== (proposed.merchant ?? "") && trimmedMerchant !== "";
 
@@ -222,7 +249,7 @@ export function CorrectSheet({
   // wallet foreign key. Disabling here means the failure is a greyed button
   // rather than a thrown repository error after the sheet has already closed.
   const canSave = amount > 0 && walletId !== null;
-  const disabledReason = canSave ? null : saveDisabledReason(amount, walletId);
+  const disabledReason = canSave ? null : saveDisabledReason(amount, walletId, wallets.length);
 
   function handleSave(): void {
     const patch: CorrectionPatch = { createRule: ruleOffered ? createRule : true };

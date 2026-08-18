@@ -164,7 +164,7 @@ export default function WalletDetailScreen() {
               </View>
             </Card>
           </View>
-  
+
           {/* Rule 4's three actions. There is no fourth: see the file header on
               why delete is offered nowhere. Archived wallets get none of them —
               an archived wallet is read-only until it is unarchived (spec §UX
@@ -221,7 +221,7 @@ export default function WalletDetailScreen() {
               </View>
             </View>
           ) : null}
-  
+
           <CashReconcileSheet
             wallet={wallet}
             visible={reconciling}
@@ -240,7 +240,7 @@ export default function WalletDetailScreen() {
               );
             }}
           />
-  
+
           {/* Rule 4: cash wallets have empty matchers and the matcher UI is
               hidden for them — money enters by manual entry, transfer legs and
               reconciliation, never by a notification. */}
@@ -252,7 +252,7 @@ export default function WalletDetailScreen() {
               </View>
             </View>
           ) : null}
-  
+
           <SectionHeader title="Transactions" />
           {/* THE app's ONE ledger list (m1c Task 6). `filtered` stays false: the
               wallet scope is what this screen IS, not a filter the user applied,
