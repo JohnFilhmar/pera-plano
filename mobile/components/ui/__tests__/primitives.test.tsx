@@ -160,6 +160,25 @@ test("Button enabled fires onPress exactly once", () => {
   expect(onPress).toHaveBeenCalledTimes(1);
 });
 
+test("a multi-word button label renders in full", () => {
+  // DEVICE-TESTING REPRODUCTION (2026-08-18, Task 8, defect b). The owner's
+  // screenshot showed the Home empty-state button reading "Add" where the
+  // catalogue string is "Add manually" (components/ui/empty_states.tsx). The
+  // leading hypothesis was a missing flex guard on this Text inside
+  // button.tsx's `flex-row` — but that is a NATIVE Yoga/TextView measurement
+  // behaviour, and @testing-library/react-native's renderer (react-test-
+  // renderer) never runs a real layout pass: it builds the host-node tree
+  // directly from props/children with no measurement step at all. So this
+  // assertion — a real getByText match against the FULL two-word string,
+  // which would throw if the component had actually sliced the string down
+  // to "Add" in JS — is the strongest reproduction attempt available in this
+  // environment, and it is expected to PASS today: nothing in button.tsx
+  // manipulates the `title` string. See the Task 8 report for why that
+  // outcome is read as "could not reproduce here", not "no bug".
+  render(<Button title="Add manually" onPress={noop} />);
+  expect(screen.getByText("Add manually")).toBeTruthy();
+});
+
 test("Button destructive is the only variant that paints danger", () => {
   render(<Button testID="danger-btn" title="Delete wallet" onPress={noop} variant="destructive" />);
   expect(classListOf("danger-btn")).toContain("bg-danger");
@@ -456,6 +475,19 @@ test("SectionHeader renders its optional action and fires it", () => {
 test("SectionHeader without an action renders no action", () => {
   render(<SectionHeader title="This month" />);
   expect(screen.queryByTestId("section-header-action")).toBeNull();
+});
+
+test("a multi-word section title renders in full", () => {
+  // DEVICE-TESTING REPRODUCTION (2026-08-18, Task 8, defect b). The owner's
+  // screenshot showed `components/home/limit_progress_list.tsx`'s
+  // `<SectionHeader title="Your limits" />` reading "Your" only. Same caveat
+  // as the button test above: this environment never runs a real Yoga/
+  // TextView layout pass, so a getByText match against the full string is
+  // the strongest available reproduction attempt, and it is expected to
+  // PASS — section_header.tsx does not touch the `title` string in JS. See
+  // the Task 8 report.
+  render(<SectionHeader title="Your limits" />);
+  expect(screen.getByText("Your limits")).toBeTruthy();
 });
 
 test("EmptyState defaults to the lucide Send paper-airplane brand mark", () => {
