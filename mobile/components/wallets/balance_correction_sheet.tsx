@@ -24,6 +24,18 @@
 // about why: balance is the ledger's running total, moved only by the
 // transaction that explains the move. This sheet's one write is an
 // `insertTransaction` call, exactly like cash reconciliation's.
+//
+// CREDIT IS EXCLUDED TOO (review fix, 2026-08-18), for a reason that is NOT
+// the same as cash's. A credit wallet's balance is the amount OWED
+// (lib/wallets/summary.ts's rule 23; app/wallet/[id].tsx labels it "Owed"),
+// and this sheet's question — "what does this wallet actually have?" — plus
+// its in/out mapping are written for a HELD balance. On a credit card that
+// question is ambiguous between owed and available credit, and answering it
+// wrong would record TAKING ON DEBT as money received, which is not a
+// currency-formatting bug — it is the app lying about which direction money
+// moved. Getting the wording and sign right for credit needs its own design
+// pass; shipping the wrong answer is worse than shipping none, so this stays
+// disabled here as belt-and-braces with app/wallet/[id].tsx's own guard.
 import { useState } from "react";
 import { Text, TextInput, View } from "react-native";
 
@@ -59,8 +71,10 @@ export function BalanceCorrectionSheet({
   const correct = useCorrectWalletBalance();
 
   // Rule 3's mirror of cash_reconcile_sheet.tsx's own guard: this path is for
-  // every OTHER wallet type. Cash keeps its own sheet, unmodified.
-  if (wallet.type === "cash") return null;
+  // every OTHER wallet type. Cash keeps its own sheet, unmodified. Credit is
+  // excluded too — see the file header for why this is a different reason
+  // than cash's.
+  if (wallet.type === "cash" || wallet.type === "credit") return null;
 
   const stated = centavosFromDigits(digits);
   const preview = cashAdjustment(wallet.balance, stated);
@@ -114,10 +128,19 @@ export function BalanceCorrectionSheet({
             of what a typed figure can promise on a wallet a provider ALSO
             reports to. A notification that arrives after this and carries a
             reported balance re-anchors the wallet from that report, the same
-            way it always has; this correction does not and cannot stop it. */}
+            way it always has; this correction does not and cannot stop it.
+            Second clause (review fix, 2026-08-18): the correction transaction
+            ITSELF is not touched by that re-anchor — the balance moves on,
+            but the row stays in the ledger and keeps counting toward
+            money-in/spend totals for whatever period it falls in. That is by
+            design (rule 3 asks for an honest ledger entry, not a balance
+            patch that vanishes later), but it is a real second-order effect
+            worth saying plainly rather than leaving the user to discover it
+            in a report. */}
         <Text testID="balance-correction-warning" className="text-sm text-warn dark:text-warn-dark">
           This is a starting point, not a bank-confirmed figure. If a notification later reports
-          this wallet&apos;s balance directly, that report will replace this correction.
+          this wallet&apos;s balance directly, that report will replace this correction. The entry
+          itself stays in your ledger and still counts toward your totals, even after that happens.
         </Text>
 
         {showError ? (

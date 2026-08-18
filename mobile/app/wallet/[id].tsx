@@ -112,6 +112,14 @@ export default function WalletDetailScreen() {
   // Read from the ruleset, never inlined — see components/wallets/balance_mismatch_badge.tsx.
   const toleranceCentavos = ruleset?.tunables.balanceDriftToleranceCentavos;
   const isCash = wallet.type === "cash";
+  // Review fix (2026-08-18): a credit balance is the amount OWED
+  // (lib/wallets/summary.ts's rule 23, and the "Owed" label just below), and
+  // BalanceCorrectionSheet's "what does this wallet actually have?" plus its
+  // in/out mapping is written for a HELD balance — on a credit card that
+  // question is ambiguous between owed and available credit, and getting the
+  // sign wrong would record taking on debt as money received. Excluded here
+  // rather than answered wrong; see the on-screen note below for why.
+  const isCredit = wallet.type === "credit";
   // The badge's own predicate, so the action and the badge cannot disagree about
   // whether there is a drift to dismiss. Narrowed to the drift itself, because
   // the mutation needs the reporting transaction's id off it.
@@ -192,14 +200,15 @@ export default function WalletDetailScreen() {
                     onPress={() => setReconciling(true)}
                   />
                 </View>
-              ) : (
+              ) : isCredit ? null : (
                 // DEVICE-TESTING FIX (2026-08-18, Task 4): every wallet used
                 // to start at ₱0.00 with no way to say "this already has
                 // ₱3,000 in it" once it existed — CashReconcileSheet is
-                // cash-only by rule 6/its own header, so non-cash wallets get
-                // their own correction, writing a ledger entry the same way
-                // (see balance_correction_sheet.tsx for why it is a
-                // different sheet, not a modified one).
+                // cash-only by rule 6/its own header, so non-cash, non-credit
+                // wallets get their own correction, writing a ledger entry
+                // the same way (see balance_correction_sheet.tsx for why it
+                // is a different sheet, not a modified one). Credit is
+                // excluded — see isCredit's own comment above.
                 <View className="flex-1">
                   <Button
                     testID="wallet-detail-adjust-balance"
@@ -237,6 +246,20 @@ export default function WalletDetailScreen() {
                   onPress={() => setArchiving(true)}
                 />
               </View>
+            </View>
+          ) : null}
+
+          {/* Review fix (2026-08-18): SAY why there is no fourth button here,
+              rather than just not having one. A silently missing action reads
+              as a bug; a stated reason reads as a real limit. */}
+          {!wallet.isArchived && isCredit ? (
+            <View className="px-4 pt-2">
+              <Text testID="wallet-detail-credit-note" className="text-sm text-fg-2 dark:text-fg-2-dark">
+                Starting balance and manual corrections aren&apos;t available for credit wallets
+                yet — a credit balance can mean either what you owe or what you have left to
+                spend, and this needs its own wording to get that right. Notifications still
+                update this balance automatically.
+              </Text>
             </View>
           ) : null}
 

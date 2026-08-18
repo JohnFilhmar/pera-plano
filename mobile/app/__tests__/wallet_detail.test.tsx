@@ -462,6 +462,38 @@ describe("correcting a non-cash wallet's balance (Task 4)", () => {
     fireEvent.press(screen.getByTestId("wallet-detail-reconcile"));
     expect(screen.getByTestId("cash-reconcile-sheet")).toBeTruthy();
   });
+
+  // -------------------------------------------------------------------------
+  // Review fix (2026-08-18): a credit balance is the amount OWED, not held.
+  // The sheet's question and its in/out mapping are written for a HELD
+  // balance, so offering it on a credit wallet would let "I owe more than
+  // recorded" be recorded as money RECEIVED — taking on debt read as income.
+  // Excluded rather than answered wrong.
+  // -------------------------------------------------------------------------
+
+  test("a credit wallet offers no balance adjustment, and says why", async () => {
+    const visa = await createWallet({ name: "Visa", type: "credit", openingBalance: 500_000 });
+
+    renderDetail(visa.id);
+    await screen.findByText("Visa");
+
+    // Neither action — this is not cash, and it is not safely correctable
+    // by this sheet either.
+    expect(screen.queryByTestId("wallet-detail-adjust-balance")).toBeNull();
+    expect(screen.queryByTestId("wallet-detail-reconcile")).toBeNull();
+
+    // The missing action is EXPLAINED, not just absent — a silently missing
+    // button reads as a bug; a stated reason reads as a real limit.
+    expect(screen.getByTestId("wallet-detail-credit-note")).toBeTruthy();
+  });
+
+  // The sheet's OWN belt-and-braces guard (rendering null for credit even if
+  // opened directly) is proven at the unit level in
+  // components/wallets/__tests__/balance_correction_sheet.test.tsx, the same
+  // way cash_reconcile_sheet.test.tsx proves its own type guard — this
+  // screen's `correcting` state starts `false`, so asserting the sheet's
+  // testID is absent here without ever opening it would pass for the wrong
+  // reason on ANY wallet type.
 });
 
 // ---------------------------------------------------------------------------
