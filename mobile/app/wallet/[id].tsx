@@ -50,6 +50,7 @@ import { Chip } from "@/components/ui/chip";
 import { EmptyState } from "@/components/ui/empty_state";
 import { SectionHeader } from "@/components/ui/section_header";
 import { ArchiveWalletSheet } from "@/components/wallets/archive_wallet_sheet";
+import { BalanceCorrectionSheet } from "@/components/wallets/balance_correction_sheet";
 import {
   BalanceMismatchBadge,
   isDriftWorthShowing,
@@ -76,6 +77,7 @@ export default function WalletDetailScreen() {
   // SafeAreaProvider comment for why each surface pads its own edges.
   const insets = useSafeAreaInsets();
   const [reconciling, setReconciling] = useState(false);
+  const [correcting, setCorrecting] = useState(false);
   const [archiving, setArchiving] = useState(false);
 
   const { data: wallet, isPending } = useWallet(walletId);
@@ -190,7 +192,23 @@ export default function WalletDetailScreen() {
                     onPress={() => setReconciling(true)}
                   />
                 </View>
-              ) : null}
+              ) : (
+                // DEVICE-TESTING FIX (2026-08-18, Task 4): every wallet used
+                // to start at ₱0.00 with no way to say "this already has
+                // ₱3,000 in it" once it existed — CashReconcileSheet is
+                // cash-only by rule 6/its own header, so non-cash wallets get
+                // their own correction, writing a ledger entry the same way
+                // (see balance_correction_sheet.tsx for why it is a
+                // different sheet, not a modified one).
+                <View className="flex-1">
+                  <Button
+                    testID="wallet-detail-adjust-balance"
+                    title="Adjust balance"
+                    variant="secondary"
+                    onPress={() => setCorrecting(true)}
+                  />
+                </View>
+              )}
               {dismissibleDrift ? (
                 <View className="flex-1">
                   <Button
@@ -226,6 +244,11 @@ export default function WalletDetailScreen() {
             wallet={wallet}
             visible={reconciling}
             onDismiss={() => setReconciling(false)}
+          />
+          <BalanceCorrectionSheet
+            wallet={wallet}
+            visible={correcting}
+            onDismiss={() => setCorrecting(false)}
           />
           <ArchiveWalletSheet
             wallet={wallet}

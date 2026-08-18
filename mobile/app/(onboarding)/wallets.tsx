@@ -65,6 +65,7 @@ import { Text, View } from "react-native";
 import { OnboardingFrame } from "@/components/onboarding/onboarding_frame";
 import { QuickWalletList } from "@/components/onboarding/quick_wallet_list";
 import type { WalletProposal } from "@/components/onboarding/quick_wallet_list";
+import { centavosFromDigits } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { providerLabel } from "@/constants/providers";
@@ -132,6 +133,8 @@ function proposalFor(choice: ProviderChoice, included: boolean): WalletProposal 
     type: defaultTypeFor(choice),
     packageName: choice.packageName,
     included,
+    // Task 4 rule 1: optional, blank by default — the user opts in by typing.
+    openingBalanceDigits: "",
   };
 }
 
@@ -142,6 +145,7 @@ const CASH_PROPOSAL: WalletProposal = {
   type: "cash",
   packageName: null,
   included: true,
+  openingBalanceDigits: "",
 };
 
 /** A bridge failure degrades to "nothing observed" — the cash proposal alone
@@ -247,6 +251,14 @@ export default function WalletsScreen({
     );
   }
 
+  function changeOpeningBalance(key: string, digits: string): void {
+    setProposals((current) =>
+      current
+        ? current.map((p) => (p.key === key ? { ...p, openingBalanceDigits: digits } : p))
+        : current,
+    );
+  }
+
   function addProvider(choice: ProviderChoice): void {
     const proposal = proposalFor(choice, true);
     setProposals((current) => (current ? [...current, proposal] : current));
@@ -298,6 +310,13 @@ export default function WalletsScreen({
         const wallet = await createWallet.mutateAsync({
           name: proposal.name.trim(),
           type: proposal.type,
+          // Task 4 rule 1: blank digits are ₱0.00 via centavosFromDigits,
+          // written the same way app/wallet/new.tsx already writes a manually
+          // created wallet's opening balance — an anchor on the brand-new
+          // row, not a patch on an existing one (wallet_form.tsx:11-13's
+          // "create-only" rule is about EDITING an existing wallet's balance,
+          // never about the very INSERT that gives it its first figure).
+          openingBalance: centavosFromDigits(proposal.openingBalanceDigits),
         });
         // A quick-added proposal carries its provider's FULL package list
         // (task-3-brief rule 1); every other proposal — observed or cash —
@@ -379,6 +398,7 @@ export default function WalletsScreen({
           onRename={rename}
           onChangeType={changeType}
           onToggleIncluded={toggleIncluded}
+          onChangeOpeningBalance={changeOpeningBalance}
         />
       ) : (
         <View testID="wallets-step-loading" />

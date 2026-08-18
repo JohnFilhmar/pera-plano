@@ -20,6 +20,7 @@
 // undone instead of a re-add from scratch.
 import { Pressable, Text, TextInput, View } from "react-native";
 
+import { AmountText, centavosFromDigits } from "@/components/ui/amount_text";
 import { WALLET_TYPE_LABELS, WALLET_TYPE_ORDER } from "@/lib/wallets/summary";
 import type { WalletType } from "@/types/domain";
 
@@ -32,6 +33,13 @@ export type WalletProposal = {
   packageName: string | null;
   /** Whether this proposal will actually be created when the step submits. */
   included: boolean;
+  /**
+   * Raw digits for "what's already in it" (device-testing fix, 2026-08-18,
+   * Task 4) — the same centavos-by-digit convention `centavosFromDigits`
+   * defines everywhere else in the app. Blank is a real, optional answer:
+   * it means ₱0.00 and must never block Continue.
+   */
+  openingBalanceDigits: string;
 };
 
 export type QuickWalletListProps = {
@@ -39,6 +47,7 @@ export type QuickWalletListProps = {
   onRename: (key: string, name: string) => void;
   onChangeType: (key: string, type: WalletType) => void;
   onToggleIncluded: (key: string) => void;
+  onChangeOpeningBalance: (key: string, digits: string) => void;
   testID?: string;
 };
 
@@ -47,13 +56,15 @@ function ProposalRow({
   onRename,
   onChangeType,
   onToggleIncluded,
+  onChangeOpeningBalance,
 }: {
   proposal: WalletProposal;
   onRename: (key: string, name: string) => void;
   onChangeType: (key: string, type: WalletType) => void;
   onToggleIncluded: (key: string) => void;
+  onChangeOpeningBalance: (key: string, digits: string) => void;
 }) {
-  const { key, name, type, packageName, included } = proposal;
+  const { key, name, type, packageName, included, openingBalanceDigits } = proposal;
 
   return (
     <View testID={`wallet-proposal-${key}`} className="gap-2 rounded-2xl bg-surface p-4 dark:bg-surface-dark">
@@ -135,6 +146,36 @@ function ProposalRow({
           ))}
         </View>
       ) : null}
+
+      {/* Task 4 rule 1: optional, blank by default, entered as raw digits —
+          the same centavos-by-digit convention Task 5 fixed the income field
+          to honestly reflect. Blank means ₱0.00, a real answer, not a missing
+          one, so it carries no error state and never blocks Continue. */}
+      <View className="gap-1">
+        <Text className="text-xs text-fg-2 dark:text-fg-2-dark">
+          What&apos;s in it right now? (optional)
+        </Text>
+        <TextInput
+          testID={`wallet-proposal-balance-${key}`}
+          value={openingBalanceDigits}
+          onChangeText={(digits) => onChangeOpeningBalance(key, digits)}
+          editable={included}
+          keyboardType="number-pad"
+          placeholder="0"
+          accessibilityLabel={`Opening balance for ${name || "this wallet"}`}
+          className={`rounded-lg border px-3 py-2 ${
+            included
+              ? "border-fg-2 text-fg dark:border-fg-2-dark dark:text-fg-dark"
+              : "border-fg-2 text-fg-2 dark:border-fg-2-dark dark:text-fg-2-dark"
+          }`}
+        />
+        <AmountText
+          testID={`wallet-proposal-balance-preview-${key}`}
+          amount={centavosFromDigits(openingBalanceDigits)}
+          size="sm"
+          showSign={false}
+        />
+      </View>
     </View>
   );
 }
@@ -144,6 +185,7 @@ export function QuickWalletList({
   onRename,
   onChangeType,
   onToggleIncluded,
+  onChangeOpeningBalance,
   testID = "quick-wallet-list",
 }: QuickWalletListProps) {
   return (
@@ -155,6 +197,7 @@ export function QuickWalletList({
           onRename={onRename}
           onChangeType={onChangeType}
           onToggleIncluded={onToggleIncluded}
+          onChangeOpeningBalance={onChangeOpeningBalance}
         />
       ))}
     </View>

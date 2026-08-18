@@ -1,5 +1,11 @@
 // app/(onboarding)/__tests__/wallets_step.test.tsx — task-3-brief: one chip per
 // PROVIDER in the "Also have one of these?" row, not one per Android package.
+// Extended for task-4-brief rule 1: the "a blank opening balance ... does not
+// block continue" requirement names a real end-to-end behaviour (a wallet row
+// actually gets created, and the flow actually advances) that no purely
+// presentational suite can prove — quick_wallet_list.test.tsx covers the
+// field itself; this covers what happens when "Continue" is actually pressed
+// against a real database, which is what this file already does for Task 3.
 //
 // WHY THIS FILE, SEPARATE FROM providers_step.test.tsx. That suite already
 // covers the wallet step end to end against single-package providers (gcash,
@@ -174,5 +180,35 @@ describe("the quick-add row", () => {
     expect(screen.getByTestId(`wallet-proposal-name-${GCASH}`).props.value).toBe(
       "GCash (via shared constants/providers.ts)",
     );
+  });
+});
+
+describe("opening balances at creation (task-4-brief rule 1)", () => {
+  test("a blank opening balance creates the wallet at zero and does not block continue", async () => {
+    await renderReady([GCASH]);
+
+    // Nothing typed into the balance field at all — the default, untouched
+    // state every proposal starts in.
+    fireEvent.press(screen.getByTestId("onboarding-primary-button"));
+
+    await waitFor(async () => expect(await listWallets()).toHaveLength(2));
+    const gcashWallet = (await listWallets()).find((wallet) => wallet.type === "e-wallet")!;
+    expect(gcashWallet.balance).toBe(0);
+    // And Continue actually continued — a blank balance is a real, complete
+    // answer, not a validation error silently holding the flow in place.
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith("/(onboarding)/income"));
+  });
+
+  test("a typed opening balance is what the wallet is actually created with", async () => {
+    await renderReady([GCASH]);
+
+    fireEvent.changeText(screen.getByTestId(`wallet-proposal-balance-${GCASH}`), "300000");
+    fireEvent.press(screen.getByTestId("onboarding-primary-button"));
+
+    await waitFor(async () => expect(await listWallets()).toHaveLength(2));
+    const gcashWallet = (await listWallets()).find((wallet) => wallet.type === "e-wallet")!;
+    // ₱3,000.00, not ₱300,000.00 — centavos-by-digit, the same rule Task 5
+    // fixed the income field to honestly reflect.
+    expect(gcashWallet.balance).toBe(300_000);
   });
 });

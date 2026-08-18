@@ -35,12 +35,13 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react-nativ
 import type { ReactNode } from "react";
 
 import { queryKeys } from "@/constants/query_keys";
+import { BALANCE_CORRECTION_NOTE } from "@/hooks/mutations/use_correct_wallet_balance";
 import { closeDatabase, getDatabase } from "@/lib/db/database";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
-import { insertTransaction } from "@/lib/db/repos/transactions_repo";
+import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions_repo";
 import { linkTransfer } from "@/lib/db/repos/transfer_links_repo";
-import { archiveWallet, createWallet } from "@/lib/db/repos/wallets_repo";
+import { archiveWallet, createWallet, getWallet } from "@/lib/db/repos/wallets_repo";
 import { DEFAULT_TUNABLES } from "@/lib/ingest/ruleset_types";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
@@ -396,6 +397,70 @@ describe("the actions m1c Task 5 added", () => {
     await screen.findByText("GCash");
 
     expect(screen.queryByTestId("wallet-detail-delete")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 4 (device-testing fix, 2026-08-18) — a non-cash wallet had no way to
+// say "this already has ₱3,000 in it" after creation. Rule 3 keeps
+// CashReconcileSheet cash-only and unmodified, so this is a SEPARATE sheet
+// (BalanceCorrectionSheet) writing a SEPARATE, honestly-labelled ledger entry
+// through the ordinary commit path — never a direct write to `wallets.balance`.
+// ---------------------------------------------------------------------------
+
+describe("correcting a non-cash wallet's balance (Task 4)", () => {
+  test("a non-cash wallet offers a balance adjustment", async () => {
+    renderDetail(gcash.id);
+    await screen.findByText("GCash");
+
+    expect(screen.getByTestId("wallet-detail-adjust-balance")).toBeTruthy();
+    // Rule 3: this is not reconciliation, and cash's action is not offered
+    // beside it.
+    expect(screen.queryByTestId("wallet-detail-reconcile")).toBeNull();
+  });
+
+  test("the adjustment writes a ledger entry rather than setting the balance directly", async () => {
+    // gcash opens at ₱1,000.00 (beforeEach). The user says it actually holds
+    // ₱1,500.00 — ₱500.00 the app never saw arrive.
+    renderDetail(gcash.id);
+    await screen.findByText("GCash");
+
+    fireEvent.press(screen.getByTestId("wallet-detail-adjust-balance"));
+    fireEvent.changeText(screen.getByTestId("balance-correction-amount"), "150000");
+    fireEvent.press(screen.getByTestId("balance-correction-confirm"));
+
+    await waitFor(async () => {
+      expect(await listTransactions({ walletId: gcash.id })).toHaveLength(1);
+    });
+
+    const written = (await listTransactions({ walletId: gcash.id }))[0]!;
+    expect(written.direction).toBe("in");
+    expect(written.amount).toBe(50_000);
+    expect(written.note).toBe(BALANCE_CORRECTION_NOTE);
+    // The balance moved BECAUSE of that transaction's signed effect, not
+    // because anything patched the row directly — the same anchor
+    // `useReconcileCash` lands cash on via the ordinary commit path.
+    await waitFor(async () => {
+      expect((await getWallet(gcash.id))?.balance).toBe(150_000);
+    });
+    // No `balanceAfter`: nothing here is a provider's reported figure, and
+    // setting one would make the drift badge treat a guess as a bank-confirmed
+    // anchor.
+    expect(written.balanceAfter).toBeNull();
+  });
+
+  test("cash wallets still use the reconcile sheet (regression on rule 3)", async () => {
+    const pocket = await createWallet({ name: "Pocket", type: "cash", openingBalance: 5_000 });
+
+    renderDetail(pocket.id);
+    await screen.findByText("Pocket");
+
+    expect(screen.getByTestId("wallet-detail-reconcile")).toBeTruthy();
+    expect(screen.queryByTestId("wallet-detail-adjust-balance")).toBeNull();
+
+    // And the sheet that opens is still the unmodified cash one.
+    fireEvent.press(screen.getByTestId("wallet-detail-reconcile"));
+    expect(screen.getByTestId("cash-reconcile-sheet")).toBeTruthy();
   });
 });
 
