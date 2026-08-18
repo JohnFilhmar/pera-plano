@@ -105,7 +105,7 @@ export function IncomeQuickForm({ wallets, busy = false, onSubmit }: IncomeQuick
                 >
                   <Text
                     className={
-                      selected ? "text-surface dark:text-surface-dark" : "text-fg dark:text-fg-dark"
+                      selected ? "text-on-brand dark:text-on-brand-dark" : "text-fg dark:text-fg-dark"
                     }
                   >
                     {wallet.name}

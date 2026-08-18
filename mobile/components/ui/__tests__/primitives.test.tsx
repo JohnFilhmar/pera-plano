@@ -173,6 +173,28 @@ test("Button destructive is the only variant that paints danger", () => {
   }
 });
 
+test("the primary button uses the on-brand foreground, not a surface token", () => {
+  // `surface` is a BACKGROUND token (#FFFFFF / #111A16). A filled primary
+  // button needs the colour that sits ON a brand fill, which is a different
+  // idea with its own token — see constants/colors.ts's ON-BRAND FOREGROUND
+  // block for the contrast numbers this pins.
+  render(<Button title="Save" onPress={noop} />);
+  const label = String(screen.getByText("Save").props.className ?? "").split(/\s+/);
+  expect(label).toContain("text-on-brand");
+  expect(label).toContain("dark:text-on-brand-dark");
+  expect(label).not.toContain("text-surface");
+  expect(label).not.toContain("dark:text-surface-dark");
+});
+
+test("the destructive button also uses the on-brand foreground, not a surface token", () => {
+  render(<Button title="Delete wallet" onPress={noop} variant="destructive" />);
+  const label = String(screen.getByText("Delete wallet").props.className ?? "").split(/\s+/);
+  expect(label).toContain("text-on-brand");
+  expect(label).toContain("dark:text-on-brand-dark");
+  expect(label).not.toContain("text-surface");
+  expect(label).not.toContain("dark:text-surface-dark");
+});
+
 // ---------------------------------------------------------------------------
 // ConfirmDialog — this component guards the data wipe
 // ---------------------------------------------------------------------------

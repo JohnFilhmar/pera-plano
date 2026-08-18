@@ -61,10 +61,14 @@ const VARIANT_BG: Record<ButtonVariant, string> = {
 };
 
 const VARIANT_FG: Record<ButtonVariant, string> = {
-  primary: "text-surface dark:text-surface-dark",
+  // `on-brand`/`on-brand-dark`, not `surface`/`surface-dark`: the label sits
+  // ON a `bg-brand`/`bg-danger` FILL, which is a different idea from "the
+  // page background" — see constants/colors.ts's ON-BRAND FOREGROUND block
+  // for why the two used to collide and the contrast numbers for this pair.
+  primary: "text-on-brand dark:text-on-brand-dark",
   secondary: "text-brand dark:text-brand-dark",
   ghost: "text-brand dark:text-brand-dark",
-  destructive: "text-surface dark:text-surface-dark",
+  destructive: "text-on-brand dark:text-on-brand-dark",
 };
 
 export function Button({

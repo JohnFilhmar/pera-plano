@@ -83,7 +83,7 @@ export function UnlockPrompt({
         accessibilityState={{ disabled: isAuthenticating }}
         className="rounded-lg bg-brand px-6 py-3 dark:bg-brand-dark"
       >
-        <Text className="font-semibold text-surface dark:text-surface-dark">
+        <Text className="font-semibold text-on-brand dark:text-on-brand-dark">
           {isAuthenticating ? "Unlocking…" : "Unlock"}
         </Text>
       </Pressable>

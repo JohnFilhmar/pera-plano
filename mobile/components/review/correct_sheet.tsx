@@ -320,7 +320,7 @@ export function CorrectSheet({
                   <Text
                     className={`font-semibold ${
                       direction === option
-                        ? "text-surface dark:text-surface-dark"
+                        ? "text-on-brand dark:text-on-brand-dark"
                         : "text-fg dark:text-fg-dark"
                     }`}
                   >
@@ -376,7 +376,7 @@ export function CorrectSheet({
               }
             >
               {createRule ? (
-                <CheckGlyph size={14} className="text-surface dark:text-surface-dark" />
+                <CheckGlyph size={14} className="text-on-brand dark:text-on-brand-dark" />
               ) : null}
             </View>
             <Text className="flex-1 text-sm text-fg dark:text-fg-dark">{ruleLabel}</Text>

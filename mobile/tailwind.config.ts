@@ -28,6 +28,7 @@ export default {
           soft: palette["brand-soft"],
           "soft-dark": palette["brand-soft-dark"],
         },
+        "on-brand": { DEFAULT: palette["on-brand"], dark: palette["on-brand-dark"] },
         danger: { DEFAULT: palette.danger, dark: palette["danger-dark"] },
         warn: { DEFAULT: palette.warn, dark: palette["warn-dark"] },
         "ph-blue": { DEFAULT: palette["ph-blue"], dark: palette["ph-blue-dark"] },

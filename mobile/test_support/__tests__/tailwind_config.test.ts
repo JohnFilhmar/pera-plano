@@ -26,6 +26,8 @@ test("every palette token is mapped into the tailwind color scales", () => {
   expect(colors.brand.dark).toBe(palette["brand-dark"]);
   expect(colors.brand.soft).toBe(palette["brand-soft"]);
   expect(colors.brand["soft-dark"]).toBe(palette["brand-soft-dark"]);
+  expect(colors["on-brand"].DEFAULT).toBe(palette["on-brand"]);
+  expect(colors["on-brand"].dark).toBe(palette["on-brand-dark"]);
   expect(colors.danger.DEFAULT).toBe(palette.danger);
   expect(colors.danger.dark).toBe(palette["danger-dark"]);
   expect(colors.warn.DEFAULT).toBe(palette.warn);

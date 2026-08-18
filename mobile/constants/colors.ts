@@ -62,4 +62,47 @@ export const palette = {
   "chart-6": "#9E4ABF", "chart-6-dark": "#BC8DCE",
   "chart-7": "#9E2E95", "chart-7-dark": "#C662BE",
   "chart-8": "#BF4088", "chart-8-dark": "#CD84AD",
+
+  // -------------------------------------------------------------------------
+  // ON-BRAND FOREGROUND. The colour that sits ON TOP of a `brand`/`brand-dark`
+  // (or `danger`/`danger-dark`) FILL — a filled control's label/icon, e.g.
+  // `components/ui/button.tsx`'s primary and destructive variants. This is a
+  // different idea from `surface`, which means "a page/card BACKGROUND", and
+  // it earns its own token rather than borrowing `surface`'s.
+  //
+  // Device-testing fix (2026-08-18, Task 8): `VARIANT_FG.primary` read
+  // `text-surface dark:text-surface-dark` before this token existed. In LIGHT
+  // mode that is white-on-`brand` — a readable pairing, but readable BY
+  // ACCIDENT, because `surface` (a background colour) happens to be white,
+  // which is also a colour that reads on `brand`. In DARK mode the same
+  // borrowed token resolves to `surface-dark` (#111A16, near-black — chosen
+  // to sit UNDER `fg-dark` text, not to sit ON a fill) painted onto
+  // `brand-dark` (#22C55E, a BRIGHT accent green picked to pop off a near-
+  // black background, not to be painted over). The two tokens' reasons for
+  // being the colour they are have nothing to do with each other; the fact
+  // that borrowing one produced a legible result was luck, not design, and
+  // the next time either `surface` or `brand` moves for its own reasons the
+  // pairing breaks silently. `on-brand`/`on-brand-dark` names the actual
+  // relationship ("the ink for a brand-filled control") so it can be tuned on
+  // its own terms.
+  //
+  // VALUES. `on-brand` (#FFFFFF) and `on-brand-dark` (#111A16) happen to equal
+  // `surface`/`surface-dark` today — the physical colours a light fill and a
+  // bright fill each need for legible ink both already exist in the palette,
+  // so this token points at them by VALUE by choice, not by aliasing the
+  // `surface` KEY. If a future redesign moves `surface` for background
+  // reasons, `on-brand` does not move with it.
+  //
+  // CONTRAST (WCAG relative-luminance formula, verified with a small Node
+  // script — see the device-testing Task 8 report for the exact numbers):
+  //   - `on-brand` (#FFFFFF) on `brand` (#15803D):            5.02:1 — passes
+  //     AA for normal text (>=4.5:1).
+  //   - `on-brand-dark` (#111A16) on `brand-dark` (#22C55E):  7.79:1 — passes
+  //     AAA (>=7:1).
+  //   - Also the pairing `VARIANT_FG.destructive` repoints here:
+  //     `on-brand` on `danger` (#DC2626):                     4.83:1 — passes
+  //     AA for normal text.
+  //     `on-brand-dark` on `danger-dark` (#F87171):           6.42:1 — passes
+  //     AA, just under AAA.
+  "on-brand": "#FFFFFF", "on-brand-dark": "#111A16",
 } as const;
