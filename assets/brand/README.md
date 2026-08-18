@@ -3,8 +3,10 @@
 This directory is the single source of truth for the brand SVGs and the web
 favicon/PWA icon set. `mobile/assets/brand/` holds a **copy** of exactly one
 file from here today (see "What's copied into the app" below) — everything
-else in this tree is consumed by the web front end only, or is a future
-mobile asset (`peraplano-logo-layered.svg`) that no code reads yet.
+else in this tree is consumed by the web front end only, with one
+exception: `peraplano-logo-layered.svg`, a web/native handoff asset that
+legitimately lives at top level but is not what the mobile app's Reanimated
+port animates — see "The SMIL fact" below for why.
 
 The original designer handoff note is kept, unmodified, at
 [`README.txt`](./README.txt) alongside this file. Read on for the same
@@ -23,7 +25,7 @@ assets/brand/
   peraplano-launch.svg         one-shot takeoff for a click action
   peraplano-logo-static.svg    the resting logo (use as the button face) — CANONICAL copy
   peraplano-logo-animated.svg  CSS-animated logo, web only
-  peraplano-logo-layered.svg   stable-id parts for native (Reanimated) animation — see below
+  peraplano-logo-layered.svg   web/native handoff asset; NOT the mobile Reanimated source — see below
   nav/                         8-direction pagination icons
     nav-n.svg  nav-ne.svg  nav-e.svg  nav-se.svg
     nav-s.svg  nav-sw.svg  nav-w.svg  nav-nw.svg
@@ -80,37 +82,56 @@ SMIL, but for opposite reasons. `peraplano-logo-animated.svg` is animated in
 the browser via CSS on the web front end — a web-only technique, not
 something `react-native-svg` can drive either. `peraplano-logo-layered.svg`
 is deliberately inert — its own `<desc>` says "No CSS/SMIL — animate parts
-natively," meaning it exists so a *native* animation runtime (Reanimated)
-can drive its individually-tagged parts (`#background`, `#trail`,
-`#airplane_body`, `#airplane_wing`, `#airplane_hull`) directly. This is not
-a guess: `docs/10-web-design-prompt.md` lines 83-87 record it as the
-project's own design intent —
+natively," meaning it was drawn so a *native* animation runtime (Reanimated)
+could drive its individually-tagged parts (`#background`, `#trail`,
+`#airplane_body`, `#airplane_wing`, `#airplane_hull`) directly. That was the
+project's own design intent, not a guess: `docs/10-web-design-prompt.md`
+lines 85-86 record it —
 
 > The layered static variant (stable ids: `airplane_body`, `trail`,
 > `background`) is the one the mobile app animates with Reanimated —
 > `react-native-svg` does not play SMIL/CSS animations, which is why the
 > prompt demands both variants.
 
-Nothing currently reads `peraplano-logo-layered.svg`; it is here for when
-that Reanimated work starts, and it is deliberately **not** implemented by
-this task (`BrandMark` ships static-only, see below).
+**That intent did not survive the toolchain.** The Reanimated port has since
+shipped — `BrandMark`'s `idle`, `launch`, and `loading` variants — and it
+does not read `peraplano-logo-layered.svg`. The reasoning lives in
+`mobile/components/ui/brand_mark.tsx`'s header comment ("WHICH ARTWORK
+MOVES") rather than being restated here, on purpose: writing the same
+explanation in two files is exactly how they drift apart again — which is
+the failure this README edit exists to stop. In short:
+`react-native-svg-transformer` compiles a `.svg` into one opaque component,
+so nothing in JS can reach a `<g id="trail">` or any other inner id once the
+file has passed through Metro — the layered file's stable ids are
+addressable on the web and unreachable on React Native. Every animated
+`BrandMark` variant instead animates the *static* mark
+(`peraplano-logo-static.svg`) as a rigid body.
+
+`peraplano-logo-layered.svg` still belongs at top level. It remains the
+web/native handoff asset `docs/10-web-design-prompt.md` describes, and the
+web front end can still address its ids directly — it is just not the
+mobile Reanimated source.
 
 ## What's copied into the app
 
 `mobile/assets/brand/peraplano-logo-static.svg` is a copy of this
-directory's (canonical) `peraplano-logo-static.svg`, and it is the **only**
-file from this delivery that is currently used by the Android app, via the
-`BrandMark` component (`mobile/components/ui/brand_mark.tsx`). It was
-chosen because it's the one static-frame file — every other animated asset
-would silently freeze if rendered the same way, per the SMIL fact above.
+directory's (canonical) `peraplano-logo-static.svg`, and it remains the
+**only** SVG file from this delivery that ships inside the Android app.
+Every `BrandMark` variant — `static`, `idle`, `launch`, `loading` — renders
+this one file; Reanimated drives its transform, nothing imports a second
+SVG. It was chosen as the file to copy because it's the one static-frame
+file — every other animated asset would silently freeze if rendered the
+same way, per the SMIL fact above.
 
-The idle, launch, and loading marks get their own path into the app once
-Reanimated work on them actually starts, and per `docs/10-web-design-prompt.md`
-(quoted above) that work drives `peraplano-logo-layered.svg`'s stable-id
-parts directly — that file is the Reanimated source for those future
-`BrandMark` variants. Until that work exists, a `variant` prop on
-`BrandMark` would be speculative API for states nothing renders, so this
-task does not add one.
+The idle, launch, and loading motion has since shipped:
+`mobile/components/ui/brand_mark.tsx` gives `BrandMark` a `variant` prop
+(`"static" | "idle" | "launch" | "loading"`) and a `playToken` to replay the
+one-shot `launch`. The motion is not read from any SVG at runtime, though —
+it is hand-transcribed, ahead of time, out of this directory's
+`peraplano-idle-logo.svg`, `peraplano-launch.svg`, and
+`peraplano-idle-loop.svg` into keyframe data in
+`mobile/components/ui/brand_mark_motion.ts`. See the next section for what
+that transcription means for anyone who touches those three files.
 
 `assets/brand/` at the repo root stays the source of truth rather than
 `mobile/` reaching out to it directly (a symlink, or a Metro
@@ -119,6 +140,27 @@ project root is a known Windows/junction hazard this repo already routes
 around in `mobile/metro.config.js` (see the `fs.realpathSync` comment
 there), and one 440-byte file isn't worth reopening that. If the source
 file changes, re-copy it by hand.
+
+## The three files that are now specifications
+
+`peraplano-idle-logo.svg`, `peraplano-launch.svg`, and
+`peraplano-idle-loop.svg` are no longer just delivered artwork sitting in
+this folder — they are the source of truth for
+`mobile/components/ui/brand_mark_motion.ts`, which transcribes their SMIL
+`keyTimes`, `keySplines`, and translate/rotate/scale values as literal
+numbers, and for
+`mobile/components/ui/__tests__/brand_mark_motion.test.tsx`, which asserts
+those same numbers as literals right back.
+
+That means editing any of these three SVGs — a retimed loop, a redrawn
+launch arc, a different idle drift — does **not** propagate automatically,
+and critically, it does **not** fail CI. The test suite asserts the OLD
+transcription against itself; it has no way to notice the source moved
+underneath it, so it stays green while the on-device animation quietly goes
+stale. If you touch one of these three files, you must also hand-update
+`brand_mark_motion.ts`'s corresponding constants and
+`brand_mark_motion.test.tsx`'s corresponding assertions in the same
+change — nothing in this repo will catch the drift for you.
 
 ## Duplicate static file
 
