@@ -91,32 +91,46 @@ export default function EditWalletScreen() {
   }
 
   return (
-    <ScrollView
+    // DEVICE-TESTING FIX (2026-08-18, Task 2): the insets used to sit on the
+    // ScrollView's `style` prop, which is the ScrollView's OUTER FRAME, not
+    // its scrolling content — so "Save wallet" rendered under Android's
+    // navigation bar (this is the screen from the owner's report: "Which
+    // notifications land here?" above a buried "Save wallet"). Matches
+    // `app/review/index.tsx`'s shape (insets on a padding-free outer View
+    // wrapping the ScrollView), the same house pattern
+    // `components/onboarding/onboarding_frame.tsx` and this task's other two
+    // screens (`app/wallet/[id].tsx`, `app/wallet/new.tsx`) use, rather than
+    // inventing a fourth: the outer View reserves both system-bar edges
+    // first, so the ScrollView's own viewport never extends into either one.
+    <View
       testID="wallet-edit"
       className="flex-1 bg-bg dark:bg-bg-dark"
       style={{ paddingTop: insets.top, paddingBottom: insets.bottom }}
     >
-      <WalletForm
-        // Remounts when the wallet's stored matchers arrive, so the form's
-        // initial state is the real one. Without it the picker would seed from
-        // an empty first frame and a save could wipe rows the user never saw.
-        key={`${wallet.id}:${ownMatchers === undefined ? "loading" : "ready"}`}
-        submitLabel="Save wallet"
-        onSubmit={save}
-        submitting={updateWallet.isPending || setMatchers.isPending}
-        errorMessage={error}
-        initial={{
-          name: wallet.name,
-          type: wallet.type,
-          matchers: (ownMatchers ?? []).map((matcher) => ({
-            packageName: matcher.packageName,
-            hint: matcher.hint,
-          })),
-        }}
-        providers={ruleset?.providers ?? []}
-        owners={ownersFrom(allMatchers ?? [], wallets ?? [])}
-        walletId={walletId}
-      />
-    </ScrollView>
+      <ScrollView className="flex-1">
+        <WalletForm
+          // Remounts when the wallet's stored matchers arrive, so the form's
+          // initial state is the real one. Without it the picker would seed
+          // from an empty first frame and a save could wipe rows the user
+          // never saw.
+          key={`${wallet.id}:${ownMatchers === undefined ? "loading" : "ready"}`}
+          submitLabel="Save wallet"
+          onSubmit={save}
+          submitting={updateWallet.isPending || setMatchers.isPending}
+          errorMessage={error}
+          initial={{
+            name: wallet.name,
+            type: wallet.type,
+            matchers: (ownMatchers ?? []).map((matcher) => ({
+              packageName: matcher.packageName,
+              hint: matcher.hint,
+            })),
+          }}
+          providers={ruleset?.providers ?? []}
+          owners={ownersFrom(allMatchers ?? [], wallets ?? [])}
+          walletId={walletId}
+        />
+      </ScrollView>
+    </View>
   );
 }

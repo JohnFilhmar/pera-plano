@@ -514,11 +514,14 @@ describe("the wallet detail actions", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Device-testing fix, Task 2 (2026-08-18) — both routes' safe-area insets
-// used to land on the ScrollView's `style` prop, which pads the outer frame
-// rather than the scrolling content, so a header could render under the
-// status bar and "Save wallet"/"Add wallet" under Android's navigation bar.
-// See app/wallet/[id].tsx and app/wallet/new.tsx for the fix itself.
+// Device-testing fix, Task 2 (2026-08-18) — all three routes' safe-area
+// insets used to land on the ScrollView's `style` prop, which pads the outer
+// frame rather than the scrolling content, so a header could render under
+// the status bar and "Save wallet"/"Add wallet" under Android's navigation
+// bar. `app/wallet/[id]/edit.tsx` is the screen from the owner's actual
+// report — "Which notifications land here?" above a buried "Save wallet".
+// See app/wallet/[id].tsx, app/wallet/new.tsx and app/wallet/[id]/edit.tsx
+// for the fix itself.
 //
 // ON-DEVICE GATE: these assert the inset values reach the outer View's
 // `style` — the prop React Native actually reads to size and position it.
@@ -554,6 +557,23 @@ describe("system-bar clearance", () => {
     await waitFor(() => expect(screen.getByTestId("wallet-form-submit")).toBeTruthy());
 
     expect(paddingOf(screen.getByTestId("wallet-new"))).toEqual({
+      top: INSET_TOP,
+      bottom: INSET_BOTTOM,
+    });
+    expect(paddingOf(screen.UNSAFE_getByType(ScrollView))).toEqual({
+      top: undefined,
+      bottom: undefined,
+    });
+  });
+
+  test("wallet edit pads its content for both system bars", async () => {
+    const gcash = await createWallet({ name: "GCash", type: "e-wallet" });
+    mockParams = { id: gcash.id };
+
+    renderWithInsets(<EditWalletScreen />);
+    await waitFor(() => expect(screen.getByTestId("wallet-form-submit")).toBeTruthy());
+
+    expect(paddingOf(screen.getByTestId("wallet-edit"))).toEqual({
       top: INSET_TOP,
       bottom: INSET_BOTTOM,
     });
