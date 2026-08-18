@@ -31,6 +31,8 @@ jest.mock("expo-router", () => ({
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { ReactNode } from "react";
+import { ScrollView, StyleSheet } from "react-native";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import {
   MANUAL_SOURCE_NOTE,
@@ -91,6 +93,43 @@ async function renderDetail(transactionId: string): Promise<void> {
   }
   render(<TransactionDetailScreen />, { wrapper: Wrapper });
   await waitFor(() => expect(screen.getByTestId("transaction-detail")).toBeTruthy());
+}
+
+// Device-testing fix, Task 2 follow-up (2026-08-18): this screen's insets
+// used to sit on the ScrollView's `style`, its outer frame rather than its
+// scrolling content — same defect, same fix, same verification shape as
+// app/wallet/[id].tsx, app/wallet/new.tsx and app/wallet/[id]/edit.tsx in
+// app/__tests__/wallet_routes.test.tsx. A real `SafeAreaProvider` with
+// deliberately non-zero, UNEQUAL insets is what turns "padded for both
+// bars" into an observable fact instead of two zeros that happen to agree.
+const INSET_TOP = 24;
+const INSET_BOTTOM = 48;
+
+function renderDetailWithInsets(transactionId: string): void {
+  mockParams = { id: transactionId };
+  const client = makeTestClient();
+  render(
+    <QueryClientProvider client={client}>
+      <SafeAreaProvider
+        initialMetrics={{
+          frame: { x: 0, y: 0, width: 320, height: 640 },
+          insets: { top: INSET_TOP, bottom: INSET_BOTTOM, left: 0, right: 0 },
+        }}
+      >
+        <TransactionDetailScreen />
+      </SafeAreaProvider>
+    </QueryClientProvider>,
+  );
+}
+
+/** The padding actually applied, after NativeWind's `className` styles and
+ * any `style` prop have been merged the way React Native merges them. */
+function paddingOf(element: { props: { style?: unknown } }) {
+  const flat = StyleSheet.flatten(element.props.style as never) ?? {};
+  return {
+    top: (flat as { paddingTop?: number }).paddingTop,
+    bottom: (flat as { paddingBottom?: number }).paddingBottom,
+  };
 }
 
 function capture(overrides: Partial<RawCapture> = {}): RawCapture {
@@ -542,5 +581,51 @@ describe("transfer links", () => {
     // Two links over one leg is the state `sumSpend` cannot express and the
     // user cannot undo in one action.
     expect(screen.queryByTestId("transfer-link-open")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Device-testing fix, Task 2 follow-up (2026-08-18) — the survey run for
+// Task 2 (app/__tests__/wallet_routes.test.tsx) found this screen applying
+// the same defect: safe-area insets on the ScrollView's `style` prop, which
+// pads the outer frame rather than the scrolling content, so the header
+// could render under the status bar and the panel's bottom could scroll in
+// behind Android's navigation bar. See app/transaction/[id].tsx for the fix.
+//
+// ON-DEVICE GATE: this asserts the inset values reach the outer View's
+// `style` — the prop React Native actually reads to size and position it.
+// It cannot prove content is physically above the nav bar; that is an A54
+// screenshot check.
+// ---------------------------------------------------------------------------
+
+describe("system-bar clearance", () => {
+  test("transaction detail pads its content for both system bars", async () => {
+    const tx = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: FOOD,
+      amount: 50_000,
+      direction: "out",
+      occurredAt: NOW,
+      merchant: "Jollibee",
+      source: "notification",
+      confidence: 0.95,
+    });
+
+    renderDetailWithInsets(tx.id);
+    await waitFor(() => expect(screen.getByTestId("transaction-detail")).toBeTruthy());
+
+    expect(paddingOf(screen.getByTestId("transaction-detail"))).toEqual({
+      top: INSET_TOP,
+      bottom: INSET_BOTTOM,
+    });
+    // NOT on the ScrollView: `style` there pads its OUTER FRAME, not the
+    // content that scrolls inside it — the exact defect this fixes. A
+    // same-valued assertion on `testID="transaction-detail"` alone would
+    // pass whether the insets sit on the ScrollView or the outer View
+    // around it; this is what actually tells the two apart.
+    expect(paddingOf(screen.UNSAFE_getByType(ScrollView))).toEqual({
+      top: undefined,
+      bottom: undefined,
+    });
   });
 });

@@ -185,123 +185,136 @@ export default function TransactionDetailScreen() {
   }
 
   return (
-    <ScrollView
+    // DEVICE-TESTING FIX (2026-08-18, Task 2 follow-up): the insets used to
+    // sit on the ScrollView's `style` prop, which is the ScrollView's OUTER
+    // FRAME, not its scrolling content — so the header rendered under the
+    // status bar and the bottom of the panel could scroll in behind
+    // Android's navigation bar. Matches `app/review/index.tsx`'s shape
+    // (insets on a padding-free outer View wrapping the ScrollView), the
+    // same house pattern this task's three wallet screens
+    // (`app/wallet/[id].tsx`, `app/wallet/new.tsx`,
+    // `app/wallet/[id]/edit.tsx`) use, rather than inventing another one: the
+    // outer View reserves both system-bar edges first, so the ScrollView's
+    // own viewport never extends into either one.
+    <View
       testID="transaction-detail"
       className="flex-1 bg-bg dark:bg-bg-dark"
       style={{ paddingTop: insets.top, paddingBottom: insets.bottom }}
     >
-      <View className="pb-10 pt-4">
-        <View className="px-4">
-          <Card>
-            <View className="gap-2">
-              <AmountText
-                testID="transaction-detail-amount"
-                amount={transaction.amount}
-                direction={transaction.direction}
-                size="hero"
-                // Rule 3 of the ledger row, restated here: a transfer leg is
-                // neither spending nor income, and must not be coloured as
-                // either on the screen that explains it.
-                muted={isTransfer}
+      <ScrollView className="flex-1">
+        <View className="pb-10 pt-4">
+          <View className="px-4">
+            <Card>
+              <View className="gap-2">
+                <AmountText
+                  testID="transaction-detail-amount"
+                  amount={transaction.amount}
+                  direction={transaction.direction}
+                  size="hero"
+                  // Rule 3 of the ledger row, restated here: a transfer leg is
+                  // neither spending nor income, and must not be coloured as
+                  // either on the screen that explains it.
+                  muted={isTransfer}
+                />
+                <Text
+                  testID="transaction-detail-direction"
+                  className="text-sm text-fg-2 dark:text-fg-2-dark"
+                >
+                  {transaction.direction === "out" ? "Money out" : "Money in"}
+                </Text>
+                <Text
+                  testID="transaction-detail-datetime"
+                  className="text-sm text-fg-2 dark:text-fg-2-dark"
+                >
+                  {formatDateTime(transaction.occurredAt)}
+                </Text>
+              </View>
+            </Card>
+          </View>
+
+          <SectionHeader title="Details" />
+          <View className="px-4">
+            <Card variant="flat">
+              <Field
+                label="Wallet"
+                value={wallet?.name ?? "Unknown wallet"}
+                testID="transaction-detail-wallet"
               />
-              <Text
-                testID="transaction-detail-direction"
-                className="text-sm text-fg-2 dark:text-fg-2-dark"
-              >
-                {transaction.direction === "out" ? "Money out" : "Money in"}
-              </Text>
-              <Text
-                testID="transaction-detail-datetime"
-                className="text-sm text-fg-2 dark:text-fg-2-dark"
-              >
-                {formatDateTime(transaction.occurredAt)}
-              </Text>
-            </View>
-          </Card>
-        </View>
-
-        <SectionHeader title="Details" />
-        <View className="px-4">
-          <Card variant="flat">
-            <Field
-              label="Wallet"
-              value={wallet?.name ?? "Unknown wallet"}
-              testID="transaction-detail-wallet"
-            />
-            {/* The one field that opens something. Rule 1 makes the category
-                editable; the picker owns the rule checkbox. */}
-            <ListRow
-              testID="transaction-detail-category"
-              title={category?.name ?? "Uncategorized"}
-              subtitle="Category"
-              onPress={() => setChoosingCategory(true)}
-              right={<Chip label="Change" />}
-            />
-            <Field
-              label="Merchant"
-              value={transaction.merchant ?? transaction.counterparty ?? "Not recorded"}
-              testID="transaction-detail-merchant"
-            />
-            <Field
-              label="Reference number"
-              value={transaction.referenceNo ?? "Not recorded"}
-              testID="transaction-detail-reference"
-            />
-            <Field
-              label="Recorded by"
-              value={SOURCE_LABELS[transaction.source]}
-              testID="transaction-detail-source"
-            />
-            <View className="gap-1 py-2">
-              <Text className="text-xs uppercase text-fg-2 dark:text-fg-2-dark">Note</Text>
-              {/* Saved on blur rather than behind a Save button: a note is the
-                  one field with no wrong value, and a button the user does not
-                  press is a note they believe they wrote and did not. */}
-              <TextInput
-                testID="transaction-detail-note-input"
-                value={note ?? transaction.note ?? ""}
-                onChangeText={setNote}
-                onBlur={commitNote}
-                onSubmitEditing={commitNote}
-                placeholder="Add a note"
-                accessibilityLabel="Note"
-                className="min-h-[44px] rounded-xl bg-bg px-3 py-2 text-base text-fg dark:bg-bg-dark dark:text-fg-dark"
+              {/* The one field that opens something. Rule 1 makes the category
+                  editable; the picker owns the rule checkbox. */}
+              <ListRow
+                testID="transaction-detail-category"
+                title={category?.name ?? "Uncategorized"}
+                subtitle="Category"
+                onPress={() => setChoosingCategory(true)}
+                right={<Chip label="Change" />}
               />
-            </View>
-          </Card>
+              <Field
+                label="Merchant"
+                value={transaction.merchant ?? transaction.counterparty ?? "Not recorded"}
+                testID="transaction-detail-merchant"
+              />
+              <Field
+                label="Reference number"
+                value={transaction.referenceNo ?? "Not recorded"}
+                testID="transaction-detail-reference"
+              />
+              <Field
+                label="Recorded by"
+                value={SOURCE_LABELS[transaction.source]}
+                testID="transaction-detail-source"
+              />
+              <View className="gap-1 py-2">
+                <Text className="text-xs uppercase text-fg-2 dark:text-fg-2-dark">Note</Text>
+                {/* Saved on blur rather than behind a Save button: a note is the
+                    one field with no wrong value, and a button the user does not
+                    press is a note they believe they wrote and did not. */}
+                <TextInput
+                  testID="transaction-detail-note-input"
+                  value={note ?? transaction.note ?? ""}
+                  onChangeText={setNote}
+                  onBlur={commitNote}
+                  onSubmitEditing={commitNote}
+                  placeholder="Add a note"
+                  accessibilityLabel="Note"
+                  className="min-h-[44px] rounded-xl bg-bg px-3 py-2 text-base text-fg dark:bg-bg-dark dark:text-fg-dark"
+                />
+              </View>
+            </Card>
+          </View>
+
+          {/* RULE 2. The app's honesty mechanism — see the component's header. */}
+          <WhyRecordedPanel
+            source={transaction.source}
+            providerName={providerName}
+            capture={rawId === null ? null : capture}
+            expiresAt={rawId === null ? null : expiresAt}
+            confidence={transaction.confidence}
+          />
+
+          <TransferLinkActions
+            transaction={transaction}
+            transactions={allTransactions ?? []}
+            wallets={wallets ?? []}
+            picking={picking}
+            onOpenPicker={() => setPicking(true)}
+            onDismissPicker={() => setPicking(false)}
+            onLink={link}
+            onUnlink={() => {
+              if (transaction.transferLinkId) unlinkTransfer.mutate(transaction.transferLinkId);
+            }}
+          />
+
+          <CategoryPicker
+            visible={choosingCategory}
+            categories={categories ?? []}
+            selectedId={transaction.categoryId}
+            merchant={transaction.merchant}
+            onDismiss={() => setChoosingCategory(false)}
+            onSubmit={commitCategory}
+          />
         </View>
-
-        {/* RULE 2. The app's honesty mechanism — see the component's header. */}
-        <WhyRecordedPanel
-          source={transaction.source}
-          providerName={providerName}
-          capture={rawId === null ? null : capture}
-          expiresAt={rawId === null ? null : expiresAt}
-          confidence={transaction.confidence}
-        />
-
-        <TransferLinkActions
-          transaction={transaction}
-          transactions={allTransactions ?? []}
-          wallets={wallets ?? []}
-          picking={picking}
-          onOpenPicker={() => setPicking(true)}
-          onDismissPicker={() => setPicking(false)}
-          onLink={link}
-          onUnlink={() => {
-            if (transaction.transferLinkId) unlinkTransfer.mutate(transaction.transferLinkId);
-          }}
-        />
-
-        <CategoryPicker
-          visible={choosingCategory}
-          categories={categories ?? []}
-          selectedId={transaction.categoryId}
-          merchant={transaction.merchant}
-          onDismiss={() => setChoosingCategory(false)}
-          onSubmit={commitCategory}
-        />
-      </View>
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 }
