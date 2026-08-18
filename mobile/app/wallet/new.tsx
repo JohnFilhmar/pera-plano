@@ -95,21 +95,31 @@ export default function NewWalletScreen() {
   }
 
   return (
-    <ScrollView
+    // DEVICE-TESTING FIX (2026-08-18, Task 2): the insets used to sit on the
+    // ScrollView's `style` prop, which is the ScrollView's OUTER FRAME, not
+    // its scrolling content — so "Add wallet" could render under Android's
+    // navigation bar. Matches `app/review/index.tsx`'s shape (insets on a
+    // padding-free outer View wrapping the ScrollView), the same house
+    // pattern `components/onboarding/onboarding_frame.tsx` uses, rather than
+    // inventing a third: the outer View reserves both system-bar edges
+    // first, so the ScrollView's own viewport never extends into either one.
+    <View
       testID="wallet-new"
       className="flex-1 bg-bg dark:bg-bg-dark"
       style={{ paddingTop: insets.top, paddingBottom: insets.bottom }}
     >
-      <WalletForm
-        submitLabel="Add wallet"
-        onSubmit={save}
-        submitting={createWallet.isPending || setMatchers.isPending}
-        errorMessage={error}
-        providers={ruleset?.providers ?? []}
-        owners={ownersFrom(matchers ?? [], wallets)}
-        showOpeningBalance
-      />
-      <UpgradeSheet visible={capped} onClose={() => setCapped(false)} capability="wallets" />
-    </ScrollView>
+      <ScrollView className="flex-1">
+        <WalletForm
+          submitLabel="Add wallet"
+          onSubmit={save}
+          submitting={createWallet.isPending || setMatchers.isPending}
+          errorMessage={error}
+          providers={ruleset?.providers ?? []}
+          owners={ownersFrom(matchers ?? [], wallets)}
+          showOpeningBalance
+        />
+        <UpgradeSheet visible={capped} onClose={() => setCapped(false)} capability="wallets" />
+      </ScrollView>
+    </View>
   );
 }

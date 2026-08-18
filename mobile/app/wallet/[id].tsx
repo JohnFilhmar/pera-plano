@@ -116,156 +116,168 @@ export default function WalletDetailScreen() {
   const dismissibleDrift = isDriftWorthShowing(drift, toleranceCentavos) ? drift : null;
 
   return (
-    <ScrollView
+    // DEVICE-TESTING FIX (2026-08-18, Task 2): the insets used to sit on the
+    // ScrollView's `style` prop, which is the ScrollView's OUTER FRAME, not
+    // its scrolling content — so the header rendered under the status bar and
+    // the last row of the ledger could scroll in behind Android's navigation
+    // bar. Matches `app/review/index.tsx`'s shape (insets on a padding-free
+    // outer View wrapping the ScrollView), the same house pattern
+    // `components/onboarding/onboarding_frame.tsx` uses, rather than
+    // inventing a third: the outer View reserves both system-bar edges
+    // first, so the ScrollView's own viewport — and everything that scrolls
+    // inside it — never extends into either one.
+    <View
       testID="wallet-detail"
       className="flex-1 bg-bg dark:bg-bg-dark"
       style={{ paddingTop: insets.top, paddingBottom: insets.bottom }}
     >
-      <View className="pb-8 pt-4">
-        <View className="px-4">
-          <Card>
-            <View className="gap-2">
-              <View className="flex-row items-center gap-2">
-                <WalletTypeIcon type={wallet.type} testID="wallet-detail-icon" />
-                <Text className="flex-1 text-lg font-semibold text-fg dark:text-fg-dark">
-                  {wallet.name}
-                </Text>
-                {wallet.isArchived ? <Chip label="Archived" tone="soon" /> : null}
-              </View>
-              <AmountText
-                testID="wallet-detail-balance"
-                amount={wallet.balance}
-                size="hero"
-                showSign={false}
-              />
-              {wallet.type === "credit" ? (
-                // Rule 23: a credit balance is the outstanding amount owed, and
-                // is excluded from the Wallets-tab total for that reason.
-                // Saying so here too keeps the detail screen from reading like
-                // cash.
-                <Text className="text-sm text-fg-2 dark:text-fg-2-dark">Owed</Text>
-              ) : null}
-              <BalanceMismatchBadge
-                testID="wallet-detail-drift"
-                drift={drift}
-                toleranceCentavos={toleranceCentavos}
-              />
-            </View>
-          </Card>
-        </View>
-
-        {/* Rule 4's three actions. There is no fourth: see the file header on
-            why delete is offered nowhere. Archived wallets get none of them —
-            an archived wallet is read-only until it is unarchived (spec §UX
-            states, "rows are read-only until unarchived"). */}
-        {!wallet.isArchived ? (
-          <View className="flex-row gap-2 px-4 pt-3">
-            <View className="flex-1">
-              <Button
-                testID="wallet-detail-edit"
-                title="Edit"
-                variant="secondary"
-                onPress={() =>
-                  router.push({ pathname: "/wallet/[id]/edit", params: { id: wallet.id } })
-                }
-              />
-            </View>
-            {isCash ? (
-              <View className="flex-1">
-                <Button
-                  testID="wallet-detail-reconcile"
-                  title="Reconcile"
-                  variant="secondary"
-                  onPress={() => setReconciling(true)}
+      <ScrollView className="flex-1">
+        <View className="pb-8 pt-4">
+          <View className="px-4">
+            <Card>
+              <View className="gap-2">
+                <View className="flex-row items-center gap-2">
+                  <WalletTypeIcon type={wallet.type} testID="wallet-detail-icon" />
+                  <Text className="flex-1 text-lg font-semibold text-fg dark:text-fg-dark">
+                    {wallet.name}
+                  </Text>
+                  {wallet.isArchived ? <Chip label="Archived" tone="soon" /> : null}
+                </View>
+                <AmountText
+                  testID="wallet-detail-balance"
+                  amount={wallet.balance}
+                  size="hero"
+                  showSign={false}
+                />
+                {wallet.type === "credit" ? (
+                  // Rule 23: a credit balance is the outstanding amount owed, and
+                  // is excluded from the Wallets-tab total for that reason.
+                  // Saying so here too keeps the detail screen from reading like
+                  // cash.
+                  <Text className="text-sm text-fg-2 dark:text-fg-2-dark">Owed</Text>
+                ) : null}
+                <BalanceMismatchBadge
+                  testID="wallet-detail-drift"
+                  drift={drift}
+                  toleranceCentavos={toleranceCentavos}
                 />
               </View>
-            ) : null}
-            {dismissibleDrift ? (
+            </Card>
+          </View>
+  
+          {/* Rule 4's three actions. There is no fourth: see the file header on
+              why delete is offered nowhere. Archived wallets get none of them —
+              an archived wallet is read-only until it is unarchived (spec §UX
+              states, "rows are read-only until unarchived"). */}
+          {!wallet.isArchived ? (
+            <View className="flex-row gap-2 px-4 pt-3">
               <View className="flex-1">
                 <Button
-                  testID="wallet-detail-dismiss-drift"
-                  title="Dismiss"
+                  testID="wallet-detail-edit"
+                  title="Edit"
                   variant="secondary"
-                  loading={dismissDrift.isPending}
-                  // The id from the drift ON SCREEN, never a fresh read: this
-                  // records what the user actually looked at and accepted. A
-                  // report that lands between this render and the tap keeps its
-                  // own drift, and the badge comes back for it.
                   onPress={() =>
-                    dismissDrift.mutate({
-                      walletId: wallet.id,
-                      transactionId: dismissibleDrift.reportingTransactionId,
-                    })
+                    router.push({ pathname: "/wallet/[id]/edit", params: { id: wallet.id } })
                   }
                 />
               </View>
-            ) : null}
-            <View className="flex-1">
-              <Button
-                testID="wallet-detail-archive"
-                title="Archive"
-                variant="ghost"
-                onPress={() => setArchiving(true)}
-              />
+              {isCash ? (
+                <View className="flex-1">
+                  <Button
+                    testID="wallet-detail-reconcile"
+                    title="Reconcile"
+                    variant="secondary"
+                    onPress={() => setReconciling(true)}
+                  />
+                </View>
+              ) : null}
+              {dismissibleDrift ? (
+                <View className="flex-1">
+                  <Button
+                    testID="wallet-detail-dismiss-drift"
+                    title="Dismiss"
+                    variant="secondary"
+                    loading={dismissDrift.isPending}
+                    // The id from the drift ON SCREEN, never a fresh read: this
+                    // records what the user actually looked at and accepted. A
+                    // report that lands between this render and the tap keeps its
+                    // own drift, and the badge comes back for it.
+                    onPress={() =>
+                      dismissDrift.mutate({
+                        walletId: wallet.id,
+                        transactionId: dismissibleDrift.reportingTransactionId,
+                      })
+                    }
+                  />
+                </View>
+              ) : null}
+              <View className="flex-1">
+                <Button
+                  testID="wallet-detail-archive"
+                  title="Archive"
+                  variant="ghost"
+                  onPress={() => setArchiving(true)}
+                />
+              </View>
             </View>
-          </View>
-        ) : null}
-
-        <CashReconcileSheet
-          wallet={wallet}
-          visible={reconciling}
-          onDismiss={() => setReconciling(false)}
-        />
-        <ArchiveWalletSheet
-          wallet={wallet}
-          visible={archiving}
-          onDismiss={() => setArchiving(false)}
-          otherWallets={wallets ?? []}
-          transactionCount={(transactions ?? []).length}
-          onArchive={(moveTransactionsTo) => {
-            archiveWallet.mutate(
-              { id: wallet.id, moveTransactionsTo },
-              { onSuccess: () => setArchiving(false) },
-            );
-          }}
-        />
-
-        {/* Rule 4: cash wallets have empty matchers and the matcher UI is
-            hidden for them — money enters by manual entry, transfer legs and
-            reconciliation, never by a notification. */}
-        {!isCash && matchers && matchers.length > 0 ? (
-          <View>
-            <SectionHeader title="Notifications" />
-            <View testID="wallet-detail-matchers" className="px-4">
-              <MatcherChipList matchers={matchers} providers={ruleset?.providers ?? []} />
+          ) : null}
+  
+          <CashReconcileSheet
+            wallet={wallet}
+            visible={reconciling}
+            onDismiss={() => setReconciling(false)}
+          />
+          <ArchiveWalletSheet
+            wallet={wallet}
+            visible={archiving}
+            onDismiss={() => setArchiving(false)}
+            otherWallets={wallets ?? []}
+            transactionCount={(transactions ?? []).length}
+            onArchive={(moveTransactionsTo) => {
+              archiveWallet.mutate(
+                { id: wallet.id, moveTransactionsTo },
+                { onSuccess: () => setArchiving(false) },
+              );
+            }}
+          />
+  
+          {/* Rule 4: cash wallets have empty matchers and the matcher UI is
+              hidden for them — money enters by manual entry, transfer legs and
+              reconciliation, never by a notification. */}
+          {!isCash && matchers && matchers.length > 0 ? (
+            <View>
+              <SectionHeader title="Notifications" />
+              <View testID="wallet-detail-matchers" className="px-4">
+                <MatcherChipList matchers={matchers} providers={ruleset?.providers ?? []} />
+              </View>
             </View>
-          </View>
-        ) : null}
-
-        <SectionHeader title="Transactions" />
-        {/* THE app's ONE ledger list (m1c Task 6). `filtered` stays false: the
-            wallet scope is what this screen IS, not a filter the user applied,
-            so an empty one is "nothing tracked in this wallet" rather than
-            "no transactions match these filters". */}
-        <LedgerList
-          testID="wallet-detail-ledger"
-          transactions={transactions}
-          wallets={wallets}
-          categories={categories}
-          // m1c Task 7: same rows, same destination as the Transactions tab.
-          onSelect={(transaction) =>
-            router.push({ pathname: "/transaction/[id]", params: { id: transaction.id } })
-          }
-          empty={
-            <Text
-              testID="wallet-detail-no-transactions"
-              className="px-4 text-fg-2 dark:text-fg-2-dark"
-            >
-              Nothing tracked in this wallet yet.
-            </Text>
-          }
-        />
-      </View>
-    </ScrollView>
+          ) : null}
+  
+          <SectionHeader title="Transactions" />
+          {/* THE app's ONE ledger list (m1c Task 6). `filtered` stays false: the
+              wallet scope is what this screen IS, not a filter the user applied,
+              so an empty one is "nothing tracked in this wallet" rather than
+              "no transactions match these filters". */}
+          <LedgerList
+            testID="wallet-detail-ledger"
+            transactions={transactions}
+            wallets={wallets}
+            categories={categories}
+            // m1c Task 7: same rows, same destination as the Transactions tab.
+            onSelect={(transaction) =>
+              router.push({ pathname: "/transaction/[id]", params: { id: transaction.id } })
+            }
+            empty={
+              <Text
+                testID="wallet-detail-no-transactions"
+                className="px-4 text-fg-2 dark:text-fg-2-dark"
+              >
+                Nothing tracked in this wallet yet.
+              </Text>
+            }
+          />
+        </View>
+      </ScrollView>
+    </View>
   );
 }

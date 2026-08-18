@@ -29,6 +29,8 @@ jest.mock("expo-router", () => ({
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { ReactNode } from "react";
+import { ScrollView, StyleSheet } from "react-native";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { closeDatabase } from "@/lib/db/database";
 import { __setTierForTests } from "@/lib/entitlements";
@@ -70,6 +72,43 @@ function renderScreen(element: React.ReactElement): void {
     return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
   }
   render(element, { wrapper: Wrapper });
+}
+
+// Device-testing fix, Task 2 (2026-08-18): both routes' insets used to sit on
+// a ScrollView's `style`, its outer frame rather than its scrolling content.
+// `test_support/safe_area_mock.ts` answers every ordinary test with zero
+// insets, which cannot tell "padded for both bars" from "padded for
+// neither" — so this mirrors `components/__tests__/safe_area.test.tsx`: a
+// real `SafeAreaProvider` carrying deliberately non-zero, UNEQUAL insets,
+// which turns the question into an observable fact instead of two zeros
+// that happen to agree.
+const INSET_TOP = 24;
+const INSET_BOTTOM = 48;
+
+function renderWithInsets(element: React.ReactElement): void {
+  const client = makeTestClient();
+  render(
+    <QueryClientProvider client={client}>
+      <SafeAreaProvider
+        initialMetrics={{
+          frame: { x: 0, y: 0, width: 320, height: 640 },
+          insets: { top: INSET_TOP, bottom: INSET_BOTTOM, left: 0, right: 0 },
+        }}
+      >
+        {element}
+      </SafeAreaProvider>
+    </QueryClientProvider>,
+  );
+}
+
+/** The padding actually applied, after NativeWind's `className` styles and
+ * any `style` prop have been merged the way React Native merges them. */
+function paddingOf(element: { props: { style?: unknown } }) {
+  const flat = StyleSheet.flatten(element.props.style as never) ?? {};
+  return {
+    top: (flat as { paddingTop?: number }).paddingTop,
+    bottom: (flat as { paddingBottom?: number }).paddingBottom,
+  };
 }
 
 async function renderNew(): Promise<void> {
@@ -470,6 +509,57 @@ describe("the wallet detail actions", () => {
     expect(mockPush).toHaveBeenCalledWith({
       pathname: "/wallet/[id]/edit",
       params: { id: gcash.id },
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Device-testing fix, Task 2 (2026-08-18) — both routes' safe-area insets
+// used to land on the ScrollView's `style` prop, which pads the outer frame
+// rather than the scrolling content, so a header could render under the
+// status bar and "Save wallet"/"Add wallet" under Android's navigation bar.
+// See app/wallet/[id].tsx and app/wallet/new.tsx for the fix itself.
+//
+// ON-DEVICE GATE: these assert the inset values reach the outer View's
+// `style` — the prop React Native actually reads to size and position it.
+// They cannot prove a button is physically above the nav bar; that is an A54
+// screenshot check.
+// ---------------------------------------------------------------------------
+
+describe("system-bar clearance", () => {
+  test("wallet detail pads its content for both system bars", async () => {
+    const gcash = await createWallet({ name: "GCash", type: "e-wallet" });
+    mockParams = { id: gcash.id };
+
+    renderWithInsets(<WalletDetailScreen />);
+    await waitFor(() => expect(screen.getByTestId("wallet-detail")).toBeTruthy());
+
+    expect(paddingOf(screen.getByTestId("wallet-detail"))).toEqual({
+      top: INSET_TOP,
+      bottom: INSET_BOTTOM,
+    });
+    // NOT on the ScrollView: `style` there pads its OUTER FRAME, not the
+    // content that scrolls inside it — the exact defect this fixes. A
+    // same-valued assertion on `testID="wallet-detail"` alone would pass
+    // whether the insets sit on the ScrollView or the outer View around it;
+    // this is what actually tells the two apart.
+    expect(paddingOf(screen.UNSAFE_getByType(ScrollView))).toEqual({
+      top: undefined,
+      bottom: undefined,
+    });
+  });
+
+  test("wallet new pads its content for both system bars", async () => {
+    renderWithInsets(<NewWalletScreen />);
+    await waitFor(() => expect(screen.getByTestId("wallet-form-submit")).toBeTruthy());
+
+    expect(paddingOf(screen.getByTestId("wallet-new"))).toEqual({
+      top: INSET_TOP,
+      bottom: INSET_BOTTOM,
+    });
+    expect(paddingOf(screen.UNSAFE_getByType(ScrollView))).toEqual({
+      top: undefined,
+      bottom: undefined,
     });
   });
 });
