@@ -76,15 +76,19 @@ beforeEach(() => {
   };
 
   jest.spyOn(AccessibilityInfo, "isReduceMotionEnabled").mockResolvedValue(false);
-  jest.spyOn(AccessibilityInfo, "addEventListener").mockImplementation(((
-    event: string,
-    listener: (enabled: boolean) => void,
-  ) => {
+  const fakeAddEventListener = (event: string, listener: (enabled: boolean) => void) => {
     if (event === "reduceMotionChanged") {
       emitReduceMotionChange = listener;
     }
     return { remove: removeReduceMotionListener };
-  }) as never);
+  };
+  // React Native types `addEventListener` as an overload set returning a full
+  // `EmitterSubscription`. `BrandMark` only ever calls `.remove()` on what it
+  // gets back, so the stub above is complete for what is under test — the cast
+  // covers the fields deliberately not built, not any behaviour.
+  jest
+    .spyOn(AccessibilityInfo, "addEventListener")
+    .mockImplementation(fakeAddEventListener as never);
 });
 
 afterEach(() => {
