@@ -35,6 +35,8 @@ import {
   LAUNCH_OPACITY_KEYFRAMES,
   LOOP_MS,
   LOOP_PATH,
+  LOOP_WING_FLAP,
+  LOOP_WING_FLAP_MS,
   TRAIL_DOTS,
 } from "../brand_mark_motion";
 
@@ -55,12 +57,13 @@ const ANIMATED_VARIANTS = ["idle", "launch", "loading"] as const;
  * Number of shared values each animated variant drives — and therefore the
  * number of `cancelAnimation` calls its unmount owes. `idle` runs drift and
  * wobble on separate SMIL clocks (3.4s vs 5.2s); `launch` runs translate and
- * opacity on separate keyTimes tracks; `loading` runs one path clock.
+ * opacity on separate keyTimes tracks; `loading` runs the 3.2s flight path
+ * and the 1.1s wing flap, which the source also gives their own clocks.
  */
 const DRIVERS_PER_VARIANT: Record<(typeof ANIMATED_VARIANTS)[number], number> = {
   idle: 2,
   launch: 2,
-  loading: 1,
+  loading: 2,
 };
 
 let removeReduceMotionListener: jest.Mock;
@@ -246,22 +249,80 @@ test("pairs every loop path point with a heading", () => {
   // `type="rotate"` list, paired index-for-index. Dropping or doubling one
   // entry on either side is silent at runtime (the plane just flies with the
   // wrong heading), so the pairing itself is the thing under test.
+  //
+  // Every row is asserted, not sampled. This variant carries 147 of the
+  // designer's numbers — spot-checking the ends and the ±180° seam would let a
+  // typo at index 12 through, and a single wrong `y` is invisible in motion.
   expect(LOOP_PATH).toHaveLength(49);
-  for (const point of LOOP_PATH) {
-    expect(Number.isFinite(point.x)).toBe(true);
-    expect(Number.isFinite(point.y)).toBe(true);
-    expect(Number.isFinite(point.deg)).toBe(true);
-  }
-
+  expect(LOOP_PATH).toEqual([
+    { x: 12.0, y: 5.4, deg: 1.7 },
+    { x: 12.8, y: 5.4, deg: 5.4 },
+    { x: 13.5, y: 5.5, deg: 11.4 },
+    { x: 14.2, y: 5.7, deg: 18.0 },
+    { x: 14.9, y: 6.0, deg: 25.2 },
+    { x: 15.6, y: 6.4, deg: 32.9 },
+    { x: 16.2, y: 6.8, deg: 41.0 },
+    { x: 16.8, y: 7.4, deg: 49.3 },
+    { x: 17.2, y: 8.0, deg: 57.7 },
+    { x: 17.6, y: 8.7, deg: 66.2 },
+    { x: 17.8, y: 9.4, deg: 74.9 },
+    { x: 18.0, y: 10.1, deg: 83.6 },
+    { x: 18.0, y: 10.9, deg: 92.7 },
+    { x: 17.9, y: 11.6, deg: 102.2 },
+    { x: 17.7, y: 12.4, deg: 111.9 },
+    { x: 17.3, y: 13.0, deg: 120.2 },
+    { x: 16.9, y: 13.7, deg: 127.8 },
+    { x: 16.4, y: 14.2, deg: 135.0 },
+    { x: 15.8, y: 14.7, deg: 141.7 },
+    { x: 15.2, y: 15.2, deg: 148.0 },
+    { x: 14.5, y: 15.5, deg: 154.0 },
+    { x: 13.8, y: 15.8, deg: 159.7 },
+    { x: 13.1, y: 16.1, deg: 165.1 },
+    { x: 12.4, y: 16.2, deg: 170.5 },
+    { x: 11.6, y: 16.3, deg: 175.8 },
+    { x: 10.9, y: 16.3, deg: -178.7 },
+    { x: 10.1, y: 16.3, deg: -173.0 },
+    { x: 9.4, y: 16.1, deg: -166.8 },
+    { x: 8.6, y: 15.9, deg: -159.4 },
+    { x: 7.9, y: 15.6, deg: -151.0 },
+    { x: 7.3, y: 15.2, deg: -141.7 },
+    { x: 6.8, y: 14.7, deg: -131.5 },
+    { x: 6.3, y: 14.1, deg: -120.9 },
+    { x: 6.0, y: 13.4, deg: -110.2 },
+    { x: 5.8, y: 12.6, deg: -99.8 },
+    { x: 5.7, y: 11.9, deg: -89.9 },
+    { x: 5.8, y: 11.1, deg: -80.9 },
+    { x: 6.0, y: 10.4, deg: -72.9 },
+    { x: 6.2, y: 9.7, deg: -66.7 },
+    { x: 6.6, y: 9.0, deg: -61.2 },
+    { x: 7.0, y: 8.4, deg: -55.8 },
+    { x: 7.4, y: 7.8, deg: -50.2 },
+    { x: 7.9, y: 7.2, deg: -44.4 },
+    { x: 8.5, y: 6.7, deg: -38.3 },
+    { x: 9.1, y: 6.3, deg: -31.7 },
+    { x: 9.8, y: 5.9, deg: -24.6 },
+    { x: 10.5, y: 5.6, deg: -16.9 },
+    { x: 11.2, y: 5.5, deg: -8.6 },
+    { x: 12.0, y: 5.4, deg: -2.9 },
+  ]);
   expect(LOOP_MS).toBe(3200);
-  expect(LOOP_PATH[0]).toEqual({ x: 12, y: 5.4, deg: 1.7 });
-  expect(LOOP_PATH[48]).toEqual({ x: 12, y: 5.4, deg: -2.9 });
 
-  // The one place the transcription is easy to "correct" by accident: the
-  // designer's heading list crosses the ±180° branch cut here. Both sides stay
-  // literal; `brand_mark.tsx` unwraps them for playback.
-  expect(LOOP_PATH[24]).toEqual({ x: 11.6, y: 16.3, deg: 175.8 });
-  expect(LOOP_PATH[25]).toEqual({ x: 10.9, y: 16.3, deg: -178.7 });
+  // The seam worth naming: the heading list crosses the ±180° branch cut
+  // between these two rows. Both sides stay literal above;
+  // `brand_mark.tsx` unwraps them for playback.
+  expect(LOOP_PATH[24].deg).toBe(175.8);
+  expect(LOOP_PATH[25].deg).toBe(-178.7);
+});
+
+test("transcribes the wing flap from the source SVG", () => {
+  // assets/brand/peraplano-idle-loop.svg, the innermost <g> around the two
+  // plane paths:
+  //   type="scale" values="1 1;1 0.4;1 1;1 0.85;1 1" dur="1.1s"
+  // The x factor is 1 throughout, so this is a Y-only squash of the plane
+  // BODY — the wing beat. It runs on its own 1.1s clock, unrelated to the
+  // 3.2s circuit, which is what keeps the flap from looking geared to the turn.
+  expect(LOOP_WING_FLAP).toEqual([1, 0.4, 1, 0.85, 1]);
+  expect(LOOP_WING_FLAP_MS).toBe(1100);
 });
 
 test("unwraps the loop headings into one continuous turn", () => {

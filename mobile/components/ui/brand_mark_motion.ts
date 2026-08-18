@@ -23,18 +23,38 @@
 // be diffed against the SVGs without reading any playback code.
 //
 // ---------------------------------------------------------------------------
-// THREE VARIANTS, AND THE TWO THAT ARE DELIBERATELY NOT HERE
+// WHAT IS PORTED, AND EXACTLY WHAT IS NOT
 // ---------------------------------------------------------------------------
 // Ported: `peraplano-idle-logo.svg` (idle), `peraplano-launch.svg` (launch),
-// `peraplano-idle-loop.svg` (loading).
+// `peraplano-idle-loop.svg` (loading) — every BODY track in all three: the
+// idle drift and wobble, the launch translate and opacity, the loading flight
+// path, heading and wing flap.
 //
-// NOT ported, and not a gap — please don't re-open these:
+// WHOLE FILES not ported, and not a gap — please don't re-open these:
 //   - `peraplano-bg-planes.svg` — 1600x900, 43 KB, seven independent plane
 //     routes. It is a marketing hero for a wide web page; on a phone it is
 //     expensive to run and has no surface to live on.
 //   - `nav/*.svg` — an 8-direction pagination set. Onboarding already paginates
 //     through `components/onboarding/step_progress.tsx`, and nothing in the app
 //     has 8-way navigation, so there is nothing for them to drive.
+//
+// CHILD TRACKS inside the three ported files that are NOT reproduced — all
+// three are trail sparks, and all three are dropped for the same one reason,
+// spelled out so nobody mistakes this list for the whole story:
+//   - idle's four trailing `<circle>`s (transcribed as `TRAIL_DOTS` below,
+//     deliberately not drawn — see that constant),
+//   - launch's three exhaust `<circle>`s (`r 1.15->1.72->0`, `begin` 0.04s /
+//     0.13s / 0.22s),
+//   - loading's three trailing `<circle>`s (`cx -7->-16`, `begin` 0.00s /
+//     0.37s / 0.73s).
+// The reason: this port animates the delivered mark as one rigid body, and
+// that mark already draws its trail as a baked dashed stroke
+// (`stroke-dasharray="0.12 2.1"` at 0.55 opacity in
+// `peraplano-logo-static.svg`). Emitting sparks on top of it would put two
+// trails on one plane — an invention the designer never drew. Nothing else is
+// dropped: the loading wing flap IS ported, precisely because it is body
+// motion rather than trail, and body motion is what a rigid-body port can
+// carry faithfully.
 //
 // ---------------------------------------------------------------------------
 // ONE SHAPE DEVIATION FROM THE BRIEF'S SKETCH, ON PURPOSE
@@ -233,6 +253,26 @@ export const LOOP_PATH: readonly LoopPoint[] = [
 
 /** `peraplano-idle-loop.svg`: `dur="3.2s" repeatCount="indefinite"` on both lists. */
 export const LOOP_MS = 3200;
+
+/**
+ * `peraplano-idle-loop.svg`, the innermost `<g>` wrapping the two plane paths:
+ * `type="scale" values="1 1;1 0.4;1 1;1 0.85;1 1" dur="1.1s"`,
+ * `calcMode="spline"` with `SMOOTH_SPLINE` on all four segments and no
+ * `keyTimes`, so the segments are evenly spaced.
+ *
+ * The x factor is 1 in every frame, so only the y factors survive the
+ * transcription: this is a NON-UNIFORM squash of the plane BODY — the wing
+ * beat — not a size change. A deep 0.4 beat, back to rest, a shallow 0.85
+ * echo, rest.
+ *
+ * Its own 1.1s clock against the circuit's 3.2s. The two are deliberately
+ * not a whole-number ratio; that is what keeps the flap from looking geared
+ * to the turn.
+ */
+export const LOOP_WING_FLAP: readonly number[] = [1, 0.4, 1, 0.85, 1];
+
+/** `peraplano-idle-loop.svg`, the wing-flap group: `dur="1.1s" repeatCount="indefinite"`. */
+export const LOOP_WING_FLAP_MS = 1100;
 
 /**
  * `peraplano-idle-loop.svg`: `transform="scale(0.32)"` on the group that

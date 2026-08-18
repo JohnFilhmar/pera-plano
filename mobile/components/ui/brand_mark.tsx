@@ -82,6 +82,8 @@ import {
   LOOP_MARK_SCALE,
   LOOP_MS,
   LOOP_PATH,
+  LOOP_WING_FLAP,
+  LOOP_WING_FLAP_MS,
   SMOOTH_SPLINE,
 } from "./brand_mark_motion";
 
@@ -96,15 +98,23 @@ const DEFAULT_SIZE = 48;
 const VIEW_BOX = 24;
 
 /**
- * Degrees to add to a transcribed loop heading before applying it to this
- * mark.
+ * Degrees that align this mark with the orientation the loop file draws its
+ * own plane in.
  *
- * Derived, not tuned. `peraplano-idle-loop.svg` draws its own plane
- * re-centred and re-oriented: apex `14.86 -0.07`, tips `-4.68 -8.25` and
- * `-3.72 10.11`, so its nose sits at atan2(-1.00, 19.06) = -3.0°. The shared
- * mark's nose — apex `22 2`, tips `2 9` and `15 22` — sits at
- * atan2(-13.5, 13.5) = -45.0°. Pointing this mark where that one points means
- * adding (-3.0) - (-45.0) = 42°.
+ * Derived, not tuned. `peraplano-idle-loop.svg` draws its plane re-centred
+ * and re-oriented: apex `14.86 -0.07`, tips `-4.68 -8.25` and `-3.72 10.11`,
+ * so its nose sits at atan2(-1.00, 19.06) = -3.0°. The shared mark's nose —
+ * apex `22 2`, tips `2 9` and `15 22` — sits at atan2(-13.5, 13.5) = -45.0°.
+ * Pointing this mark where that one points means adding
+ * (-3.0) - (-45.0) = 42°.
+ *
+ * APPLIED LAST IN THE TRANSFORM CHAIN, NOT FOLDED INTO THE HEADING, and that
+ * is load-bearing. It could be folded in while the only other operations were
+ * a rotate and a UNIFORM scale, which commute. The wing flap is a non-uniform
+ * `scaleY`, which does not: the squash has to happen in the frame where the
+ * mark is already aligned nose-along-+x, exactly as the source applies it
+ * inside its own rotate. Folding the 42° back into the heading would tilt the
+ * squash axis 42° off the wings.
  */
 const LOOP_HEADING_OFFSET = 42;
 
@@ -219,9 +229,11 @@ const LOOP_STEPS = LOOP_PATH.map((_, index) => index);
 const LOOP_TIMES = uniformKeyTimes(LOOP_PATH.length);
 const LOOP_X = LOOP_PATH.map((point) => point.x);
 const LOOP_Y = LOOP_PATH.map((point) => point.y);
-const LOOP_HEADINGS = unwrapDegrees(LOOP_PATH.map((point) => point.deg)).map(
-  (deg) => deg + LOOP_HEADING_OFFSET,
-);
+const LOOP_HEADINGS = unwrapDegrees(LOOP_PATH.map((point) => point.deg));
+
+const FLAP_STEPS = LOOP_WING_FLAP.map((_, index) => index);
+const FLAP_TIMES = uniformKeyTimes(LOOP_WING_FLAP.length);
+const FLAP_SCALE_Y = [...LOOP_WING_FLAP];
 
 /**
  * `peraplano-idle-logo.svg`: a slow drift on one clock and a slower wobble on
@@ -331,25 +343,39 @@ function LaunchMark({
 
 /**
  * `peraplano-idle-loop.svg`: the mark flies a closed circuit forever, banking
- * into each turn. One shared value walks the 49 transcribed samples, and
- * position, heading and the source's `scale(0.32)` all read off it.
+ * into each turn and beating its wings as it goes.
+ *
+ * Two shared values, because the source gives the two motions two clocks: the
+ * circuit is 3.2s and the wing flap is 1.1s. Position, heading and the
+ * source's `scale(0.32)` all read off the flight driver; only the squash
+ * reads off the flap.
  */
 function LoopMark({ size, className, testID }: AnimatedMarkProps) {
   const flight = useSharedValue(0);
+  const flap = useSharedValue(0);
 
   useEffect(() => {
     flight.value = withRepeat(
       keyframeTimeline(LOOP_TIMES, LOOP_MS, () => Easing.linear),
       -1,
     );
+    flap.value = withRepeat(
+      keyframeTimeline(FLAP_TIMES, LOOP_WING_FLAP_MS, () => SMOOTH_EASE),
+      -1,
+    );
     return () => {
       cancelAnimation(flight);
+      cancelAnimation(flap);
     };
-  }, [flight]);
+  }, [flight, flap]);
 
   const flightStyle = useAnimatedStyle(() => {
     const unit = size / VIEW_BOX;
     return {
+      // Read outermost-first, the same order the source nests its groups:
+      // translate to the path point, turn onto the heading, shrink, beat the
+      // wings, then the fixed 42° that aligns this mark with the plane the
+      // loop file draws. The last two do NOT commute — see LOOP_HEADING_OFFSET.
       transform: [
         // The source translates a point and draws the plane around it; here the
         // mark is a box, so its CENTRE has to land on that point.
@@ -357,6 +383,8 @@ function LoopMark({ size, className, testID }: AnimatedMarkProps) {
         { translateY: interpolate(flight.value, LOOP_STEPS, LOOP_Y) * unit - size / 2 },
         { rotate: `${interpolate(flight.value, LOOP_STEPS, LOOP_HEADINGS)}deg` },
         { scale: LOOP_MARK_SCALE },
+        { scaleY: interpolate(flap.value, FLAP_STEPS, FLAP_SCALE_Y) },
+        { rotate: `${LOOP_HEADING_OFFSET}deg` },
       ],
     };
   });
