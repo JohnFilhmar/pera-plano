@@ -183,6 +183,42 @@ describe("the quick-add row", () => {
   });
 });
 
+describe("the observed (auto-proposed) row respects provider boundaries too (review fix, 2026-08-18)", () => {
+  test("two observed packages of the same multi-package provider produce ONE proposal, not two", async () => {
+    // Both Google Messages and Samsung Messages have posted sms_relay
+    // notifications on this device. Before this fix, buildProviderChoices'
+    // per-package shape flowed straight through to two identically-named
+    // "Bank SMS" proposals, splitting one provider's traffic by default.
+    await renderReady([GMESSAGES, SMESSAGES]);
+
+    expect(screen.getByTestId(`wallet-proposal-${GMESSAGES}`)).toBeTruthy();
+    expect(screen.queryByTestId(`wallet-proposal-${SMESSAGES}`)).toBeNull();
+
+    const names = screen
+      .queryAllByTestId(/^wallet-proposal-name-/)
+      .map((el) => el.props.value);
+    expect(names.filter((name) => name === "Bank SMS")).toHaveLength(1);
+  });
+
+  test("an observed multi-package provider catches every package, not just the one observed", async () => {
+    // Only Google Messages was observed; sms_relay also owns Samsung
+    // Messages and AOSP MMS. The created wallet must still match all three,
+    // or switching SMS apps silently stops tracking.
+    await renderReady([GMESSAGES]);
+
+    fireEvent.press(screen.getByTestId("onboarding-primary-button"));
+
+    await waitFor(async () => expect(await listWallets()).toHaveLength(2));
+    const smsWallet = (await listWallets()).find((wallet) => wallet.name === "Bank SMS")!;
+    expect(smsWallet).toBeTruthy();
+
+    const matchers = await listMatchers(smsWallet.id);
+    expect(matchers.map((matcher) => matcher.packageName).sort()).toEqual(
+      [GMESSAGES, SMESSAGES, AOSP_MMS].sort(),
+    );
+  });
+});
+
 describe("opening balances at creation (task-4-brief rule 1)", () => {
   test("a blank opening balance creates the wallet at zero and does not block continue", async () => {
     await renderReady([GCASH]);

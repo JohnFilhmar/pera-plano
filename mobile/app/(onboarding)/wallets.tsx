@@ -79,6 +79,7 @@ import { matchersForProvider } from "@/lib/wallets/matchers";
 import { listObservedPackages } from "@/modules/notification_listener";
 
 import type { ProviderChoice } from "@/lib/ingest/provider_catalogue";
+import type { ProviderRuleset } from "@/lib/ingest/ruleset_types";
 import type { ObservedPackage } from "@/modules/notification_listener";
 import type { NewWalletMatcher, WalletType } from "@/types/domain";
 
@@ -124,6 +125,29 @@ function dedupeByProvider(choices: ProviderChoice[]): ProviderChoice[] {
 
 function defaultTypeFor(choice: ProviderChoice): WalletType {
   return WALLET_TYPE_BY_PROVIDER_KEY[choice.displayName] ?? "bank";
+}
+
+/**
+ * Every package a choice's provider owns, as matchers — falling back to the
+ * choice's own single package when the ruleset has no provider for it (should
+ * not happen for anything `buildProviderChoices` emits, but a fallback beats
+ * a thrown error over a provider the ruleset stopped shipping mid-onboarding).
+ *
+ * SHARED BY BOTH GROUPS. Review fix (2026-08-18): this used to run only for a
+ * QUICK-ADDED provider. An OBSERVED multi-package provider (`sms_relay` seen
+ * via `com.samsung.android.messaging` alone) got matched on that one package
+ * only — so switching SMS apps silently stopped tracking, the exact failure
+ * `lib/wallets/matchers.ts`'s own header exists to prevent. Reused here rather
+ * than re-derived, same as the quick-add path already did.
+ */
+function matchersForChoice(
+  choice: ProviderChoice,
+  ruleset: { providers: readonly ProviderRuleset[] } | null | undefined,
+): NewWalletMatcher[] {
+  const provider = ruleset?.providers.find(
+    (candidate) => candidate.providerKey === choice.displayName,
+  );
+  return provider ? matchersForProvider(provider, undefined) : [{ packageName: choice.packageName }];
 }
 
 function proposalFor(choice: ProviderChoice, included: boolean): WalletProposal {
@@ -223,10 +247,25 @@ export default function WalletsScreen({
     initializedRef.current = true;
 
     const choices = ruleset ? buildProviderChoices(observed, ruleset) : [];
-    const observedChoices = choices.filter((choice) => choice.seen);
+    // Review fix (2026-08-18): deduped by provider too, not just the
+    // quick-add row — two packages of the same OBSERVED provider (both
+    // Google Messages and Samsung Messages posting sms_relay traffic) used to
+    // propose two identically-named wallets, splitting one provider's
+    // notifications across two Wallet rows by default.
+    const observedChoices = dedupeByProvider(choices.filter((choice) => choice.seen));
     const suggestedOnly = choices.filter((choice) => !choice.seen);
 
     setProposals([...observedChoices.map((choice) => proposalFor(choice, true)), CASH_PROPOSAL]);
+    // Every OBSERVED proposal now carries its provider's FULL package list
+    // too, the same as a quick-added one — seeing sms_relay via ONE package
+    // must not leave the created wallet matching only that one.
+    setPendingMatchers((current) => {
+      const next = { ...current };
+      for (const choice of observedChoices) {
+        next[choice.packageName] = matchersForChoice(choice, ruleset);
+      }
+      return next;
+    });
     // task-3-brief rule 1: one quick-add chip per PROVIDER, not one per
     // package `sms_relay` (or any future multi-package provider) happens to
     // list separately.
@@ -265,16 +304,10 @@ export default function WalletsScreen({
     // Every package the provider owns, not just the one this chip happened to
     // be keyed on — otherwise a user whose bank texts arrive via a different
     // package under the same provider (e.g. com.android.mms for sms_relay)
-    // silently catches nothing. lib/wallets/matchers.ts's own `matchersForProvider`
-    // does this mapping; reused here rather than re-derived (task-3-brief rule 1).
-    const provider = ruleset?.providers.find(
-      (candidate) => candidate.providerKey === choice.displayName,
-    );
+    // silently catches nothing (task-3-brief rule 1).
     setPendingMatchers((current) => ({
       ...current,
-      [proposal.key]: provider
-        ? matchersForProvider(provider, undefined)
-        : [{ packageName: choice.packageName }],
+      [proposal.key]: matchersForChoice(choice, ruleset),
     }));
     // Dedupe is by provider (rule 1), so every addable entry sharing this
     // provider's label leaves the row together — not just the one tapped.
