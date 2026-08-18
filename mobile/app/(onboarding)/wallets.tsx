@@ -351,9 +351,17 @@ export default function WalletsScreen({
           // never about the very INSERT that gives it its first figure).
           openingBalance: centavosFromDigits(proposal.openingBalanceDigits),
         });
-        // A quick-added proposal carries its provider's FULL package list
-        // (task-3-brief rule 1); every other proposal — observed or cash —
-        // falls back to its own single `packageName`, exactly as before.
+        // Both quick-added AND observed proposals carry their provider's FULL
+        // package list in `pendingMatchers` now (see the init effect above,
+        // and `matchersForChoice`'s own doc for why observed joined quick-add
+        // here) — so the only proposal left to reach this fallback is CASH,
+        // whose `packageName` is `null` and whose matcher list is correctly
+        // empty. A non-cash proposal missing from `pendingMatchers` would be a
+        // bug upstream, not a case this fallback is meant to paper over; per-
+        // package fallback is exactly the failure lib/wallets/matchers.ts:48-53
+        // exists to prevent (a provider whose SMS arrive via a second app
+        // silently stops being tracked), so this stays a safety net for cash
+        // alone, not a second matching path for observed providers.
         const matchers =
           pendingMatchers[proposal.key] ??
           (proposal.packageName ? [{ packageName: proposal.packageName }] : []);

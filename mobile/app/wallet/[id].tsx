@@ -16,14 +16,36 @@
 // tracked in this wallet yet" is a narrower and more useful statement than the
 // tab-wide one, and it is true even when the rest of the ledger is full.
 //
-// THE THREE ACTIONS ARRIVED WITH m1c TASK 5 (rule 4: edit, reconcile, archive),
-// each behind the thing that makes it safe, and DISMISS joined them with
-// migration 003:
+// THE ACTIONS ARRIVED WITH m1c TASK 5 (rule 4: edit, reconcile, archive), each
+// behind the thing that makes it safe, and DISMISS joined them with migration
+// 003. DEVICE-TESTING FIX (2026-08-18, Task 4) then split RECONCILE's non-cash
+// half into its own ADJUST BALANCE action instead of widening RECONCILE, and
+// gave credit wallets neither:
 //
 //   EDIT opens app/wallet/[id]/edit.tsx.
 //   RECONCILE is offered for `type: "cash"` ONLY (Task 5 rule 6). A wallet with
 //     a provider re-anchors itself from the reported balance-after; a typed
-//     adjustment there would fight the next snap.
+//     adjustment there would fight the next snap and lose, leaving a
+//     transaction explaining a balance change that never happened. That
+//     reasoning is still exactly why RECONCILE stays cash-only — it is what
+//     makes ADJUST BALANCE below a separate action instead of RECONCILE
+//     simply covering more wallet types.
+//   ADJUST BALANCE is offered for bank, savings, and e-wallet types — never
+//     cash (RECONCILE already owns that). It opens BalanceCorrectionSheet: a
+//     manual starting-balance correction that writes an ordinary ledger
+//     entry, deliberately NOT a reconciliation, and the sheet says so on
+//     screen — including that a later provider notification carrying a
+//     reported balance will re-anchor the wallet and replace this
+//     correction, though the correction's own ledger row stays and keeps
+//     counting toward totals. That disclosure is what makes it safe to offer
+//     on a wallet a provider also writes to.
+//   CREDIT WALLETS get neither RECONCILE nor ADJUST BALANCE, with an
+//     on-screen note (below) explaining why instead of a silently missing
+//     button. A credit balance is the amount OWED (rule 23), not held; "you
+//     have more than recorded" on a credit wallet would write a
+//     `direction: "in"` row — recording taking on debt as money received.
+//     Excluded rather than answered wrong; getting the wording and sign
+//     right for credit needs its own design pass.
 //   DISMISS is the other half of balance-handling rule 3 ("record the gap as an
 //     adjustment, or dismiss") and appears ONLY while the drift badge is
 //     actually showing — decided by the badge's own `isDriftWorthShowing`, so a
@@ -175,10 +197,15 @@ export default function WalletDetailScreen() {
             </Card>
           </View>
 
-          {/* Rule 4's three actions. There is no fourth: see the file header on
-              why delete is offered nowhere. Archived wallets get none of them —
-              an archived wallet is read-only until it is unarchived (spec §UX
-              states, "rows are read-only until unarchived"). */}
+          {/* Rule 4's actions — FOUR now, not three: edit, reconcile
+              (cash only), adjust balance (bank/savings/e-wallet only), and
+              archive. Reconcile and adjust balance are mutually exclusive per
+              wallet type, so at most one of them ever renders here; dismiss
+              is a separate, drift-conditional button layered on top (rule 3),
+              not counted among these. There is still no delete: see the file
+              header on why. Archived wallets get none of them — an archived
+              wallet is read-only until it is unarchived (spec §UX states,
+              "rows are read-only until unarchived"). */}
           {!wallet.isArchived ? (
             <View className="flex-row gap-2 px-4 pt-3">
               <View className="flex-1">
