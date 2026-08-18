@@ -25,6 +25,21 @@
 //
 // PRESENTATIONAL: wallets and categories arrive from the screen's hooks, and
 // this component writes nothing.
+//
+// DEVICE-TESTING FIX (2026-08-18, Task 1): a real notification landed here
+// and could not be saved — `canSave` needs a wallet, the wallet rows lived
+// below a `max-h-96` scroll fold, and the greyed Save gave no reason. Three
+// changes: (a) a text line above Save states whichever of amount/wallet is
+// still missing; (b) the wallet block now renders directly under the numpad,
+// ABOVE Direction — chosen over relaxing `max-h-96` because a taller fixed
+// cap is still a fold on some device, while reordering puts the picker
+// on-screen without any scrolling in the common single-wallet case; (c) the
+// sole wallet is preselected when `wallets.length === 1` (no ambiguity left
+// to ask about), and the section says so explicitly when `wallets.length ===
+// 0` instead of leaving a bare "WALLET" label over dead space. None of this
+// touches `CorrectionPatch` or the diff below — the preselected default is
+// folded into the SAME baseline the diff compares against, so an untouched
+// single-wallet sheet still reports no `walletId`.
 import { Check } from "lucide-react-native";
 import { useEffect, useState } from "react";
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
@@ -90,6 +105,33 @@ function digitsFromCentavos(amount: Centavos | null): string {
   return amount === null || amount <= 0 ? "" : String(Math.trunc(amount));
 }
 
+/**
+ * The wallet the sheet opens (and diffs) on. The parser's own guess wins when
+ * it has one; otherwise a single available wallet is not really a guess — it
+ * is the only answer there is, so nothing is left for the user to decide.
+ * With two or more wallets, guessing which one a transaction belongs to IS
+ * the decision this sheet exists to ask about, so this stays `null`.
+ */
+function defaultWalletId(payload: ReviewItemPayload, wallets: readonly Wallet[]): string | null {
+  const proposed = readString(payload, "walletId");
+  if (proposed !== null) return proposed;
+  return wallets.length === 1 ? wallets[0].id : null;
+}
+
+export const NO_WALLETS_MESSAGE = "No wallets yet — add one to save this entry.";
+
+/**
+ * The line above a disabled Save. Amount is checked first because it is the
+ * first thing the sheet asks for (the numpad sits above the wallet block);
+ * either message names the ONE thing still missing rather than restating
+ * "can't save" with no reason, which is the actual bug this fixes.
+ */
+function saveDisabledReason(amount: Centavos, walletId: string | null): string | null {
+  if (amount <= 0) return "Enter an amount to save";
+  if (walletId === null) return "Pick a wallet to save";
+  return null;
+}
+
 export type CorrectSheetProps = {
   visible: boolean;
   item: ReviewQueueItem;
@@ -117,7 +159,7 @@ export function CorrectSheet({
 
   const [digits, setDigits] = useState(digitsFromCentavos(proposed.amount));
   const [direction, setDirection] = useState<TxDirection>(proposed.direction ?? "out");
-  const [walletId, setWalletId] = useState<string | null>(proposed.walletId);
+  const [walletId, setWalletId] = useState<string | null>(defaultWalletId(item.payload, wallets));
   const [categoryId, setCategoryId] = useState<string | null>(proposed.categoryId);
   const [merchant, setMerchant] = useState(proposed.merchant ?? "");
   const [createRule, setCreateRule] = useState(true);
@@ -137,7 +179,7 @@ export function CorrectSheet({
     if (!visible) return;
     setDigits(digitsFromCentavos(readAmount(item.payload)));
     setDirection(readDirection(item.payload) ?? "out");
-    setWalletId(readString(item.payload, "walletId"));
+    setWalletId(defaultWalletId(item.payload, wallets));
     setCategoryId(readString(item.payload, "categoryId"));
     setMerchant(readString(item.payload, "merchant") ?? "");
     setCreateRule(true);
@@ -151,10 +193,14 @@ export function CorrectSheet({
   const selectedWallet = wallets.find((wallet) => wallet.id === walletId) ?? null;
 
   // The DIFF, field by field. Each is a correction only when it differs from
-  // what the parser proposed — see this file's header.
+  // what the parser proposed — see this file's header. The wallet compares
+  // against `walletBaseline`, NOT `proposed.walletId` directly: when a sole
+  // wallet was preselected because there was nothing to choose between, that
+  // default is the baseline, not a user correction — see `defaultWalletId`.
+  const walletBaseline = defaultWalletId(item.payload, wallets);
   const changedAmount = amount > 0 && amount !== proposed.amount;
   const changedDirection = direction !== (proposed.direction ?? "out") || proposed.direction === null;
-  const changedWallet = walletId !== null && walletId !== proposed.walletId;
+  const changedWallet = walletId !== null && walletId !== walletBaseline;
   const changedCategory = categoryId !== null && categoryId !== proposed.categoryId;
   const changedMerchant = trimmedMerchant !== (proposed.merchant ?? "") && trimmedMerchant !== "";
 
@@ -176,6 +222,7 @@ export function CorrectSheet({
   // wallet foreign key. Disabling here means the failure is a greyed button
   // rather than a thrown repository error after the sheet has already closed.
   const canSave = amount > 0 && walletId !== null;
+  const disabledReason = canSave ? null : saveDisabledReason(amount, walletId);
 
   function handleSave(): void {
     const patch: CorrectionPatch = { createRule: ruleOffered ? createRule : true };
@@ -193,6 +240,40 @@ export function CorrectSheet({
         <ScrollView className="max-h-96">
           <View className="gap-4">
             <AmountNumpad digits={digits} onDigitsChange={setDigits} />
+
+            {/* Directly under the numpad, ahead of Direction — see this
+                file's header. This is the field a disabled Save most often
+                blocks on, and the fix is putting it on-screen, not just
+                naming it below. */}
+            <View className="gap-2">
+              <Text className="text-xs uppercase text-fg-2 dark:text-fg-2-dark">Wallet</Text>
+              {wallets.length === 0 ? (
+                <Text
+                  testID="correct-wallet-empty"
+                  className="text-sm text-fg-2 dark:text-fg-2-dark"
+                >
+                  {NO_WALLETS_MESSAGE}
+                </Text>
+              ) : (
+                wallets.map((wallet) => (
+                  <Pressable
+                    key={wallet.id}
+                    testID={`correct-wallet-${wallet.id}`}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: walletId === wallet.id }}
+                    accessibilityLabel={wallet.name}
+                    onPress={() => setWalletId(wallet.id)}
+                    className={`min-h-[44px] justify-center rounded-xl px-4 py-3 ${
+                      walletId === wallet.id
+                        ? "bg-brand-soft dark:bg-brand-soft-dark"
+                        : "bg-bg dark:bg-bg-dark"
+                    }`}
+                  >
+                    <Text className="text-fg dark:text-fg-dark">{wallet.name}</Text>
+                  </Pressable>
+                ))
+              )}
+            </View>
 
             <View className="flex-row gap-3">
               {(["out", "in"] as const).map((option) => (
@@ -218,27 +299,6 @@ export function CorrectSheet({
                   >
                     {option === "out" ? "Money out" : "Money in"}
                   </Text>
-                </Pressable>
-              ))}
-            </View>
-
-            <View className="gap-2">
-              <Text className="text-xs uppercase text-fg-2 dark:text-fg-2-dark">Wallet</Text>
-              {wallets.map((wallet) => (
-                <Pressable
-                  key={wallet.id}
-                  testID={`correct-wallet-${wallet.id}`}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: walletId === wallet.id }}
-                  accessibilityLabel={wallet.name}
-                  onPress={() => setWalletId(wallet.id)}
-                  className={`min-h-[44px] justify-center rounded-xl px-4 py-3 ${
-                    walletId === wallet.id
-                      ? "bg-brand-soft dark:bg-brand-soft-dark"
-                      : "bg-bg dark:bg-bg-dark"
-                  }`}
-                >
-                  <Text className="text-fg dark:text-fg-dark">{wallet.name}</Text>
                 </Pressable>
               ))}
             </View>
@@ -294,6 +354,15 @@ export function CorrectSheet({
             </View>
             <Text className="flex-1 text-sm text-fg dark:text-fg-dark">{ruleLabel}</Text>
           </Pressable>
+        ) : null}
+
+        {disabledReason !== null ? (
+          <Text
+            testID="correct-save-reason"
+            className="text-center text-sm text-warn dark:text-warn-dark"
+          >
+            {disabledReason}
+          </Text>
         ) : null}
 
         <Button

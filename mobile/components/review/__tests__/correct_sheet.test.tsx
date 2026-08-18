@@ -317,3 +317,108 @@ describe("save is refused while the ledger would reject the row", () => {
     });
   });
 });
+
+// Device-testing fix, Task 1 (2026-08-18): a real ₱200 notification landed in
+// the queue and could not be saved. `canSave` was correct — the app was
+// silently right and useless at the same time, because nothing told the user
+// why, and the field they needed sat below a scroll fold they never found.
+describe("a disabled Save always says why", () => {
+  test("explains why save is disabled when no wallet is chosen", () => {
+    renderSheet(item({ walletId: null }));
+
+    expect(screen.getByTestId("correct-save-reason")).toHaveTextContent(
+      "Pick a wallet to save",
+    );
+  });
+
+  test("explains why save is disabled when the amount is zero", () => {
+    renderSheet(item({ amount: null }));
+
+    expect(screen.getByTestId("correct-save-reason")).toHaveTextContent(
+      "Enter an amount to save",
+    );
+  });
+
+  test("says nothing once the sheet is actually savable", () => {
+    renderSheet();
+
+    expect(screen.queryByTestId("correct-save-reason")).toBeNull();
+  });
+});
+
+describe("the wallet picker defaults when the choice is unambiguous", () => {
+  test("preselects the only wallet when there is exactly one", () => {
+    render(
+      <CorrectSheet
+        visible
+        item={item({ walletId: null })}
+        wallets={[WALLETS[0]]}
+        categories={CATEGORIES}
+        onDismiss={onDismiss}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    expect(screen.getByTestId("correct-wallet-wallet_gcash").props.accessibilityState).toMatchObject(
+      { selected: true },
+    );
+    // Nothing left to ask about, so the sheet is savable without a tap.
+    expect(screen.getByTestId("correct-save").props.accessibilityState).toMatchObject({
+      disabled: false,
+    });
+  });
+
+  test("does not preselect a wallet when there are several", () => {
+    renderSheet(item({ walletId: null }));
+
+    expect(screen.getByTestId("correct-wallet-wallet_gcash").props.accessibilityState).toMatchObject(
+      { selected: false },
+    );
+    expect(screen.getByTestId("correct-wallet-wallet_bpi").props.accessibilityState).toMatchObject(
+      { selected: false },
+    );
+    expect(screen.getByTestId("correct-save").props.accessibilityState).toMatchObject({
+      disabled: true,
+    });
+  });
+
+  test("tells the user when there are no wallets at all", () => {
+    render(
+      <CorrectSheet
+        visible
+        item={item({ walletId: null })}
+        wallets={[]}
+        categories={CATEGORIES}
+        onDismiss={onDismiss}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    expect(screen.getByTestId("correct-wallet-empty")).toHaveTextContent(
+      /No wallets yet/,
+    );
+    expect(screen.queryByTestId(/^correct-wallet-wallet_/)).toBeNull();
+    expect(screen.getByTestId("correct-save").props.accessibilityState).toMatchObject({
+      disabled: true,
+    });
+  });
+
+  test("still reports only the changed fields", () => {
+    // Regression on rule 5: the auto-preselected sole wallet must fold into
+    // the diff's OWN baseline, not read as a user correction.
+    render(
+      <CorrectSheet
+        visible
+        item={item({ walletId: null })}
+        wallets={[WALLETS[0]]}
+        categories={CATEGORIES}
+        onDismiss={onDismiss}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    fireEvent.press(screen.getByTestId("correct-save"));
+
+    expect(onSubmit).toHaveBeenCalledWith({ createRule: true });
+  });
+});
