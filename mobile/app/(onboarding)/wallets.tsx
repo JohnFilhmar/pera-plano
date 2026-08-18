@@ -67,38 +67,21 @@ import { QuickWalletList } from "@/components/onboarding/quick_wallet_list";
 import type { WalletProposal } from "@/components/onboarding/quick_wallet_list";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { providerLabel } from "@/constants/providers";
 import { useCreateWallet } from "@/hooks/mutations/use_create_wallet";
 import { useSetWalletMatchers } from "@/hooks/mutations/use_set_wallet_matchers";
 import { useRuleset } from "@/hooks/queries/use_ruleset";
 import { useWallets } from "@/hooks/queries/use_wallets";
 import { canCreateWallet } from "@/lib/entitlements";
 import { buildProviderChoices } from "@/lib/ingest/provider_catalogue";
+import { matchersForProvider } from "@/lib/wallets/matchers";
 import { listObservedPackages } from "@/modules/notification_listener";
 
 import type { ProviderChoice } from "@/lib/ingest/provider_catalogue";
 import type { ObservedPackage } from "@/modules/notification_listener";
-import type { WalletType } from "@/types/domain";
+import type { NewWalletMatcher, WalletType } from "@/types/domain";
 
 const CASH_KEY = "cash";
-
-/** Human-cased labels for the catalogue's known provider keys. An observed
- * app the catalogue never heard of falls back to its raw package name, same
- * as provider_picker.tsx's own `displayName` rule. */
-const PROVIDER_LABELS: Record<string, string> = {
-  gcash: "GCash",
-  maya: "Maya",
-  bpi: "BPI",
-  bdo: "BDO",
-  unionbank: "UnionBank",
-  metrobank: "Metrobank",
-  seabank: "SeaBank",
-  gotyme: "GoTyme",
-  cimb: "CIMB",
-  landbank: "Landbank",
-  shopeepay: "ShopeePay",
-  grabpay: "GrabPay",
-  sms_relay: "Bank SMS",
-};
 
 /** A sensible starting `WalletType` per known provider — editable inline
  * (rule 2), so a wrong guess here costs one tap, not a support ticket. */
@@ -119,7 +102,23 @@ const WALLET_TYPE_BY_PROVIDER_KEY: Record<string, WalletType> = {
 };
 
 function defaultNameFor(choice: ProviderChoice): string {
-  return PROVIDER_LABELS[choice.displayName] ?? choice.displayName;
+  return providerLabel(choice.displayName);
+}
+
+/** Deduplicated by provider, keeping the first package seen for each — the
+ * "Also have one of these?" row offers one chip per PROVIDER, never one per
+ * Android package `buildProviderChoices` happens to have listed separately
+ * (task-3-brief rule 1). `choice.displayName` is the provider key here (see
+ * `ProviderChoice`'s own doc), so it is the right thing to dedupe on. */
+function dedupeByProvider(choices: ProviderChoice[]): ProviderChoice[] {
+  const seen = new Set<string>();
+  const deduped: ProviderChoice[] = [];
+  for (const choice of choices) {
+    if (seen.has(choice.displayName)) continue;
+    seen.add(choice.displayName);
+    deduped.push(choice);
+  }
+  return deduped;
 }
 
 function defaultTypeFor(choice: ProviderChoice): WalletType {
@@ -169,6 +168,11 @@ export default function WalletsScreen({
   const [observed, setObserved] = useState<ObservedPackage[] | null>(null);
   const [proposals, setProposals] = useState<WalletProposal[] | null>(null);
   const [addable, setAddable] = useState<ProviderChoice[]>([]);
+  // A quick-added proposal's full matcher set — every package its provider
+  // owns (task-3-brief rule 1), keyed by the proposal's own key. A proposal
+  // absent here falls back to its single `packageName` in `submit` below,
+  // which is what every OBSERVED proposal already had before this.
+  const [pendingMatchers, setPendingMatchers] = useState<Record<string, NewWalletMatcher[]>>({});
   const initializedRef = useRef(false);
 
   const [submitting, setSubmitting] = useState(false);
@@ -219,7 +223,10 @@ export default function WalletsScreen({
     const suggestedOnly = choices.filter((choice) => !choice.seen);
 
     setProposals([...observedChoices.map((choice) => proposalFor(choice, true)), CASH_PROPOSAL]);
-    setAddable(suggestedOnly);
+    // task-3-brief rule 1: one quick-add chip per PROVIDER, not one per
+    // package `sms_relay` (or any future multi-package provider) happens to
+    // list separately.
+    setAddable(dedupeByProvider(suggestedOnly));
   }, [observed, ruleset]);
 
   function rename(key: string, name: string): void {
@@ -241,8 +248,25 @@ export default function WalletsScreen({
   }
 
   function addProvider(choice: ProviderChoice): void {
-    setProposals((current) => (current ? [...current, proposalFor(choice, true)] : current));
-    setAddable((current) => current.filter((c) => c.packageName !== choice.packageName));
+    const proposal = proposalFor(choice, true);
+    setProposals((current) => (current ? [...current, proposal] : current));
+    // Every package the provider owns, not just the one this chip happened to
+    // be keyed on — otherwise a user whose bank texts arrive via a different
+    // package under the same provider (e.g. com.android.mms for sms_relay)
+    // silently catches nothing. lib/wallets/matchers.ts's own `matchersForProvider`
+    // does this mapping; reused here rather than re-derived (task-3-brief rule 1).
+    const provider = ruleset?.providers.find(
+      (candidate) => candidate.providerKey === choice.displayName,
+    );
+    setPendingMatchers((current) => ({
+      ...current,
+      [proposal.key]: provider
+        ? matchersForProvider(provider, undefined)
+        : [{ packageName: choice.packageName }],
+    }));
+    // Dedupe is by provider (rule 1), so every addable entry sharing this
+    // provider's label leaves the row together — not just the one tapped.
+    setAddable((current) => current.filter((c) => c.displayName !== choice.displayName));
   }
 
   async function submit(): Promise<void> {
@@ -275,11 +299,14 @@ export default function WalletsScreen({
           name: proposal.name.trim(),
           type: proposal.type,
         });
-        if (proposal.packageName) {
-          await setMatchers.mutateAsync({
-            walletId: wallet.id,
-            matchers: [{ packageName: proposal.packageName }],
-          });
+        // A quick-added proposal carries its provider's FULL package list
+        // (task-3-brief rule 1); every other proposal — observed or cash —
+        // falls back to its own single `packageName`, exactly as before.
+        const matchers =
+          pendingMatchers[proposal.key] ??
+          (proposal.packageName ? [{ packageName: proposal.packageName }] : []);
+        if (matchers.length > 0) {
+          await setMatchers.mutateAsync({ walletId: wallet.id, matchers });
         }
         runningCount += 1;
       }
