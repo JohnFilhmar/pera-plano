@@ -81,6 +81,9 @@ export default function TransactionsScreen() {
             categories={categories}
             search={search}
             filtered={filtered}
+            // task-7-brief.md: an empty ledger below a non-empty queue banner
+            // above must not contradict it -- see ledger_list.tsx's header.
+            reviewQueueCount={reviewCount}
             // m1c Task 7: the rows open the detail screen. Task 6 left them
             // inert because this route did not exist yet.
             onSelect={(transaction) =>

@@ -392,11 +392,17 @@ describe("the review queue entry point", () => {
     // The two states are independent: a brand-new install whose very first
     // captures all landed in the queue has nothing in the ledger and everything
     // to triage. A row rendered inside the ledger list would vanish exactly then.
+    //
+    // The ledger's OWN empty state here is the queue-aware variant
+    // (task-7-brief.md), not the plain "ledger-empty" one -- "Nothing tracked
+    // yet" directly under "Needs your review — 1 item needs a second look"
+    // read as a broken app even though both sentences were true.
     await queueItems(1);
 
     renderScreen();
 
     expect(await screen.findByTestId("review-queue-entry")).toBeTruthy();
-    expect(screen.getByTestId("ledger-empty")).toBeTruthy();
+    expect(screen.getByTestId("ledger-empty-review-pending")).toBeTruthy();
+    expect(screen.queryByTestId("ledger-empty")).toBeNull();
   });
 });

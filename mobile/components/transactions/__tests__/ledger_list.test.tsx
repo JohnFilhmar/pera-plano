@@ -40,6 +40,7 @@ import {
   LEDGER_EMPTY_BODY,
   LEDGER_EMPTY_TITLE,
   LEDGER_FILTERED_EMPTY_TITLE,
+  ledgerEmptyReviewPendingBody,
   LedgerList,
   localDateKey,
   matchesSearch,
@@ -522,6 +523,76 @@ describe("empty states", () => {
 
     expect(screen.queryByTestId("ledger-empty")).toBeNull();
     expect(screen.queryByTestId("ledger-empty-filtered")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// task-7-brief.md: the empty ledger must not contradict the review-queue
+// banner sitting directly above it on the Transactions tab. Rule 2 is load-
+// bearing here too -- these assertions prove the copy changed, never that a
+// row got smuggled into the ledger to make the two agree.
+// ---------------------------------------------------------------------------
+
+describe("the queue-aware empty state (task-7-brief)", () => {
+  test("points at the review queue when the ledger is empty but items are waiting", () => {
+    renderLedger([], { reviewQueueCount: 3 });
+
+    expect(screen.getByTestId("ledger-empty-review-pending")).toBeTruthy();
+    expect(screen.getByText(LEDGER_EMPTY_TITLE)).toBeTruthy();
+    expect(screen.getByText(ledgerEmptyReviewPendingBody(3))).toBeTruthy();
+    // Never the plain "nothing tracked" body, and never the plain testID --
+    // either one would be the exact contradiction this task exists to fix.
+    expect(screen.queryByText(LEDGER_EMPTY_BODY)).toBeNull();
+    expect(screen.queryByTestId("ledger-empty")).toBeNull();
+    // And the ledger itself stays genuinely empty -- no row was smuggled in
+    // to make the two numbers agree (rule 2).
+    expect(screen.queryAllByTestId(/^transaction-row-/)).toHaveLength(0);
+  });
+
+  test("keeps the plain empty copy when nothing is waiting either", () => {
+    renderLedger([], { reviewQueueCount: 0 });
+
+    expect(screen.getByTestId("ledger-empty")).toBeTruthy();
+    expect(screen.getByText(LEDGER_EMPTY_BODY)).toBeTruthy();
+    expect(screen.queryByTestId("ledger-empty-review-pending")).toBeNull();
+  });
+
+  test("an unset count -- callers that don't know about the queue -- also keeps the plain copy", () => {
+    // The wallet detail screen renders this same list and has no concept of
+    // the (app-wide) review queue; leaving the prop off must not change its
+    // behaviour.
+    renderLedger([]);
+
+    expect(screen.getByTestId("ledger-empty")).toBeTruthy();
+    expect(screen.queryByTestId("ledger-empty-review-pending")).toBeNull();
+  });
+
+  test("says '1 item', not '1 items'", () => {
+    renderLedger([], { reviewQueueCount: 1 });
+    expect(screen.getByText(/\b1 item\b/)).toBeTruthy();
+    expect(screen.queryByText(/\b1 items\b/)).toBeNull();
+  });
+
+  test("a waiting queue never overrides the FILTERED empty state", () => {
+    // Rule 1 only concerns the fully-empty ledger; a filter that narrows to
+    // zero rows is still "the query missed", never "nothing was tracked" --
+    // queue or no queue.
+    renderLedger([], { filtered: true, reviewQueueCount: 5 });
+
+    expect(screen.getByTestId("ledger-empty-filtered")).toBeTruthy();
+    expect(screen.queryByTestId("ledger-empty-review-pending")).toBeNull();
+  });
+
+  test("a caller's own empty override still wins over a waiting queue", () => {
+    // The wallet detail screen's override (already proven above) must not be
+    // pre-empted by a prop it never passes.
+    renderLedger([], {
+      reviewQueueCount: 5,
+      empty: <Text testID="wallet-detail-no-transactions">Nothing here</Text>,
+    });
+
+    expect(screen.getByTestId("wallet-detail-no-transactions")).toBeTruthy();
+    expect(screen.queryByTestId("ledger-empty-review-pending")).toBeNull();
   });
 });
 

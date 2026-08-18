@@ -58,6 +58,13 @@ export const EMPTY_STATE_CATALOGUE: readonly EmptyStateEntry[] = [
     screen: "transactions",
     // Mirrors `LEDGER_EMPTY_TITLE`/`LEDGER_EMPTY_BODY`
     // (components/transactions/ledger_list.tsx) — see this file's header.
+    // THIS IS THE "BOTH EMPTY" CASE ONLY (task-7-brief.md rule 1): when the
+    // ledger is empty but the review queue is not, ledger_list.tsx renders a
+    // different, queue-aware body instead (`ledgerEmptyReviewPendingBody`).
+    // That variant is deliberately NOT a second catalogue row — it is a
+    // situational refinement of this same screen's empty state, the kind of
+    // thing this file's header already excludes ("NOT EVERY EmptyState IN
+    // THE APP IS HERE"), not a ninth IA §5 row.
     title: "Nothing tracked yet",
     body: "Your transactions will appear here automatically.",
     actionLabel: "Add manual Transaction",

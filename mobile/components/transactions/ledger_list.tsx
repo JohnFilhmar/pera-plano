@@ -22,6 +22,17 @@
 //   make, and it is one `if` away at all times, which is why the two live as
 //   named constants with their own assertions.
 //
+//   THE UNFILTERED EMPTY STATE HAS A QUEUE-AWARE VARIANT (task-7-brief.md).
+//   "Nothing tracked yet" directly under "Needs your review — 1 item needs a
+//   second look" reads as a broken app even though both sentences are true —
+//   review-queue items are not Transactions (rule 2: they never get smuggled
+//   into the ledger to make the two agree). So when the ledger is empty AND
+//   the caller reports a non-zero `reviewQueueCount`, the copy acknowledges
+//   the wait instead of ignoring it. `reviewQueueCount` is OPTIONAL and
+//   defaults to leaving this alone: the wallet detail screen has no concept
+//   of an app-wide review queue and never passes it, and every caller that
+//   predates this prop keeps today's plain copy exactly as before.
+//
 //   THE FREE-TIER BOUNDARY ROW (rule 5; docs/05-monetization.md §3.2). Free sees
 //   90 days — a VISIBILITY window, never a retention one — so the row has to say
 //   the older records still exist and are safe, not merely advertise Plus.
@@ -63,6 +74,28 @@ export { localDateKey };
  */
 export const LEDGER_EMPTY_TITLE = "Nothing tracked yet";
 export const LEDGER_EMPTY_BODY = "Your transactions will appear here automatically.";
+
+/**
+ * The queue-aware variant of the body above (task-7-brief.md rule 1).
+ *
+ * SAME TITLE, DIFFERENT BODY. The ledger genuinely is still empty — that
+ * headline stays true and stays put. What changes is the sentence underneath
+ * it: rather than the passive "will appear here automatically" (misleading
+ * when what is actually waiting needs the user's own second look, not time),
+ * this names the review queue directly and echoes its own language
+ * ("needs a second look", `review_queue_entry.tsx`'s `reviewQueueEntrySubtitle`)
+ * so the banner above and the empty state below read as one feature instead
+ * of two screens that happen to disagree.
+ *
+ * Singular/plural for the same reason `reviewQueueEntrySubtitle` bothers:
+ * "1 items" is the kind of detail that makes a money app feel unfinished at
+ * exactly the moment it is asking to be trusted.
+ */
+export function ledgerEmptyReviewPendingBody(reviewQueueCount: number): string {
+  return reviewQueueCount === 1
+    ? "1 item is waiting in your review queue for a second look."
+    : `${reviewQueueCount} items are waiting in your review queue for a second look.`;
+}
 
 /**
  * Rule 6's second empty state. Deliberately says NOTHING about tracking: the
@@ -207,8 +240,19 @@ export type LedgerListProps = {
    * Replaces the default "nothing tracked yet" state. The wallet detail screen
    * uses it to keep saying "Nothing tracked in this wallet yet" — a wallet with
    * no rows is a narrower and more useful statement than the tab-wide one.
+   * Takes priority over `reviewQueueCount` below: a caller that supplies its
+   * own empty copy has already made its own decision about what to say.
    */
   empty?: ReactNode;
+  /**
+   * How many items are waiting in the Review Queue right now, if the caller
+   * knows. `undefined` (the default) leaves the plain empty state exactly as
+   * it always was — see this file's header. Passed by the Transactions tab
+   * (`app/(tabs)/transactions.tsx`), which already fetches this count for its
+   * own queue-entry banner; not by the wallet detail screen, which has no
+   * app-wide queue to point at.
+   */
+  reviewQueueCount?: number;
   /**
    * Opens a row (m1c Task 7's app/transaction/[id].tsx).
    *
@@ -230,6 +274,7 @@ export function LedgerList({
   filtered = false,
   now = Date.now(),
   empty,
+  reviewQueueCount,
   onSelect,
   testID = "ledger-list",
 }: LedgerListProps) {
@@ -255,6 +300,15 @@ export function LedgerList({
       );
     }
     if (empty !== undefined) return <>{empty}</>;
+    if (reviewQueueCount !== undefined && reviewQueueCount > 0) {
+      return (
+        <EmptyState
+          testID="ledger-empty-review-pending"
+          title={LEDGER_EMPTY_TITLE}
+          body={ledgerEmptyReviewPendingBody(reviewQueueCount)}
+        />
+      );
+    }
     return <EmptyState testID="ledger-empty" title={LEDGER_EMPTY_TITLE} body={LEDGER_EMPTY_BODY} />;
   }
 
