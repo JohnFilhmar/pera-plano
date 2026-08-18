@@ -1,0 +1,244 @@
+// components/wallets/__tests__/balance_correction_sheet.test.tsx — review fix
+// (2026-08-18). BalanceCorrectionSheet had no suite of its own; the only
+// assertions touching it were two `getByTestId` calls inside
+// wallet_detail.test.tsx, which could not have caught the rule-3
+// notification-wins disclosure being deleted, or either wallet-type guard
+// being loosened, without failing for an unrelated reason.
+// cash_reconcile_sheet.test.tsx is the model this mirrors: its clone gets the
+// same rigor, tested end to end against a real (in-memory) database rather
+// than a mocked mutation, for the same reason that file gives — this is a
+// flow that writes money the user did not itemize.
+//
+// SAME MATH, VERIFIED THROUGH THIS SHEET, NOT RE-DERIVED. `cashAdjustment`
+// (lib/wallets/reconcile.ts) is reused by `useCorrectWalletBalance`, not
+// re-implemented — these tests exercise that reuse through the sheet's own
+// interaction rather than re-testing the pure function a second time.
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import type { ReactNode } from "react";
+
+import { BALANCE_CORRECTION_NOTE } from "@/hooks/mutations/use_correct_wallet_balance";
+import { closeDatabase } from "@/lib/db/database";
+import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
+import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions_repo";
+import { createWallet, getWallet } from "@/lib/db/repos/wallets_repo";
+import { queryClient as appQueryClient } from "@/lib/query_client";
+import { freshDb } from "@/test_support/db";
+import type { Transaction, Wallet } from "@/types/domain";
+
+import { BalanceCorrectionSheet } from "../balance_correction_sheet";
+
+function makeTestClient(): QueryClient {
+  const defaults = appQueryClient.getDefaultOptions();
+  return new QueryClient({
+    defaultOptions: {
+      ...defaults,
+      queries: { ...defaults.queries, retry: 0, gcTime: Infinity },
+      mutations: { ...defaults.mutations, gcTime: 0 },
+    },
+  });
+}
+
+function renderSheet(wallet: Wallet): void {
+  const client = makeTestClient();
+  function Wrapper({ children }: { children: ReactNode }) {
+    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  }
+  render(<BalanceCorrectionSheet wallet={wallet} visible onDismiss={jest.fn()} />, {
+    wrapper: Wrapper,
+  });
+}
+
+/** Types the stated figure in centavos-as-digits and confirms. */
+async function correct(digits: string): Promise<void> {
+  fireEvent.changeText(screen.getByTestId("balance-correction-amount"), digits);
+  fireEvent.press(screen.getByTestId("balance-correction-confirm"));
+}
+
+/** Every transaction on the device, oldest first, for before/after comparison. */
+async function ledger(): Promise<Transaction[]> {
+  const transactions = await listTransactions({});
+  return [...transactions].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+let gcash: Wallet;
+
+beforeEach(async () => {
+  await freshDb();
+  await seedDefaultCategories();
+  // ₱1,000.00 opening, minus a ₱200.00 spend the app DID see → recorded ₱800.00.
+  gcash = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100_000 });
+  await insertTransaction({
+    walletId: gcash.id,
+    categoryId: UNCATEGORIZED_ID,
+    amount: 20_000,
+    direction: "out",
+    occurredAt: 1_786_000_000_000,
+    source: "manual",
+    confidence: 1,
+    merchant: "Jollibee",
+  });
+  gcash = (await getWallet(gcash.id)) as Wallet;
+});
+
+afterEach(async () => {
+  await closeDatabase();
+});
+
+test("the sheet asks what the wallet actually has and states the recorded figure", () => {
+  renderSheet(gcash);
+
+  expect(screen.getByTestId("balance-correction-sheet")).toHaveTextContent(
+    /What does this wallet actually have right now\?/,
+  );
+  expect(screen.getByTestId("balance-correction-recorded")).toHaveTextContent("₱800.00");
+});
+
+// ---------------------------------------------------------------------------
+// Rule 3's required disclosure — the agreed resolution to the notification-
+// wins conflict. Present BEFORE any input, not conjured only after a save, or
+// a user who reads and dismisses without typing anything never saw it. This
+// is the assertion the reviewer named directly: delete the `Text` at the
+// sheet's `:118` and every OTHER test in this file still passes, because none
+// of them touch it.
+// ---------------------------------------------------------------------------
+
+test("the notification-wins disclosure is shown before any input, not just after confirming", () => {
+  renderSheet(gcash);
+
+  const warning = screen.getByTestId("balance-correction-warning");
+  expect(warning).toHaveTextContent(/starting point, not a bank-confirmed figure/i);
+  expect(warning).toHaveTextContent(/report will replace this correction/i);
+  // The second-order effect folded in alongside the credit exclusion: the
+  // entry survives that re-anchor and keeps counting toward totals.
+  expect(warning).toHaveTextContent(/stays in your ledger and still counts/i);
+});
+
+describe("the adjustment it writes", () => {
+  test("a shortfall writes ONE `out` transaction for the DIFFERENCE", async () => {
+    // Recorded ₱800.00, actual ₱500.00 → ₱300.00 the app never saw leave.
+    renderSheet(gcash);
+    await correct("50000");
+
+    await waitFor(async () => {
+      expect(await listTransactions({ walletId: gcash.id })).toHaveLength(2);
+    });
+
+    const written = (await listTransactions({ walletId: gcash.id })).find(
+      (transaction) => transaction.note === BALANCE_CORRECTION_NOTE,
+    );
+    expect(written).toBeDefined();
+    expect(written?.direction).toBe("out");
+    // 30000, not 50000 (the stated total) and not 80000 (the recorded one).
+    expect(written?.amount).toBe(30_000);
+  });
+
+  test("a surplus writes ONE `in` transaction for the DIFFERENCE", async () => {
+    renderSheet(gcash);
+    await correct("95000");
+
+    await waitFor(async () => {
+      expect(await listTransactions({ walletId: gcash.id })).toHaveLength(2);
+    });
+
+    const written = (await listTransactions({ walletId: gcash.id })).find(
+      (transaction) => transaction.note === BALANCE_CORRECTION_NOTE,
+    );
+    expect(written?.direction).toBe("in");
+    expect(written?.amount).toBe(15_000);
+  });
+
+  test("the wallet lands exactly on the figure the user typed", async () => {
+    renderSheet(gcash);
+    await correct("50000");
+
+    await waitFor(async () => {
+      expect((await getWallet(gcash.id))?.balance).toBe(50_000);
+    });
+  });
+
+  test("it is a manual, recategorizable, uncategorized entry with no balanceAfter", async () => {
+    renderSheet(gcash);
+    await correct("50000");
+
+    await waitFor(async () => {
+      expect(await listTransactions({ walletId: gcash.id })).toHaveLength(2);
+    });
+
+    const written = (await listTransactions({ walletId: gcash.id })).find(
+      (transaction) => transaction.note === BALANCE_CORRECTION_NOTE,
+    );
+    expect(written?.source).toBe("manual");
+    expect(written?.confidence).toBe(1);
+    expect(written?.rawNotificationId).toBeNull();
+    expect(written?.categoryId).toBe(UNCATEGORIZED_ID);
+    // No provider reported this — the sheet's own header on why setting one
+    // here would let the drift badge treat a guess as bank-confirmed.
+    expect(written?.balanceAfter).toBeNull();
+  });
+
+  test("a figure equal to the recorded balance writes NOTHING — the preview === null money path", async () => {
+    const before = await ledger();
+    renderSheet(gcash);
+
+    await correct("80000");
+
+    await waitFor(() => {
+      expect(screen.getByTestId("balance-correction-result")).toBeTruthy();
+    });
+    expect(screen.getByTestId("balance-correction-plan")).toHaveTextContent(
+      /matches what this wallet already says/i,
+    );
+    // Not a zero-amount row — nothing happened, so nothing is written.
+    expect(await ledger()).toEqual(before);
+  });
+
+  test("it NEVER edits past transactions", async () => {
+    const before = await ledger();
+    renderSheet(gcash);
+
+    await correct("50000");
+
+    await waitFor(async () => {
+      expect(await listTransactions({ walletId: gcash.id })).toHaveLength(2);
+    });
+
+    const after = await ledger();
+    for (const original of before) {
+      expect(after.find((transaction) => transaction.id === original.id)).toEqual(original);
+    }
+  });
+});
+
+test("confirming with nothing typed is refused rather than writing anything", async () => {
+  const before = await ledger();
+  renderSheet(gcash);
+
+  fireEvent.press(screen.getByTestId("balance-correction-confirm"));
+
+  // An empty field reads as 0, and 0 is a real answer — but not one the user
+  // gave. Committing it would write off the whole recorded balance on a
+  // mis-tap.
+  expect(await ledger()).toEqual(before);
+  expect(screen.getByTestId("balance-correction-error")).toBeTruthy();
+});
+
+describe("wallet type guards", () => {
+  test.each(["bank", "e-wallet", "savings"] as const)("a %s wallet gets the sheet", async (type) => {
+    const wallet = await createWallet({ name: `A ${type}`, type });
+
+    renderSheet(wallet);
+
+    expect(screen.getByTestId("balance-correction-sheet")).toBeTruthy();
+  });
+
+  test.each(["cash", "credit"] as const)("a %s wallet renders no sheet at all", async (type) => {
+    // Cash keeps CashReconcileSheet, unmodified (rule 3). Credit is excluded
+    // because its balance is owed, not held — see this sheet's own header.
+    const wallet = await createWallet({ name: `A ${type}`, type });
+
+    renderSheet(wallet);
+
+    expect(screen.queryByTestId("balance-correction-sheet")).toBeNull();
+  });
+});
