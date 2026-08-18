@@ -24,10 +24,11 @@
 // (app/(onboarding)/income.tsx) owns the wallet list, the mutation and the
 // clock; this component only collects the answer.
 import { useState } from "react";
-import { Pressable, Text, TextInput, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 
 import { CadencePicker } from "@/components/income/cadence_picker";
-import { centavosFromDigits, formatCentavos } from "@/components/ui/amount_text";
+import { AmountNumpad } from "@/components/transactions/amount_numpad";
+import { centavosFromDigits } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
 import type { Centavos, IncomeCadence, Wallet } from "@/types/domain";
 
@@ -68,17 +69,16 @@ export function IncomeQuickForm({ wallets, busy = false, onSubmit }: IncomeQuick
         <Text className="font-semibold text-fg dark:text-fg-dark">
           {cadence === "irregular" ? "Roughly how much a month?" : "How much each time?"}
         </Text>
-        <TextInput
-          testID="income-quick-amount"
-          className="mt-2 rounded-xl bg-surface p-3 text-fg dark:bg-surface-dark dark:text-fg-dark"
-          keyboardType="numeric"
-          placeholder="Amount, e.g. 18500"
-          value={digits}
-          onChangeText={setDigits}
-        />
-        <Text testID="income-quick-amount-preview" className="mt-2 text-fg-2 dark:text-fg-2-dark">
-          {formatCentavos(amount)}
-        </Text>
+        {/* DEVICE-TESTING FIX (2026-08-18, Task 5): this used to be a bare
+            TextInput behind a placeholder reading "Amount, e.g. 18500", which
+            reads as ₱18,500 but — because the field takes DIGITS, not pesos —
+            actually produced ₱185.00. AmountNumpad replaces both the input and
+            the static claim with one live display: the peso string is
+            rendered FROM the digits on every keystroke, so there is no
+            separate "e.g." text left to disagree with what typing does. */}
+        <View testID="income-quick-amount" className="mt-2">
+          <AmountNumpad digits={digits} onDigitsChange={setDigits} />
+        </View>
       </View>
 
       {wallets.length > 0 ? (

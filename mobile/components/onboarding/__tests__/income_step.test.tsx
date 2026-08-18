@@ -35,6 +35,16 @@ import { freshDb } from "@/test_support/db";
 import { IncomeQuickForm } from "../income_quick_form";
 import IncomeScreen from "@/app/(onboarding)/income";
 
+/** Presses one numpad key per digit — the amount field's own interaction
+ * since the device-testing fix (Task 5) replaced the bare, misleadingly
+ * placeholdered TextInput with AmountNumpad. See income_quick_form.test.tsx
+ * for why. */
+function typeAmount(digits: string): void {
+  for (const digit of digits) {
+    fireEvent.press(screen.getByTestId(`numpad-key-${digit}`));
+  }
+}
+
 function makeTestClient(): QueryClient {
   const defaults = appQueryClient.getDefaultOptions();
   return new QueryClient({
@@ -97,7 +107,7 @@ describe("IncomeQuickForm", () => {
     render(<IncomeQuickForm wallets={[]} onSubmit={onSubmit} />);
 
     fireEvent.press(screen.getByTestId("cadence-monthly"));
-    fireEvent.changeText(screen.getByTestId("income-quick-amount"), "1850000");
+    typeAmount("1850000");
     fireEvent.press(screen.getByTestId("income-quick-save"));
 
     expect(onSubmit).toHaveBeenCalledWith({
@@ -119,7 +129,7 @@ describe("IncomeScreen", () => {
     await waitFor(() => expect(screen.getByTestId(`income-quick-wallet-${gcash.id}`)).toBeTruthy());
 
     fireEvent.press(screen.getByTestId("cadence-kinsenas"));
-    fireEvent.changeText(screen.getByTestId("income-quick-amount"), "1200000");
+    typeAmount("1200000");
     fireEvent.press(screen.getByTestId(`income-quick-wallet-${gcash.id}`));
     fireEvent.press(screen.getByTestId("income-quick-save"));
 
@@ -160,7 +170,7 @@ describe("IncomeScreen", () => {
     const onDone = jest.fn();
     await renderScreen({ onDone });
 
-    fireEvent.changeText(screen.getByTestId("income-quick-amount"), "900000");
+    typeAmount("900000");
     fireEvent.press(screen.getByTestId("income-quick-save"));
 
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));

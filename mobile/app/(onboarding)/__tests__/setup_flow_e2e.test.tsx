@@ -120,6 +120,15 @@ function pressSkip() {
   fireEvent.press(screen.getByTestId("onboarding-skip-link"));
 }
 
+/** Presses one numpad key per digit — the income amount field's own
+ * interaction since the device-testing fix (Task 5) replaced its bare,
+ * misleadingly placeholdered TextInput with AmountNumpad. */
+function typeIncomeAmount(digits: string): void {
+  for (const digit of digits) {
+    fireEvent.press(screen.getByTestId(`numpad-key-${digit}`));
+  }
+}
+
 beforeEach(async () => {
   await freshDb();
   // The catalogue bootstrapApp() seeds on a real launch — the wallet step
@@ -205,7 +214,7 @@ test("a user who taps through every step reaches the end, and onboarding actuall
 
   // 6. income -> 7. first_limit, via the form's own save button (the path the
   // mutation takes, distinct from the frame's "figure it out" primary).
-  fireEvent.changeText(screen.getByTestId("income-quick-amount"), "1200000");
+  typeIncomeAmount("1200000");
   fireEvent.press(screen.getByTestId("income-quick-save"));
   await waitFor(() => expect(screen.getByTestId("first-limit-form-intro")).toBeTruthy());
   expect((await getIncomeProfile())?.averageAmount).toBe(1_200_000);
