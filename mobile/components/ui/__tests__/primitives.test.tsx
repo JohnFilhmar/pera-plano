@@ -175,8 +175,18 @@ test("a multi-word button label renders in full", () => {
   // environment, and it is expected to PASS today: nothing in button.tsx
   // manipulates the `title` string. See the Task 8 report for why that
   // outcome is read as "could not reproduce here", not "no bug".
+  //
+  // The two prop checks below ARE a real regression guard, unlike the
+  // getByText match above: `numberOfLines`/`ellipsizeMode` are the one
+  // JS-visible cause of exactly this symptom, and the first thing a future
+  // contributor reaches for when a label overflows (review finding,
+  // 2026-08-18 — the getByText-only version passes unchanged if either prop
+  // is added later).
   render(<Button title="Add manually" onPress={noop} />);
-  expect(screen.getByText("Add manually")).toBeTruthy();
+  const label = screen.getByText("Add manually");
+  expect(label).toBeTruthy();
+  expect(label.props.numberOfLines).toBeUndefined();
+  expect(label.props.ellipsizeMode).toBeUndefined();
 });
 
 test("Button destructive is the only variant that paints danger", () => {
@@ -486,8 +496,15 @@ test("a multi-word section title renders in full", () => {
   // the strongest available reproduction attempt, and it is expected to
   // PASS — section_header.tsx does not touch the `title` string in JS. See
   // the Task 8 report.
+  //
+  // Same regression-guard reasoning as the button test above: pin the ABSENCE
+  // of numberOfLines/ellipsizeMode, the one JS-visible cause of this exact
+  // symptom (review finding, 2026-08-18).
   render(<SectionHeader title="Your limits" />);
-  expect(screen.getByText("Your limits")).toBeTruthy();
+  const title = screen.getByText("Your limits");
+  expect(title).toBeTruthy();
+  expect(title.props.numberOfLines).toBeUndefined();
+  expect(title.props.ellipsizeMode).toBeUndefined();
 });
 
 test("EmptyState defaults to the lucide Send paper-airplane brand mark", () => {

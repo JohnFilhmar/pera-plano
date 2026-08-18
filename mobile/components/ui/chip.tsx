@@ -41,7 +41,10 @@ const TONE_BG: Record<ChipTone, string> = {
  * fills and near-black on the brighter dark-mode fills — the same pairing the
  * shipped Plus badge and Soon chip already use. Contrast against 12px
  * semibold text clears WCAG AA (4.5:1) on all of them: brand 5.0, danger 4.8,
- * soon 5.4 in light; 9:1 or better in dark.
+ * soon 5.4 in light; brand 7.79, danger 6.42, soon 7.74 in dark (recomputed
+ * 2026-08-18 device-testing review — "9:1 or better in dark" was wrong for
+ * all three; none of them reach 9:1, and the one tone that does, warn-dark at
+ * 10.63, is the exception this comment excludes below).
  *
  * `warn` is the exception and takes dark ink in BOTH themes. Amber is the one
  * token bright enough that white sits at 3.2:1 against it — legible on a
