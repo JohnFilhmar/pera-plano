@@ -26,6 +26,19 @@
 // (contexts/lock_context.tsx's keysProvisioned) routes the freshly-keyed user
 // through the ordinary unlock, and the flow continues from there. This file
 // walks exactly that, in one unbroken session.
+//
+// THE GATE THIS HANDS OFF TO NOW AUTO-FIRES ITS OWN UNLOCK (task-6-brief.md),
+// AND THAT APPLIES HERE TOO, DELIBERATELY -- NOT AS A SPECIAL CASE. The
+// alternative — auto-prompt on an ordinary cold start or re-lock, but suppress
+// it specifically right after this pre-flow, on the grounds that the user
+// authenticated seconds ago provisioning their device key — was considered
+// and rejected: it would require UnlockPrompt to know "we just provisioned
+// keys", state it has no business holding, and a single biometric touch
+// immediately after setting up biometrics reads as confirmation the lock
+// works rather than as friction. Simple and consistent beats a special case.
+// The tests below were updated to assert this (the gate unlocking itself,
+// with no `fireEvent.press` where the old manual tap used to be required)
+// rather than the superseded "handed to the gate, not through it" behaviour.
 jest.mock("expo-font", () => ({
   ...jest.requireActual("expo-font"),
   useFonts: jest.fn(() => [true, null]),
@@ -244,7 +257,7 @@ async function flushMicrotasks() {
 // nowhere for a Redirect to land.
 // ---------------------------------------------------------------------------
 
-test("the pre-flow hands off to the lock gate instead of dead-ending with nothing on screen", async () => {
+test("the pre-flow hands off to the lock gate, which auto-fires its own unlock -- no dead end, no manual tap needed", async () => {
   // No keys at all: contexts/lock_context.tsx reports "needs_onboarding" and
   // app/(onboarding)/index.tsx starts at the device-lock gate.
   mockGetKeyState.mockResolvedValue("uninitialized");
@@ -257,8 +270,14 @@ test("the pre-flow hands off to the lock gate instead of dead-ending with nothin
   // replaced it had no navigator to move and nothing else was wired up.
   await waitFor(() => expect(screen.getByTestId("unlock-prompt")).toBeTruthy());
   expect(screen.queryByTestId("fake-providers")).toBeNull();
-  // Handed TO the gate, not through it: nothing has been unlocked yet.
-  expect(mockUnlockWithDeviceKey).not.toHaveBeenCalled();
+  // Handed TO a REAL gate, and task-6-brief.md means the gate does not just
+  // sit there either: UnlockPrompt auto-fires the moment it mounts, so the
+  // freshly-keyed device unlocks itself without the user tapping anything.
+  // (Deliberate, ruled: one biometric touch immediately after setting up
+  // biometrics reads as confirmation the lock works, not as friction --
+  // see this file's header for why the alternative of suppressing the
+  // auto-fire specifically here was rejected.)
+  await waitFor(() => expect(mockUnlockWithDeviceKey).toHaveBeenCalledTimes(1));
 });
 
 test("the gate it hands off to is the real one: a refused authentication leaves the app locked", async () => {
@@ -269,11 +288,26 @@ test("the gate it hands off to is the real one: a refused authentication leaves 
   await walkPreFlow();
   await waitFor(() => expect(screen.getByTestId("unlock-prompt")).toBeTruthy());
 
-  fireEvent.press(screen.getByTestId("unlock-button"));
-
+  // The gate's OWN auto-fire (task-6-brief.md) is already one real, refused
+  // attempt -- proven here BEFORE any tap, and bounded to exactly one: if the
+  // auto-fire ever looped on a refusal, `mockAuthenticateAsync` would show
+  // more than a single call at this point.
   await waitFor(() => expect(screen.getByTestId("unlock-error")).toBeTruthy());
   expect(screen.getByTestId("unlock-prompt")).toBeTruthy();
+  expect(mockAuthenticateAsync).toHaveBeenCalledTimes(1);
   // A failed authentication is not a way past the DEK: nothing unwrapped it.
+  expect(mockUnlockWithDeviceKey).not.toHaveBeenCalled();
+
+  // The anti-loop guarantee itself, exercised on the real first-run path: a
+  // manual retry is a SECOND, independent attempt -- not blocked, and not
+  // automatic either. This is the fallback unlock_prompt.tsx's header
+  // describes: after the auto-fire's own failure, only a fresh tap tries
+  // again.
+  fireEvent.press(screen.getByTestId("unlock-button"));
+
+  await waitFor(() => expect(mockAuthenticateAsync).toHaveBeenCalledTimes(2));
+  expect(screen.getByTestId("unlock-error")).toBeTruthy();
+  expect(screen.getByTestId("unlock-prompt")).toBeTruthy();
   expect(mockUnlockWithDeviceKey).not.toHaveBeenCalled();
 });
 
@@ -282,19 +316,20 @@ test("the gate it hands off to is the real one: a refused authentication leaves 
 // handoff leads to is what mounts the Stack, and the numbered flow starts.
 // ---------------------------------------------------------------------------
 
-test("one unlock later, the numbered flow's first screen is on screen — no relaunch anywhere in this session", async () => {
+test("one unlock later -- fired by the gate itself, no button needed -- the numbered flow's first screen is on screen, no relaunch anywhere in this session", async () => {
   mockGetKeyState.mockResolvedValue("uninitialized");
 
   renderApp();
   await walkPreFlow();
 
   await waitFor(() => expect(screen.getByTestId("unlock-prompt")).toBeTruthy());
-  // Still locked: no tab tree, and the numbered flow has not started either.
+  // Still locked at the very first paint: no tab tree, and the numbered flow
+  // has not started either.
   expect(screen.queryByTestId("tabs-stub")).toBeNull();
   expect(screen.queryByTestId("welcome-promise")).toBeNull();
 
-  fireEvent.press(screen.getByTestId("unlock-button"));
-
+  // NO fireEvent.press HERE (task-6-brief.md): UnlockPrompt's own auto-fire
+  // does what the manual tap used to, so the flow continues on its own.
   await waitFor(() => expect(screen.getByTestId("welcome-promise")).toBeTruthy());
   // Routed now, not rendered under the lock screen: the unlock prompt is gone,
   // and so is the pre-flow it handed off from.
