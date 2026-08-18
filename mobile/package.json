@@ -87,6 +87,7 @@
       "<rootDir>/test_support/jest_setup_after_env.ts"
     ],
     "moduleNameMapper": {
+      "\\.svg$": "<rootDir>/test_support/svg_mock.tsx",
       "\\.css$": "<rootDir>/test_support/style_mock.ts",
       "^@/(.*)$": "<rootDir>/$1",
       "^@op-engineering/op-sqlite$": "<rootDir>/test_support/sqlite_mock.ts",

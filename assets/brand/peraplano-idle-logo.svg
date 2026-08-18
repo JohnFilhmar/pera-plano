@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="512" height="512" role="img" aria-label="PeraPlano logo idle">
+  <title>PeraPlano — idle logo</title>
+  <g>
+    <animateTransform attributeName="transform" type="translate" values="0 0;0.55 -0.45;0 0;-0.35 0.3;0 0" dur="3.4s" repeatCount="indefinite" calcMode="spline" keySplines="0.4 0 0.6 1;0.4 0 0.6 1;0.4 0 0.6 1;0.4 0 0.6 1"/>
+    <circle cx="9.2" cy="14.4" r="1.15" fill="#22C55E" opacity="0.5">
+      <animate attributeName="opacity" values="0;0.5;0.28;0" keyTimes="0;0.25;0.6;1" dur="1.36s" begin="0.00s" repeatCount="indefinite"/>
+      <animate attributeName="cx" values="9.2;6.0" dur="1.36s" begin="0.00s" repeatCount="indefinite"/>
+      <animate attributeName="cy" values="14.4;16.9" dur="1.36s" begin="0.00s" repeatCount="indefinite"/>
+      <animate attributeName="r" values="1.15;0" dur="1.36s" begin="0.00s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="7" cy="16.1" r="0.95" fill="#22C55E" opacity="0.4">
+      <animate attributeName="opacity" values="0;0.4;0.22;0" keyTimes="0;0.25;0.6;1" dur="1.36s" begin="0.34s" repeatCount="indefinite"/>
+      <animate attributeName="cx" values="7;3.8" dur="1.36s" begin="0.34s" repeatCount="indefinite"/>
+      <animate attributeName="cy" values="16.1;18.6" dur="1.36s" begin="0.34s" repeatCount="indefinite"/>
+      <animate attributeName="r" values="0.95;0" dur="1.36s" begin="0.34s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="4.8" cy="17.8" r="0.75" fill="#22C55E" opacity="0.3">
+      <animate attributeName="opacity" values="0;0.3;0.17;0" keyTimes="0;0.25;0.6;1" dur="1.36s" begin="0.68s" repeatCount="indefinite"/>
+      <animate attributeName="cx" values="4.8;1.6" dur="1.36s" begin="0.68s" repeatCount="indefinite"/>
+      <animate attributeName="cy" values="17.8;20.3" dur="1.36s" begin="0.68s" repeatCount="indefinite"/>
+      <animate attributeName="r" values="0.75;0" dur="1.36s" begin="0.68s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="2.6" cy="19.5" r="0.55" fill="#22C55E" opacity="0.2">
+      <animate attributeName="opacity" values="0;0.2;0.11;0" keyTimes="0;0.25;0.6;1" dur="1.36s" begin="1.02s" repeatCount="indefinite"/>
+      <animate attributeName="cx" values="2.6;-0.6" dur="1.36s" begin="1.02s" repeatCount="indefinite"/>
+      <animate attributeName="cy" values="19.5;22.0" dur="1.36s" begin="1.02s" repeatCount="indefinite"/>
+      <animate attributeName="r" values="0.55;0" dur="1.36s" begin="1.02s" repeatCount="indefinite"/>
+    </circle>
+    <g transform="rotate(-1.5 12 12)">
+      <animateTransform attributeName="transform" type="rotate" values="-1.5 12 12;2 12 12;-1.5 12 12" dur="5.2s" repeatCount="indefinite" calcMode="spline" keySplines="0.4 0 0.6 1;0.4 0 0.6 1"/>
+      <path d="M22 2 L2 9 L11 13 Z" fill="#22C55E"/>
+      <path d="M22 2 L11 13 L15 22 Z" fill="#15803D"/>
+    </g>
+  </g>
+</svg>
