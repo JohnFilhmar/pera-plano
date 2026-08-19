@@ -40,6 +40,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { ReactNode } from "react";
 
+import { KeypadHost } from "@/components/ui/keypad_host";
+import { KeypadProvider } from "@/contexts/keypad_context";
 import { listObservedPackages } from "@/modules/notification_listener";
 import { closeDatabase } from "@/lib/db/database";
 import { __setTierForTests } from "@/lib/entitlements";
@@ -74,10 +76,26 @@ function makeTestClient(): QueryClient {
   });
 }
 
+// KeypadProvider AND A HOST (numeric-input-system Task 13 follow-up). This
+// screen renders QuickWalletList, whose opening-balance field is a
+// NumericField now — its `useKeypad()` throws with no provider above it, and
+// the tree unmounted before `quick-wallet-list` ever appeared. Host BEFORE the
+// subject, matching every other suite that mounts a keypad field: the context
+// gives the panel to the highest live host token and effects flush in
+// completion order, so a host mounted after the screen would outrank one
+// nested inside it. No assertion here types an amount; this is the wrapper and
+// nothing else.
 function renderScreen(props: { onDone?: () => void } = {}): void {
   const client = makeTestClient();
   function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    return (
+      <QueryClientProvider client={client}>
+        <KeypadProvider>
+          <KeypadHost />
+          {children}
+        </KeypadProvider>
+      </QueryClientProvider>
+    );
   }
   render(<WalletsScreen {...props} />, { wrapper: Wrapper });
 }
