@@ -34,7 +34,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { ReactNode } from "react";
 
+import { KeypadHost } from "@/components/ui/keypad_host";
 import { queryKeys } from "@/constants/query_keys";
+import { KeypadProvider } from "@/contexts/keypad_context";
 import { BALANCE_CORRECTION_NOTE } from "@/hooks/mutations/use_correct_wallet_balance";
 import { closeDatabase, getDatabase } from "@/lib/db/database";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
@@ -45,6 +47,7 @@ import { archiveWallet, createWallet, getWallet } from "@/lib/db/repos/wallets_r
 import { DEFAULT_TUNABLES } from "@/lib/ingest/ruleset_types";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
+import { typeAmount } from "@/test_support/keypad";
 import type { Centavos, Wallet } from "@/types/domain";
 
 import WalletDetailScreen from "../wallet/[id]";
@@ -68,11 +71,25 @@ function makeTestClient(): QueryClient {
 /** The screen plus the cache behind it, so a test can wait on a read or close it. */
 type DetailView = ReturnType<typeof render> & { client: QueryClient };
 
+// KeypadProvider AND A ROOT HOST (numeric-input-system Task 13). This screen
+// mounts BalanceCorrectionSheet and CashReconcileSheet, whose amounts are
+// NumericFields — `useKeypad()` throws with no provider above them. The host
+// goes BEFORE the screen: the context gives the panel to the highest live
+// token and effects flush in completion order, so a host mounted after the
+// screen would outrank the one bottom_sheet.tsx mounts inside its Modal, and
+// the panel a sheet raises would end up behind the dialog.
 function renderDetail(walletId: string): DetailView {
   mockParams = { id: walletId };
   const client = makeTestClient();
   function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    return (
+      <QueryClientProvider client={client}>
+        <KeypadProvider>
+          <KeypadHost />
+          {children}
+        </KeypadProvider>
+      </QueryClientProvider>
+    );
   }
   return Object.assign(render(<WalletDetailScreen />, { wrapper: Wrapper }), { client });
 }
@@ -426,7 +443,10 @@ describe("correcting a non-cash wallet's balance (Task 4)", () => {
     await screen.findByText("GCash");
 
     fireEvent.press(screen.getByTestId("wallet-detail-adjust-balance"));
-    fireEvent.changeText(screen.getByTestId("balance-correction-amount"), "150000");
+    // "1500", not the old "150000" (numeric-input-system Task 13): the stated
+    // balance this test is about is ₱1,500.00 either way — a digit is a peso
+    // now rather than a centavo, so the keystrokes moved and the amount did not.
+    typeAmount("balance-correction-amount", "1500");
     fireEvent.press(screen.getByTestId("balance-correction-confirm"));
 
     await waitFor(async () => {

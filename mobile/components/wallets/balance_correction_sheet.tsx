@@ -37,12 +37,14 @@
 // pass; shipping the wrong answer is worse than shipping none, so this stays
 // disabled here as belt-and-braces with app/wallet/[id].tsx's own guard.
 import { useState } from "react";
-import { Text, TextInput, View } from "react-native";
+import { Text, View } from "react-native";
 
-import { AmountText, centavosFromDigits } from "@/components/ui/amount_text";
+import { AmountText } from "@/components/ui/amount_text";
 import { BottomSheet } from "@/components/ui/bottom_sheet";
 import { Button } from "@/components/ui/button";
+import { NumericField } from "@/components/ui/numeric_field";
 import { useCorrectWalletBalance } from "@/hooks/mutations/use_correct_wallet_balance";
+import { centavosFrom } from "@/lib/money/peso_input";
 import { cashAdjustment } from "@/lib/wallets/reconcile";
 import type { Transaction, Wallet } from "@/types/domain";
 
@@ -62,9 +64,20 @@ export function BalanceCorrectionSheet({
   onDone,
   testID = "balance-correction-sheet",
 }: BalanceCorrectionSheetProps) {
-  // The RAW DIGITS, so "nothing typed" and "typed zero" stay different
-  // answers — the same reasoning cash_reconcile_sheet.tsx gives.
-  const [digits, setDigits] = useState("");
+  // WHAT THE USER KEYED, so "nothing typed" and "typed zero" stay different
+  // answers — the same reasoning cash_reconcile_sheet.tsx gives, and the
+  // reason `confirm` below refuses "" rather than treating it as 0.
+  //
+  // NEVER SEEDED FROM `wallet.balance` (numeric-input-system Task 13's seeding
+  // audit), and this sheet is exactly where that temptation lives: it is ABOUT
+  // entering a corrected balance, so pre-filling it with the recorded one
+  // looks helpful. Two reasons it stays "". First, the empty/zero distinction
+  // above is the whole refusal: a pre-filled field is already a typed answer,
+  // and a mis-tapped Save would commit the recorded figure as if the user had
+  // confirmed it. Second, a seed must go through `pesoInputFrom` and NOT
+  // `String(wallet.balance)` — the latter reads as pesos and inflates 100×,
+  // the bug already found twice in this workstream.
+  const [text, setText] = useState("");
   const [showError, setShowError] = useState(false);
   const [result, setResult] = useState<Transaction | null | undefined>(undefined);
 
@@ -76,11 +89,11 @@ export function BalanceCorrectionSheet({
   // than cash's.
   if (wallet.type === "cash" || wallet.type === "credit") return null;
 
-  const stated = centavosFromDigits(digits);
+  const stated = centavosFrom(text);
   const preview = cashAdjustment(wallet.balance, stated);
 
   function confirm(): void {
-    if (digits === "") {
+    if (text === "") {
       setShowError(true);
       return;
     }
@@ -113,14 +126,22 @@ export function BalanceCorrectionSheet({
           />
         </View>
 
-        <TextInput
+        {/* THE APP'S OWN KEYPAD (numeric-input-system Task 13), and inside a
+            Modal the panel comes from bottom_sheet.tsx's nested KeypadHost —
+            the root one would paint behind this dialog.
+
+            NO "0" PLACEHOLDER any more. On this sheet a typed 0 is a real and
+            consequential answer ("this wallet is empty", which writes off the
+            whole recorded balance), and an empty field is refused — so a
+            placeholder that LOOKS like a zero blurs the one distinction the
+            refusal below depends on. */}
+        <NumericField
           testID="balance-correction-amount"
-          value={digits}
-          onChangeText={setDigits}
-          keyboardType="number-pad"
-          placeholder="0"
-          accessibilityLabel="This wallet's actual balance"
-          className="rounded-lg border border-fg-2 px-3 py-2 text-fg dark:border-fg-2-dark dark:text-fg-dark"
+          label="This wallet's actual balance"
+          mode="peso"
+          placeholder="Type the amount"
+          value={text}
+          onChangeText={setText}
         />
         <AmountText testID="balance-correction-preview" amount={stated} size="lg" showSign={false} />
 

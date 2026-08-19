@@ -20,8 +20,11 @@
 // undone instead of a re-add from scratch.
 import { Pressable, Text, TextInput, View } from "react-native";
 
-import { AmountText, centavosFromDigits } from "@/components/ui/amount_text";
+import { AmountText } from "@/components/ui/amount_text";
+import { NumericField } from "@/components/ui/numeric_field";
+import { centavosFrom } from "@/lib/money/peso_input";
 import { WALLET_TYPE_LABELS, WALLET_TYPE_ORDER } from "@/lib/wallets/summary";
+import type { PesoInput } from "@/lib/money/peso_input";
 import type { WalletType } from "@/types/domain";
 
 export type WalletProposal = {
@@ -34,12 +37,21 @@ export type WalletProposal = {
   /** Whether this proposal will actually be created when the step submits. */
   included: boolean;
   /**
-   * Raw digits for "what's already in it" (device-testing fix, 2026-08-18,
-   * Task 4) — the same centavos-by-digit convention `centavosFromDigits`
-   * defines everywhere else in the app. Blank is a real, optional answer:
-   * it means ₱0.00 and must never block Continue.
+   * What the user has KEYED for "what's already in it" (device-testing fix,
+   * 2026-08-18, Task 4), as PESOS — "3000" is ₱3,000.00 and a fraction needs
+   * an explicit "." (numeric-input-system Task 13; `lib/money/peso_input.ts`).
+   *
+   * RENAMED FROM `openingBalanceDigits`. The old name said centavo-digits and
+   * it was true — the helper this field used to go through read "3000" as
+   * ₱30.00. Under `centavosFrom` the identical string is ₱3,000.00, so a name
+   * promising digits is now a standing invitation to seed this field with
+   * `String(someCentavos)` and inflate it 100× — the exact bug already found
+   * twice in this workstream. Seed it with `pesoInputFrom` or not at all.
+   *
+   * Blank is a real, optional answer: it means ₱0.00 and must never block
+   * Continue.
    */
-  openingBalanceDigits: string;
+  openingBalanceText: PesoInput;
 };
 
 export type QuickWalletListProps = {
@@ -47,7 +59,7 @@ export type QuickWalletListProps = {
   onRename: (key: string, name: string) => void;
   onChangeType: (key: string, type: WalletType) => void;
   onToggleIncluded: (key: string) => void;
-  onChangeOpeningBalance: (key: string, digits: string) => void;
+  onChangeOpeningBalance: (key: string, text: PesoInput) => void;
   testID?: string;
 };
 
@@ -62,9 +74,9 @@ function ProposalRow({
   onRename: (key: string, name: string) => void;
   onChangeType: (key: string, type: WalletType) => void;
   onToggleIncluded: (key: string) => void;
-  onChangeOpeningBalance: (key: string, digits: string) => void;
+  onChangeOpeningBalance: (key: string, text: PesoInput) => void;
 }) {
-  const { key, name, type, packageName, included, openingBalanceDigits } = proposal;
+  const { key, name, type, packageName, included, openingBalanceText } = proposal;
 
   return (
     <View testID={`wallet-proposal-${key}`} className="gap-2 rounded-2xl bg-surface p-4 dark:bg-surface-dark">
@@ -147,31 +159,43 @@ function ProposalRow({
         </View>
       ) : null}
 
-      {/* Task 4 rule 1: optional, blank by default, entered as raw digits —
-          the same centavos-by-digit convention Task 5 fixed the income field
-          to honestly reflect. Blank means ₱0.00, a real answer, not a missing
-          one, so it carries no error state and never blocks Continue. */}
+      {/* Task 4 rule 1: optional, blank by default. Blank means ₱0.00, a real
+          answer, not a missing one, so it carries no error state and never
+          blocks Continue.
+
+          THE APP'S OWN KEYPAD, NOT THE OS NUMBER PAD (numeric-input-system
+          Task 13). This is the field behind the owner's original report —
+          100000 typed here used to read as 100000 CENTAVOS, ₱1,000.00. It now
+          reads as pesos, and the field itself shows the grouped figure while
+          it is being typed, so the reading is on screen before Continue.
+
+          NumericField has no `editable`/`disabled` prop, so an excluded row is
+          disabled the way components/goals/allocation_sheet.tsx disables a
+          skipped one: pointerEvents on the wrapper, which leaves the amount
+          visible but genuinely un-pressable. The dimming that
+          `editable={included}` used to carry in text colour moves to the
+          wrapper's opacity, since the field owns its own classes. */}
       <View className="gap-1">
         <Text className="text-xs text-fg-2 dark:text-fg-2-dark">
           What&apos;s in it right now? (optional)
         </Text>
-        <TextInput
-          testID={`wallet-proposal-balance-${key}`}
-          value={openingBalanceDigits}
-          onChangeText={(digits) => onChangeOpeningBalance(key, digits)}
-          editable={included}
-          keyboardType="number-pad"
-          placeholder="0"
-          accessibilityLabel={`Opening balance for ${name || "this wallet"}`}
-          className={`rounded-lg border px-3 py-2 ${
-            included
-              ? "border-fg-2 text-fg dark:border-fg-2-dark dark:text-fg-dark"
-              : "border-fg-2 text-fg-2 dark:border-fg-2-dark dark:text-fg-2-dark"
-          }`}
-        />
+        <View pointerEvents={included ? "auto" : "none"} className={included ? "" : "opacity-50"}>
+          <NumericField
+            testID={`wallet-proposal-balance-${key}`}
+            label={`Opening balance for ${name || "this wallet"}`}
+            mode="peso"
+            // "Optional", not the old "0". A keypad field cannot be typed
+            // into directly, so its placeholder is the only thing standing in
+            // for an empty value — and a "0" there reads as a figure already
+            // entered rather than as a question not yet answered.
+            placeholder="Optional"
+            value={openingBalanceText}
+            onChangeText={(text) => onChangeOpeningBalance(key, text)}
+          />
+        </View>
         <AmountText
           testID={`wallet-proposal-balance-preview-${key}`}
-          amount={centavosFromDigits(openingBalanceDigits)}
+          amount={centavosFrom(openingBalanceText)}
           size="sm"
           showSign={false}
         />

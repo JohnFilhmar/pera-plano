@@ -14,9 +14,12 @@
 // re-implemented — these tests exercise that reuse through the sheet's own
 // interaction rather than re-testing the pure function a second time.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
+import { Modal } from "react-native";
 import type { ReactNode } from "react";
 
+import { KeypadHost } from "@/components/ui/keypad_host";
+import { KeypadProvider } from "@/contexts/keypad_context";
 import { BALANCE_CORRECTION_NOTE } from "@/hooks/mutations/use_correct_wallet_balance";
 import { closeDatabase } from "@/lib/db/database";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
@@ -24,6 +27,7 @@ import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions
 import { createWallet, getWallet } from "@/lib/db/repos/wallets_repo";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
+import { typeAmount } from "@/test_support/keypad";
 import type { Transaction, Wallet } from "@/types/domain";
 
 import { BalanceCorrectionSheet } from "../balance_correction_sheet";
@@ -39,19 +43,41 @@ function makeTestClient(): QueryClient {
   });
 }
 
+// A ROOT KeypadHost, MOUNTED BEFORE THE SHEET (numeric-input-system Task 13).
+// The amount is a NumericField now, and its `useKeypad()` throws with no
+// provider above it. bottom_sheet.tsx mounts a SECOND host inside its Modal,
+// and this root one is here so the suite proves the SHEET's host wins rather
+// than merely being the only one present: the context gives the panel to the
+// highest live token and effects flush in completion order, so the host
+// declared FIRST registers the LOWER token and the Modal's host outranks it.
+// Mounted after the sheet it would win instead — and on a device the panel
+// would paint behind the dialog with every test still green.
 function renderSheet(wallet: Wallet): void {
   const client = makeTestClient();
   function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    return (
+      <QueryClientProvider client={client}>
+        <KeypadProvider>
+          <KeypadHost />
+          {children}
+        </KeypadProvider>
+      </QueryClientProvider>
+    );
   }
   render(<BalanceCorrectionSheet wallet={wallet} visible onDismiss={jest.fn()} />, {
     wrapper: Wrapper,
   });
 }
 
-/** Types the stated figure in centavos-as-digits and confirms. */
-async function correct(digits: string): Promise<void> {
-  fireEvent.changeText(screen.getByTestId("balance-correction-amount"), digits);
+/**
+ * Keys the stated figure IN PESOS on the app's own keypad, then confirms.
+ *
+ * Every caller's keystrokes shrank by two digits (numeric-input-system Task
+ * 13) and not one of the amounts they assert moved: ₱500.00 was "50000" and
+ * is now "500", because a digit is a peso rather than a centavo.
+ */
+async function correct(pesos: string): Promise<void> {
+  typeAmount("balance-correction-amount", pesos);
   fireEvent.press(screen.getByTestId("balance-correction-confirm"));
 }
 
@@ -114,11 +140,57 @@ test("the notification-wins disclosure is shown before any input, not just after
   expect(warning).toHaveTextContent(/stays in your ledger and still counts/i);
 });
 
+// ---------------------------------------------------------------------------
+// The keypad (numeric-input-system Task 13). A sheet is a Modal — its own
+// native window — so which host draws the panel is not a detail: the root one
+// paints BEHIND the dialog.
+// ---------------------------------------------------------------------------
+
+describe("the corrected balance is keyed on the app's own keypad", () => {
+  test("the panel opens INSIDE the sheet's Modal, not behind it", () => {
+    renderSheet(gcash);
+
+    fireEvent.press(screen.getByTestId("balance-correction-amount"));
+
+    // Scoped to the Modal deliberately: a bare `getAllByTestId("keypad-host")`
+    // of length one cannot tell the sheet's host from the root one, which is
+    // exactly the mix-up that would ship a panel nobody can reach.
+    expect(within(screen.UNSAFE_getByType(Modal)).getByTestId("keypad-host")).toBeTruthy();
+    expect(screen.getByTestId("keypad-label")).toHaveTextContent("This wallet's actual balance");
+  });
+
+  test("a digit is a PESO — 100000 states a hundred thousand, not a thousand", async () => {
+    // The workstream's headline behaviour change, on the sheet whose entire
+    // job is entering a corrected balance. Recorded ₱800.00, stated
+    // ₱100,000.00 → ₱99,200.00 arrived that the app never saw.
+    renderSheet(gcash);
+
+    typeAmount("balance-correction-amount", "100000");
+
+    expect(screen.getByTestId("balance-correction-preview")).toHaveTextContent("₱100,000.00");
+
+    fireEvent.press(screen.getByTestId("balance-correction-confirm"));
+    await waitFor(async () => {
+      expect((await getWallet(gcash.id))?.balance).toBe(10_000_000);
+    });
+  });
+
+  test("a fraction needs an explicit decimal point", async () => {
+    renderSheet(gcash);
+
+    await correct("500.25");
+
+    await waitFor(async () => {
+      expect((await getWallet(gcash.id))?.balance).toBe(50_025);
+    });
+  });
+});
+
 describe("the adjustment it writes", () => {
   test("a shortfall writes ONE `out` transaction for the DIFFERENCE", async () => {
     // Recorded ₱800.00, actual ₱500.00 → ₱300.00 the app never saw leave.
     renderSheet(gcash);
-    await correct("50000");
+    await correct("500");
 
     await waitFor(async () => {
       expect(await listTransactions({ walletId: gcash.id })).toHaveLength(2);
@@ -135,7 +207,7 @@ describe("the adjustment it writes", () => {
 
   test("a surplus writes ONE `in` transaction for the DIFFERENCE", async () => {
     renderSheet(gcash);
-    await correct("95000");
+    await correct("950");
 
     await waitFor(async () => {
       expect(await listTransactions({ walletId: gcash.id })).toHaveLength(2);
@@ -150,7 +222,7 @@ describe("the adjustment it writes", () => {
 
   test("the wallet lands exactly on the figure the user typed", async () => {
     renderSheet(gcash);
-    await correct("50000");
+    await correct("500");
 
     await waitFor(async () => {
       expect((await getWallet(gcash.id))?.balance).toBe(50_000);
@@ -159,7 +231,7 @@ describe("the adjustment it writes", () => {
 
   test("it is a manual, recategorizable, uncategorized entry with no balanceAfter", async () => {
     renderSheet(gcash);
-    await correct("50000");
+    await correct("500");
 
     await waitFor(async () => {
       expect(await listTransactions({ walletId: gcash.id })).toHaveLength(2);
@@ -181,7 +253,7 @@ describe("the adjustment it writes", () => {
     const before = await ledger();
     renderSheet(gcash);
 
-    await correct("80000");
+    await correct("800");
 
     await waitFor(() => {
       expect(screen.getByTestId("balance-correction-result")).toBeTruthy();
@@ -197,7 +269,7 @@ describe("the adjustment it writes", () => {
     const before = await ledger();
     renderSheet(gcash);
 
-    await correct("50000");
+    await correct("500");
 
     await waitFor(async () => {
       expect(await listTransactions({ walletId: gcash.id })).toHaveLength(2);

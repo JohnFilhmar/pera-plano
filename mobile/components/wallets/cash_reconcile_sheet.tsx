@@ -18,12 +18,14 @@
 // and lose, leaving a transaction explaining a balance change that never
 // happened.
 import { useState } from "react";
-import { Text, TextInput, View } from "react-native";
+import { Text, View } from "react-native";
 
-import { AmountText, centavosFromDigits } from "@/components/ui/amount_text";
+import { AmountText } from "@/components/ui/amount_text";
 import { BottomSheet } from "@/components/ui/bottom_sheet";
 import { Button } from "@/components/ui/button";
+import { NumericField } from "@/components/ui/numeric_field";
 import { useReconcileCash } from "@/hooks/mutations/use_reconcile_cash";
+import { centavosFrom } from "@/lib/money/peso_input";
 import { cashAdjustment } from "@/lib/wallets/reconcile";
 import type { Transaction, Wallet } from "@/types/domain";
 
@@ -43,10 +45,18 @@ export function CashReconcileSheet({
   onDone,
   testID = "cash-reconcile-sheet",
 }: CashReconcileSheetProps) {
-  // The RAW DIGITS, so "nothing typed" and "typed zero" stay different answers.
-  // An empty pocket is a real thing to report; an untouched field is not, and
-  // both parse to 0.
-  const [digits, setDigits] = useState("");
+  // WHAT THE USER KEYED, so "nothing typed" and "typed zero" stay different
+  // answers. An empty pocket is a real thing to report; an untouched field is
+  // not, and both parse to 0.
+  //
+  // NEVER SEEDED FROM `wallet.balance` (numeric-input-system Task 13's seeding
+  // audit). Pre-filling the recorded figure would look helpful on a sheet
+  // whose whole subject is a balance, and it would destroy the distinction
+  // above — a pre-filled field is already a typed answer, so a mis-tapped Save
+  // would confirm the recorded figure on the user's behalf. Any seed would
+  // also have to be `pesoInputFrom(wallet.balance)`, never
+  // `String(wallet.balance)`: the latter reads as pesos and inflates 100×.
+  const [text, setText] = useState("");
   const [showError, setShowError] = useState(false);
   const [result, setResult] = useState<Transaction | null | undefined>(undefined);
 
@@ -57,11 +67,11 @@ export function CashReconcileSheet({
   // is not.
   if (wallet.type !== "cash") return null;
 
-  const physical = centavosFromDigits(digits);
+  const physical = centavosFrom(text);
   const preview = cashAdjustment(wallet.balance, physical);
 
   function confirm(): void {
-    if (digits === "") {
+    if (text === "") {
       setShowError(true);
       return;
     }
@@ -98,14 +108,22 @@ export function CashReconcileSheet({
           />
         </View>
 
-        <TextInput
+        {/* THE APP'S OWN KEYPAD (numeric-input-system Task 13), and inside a
+            Modal the panel comes from bottom_sheet.tsx's nested KeypadHost —
+            the root one would paint behind this dialog.
+
+            NO "0" PLACEHOLDER any more. A typed 0 here is a real and
+            consequential answer ("my pocket is empty", which writes off the
+            whole recorded balance), and an empty field is refused — so a
+            placeholder that LOOKS like a zero blurs the one distinction the
+            refusal below depends on. */}
+        <NumericField
           testID="reconcile-amount"
-          value={digits}
-          onChangeText={setDigits}
-          keyboardType="number-pad"
-          placeholder="0"
-          accessibilityLabel="Cash you have right now"
-          className="rounded-lg border border-fg-2 px-3 py-2 text-fg dark:border-fg-2-dark dark:text-fg-dark"
+          label="Cash you have right now"
+          mode="peso"
+          placeholder="Type the amount"
+          value={text}
+          onChangeText={setText}
         />
         <AmountText testID="reconcile-preview" amount={physical} size="lg" showSign={false} />
 

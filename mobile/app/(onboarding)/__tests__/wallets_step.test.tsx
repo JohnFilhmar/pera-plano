@@ -49,6 +49,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { ReactNode } from "react";
 
+import { KeypadHost } from "@/components/ui/keypad_host";
+import { KeypadProvider } from "@/contexts/keypad_context";
 import { listObservedPackages } from "@/modules/notification_listener";
 import { closeDatabase } from "@/lib/db/database";
 import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
@@ -56,6 +58,7 @@ import { listMatchers } from "@/lib/db/repos/wallet_matchers_repo";
 import { listWallets } from "@/lib/db/repos/wallets_repo";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
+import { typeAmount } from "@/test_support/keypad";
 import type { ObservedPackage } from "@/modules/notification_listener";
 
 import WalletsScreen from "@/app/(onboarding)/wallets";
@@ -78,10 +81,24 @@ function makeTestClient(): QueryClient {
   });
 }
 
+// KeypadProvider AND A HOST, MOUNTED BEFORE THE SCREEN (numeric-input-system
+// Task 13). The opening-balance field is a NumericField now, and its
+// `useKeypad()` throws with no provider above it; the host is what the panel
+// actually renders into, so `typeAmount` has nothing to press without one.
+// Host first, subject second: contexts/keypad_context.tsx hands the panel to
+// the HIGHEST live token, and effects flush in completion order, so a host
+// mounted after the screen would outrank anything the screen mounts itself.
 function renderScreen(): void {
   const client = makeTestClient();
   function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    return (
+      <QueryClientProvider client={client}>
+        <KeypadProvider>
+          <KeypadHost />
+          {children}
+        </KeypadProvider>
+      </QueryClientProvider>
+    );
   }
   render(<WalletsScreen />, { wrapper: Wrapper });
 }
@@ -238,13 +255,14 @@ describe("opening balances at creation (task-4-brief rule 1)", () => {
   test("a typed opening balance is what the wallet is actually created with", async () => {
     await renderReady([GCASH]);
 
-    fireEvent.changeText(screen.getByTestId(`wallet-proposal-balance-${GCASH}`), "300000");
+    // "3000", not "300000" (numeric-input-system Task 13): the wallet this
+    // test is about still opens at ₱3,000.00 — only the keystrokes that get
+    // it there changed, because a digit is a PESO now rather than a centavo.
+    typeAmount(`wallet-proposal-balance-${GCASH}`, "3000");
     fireEvent.press(screen.getByTestId("onboarding-primary-button"));
 
     await waitFor(async () => expect(await listWallets()).toHaveLength(2));
     const gcashWallet = (await listWallets()).find((wallet) => wallet.type === "e-wallet")!;
-    // ₱3,000.00, not ₱300,000.00 — centavos-by-digit, the same rule Task 5
-    // fixed the income field to honestly reflect.
     expect(gcashWallet.balance).toBe(300_000);
   });
 });

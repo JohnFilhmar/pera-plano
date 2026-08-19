@@ -65,7 +65,6 @@ import { Text, View } from "react-native";
 import { OnboardingFrame } from "@/components/onboarding/onboarding_frame";
 import { QuickWalletList } from "@/components/onboarding/quick_wallet_list";
 import type { WalletProposal } from "@/components/onboarding/quick_wallet_list";
-import { centavosFromDigits } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { providerLabel } from "@/constants/providers";
@@ -75,6 +74,7 @@ import { useRuleset } from "@/hooks/queries/use_ruleset";
 import { useWallets } from "@/hooks/queries/use_wallets";
 import { canCreateWallet } from "@/lib/entitlements";
 import { buildProviderChoices } from "@/lib/ingest/provider_catalogue";
+import { centavosFrom } from "@/lib/money/peso_input";
 import { matchersForProvider } from "@/lib/wallets/matchers";
 import { listObservedPackages } from "@/modules/notification_listener";
 
@@ -158,7 +158,7 @@ function proposalFor(choice: ProviderChoice, included: boolean): WalletProposal 
     packageName: choice.packageName,
     included,
     // Task 4 rule 1: optional, blank by default — the user opts in by typing.
-    openingBalanceDigits: "",
+    openingBalanceText: "",
   };
 }
 
@@ -169,7 +169,7 @@ const CASH_PROPOSAL: WalletProposal = {
   type: "cash",
   packageName: null,
   included: true,
-  openingBalanceDigits: "",
+  openingBalanceText: "",
 };
 
 /** A bridge failure degrades to "nothing observed" — the cash proposal alone
@@ -290,10 +290,10 @@ export default function WalletsScreen({
     );
   }
 
-  function changeOpeningBalance(key: string, digits: string): void {
+  function changeOpeningBalance(key: string, text: string): void {
     setProposals((current) =>
       current
-        ? current.map((p) => (p.key === key ? { ...p, openingBalanceDigits: digits } : p))
+        ? current.map((p) => (p.key === key ? { ...p, openingBalanceText: text } : p))
         : current,
     );
   }
@@ -343,13 +343,19 @@ export default function WalletsScreen({
         const wallet = await createWallet.mutateAsync({
           name: proposal.name.trim(),
           type: proposal.type,
-          // Task 4 rule 1: blank digits are ₱0.00 via centavosFromDigits,
-          // written the same way app/wallet/new.tsx already writes a manually
-          // created wallet's opening balance — an anchor on the brand-new
-          // row, not a patch on an existing one (wallet_form.tsx:11-13's
-          // "create-only" rule is about EDITING an existing wallet's balance,
-          // never about the very INSERT that gives it its first figure).
-          openingBalance: centavosFromDigits(proposal.openingBalanceDigits),
+          // Task 4 rule 1: a blank field is ₱0.00 via centavosFrom, written
+          // the same way app/wallet/new.tsx already writes a manually created
+          // wallet's opening balance — an anchor on the brand-new row, not a
+          // patch on an existing one (wallet_form.tsx:11-13's "create-only"
+          // rule is about EDITING an existing wallet's balance, never about
+          // the very INSERT that gives it its first figure).
+          //
+          // centavosFrom, replacing the centavos-by-digit helper this used to
+          // call (numeric-input-system Task 13): the proposal now carries what
+          // the user KEYED IN PESOS, so "3000" is ₱3,000.00. This screen is
+          // where the owner's report landed — 100000 used to become ₱1,000.00
+          // here.
+          openingBalance: centavosFrom(proposal.openingBalanceText),
         });
         // Both quick-added AND observed proposals carry their provider's FULL
         // package list in `pendingMatchers` now (see the init effect above,

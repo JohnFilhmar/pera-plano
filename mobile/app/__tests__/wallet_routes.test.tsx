@@ -32,6 +32,8 @@ import type { ReactNode } from "react";
 import { ScrollView, StyleSheet } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
+import { KeypadHost } from "@/components/ui/keypad_host";
+import { KeypadProvider } from "@/contexts/keypad_context";
 import { closeDatabase } from "@/lib/db/database";
 import { __setTierForTests } from "@/lib/entitlements";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
@@ -41,6 +43,7 @@ import { listMatchers, setMatchers } from "@/lib/db/repos/wallet_matchers_repo";
 import { archiveWallet, createWallet, getWallet, listWallets } from "@/lib/db/repos/wallets_repo";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
+import { typeAmount } from "@/test_support/keypad";
 import type { Wallet } from "@/types/domain";
 
 import NewWalletScreen from "../wallet/new";
@@ -66,10 +69,23 @@ function makeTestClient(): QueryClient {
   });
 }
 
+// KeypadProvider AND A ROOT HOST (numeric-input-system Task 13). The opening
+// balance is a NumericField, whose `useKeypad()` throws with no provider above
+// it, and `app/wallet/new.tsx` also mounts an UpgradeSheet whose Modal carries
+// a host of its own. Host BEFORE the screen: the context gives the panel to
+// the highest live token and effects flush in completion order, so a host
+// mounted after would outrank anything a Modal in the subtree mounts.
 function renderScreen(element: React.ReactElement): void {
   const client = makeTestClient();
   function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    return (
+      <QueryClientProvider client={client}>
+        <KeypadProvider>
+          <KeypadHost />
+          {children}
+        </KeypadProvider>
+      </QueryClientProvider>
+    );
   }
   render(element, { wrapper: Wrapper });
 }
@@ -95,7 +111,10 @@ function renderWithInsets(element: React.ReactElement): void {
           insets: { top: INSET_TOP, bottom: INSET_BOTTOM, left: 0, right: 0 },
         }}
       >
-        {element}
+        <KeypadProvider>
+          <KeypadHost />
+          {element}
+        </KeypadProvider>
       </SafeAreaProvider>
     </QueryClientProvider>,
   );
@@ -170,7 +189,10 @@ describe("creating a wallet", () => {
 
     fireEvent.changeText(screen.getByTestId("wallet-form-name"), "BPI");
     fireEvent.press(screen.getByTestId("wallet-form-type-bank"));
-    fireEvent.changeText(screen.getByTestId("wallet-form-opening-balance"), "250000");
+    // "2500", not the old "250000" (numeric-input-system Task 13): the wallet
+    // this test writes still opens at ₱2,500.00 — 250000 centavos. Only the
+    // keystrokes moved, because a digit is a peso now rather than a centavo.
+    typeAmount("wallet-form-opening-balance", "2500");
     fireEvent.press(screen.getByTestId("wallet-form-submit"));
 
     await waitFor(async () => {
@@ -527,6 +549,15 @@ describe("the wallet detail actions", () => {
 // `style` — the prop React Native actually reads to size and position it.
 // They cannot prove a button is physically above the nav bar; that is an A54
 // screenshot check.
+//
+// THE SCROLL VIEW THE TWO FORM ROUTES HOLD IS A FormScreen NOW
+// (numeric-input-system Task 13). The claim under test is unchanged and is
+// the point of the house pattern: the INSETS LIVE ON THE OUTER VIEW and the
+// scrolling surface inside it carries none of its own, so the viewport never
+// extends into either system bar. Only the identity of that surface moved,
+// from a plain ScrollView to FormScreen's KeyboardAwareScrollView, so these
+// two assertions name it by testID rather than by type. `wallet detail` is
+// untouched and still holds a real ScrollView.
 // ---------------------------------------------------------------------------
 
 describe("system-bar clearance", () => {
@@ -560,7 +591,7 @@ describe("system-bar clearance", () => {
       top: INSET_TOP,
       bottom: INSET_BOTTOM,
     });
-    expect(paddingOf(screen.UNSAFE_getByType(ScrollView))).toEqual({
+    expect(paddingOf(screen.getByTestId("wallet-new-scroll"))).toEqual({
       top: undefined,
       bottom: undefined,
     });
@@ -577,9 +608,29 @@ describe("system-bar clearance", () => {
       top: INSET_TOP,
       bottom: INSET_BOTTOM,
     });
-    expect(paddingOf(screen.UNSAFE_getByType(ScrollView))).toEqual({
+    expect(paddingOf(screen.getByTestId("wallet-edit-scroll"))).toEqual({
       top: undefined,
       bottom: undefined,
     });
+  });
+
+  // The half a padding assertion cannot state: the scrolling surface is the
+  // KEYBOARD-AWARE one, so it is the thing that grows for the keypad. Nesting
+  // it inside another ScrollView (what these routes did before Task 13) left
+  // the outer one holding all the scroll range, and FormScreen's avoidance
+  // became a silent no-op — the defect Task 10 hit on the loans route.
+  test("the two form routes scroll through FormScreen, not a plain ScrollView", async () => {
+    await renderNew();
+
+    const surface = screen.getByTestId("wallet-new-scroll");
+    expect(surface.props.contentContainerStyle).toEqual(
+      expect.objectContaining({ flexGrow: 1, paddingBottom: expect.any(Number) }),
+    );
+    // EXACTLY ONE scrolling surface on the screen, and it is FormScreen's own
+    // — react-native-keyboard-controller's jest mock renders a real
+    // ScrollView underneath KeyboardAwareScrollView, so this counts the total.
+    // Before Task 13 there were two, and the outer one held all the scroll
+    // range. A second appearing here again is that regression.
+    expect(screen.UNSAFE_queryAllByType(ScrollView)).toHaveLength(1);
   });
 });

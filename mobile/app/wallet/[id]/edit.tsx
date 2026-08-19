@@ -18,10 +18,11 @@
 // reassigns a provider on the way to reporting the error.
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useState } from "react";
-import { ScrollView, View } from "react-native";
+import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { EmptyState } from "@/components/ui/empty_state";
+import { FormScreen } from "@/components/ui/form_screen";
 import { WalletForm } from "@/components/wallets/wallet_form";
 import type { WalletFormValues } from "@/components/wallets/wallet_form";
 import { useSetWalletMatchers } from "@/hooks/mutations/use_set_wallet_matchers";
@@ -92,22 +93,40 @@ export default function EditWalletScreen() {
 
   return (
     // DEVICE-TESTING FIX (2026-08-18, Task 2): the insets used to sit on the
-    // ScrollView's `style` prop, which is the ScrollView's OUTER FRAME, not
-    // its scrolling content — so "Save wallet" rendered under Android's
-    // navigation bar (this is the screen from the owner's report: "Which
-    // notifications land here?" above a buried "Save wallet"). Matches
-    // `app/review/index.tsx`'s shape (insets on a padding-free outer View
-    // wrapping the ScrollView), the same house pattern
-    // `components/onboarding/onboarding_frame.tsx` and this task's other two
-    // screens (`app/wallet/[id].tsx`, `app/wallet/new.tsx`) use, rather than
-    // inventing a fourth: the outer View reserves both system-bar edges
-    // first, so the ScrollView's own viewport never extends into either one.
+    // scroll view's `style` prop, which is its OUTER FRAME, not its scrolling
+    // content — so "Save wallet" rendered under Android's navigation bar (this
+    // is the screen from the owner's report: "Which notifications land here?"
+    // above a buried "Save wallet"). Matches `app/review/index.tsx`'s shape
+    // (insets on a padding-free outer View wrapping the scroll view), the same
+    // house pattern `components/onboarding/onboarding_frame.tsx` and this
+    // task's other two screens (`app/wallet/[id].tsx`, `app/wallet/new.tsx`)
+    // use, rather than inventing a fourth: the outer View reserves both
+    // system-bar edges first, so the scroll view's own viewport never extends
+    // into either one.
+    //
+    // THE PATTERN IS KEPT; ONLY THE SCROLL VIEW CHANGED (numeric-input-system
+    // Task 13) — see app/wallet/new.tsx for the full reasoning. In short: the
+    // outer View protects the VIEWPORT BOUNDARY and does that whatever
+    // scrolls inside, so it is untouched; the inner plain ScrollView could not
+    // stay, because FormScreen IS a keyboard-aware scroll view and nesting one
+    // inside another leaves the outer one holding every bit of scroll range.
+    // FormScreen replaces it IN PLACE — same slot inside the inset-bearing
+    // View, still no system-bar padding of its own. The dropped
+    // `className="flex-1"` was redundant: React Native composes
+    // `{ flexGrow: 1, flexShrink: 1 }` under every ScrollView's `style`.
+    //
+    // THIS ROUTE HAS NO AMOUNT FIELD AT ALL (the opening balance is
+    // create-only — wallet_form.tsx:10-14), and it still gets FormScreen: the
+    // form is long, its Save button is the thing that was buried, and its name
+    // field raises the SYSTEM keyboard, which is the half FormScreen handles
+    // with no configuration. A route left on a plain ScrollView because "there
+    // is no keypad here" would keep exactly the bug the owner reported.
     <View
       testID="wallet-edit"
       className="flex-1 bg-bg dark:bg-bg-dark"
       style={{ paddingTop: insets.top, paddingBottom: insets.bottom }}
     >
-      <ScrollView className="flex-1">
+      <FormScreen testID="wallet-edit-scroll">
         <WalletForm
           // Remounts when the wallet's stored matchers arrive, so the form's
           // initial state is the real one. Without it the picker would seed
@@ -130,7 +149,7 @@ export default function EditWalletScreen() {
           owners={ownersFrom(allMatchers ?? [], wallets ?? [])}
           walletId={walletId}
         />
-      </ScrollView>
+      </FormScreen>
     </View>
   );
 }

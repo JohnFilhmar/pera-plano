@@ -18,11 +18,13 @@
 import { useState } from "react";
 import { Text, TextInput, View } from "react-native";
 
-import { AmountText, centavosFromDigits } from "@/components/ui/amount_text";
+import { AmountText } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { ListRow } from "@/components/ui/list_row";
+import { NumericField } from "@/components/ui/numeric_field";
 import { SectionHeader } from "@/components/ui/section_header";
+import { centavosFrom } from "@/lib/money/peso_input";
 import { WALLET_TYPE_LABELS, WALLET_TYPE_ORDER } from "@/lib/wallets/summary";
 import type { MatcherOwner } from "@/lib/wallets/matchers";
 import type { ProviderRuleset } from "@/lib/ingest/ruleset_types";
@@ -68,9 +70,17 @@ export function WalletForm({
 }: WalletFormProps) {
   const [name, setName] = useState(initial?.name ?? "");
   const [type, setType] = useState<WalletType | null>(initial?.type ?? null);
-  // The RAW DIGITS, not a parsed number: centavos are built from keystrokes and
-  // a formatted string is never parsed back (see `centavosFromDigits`).
-  const [balanceDigits, setBalanceDigits] = useState("");
+  // WHAT THE USER KEYED, not a parsed number — centavos are derived from it on
+  // submit and a formatted string is never parsed back (lib/money/peso_input.ts).
+  //
+  // ALWAYS "", NEVER SEEDED FROM `initial` (numeric-input-system Task 13's
+  // seeding audit). `initial.openingBalance` is Centavos and the field is
+  // PESO TEXT, so a future `String(initial.openingBalance)` here would be a
+  // silent 100× — the bug already found twice in this workstream. There is
+  // nothing to seed anyway: the field is create-only (file header), and a
+  // brand-new wallet has no balance yet. Should a seeded default ever be
+  // wanted, it is `pesoInputFrom(initial.openingBalance)` and nothing else.
+  const [balanceText, setBalanceText] = useState("");
   const [matchers, setMatchers] = useState<NewWalletMatcher[]>(initial?.matchers ?? []);
   const [showErrors, setShowErrors] = useState(false);
 
@@ -97,13 +107,18 @@ export function WalletForm({
     onSubmit({
       name: trimmedName,
       type,
-      openingBalance: centavosFromDigits(balanceDigits),
+      openingBalance: centavosFrom(balanceText),
       matchers: type === "cash" ? [] : matchers,
     });
   }
 
   return (
-    <View testID={testID} className="gap-2 pb-8">
+    // No `pb-8` any more (numeric-input-system Task 13). Both routes wrap this
+    // form in FormScreen, whose contentContainerStyle already reserves
+    // Math.max(keypadHeight, 0) + 24 at the bottom; a second bottom padding
+    // here would double-count that edge — the defect Task 9's fix round
+    // removed from the manual-entry form.
+    <View testID={testID} className="gap-2">
       <View className="gap-1 px-4 pt-4">
         <Text className="text-sm text-fg-2 dark:text-fg-2-dark">Name</Text>
         <TextInput
@@ -147,18 +162,29 @@ export function WalletForm({
           <Text className="text-sm text-fg-2 dark:text-fg-2-dark">
             What is in it right now? (optional)
           </Text>
-          <TextInput
+          {/* THE APP'S OWN KEYPAD, NOT THE OS NUMBER PAD (numeric-input-system
+              Task 13). "1000" here is ₱1,000.00 now; it used to be ₱10.00,
+              and the same field in onboarding is where the owner typed 100000
+              and was shown ₱1,000.00.
+
+              "Optional", not the old "0", as the empty-state text: a keypad
+              field cannot be typed into directly, so its placeholder is the
+              only thing standing in for an empty value, and a "0" there reads
+              as a figure already entered rather than a question unanswered. */}
+          <NumericField
             testID="wallet-form-opening-balance"
-            value={balanceDigits}
-            onChangeText={setBalanceDigits}
-            keyboardType="number-pad"
-            placeholder="0"
-            accessibilityLabel="Opening balance"
-            className="rounded-lg border border-fg-2 px-3 py-2 text-fg dark:border-fg-2-dark dark:text-fg-dark"
+            label="Opening balance"
+            mode="peso"
+            placeholder="Optional"
+            value={balanceText}
+            onChangeText={setBalanceText}
           />
+          {/* The field shows what is being typed; this states the figure the
+              way the ledger will hold it, centavos included — the same echo
+              the income and limit amount fields keep. */}
           <AmountText
             testID="wallet-form-opening-balance-preview"
-            amount={centavosFromDigits(balanceDigits)}
+            amount={centavosFrom(balanceText)}
             size="lg"
             showSign={false}
           />

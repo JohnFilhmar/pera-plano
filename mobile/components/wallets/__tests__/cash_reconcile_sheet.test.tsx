@@ -24,9 +24,12 @@
 //   being something a user can check — so the existing rows are captured before
 //   and compared field-for-field after.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
+import { Modal } from "react-native";
 import type { ReactNode } from "react";
 
+import { KeypadHost } from "@/components/ui/keypad_host";
+import { KeypadProvider } from "@/contexts/keypad_context";
 import { closeDatabase } from "@/lib/db/database";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions_repo";
@@ -34,6 +37,7 @@ import { createWallet, getWallet } from "@/lib/db/repos/wallets_repo";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { RECONCILE_NOTE } from "@/lib/wallets/reconcile";
 import { freshDb } from "@/test_support/db";
+import { typeAmount } from "@/test_support/keypad";
 import type { Transaction, Wallet } from "@/types/domain";
 
 import { CashReconcileSheet } from "../cash_reconcile_sheet";
@@ -49,19 +53,40 @@ function makeTestClient(): QueryClient {
   });
 }
 
+// A ROOT KeypadHost, MOUNTED BEFORE THE SHEET (numeric-input-system Task 13).
+// The amount is a NumericField now, and its `useKeypad()` throws with no
+// provider above it. bottom_sheet.tsx mounts a SECOND host inside its Modal,
+// and this root one is here so the suite proves the SHEET's host wins rather
+// than merely being the only one present: the context gives the panel to the
+// highest live token and effects flush in completion order, so the host
+// declared FIRST registers the LOWER token and the Modal's host outranks it.
 function renderSheet(wallet: Wallet): void {
   const client = makeTestClient();
   function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    return (
+      <QueryClientProvider client={client}>
+        <KeypadProvider>
+          <KeypadHost />
+          {children}
+        </KeypadProvider>
+      </QueryClientProvider>
+    );
   }
   render(<CashReconcileSheet wallet={wallet} visible onDismiss={jest.fn()} />, {
     wrapper: Wrapper,
   });
 }
 
-/** Types the physical figure in centavos-as-digits and confirms. */
-async function reconcile(digits: string): Promise<void> {
-  fireEvent.changeText(screen.getByTestId("reconcile-amount"), digits);
+/**
+ * Keys the physical figure IN PESOS on the app's own keypad, then confirms.
+ *
+ * Every caller's keystrokes shrank by two digits (numeric-input-system Task
+ * 13) and not one of the amounts they assert moved: ₱500.00 was "50000" and
+ * is now "500", because a digit is a peso rather than a centavo. "0" is the
+ * one that stays as it was — an empty pocket is 0 either way.
+ */
+async function reconcile(pesos: string): Promise<void> {
+  typeAmount("reconcile-amount", pesos);
   fireEvent.press(screen.getByTestId("reconcile-confirm"));
 }
 
@@ -107,11 +132,53 @@ test("the sheet asks the spec's question and states the recorded figure", () => 
   expect(screen.getByTestId("reconcile-recorded")).toHaveTextContent("₱800.00");
 });
 
+// ---------------------------------------------------------------------------
+// The keypad (numeric-input-system Task 13). A sheet is a Modal — its own
+// native window — so which host draws the panel is not a detail: the root one
+// paints BEHIND the dialog.
+// ---------------------------------------------------------------------------
+
+describe("the pocket figure is keyed on the app's own keypad", () => {
+  test("the panel opens INSIDE the sheet's Modal, not behind it", () => {
+    renderSheet(cash);
+
+    fireEvent.press(screen.getByTestId("reconcile-amount"));
+
+    // Scoped to the Modal deliberately: a bare `getAllByTestId("keypad-host")`
+    // of length one cannot tell the sheet's host from the root one.
+    expect(within(screen.UNSAFE_getByType(Modal)).getByTestId("keypad-host")).toBeTruthy();
+    expect(screen.getByTestId("keypad-label")).toHaveTextContent("Cash you have right now");
+  });
+
+  test("a digit is a PESO — 100000 states a hundred thousand, not a thousand", async () => {
+    renderSheet(cash);
+
+    typeAmount("reconcile-amount", "100000");
+
+    expect(screen.getByTestId("reconcile-preview")).toHaveTextContent("₱100,000.00");
+
+    fireEvent.press(screen.getByTestId("reconcile-confirm"));
+    await waitFor(async () => {
+      expect((await getWallet(cash.id))?.balance).toBe(10_000_000);
+    });
+  });
+
+  test("loose change needs an explicit decimal point", async () => {
+    renderSheet(cash);
+
+    await reconcile("500.25");
+
+    await waitFor(async () => {
+      expect((await getWallet(cash.id))?.balance).toBe(50_025);
+    });
+  });
+});
+
 describe("the adjustment it writes", () => {
   test("a shortfall writes ONE `out` transaction for the DIFFERENCE", async () => {
     // Recorded ₱800.00, pocket holds ₱500.00 → ₱300.00 spent unseen.
     renderSheet(cash);
-    await reconcile("50000");
+    await reconcile("500");
 
     await waitFor(async () => {
       expect(await listTransactions({ walletId: cash.id })).toHaveLength(2);
@@ -128,7 +195,7 @@ describe("the adjustment it writes", () => {
 
   test("a surplus writes ONE `in` transaction for the DIFFERENCE", async () => {
     renderSheet(cash);
-    await reconcile("95000");
+    await reconcile("950");
 
     await waitFor(async () => {
       expect(await listTransactions({ walletId: cash.id })).toHaveLength(2);
@@ -143,7 +210,7 @@ describe("the adjustment it writes", () => {
 
   test("the wallet lands exactly on the figure the user typed", async () => {
     renderSheet(cash);
-    await reconcile("50000");
+    await reconcile("500");
 
     // Spec rule 4: reconciliation resets the wallet's computed-balance anchor
     // to the entered amount. Writing the delta through the ordinary commit path
@@ -156,7 +223,7 @@ describe("the adjustment it writes", () => {
 
   test("it is a manual, recategorizable, uncategorized entry", async () => {
     renderSheet(cash);
-    await reconcile("50000");
+    await reconcile("500");
 
     await waitFor(async () => {
       expect(await listTransactions({ walletId: cash.id })).toHaveLength(2);
@@ -195,7 +262,7 @@ describe("the adjustment it writes", () => {
     const before = await ledger();
     renderSheet(cash);
 
-    await reconcile("80000");
+    await reconcile("800");
 
     await waitFor(() => {
       expect(screen.getByTestId("reconcile-result")).toBeTruthy();
@@ -209,7 +276,7 @@ describe("the adjustment it writes", () => {
     const before = await ledger();
     renderSheet(cash);
 
-    await reconcile("50000");
+    await reconcile("500");
 
     await waitFor(async () => {
       expect(await listTransactions({ walletId: cash.id })).toHaveLength(2);

@@ -17,10 +17,11 @@
 // binding a provider to a wallet that might fail to save on a duplicate name.
 import { useRouter } from "expo-router";
 import { useState } from "react";
-import { ScrollView, View } from "react-native";
+import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { UpgradeSheet } from "@/components/gates/upgrade_sheet";
+import { FormScreen } from "@/components/ui/form_screen";
 import { WalletForm } from "@/components/wallets/wallet_form";
 import type { WalletFormValues } from "@/components/wallets/wallet_form";
 import { useCreateWallet } from "@/hooks/mutations/use_create_wallet";
@@ -96,19 +97,42 @@ export default function NewWalletScreen() {
 
   return (
     // DEVICE-TESTING FIX (2026-08-18, Task 2): the insets used to sit on the
-    // ScrollView's `style` prop, which is the ScrollView's OUTER FRAME, not
-    // its scrolling content — so "Add wallet" could render under Android's
-    // navigation bar. Matches `app/review/index.tsx`'s shape (insets on a
-    // padding-free outer View wrapping the ScrollView), the same house
-    // pattern `components/onboarding/onboarding_frame.tsx` uses, rather than
-    // inventing a third: the outer View reserves both system-bar edges
-    // first, so the ScrollView's own viewport never extends into either one.
+    // scroll view's `style` prop, which is its OUTER FRAME, not its scrolling
+    // content — so "Add wallet" could render under Android's navigation bar.
+    // Matches `app/review/index.tsx`'s shape (insets on a padding-free outer
+    // View wrapping the scroll view), the same house pattern
+    // `components/onboarding/onboarding_frame.tsx` uses, rather than inventing
+    // a third: the outer View reserves both system-bar edges first, so the
+    // scroll view's own viewport never extends into either one.
+    //
+    // THE PATTERN IS KEPT; ONLY THE SCROLL VIEW CHANGED (numeric-input-system
+    // Task 13). What that outer View protects is the VIEWPORT BOUNDARY, and it
+    // protects it whatever scrolls inside — so it stays exactly as it was,
+    // still the only holder of insets, still padding-free elsewhere. What
+    // could not stay is the inner plain `ScrollView`: FormScreen IS a
+    // (keyboard-avoiding) scroll view, and nesting one inside another leaves
+    // the OUTER one — which knows nothing about the keypad — holding all the
+    // scroll range, so FormScreen's avoidance and its
+    // `paddingBottom: keypadHeight + 24` become silent no-ops. That is the
+    // defect Task 10 hit on the loans route. FormScreen therefore REPLACES the
+    // ScrollView in place rather than wrapping or being wrapped by it: same
+    // slot inside the inset-bearing View, still no padding of its own for
+    // either system bar.
+    //
+    // The removed `className="flex-1"` was redundant, not lost: React Native
+    // composes `{ flexGrow: 1, flexShrink: 1 }` under every ScrollView's own
+    // `style` (ScrollView.js's `baseVertical`), so the surface still fills and
+    // shrinks to the safe region this View defines. FormScreen exposes no
+    // className, and it does not need one.
+    //
+    // The UpgradeSheet moves OUT of it in the same edit — it is a Modal, its
+    // own native window, and never was scrolling content.
     <View
       testID="wallet-new"
       className="flex-1 bg-bg dark:bg-bg-dark"
       style={{ paddingTop: insets.top, paddingBottom: insets.bottom }}
     >
-      <ScrollView className="flex-1">
+      <FormScreen testID="wallet-new-scroll">
         <WalletForm
           submitLabel="Add wallet"
           onSubmit={save}
@@ -118,8 +142,8 @@ export default function NewWalletScreen() {
           owners={ownersFrom(matchers ?? [], wallets)}
           showOpeningBalance
         />
-        <UpgradeSheet visible={capped} onClose={() => setCapped(false)} capability="wallets" />
-      </ScrollView>
+      </FormScreen>
+      <UpgradeSheet visible={capped} onClose={() => setCapped(false)} capability="wallets" />
     </View>
   );
 }
