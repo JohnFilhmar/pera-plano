@@ -23,7 +23,10 @@ jest.mock("@react-native-community/datetimepicker", () => {
         <Pressable testID="picker-cancel" onPress={() => onChange({ type: "dismissed" }, undefined)}>
           <Text>cancel</Text>
         </Pressable>
-        <Text testID="picker-value">{`${value.getFullYear()}`}</Text>
+        {/* getMonth() is 0-indexed and deliberately NOT adjusted here: this
+            renders exactly what the picker was handed, so a wrong month (or
+            day) shows up as a wrong number instead of being reformatted away. */}
+        <Text testID="picker-value">{`${value.getFullYear()}-${value.getMonth()}-${value.getDate()}`}</Text>
       </>
     ),
   };
@@ -55,6 +58,20 @@ test("pressing the field opens the picker", () => {
   fireEvent.press(screen.getByTestId("due"));
 
   expect(screen.getByTestId("picker-pick")).toBeTruthy();
+});
+
+test("an existing value opens the picker on the matching local calendar date", () => {
+  render(<Harness initial="2026-09-30" />);
+
+  fireEvent.press(screen.getByTestId("due"));
+
+  // September is month index 8, not 9 -- this is the reverse half of the
+  // toISOString-class bug the component exists to prevent. A component that
+  // passed `month` instead of `month - 1` into the picker's Date would land
+  // on index 9 (October) here, and none of the other tests would catch it:
+  // they only round-trip through a picked Date, never seed one from an
+  // existing IsoDate.
+  expect(String(screen.getByTestId("picker-value").props.children)).toBe("2026-8-30");
 });
 
 test("choosing a date yields a local YYYY-MM-DD and closes the picker", () => {

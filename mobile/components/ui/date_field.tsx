@@ -3,29 +3,33 @@
 //
 // IsoDate IN, IsoDate OUT. No Date object crosses this boundary and nothing
 // here calls toISOString: that method is UTC, and for a UTC+8 user picking a
-// date late in the evening it names YESTERDAY. The conversion below reads the
-// local calendar fields off the Date the picker hands back, which is the same
-// rule components/transactions/day_group_header.tsx already follows.
+// date late in the evening it names YESTERDAY. Conversion is delegated to
+// lib/dates.ts's toDateIso/parseDateIso -- that file is the control plane for
+// this exact 'YYYY-MM-DD' <-> Date conversion (see its header) -- rather than
+// a second local-calendar-field implementation, which is the same call
+// components/transactions/day_group_header.tsx's header explains: two copies
+// of the same instant is how they end up disagreeing about it.
 import { useState } from "react";
 import { Pressable, Text } from "react-native";
 import DateTimePicker from "@react-native-community/datetimepicker";
 
+import { parseDateIso, toDateIso } from "@/lib/dates";
 import type { IsoDate } from "@/types/domain";
 
-/** A Date -> the LOCAL calendar day it names. Never toISOString. */
-function isoDateFrom(date: Date): IsoDate {
-  const year = String(date.getFullYear()).padStart(4, "0");
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-/** `'YYYY-MM-DD'` -> a local Date at midnight, or today when absent/unparseable. */
+/**
+ * `'YYYY-MM-DD'` -> a local Date at midnight, or today when absent/unparseable.
+ *
+ * The guard runs BEFORE `parseDateIso`, not after: that function does no
+ * validation at all (by design -- see its header), so a garbage or partial
+ * string would otherwise silently produce an Invalid Date, or (worse, for a
+ * zero-valued component like "2026-00-19") a Date that quietly rolled back a
+ * month/year instead of the "fall back to today" this field has always done.
+ */
 function dateFrom(value: IsoDate | null): Date {
   if (value === null) return new Date();
   const [year, month, day] = value.split("-").map(Number);
   if (!year || !month || !day) return new Date();
-  return new Date(year, month - 1, day);
+  return parseDateIso(value);
 }
 
 export type DateFieldProps = {
@@ -77,7 +81,7 @@ export function DateField({
             // either way or the next press re-opens nothing.
             setOpen(false);
             if (event.type !== "set" || picked === undefined) return;
-            onChange(isoDateFrom(picked));
+            onChange(toDateIso(picked));
           }}
         />
       ) : null}
