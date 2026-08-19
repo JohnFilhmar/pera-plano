@@ -100,7 +100,7 @@ export function GoalForm({
         <DateField
           testID="goal-target-date"
           label="By when? (optional)"
-          placeholder="YYYY-MM-DD"
+          placeholder="Pick a date"
           value={targetDate}
           onChange={setTargetDate}
           // A goal deadline is always in the future — GoalForm has no

@@ -9,14 +9,14 @@
 // screen-level wrapper and does not belong here, and this file's layout is
 // otherwise untouched. What DOES change: the row amount fields now go through
 // NumericField, and BottomSheet already mounts its own KeypadHost inside its
-// Modal — see the "keypad draws above the sheet" test below, the first in
-// this branch to exercise that mount for real.
-import { fireEvent, render, screen } from "@testing-library/react-native";
+// Modal — see the "keypad draws above the sheet" test below.
+import { fireEvent, render, screen, within } from "@testing-library/react-native";
+import { Modal } from "react-native";
 
 import { KeypadHost } from "@/components/ui/keypad_host";
 import { KeypadProvider } from "@/contexts/keypad_context";
 import type { AllocationProposal } from "@/lib/goals/goals_service";
-import { clearAmount, typeAmount } from "@/test_support/keypad";
+import { clearAmount, closeKeypad, openKeypad, typeAmount } from "@/test_support/keypad";
 
 import { AllocationSheet } from "../allocation_sheet";
 
@@ -42,11 +42,25 @@ const TRAVEL: AllocationProposal = {
 // KeypadProvider above it — see test_support/keypad.ts's header. The root
 // <KeypadHost /> here stands in for app/_layout.tsx's; BottomSheet mounts a
 // second one itself, inside its Modal, whenever `visible` is true.
+//
+// ORDER IS LOAD-BEARING: <KeypadHost /> comes BEFORE <AllocationSheet />.
+// React fires mount effects child-before-parent, sibling-in-order, so the
+// FIRST child's whole subtree (including anything it nests) completes its
+// effects before the SECOND child's. With AllocationSheet first, its
+// sheet-nested host would register (and take its token) before this root
+// one — the exact wrong order review caught in this file's first draft: it
+// silently made the ROOT host active in every test, the one configuration
+// keypad_host.tsx's header calls "behind" the sheet. This order instead
+// mirrors app/_layout.tsx: the root host is mounted at app startup (first),
+// and a sheet's own host only comes into being once the sheet is visible
+// (second, here — and always, for a real sheet, since BottomSheet returns
+// null while invisible), so it registers later and wins, same as the app.
 function renderSheet(over: Partial<Parameters<typeof AllocationSheet>[0]> = {}) {
   const onConfirm = jest.fn();
   const onDismiss = jest.fn();
   render(
     <KeypadProvider>
+      <KeypadHost />
       <AllocationSheet
         visible
         proposals={[EMERGENCY, TRAVEL]}
@@ -55,7 +69,6 @@ function renderSheet(over: Partial<Parameters<typeof AllocationSheet>[0]> = {}) 
         onDismiss={onDismiss}
         {...over}
       />
-      <KeypadHost />
     </KeypadProvider>,
   );
   return { onConfirm, onDismiss };
@@ -201,13 +214,28 @@ test("an invisible sheet renders nothing", () => {
 // app/_layout.tsx's) would paint BEHIND it. BottomSheet mounts a SECOND
 // KeypadHost inside its own Modal for exactly this reason, and
 // keypad_context.tsx's token registry hands the panel to the most recently
-// mounted host. This is the first test in the branch to exercise that path.
+// mounted host — see renderSheet's own comment for why its mount ORDER is
+// what makes that true here rather than merely asserted.
 // ---------------------------------------------------------------------------
 test("the keypad draws above the sheet, not behind it", () => {
   renderSheet();
 
   clearAmount(`allocation-amount-${EMERGENCY.goalId}`);
-  typeAmount(`allocation-amount-${EMERGENCY.goalId}`, "500");
+  openKeypad(`allocation-amount-${EMERGENCY.goalId}`);
+
+  // Exactly one host is live (the other's `visible` is false and it renders
+  // null — see keypad_host.tsx), and it is the one INSIDE the sheet's own
+  // Modal, not renderSheet's root stand-in. Deleting BottomSheet's own
+  // <KeypadHost /> (bottom_sheet.tsx) makes the `within` line below throw —
+  // verified by mutation: the root host would then be the lone survivor,
+  // found by getAllByTestId but not inside the Modal.
+  expect(screen.getAllByTestId("keypad-host")).toHaveLength(1);
+  within(screen.UNSAFE_getByType(Modal)).getByTestId("keypad-host");
+
+  for (const key of "500") {
+    fireEvent.press(screen.getByTestId(`keypad-key-${key}`));
+  }
+  closeKeypad();
 
   // "₱500" (no forced decimals) is the field's OWN live display — distinct
   // from the row's separate formatCentavos summary a line below, which would
