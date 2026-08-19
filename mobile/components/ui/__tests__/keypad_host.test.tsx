@@ -1,9 +1,10 @@
 // mobile/components/ui/__tests__/keypad_host.test.tsx — W1 Task 4.
 import { act, fireEvent, render, screen } from "@testing-library/react-native";
-import { BackHandler, Pressable, Text } from "react-native";
+import { BackHandler, Modal, Pressable, Text } from "react-native";
 import { useEffect, useState } from "react";
 
 import { KeypadProvider, useKeypad } from "@/contexts/keypad_context";
+import { BottomSheet } from "../bottom_sheet";
 import { KeypadHost } from "../keypad_host";
 
 /**
@@ -183,6 +184,16 @@ test("integer mode shows the raw number and refuses the decimal key", () => {
   expect(screen.getByTestId("value-amount").props.children).toBe("6");
 });
 
+test("renders nothing when there is no KeypadProvider above it", () => {
+  // The reason KeypadHost reads the context optionally. components/ui/
+  // bottom_sheet.tsx mounts one inside every sheet, and BottomSheet is a
+  // shared primitive that a dozen suites render on its own — a throwing read
+  // would make KeypadProvider a dependency of all of them.
+  render(<KeypadHost />);
+
+  expect(screen.queryByTestId("keypad-host")).toBeNull();
+});
+
 test("only the most recently mounted host draws the panel", () => {
   render(
     <KeypadProvider>
@@ -196,4 +207,64 @@ test("only the most recently mounted host draws the panel", () => {
 
   // Two hosts are mounted; exactly one renders.
   expect(screen.getAllByTestId("keypad-host")).toHaveLength(1);
+});
+
+/**
+ * SYSTEM BACK INSIDE A SHEET GOES THROUGH THE MODAL, NOT THROUGH BackHandler.
+ *
+ * On Android a Modal is a Dialog, and its key listener swallows KEYCODE_BACK
+ * and calls `onRequestClose`; the Activity back press that drives JS
+ * `BackHandler` listeners never fires while the dialog has focus. So the
+ * host's own subscription — the one the test above proves works — is dead
+ * inside a sheet, and without the routing in bottom_sheet.tsx a single back
+ * press would dismiss the whole sheet and discard a half-filled form.
+ *
+ * These two tests are the pair that pins the routing: the keypad gets back
+ * FIRST, and the sheet gets it back once the keypad is gone.
+ */
+describe("system back inside a sheet", () => {
+  function renderSheet(onDismiss: () => void) {
+    render(
+      <KeypadProvider>
+        <BottomSheet visible onDismiss={onDismiss} title="Pick a wallet">
+          <Opener />
+        </BottomSheet>
+      </KeypadProvider>,
+    );
+  }
+
+  /** What Android's dialog does to a back press. */
+  function requestClose(): void {
+    const modal = screen.UNSAFE_getByType(Modal);
+    expect(typeof modal.props.onRequestClose).toBe("function");
+    // act() for the same reason the hardware-back test above needs it: this
+    // call comes from outside React.
+    act(() => {
+      (modal.props.onRequestClose as () => void)();
+    });
+  }
+
+  test("back closes the keypad and leaves the sheet open", () => {
+    const onDismiss = jest.fn();
+    renderSheet(onDismiss);
+    press("open-amount");
+    expect(screen.getByTestId("keypad-host")).toBeTruthy();
+
+    requestClose();
+
+    expect(screen.queryByTestId("keypad-host")).toBeNull();
+    // The form is still there. This is the whole point.
+    expect(onDismiss).not.toHaveBeenCalled();
+    expect(screen.getByTestId("open-amount")).toBeTruthy();
+  });
+
+  test("back dismisses the sheet once the keypad is closed", () => {
+    const onDismiss = jest.fn();
+    renderSheet(onDismiss);
+
+    requestClose();
+
+    // No panel to claim it, so the sheet's own dismissal is untouched.
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
 });

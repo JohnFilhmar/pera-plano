@@ -10,6 +10,7 @@ import type { ReactNode } from "react";
 import { Modal, Pressable, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { useKeypadOptional } from "@/contexts/keypad_context";
 import { KeypadHost } from "./keypad_host";
 
 /**
@@ -49,6 +50,12 @@ export function BottomSheet({
   // above the whole app (see app/_layout.tsx).
   const insets = useSafeAreaInsets();
 
+  // Read optionally, and above the early return so the hook order never moves:
+  // a sheet rendered outside the app tree (every component suite that mounts
+  // one on its own) has no provider, and gets null. See onRequestClose below
+  // for what this is for.
+  const keypad = useKeypadOptional();
+
   // Rendering nothing, not rendering offscreen: an offscreen sheet still
   // covers the screen with an invisible touch target and the app looks frozen.
   if (!visible) return null;
@@ -58,9 +65,24 @@ export function BottomSheet({
       visible
       transparent
       animationType="slide"
-      // Android system back. Modal owns this on Android; there is no separate
-      // BackHandler listener to leak.
-      onRequestClose={onDismiss}
+      // Android system back — and the ONLY route to it inside this window.
+      // Modal still owns the subscription, so there is no listener here to
+      // leak, but it is not merely `onDismiss` any more.
+      //
+      // WHY THE NESTED KeypadHost CANNOT USE ITS OWN BackHandler. On Android a
+      // Modal is a Dialog, and the Dialog's key listener swallows
+      // KEYCODE_BACK and calls this prop; the Activity back press that drives
+      // JS `BackHandler` listeners never fires while the dialog holds focus.
+      // The host's own subscription (components/ui/keypad_host.tsx) is live
+      // and correct at the ROOT mount, where there is no dialog in the way,
+      // and dead here.
+      //
+      // So the keypad gets FIRST CLAIM on back: with the panel open, back
+      // closes the panel and the sheet stays exactly where it was. Without
+      // this, one back press would throw away a half-filled form — the very
+      // outcome the keypad's back handling exists to prevent, and worse than
+      // it, since a sheet is a whole form rather than one screen.
+      onRequestClose={() => (keypad?.request ? keypad.close() : onDismiss())}
     >
       <View className="flex-1 justify-end">
         {/* Scrim. `bg-fg` in light and `bg-bg-dark` in dark are the two
@@ -93,7 +115,9 @@ export function BottomSheet({
           gives the most recently mounted host the panel, which while this sheet is
           open is this one. It reads the context optionally and renders nothing
           when there is no provider, so a sheet mounted on its own — in a test, or
-          anywhere outside the app tree — is unaffected. */}
+          anywhere outside the app tree — is unaffected. Its own BackHandler
+          subscription is inert inside this dialog; `onRequestClose` above is what
+          dismisses the panel here. */}
       <KeypadHost />
     </Modal>
   );
