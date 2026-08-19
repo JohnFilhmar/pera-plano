@@ -25,6 +25,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Button, registerIcon } from "@/components/ui/button";
 import { SkipLink } from "@/components/onboarding/skip_link";
 import { StepProgress } from "@/components/onboarding/step_progress";
+import { useKeypadOptional } from "@/contexts/keypad_context";
 import type { OnboardingStep } from "@/lib/onboarding/onboarding_state";
 
 const BackGlyph = registerIcon(ChevronLeft);
@@ -71,6 +72,55 @@ export function OnboardingFrame({
   // handled the status bar either.
   const insets = useSafeAreaInsets();
 
+  // THE SECOND BURIED-BUTTON DEFECT, AND IT IS NOT THE SAME ONE
+  // (numeric-input-system Task 12; the owner's `save-income-button-burried`).
+  // The insets above clear Android's navigation bar. This clears OUR OWN
+  // keypad panel, which is a different obstruction with a different fix.
+  //
+  // WHY THE ROUTES' FIX DOES NOT WORK HERE. Every migrated route wraps its
+  // form in components/ui/form_screen.tsx, whose whole job is to be the ONE
+  // scroll view and to pad its content by the panel's height. Doing that on an
+  // onboarding step would nest a scroll view inside the one below, which is
+  // exactly the defect Task 10 found: the outer scroller — the one that knows
+  // nothing about the keypad — keeps the only real scroll range, and the
+  // inner one's avoidance becomes a no-op. And it would not help anyway:
+  // this frame's primary action and skip link live in a fixed footer OUTSIDE
+  // the scroll area, so NO amount of scrolling can lift them clear of a panel
+  // pinned to the bottom of the window.
+  //
+  // SO THE FRAME GIVES THE BAND UP ITSELF, at the footer, with one number.
+  // Growing the footer's bottom margin lifts the buttons AND — because the
+  // ScrollView above it is `flex-1` in the same column — shrinks the scroll
+  // viewport by the same amount in the same pass. That is both halves at
+  // once: the actions clear the panel, and the content area now ends above it
+  // with the extra scroll range to reach anything that moved out of sight. No
+  // second padding anywhere; the scroll content keeps its own `py-4`.
+  //
+  // MINUS insets.bottom, BECAUSE THAT STRIP IS ALREADY SPOKEN FOR. The outer
+  // View above already holds the footer `insets.bottom` clear of the window,
+  // and keypad_host.tsx pads its own panel by `insets.bottom + 16`, so the
+  // measured height reported here already contains that same strip. Adding
+  // the whole of it again would count the navigation bar twice — a 126px
+  // dead band on the A54 this frame's insets were measured against.
+  //
+  // useKeypadOptional, NOT useKeypad, AND THE DISTINCTION MATTERS. That read
+  // is documented "FOR HOSTS ONLY" because a FIELD that silently no-ops
+  // without a provider is a number the user typed and the app never saw. This
+  // is chrome, not a field: it reads a MEASUREMENT, and "no provider" means
+  // there is no panel, which makes 0 the correct answer rather than a
+  // swallowed one. The eight step screens are also mounted bare by a dozen
+  // suites that have no reason to know the keypad exists, and turning
+  // KeypadProvider into a hard dependency of every onboarding render would be
+  // a crash in place of a lift nobody asked for.
+  //
+  // A NUMBER, NOT A CLASS, AND marginBottom RATHER THAN paddingBottom. The
+  // footer's `pb-6` is the gap between the button and whatever is under it and
+  // has to survive; a `style` paddingBottom would win over the compiled class
+  // and replace it (see the note above about the header/footer). Margin is a
+  // property no class here sets, so the two compose.
+  const keypadHeight = useKeypadOptional()?.keypadHeight ?? 0;
+  const footerLift = Math.max(keypadHeight - insets.bottom, 0);
+
   return (
     <View
       testID="onboarding-frame"
@@ -109,7 +159,11 @@ export function OnboardingFrame({
         {children}
       </ScrollView>
 
-      <View className="gap-2 px-6 pb-6 pt-2">
+      <View
+        testID="onboarding-footer"
+        className="gap-2 px-6 pb-6 pt-2"
+        style={{ marginBottom: footerLift }}
+      >
         <Button
           testID="onboarding-primary-button"
           title={primaryLabel}

@@ -21,8 +21,12 @@ jest.mock("expo-router", () => ({
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
-import type { ReactNode } from "react";
+import type { ReactElement, ReactNode } from "react";
+import { TextInput } from "react-native";
 
+import { KeypadHost } from "@/components/ui/keypad_host";
+import { KeypadProvider } from "@/contexts/keypad_context";
+import { typeAmount } from "@/test_support/keypad";
 import { closeDatabase } from "@/lib/db/database";
 import { listLimits } from "@/lib/db/repos/limits_repo";
 import { setManualIncome } from "@/lib/income/income_service";
@@ -43,10 +47,34 @@ function makeTestClient(): QueryClient {
   });
 }
 
+/**
+ * Both of this form's fields are NumericFields now (numeric-input-system Task
+ * 12) and `useKeypad` throws without a provider, so the bare-component cases
+ * need the same shell the routed ones do. The host is rendered BEFORE the
+ * subject: mount effects commit in completion order, and keypad_context.tsx
+ * gives the panel to the highest live token, so a root stand-in registered
+ * first leaves the higher tokens to anything the subject mounts later.
+ */
+function renderForm(ui: ReactElement) {
+  return render(
+    <KeypadProvider>
+      <KeypadHost />
+      {ui}
+    </KeypadProvider>,
+  );
+}
+
 async function renderScreen(props: { onDone?: () => void } = {}): Promise<void> {
   const client = makeTestClient();
   function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    return (
+      <QueryClientProvider client={client}>
+        <KeypadProvider>
+          <KeypadHost />
+          {children}
+        </KeypadProvider>
+      </QueryClientProvider>
+    );
   }
   render(<FirstLimitScreen {...props} />, { wrapper: Wrapper });
   // Waits out both queries (income summary, wallets are not read here) so no
@@ -70,9 +98,11 @@ afterEach(async () => {
 
 describe("FirstLimitForm", () => {
   test("the preview sentence updates live as the fixed amount is typed", () => {
-    render(<FirstLimitForm monthlyIncome={null} onSubmit={jest.fn()} />);
+    renderForm(<FirstLimitForm monthlyIncome={null} onSubmit={jest.fn()} />);
 
-    fireEvent.changeText(screen.getByTestId("first-limit-amount"), "1000000");
+    // Was changeText "1000000" read as centavos; now "10000" read as pesos.
+    // The SAME ₱10,000.00, so the sentence below is unchanged.
+    typeAmount("first-limit-amount", "10000");
 
     // 1,000,000 centavos = ₱10,000.00 a month; ₱10,000.00 / 30 ≈ ₱333.33 a day.
     expect(screen.getByTestId("first-limit-preview")).toHaveTextContent(
@@ -80,8 +110,32 @@ describe("FirstLimitForm", () => {
     );
   });
 
+  test("THE ONBOARDING LIMIT STEP NEVER RAISES THE ANDROID KEYBOARD", () => {
+    // The `add-numpad-to-this-section` screenshot this task closes. Not a
+    // convention about props — there is no TextInput in the tree at all, so
+    // no later edit to this form can bring the OS keypad back by accident.
+    renderForm(<FirstLimitForm monthlyIncome={3_000_000} onSubmit={jest.fn()} />);
+
+    expect(screen.UNSAFE_queryAllByType(TextInput)).toHaveLength(0);
+
+    fireEvent.press(screen.getByTestId("first-limit-basis-percent"));
+
+    expect(screen.UNSAFE_queryAllByType(TextInput)).toHaveLength(0);
+  });
+
+  test("A PERCENT LIMIT TYPES ON THE KEYPAD AND READS BACK WITH A PERCENT SIGN", () => {
+    // `mode="rate"`, not `peso`: the panel's own read-out and the field both
+    // suffix a %, and nothing here is ever formatted as money.
+    renderForm(<FirstLimitForm monthlyIncome={3_000_000} onSubmit={jest.fn()} />);
+
+    fireEvent.press(screen.getByTestId("first-limit-basis-percent"));
+    typeAmount("first-limit-percent", "50");
+
+    expect(screen.getByText("50%")).toBeTruthy();
+  });
+
   test("percent-of-income is hidden entirely when no income was declared, with a note explaining why", () => {
-    render(<FirstLimitForm monthlyIncome={null} onSubmit={jest.fn()} />);
+    renderForm(<FirstLimitForm monthlyIncome={null} onSubmit={jest.fn()} />);
 
     expect(screen.queryByTestId("first-limit-basis-percent")).toBeNull();
     expect(screen.getByTestId("first-limit-no-income-note")).toBeTruthy();
@@ -89,11 +143,11 @@ describe("FirstLimitForm", () => {
 
   test("percent-of-income is offered once income is known, and the preview reflects it", () => {
     // ₱30,000.00 monthly income.
-    render(<FirstLimitForm monthlyIncome={3_000_000} onSubmit={jest.fn()} />);
+    renderForm(<FirstLimitForm monthlyIncome={3_000_000} onSubmit={jest.fn()} />);
 
     expect(screen.queryByTestId("first-limit-no-income-note")).toBeNull();
     fireEvent.press(screen.getByTestId("first-limit-basis-percent"));
-    fireEvent.changeText(screen.getByTestId("first-limit-percent"), "20");
+    typeAmount("first-limit-percent", "20");
 
     // 20% of ₱30,000.00 = ₱6,000.00 a month; /30 = ₱200.00 a day.
     expect(screen.getByTestId("first-limit-preview")).toHaveTextContent(
@@ -103,10 +157,10 @@ describe("FirstLimitForm", () => {
 
   test("submitting a percent basis reports the percent-times-100 encoding, never the raw percent", () => {
     const onSubmit = jest.fn();
-    render(<FirstLimitForm monthlyIncome={3_000_000} onSubmit={onSubmit} />);
+    renderForm(<FirstLimitForm monthlyIncome={3_000_000} onSubmit={onSubmit} />);
 
     fireEvent.press(screen.getByTestId("first-limit-basis-percent"));
-    fireEvent.changeText(screen.getByTestId("first-limit-percent"), "20");
+    typeAmount("first-limit-percent", "20");
     fireEvent.press(screen.getByTestId("first-limit-save"));
 
     // The trap task-3-brief warns about: 20% must store 2000, never 20.
@@ -122,7 +176,7 @@ describe("FirstLimitScreen", () => {
   test("saving creates a monthly, non-rollover Limit with the entered fixed amount", async () => {
     await renderScreen();
 
-    fireEvent.changeText(screen.getByTestId("first-limit-amount"), "1000000");
+    typeAmount("first-limit-amount", "10000"); // was "1000000" in centavos
     fireEvent.press(screen.getByTestId("first-limit-save"));
 
     await waitFor(async () => expect(await listLimits()).toHaveLength(1));
@@ -170,7 +224,7 @@ describe("FirstLimitScreen", () => {
     const onDone = jest.fn();
     await renderScreen({ onDone });
 
-    fireEvent.changeText(screen.getByTestId("first-limit-amount"), "500000");
+    typeAmount("first-limit-amount", "5000"); // was "500000" in centavos
     fireEvent.press(screen.getByTestId("first-limit-save"));
 
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));

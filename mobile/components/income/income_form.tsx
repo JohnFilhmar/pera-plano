@@ -6,11 +6,13 @@
 // and an app that quietly reverted their figure a week later would be worse
 // than one that never offered the choice.
 import { useState } from "react";
-import { Pressable, Text, TextInput, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 
 import { CadencePicker } from "@/components/income/cadence_picker";
-import { centavosFromDigits, formatCentavos } from "@/components/ui/amount_text";
+import { formatCentavos } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
+import { NumericField } from "@/components/ui/numeric_field";
+import { centavosFrom, pesoInputFrom } from "@/lib/money/peso_input";
 import type { Centavos, IncomeCadence, Wallet } from "@/types/domain";
 
 export type IncomeFormValues = {
@@ -28,12 +30,20 @@ export type IncomeFormProps = {
 
 export function IncomeForm({ wallets, initial, onSubmit, busy = false }: IncomeFormProps) {
   const [cadence, setCadence] = useState<IncomeCadence>(initial?.cadence ?? "kinsenas");
-  const [digits, setDigits] = useState(
-    initial?.averageAmount === undefined ? "" : String(initial.averageAmount),
+  // pesoInputFrom, NOT String() — A LATENT 100× BUG, FIXED
+  // (numeric-input-system Task 12). `averageAmount` is Centavos. Seeding the
+  // field with `String(initial.averageAmount)` was correct only for as long as
+  // the field read its own text back as centavo digits; the moment W1 made
+  // that text PESOS, a stored ₱2,000.00 (200000) would have seeded as
+  // ₱200,000.00 — a hundredfold inflation nobody typed, sitting in the box
+  // of the one screen whose entire subject is a figure the user told the app.
+  // lib/money/peso_input.ts exports this direction for exactly this use.
+  const [amountText, setAmountText] = useState(
+    initial?.averageAmount === undefined ? "" : pesoInputFrom(initial.averageAmount),
   );
   const [walletIds, setWalletIds] = useState<string[]>(initial?.sourceWalletIds ?? []);
 
-  const amount = centavosFromDigits(digits);
+  const amount = centavosFrom(amountText);
   const canSave = amount > 0 && !busy;
 
   const toggleWallet = (id: string) =>
@@ -54,17 +64,19 @@ export function IncomeForm({ wallets, initial, onSubmit, busy = false }: IncomeF
         <Text className="font-semibold text-fg dark:text-fg-dark">
           {cadence === "irregular" ? "Roughly how much a month?" : "How much each time?"}
         </Text>
-        <TextInput
+        <NumericField
           testID="income-amount"
-          className="mt-2 rounded-xl bg-surface p-3 text-fg dark:bg-surface-dark dark:text-fg-dark"
-          keyboardType="numeric"
+          label={cadence === "irregular" ? "Roughly how much a month?" : "How much each time?"}
+          mode="peso"
           placeholder="Amount, e.g. 18500"
-          value={digits}
-          onChangeText={setDigits}
+          value={amountText}
+          onChangeText={setAmountText}
         />
-        {/* The field takes DIGITS — typing 18500 means ₱185.00 — so it is
-            echoed back formatted before anything is saved, the same way the
-            limit amount field does. */}
+        {/* Typing 18500 means ₱18,500.00 now (numeric-input-system Task 12),
+            so the example above finally agrees with the field. The preview
+            stays: it states the figure the way the ledger will hold it,
+            centavos included, before anything is saved — the same echo the
+            limit amount field keeps. */}
         <Text testID="income-amount-preview" className="mt-2 text-fg-2 dark:text-fg-2-dark">
           {formatCentavos(amount)}
         </Text>

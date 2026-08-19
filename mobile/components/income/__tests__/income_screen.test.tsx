@@ -16,8 +16,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { ReactNode } from "react";
 
+import { IncomeForm } from "@/components/income/income_form";
 import { PaydayDetectedSheet } from "@/components/income/payday_detected_sheet";
 import { incomeSentence } from "@/components/income/income_summary_card";
+import { KeypadHost } from "@/components/ui/keypad_host";
+import { KeypadProvider } from "@/contexts/keypad_context";
+import { typeAmount } from "@/test_support/keypad";
 import { closeDatabase } from "@/lib/db/database";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { getIncomeDetectionState, getIncomeProfile } from "@/lib/db/repos/income_repo";
@@ -49,8 +53,22 @@ function makeTestClient(): QueryClient {
   });
 }
 
+/**
+ * The amount field is a NumericField now (numeric-input-system Task 12), and
+ * `useKeypad` throws without a provider. <KeypadHost /> is rendered BEFORE the
+ * subject on purpose: mount effects commit in completion order and the panel
+ * goes to the highest live token, so the root stand-in registering first
+ * leaves the higher tokens for anything the screen mounts later.
+ */
 function renderScreen(ui: ReactNode) {
-  return render(<QueryClientProvider client={makeTestClient()}>{ui}</QueryClientProvider>);
+  return render(
+    <QueryClientProvider client={makeTestClient()}>
+      <KeypadProvider>
+        <KeypadHost />
+        {ui}
+      </KeypadProvider>
+    </QueryClientProvider>,
+  );
 }
 
 async function credit(amount: number, at: number): Promise<void> {
@@ -177,14 +195,14 @@ test("SUBMITTING THE FORM SETS A MANUAL OVERRIDE with the entered values", async
   await screen.findByTestId("income-amount");
 
   fireEvent.press(screen.getByTestId("cadence-monthly"));
-  fireEvent.changeText(screen.getByTestId("income-amount"), "3000000");
+  typeAmount("income-amount", "30000"); // was changeText "3000000" in centavos
   fireEvent.press(screen.getByTestId(`income-wallet-${payroll.id}`));
   fireEvent.press(screen.getByTestId("income-save"));
 
   await waitFor(async () => expect(await getIncomeProfile()).not.toBeNull());
   const profile = await getIncomeProfile();
   expect(profile?.cadence).toBe("monthly");
-  expect(profile?.averageAmount).toBe(3000000); // ₱30,000.00, from the digits
+  expect(profile?.averageAmount).toBe(3000000); // ₱30,000.00, from the pesos typed
   expect(profile?.sourceWalletIds).toEqual([payroll.id]);
   // Rule 14: any user-entered value sets the override.
   expect(profile?.isManualOverride).toBe(true);
@@ -200,15 +218,41 @@ test("the form states plainly that it overrides detection", async () => {
   expect(note.props.children.join?.("") ?? String(note.props.children)).toMatch(/overrides/i);
 });
 
-test("the amount field echoes back what the digits mean before saving", async () => {
+test("the amount field echoes back the centavos it will save", async () => {
+  // RENAMED from "...what the digits mean" (numeric-input-system Task 12):
+  // there are no centavo-digits to interpret any more. 18500 keyed on the
+  // panel is ₱18,500 — what the field itself shows — and the preview line
+  // states the same figure the way the ledger will store it.
   renderScreen(<IncomeScreen />);
   await screen.findByTestId("income-amount");
 
-  fireEvent.changeText(screen.getByTestId("income-amount"), "1850000");
+  typeAmount("income-amount", "18500");
 
-  // Typing 1850000 means ₱18,500.00, not ₱1,850,000 — the same digit-entry
-  // hazard the limit amount field echoes back for.
-  screen.getByText("₱18,500.00");
+  expect(screen.getByTestId("income-amount-preview")).toHaveTextContent("₱18,500.00");
+});
+
+test("A STORED AMOUNT SEEDS THE FIELD AS ITSELF, NOT A HUNDRED TIMES ITSELF", async () => {
+  // THE LATENT 100× BUG numeric-input-system Task 12 fixes.
+  // `IncomeFormValues.averageAmount` is Centavos. The form used to seed its
+  // field with `String(initial.averageAmount)` — correct while the field read
+  // its text as centavo digits, and a hundredfold inflation the moment the
+  // same text started being read as PESOS. A user re-opening "Change my
+  // income" on a stored ₱2,000.00 would have found ₱200,000.00 waiting in the
+  // box, and saving without retyping would have written it.
+  renderScreen(
+    <IncomeForm
+      wallets={[]}
+      initial={{ cadence: "monthly", averageAmount: 200_000, sourceWalletIds: [] }}
+      onSubmit={jest.fn()}
+    />,
+  );
+
+  // The field's own live display (formatPesoInput) and the preview line
+  // (formatCentavos) are different strings for the same amount, so neither
+  // assertion can be satisfied by the other's element.
+  expect(screen.getByTestId("income-amount")).toHaveTextContent("₱2,000");
+  expect(screen.getByTestId("income-amount-preview")).toHaveTextContent("₱2,000.00");
+  expect(screen.queryByText("₱200,000.00")).toBeNull();
 });
 
 test("an empty amount cannot be saved", async () => {
@@ -266,7 +310,7 @@ test("DISMISSING records the signature and stops re-proposing it", async () => {
 test("a manual override says so, and offers switching back to automatic", async () => {
   renderScreen(<IncomeScreen />);
   await screen.findByTestId("income-amount");
-  fireEvent.changeText(screen.getByTestId("income-amount"), "3000000");
+  typeAmount("income-amount", "30000"); // was changeText "3000000" in centavos
   fireEvent.press(screen.getByTestId("income-save"));
 
   await screen.findByTestId("income-manual-note");

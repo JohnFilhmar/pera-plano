@@ -38,6 +38,9 @@ import { renderRouter, screen } from "expo-router/testing-library";
 import { Stack } from "expo-router";
 import { AppState, Linking, Text, type AppStateStatus } from "react-native";
 
+import { KeypadHost } from "@/components/ui/keypad_host";
+import { KeypadProvider } from "@/contexts/keypad_context";
+import { typeAmount } from "@/test_support/keypad";
 import { closeDatabase } from "@/lib/db/database";
 import { getSetting } from "@/lib/db/repos/app_settings_repo";
 import { getIncomeProfile } from "@/lib/db/repos/income_repo";
@@ -76,7 +79,19 @@ let client: QueryClient;
 function TestRoot() {
   return (
     <QueryClientProvider client={client}>
-      <Stack screenOptions={{ headerShown: false }} />
+      {/* app/_layout.tsx's own pairing: KeypadProvider wraps the whole shell
+          and one KeypadHost sits beside the Stack. The income and first-limit
+          steps hold NumericFields now (numeric-input-system Task 12), and
+          `useKeypad` throws without the provider — so a flow test that mounts
+          those two routes needs both halves, exactly like the real app. The
+          host is rendered before the Stack rather than after it: mount
+          effects commit in completion order and keypad_context.tsx gives the
+          panel to the highest live token, so registering the root stand-in
+          first leaves the higher tokens for anything a screen mounts later. */}
+      <KeypadProvider>
+        <KeypadHost />
+        <Stack screenOptions={{ headerShown: false }} />
+      </KeypadProvider>
     </QueryClientProvider>
   );
 }
@@ -118,15 +133,6 @@ function pressPrimary() {
 
 function pressSkip() {
   fireEvent.press(screen.getByTestId("onboarding-skip-link"));
-}
-
-/** Presses one numpad key per digit — the income amount field's own
- * interaction since the device-testing fix (Task 5) replaced its bare,
- * misleadingly placeholdered TextInput with AmountNumpad. */
-function typeIncomeAmount(digits: string): void {
-  for (const digit of digits) {
-    fireEvent.press(screen.getByTestId(`numpad-key-${digit}`));
-  }
 }
 
 beforeEach(async () => {
@@ -214,13 +220,15 @@ test("a user who taps through every step reaches the end, and onboarding actuall
 
   // 6. income -> 7. first_limit, via the form's own save button (the path the
   // mutation takes, distinct from the frame's "figure it out" primary).
-  typeIncomeAmount("1200000");
+  // Pesos now, not centavo digits: "12000" is the ₱12,000.00 that "1200000"
+  // used to mean. The assertion below is deliberately unchanged.
+  typeAmount("income-quick-amount", "12000");
   fireEvent.press(screen.getByTestId("income-quick-save"));
   await waitFor(() => expect(screen.getByTestId("first-limit-form-intro")).toBeTruthy());
   expect((await getIncomeProfile())?.averageAmount).toBe(1_200_000);
 
   // 7. first_limit -> 8. done, again through the write path.
-  fireEvent.changeText(screen.getByTestId("first-limit-amount"), "1000000");
+  typeAmount("first-limit-amount", "10000"); // was "1000000" in centavos
   fireEvent.press(screen.getByTestId("first-limit-save"));
   await waitFor(() => expect(screen.getByTestId("done-step-intro")).toBeTruthy());
   expect(await listLimits()).toHaveLength(1);

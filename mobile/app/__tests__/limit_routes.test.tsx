@@ -37,7 +37,11 @@ jest.mock("expo-router", () => ({
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { ReactNode } from "react";
+import { TextInput } from "react-native";
 
+import { KeypadHost } from "@/components/ui/keypad_host";
+import { KeypadProvider } from "@/contexts/keypad_context";
+import { typeAmount } from "@/test_support/keypad";
 import { closeDatabase } from "@/lib/db/database";
 import { seedDefaultCategories, createCategory } from "@/lib/db/repos/categories_repo";
 import { createLimit, getLimit, listLimits } from "@/lib/db/repos/limits_repo";
@@ -71,9 +75,29 @@ function makeTestClient(): QueryClient {
   });
 }
 
+/**
+ * The create route's amount and percent fields are NumericFields now
+ * (numeric-input-system Task 12), and `useKeypad` throws without a provider —
+ * so every screen in this file gets one, not just the two that hold a field.
+ *
+ * <KeypadHost /> COMES FIRST, BEFORE THE SUBJECT. React commits mount effects
+ * in completion order, so a host rendered after a subtree registers a HIGHER
+ * token than any host nested inside that subtree — and keypad_context.tsx
+ * hands the panel to the highest live token. Rendering the root stand-in
+ * first leaves the higher tokens for whatever a screen mounts later (a
+ * BottomSheet's own host), which is the real app's ordering. Task 11's fix
+ * round found this the hard way.
+ */
 function renderScreen(ui: ReactNode) {
   const client = makeTestClient();
-  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+  return render(
+    <QueryClientProvider client={client}>
+      <KeypadProvider>
+        <KeypadHost />
+        {ui}
+      </KeypadProvider>
+    </QueryClientProvider>,
+  );
 }
 
 let wallet: Wallet;
@@ -222,11 +246,16 @@ test("the cap counts ACTIVE limits, so a deactivated one leaves room", async () 
 // ---------------------------------------------------------------------------
 // Create
 // ---------------------------------------------------------------------------
-test("saving a fixed limit stores CENTAVOS, from the digits typed", async () => {
+test("saving a fixed limit stores CENTAVOS, from the PESOS typed", async () => {
+  // RENAMED FROM "...from the digits typed" (numeric-input-system Task 12).
+  // The keystrokes changed and the stored value did not: the field used to
+  // read "800000" as centavos, and now reads "8000" as pesos. Both are
+  // ₱8,000.00. The expectation below is untouched precisely because the
+  // amount the user means is untouched.
   renderScreen(<NewLimitScreen />);
 
-  fireEvent.changeText(screen.getByTestId("limit-amount"), "800000");
-  // Echoed back so the user can see what the digits mean before saving.
+  typeAmount("limit-amount", "8000");
+  // Echoed back with the centavos it will actually store, before saving.
   screen.getByText("₱8,000.00");
   fireEvent.press(screen.getByTestId("limit-save"));
 
@@ -243,7 +272,7 @@ test("the scope chips choose the period, and rollover defaults OFF", async () =>
   renderScreen(<NewLimitScreen />);
 
   fireEvent.press(screen.getByTestId("limit-scope-weekly"));
-  fireEvent.changeText(screen.getByTestId("limit-amount"), "150000");
+  typeAmount("limit-amount", "1500"); // was changeText "150000" — same ₱1,500.00
   fireEvent.press(screen.getByTestId("limit-save"));
 
   await waitFor(async () => expect((await listLimits()).length).toBe(1));
@@ -258,7 +287,7 @@ test("an empty or zero amount cannot be saved", async () => {
   renderScreen(<NewLimitScreen />);
 
   fireEvent.press(screen.getByTestId("limit-save"));
-  fireEvent.changeText(screen.getByTestId("limit-amount"), "0");
+  typeAmount("limit-amount", "0");
   fireEvent.press(screen.getByTestId("limit-save"));
 
   await waitFor(() => expect(mockBack).not.toHaveBeenCalled());
@@ -273,11 +302,24 @@ test("percent-of-income cannot be saved until income exists", async () => {
 
   fireEvent.press(screen.getByTestId("limit-basis-percent"));
   screen.getByTestId("limit-percent-blocked");
-  fireEvent.changeText(screen.getByTestId("limit-percent"), "20");
+  typeAmount("limit-percent", "20");
   fireEvent.press(screen.getByTestId("limit-save"));
 
   await waitFor(() => expect(mockBack).not.toHaveBeenCalled());
   expect(await listLimits()).toEqual([]);
+});
+
+test("THE CREATE ROUTE RAISES NO SYSTEM KEYBOARD, on either basis", async () => {
+  // numeric-input-system Task 12. Both fields are Pressables now
+  // (components/ui/numeric_field.tsx), and a subtree with no TextInput in it
+  // cannot raise the OS keypad however it is later edited.
+  renderScreen(<NewLimitScreen />);
+
+  expect(screen.UNSAFE_queryAllByType(TextInput)).toHaveLength(0);
+
+  fireEvent.press(screen.getByTestId("limit-basis-percent"));
+
+  expect(screen.UNSAFE_queryAllByType(TextInput)).toHaveLength(0);
 });
 
 test("the gated create route explains the cap and shows NO form", async () => {

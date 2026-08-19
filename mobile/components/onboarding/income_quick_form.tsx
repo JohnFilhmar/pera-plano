@@ -27,9 +27,9 @@ import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 
 import { CadencePicker } from "@/components/income/cadence_picker";
-import { AmountNumpad } from "@/components/transactions/amount_numpad";
-import { centavosFromDigits } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
+import { NumericField } from "@/components/ui/numeric_field";
+import { centavosFrom } from "@/lib/money/peso_input";
 import type { Centavos, IncomeCadence, Wallet } from "@/types/domain";
 
 export type IncomeQuickFormValues = {
@@ -46,10 +46,10 @@ export type IncomeQuickFormProps = {
 
 export function IncomeQuickForm({ wallets, busy = false, onSubmit }: IncomeQuickFormProps) {
   const [cadence, setCadence] = useState<IncomeCadence>("kinsenas");
-  const [digits, setDigits] = useState("");
+  const [amountText, setAmountText] = useState("");
   const [walletIds, setWalletIds] = useState<string[]>([]);
 
-  const amount = centavosFromDigits(digits);
+  const amount = centavosFrom(amountText);
   const canSave = amount > 0 && !busy;
 
   const toggleWallet = (id: string) =>
@@ -69,16 +69,24 @@ export function IncomeQuickForm({ wallets, busy = false, onSubmit }: IncomeQuick
         <Text className="font-semibold text-fg dark:text-fg-dark">
           {cadence === "irregular" ? "Roughly how much a month?" : "How much each time?"}
         </Text>
-        {/* DEVICE-TESTING FIX (2026-08-18, Task 5): this used to be a bare
-            TextInput behind a placeholder reading "Amount, e.g. 18500", which
-            reads as ₱18,500 but — because the field takes DIGITS, not pesos —
-            actually produced ₱185.00. AmountNumpad replaces both the input and
-            the static claim with one live display: the peso string is
-            rendered FROM the digits on every keystroke, so there is no
-            separate "e.g." text left to disagree with what typing does. */}
-        <View testID="income-quick-amount" className="mt-2">
-          <AmountNumpad digits={digits} onDigitsChange={setDigits} />
-        </View>
+        {/* THE FIELD FINALLY MEANS WHAT ITS EXAMPLE SAYS (numeric-input-system
+            Task 12). Two rounds of this bug: the original was a TextInput
+            behind "Amount, e.g. 18500" that read those digits as CENTAVOS and
+            produced ₱185.00; Task 5 swapped in an inline AmountNumpad so at
+            least the live read-out could not lie about what had been keyed.
+            The cause is gone now rather than annotated — lib/money/peso_input.ts
+            reads keystrokes as PESOS, so 18500 is the ₱18,500.00 the reporter
+            meant — and the keys themselves moved to the shared panel
+            (components/ui/keypad_host.tsx), which is what lets the frame
+            around this form lift its Save button clear of them. */}
+        <NumericField
+          testID="income-quick-amount"
+          label={cadence === "irregular" ? "Roughly how much a month?" : "How much each time?"}
+          mode="peso"
+          placeholder="Amount, e.g. 18500"
+          value={amountText}
+          onChangeText={setAmountText}
+        />
       </View>
 
       {wallets.length > 0 ? (

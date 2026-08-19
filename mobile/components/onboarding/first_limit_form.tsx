@@ -24,12 +24,20 @@
 // app/(tabs)/plan/limits/new.tsx uses — rather than `Math.round(Number(text))`,
 // which would store 20 for a typed "20%": a hundredth of the real limit, with
 // nothing that throws.
+//
+// THE PESO HALF HAS THE SAME SHAPE OF HAZARD FROM THE OTHER DIRECTION, which
+// is why it goes through `centavosFrom` (lib/money/peso_input.ts) rather than
+// `Number(text) * 100` — `12.34 * 100` is 1233.9999999999998. Since
+// numeric-input-system W1 that helper reads the keys as PESOS: "10000" is
+// ₱10,000.00, not the ₱100.00 the old centavos-by-digit field made of it.
 import { useState } from "react";
-import { Pressable, Text, TextInput, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 
-import { centavosFromDigits, formatCentavos } from "@/components/ui/amount_text";
+import { formatCentavos } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
+import { NumericField } from "@/components/ui/numeric_field";
 import { percentToValue } from "@/lib/limits/limit_input";
+import { centavosFrom } from "@/lib/money/peso_input";
 import type { Centavos, LimitBasis } from "@/types/domain";
 
 export type FirstLimitFormValues = {
@@ -60,15 +68,12 @@ function dailyEquivalent(monthlyValue: Centavos): Centavos {
 
 export function FirstLimitForm({ monthlyIncome, busy = false, onSubmit }: FirstLimitFormProps) {
   const [basis, setBasis] = useState<LimitBasis>("fixed");
-  const [pesoDigits, setPesoDigits] = useState("");
+  const [pesoText, setPesoText] = useState("");
   const [percentText, setPercentText] = useState("");
 
   const percentAvailable = monthlyIncome !== null;
 
-  const value =
-    basis === "fixed"
-      ? centavosFromDigits(pesoDigits)
-      : percentToValue(percentText);
+  const value = basis === "fixed" ? centavosFrom(pesoText) : percentToValue(percentText);
 
   const monthlyValue =
     basis === "fixed" ? value : monthlyIncome !== null ? monthlyFromPercent(monthlyIncome, value) : 0;
@@ -139,20 +144,26 @@ export function FirstLimitForm({ monthlyIncome, busy = false, onSubmit }: FirstL
         </Text>
       ) : null}
 
+      {/* TWO MODES, NOT ONE FIELD WITH TWO MEANINGS (numeric-input-system
+          Task 12, and the `add-numpad-to-this-section` screenshot it closes).
+          `peso` groups the integer part and prefixes ₱; `rate` suffixes a %
+          and never formats money. Both are Pressables — there is no TextInput
+          left in this form, so the step cannot raise Android's keyboard over
+          the panel however it is later edited. */}
       {basis === "fixed" ? (
-        <TextInput
+        <NumericField
           testID="first-limit-amount"
-          className="rounded-xl bg-surface p-3 text-fg dark:bg-surface-dark dark:text-fg-dark"
-          keyboardType="numeric"
+          label="Monthly limit"
+          mode="peso"
           placeholder="Amount, e.g. 10000"
-          value={pesoDigits}
-          onChangeText={setPesoDigits}
+          value={pesoText}
+          onChangeText={setPesoText}
         />
       ) : (
-        <TextInput
+        <NumericField
           testID="first-limit-percent"
-          className="rounded-xl bg-surface p-3 text-fg dark:bg-surface-dark dark:text-fg-dark"
-          keyboardType="numeric"
+          label="Percent of income"
+          mode="rate"
           placeholder="Percent of income, e.g. 20"
           value={percentText}
           onChangeText={setPercentText}
