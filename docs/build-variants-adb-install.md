@@ -70,7 +70,7 @@ Select-String -Path android\app\build.gradle -Pattern "applicationId"
 
 cd android
 .\gradlew.bat assembleDebug
-adb install -r app\build\outputs\apk\debug\app-debug.apk
+adb install -r --user 0 app\build\outputs\apk\debug\app-debug.apk
 cd ..
 npx expo start --dev-client
 ```
@@ -108,7 +108,7 @@ Select-String -Path android\app\build.gradle -Pattern "applicationId"
 
 cd android
 .\gradlew.bat assembleRelease
-adb install -r app\build\outputs\apk\release\app-release.apk
+adb install -r --user 0 app\build\outputs\apk\release\app-release.apk
 cd ..
 ```
 
@@ -146,6 +146,21 @@ Notification access** (Samsung One UI wording varies) → enable the row labeled
   that is precisely how both builds ended up sharing one package id. The suffix
   must not be re-added: with the config-driven package it would produce
   `com.filldev.peraplano.dev.dev`.
+- **A second, badged copy of the icon appears after install.** `adb install`
+  installs for *every* Android user, and the Samsung test device permanently
+  carries a Dual App profile (user 95) next to Secure Folder (user 150), so the
+  sideload is cloned there and One UI draws a second icon. The clone is a real
+  second instance: its own data directory, its own notification-access grant,
+  its own encrypted ledger. Install owner-only with `--user 0` (as above), and
+  clear an existing clone with:
+
+  ```powershell
+  adb shell pm list users                                   # confirm the DUAL_APP user id
+  adb shell pm uninstall --user 95 com.filldev.peraplano.dev
+  ```
+
+  Verify with `adb shell dumpsys package <pkg> | Select-String "User \d+:"` —
+  only user 0 should read `installed=true`.
 - **`INSTALL_FAILED_UPDATE_INCOMPATIBLE` on reinstall.** Each `prebuild --clean`
   mints a fresh debug keystore, so a rebuilt APK may carry a new signature.
   Fix: `adb uninstall com.filldev.peraplano.prev` (or `.dev`), then install again.
