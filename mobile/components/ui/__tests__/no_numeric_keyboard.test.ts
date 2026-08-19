@@ -49,6 +49,15 @@ const CHECKS: Check[] = [
     reason: "asks for a numeric OS keyboard via keyboardType",
     pattern: /keyboardType\s*=\s*["'](?:numeric|number-pad|decimal-pad)["']/gu,
   },
+  {
+    // THE SECOND DOOR TO THE SAME KEYPAD. RN 0.71+ accepts the web-standard
+    // `inputMode` on TextInput and maps "numeric"/"decimal" onto the very OS
+    // keypads `keyboardType` above is here to keep out — so a guard that
+    // checks only `keyboardType` waves this straight through, and it is the
+    // spelling a web-shaped copy-paste reaches for first.
+    reason: "asks for a numeric OS keyboard via inputMode",
+    pattern: /inputMode\s*=\s*["'](?:numeric|decimal)["']/gu,
+  },
 ];
 
 function collectSourceFiles(dir: string, out: string[] = []): string[] {

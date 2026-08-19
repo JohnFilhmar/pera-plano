@@ -339,9 +339,16 @@ describe("the amount panel", () => {
 
     // Models router.back()/router.push() unmounting this screen while the
     // root KeypadHost beside the Stack (app/_layout.tsx) survives — see
-    // renderForm's header. Without the mount effect's close() cleanup, the
-    // panel would still be showing here, wired to a setAmount that belongs
-    // to a component which no longer exists.
+    // renderForm's header. The panel must not still be showing here, wired to
+    // a setAmount that belongs to a component which no longer exists.
+    //
+    // WHO CLOSES IT MOVED, AND THE GUARANTEE DID NOT. This route used to end
+    // its mount effect with `return () => close()`. It no longer does:
+    // components/ui/numeric_field.tsx closes the panel when the field the
+    // request NAMES unmounts, which covers every migrated screen instead of
+    // this one, and cannot misfire on a panel some other screen opened. The
+    // field here is manual_entry_form.tsx's "manual-amount", which is exactly
+    // what this route's open() targets.
     view.unmountScreen();
 
     expect(screen.queryByTestId("keypad-host")).toBeNull();

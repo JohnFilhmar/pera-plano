@@ -92,7 +92,9 @@ test("NOTHING IS COMMITTED UNTIL CONFIRM", () => {
 
   fireEvent.press(screen.getByTestId(`allocation-toggle-${TRAVEL.goalId}`));
   // ₱1,500 — the field defaults to EMERGENCY's seeded ₱2,000, so it is
-  // cleared before retyping (typeAmount appends, it does not replace).
+  // cleared before retyping. Redundant since the first keystroke on a seeded
+  // field started replacing rather than appending, but harmless, and it keeps
+  // these assertions independent of that rule.
   clearAmount(`allocation-amount-${EMERGENCY.goalId}`);
   typeAmount(`allocation-amount-${EMERGENCY.goalId}`, "1500");
 

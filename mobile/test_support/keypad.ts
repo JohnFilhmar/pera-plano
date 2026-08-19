@@ -28,6 +28,13 @@ export function closeKeypad(): void {
  * the same appendKey rules the user does — including the refusals. A test
  * that sets "10.555" directly would pass against a field that cannot actually
  * be typed into that way.
+ *
+ * ON A SEEDED FIELD THIS REPLACES, IT DOES NOT APPEND. The first digit or
+ * decimal after a focus starts a fresh string — see `untouched` in
+ * contexts/keypad_context.tsx — so `typeAmount(id, "1300")` on a field
+ * showing 1250 leaves 1300, not 12501300. A `clearAmount` before a
+ * `typeAmount` is therefore redundant now rather than wrong; several suites
+ * still carry one from before the panel behaved this way.
  */
 export function typeAmount(testID: string, text: string): void {
   openKeypad(testID);

@@ -169,30 +169,27 @@ function ProposalRow({
           reads as pesos, and the field itself shows the grouped figure while
           it is being typed, so the reading is on screen before Continue.
 
-          NumericField has no `editable`/`disabled` prop, so an excluded row is
-          disabled the way components/goals/allocation_sheet.tsx disables a
-          skipped one: pointerEvents on the wrapper, which leaves the amount
-          visible but genuinely un-pressable. The dimming that
-          `editable={included}` used to carry in text colour moves to the
-          wrapper's opacity, since the field owns its own classes. */}
+          An excluded row uses NumericField's own `disabled`, the direct
+          replacement for the old `editable={included}` — it carries the
+          dimming and the disabled accessibility state that a
+          pointerEvents wrapper could not. */}
       <View className="gap-1">
         <Text className="text-xs text-fg-2 dark:text-fg-2-dark">
           What&apos;s in it right now? (optional)
         </Text>
-        <View pointerEvents={included ? "auto" : "none"} className={included ? "" : "opacity-50"}>
-          <NumericField
-            testID={`wallet-proposal-balance-${key}`}
-            label={`Opening balance for ${name || "this wallet"}`}
-            mode="peso"
-            // "Optional", not the old "0". A keypad field cannot be typed
-            // into directly, so its placeholder is the only thing standing in
-            // for an empty value — and a "0" there reads as a figure already
-            // entered rather than as a question not yet answered.
-            placeholder="Optional"
-            value={openingBalanceText}
-            onChangeText={(text) => onChangeOpeningBalance(key, text)}
-          />
-        </View>
+        <NumericField
+          testID={`wallet-proposal-balance-${key}`}
+          label={`Opening balance for ${name || "this wallet"}`}
+          mode="peso"
+          disabled={!included}
+          // "Optional", not the old "0". A keypad field cannot be typed
+          // into directly, so its placeholder is the only thing standing in
+          // for an empty value — and a "0" there reads as a figure already
+          // entered rather than as a question not yet answered.
+          placeholder="Optional"
+          value={openingBalanceText}
+          onChangeText={(text) => onChangeOpeningBalance(key, text)}
+        />
         <AmountText
           testID={`wallet-proposal-balance-preview-${key}`}
           amount={centavosFrom(openingBalanceText)}

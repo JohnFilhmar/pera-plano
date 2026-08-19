@@ -1,7 +1,7 @@
 // mobile/components/ui/__tests__/numeric_field.test.tsx — W1 Task 5.
 import { fireEvent, render, screen } from "@testing-library/react-native";
 import { TextInput } from "react-native";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
 import { KeypadProvider } from "@/contexts/keypad_context";
 import { KeypadHost } from "../keypad_host";
@@ -96,4 +96,197 @@ test("the field is announced with its label and value", () => {
   render(<Harness initial="1000" />);
 
   expect(screen.getByLabelText("How much?, ₱1,000")).toBeTruthy();
+});
+
+// ---------------------------------------------------------------------------
+// THE PANEL DOES NOT OUTLIVE THE FIELD (final review, Critical 1)
+// ---------------------------------------------------------------------------
+//
+// Spec §4.2's "navigate away / host unmounts → close" was half-built: the
+// provider's releaseHost fires when a HOST unmounts, and the root host beside
+// the Stack (app/_layout.tsx) never does. So on every migrated form the
+// sequence "tap the amount, tap Save" — Save is reachable while the panel is
+// open by design, and calls router.back() — unmounted the screen and left the
+// panel floating over the previous one, wired to a setState on a component
+// that no longer exists, with the host's live BackHandler eating the user's
+// next back press instead of navigating.
+//
+// The tree below keeps KeypadProvider and KeypadHost at fixed positions and
+// swaps only the screen out, which is the shape a stack pop actually takes.
+// Unmounting the whole render result would take the host with it and would
+// pass with no fix at all.
+describe("unmounting the screen that opened the panel", () => {
+  function Screen({ fieldId = "amount" }: { fieldId?: string }) {
+    const [value, setValue] = useState("");
+    return (
+      <NumericField testID={fieldId} label={`Label ${fieldId}`} value={value} onChangeText={setValue} />
+    );
+  }
+
+  function tree(inner: ReactNode) {
+    return (
+      <KeypadProvider>
+        {inner}
+        <KeypadHost />
+      </KeypadProvider>
+    );
+  }
+
+  test("closes the panel when that screen's field was the focused one", () => {
+    const view = render(tree(<Screen />));
+    fireEvent.press(screen.getByTestId("amount"));
+    expect(screen.getByTestId("keypad-host")).toBeTruthy(); // sanity: open first
+
+    view.rerender(tree(null));
+
+    expect(screen.queryByTestId("keypad-host")).toBeNull();
+  });
+
+  test("leaves the panel alone when the field going away was not the focused one", () => {
+    // The other half of the same rule, and the reason the cleanup is
+    // ownership-checked rather than unconditional: a conditional row or a
+    // re-keyed list item disappearing must not close a panel that belongs to
+    // a different field.
+    //
+    // Every child holds its slot across the rerender — only the second one
+    // becomes null. Swapping the SHAPE of the children instead (a fragment
+    // for a lone element, say) makes React remount the whole subtree, which
+    // would unmount the focused field as well and quietly test nothing.
+    function pair(showOther: boolean) {
+      return (
+        <KeypadProvider>
+          <Screen fieldId="amount" />
+          {showOther ? <Screen fieldId="other" /> : null}
+          <KeypadHost />
+        </KeypadProvider>
+      );
+    }
+
+    const view = render(pair(true));
+    fireEvent.press(screen.getByTestId("amount"));
+
+    view.rerender(pair(false));
+
+    expect(screen.queryByTestId("other")).toBeNull(); // sanity: it really went
+    expect(screen.getByTestId("keypad-host")).toBeTruthy();
+    expect(screen.getByTestId("keypad-label").props.children).toBe("Label amount");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// disabled (final review, Important 4)
+// ---------------------------------------------------------------------------
+describe("disabled", () => {
+  function DisabledHarness({ disabled }: { disabled: boolean }) {
+    return (
+      <KeypadProvider>
+        <NumericField
+          testID="amount"
+          label="How much?"
+          disabled={disabled}
+          value="1000"
+          onChangeText={() => {}}
+        />
+        <KeypadHost />
+      </KeypadProvider>
+    );
+  }
+
+  test("a disabled field does not open the panel", () => {
+    render(<DisabledHarness disabled />);
+
+    fireEvent.press(screen.getByTestId("amount"));
+
+    expect(screen.queryByTestId("keypad-host")).toBeNull();
+  });
+
+  test("a disabled field says so to a screen reader", () => {
+    // What editable={false} on the TextInput this replaces gave for free. The
+    // two call sites that hand-rolled pointerEvents wrappers instead left the
+    // field announcing itself as an ordinary button that then ignored taps.
+    render(<DisabledHarness disabled />);
+
+    expect(screen.getByTestId("amount").props.accessibilityState.disabled).toBe(true);
+  });
+
+  test("a disabled field is visibly dimmed, so it does not look tappable", () => {
+    render(<DisabledHarness disabled />);
+
+    expect(String(screen.getByTestId("amount").props.className)).toMatch(/opacity-50/u);
+  });
+
+  test("an enabled field is neither dimmed nor announced as disabled", () => {
+    render(<DisabledHarness disabled={false} />);
+
+    expect(screen.getByTestId("amount").props.accessibilityState.disabled).toBe(false);
+    expect(String(screen.getByTestId("amount").props.className)).not.toMatch(/opacity-50/u);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A SEEDED FIGURE IS REPLACED, NOT APPENDED TO (final review, Important 5)
+// ---------------------------------------------------------------------------
+//
+// pesoInputFrom(1833333) is "18333.33", already at appendKey's two-decimal
+// cap — and appendKey's `point >= 0` branch then refuses EVERY digit, not
+// just fraction digits. Reopening "Change my income" on a detected figure
+// (detection produces an average, so a non-round peso is the common case)
+// left the whole keypad looking dead: no error, no explanation.
+describe("a seeded value", () => {
+  test("is replaced by the first digit rather than refusing it", () => {
+    render(<Harness initial="18333.33" />);
+    fireEvent.press(screen.getByTestId("amount"));
+
+    fireEvent.press(screen.getByTestId("keypad-key-5"));
+
+    expect(String(screen.getByTestId("keypad-display").props.children)).toBe("₱5");
+  });
+
+  test("keeps appending from the second key onward", () => {
+    render(<Harness initial="1000" />);
+    fireEvent.press(screen.getByTestId("amount"));
+
+    fireEvent.press(screen.getByTestId("keypad-key-5"));
+    fireEvent.press(screen.getByTestId("keypad-key-0"));
+
+    expect(String(screen.getByTestId("keypad-display").props.children)).toBe("₱50");
+  });
+
+  test("is replaced by a first decimal keystroke too", () => {
+    render(<Harness initial="18333.33" />);
+    fireEvent.press(screen.getByTestId("amount"));
+
+    fireEvent.press(screen.getByTestId("keypad-key-."));
+
+    expect(String(screen.getByTestId("keypad-display").props.children)).toBe("₱0.");
+  });
+
+  test("BACKSPACE EDITS IT IN PLACE — it never triggers the replacement", () => {
+    // Someone pressing backspace is deliberately correcting the seeded
+    // figure. Replacing on the next digit after that would throw away the
+    // part they kept.
+    render(<Harness initial="18333.33" />);
+    fireEvent.press(screen.getByTestId("amount"));
+
+    fireEvent.press(screen.getByTestId("keypad-backspace"));
+    expect(String(screen.getByTestId("keypad-display").props.children)).toBe("₱18,333.3");
+
+    fireEvent.press(screen.getByTestId("keypad-key-5"));
+
+    expect(String(screen.getByTestId("keypad-display").props.children)).toBe("₱18,333.35");
+  });
+
+  test("re-focusing the field seeds it afresh, so the replacement is per focus", () => {
+    render(<Harness initial="1000" />);
+
+    fireEvent.press(screen.getByTestId("amount"));
+    fireEvent.press(screen.getByTestId("keypad-key-5"));
+    fireEvent.press(screen.getByTestId("keypad-key-0"));
+    fireEvent.press(screen.getByTestId("keypad-done"));
+
+    fireEvent.press(screen.getByTestId("amount"));
+    fireEvent.press(screen.getByTestId("keypad-key-7"));
+
+    expect(String(screen.getByTestId("keypad-display").props.children)).toBe("₱7");
+  });
 });

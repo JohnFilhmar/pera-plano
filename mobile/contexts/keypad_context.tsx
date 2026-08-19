@@ -40,11 +40,37 @@ export type KeypadRequest = {
   label: string;
   mode: KeypadMode;
   text: string;
+  /**
+   * The panel was seeded with `text` and no key has been pressed since.
+   *
+   * REPLACE-ON-FIRST-KEYSTROKE, AND IT IS NOT COSMETIC. `pesoInputFrom`
+   * seeds an edit field from a stored amount, and a detected income is an
+   * AVERAGE -- ₱18,333.33, not ₱18,000 -- so the seed usually arrives
+   * already at the two-decimal cap. `appendKey`'s fraction rule then refuses
+   * EVERY digit, and the user taps 0-9 on a panel that appears simply dead:
+   * no error, no explanation. The first digit or decimal therefore starts a
+   * fresh string instead of appending, which is what every amount UI does.
+   *
+   * BACKSPACE DOES NOT TRIGGER THE REPLACE. Someone pressing backspace is
+   * deliberately editing the seeded figure; it edits normally and clears
+   * this flag like any other key.
+   *
+   * IT LIVES HERE, NOT IN lib/money/peso_input.ts. That module is a pure
+   * keystroke state machine over a string and has no idea where the string
+   * came from — "seeded" is a fact about this focus session, so it belongs
+   * to the request that opened it.
+   */
+  untouched: boolean;
+};
+
+/** What a field hands to `open` — `untouched` is the provider's to set. */
+export type KeypadOpenRequest = Omit<KeypadRequest, "untouched"> & {
+  onChangeText: (text: string) => void;
 };
 
 export type KeypadContextValue = {
   request: KeypadRequest | null;
-  open: (request: KeypadRequest & { onChangeText: (text: string) => void }) => void;
+  open: (request: KeypadOpenRequest) => void;
   close: () => void;
   /** The host calls this with the next text on every key. */
   emit: (text: string) => void;
@@ -75,13 +101,13 @@ export function KeypadProvider({ children }: { children: ReactNode }) {
   const activeHostRef = useRef<number | null>(null);
   activeHostRef.current = activeHost;
 
-  const open = useCallback(
-    ({ onChangeText, ...next }: KeypadRequest & { onChangeText: (text: string) => void }) => {
-      onChangeRef.current = onChangeText;
-      setRequest(next);
-    },
-    [],
-  );
+  const open = useCallback(({ onChangeText, ...next }: KeypadOpenRequest) => {
+    onChangeRef.current = onChangeText;
+    // Every open starts untouched, including one with an empty `text`: there
+    // the replacement and the append are the same string, so nothing special
+    // happens and there is no second case to reason about.
+    setRequest({ ...next, untouched: true });
+  }, []);
 
   const close = useCallback(() => {
     onChangeRef.current = null;
@@ -89,6 +115,15 @@ export function KeypadProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const emit = useCallback((text: string) => {
+    // ANY key ends the seeded state — digit, decimal, backspace or clear.
+    // Backspace especially: `request.untouched` only decides whether the
+    // NEXT digit replaces or appends, and someone who has already backspaced
+    // into the seeded figure is editing it, not about to retype it.
+    setRequest((current) => {
+      // Same object when nothing moved, for the reason syncFocused documents.
+      if (current === null || !current.untouched) return current;
+      return { ...current, untouched: false };
+    });
     onChangeRef.current?.(text);
   }, []);
 
@@ -124,6 +159,19 @@ export function KeypadProvider({ children }: { children: ReactNode }) {
     if (wasActive) {
       onChangeRef.current = null;
       setRequest(null);
+      // AND THE HEIGHT GOES WITH IT. components/ui/keypad_host.tsx zeroes
+      // this from an effect keyed on its own `visible`, which fires only on a
+      // TRANSITION -- so when a sheet host takes the panel (root host already
+      // went `visible: false` and already ran its effect) and is then
+      // unmounted, nothing re-runs at the root and the last measured height
+      // survives the panel. Two taps reach it: open the correct sheet, tap
+      // the amount, tap the category row, dismiss the picker. Every consumer
+      // then reserves a band for a panel that is gone -- ~380dp of dead space
+      // under a sheet's Confirm (bottom_sheet.tsx), phantom bottom padding on
+      // every form (form_screen.tsx), a footer floating ~330dp up
+      // (onboarding_frame.tsx). This provider is the only place that knows a
+      // host died, so it is the only place that can put the height back.
+      setKeypadHeight(0);
     }
   }, []);
 

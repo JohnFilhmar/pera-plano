@@ -188,6 +188,114 @@ test("close clears the request", () => {
   expect(state()).toBe("closed");
 });
 
+// ---------------------------------------------------------------------------
+// THE PUBLISHED HEIGHT DIES WITH THE HOST (final review, Critical 2)
+// ---------------------------------------------------------------------------
+//
+// components/ui/keypad_host.tsx zeroes `keypadHeight` from an effect keyed on
+// its own `visible`, which fires only on a TRANSITION. When a sheet host takes
+// the panel the root host has ALREADY gone `visible: false` and already run
+// that effect — so when the sheet host is then torn down, nothing at the root
+// re-runs and the sheet's measured ~350dp survives the panel it measured.
+// Every consumer keeps reserving a band for a panel that is gone.
+//
+// FakeHost below deliberately does NOT touch the height, which is the point:
+// this pins the guarantee on the PROVIDER, the only place that knows a host
+// died, rather than on the host's own cleanup.
+describe("the published keypad height", () => {
+  function HeightProbe() {
+    const { keypadHeight } = useKeypad();
+    return <Text testID="height">{String(keypadHeight)}</Text>;
+  }
+
+  function height(): string {
+    return String(screen.getByTestId("height").props.children);
+  }
+
+  test("goes back to zero when the host that was drawing the panel unmounts", () => {
+    let openIt: () => void = () => {};
+    let measure: (value: number) => void = () => {};
+
+    function Opener() {
+      const { open, setKeypadHeight } = useKeypad();
+      openIt = () =>
+        open({ fieldId: "a", label: "A", mode: "peso", text: "", onChangeText: () => {} });
+      measure = setKeypadHeight;
+      return null;
+    }
+
+    const { rerender } = render(
+      <KeypadProvider>
+        <HeightProbe />
+        <Opener />
+        <FakeHost name="root" />
+        <FakeHost name="sheet" />
+      </KeypadProvider>,
+    );
+
+    act(() => openIt());
+    // What the sheet host's onLayout does once it is the one drawing.
+    act(() => measure(350));
+    expect(height()).toBe("350");
+
+    rerender(
+      <KeypadProvider>
+        <HeightProbe />
+        <Opener />
+        <FakeHost name="root" />
+      </KeypadProvider>,
+    );
+
+    // Without this the next sheet gets a ~380dp dead band under Confirm, every
+    // migrated form gets ~374px of phantom bottom padding, and the onboarding
+    // footer floats ~330dp up — until someone opens AND closes a keypad at the
+    // root, which is the only thing that used to reset it.
+    expect(height()).toBe("0");
+  });
+
+  test("survives an INACTIVE host unmounting, which measured nothing", () => {
+    // The guard on the reset: only the host that was actually drawing takes
+    // the height with it. A root host disappearing under an open sheet must
+    // not wipe the height that sheet just published.
+    let openIt: () => void = () => {};
+    let measure: (value: number) => void = () => {};
+
+    function Opener() {
+      const { open, setKeypadHeight } = useKeypad();
+      openIt = () =>
+        open({ fieldId: "a", label: "A", mode: "peso", text: "", onChangeText: () => {} });
+      measure = setKeypadHeight;
+      return null;
+    }
+
+    const { rerender } = render(
+      <KeypadProvider>
+        <Probe />
+        <HeightProbe />
+        <Opener />
+        <FakeHost name="root" />
+        <FakeHost name="sheet" />
+      </KeypadProvider>,
+    );
+
+    act(() => openIt());
+    act(() => measure(350));
+
+    rerender(
+      <KeypadProvider>
+        <Probe />
+        <HeightProbe />
+        <Opener />
+        {null}
+        <FakeHost name="sheet" />
+      </KeypadProvider>,
+    );
+
+    expect(height()).toBe("350");
+    expect(state()).toBe("a");
+  });
+});
+
 test("useKeypad outside a provider throws rather than silently no-opping", () => {
   const spy = jest.spyOn(console, "error").mockImplementation(() => {});
   function Bare() {

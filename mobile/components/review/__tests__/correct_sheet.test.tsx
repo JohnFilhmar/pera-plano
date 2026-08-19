@@ -239,8 +239,9 @@ describe("the patch reports only what the user changed", () => {
 
   test("correcting a seeded amount reports the corrected figure, not a hundredfold one", () => {
     // The seeding trap end to end: the parser read ₱1,250.00, the user fixes it
-    // to ₱1,300.00. `clearAmount` first because typeAmount APPENDS — without it
-    // this would type onto the end of the seeded "1250".
+    // to ₱1,300.00. The `clearAmount` is belt-and-braces: the first keystroke
+    // on a seeded field now replaces rather than appends (see `untouched` in
+    // contexts/keypad_context.tsx), so this reaches 1300 either way.
     renderSheet();
 
     clearAmount("correct-amount");

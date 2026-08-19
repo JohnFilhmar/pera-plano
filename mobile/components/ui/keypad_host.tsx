@@ -100,6 +100,28 @@ export function KeypadHost() {
     if (!visible) setKeypadHeight?.(0);
   }, [visible, setKeypadHeight]);
 
+  // DEFENCE IN DEPTH for the effect immediately above, which fires only on a
+  // `visible` TRANSITION and so cannot cover a host that is unmounted while
+  // it is still the one drawing — a sheet dismissed with the panel open, or
+  // the root host going away when AppShell swaps in the lock screen. The
+  // authoritative fix is releaseHost in contexts/keypad_context.tsx (the only
+  // place that knows a host died); this is the same guarantee stated where
+  // the height is actually published, and the two are independent.
+  //
+  // GUARDED BY `visible`, because an INACTIVE host unmounting must not wipe
+  // the height an active one just measured. `visibleRef` is read only from
+  // the unmount path, where the last render's value is the value at unmount.
+  // `setKeypadHeight` is a bare useState setter, so this effect's dependency
+  // never changes and the cleanup runs on unmount and nowhere else.
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
+  useEffect(
+    () => () => {
+      if (visibleRef.current) setKeypadHeight?.(0);
+    },
+    [setKeypadHeight],
+  );
+
   // Every hook above runs on every render, provider or not — this is the only
   // exit, and it is below all of them.
   if (keypad === null || !visible || request === null) return null;
@@ -162,7 +184,16 @@ export function KeypadHost() {
 
         <NumericKeypad
           mode={request.mode}
-          onKey={(key) => keypad.emit(appendKey(request.text, key))}
+          // A SEEDED FIGURE IS REPLACED BY THE FIRST DIGIT, NOT APPENDED TO.
+          // Detected income arrives as an average — ₱18,333.33 — which seeds
+          // the field already at appendKey's two-decimal cap, and from there
+          // appendKey refuses every digit, so the panel reads as dead. See
+          // `untouched` in contexts/keypad_context.tsx for the full case;
+          // `emit` is what clears the flag, so this reverts to plain
+          // appending from the second key onward.
+          onKey={(key) => keypad.emit(appendKey(request.untouched ? "" : request.text, key))}
+          // NOT replaced: backspace edits the seeded figure in place, which
+          // is what someone pressing it is asking for.
           onBackspace={() => keypad.emit(removeLastKey(request.text))}
           onClear={() => keypad.emit("")}
         />

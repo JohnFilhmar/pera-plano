@@ -106,21 +106,21 @@ export function AllocationSheet({
                 </Text>
               </Pressable>
 
-              {/* NumericField has no `editable`/`disabled` prop — pointerEvents
-                  is how PlusGate disables a Pressable subtree elsewhere in
-                  this app (components/gates/plus_gate.tsx), and it is the
-                  same mechanism here: a skipped row's amount stays visible
-                  but genuinely un-pressable, matching the old
-                  editable={row.checked}. */}
-              <View pointerEvents={row.checked ? "auto" : "none"}>
-                <NumericField
-                  testID={`allocation-amount-${proposal.goalId}`}
-                  label={proposal.goalName}
-                  mode="peso"
-                  value={row.text}
-                  onChangeText={(text) => setRow(proposal.goalId, { text })}
-                />
-              </View>
+              {/* `disabled`, the direct replacement for the old
+                  editable={row.checked}. This used to be a
+                  pointerEvents="none" wrapper that left a skipped row looking
+                  fully enabled — same colours as an editable one, announced
+                  to TalkBack as a plain button — while silently swallowing
+                  every tap. The prop dims it and marks it disabled to a
+                  screen reader, both inside the field. */}
+              <NumericField
+                testID={`allocation-amount-${proposal.goalId}`}
+                label={proposal.goalName}
+                mode="peso"
+                disabled={!row.checked}
+                value={row.text}
+                onChangeText={(text) => setRow(proposal.goalId, { text })}
+              />
               <Text className="text-fg-2 dark:text-fg-2-dark">
                 {formatCentavos(centavosFrom(row.text))}
               </Text>

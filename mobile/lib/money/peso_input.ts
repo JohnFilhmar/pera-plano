@@ -85,10 +85,18 @@ export function centavosFrom(text: PesoInput): Centavos {
 /**
  * The inverse, for seeding a field from a stored amount.
  *
- * `100000` gives `"1000"` and NOT `"1000.00"`: the next keystroke has to
- * continue the integer part, and a seeded `"1000.00"` is already at the
- * fraction cap, so every further digit would be refused on a field the user
- * has not touched yet.
+ * `100000` gives `"1000"` and NOT `"1000.00"`: a seeded `"1000.00"` is already
+ * at the fraction cap, so every further digit would be refused on a field the
+ * user has not touched yet. It is also simply the shorter thing to read.
+ *
+ * THAT IS NO LONGER THE WHOLE ANSWER, and this function is not where the rest
+ * of it lives. `649` still has to give `"6.49"`, and a detected income is an
+ * average, so a non-round seed is the COMMON case for an edit field -- which
+ * lands in exactly the refusal above. The UI layer handles it by replacing a
+ * seeded value on the first keystroke instead of appending to it; see
+ * `untouched` in contexts/keypad_context.tsx. Deliberately not here: this
+ * module is a pure function of (string, key) and has no way to know whether a
+ * string was seeded or typed.
  */
 export function pesoInputFrom(amount: Centavos): PesoInput {
   const absolute = Math.abs(amount);

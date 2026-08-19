@@ -35,8 +35,16 @@ import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 
 import { useKeypad } from "@/contexts/keypad_context";
 
-/** Breathing room under the last control, on top of whatever is covering it. */
-const BASE_PADDING = 24;
+/**
+ * Breathing room under the last control, on top of whatever is covering it.
+ *
+ * Exported so __tests__/form_screen.test.tsx can assert the CLOSED baseline
+ * exactly — `paddingBottom === BASE_PADDING` with nothing focused. That one
+ * assertion is what catches a stale `keypadHeight` surviving a panel that is
+ * gone (final review, Critical 2); a `toBeGreaterThanOrEqual` on the open
+ * case cannot, since it passes just as happily at 100000.
+ */
+export const BASE_PADDING = 24;
 
 export function FormScreen({
   children,
@@ -56,6 +64,18 @@ export function FormScreen({
       bottomOffset={BASE_PADDING}
       contentContainerStyle={{
         flexGrow: 1,
+        // ASSUMES THIS VIEWPORT REACHES THE BOTTOM OF THE WINDOW, and on two
+        // routes it does not: app/wallet/new.tsx and app/wallet/edit.tsx wrap
+        // this in an outer View carrying `paddingBottom: insets.bottom`, so
+        // the panel — pinned to the WINDOW's bottom edge at
+        // `position: absolute; bottom: 0` (keypad_host.tsx) — overlaps this
+        // scroll view by `keypadHeight - insets.bottom`, not by keypadHeight.
+        // Those two forms therefore over-reserve by the inset (126px on the
+        // A54). The error direction is safe — it always over-reserves, never
+        // under — which is why nothing catches it and why it is recorded as a
+        // deferred deviation in the spec rather than fixed here. The clean fix
+        // is for the context to publish the panel's TOP EDGE in window
+        // coordinates and for this to subtract its own measured bottom.
         paddingBottom: Math.max(keypadHeight, 0) + BASE_PADDING,
       }}
     >

@@ -209,6 +209,54 @@ test("only the most recently mounted host draws the panel", () => {
   expect(screen.getAllByTestId("keypad-host")).toHaveLength(1);
 });
 
+// ---------------------------------------------------------------------------
+// THE HEIGHT A DEAD HOST PUBLISHED (final review, Critical 2)
+// ---------------------------------------------------------------------------
+//
+// The same guarantee contexts/__tests__/keypad_context.test.tsx pins on the
+// provider, driven end to end through two REAL hosts and a real onLayout —
+// the shape the two-tap reproduction actually takes on a device: a picker
+// sheet opened from inside another sheet mounts a host, takes the panel,
+// measures itself, and is then dismissed while the sheet under it stays.
+describe("the published height when a host dies", () => {
+  function HeightProbe() {
+    const { keypadHeight } = useKeypad();
+    return <Text testID="height">{String(keypadHeight)}</Text>;
+  }
+
+  function tree(showNested: boolean) {
+    return (
+      <KeypadProvider>
+        <HeightProbe />
+        <Opener />
+        <KeypadHost />
+        {showNested ? <KeypadHost /> : null}
+      </KeypadProvider>
+    );
+  }
+
+  function height(): string {
+    return String(screen.getByTestId("height").props.children);
+  }
+
+  test("goes with it, so the next screen gets no dead band", () => {
+    const view = render(tree(true));
+    press("open-amount");
+
+    // Exactly one host draws, and it is the nested one — the panel's own
+    // registry rule. Its onLayout is what publishes the height.
+    fireEvent(screen.getByTestId("keypad-host"), "layout", {
+      nativeEvent: { layout: { height: 350, width: 400, x: 0, y: 0 } },
+    });
+    expect(height()).toBe("350");
+
+    view.rerender(tree(false));
+
+    expect(screen.queryByTestId("keypad-host")).toBeNull();
+    expect(height()).toBe("0");
+  });
+});
+
 /**
  * SYSTEM BACK INSIDE A SHEET GOES THROUGH THE MODAL, NOT THROUGH BackHandler.
  *
