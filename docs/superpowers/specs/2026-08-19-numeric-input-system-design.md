@@ -356,7 +356,7 @@ table-driven tests and it is where W1's correctness is actually established:
 - the specific cases from the owner's report: `"1000"` → `100000`, `"1000.50"` → `100050`,
   `"1000.5"` → `100050`, `"0.05"` → `5`, `"6.49"` → `649`;
 - the boundary at `MAX_INTEGER_DIGITS`, asserting the result stays a safe integer;
-- a regression test naming the old behaviour: `"100000"` must be ₱1,000,000.00 and **not** ₱1,000.00.
+- a regression test naming the old behaviour: `"100000"` must be ₱100,000.00 and **not** ₱1,000.00.
 
 The registry rule in §3.2 is likewise testable without a renderer: register, register, unregister,
 assert which token holds the panel.
