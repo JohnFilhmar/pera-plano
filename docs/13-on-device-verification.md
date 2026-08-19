@@ -816,6 +816,17 @@ adb shell am start -a android.intent.action.VIEW -d "peraplano://wallet/new"
       Save stays reachable without being hidden under the panel → `________________`
 - [ ] **Wallet detail → Edit** (any wallet): the form scrolls correctly and Save is reachable. This
       is the screen from the original bug report → `________________`
+- [ ] **Navigating away with the panel still open.** On **Wallet → New**, tap the opening-balance
+      field so the keypad comes up, then — WITHOUT closing it — tap **Save**. Save is reachable
+      with the panel open by design, so this is an ordinary thing to do. The keypad must be gone
+      the instant the Wallets list appears, and your NEXT back press must navigate rather than
+      being swallowed. Repeat with hardware Back instead of Save (two presses: the first closes
+      the panel, the second leaves the screen) → `________________`
+  > **The regression this is here for.** The panel is global state drawn by the host beside the
+  > Stack, which never unmounts on navigation — so nothing used to take it down when the SCREEN
+  > went away. A keypad left floating over the wallet list, wired to a form that no longer exists,
+  > with its back-press handler still live. Watch specifically for a first back press that does
+  > nothing visible. Any migrated form works for this; Wallet → New is just the shortest path.
 
 ### Income
 
@@ -829,13 +840,20 @@ adb shell am start -a android.intent.action.VIEW -d "peraplano://plan/income"
 
 - [ ] Re-open **"Change my income"** on income PeraPlano detected on its own (not one you set
       manually). Detection produces an average, rarely a round peso — e.g. ₱18,333.33 — so the
-      field seeds already at two decimal places, the maximum the input allows: **every digit key
-      is inert until you backspace first.** No error, no explanation — the field just appears not
-      to respond. This is documented behaviour of the input rules, not a new bug, but W1 is what
-      makes this screen reachable in the first place. Judge whether it needs addressing. If your
-      test account's income was set manually instead, this needs an account where detection
-      produced the figure — note if you could not reproduce the setup this session
-      → `________________`
+      field seeds already at two decimal places, the maximum the input allows. Tap the field and
+      press a digit: it must **replace** the seeded figure, so pressing `2` leaves ₱2, not a
+      keypad that ignores you. If your test account's income was set manually instead, this needs
+      an account where detection produced the figure — note if you could not reproduce the setup
+      this session → `________________`
+  > **Fixed on this branch, and worth confirming by hand.** Before the fix every digit key was
+  > inert on a seeded non-round amount — no error, no explanation, the field simply appeared not
+  > to respond — because `appendKey` refuses everything once the fraction is full.
+- [ ] Same field, same seeded figure: press **backspace** instead. It must edit the seeded value
+      in place (₱18,333.33 → ₱18,333.3), NOT clear the whole thing — and the next digit must then
+      append to what is left (→ ₱18,333.35), not replace it → `________________`
+  > The other half of the same rule. Replace-on-first-keystroke is for someone retyping the
+  > figure; backspace means they are correcting it, and throwing away the part they kept would be
+  > the worse bug of the two.
 
 ### Bills
 
@@ -899,6 +917,31 @@ Verify these three on every sheet you can reach:
 - [ ] Closing the sheet (backdrop tap, or hardware Back) while the keypad is open closes the
       keypad first, rather than closing both at once or leaving the panel floating
       → `________________`
+
+Three more, and they are the ones the checks above do NOT reach — everything so far opens a keypad
+INSIDE a sheet that is already there. These start from a keypad that is already open:
+
+- [ ] **Opening a sheet while the panel is already up.** Manual entry (`peraplano://transaction/new`)
+      lands with the keypad already open. WITHOUT closing it, tap the category row. The category
+      picker opens as a sheet, and the panel must re-appear ABOVE it — not behind it, not gone,
+      not duplicated (exactly one keypad on screen). Dismiss the picker: the panel closes with it
+      and you are back on the manual-entry form with the amount you typed intact
+      → `________________`
+  > The panel physically moves between native windows here — a sheet is its own window, so the
+  > keypad is torn down at the root and redrawn inside the sheet. Two panels, a panel behind the
+  > picker, or a flicker on the handover all belong in the box.
+- [ ] **The dead band a dismissed sheet can leave behind.** Same sequence as above, but stay on
+      the screen afterwards: open the panel, open the picker sheet, dismiss the picker, then close
+      the keypad. Look at the bottom of the form. There must be NO band of empty space where the
+      panel used to be — Save/Confirm sits where it did before you started, not pushed up by
+      several centimetres. Repeat inside the review-queue correction sheet (tap the amount, tap
+      the category row, dismiss the picker) and check Confirm's position there
+      → `________________`
+  > **The measurement, not the panel.** The panel's height is published for the forms and sheets
+  > to reserve space with, and a sheet that dies while holding the panel used to take the panel
+  > with it and leave the MEASUREMENT behind — roughly 350dp of reserved nothing, on every form
+  > and sheet, until someone opened and closed a keypad at the root. If you see it, note WHICH
+  > screen and roughly how much space.
 
 - [ ] **On the review-queue correction sheet specifically, with the keypad open on the amount
       field:** its content runs to roughly 830dp, and the panel may now clip off the TOP of the

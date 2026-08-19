@@ -227,14 +227,14 @@ destructive-vs-safe ones with no visual cue telling them apart.
 
 ### 4.2 Opening and closing
 
-| Trigger | Effect |
-|---|---|
-| Press a `NumericField` | open, or swap focus if already open |
-| Press **Done** or **×** | commit, close — identical, see §4.1 |
-| Focus any `TextInput` | close (the OS keyboard is coming up regardless) |
-| Android hardware back | close, and **do not** navigate |
-| Scroll the form | close |
-| Navigate away / host unmounts | close |
+| Trigger | Effect | Built? |
+|---|---|---|
+| Press a `NumericField` | open, or swap focus if already open | yes |
+| Press **Done** or **×** | commit, close — identical, see §4.1 | yes |
+| Focus any `TextInput` | close (the OS keyboard is coming up regardless) | **no — §11.1** |
+| Android hardware back | close, and **do not** navigate | yes |
+| Scroll the form | close | **no — §11.1** |
+| Navigate away / host unmounts | close | yes |
 
 Hardware back consuming the event while the keypad is open is the one that needs a `BackHandler`
 subscription. Without it the user's first back press exits the screen they were mid-way through
@@ -301,7 +301,7 @@ W1 adds one wrapper, `components/ui/form_screen.tsx`:
   for the alphanumeric fields with no per-screen logic.
 - Bottom padding of `max(keyboardHeight, keypadHeight)`, so our panel gets the same treatment the
   library gives the system keyboard.
-- Scrolls the focused `NumericField` into view when the keypad opens.
+- ~~Scrolls the focused `NumericField` into view when the keypad opens.~~ **Not built — §11.2.**
 - `keyboardShouldPersistTaps="handled"`, so tapping a chip or a Save button while something is
   focused registers on the first tap rather than being eaten by a dismissal.
 
@@ -397,3 +397,72 @@ Amounts already stored wrong under the centavo rule are **not** migrated. There 
 deliberate ₱6.49 from a mistyped ₱649, and a migration that guesses would corrupt correct data to
 fix incorrect data. The user deletes and re-enters them, which is what makes W2's delete a near
 dependency rather than a later nicety.
+
+---
+
+## 11. Deferred after implementation
+
+Three deliverables above were **not built**, and W1 shipped without a ruling either way. They are
+recorded here as deliberate deferrals rather than left as claims the code does not honour. None is
+a correctness defect -- each is a comfort or polish gap with a bounded, named fix -- and none
+blocks the merge. Whoever picks one up starts here.
+
+### 11.1 §4.2's "focus any `TextInput`" and "scroll the form" close triggers
+
+**Not implemented.** There is no `onFocus` handler and no `onScroll` anywhere in the app. Four of
+§4.2's six triggers are built; these two are not.
+
+Reachable immediately, and the sharpest case is the screen the panel was designed around:
+`components/transactions/manual_entry_form.tsx` renders the merchant and note `TextInput`s at
+`:306` and `:315`, on a screen where `app/transaction/new.tsx` auto-opens the panel on mount. So
+the very first thing a user does after typing an amount -- tapping "Where?" -- raises the OS
+keyboard **over** the still-open keypad panel. Two keyboards, stacked. It is survivable (Done, ×
+and hardware back all still dismiss the panel, and the OS keyboard sits on top so the field being
+typed into stays visible) but it is not what §4.2 describes.
+
+**The fix, for whoever takes it.** Both halves are cheap and neither needs to touch a call site:
+
+- *Scroll:* `close()` from `FormScreen`'s `onScrollBeginDrag`. One prop, in the one wrapper every
+  migrated form already goes through.
+- *Focus:* a `Keyboard.addListener("keyboardDidShow", close)` in `KeypadProvider`. Prefer this to
+  a per-`TextInput` `onFocus` -- it is one subscription instead of an `onFocus` on every text
+  field in the app, it cannot be forgotten on a new field, and it fires on the event that actually
+  matters (the OS keyboard arriving) rather than on a proxy for it.
+
+Both want a test that the panel closes without the field's value changing, since closing is not
+cancelling (§4.1).
+
+### 11.2 §6's "scrolls the focused `NumericField` into view when the keypad opens"
+
+**Not implemented.** `components/ui/form_screen.tsx` pads its content by the panel's height and
+stops there. `KeyboardAwareScrollView` does scroll-into-view for the OS keyboard on its own, but
+our panel is not a keyboard as far as it or the OS is concerned, so nothing does it for a
+`NumericField`.
+
+The consequence is a comfort gap, not a lost keystroke: the padding guarantees the field CAN be
+scrolled to, only not that it already has been. The onboarding income step is the case to look at
+-- its amount field sits below a four-row cadence picker and can scroll out of sight on the very
+tap that focuses it. The panel still shows the field's name and its running value, so the user is
+never editing something they cannot read, which is why this is a deferral and not a defect. It is
+already on the on-device checklist (`docs/13-on-device-verification.md`, W1 -> Onboarding) as a
+judgement call for the walker.
+
+### 11.3 `form_screen.tsx` assumes its viewport reaches the bottom of the window
+
+`components/ui/form_screen.tsx` adds `keypadHeight` as bottom padding, which is only exact when
+the scroll viewport's bottom edge **is** the window's bottom edge -- the panel is pinned there at
+`position: absolute; bottom: 0` (`components/ui/keypad_host.tsx`).
+
+On two routes it is not. `app/wallet/new.tsx:129-134` and `app/wallet/edit.tsx` wrap `FormScreen`
+in an outer `View` carrying `paddingBottom: insets.bottom`, so the panel overlaps the scroll view
+by `keypadHeight - insets.bottom` and those two forms over-reserve by the inset -- 126px on the
+A54. **The error direction is safe:** it always over-reserves and never under-reserves, so Save is
+never buried; the cost is dead space. That is exactly why no checklist item catches it, and why it
+is stated rather than fixed under a review deadline.
+
+**The clean fix** is for `contexts/keypad_context.tsx` to publish the panel's **top edge in window
+coordinates** instead of a bare height, and for each consumer to subtract its own measured bottom.
+That also generalises: `components/ui/bottom_sheet.tsx` and `components/onboarding/onboarding_frame.tsx`
+each hand-derive their own correction from the same bare height today, and each documents its own
+reasoning for doing so. The assumption is named in a comment at the `paddingBottom` line so the
+next reader meets it there.
