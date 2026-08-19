@@ -21,6 +21,10 @@ import { KeypadHost } from "./keypad_host";
  * three-button navigation the inset is the whole button strip. Adding the two
  * means the sheet's last row clears the system bar on any device and still has
  * the same breathing room it was designed with on the devices that need none.
+ *
+ * It sits on top of `bottomBand` below, which is the taller of the system bar
+ * and our own keypad panel — so this stays a floor whichever of the two the
+ * sheet is currently clearing.
  */
 const SHEET_BOTTOM_PADDING = 32;
 
@@ -53,8 +57,41 @@ export function BottomSheet({
   // Read optionally, and above the early return so the hook order never moves:
   // a sheet rendered outside the app tree (every component suite that mounts
   // one on its own) has no provider, and gets null. See onRequestClose below
-  // for what this is for.
+  // and `bottomBand` for the two things it is for.
   const keypad = useKeypadOptional();
+
+  // THE SECOND BURIED-BUTTON DEFECT, ON FOUR SHEETS AT ONCE
+  // (numeric-input-system Task 14): allocation_sheet, balance_correction_sheet,
+  // cash_reconcile_sheet and correct_sheet all end in a Confirm/Save the panel
+  // below was painting straight over.
+  //
+  // WHY THE ROUTES' FIX DOES NOT REACH HERE. Every migrated screen scrolls
+  // through components/ui/form_screen.tsx, which pads its scroll CONTENT by
+  // the panel's height. A sheet is not a screen and does not scroll: it is
+  // bottom-aligned in its own Modal window, its last row sits exactly
+  // `paddingBottom` above the window's edge, and the panel is pinned to that
+  // same edge at `position: absolute; bottom: 0` (keypad_host.tsx). No amount
+  // of scrolling can lift a row out from under it, so the container has to
+  // give the band up itself — the same conclusion onboarding_frame.tsx reached
+  // for its fixed footer.
+  //
+  // MAX, NOT SUM, AND THAT IS THE WHOLE ARITHMETIC. Two different things want
+  // this bottom strip and they are never stacked: Android's navigation bar
+  // (`insets.bottom`) and our own panel. The panel is DRAWN OVER the
+  // navigation bar and already pads itself by `insets.bottom + 16`
+  // (keypad_host.tsx), so its measured height CONTAINS that strip. Clearing
+  // `insets.bottom + keypadHeight` would count the navigation bar twice — a
+  // 48dp dead band under the panel on a three-button phone, the same
+  // double-count onboarding_frame.tsx documents. Whichever obstruction is
+  // taller is the one to clear, and SHEET_BOTTOM_PADDING stays on top of it as
+  // the floor it has always been, so Confirm keeps its designed breathing room
+  // above the panel rather than resting on it.
+  //
+  // A GENUINE NO-OP AT ZERO. `keypadHeight` is 0 with no panel open, and null
+  // with no provider at all (every suite that mounts a lone sheet), so this
+  // resolves to exactly the `SHEET_BOTTOM_PADDING + insets.bottom` the sheet
+  // has always carried. Nothing that does not open a keypad can observe it.
+  const bottomBand = Math.max(insets.bottom, keypad?.keypadHeight ?? 0);
 
   // Rendering nothing, not rendering offscreen: an offscreen sheet still
   // covers the screen with an invisible touch target and the app looks frozen.
@@ -98,7 +135,7 @@ export function BottomSheet({
         <View
           testID="bottom-sheet"
           className="rounded-t-2xl bg-surface p-4 dark:bg-surface-dark"
-          style={{ paddingBottom: SHEET_BOTTOM_PADDING + insets.bottom }}
+          style={{ paddingBottom: SHEET_BOTTOM_PADDING + bottomBand }}
         >
           {/* Grab handle — the affordance that says "drag or tap away". */}
           <View className="mb-3 h-1 w-10 self-center rounded-full bg-fg-2 opacity-40 dark:bg-fg-2-dark" />

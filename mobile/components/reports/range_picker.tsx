@@ -13,9 +13,11 @@
 // same lock icon. Interfaces note: a Plus row that NAMES the feature — not a
 // blurred preview of real data — is what rule 5 asks for here.
 import { useState } from "react";
-import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { Pressable, ScrollView, Text, View } from "react-native";
 
 import { PlusGate } from "@/components/gates/plus_gate";
+import { DateField } from "@/components/ui/date_field";
+import { parseDateIso } from "@/lib/dates";
 import { MONTHS } from "@/lib/datetime";
 import type { AvailableScopes, ReportScope } from "@/lib/reports/reports_service";
 
@@ -51,6 +53,19 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 function isValidCustomRange(from: string, to: string): boolean {
   return DATE_PATTERN.test(from) && DATE_PATTERN.test(to) && from <= to;
+}
+
+/**
+ * The other field's value as a picker bound — `undefined` while it is unset.
+ *
+ * GUARDED BY THE SAME PATTERN, not just by `!== ""`. `parseDateIso` does no
+ * validation (see lib/dates.ts's header), so a half-set value would produce an
+ * Invalid Date, and a dialog handed one refuses every day on the calendar:
+ * the form would look broken on the very first tap rather than simply
+ * unbounded.
+ */
+function boundFrom(value: string): Date | undefined {
+  return DATE_PATTERN.test(value) ? parseDateIso(value) : undefined;
 }
 
 export function RangePicker({
@@ -118,24 +133,52 @@ export function RangePicker({
 
       {customOpen ? (
         <View testID="range-picker-custom-form" className="gap-2">
-          <TextInput
-            testID="range-picker-custom-from"
-            value={from}
-            onChangeText={setFrom}
-            placeholder="YYYY-MM-DD"
-            className="rounded-lg border border-fg-2 px-3 py-2 text-fg dark:border-fg-2-dark dark:text-fg-dark"
-          />
-          <TextInput
-            testID="range-picker-custom-to"
-            value={to}
-            onChangeText={setTo}
-            placeholder="YYYY-MM-DD"
-            className="rounded-lg border border-fg-2 px-3 py-2 text-fg dark:border-fg-2-dark dark:text-fg-dark"
-          />
+          {/* TWO DateFields THAT BOUND EACH OTHER (numeric-input-system Task
+              14). These were `placeholder="YYYY-MM-DD"` TextInputs, which is
+              the pattern date_field.tsx exists to retire.
+
+              THE BOUNDS AND `isValidCustomRange` ARE NOT REDUNDANT. The bounds
+              stop the user REACHING an invalid pair — the end date's calendar
+              simply cannot go below the start — and the string check still
+              catches one. Deleting the check because "the dialog prevents it"
+              would leave the untouched `""`/`""` pair, and a half-filled form,
+              with nothing guarding Apply at all.
+
+              VISIBLE LABELS, because both fields now show the same "Pick a
+              date" placeholder while empty: without them the form would be two
+              identical rows with nothing saying which is the start. */}
+          <View>
+            <Text className="font-semibold text-fg dark:text-fg-dark">Start</Text>
+            <DateField
+              testID="range-picker-custom-from"
+              label="Start date"
+              placeholder="Pick a date"
+              value={from}
+              onChange={setFrom}
+              maximumDate={boundFrom(to)}
+            />
+          </View>
+          <View>
+            <Text className="font-semibold text-fg dark:text-fg-dark">End</Text>
+            <DateField
+              testID="range-picker-custom-to"
+              label="End date"
+              placeholder="Pick a date"
+              value={to}
+              onChange={setTo}
+              minimumDate={boundFrom(from)}
+            />
+          </View>
           {/* Tone matches cash_reconcile_sheet.tsx's field hints: say what is
-              needed, not what is wrong with what was typed. */}
+              needed, not what is wrong with what was typed.
+
+              THE FORMAT INSTRUCTION IS GONE, AND SO IS THE ORDERING ONE. "Enter
+              both dates as YYYY-MM-DD" told the user to type into controls that
+              cannot be typed into, and "with the start on or before the end"
+              warned about a pair the bounds above make unreachable. What is
+              left is the one thing still true: Apply needs both. */}
           <Text testID="range-picker-custom-hint" className="text-fg-2 dark:text-fg-2-dark">
-            Enter both dates as YYYY-MM-DD, with the start on or before the end.
+            Pick both dates to apply a custom range.
           </Text>
           <Pressable
             testID="range-picker-custom-apply"

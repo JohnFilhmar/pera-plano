@@ -15,8 +15,13 @@
 //   recategorizing rows the user never looked at, having just told the app not
 //   to.
 import { fireEvent, render, screen } from "@testing-library/react-native";
+import type { ReactNode } from "react";
 
 import { ALWAYS_BOTH_LABEL, CorrectSheet, alwaysRuleLabel } from "../correct_sheet";
+
+import { KeypadHost } from "@/components/ui/keypad_host";
+import { KeypadProvider } from "@/contexts/keypad_context";
+import { clearAmount, typeAmount } from "@/test_support/keypad";
 
 import { closeDatabase } from "@/lib/db/database";
 import { seedDefaultCategories } from "@/lib/db/repos/categories_repo";
@@ -103,6 +108,21 @@ function item(payload: Record<string, unknown> = {}): ReviewQueueItem {
 const onSubmit = jest.fn();
 const onDismiss = jest.fn();
 
+// KeypadProvider AND A ROOT HOST (numeric-input-system Task 14). The amount is
+// a NumericField now, whose `useKeypad()` throws with no provider above it, and
+// BottomSheet mounts a host of its own inside its Modal. The root host goes
+// BEFORE the subject: tokens are handed out in effect-completion order, so a
+// host mounted after this subtree would outrank the sheet's own and the panel
+// would be painted behind the sheet.
+function Wrapper({ children }: { children: ReactNode }) {
+  return (
+    <KeypadProvider>
+      <KeypadHost />
+      {children}
+    </KeypadProvider>
+  );
+}
+
 function renderSheet(entry: ReviewQueueItem = item()): void {
   render(
     <CorrectSheet
@@ -113,6 +133,7 @@ function renderSheet(entry: ReviewQueueItem = item()): void {
       onDismiss={onDismiss}
       onSubmit={onSubmit}
     />,
+    { wrapper: Wrapper },
   );
 }
 
@@ -124,7 +145,13 @@ describe("the sheet opens on what the parser proposed", () => {
   test("prefills the parsed amount, wallet, category and merchant", () => {
     renderSheet();
 
-    expect(screen.getByTestId("numpad-amount")).toHaveTextContent("₱1,250.00");
+    // THE SEEDING ASSERTION, AND IT IS WORTH ITS OWN SENTENCE. A field seeded
+    // with a raw `String(125000)` would read back through `centavosFrom` as
+    // ₱125,000 — a hundredfold inflation of the figure the parser actually
+    // captured, on the one sheet whose entire job is correcting that figure.
+    // `pesoInputFrom` is the only route from Centavos to field text.
+    expect(screen.getByTestId("correct-amount")).toHaveTextContent("₱1,250");
+    expect(screen.getByTestId("correct-amount")).not.toHaveTextContent("₱125,000");
     expect(screen.getByTestId("correct-wallet-wallet_gcash").props.accessibilityState).toMatchObject(
       { selected: true },
     );
@@ -136,8 +163,11 @@ describe("the sheet opens on what the parser proposed", () => {
     renderSheet(item({ amount: null, direction: null, walletId: null, merchant: null }));
 
     // The unknown-provider flow lands here too (spec §"this is a money
-    // notification"), and it must not present a guessed ₱0.00 as a parsed value.
-    expect(screen.getByTestId("numpad-amount")).toHaveTextContent("₱0.00");
+    // notification"), and it must not present a guessed ₱0 as a parsed value —
+    // an empty NumericField shows its PLACEHOLDER, which is greyed and is not
+    // a value the sheet would submit.
+    expect(screen.getByTestId("correct-amount")).toHaveTextContent("₱0");
+    expect(screen.getByTestId("correct-amount").props.accessibilityLabel).toBe("Amount");
     expect(screen.getByTestId("correct-save").props.accessibilityState).toMatchObject({
       disabled: true,
     });
@@ -153,6 +183,7 @@ describe("the sheet opens on what the parser proposed", () => {
         onDismiss={onDismiss}
         onSubmit={onSubmit}
       />,
+      { wrapper: Wrapper },
     );
 
     expect(screen.queryByTestId("correct-sheet")).toBeNull();
@@ -194,14 +225,29 @@ describe("the patch reports only what the user changed", () => {
   test("a changed amount is reported in centavos built from keystrokes", () => {
     renderSheet(item({ amount: null }));
 
-    for (const key of ["1", "2", "3", "4"]) {
-      fireEvent.press(screen.getByTestId(`numpad-key-${key}`));
-    }
+    // RETYPED, NOT RE-BASELINED. This used to press 1,2,3,4 into a numpad that
+    // read digits as CENTAVOS. The keypad reads them as PESOS, so reaching the
+    // same ₱12.34 now takes "12.34" — the expectation below is the one figure
+    // that must not move.
+    typeAmount("correct-amount", "12.34");
     fireEvent.press(screen.getByTestId("correct-save"));
 
-    // 1,2,3,4 → ₱12.34 → 1234 centavos. Never a display string parsed back into
-    // a number (Task 8 rule 2).
+    // ₱12.34 → 1234 centavos. Never a display string parsed back into a number
+    // (Task 8 rule 2).
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ amount: 1234 }));
+  });
+
+  test("correcting a seeded amount reports the corrected figure, not a hundredfold one", () => {
+    // The seeding trap end to end: the parser read ₱1,250.00, the user fixes it
+    // to ₱1,300.00. `clearAmount` first because typeAmount APPENDS — without it
+    // this would type onto the end of the seeded "1250".
+    renderSheet();
+
+    clearAmount("correct-amount");
+    typeAmount("correct-amount", "1300");
+    fireEvent.press(screen.getByTestId("correct-save"));
+
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ amount: 130000 }));
   });
 
   test("a flipped direction is reported", () => {
@@ -354,6 +400,7 @@ describe("a disabled Save always says why", () => {
         onDismiss={onDismiss}
         onSubmit={onSubmit}
       />,
+      { wrapper: Wrapper },
     );
 
     expect(screen.getByTestId("correct-save-reason")).toHaveTextContent(
@@ -387,6 +434,7 @@ describe("the wallet picker defaults when the choice is unambiguous", () => {
         onDismiss={onDismiss}
         onSubmit={onSubmit}
       />,
+      { wrapper: Wrapper },
     );
 
     expect(screen.getByTestId("correct-wallet-wallet_gcash").props.accessibilityState).toMatchObject(
@@ -422,6 +470,7 @@ describe("the wallet picker defaults when the choice is unambiguous", () => {
         onDismiss={onDismiss}
         onSubmit={onSubmit}
       />,
+      { wrapper: Wrapper },
     );
 
     expect(screen.getByTestId("correct-wallet-empty")).toHaveTextContent(
@@ -452,6 +501,7 @@ describe("the wallet picker defaults when the choice is unambiguous", () => {
         onDismiss={onDismiss}
         onSubmit={onSubmit}
       />,
+      { wrapper: Wrapper },
     );
 
     fireEvent.press(screen.getByTestId("correct-save"));
@@ -523,6 +573,7 @@ describe("the emitted patch actually survives the resolver", () => {
         onDismiss={onDismiss}
         onSubmit={onSubmit}
       />,
+      { wrapper: Wrapper },
     );
 
     // Nothing touched — the preselect is left exactly as it opened.

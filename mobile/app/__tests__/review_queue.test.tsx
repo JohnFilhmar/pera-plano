@@ -27,6 +27,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { ReactNode } from "react";
 
+import { KeypadHost } from "@/components/ui/keypad_host";
+import { KeypadProvider } from "@/contexts/keypad_context";
 import { closeDatabase } from "@/lib/db/database";
 import { seedDefaultCategories } from "@/lib/db/repos/categories_repo";
 import { countOpen, enqueue, resolve } from "@/lib/db/repos/review_queue_repo";
@@ -65,8 +67,21 @@ function makeTestClient(): QueryClient {
   });
 }
 
+// KeypadProvider AND A ROOT HOST (numeric-input-system Task 14). "Correct"
+// opens a sheet whose amount is a NumericField now, and that field's
+// `useKeypad()` throws with no provider above it. The host goes BEFORE the
+// screen: tokens are handed out in effect-completion order, so a host mounted
+// after would outrank the one CorrectSheet's BottomSheet mounts inside its own
+// Modal, and the panel would be painted behind the sheet.
 function Wrapper({ children }: { children: ReactNode }) {
-  return <QueryClientProvider client={makeTestClient()}>{children}</QueryClientProvider>;
+  return (
+    <QueryClientProvider client={makeTestClient()}>
+      <KeypadProvider>
+        <KeypadHost />
+        {children}
+      </KeypadProvider>
+    </QueryClientProvider>
+  );
 }
 
 /**

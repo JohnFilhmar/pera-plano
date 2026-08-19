@@ -25,8 +25,33 @@ import { RankedBars } from "../ranked_bars";
 import { SummaryTiles } from "../summary_tiles";
 import { TrendLine } from "../trend_line";
 
+// RangePicker's custom range is two DateFields (numeric-input-system Task
+// 14), and a DateField mounts the platform dialog. The bounds they hand it
+// are asserted in range_picker.test.tsx; here the mock only has to make a day
+// pickable so the custom-range flow below still reaches Apply.
+let mockPickedDate = new Date(2026, 6, 1);
+
+jest.mock("@react-native-community/datetimepicker", () => {
+  const { Pressable, Text } = require("react-native");
+  return {
+    __esModule: true,
+    default: ({ onChange }: { onChange: (event: { type: string }, date?: Date) => void }) => (
+      <Pressable testID="date-picker-pick" onPress={() => onChange({ type: "set" }, mockPickedDate)}>
+        <Text>pick</Text>
+      </Pressable>
+    ),
+  };
+});
+
 function withTheme(ui: ReactNode) {
   return render(<ThemeProvider>{ui}</ThemeProvider>);
+}
+
+/** Opens a date field, mock-picks the given local day, and closes the dialog. */
+function pickDate(testID: string, year: number, month: number, day: number): void {
+  mockPickedDate = new Date(year, month - 1, day);
+  fireEvent.press(screen.getByTestId(testID));
+  fireEvent.press(screen.getByTestId("date-picker-pick"));
 }
 
 afterEach(() => {
@@ -239,8 +264,8 @@ test("THE RANGE PICKER OFFERS CUSTOM ON PLUS", () => {
   screen.getByTestId("range-picker-months");
 
   fireEvent.press(screen.getByTestId("range-picker-custom-toggle"));
-  fireEvent.changeText(screen.getByTestId("range-picker-custom-from"), "2026-07-01");
-  fireEvent.changeText(screen.getByTestId("range-picker-custom-to"), "2026-07-15");
+  pickDate("range-picker-custom-from", 2026, 7, 1);
+  pickDate("range-picker-custom-to", 2026, 7, 15);
   fireEvent.press(screen.getByTestId("range-picker-custom-apply"));
 
   expect(onSelectCustom).toHaveBeenCalledWith({ from: "2026-07-01", to: "2026-07-15" });

@@ -19,14 +19,20 @@
 //     themes, which is the one thing the token system exists to prevent — and
 //     it fails silently, in dark mode, on a device no test runs on.
 import type { ReactElement } from "react";
-import { fireEvent, render, screen } from "@testing-library/react-native";
-import { Modal, Text } from "react-native";
+import { useState } from "react";
+import { fireEvent, render, screen, within } from "@testing-library/react-native";
+import { Modal, StyleSheet, Text } from "react-native";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 import { Send, Wallet } from "lucide-react-native";
 
 import { SoonGate } from "@/components/gates/soon_gate";
 import { SHIPPED_FEATURES } from "@/constants/shipped_features";
 import type { FeatureKey, ShipState } from "@/constants/shipped_features";
+import { KeypadProvider } from "@/contexts/keypad_context";
+import { openKeypad } from "@/test_support/keypad";
 import { BottomSheet } from "../bottom_sheet";
+import { KeypadHost } from "../keypad_host";
+import { NumericField } from "../numeric_field";
 import { Button } from "../button";
 import { Card } from "../card";
 import { Chip } from "../chip";
@@ -376,6 +382,111 @@ test("BottomSheet dismisses on Android back", () => {
   expect(typeof modal.props.onRequestClose).toBe("function");
   modal.props.onRequestClose();
   expect(onDismiss).toHaveBeenCalledTimes(1);
+});
+
+// ---------------------------------------------------------------------------
+// BottomSheet vs. the keypad panel (numeric-input-system Task 14)
+//
+// THE PANEL IS PAINTED INSIDE THIS SHEET'S OWN Modal, absolutely positioned at
+// `bottom: 0` — so with nothing reserved it sits ON TOP of whatever the
+// sheet's last row is, which on all four amount-bearing sheets
+// (allocation_sheet, balance_correction_sheet, cash_reconcile_sheet,
+// correct_sheet) is Confirm/Save. The sheet does not scroll, so the user
+// cannot get out from under it either. It has to give the band up itself.
+// ---------------------------------------------------------------------------
+
+/** The panel height the mocked layout event reports. Taller than any inset. */
+const PANEL_HEIGHT = 320;
+/** Deliberately non-zero and unequal to anything else here: zeros cannot tell
+ *  "counted the navigation bar once" from "counted it twice". */
+const NAV_BAR = 48;
+
+function SheetWithAmount() {
+  const [value, setValue] = useState("");
+  return (
+    <BottomSheet visible onDismiss={noop} title="Move money">
+      <NumericField testID="sheet-amount" label="How much?" value={value} onChangeText={setValue} />
+      <Text>Confirm</Text>
+    </BottomSheet>
+  );
+}
+
+function sheetPadding(): number {
+  const flat = StyleSheet.flatten(screen.getByTestId("bottom-sheet").props.style) ?? {};
+  return (flat as { paddingBottom?: number }).paddingBottom ?? 0;
+}
+
+/** Mounts the sheet under a provider, a root host, and a real navigation bar. */
+function renderSheetWithKeypad(): void {
+  render(
+    <SafeAreaProvider
+      initialMetrics={{
+        frame: { x: 0, y: 0, width: 320, height: 640 },
+        insets: { top: 0, bottom: NAV_BAR, left: 0, right: 0 },
+      }}
+    >
+      {/* HOST BEFORE THE SUBJECT: tokens are handed out in effect-completion
+          order, so a root host mounted AFTER this subtree would outrank the
+          one BottomSheet mounts inside its own Modal and the panel would be
+          drawn behind the sheet — the bug the second host exists to fix. */}
+      <KeypadProvider>
+        <KeypadHost />
+        <SheetWithAmount />
+      </KeypadProvider>
+    </SafeAreaProvider>,
+  );
+}
+
+test("BottomSheet reserves the keypad panel's band so its last row is not buried", () => {
+  renderSheetWithKeypad();
+  const closed = sheetPadding();
+
+  openKeypad("sheet-amount");
+  // THIS SHEET'S OWN HOST, not the root one. Both are mounted and only the
+  // topmost token draws, so a bare `getByTestId("keypad-host")` would pass
+  // just as happily with the wrong one active.
+  const host = within(screen.UNSAFE_getByType(Modal)).getByTestId("keypad-host");
+  fireEvent(host, "layout", {
+    nativeEvent: { layout: { height: PANEL_HEIGHT, width: 320, x: 0, y: 0 } },
+  });
+
+  const open = sheetPadding();
+
+  // The sheet's bottom edge is flush with the window and the panel is pinned
+  // to the same edge, so clearing it takes the panel's WHOLE height.
+  expect(open).toBeGreaterThanOrEqual(PANEL_HEIGHT);
+  // And exactly once: keypad_host.tsx pads its own panel by `insets.bottom`,
+  // so the measured height already contains the navigation bar the sheet was
+  // separately clearing. A naive `closed + PANEL_HEIGHT` would land on
+  // exactly this number and leave a 48dp dead band.
+  expect(open).toBeLessThan(closed + PANEL_HEIGHT);
+  // What is left above the panel is the sheet's own designed floor, intact.
+  expect(open - PANEL_HEIGHT).toBe(closed - NAV_BAR);
+});
+
+test("BottomSheet reserves nothing at all while the panel is closed", () => {
+  // The no-op half, and it is what keeps every other sheet suite in this repo
+  // untouched. Measured against a sheet with NO provider above it — the
+  // literal pre-Task-14 sheet — rather than against a constant copied out of
+  // the component, which would still agree if both drifted.
+  render(
+    <SafeAreaProvider
+      initialMetrics={{
+        frame: { x: 0, y: 0, width: 320, height: 640 },
+        insets: { top: 0, bottom: NAV_BAR, left: 0, right: 0 },
+      }}
+    >
+      <BottomSheet visible onDismiss={noop} title="Pick a wallet">
+        <Text>Sheet body</Text>
+      </BottomSheet>
+    </SafeAreaProvider>,
+  );
+  const withoutKeypad = sheetPadding();
+  screen.unmount();
+
+  renderSheetWithKeypad();
+
+  expect(sheetPadding()).toBe(withoutKeypad);
 });
 
 // ---------------------------------------------------------------------------

@@ -30,9 +30,9 @@
 // and could not be saved — `canSave` needs a wallet, the wallet rows lived
 // below a `max-h-96` scroll fold, and the greyed Save gave no reason. Three
 // changes: (a) a text line above Save states whichever of amount/wallet is
-// still missing; (b) the wallet block now renders directly under the numpad,
-// ABOVE Direction — chosen over relaxing `max-h-96` because a taller fixed
-// cap is still a fold on some device, while reordering puts the picker
+// still missing; (b) the wallet block now renders directly under the amount
+// field, ABOVE Direction — chosen over relaxing `max-h-96` because a taller
+// fixed cap is still a fold on some device, while reordering puts the picker
 // on-screen without any scrolling in the common single-wallet case; (c) the
 // sole wallet is preselected when `wallets.length === 1` (no ambiguity left
 // to ask about), and the section says so explicitly when `wallets.length ===
@@ -57,11 +57,11 @@ import { Check } from "lucide-react-native";
 import { useEffect, useState } from "react";
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 
-import { AmountNumpad } from "@/components/transactions/amount_numpad";
 import { CategoryPicker } from "@/components/transactions/category_picker";
 import { BottomSheet } from "@/components/ui/bottom_sheet";
 import { Button, registerIcon } from "@/components/ui/button";
-import { centavosFromDigits } from "@/components/ui/amount_text";
+import { NumericField } from "@/components/ui/numeric_field";
+import { centavosFrom, pesoInputFrom } from "@/lib/money/peso_input";
 import type { CorrectionPatch } from "@/lib/review/resolve_actions";
 import type {
   Category,
@@ -113,9 +113,21 @@ function readDirection(payload: ReviewItemPayload): TxDirection | null {
   return payload.direction === "in" || payload.direction === "out" ? payload.direction : null;
 }
 
-/** Centavos back into the digit string the numpad builds forward from. */
-function digitsFromCentavos(amount: Centavos | null): string {
-  return amount === null || amount <= 0 ? "" : String(Math.trunc(amount));
+/**
+ * Centavos back into the peso text the keypad builds forward from.
+ *
+ * THROUGH pesoInputFrom, NEVER `String(amount)` (numeric-input-system Task
+ * 14). This function used to be exactly that raw stringify, and it was
+ * correct only because the numpad's own reader took its digits as CENTAVOS:
+ * "125000" in, 125000 out. `centavosFrom` reads them as PESOS, so the same
+ * string is now P125,000 — a hundredfold inflation of the figure the parser
+ * captured, seeded into the one sheet whose whole job is correcting that
+ * figure, and reported as a "correction" the user never made. The same
+ * class of bug was caught in allocation_sheet.tsx (Task 11) and
+ * income_form.tsx (Task 12); this is the third.
+ */
+function amountTextFrom(amount: Centavos | null): string {
+  return amount === null || amount <= 0 ? "" : pesoInputFrom(Math.trunc(amount));
 }
 
 /**
@@ -135,9 +147,9 @@ export const NO_WALLETS_MESSAGE = "No wallets yet — add one to save this entry
 
 /**
  * The line above a disabled Save. Amount is checked first because it is the
- * first thing the sheet asks for (the numpad sits above the wallet block);
- * either message names the ONE thing still missing rather than restating
- * "can't save" with no reason, which is the actual bug this fixes.
+ * first thing the sheet asks for (the amount field sits above the wallet
+ * block); either message names the ONE thing still missing rather than
+ * restating "can't save" with no reason, which is the actual bug this fixes.
  *
  * `walletCount` special-cases the zero-wallets state: "Pick a wallet" would
  * tell the user to choose from the list the section above just said is
@@ -179,7 +191,7 @@ export function CorrectSheet({
     merchant: readString(item.payload, "merchant"),
   };
 
-  const [digits, setDigits] = useState(digitsFromCentavos(proposed.amount));
+  const [amountText, setAmountText] = useState(amountTextFrom(proposed.amount));
   const [direction, setDirection] = useState<TxDirection>(proposed.direction ?? "out");
   const [walletId, setWalletId] = useState<string | null>(defaultWalletId(item.payload, wallets));
   const [categoryId, setCategoryId] = useState<string | null>(proposed.categoryId);
@@ -199,7 +211,7 @@ export function CorrectSheet({
   const itemId = item.id;
   useEffect(() => {
     if (!visible) return;
-    setDigits(digitsFromCentavos(readAmount(item.payload)));
+    setAmountText(amountTextFrom(readAmount(item.payload)));
     setDirection(readDirection(item.payload) ?? "out");
     setWalletId(defaultWalletId(item.payload, wallets));
     setCategoryId(readString(item.payload, "categoryId"));
@@ -215,7 +227,7 @@ export function CorrectSheet({
     // (and re-arming the checkbox) over a background list update.
   }, [visible, itemId]);
 
-  const amount = centavosFromDigits(digits);
+  const amount = centavosFrom(amountText);
   const trimmedMerchant = merchant.trim();
   const selectedCategory = categories.find((category) => category.id === categoryId) ?? null;
   const selectedWallet = wallets.find((wallet) => wallet.id === walletId) ?? null;
@@ -266,9 +278,19 @@ export function CorrectSheet({
       <View testID="correct-sheet" className="gap-4">
         <ScrollView className="max-h-96">
           <View className="gap-4">
-            <AmountNumpad digits={digits} onDigitsChange={setDigits} />
+            <View className="gap-2">
+              <Text className="text-xs uppercase text-fg-2 dark:text-fg-2-dark">Amount</Text>
+              <NumericField
+                testID="correct-amount"
+                label="Amount"
+                mode="peso"
+                placeholder="₱0"
+                value={amountText}
+                onChangeText={setAmountText}
+              />
+            </View>
 
-            {/* Directly under the numpad, ahead of Direction — see this
+            {/* Directly under the amount, ahead of Direction — see this
                 file's header. This is the field a disabled Save most often
                 blocks on, and the fix is putting it on-screen, not just
                 naming it below. */}

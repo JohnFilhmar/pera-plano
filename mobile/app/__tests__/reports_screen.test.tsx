@@ -8,8 +8,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
 import type { ReactNode } from "react";
+import { ScrollView } from "react-native";
 
+import { KeypadHost } from "@/components/ui/keypad_host";
 import { queryKeys } from "@/constants/query_keys";
+import { KeypadProvider } from "@/contexts/keypad_context";
 import { ThemeProvider } from "@/contexts/theme_context";
 import { systemClock } from "@/lib/clock";
 import { addMonthsClampedIso, toDateIso } from "@/lib/dates";
@@ -36,11 +39,21 @@ function makeTestClient(): QueryClient {
   });
 }
 
+// KeypadProvider AND A ROOT HOST (numeric-input-system Task 14). The screen
+// scrolls through FormScreen now, whose `useKeypad()` throws with no provider
+// above it. The host goes BEFORE the subject: the context gives the panel to
+// the highest live token and effects flush in completion order, so a host
+// mounted after would outrank one nested in a Modal inside the screen.
 function renderScreen(ui: ReactNode) {
   const client = makeTestClient();
   const utils = render(
     <QueryClientProvider client={client}>
-      <ThemeProvider>{ui}</ThemeProvider>
+      <ThemeProvider>
+        <KeypadProvider>
+          <KeypadHost />
+          {ui}
+        </KeypadProvider>
+      </ThemeProvider>
     </QueryClientProvider>,
   );
   return { client, ...utils };
@@ -122,4 +135,32 @@ test("PLUS TIER SEES THE EXPORT BUTTON WITH NO PLUS BADGE", async () => {
   const exportSection = within(screen.getByTestId("reports-export"));
   exportSection.getByTestId("export-csv-button");
   expect(exportSection.queryByTestId("plus-badge")).toBeNull();
+});
+
+// ---------------------------------------------------------------------------
+// One vertical scrolling surface, and it is FormScreen's own
+// ---------------------------------------------------------------------------
+
+test("THE SCREEN SCROLLS THROUGH FormScreen, NOT A PLAIN ScrollView", async () => {
+  // numeric-input-system Task 14. This route was a plain vertical ScrollView,
+  // the same shape Task 10 found on the loans route: the outer scroller — the
+  // one that knows nothing about the keypad panel — keeps all the scroll
+  // range, and any keypad-aware surface below it becomes a no-op. Fixed here
+  // before a numeric field could land on this screen and inherit the defect.
+  renderScreen(<ReportsScreen />);
+
+  await screen.findByTestId("reports-empty", {}, { timeout: 30_000 });
+
+  const surface = screen.getByTestId("reports-screen");
+  expect(surface.props.contentContainerStyle).toEqual(
+    expect.objectContaining({ flexGrow: 1, paddingBottom: expect.any(Number) }),
+  );
+
+  // EXACTLY TWO scrolling surfaces: FormScreen's own (the keyboard-controller
+  // jest mock renders a real ScrollView underneath KeyboardAwareScrollView)
+  // and RangePicker's HORIZONTAL month strip, which is a different axis and
+  // steals no vertical scroll range. A THIRD is the nesting regression.
+  const scrollers = screen.UNSAFE_queryAllByType(ScrollView);
+  expect(scrollers).toHaveLength(2);
+  expect(scrollers.filter((node) => node.props.horizontal === true)).toHaveLength(1);
 });

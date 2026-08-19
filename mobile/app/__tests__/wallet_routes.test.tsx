@@ -619,10 +619,16 @@ describe("system-bar clearance", () => {
   // it inside another ScrollView (what these routes did before Task 13) left
   // the outer one holding all the scroll range, and FormScreen's avoidance
   // became a silent no-op — the defect Task 10 hit on the loans route.
-  test("the two form routes scroll through FormScreen, not a plain ScrollView", async () => {
-    await renderNew();
-
-    const surface = screen.getByTestId("wallet-new-scroll");
+  //
+  // WHY THIS ASSERTS ON BOTH ROUTES AND NOT JUST `new`
+  // (numeric-input-system Task 14). It used to render `renderNew()` alone
+  // while its name claimed two, and `edit` is the route the owner's original
+  // report names. Nor did the padding test above cover it: `paddingOf` reads
+  // the scroll surface's OUTER `style`, which is undefined either way, so
+  // re-nesting FormScreen inside a ScrollView on `edit` left every assertion
+  // in this describe green.
+  function expectSoleFormScreenSurface(testID: string): void {
+    const surface = screen.getByTestId(testID);
     expect(surface.props.contentContainerStyle).toEqual(
       expect.objectContaining({ flexGrow: 1, paddingBottom: expect.any(Number) }),
     );
@@ -632,5 +638,15 @@ describe("system-bar clearance", () => {
     // Before Task 13 there were two, and the outer one held all the scroll
     // range. A second appearing here again is that regression.
     expect(screen.UNSAFE_queryAllByType(ScrollView)).toHaveLength(1);
+  }
+
+  test("the two form routes scroll through FormScreen, not a plain ScrollView", async () => {
+    await renderNew();
+    expectSoleFormScreenSurface("wallet-new-scroll");
+    screen.unmount();
+
+    const gcash = await createWallet({ name: "GCash", type: "e-wallet" });
+    await renderEdit(gcash.id);
+    expectSoleFormScreenSurface("wallet-edit-scroll");
   });
 });
