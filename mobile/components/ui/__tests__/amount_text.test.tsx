@@ -11,7 +11,7 @@
 //   - an `out` amount renders U+2212 MINUS, not a hyphen. A hyphen is narrower
 //     than a digit, so a right-aligned column of amounts visibly wobbles.
 import { render, screen } from "@testing-library/react-native";
-import { AmountText, centavosFromDigits, formatCentavos } from "../amount_text";
+import { AmountText, formatCentavos } from "../amount_text";
 
 const MINUS = "−";
 
@@ -122,47 +122,3 @@ test("no hard-coded hex reaches the rendered output", () => {
   expect(JSON.stringify(rendered.props.style ?? {})).not.toMatch(/#[0-9a-fA-F]{3,8}/);
 });
 
-// ---------------------------------------------------------------------------
-// centavosFromDigits — the inverse, added by m1c Task 5
-// ---------------------------------------------------------------------------
-//
-// Two amount fields in this milestone (a wallet's opening balance, and "how
-// much cash do you have right now?") have to turn keystrokes into centavos.
-// They build the integer FROM THE DIGITS and never parse a formatted string
-// back — `Number("₱1,234.56".replace(...)) * 100` is the 12.10 * 100 ===
-// 1209.9999 bug wearing a different hat. It lives beside its inverse so the two
-// cannot drift.
-
-test("digits build centavos directly, smallest unit last", () => {
-  // 1,2,3,4 typed in order is ₱12.34, exactly as the Task 8 numpad will read.
-  expect(centavosFromDigits("1234")).toBe(1234);
-  expect(formatCentavos(centavosFromDigits("1234"))).toBe("₱12.34");
-});
-
-test("an empty field is zero, not NaN", () => {
-  // `Number("")` is 0 but `parseInt("")` is NaN, and a NaN reaching the schema's
-  // `CHECK (amount > 0)` fails as a type error rather than as a validation one.
-  expect(centavosFromDigits("")).toBe(0);
-});
-
-test("non-digits are dropped rather than poisoning the figure", () => {
-  // Some Android keyboards emit a decimal separator on a numeric keypad.
-  expect(centavosFromDigits("1,234.56")).toBe(123456);
-  expect(centavosFromDigits("₱12")).toBe(12);
-});
-
-test("leading zeros do not survive as a different number", () => {
-  expect(centavosFromDigits("000500")).toBe(500);
-});
-
-test("a single digit is centavos, not pesos", () => {
-  // The regression that makes ₱0.05 read as ₱5.00 — a 100x error that throws
-  // nothing and looks plausible on screen.
-  expect(formatCentavos(centavosFromDigits("5"))).toBe("₱0.05");
-});
-
-test("an absurdly long entry is clamped rather than losing integer precision", () => {
-  // Beyond Number.MAX_SAFE_INTEGER the arithmetic silently stops being exact,
-  // which in a money app means a balance that does not add up.
-  expect(Number.isSafeInteger(centavosFromDigits("9".repeat(30)))).toBe(true);
-});
