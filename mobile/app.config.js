@@ -13,6 +13,19 @@
 // so the suffix can no longer be dropped on a --clean.
 
 const VARIANT = process.env.APP_VARIANT;
+
+// Unset means production, so an unrecognised value is the one dangerous case:
+// it would silently fall back to the production name and package, and the build
+// would install straight over the real app instead of alongside it. `prev` for
+// `preview` is the obvious typo. Fail the build instead.
+const KNOWN_VARIANTS = ['development', 'preview', 'production'];
+if (VARIANT !== undefined && VARIANT !== '' && !KNOWN_VARIANTS.includes(VARIANT)) {
+  throw new Error(
+    `APP_VARIANT="${VARIANT}" is not a known build variant. ` +
+      `Expected one of ${KNOWN_VARIANTS.join(', ')}, or unset for production.`,
+  );
+}
+
 const IS_DEV = VARIANT === 'development';
 const IS_PREVIEW = VARIANT === 'preview';
 

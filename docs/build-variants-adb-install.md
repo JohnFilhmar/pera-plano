@@ -26,6 +26,11 @@ hand-edited `applicationIdSuffix` in the gitignored `android/` project that a
 `mobile/eas.json` sets `APP_VARIANT` in each build profile's `env`, so EAS builds
 pick the same identity automatically.
 
+**`APP_VARIANT` unset means production.** A local build that forgets to set it
+produces `PeraPlano` / `com.filldev.peraplano` and installs over the production
+app. An *unrecognised* value (`prev`, `dev`, `Preview`) throws instead of falling
+back, so a typo fails the build rather than silently mislabelling it.
+
 The commands below use PowerShell (the primary shell on this machine). All paths
 assume the repo is at `D:\My Folder\pera-plano`.
 
@@ -34,15 +39,18 @@ assume the repo is at `D:\My Folder\pera-plano`.
 ## Step 0 — prerequisites
 
 - USB debugging enabled on the device, and the device authorized for this laptop.
-- The variant-naming change present on your branch.
+- **`mobile/app.config.js` must exist in the checkout you are building from.**
+  Without it there is no variant logic at all: every build gets the production
+  name and package, and each install overwrites the last.
 
-Confirm the device is seen:
+Verify both before building anything:
 
 ```powershell
-adb devices
+Test-Path "D:\My Folder\pera-plano\mobile\app.config.js"   # must print True
+adb devices                                                 # one line ending in "device"
 ```
 
-Expect exactly one line ending in `device` (not `unauthorized` or `offline`).
+If `Test-Path` prints `False`, merge the branch carrying the change first.
 
 ---
 
@@ -55,6 +63,11 @@ Metro has to be running for the app to load.
 cd "D:\My Folder\pera-plano\mobile"
 $env:APP_VARIANT = "development"
 npx expo prebuild --clean -p android
+
+# Confirm prebuild wrote the dev identity before spending time on a build:
+Select-String -Path android\app\build.gradle -Pattern "applicationId"
+# expect: applicationId 'com.filldev.peraplano.dev'
+
 cd android
 .\gradlew.bat assembleDebug
 adb install -r app\build\outputs\apk\debug\app-debug.apk
@@ -88,6 +101,11 @@ for preview after building dev:
 cd "D:\My Folder\pera-plano\mobile"
 $env:APP_VARIANT = "preview"
 npx expo prebuild --clean -p android
+
+# Confirm prebuild wrote the preview identity:
+Select-String -Path android\app\build.gradle -Pattern "applicationId"
+# expect: applicationId 'com.filldev.peraplano.prev'
+
 cd android
 .\gradlew.bat assembleRelease
 adb install -r app\build\outputs\apk\release\app-release.apk
@@ -116,6 +134,18 @@ Notification access** (Samsung One UI wording varies) → enable the row labeled
 
 ## Traps
 
+- **One build overwrites the other.** Both APKs carry the same `applicationId`,
+  so Android treats the second install as an update of the first. Causes, in the
+  order worth checking: `app.config.js` missing from the checkout (Step 0), or
+  `APP_VARIANT` not set in the shell that ran `prebuild`. Confirm with the
+  `Select-String` check above, and with `adb shell pm list packages peraplano` —
+  a working pair shows both `com.filldev.peraplano.dev` and
+  `com.filldev.peraplano.prev`.
+- **The old `applicationIdSuffix ".dev"` hack is gone, deliberately.** It used to
+  be hand-added to `android/app/build.gradle`, which `prebuild --clean` wipes —
+  that is precisely how both builds ended up sharing one package id. The suffix
+  must not be re-added: with the config-driven package it would produce
+  `com.filldev.peraplano.dev.dev`.
 - **`INSTALL_FAILED_UPDATE_INCOMPATIBLE` on reinstall.** Each `prebuild --clean`
   mints a fresh debug keystore, so a rebuilt APK may carry a new signature.
   Fix: `adb uninstall com.filldev.peraplano.prev` (or `.dev`), then install again.
