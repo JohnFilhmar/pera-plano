@@ -1,5 +1,6 @@
 // components/transactions/__tests__/manual_entry_form.test.tsx — m1c plan
-// Task 8, rules 1, 3 and 5.
+// Task 8, rules 1, 3 and 5. Amount and date now go through the shared keypad
+// and calendar picker (numeric-input-system W1 Task 9).
 //
 // AMOUNT FIRST IS A PRODUCT DECISION WITH A TEST. Cash entry competes with
 // not-bothering: every tap before the amount is a reason to skip it, and a cash
@@ -18,11 +19,35 @@
 // SUBMITTED is what is asserted here, and what is WRITTEN is asserted in
 // app/__tests__/transaction_new.test.tsx.
 import { fireEvent, render, screen } from "@testing-library/react-native";
+import { useState } from "react";
+import type { ReactElement } from "react";
 
+import { KeypadHost } from "@/components/ui/keypad_host";
+import { KeypadProvider } from "@/contexts/keypad_context";
 import { UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
+import { clearAmount, typeAmount } from "@/test_support/keypad";
 import type { Category, Transaction, Wallet } from "@/types/domain";
 
 import { ManualEntryForm } from "../manual_entry_form";
+
+// A stand-in for the OS date dialog DateField opens, matching
+// components/ui/__tests__/date_field.test.tsx's own mock — except the picked
+// date is mutable per test, since these tests need to land on specific days
+// (today, a backdate, a refused future date) rather than one fixed value.
+// `mock`-prefixed so babel-plugin-jest-hoist allows the factory to close over it.
+let mockPickedDate = new Date(2026, 7, 13);
+
+jest.mock("@react-native-community/datetimepicker", () => {
+  const { Pressable, Text } = require("react-native");
+  return {
+    __esModule: true,
+    default: ({ onChange }: { onChange: (event: { type: string }, date?: Date) => void }) => (
+      <Pressable testID="date-picker-pick" onPress={() => onChange({ type: "set" }, mockPickedDate)}>
+        <Text>pick</Text>
+      </Pressable>
+    ),
+  };
+});
 
 const onSubmit = jest.fn();
 const onCreateCashWallet = jest.fn();
@@ -104,30 +129,54 @@ function tx(overrides: Partial<Transaction> = {}): Transaction {
   };
 }
 
-function renderForm(
-  wallets: Wallet[] = [POCKET, BPI],
-  transactions: Transaction[] = [],
-): void {
-  render(
+/**
+ * Owns the amount's controlled state the way app/transaction/new.tsx does, so
+ * typing through the shared keypad has somewhere real to land — see
+ * manual_entry_form.tsx's header on why the amount is a prop, not internal
+ * state.
+ */
+function Harness({
+  wallets = [POCKET, BPI],
+  transactions = [],
+}: {
+  wallets?: Wallet[];
+  transactions?: Transaction[];
+}) {
+  const [amount, setAmount] = useState("");
+  return (
     <ManualEntryForm
       wallets={wallets}
       categories={CATEGORIES}
       transactions={transactions}
       now={NOW}
+      amount={amount}
+      onAmountChange={setAmount}
       onSubmit={onSubmit}
       onCreateCashWallet={onCreateCashWallet}
-    />,
+    />
   );
 }
 
-function type(keys: string): void {
-  for (const key of keys) {
-    fireEvent.press(screen.getByTestId(`numpad-key-${key}`));
-  }
+// NumericField throws without a KeypadProvider above it, and the panel it
+// opens has to be hosted somewhere — see test_support/keypad.ts's header.
+function renderForm(ui: ReactElement): void {
+  render(
+    <KeypadProvider>
+      {ui}
+      <KeypadHost />
+    </KeypadProvider>,
+  );
 }
 
 function save(): void {
   fireEvent.press(screen.getByTestId("manual-entry-save"));
+}
+
+/** Opens the date field, mock-picks the given local day, and closes the dialog. */
+function pickDate(testID: string, year: number, month: number, day: number): void {
+  mockPickedDate = new Date(year, month - 1, day);
+  fireEvent.press(screen.getByTestId(testID));
+  fireEvent.press(screen.getByTestId("date-picker-pick"));
 }
 
 beforeEach(() => {
@@ -140,17 +189,30 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("amount first", () => {
-  test("the numpad is on screen with nothing else touched", () => {
-    renderForm();
+  test("the amount field is on screen with nothing else touched", () => {
+    renderForm(<Harness />);
 
-    expect(screen.getByTestId("amount-numpad")).toBeTruthy();
-    expect(screen.getByTestId("numpad-amount")).toBeTruthy();
+    // The auto-open-on-mount behaviour that makes this the LANDING state lives
+    // in app/transaction/new.tsx (asserted in transaction_new.test.tsx) — this
+    // component-level test only owns that the field itself exists.
+    expect(screen.getByTestId("manual-amount")).toBeTruthy();
+  });
+
+  test("typing 1000 records one thousand pesos, not ten", () => {
+    // The whole reason this migration exists: before it, every digit typed
+    // here was read as CENTAVOS, so "1000" produced ₱10.00.
+    renderForm(<Harness />);
+
+    typeAmount("manual-amount", "1000");
+    save();
+
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ amount: 100_000 }));
   });
 
   test("four keystrokes and save is a complete transaction", () => {
-    renderForm([POCKET, BPI], [tx()]);
+    renderForm(<Harness transactions={[tx()]} />);
 
-    type("1234");
+    typeAmount("manual-amount", "1234");
     save();
 
     // EVERY field, from four taps. This is the whole design: the user typed an
@@ -158,7 +220,7 @@ describe("amount first", () => {
     // correct in the wallet, the direction, the date and the category.
     expect(onSubmit).toHaveBeenCalledTimes(1);
     expect(onSubmit).toHaveBeenCalledWith({
-      amount: 1234,
+      amount: 123_400,
       direction: "out",
       walletId: "cash-pocket",
       categoryId: UNCATEGORIZED_ID,
@@ -175,7 +237,7 @@ describe("amount first", () => {
 
 describe("a zero amount cannot be saved", () => {
   test("pressing save with nothing typed submits nothing", () => {
-    renderForm();
+    renderForm(<Harness />);
 
     save();
 
@@ -186,18 +248,18 @@ describe("a zero amount cannot be saved", () => {
   });
 
   test("the save button reports itself disabled", () => {
-    renderForm();
+    renderForm(<Harness />);
 
     expect(screen.getByTestId("manual-entry-save").props.accessibilityState.disabled).toBe(true);
   });
 
   test("it enables the moment a digit is typed and disables again on clear", () => {
-    renderForm();
+    renderForm(<Harness />);
 
-    type("1");
+    typeAmount("manual-amount", "1");
     expect(screen.getByTestId("manual-entry-save").props.accessibilityState.disabled).toBe(false);
 
-    fireEvent(screen.getByTestId("numpad-backspace"), "longPress");
+    clearAmount("manual-amount");
     expect(screen.getByTestId("manual-entry-save").props.accessibilityState.disabled).toBe(true);
   });
 });
@@ -208,7 +270,7 @@ describe("a zero amount cannot be saved", () => {
 
 describe("the defaults", () => {
   test("direction is `out`", () => {
-    renderForm();
+    renderForm(<Harness />);
 
     // Spending is what cash is for; the occasional cash gift can be switched.
     expect(screen.getByTestId("manual-entry-direction-out").props.accessibilityState.selected).toBe(
@@ -221,11 +283,13 @@ describe("the defaults", () => {
 
   test("the wallet is the most recently used cash wallet", () => {
     renderForm(
-      [POCKET, JAR, BPI],
-      [
-        tx({ id: "older", walletId: "cash-jar", occurredAt: AUG_11_NOON }),
-        tx({ id: "newer", walletId: "cash-pocket", occurredAt: AUG_12_NOON }),
-      ],
+      <Harness
+        wallets={[POCKET, JAR, BPI]}
+        transactions={[
+          tx({ id: "older", walletId: "cash-jar", occurredAt: AUG_11_NOON }),
+          tx({ id: "newer", walletId: "cash-pocket", occurredAt: AUG_12_NOON }),
+        ]}
+      />,
     );
 
     expect(screen.getByTestId("manual-entry-wallet-cash-pocket").props.accessibilityState.selected).toBe(
@@ -237,18 +301,17 @@ describe("the defaults", () => {
   });
 
   test("the date is today", () => {
-    renderForm();
+    renderForm(<Harness />);
 
-    expect(screen.getByTestId("manual-entry-date").props.value).toBe("2026-08-13");
+    expect(screen.getByText("2026-08-13")).toBeTruthy();
   });
 
   test("the category is the one that merchant last landed in", () => {
     renderForm(
-      [POCKET, BPI],
-      [tx({ merchant: "Jollibee", categoryId: "cat_food_dining" })],
+      <Harness transactions={[tx({ merchant: "Jollibee", categoryId: "cat_food_dining" })]} />,
     );
 
-    type("5000");
+    typeAmount("manual-amount", "5000");
     fireEvent.changeText(screen.getByTestId("manual-entry-merchant"), "Jollibee");
     save();
 
@@ -258,9 +321,11 @@ describe("the defaults", () => {
   });
 
   test("an unknown merchant falls back to Uncategorized", () => {
-    renderForm([POCKET, BPI], [tx({ merchant: "Jollibee", categoryId: "cat_food_dining" })]);
+    renderForm(
+      <Harness transactions={[tx({ merchant: "Jollibee", categoryId: "cat_food_dining" })]} />,
+    );
 
-    type("5000");
+    typeAmount("manual-amount", "5000");
     fireEvent.changeText(screen.getByTestId("manual-entry-merchant"), "Palengke");
     save();
 
@@ -270,9 +335,11 @@ describe("the defaults", () => {
   });
 
   test("a category the user picked outranks the merchant's history", () => {
-    renderForm([POCKET, BPI], [tx({ merchant: "Jollibee", categoryId: "cat_food_dining" })]);
+    renderForm(
+      <Harness transactions={[tx({ merchant: "Jollibee", categoryId: "cat_food_dining" })]} />,
+    );
 
-    type("5000");
+    typeAmount("manual-amount", "5000");
     fireEvent.changeText(screen.getByTestId("manual-entry-merchant"), "Jollibee");
     fireEvent.press(screen.getByTestId("manual-entry-category"));
     fireEvent.press(screen.getByTestId("category-option-cat_transport"));
@@ -292,7 +359,7 @@ describe("the defaults", () => {
 
 describe("no cash wallet", () => {
   test("renders a create prompt instead of a silent bank default", () => {
-    renderForm([BPI, GCASH]);
+    renderForm(<Harness wallets={[BPI, GCASH]} />);
 
     // The prompt is the whole point. A bank wallet chosen for the user here
     // corrupts two balances at once and nothing on screen would say so.
@@ -306,7 +373,7 @@ describe("no cash wallet", () => {
   });
 
   test("the prompt offers to create one", () => {
-    renderForm([BPI, GCASH]);
+    renderForm(<Harness wallets={[BPI, GCASH]} />);
 
     fireEvent.press(screen.getByTestId("manual-entry-create-cash"));
 
@@ -314,9 +381,9 @@ describe("no cash wallet", () => {
   });
 
   test("saving without picking a wallet is refused, and says why", () => {
-    renderForm([BPI, GCASH]);
+    renderForm(<Harness wallets={[BPI, GCASH]} />);
 
-    type("1234");
+    typeAmount("manual-amount", "1234");
     save();
 
     expect(onSubmit).not.toHaveBeenCalled();
@@ -324,9 +391,9 @@ describe("no cash wallet", () => {
   });
 
   test("a wallet the user picks DELIBERATELY still works", () => {
-    renderForm([BPI, GCASH]);
+    renderForm(<Harness wallets={[BPI, GCASH]} />);
 
-    type("1234");
+    typeAmount("manual-amount", "1234");
     fireEvent.press(screen.getByTestId("manual-entry-wallet-bank-bpi"));
     save();
 
@@ -338,9 +405,9 @@ describe("no cash wallet", () => {
   });
 
   test("two unused cash wallets are a question, not a guess", () => {
-    renderForm([POCKET, JAR]);
+    renderForm(<Harness wallets={[POCKET, JAR]} />);
 
-    type("1234");
+    typeAmount("manual-amount", "1234");
     save();
 
     // There IS a cash wallet, so no create prompt — but the app has no evidence
@@ -354,7 +421,7 @@ describe("no cash wallet", () => {
 
 describe("the wallet picker", () => {
   test("lists cash wallets first", () => {
-    renderForm([BPI, GCASH, POCKET]);
+    renderForm(<Harness wallets={[BPI, GCASH, POCKET]} />);
 
     const ids = screen
       .getAllByTestId(/^manual-entry-wallet-/)
@@ -367,7 +434,7 @@ describe("the wallet picker", () => {
   });
 
   test("excludes archived wallets", () => {
-    renderForm([POCKET, { ...BPI, isArchived: true }]);
+    renderForm(<Harness wallets={[POCKET, { ...BPI, isArchived: true }]} />);
 
     // Spec §archive rule 2: archived wallets are "hidden from all pickers
     // (manual entry, …)".
@@ -375,9 +442,9 @@ describe("the wallet picker", () => {
   });
 
   test("a chosen wallet replaces the default", () => {
-    renderForm([POCKET, BPI]);
+    renderForm(<Harness />);
 
-    type("1234");
+    typeAmount("manual-amount", "1234");
     fireEvent.press(screen.getByTestId("manual-entry-wallet-bank-bpi"));
     save();
 
@@ -391,9 +458,9 @@ describe("the wallet picker", () => {
 
 describe("the secondary fields", () => {
   test("direction can be switched to `in`", () => {
-    renderForm();
+    renderForm(<Harness />);
 
-    type("1234");
+    typeAmount("manual-amount", "1234");
     fireEvent.press(screen.getByTestId("manual-entry-direction-in"));
     save();
 
@@ -401,10 +468,10 @@ describe("the secondary fields", () => {
   });
 
   test("a backdated entry lands on that day", () => {
-    renderForm();
+    renderForm(<Harness />);
 
-    type("1234");
-    fireEvent.changeText(screen.getByTestId("manual-entry-date"), "2026-08-11");
+    typeAmount("manual-amount", "1234");
+    pickDate("manual-entry-date", 2026, 8, 11);
     save();
 
     // Spec rule 24: the timestamp "may be backdated". Yesterday's forgotten
@@ -415,10 +482,10 @@ describe("the secondary fields", () => {
   });
 
   test("a future date is refused with an explanation", () => {
-    renderForm();
+    renderForm(<Harness />);
 
-    type("1234");
-    fireEvent.changeText(screen.getByTestId("manual-entry-date"), "2026-08-20");
+    typeAmount("manual-amount", "1234");
+    pickDate("manual-entry-date", 2026, 8, 20);
     save();
 
     // Spec rule 24: "never future-dated". Counting money that has not moved
@@ -428,9 +495,9 @@ describe("the secondary fields", () => {
   });
 
   test("a merchant and a note travel with the entry, trimmed", () => {
-    renderForm();
+    renderForm(<Harness />);
 
-    type("1234");
+    typeAmount("manual-amount", "1234");
     fireEvent.changeText(screen.getByTestId("manual-entry-merchant"), "  Palengke  ");
     fireEvent.changeText(screen.getByTestId("manual-entry-note"), "  tinapa  ");
     save();
@@ -441,9 +508,9 @@ describe("the secondary fields", () => {
   });
 
   test("blank optional fields submit as null, never as empty strings", () => {
-    renderForm();
+    renderForm(<Harness />);
 
-    type("1234");
+    typeAmount("manual-amount", "1234");
     fireEvent.changeText(screen.getByTestId("manual-entry-merchant"), "   ");
     save();
 

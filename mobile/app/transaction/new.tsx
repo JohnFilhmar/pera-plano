@@ -1,7 +1,11 @@
 // app/transaction/new.tsx — m1c plan Task 8's route.
 //
 // Owns every read and write; the form is presentational (Global Constraints:
-// no repository import inside a component).
+// no repository import inside a component). THE AMOUNT LIVES HERE TOO
+// (numeric-input-system W1 Task 9): the mount effect below hands the shared
+// keypad a field to open before ManualEntryForm's own NumericField has ever
+// been pressed, so the screen lands with the amount already up — see that
+// component's header for the other half of this handoff.
 //
 // RULE 4 LIVES HERE: A MANUAL ENTRY IS GROUND TRUTH. It is written straight
 // through `useCreateTransaction` -> `insertTransaction`, and NEVER through
@@ -14,9 +18,12 @@
 // by a human, and merging them would tell the user they did not do something
 // they just did — while quietly leaving money in a pocket they had already
 // emptied.
+import { useEffect, useState } from "react";
 import { useRouter } from "expo-router";
 
 import { ManualEntryForm } from "@/components/transactions/manual_entry_form";
+import { FormScreen } from "@/components/ui/form_screen";
+import { useKeypad } from "@/contexts/keypad_context";
 import { useCategories } from "@/hooks/queries/use_categories";
 import { useCreateTransaction } from "@/hooks/mutations/use_create_transaction";
 import { useTransactions } from "@/hooks/queries/use_transactions";
@@ -32,6 +39,20 @@ export default function NewTransactionScreen() {
   // the category this merchant last landed in.
   const transactions = useTransactions({});
   const createTransaction = useCreateTransaction();
+
+  const [amount, setAmount] = useState("");
+  const { open } = useKeypad();
+
+  // The amount is deliberately the first and only thing on screen (m1c rule
+  // 1), so the panel is already up when the screen appears. Same landing
+  // state as the inline numpad this replaces, one code path instead of two,
+  // and it inherits FormScreen's avoidance so Save stops hiding.
+  useEffect(() => {
+    open({ fieldId: "manual-amount", label: "How much?", mode: "peso", text: amount, onChangeText: setAmount });
+    // Mount only: re-opening on every amount change would fight a user who
+    // dismissed the panel to reach the category picker.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Rendering the form before these resolve would default the wallet from an
   // empty ledger and the category from an empty history — the same class of bug
@@ -67,14 +88,18 @@ export default function NewTransactionScreen() {
   }
 
   return (
-    <ManualEntryForm
-      testID="manual-entry-form"
-      wallets={wallets.data}
-      categories={categories.data}
-      transactions={transactions.data}
-      now={Date.now()}
-      onSubmit={handleSubmit}
-      onCreateCashWallet={() => router.push("/wallet/new")}
-    />
+    <FormScreen>
+      <ManualEntryForm
+        testID="manual-entry-form"
+        wallets={wallets.data}
+        categories={categories.data}
+        transactions={transactions.data}
+        now={Date.now()}
+        amount={amount}
+        onAmountChange={setAmount}
+        onSubmit={handleSubmit}
+        onCreateCashWallet={() => router.push("/wallet/new")}
+      />
+    </FormScreen>
   );
 }

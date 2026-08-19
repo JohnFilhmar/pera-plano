@@ -1,5 +1,6 @@
 // app/__tests__/transaction_new.test.tsx — m1c plan Task 8's route,
-// app/transaction/new.tsx, against a REAL database.
+// app/transaction/new.tsx, against a REAL database. Amount now goes through
+// the shared keypad, auto-opened on mount (numeric-input-system W1 Task 9).
 //
 // The numpad and the form are pinned next door
 // (components/transactions/__tests__/). What lives HERE is rule 4, which is the
@@ -31,10 +32,21 @@ jest.mock("expo-router", () => ({
   }),
 }));
 
+// DateField (inside ManualEntryForm) imports the native picker at module load
+// regardless of whether a test ever opens it — components/ui/__tests__/
+// date_field.test.tsx's own mock exists for the same reason. Nothing here
+// presses the date field, so a trivial stub is enough.
+jest.mock("@react-native-community/datetimepicker", () => ({
+  __esModule: true,
+  default: () => null,
+}));
+
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
-import type { ReactNode } from "react";
+import type { ReactElement, ReactNode } from "react";
 
+import { KeypadHost } from "@/components/ui/keypad_host";
+import { KeypadProvider } from "@/contexts/keypad_context";
 import { closeDatabase } from "@/lib/db/database";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { countOpen } from "@/lib/db/repos/review_queue_repo";
@@ -42,6 +54,7 @@ import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions
 import { createWallet, getWallet } from "@/lib/db/repos/wallets_repo";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
+import { typeAmount } from "@/test_support/keypad";
 import type { Transaction, Wallet } from "@/types/domain";
 
 import NewTransactionScreen from "../transaction/new";
@@ -61,20 +74,26 @@ function makeTestClient(): QueryClient {
   });
 }
 
-async function renderNew(): Promise<void> {
+// NumericField throws without a KeypadProvider above it, and the panel it
+// opens has to be hosted somewhere — see test_support/keypad.ts's header.
+function renderForm(ui: ReactElement) {
   const client = makeTestClient();
   function Wrapper({ children }: { children: ReactNode }) {
     return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
   }
-  render(<NewTransactionScreen />, { wrapper: Wrapper });
-  await waitFor(() => expect(screen.getByTestId("manual-entry-form")).toBeTruthy());
+  return render(
+    <Wrapper>
+      <KeypadProvider>
+        {ui}
+        <KeypadHost />
+      </KeypadProvider>
+    </Wrapper>,
+  );
 }
 
-/** Taps the amount in, digit by digit, exactly as a thumb would. */
-function type(keys: string): void {
-  for (const key of keys) {
-    fireEvent.press(screen.getByTestId(`numpad-key-${key}`));
-  }
+async function renderNew(): Promise<void> {
+  renderForm(<NewTransactionScreen />);
+  await waitFor(() => expect(screen.getByTestId("manual-entry-form")).toBeTruthy());
 }
 
 function save(): void {
@@ -106,7 +125,7 @@ describe("what saving writes", () => {
   test("`source: manual`, `confidence: 1`, and no raw capture behind it", async () => {
     await renderNew();
 
-    type("1234");
+    typeAmount("manual-amount", "1234");
     save();
 
     await waitFor(async () => {
@@ -119,7 +138,8 @@ describe("what saving writes", () => {
     // notification to point at, and inventing a reference would make the
     // transparency panel lie about where the row came from.
     expect(written.rawNotificationId).toBeNull();
-    expect(written.amount).toBe(1234);
+    // "1234" typed on the shared keypad is pesos, not centavos — ₱1,234.00.
+    expect(written.amount).toBe(123_400);
     expect(written.direction).toBe("out");
     expect(written.walletId).toBe(pocket.id);
     expect(written.categoryId).toBe(UNCATEGORIZED_ID);
@@ -128,7 +148,7 @@ describe("what saving writes", () => {
   test("the wallet balance moves by exactly the amount", async () => {
     await renderNew();
 
-    type("30000");
+    typeAmount("manual-amount", "300");
     save();
 
     // ₱1,000.00 opening, ₱300.00 spent → ₱700.00. Not a snap to a reported
@@ -143,7 +163,7 @@ describe("what saving writes", () => {
   test("an `in` entry adds to the balance instead", async () => {
     await renderNew();
 
-    type("30000");
+    typeAmount("manual-amount", "300");
     fireEvent.press(screen.getByTestId("manual-entry-direction-in"));
     save();
 
@@ -155,7 +175,7 @@ describe("what saving writes", () => {
   test("the entry closes the screen once it is committed", async () => {
     await renderNew();
 
-    type("1234");
+    typeAmount("manual-amount", "1234");
     save();
 
     await waitFor(() => {
@@ -170,7 +190,7 @@ describe("what saving writes", () => {
 describe("a manual entry never enters the pipeline", () => {
   test("the SAME amount entered twice seconds apart leaves TWO rows", async () => {
     await renderNew();
-    type("10000");
+    typeAmount("manual-amount", "100");
     save();
     await waitFor(async () => {
       expect(await ledger(pocket.id)).toHaveLength(1);
@@ -213,7 +233,7 @@ describe("a manual entry never enters the pipeline", () => {
     });
     await renderNew();
 
-    type("10000");
+    typeAmount("manual-amount", "100");
     save();
 
     await waitFor(async () => {
@@ -224,7 +244,7 @@ describe("a manual entry never enters the pipeline", () => {
   test("nothing is queued for review", async () => {
     await renderNew();
 
-    type("1234");
+    typeAmount("manual-amount", "1234");
     save();
 
     await waitFor(async () => {
@@ -254,7 +274,7 @@ describe("the cash wallet", () => {
     });
     await renderNew();
 
-    type("1234");
+    typeAmount("manual-amount", "1234");
     save();
 
     await waitFor(async () => {
@@ -269,7 +289,7 @@ describe("the cash wallet", () => {
     const bpi = await createWallet({ name: "BPI", type: "bank", openingBalance: 500_000 });
     await renderNew();
 
-    type("1234");
+    typeAmount("manual-amount", "1234");
     save();
 
     // Cash in a bank wallet corrupts both balances, so the screen stops and
@@ -280,5 +300,21 @@ describe("the cash wallet", () => {
 
     fireEvent.press(screen.getByTestId("manual-entry-create-cash"));
     expect(mockPush).toHaveBeenCalledWith("/wallet/new");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The auto-opened keypad — numeric-input-system W1 Task 9
+// ---------------------------------------------------------------------------
+
+describe("the amount panel", () => {
+  test("opens on mount, before the amount field is ever pressed", async () => {
+    await renderNew();
+
+    // The whole point of the mount effect: the screen lands with the panel
+    // already up, the same landing state the inline numpad used to give it,
+    // now with FormScreen's keyboard-avoidance underneath.
+    expect(screen.getByTestId("keypad-host")).toBeTruthy();
+    expect(screen.getByTestId("keypad-label").props.children).toBe("How much?");
   });
 });

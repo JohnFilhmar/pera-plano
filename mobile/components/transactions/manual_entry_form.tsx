@@ -13,15 +13,20 @@
 // on screen would say so. When there is no safe answer this form ASKS.
 //
 // Presentational: it validates and reports. The route owns every read and write
-// (Global Constraints: no repository import inside a component).
+// (Global Constraints: no repository import inside a component). THE AMOUNT IS
+// ALSO OWNED BY THE ROUTE (numeric-input-system W1 Task 9): app/transaction/
+// new.tsx holds the PesoInput text so its mount effect can hand the shared
+// keypad a field to open before this form's own NumericField has ever been
+// pressed — see that file's header for the other half of the handoff.
 import { useMemo, useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { AmountNumpad } from "@/components/transactions/amount_numpad";
 import { CategoryPicker } from "@/components/transactions/category_picker";
 import { Button } from "@/components/ui/button";
-import { centavosFromDigits } from "@/components/ui/amount_text";
+import { DateField } from "@/components/ui/date_field";
+import { NumericField } from "@/components/ui/numeric_field";
+import { centavosFrom } from "@/lib/money/peso_input";
 import {
   categoryForMerchant,
   lastUsedCashWallet,
@@ -46,6 +51,9 @@ export type ManualEntryFormProps = {
   categories: Category[];
   transactions: Transaction[];
   now: EpochMs;
+  /** The typed peso text — see this file's header on why the route owns it. */
+  amount: string;
+  onAmountChange: (text: string) => void;
   onSubmit: (draft: ManualEntryDraft) => void;
   onCreateCashWallet: () => void;
 };
@@ -74,6 +82,8 @@ export function ManualEntryForm({
   categories,
   transactions,
   now,
+  amount,
+  onAmountChange,
   onSubmit,
   onCreateCashWallet,
 }: ManualEntryFormProps) {
@@ -82,7 +92,6 @@ export function ManualEntryForm({
   // navigation bar (app.json `edgeToEdgeEnabled`). Its Save button is the last
   // thing in the column and was the one landing under ▢ ◁.
   const insets = useSafeAreaInsets();
-  const [digits, setDigits] = useState("");
   const [direction, setDirection] = useState<TxDirection>("out");
   const [day, setDay] = useState(() => localDayOf(now));
   const [merchant, setMerchant] = useState("");
@@ -116,10 +125,10 @@ export function ManualEntryForm({
   const [chosenCategoryId, setChosenCategoryId] = useState<string | null>(null);
   const categoryId = chosenCategoryId ?? categoryForMerchant(transactions, merchant);
 
-  const amount = centavosFromDigits(digits);
+  const amountCentavos = centavosFrom(amount);
   const occurredAt = occurredAtFor(day, now);
 
-  const canSave = amount > 0;
+  const canSave = amountCentavos > 0;
   const walletMissing = walletId === null;
   const dateInvalid = occurredAt === null;
 
@@ -134,7 +143,7 @@ export function ManualEntryForm({
     }
 
     onSubmit({
-      amount,
+      amount: amountCentavos,
       direction,
       walletId,
       categoryId,
@@ -158,9 +167,13 @@ export function ManualEntryForm({
         paddingBottom: FORM_PADDING + insets.bottom,
       }}
     >
-      <View testID="amount-numpad">
-        <AmountNumpad digits={digits} onDigitsChange={setDigits} />
-      </View>
+      <NumericField
+        testID="manual-amount"
+        label="How much?"
+        placeholder="₱0"
+        value={amount}
+        onChangeText={onAmountChange}
+      />
 
       {/* Direction */}
       <View className="flex-row gap-3">
@@ -243,13 +256,14 @@ export function ManualEntryForm({
 
       {/* Date */}
       <View className="gap-2">
-        <TextInput
+        <DateField
           testID="manual-entry-date"
+          label="Date"
+          placeholder="Pick a date"
           value={day}
-          onChangeText={setDay}
-          accessibilityLabel="Date"
-          placeholder="YYYY-MM-DD"
-          className="rounded-xl bg-surface px-4 py-3 text-fg dark:bg-surface-dark dark:text-fg-dark"
+          onChange={setDay}
+          // A manual transaction is something that already happened.
+          maximumDate={new Date()}
         />
         {showErrors && dateInvalid ? (
           <Text testID="manual-entry-date-error" className="text-danger dark:text-danger-dark">
