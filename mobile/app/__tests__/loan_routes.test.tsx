@@ -22,11 +22,22 @@ jest.mock("@/lib/alerts/alerts_service", () => ({
   postAlert: jest.fn().mockResolvedValue(undefined),
 }));
 
+// DateField (inside LoanForm's amortized/flat branches) imports the native
+// picker at module load regardless of whether a test ever opens it —
+// components/ui/__tests__/date_field.test.tsx's own mock exists for the same
+// reason. Nothing here presses the date field, so a trivial stub is enough.
+jest.mock("@react-native-community/datetimepicker", () => ({
+  __esModule: true,
+  default: () => null,
+}));
+
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { ReactNode } from "react";
 
 import { cancelScheduled } from "@/lib/alerts/alerts_service";
+import { KeypadHost } from "@/components/ui/keypad_host";
+import { KeypadProvider } from "@/contexts/keypad_context";
 import { ThemeProvider } from "@/contexts/theme_context";
 import { closeDatabase } from "@/lib/db/database";
 import { getSetting, setSetting } from "@/lib/db/repos/app_settings_repo";
@@ -37,6 +48,7 @@ import { createWallet } from "@/lib/db/repos/wallets_repo";
 import { __setTierForTests } from "@/lib/entitlements";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
+import { typeAmount } from "@/test_support/keypad";
 import type { Wallet } from "@/types/domain";
 
 import LoansScreen from "../(tabs)/plan/loans";
@@ -72,10 +84,19 @@ function makeTestClient(): QueryClient {
   });
 }
 
+// NumericField (inside LoanForm) throws without a KeypadProvider above it,
+// and the panel it opens has to be hosted somewhere — see
+// test_support/keypad.ts's header. Harmless for the routes that never touch
+// LoanForm: KeypadHost renders nothing while no field is focused.
 function renderScreen(ui: ReactNode) {
   return render(
     <QueryClientProvider client={makeTestClient()}>
-      <ThemeProvider>{ui}</ThemeProvider>
+      <ThemeProvider>
+        <KeypadProvider>
+          {ui}
+          <KeypadHost />
+        </KeypadProvider>
+      </ThemeProvider>
     </QueryClientProvider>,
   );
 }
@@ -185,7 +206,8 @@ test("a free-form loan saves from counterparty and amount alone", async () => {
   await screen.findByTestId("loan-counterparty");
 
   fireEvent.changeText(screen.getByTestId("loan-counterparty"), "Aling Nena");
-  fireEvent.changeText(screen.getByTestId("loan-principal"), "500000");
+  // ₱5,000 — the old test typed "500000" as raw centavo digits.
+  typeAmount("loan-principal", "5000");
   fireEvent.press(screen.getByTestId("loan-save"));
 
   await waitFor(async () => expect((await listLoans()).length).toBe(1));

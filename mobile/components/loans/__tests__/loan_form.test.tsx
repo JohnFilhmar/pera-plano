@@ -1,16 +1,62 @@
-// components/loans/__tests__/loan_form.test.tsx — m2b Task 8, rule 3.
+// components/loans/__tests__/loan_form.test.tsx — m2b Task 8, rule 3. Amount,
+// rate, term and the three flat-loan fields now go through the shared keypad,
+// and the first-due date through DateField's calendar picker
+// (numeric-input-system Task 10) — this is the one form that exercises all
+// three keypad modes (peso, rate, integer) at once.
+//
+// STATE STAYS INSIDE THE FORM. Unlike manual entry (Task 9), this screen
+// never auto-opens the panel on mount, so there is no reason to lift any of
+// its fields' text up to the route — this is a component swap, not a state
+// rewrite.
 import { fireEvent, render, screen } from "@testing-library/react-native";
+
+import { KeypadHost } from "@/components/ui/keypad_host";
+import { KeypadProvider } from "@/contexts/keypad_context";
+import { clearAmount, typeAmount } from "@/test_support/keypad";
 
 import { LoanForm } from "../loan_form";
 import type { LoanFormValues } from "../loan_form";
 
+// DateField (inside the amortized/flat branches) imports the native picker at
+// module load regardless of which branch a test ever renders, matching
+// components/ui/__tests__/date_field.test.tsx's own mock and
+// manual_entry_form.test.tsx's. `mock`-prefixed so babel-plugin-jest-hoist
+// allows the factory to close over it.
+let mockPickedDate = new Date(2026, 7, 13);
+
+jest.mock("@react-native-community/datetimepicker", () => {
+  const { Pressable, Text } = require("react-native");
+  return {
+    __esModule: true,
+    default: ({ onChange }: { onChange: (event: { type: string }, date?: Date) => void }) => (
+      <Pressable testID="date-picker-pick" onPress={() => onChange({ type: "set" }, mockPickedDate)}>
+        <Text>pick</Text>
+      </Pressable>
+    ),
+  };
+});
+
+// NumericField throws without a KeypadProvider above it, and the panel it
+// opens has to be hosted somewhere — see test_support/keypad.ts's header.
 function renderForm() {
   const onSubmit = jest.fn();
-  render(<LoanForm onSubmit={onSubmit} />);
+  render(
+    <KeypadProvider>
+      <LoanForm onSubmit={onSubmit} />
+      <KeypadHost />
+    </KeypadProvider>,
+  );
   return { onSubmit };
 }
 
 const submitted = (onSubmit: jest.Mock): LoanFormValues => onSubmit.mock.calls[0][0];
+
+/** Opens the date field, mock-picks the given local day, and closes the dialog. */
+function pickDate(testID: string, year: number, month: number, day: number): void {
+  mockPickedDate = new Date(year, month - 1, day);
+  fireEvent.press(screen.getByTestId(testID));
+  fireEvent.press(screen.getByTestId("date-picker-pick"));
+}
 
 test("THE FORM DEFAULTS TO FREE-FORM, and free-form asks for nothing extra", () => {
   // Rule 3: free-form "asks for nothing beyond principal and counterparty".
@@ -54,9 +100,11 @@ test("THE AMORTIZED FORM PREVIEWS THE MONTHLY PAYMENT LIVE", () => {
   renderForm();
 
   fireEvent.press(screen.getByTestId("loan-kind-amortized"));
-  fireEvent.changeText(screen.getByTestId("loan-principal"), "5000000");
-  fireEvent.changeText(screen.getByTestId("loan-rate"), "12");
-  fireEvent.changeText(screen.getByTestId("loan-term"), "12");
+  // ₱50,000 principal — the old test typed "5000000" as raw centavo digits;
+  // under the new peso-first reading the same amount is "50000".
+  typeAmount("loan-principal", "50000");
+  typeAmount("loan-rate", "12");
+  typeAmount("loan-term", "12");
 
   screen.getByText("About ₱4,442.44 a month.");
 });
@@ -64,12 +112,15 @@ test("THE AMORTIZED FORM PREVIEWS THE MONTHLY PAYMENT LIVE", () => {
 test("the preview updates as the term changes", () => {
   renderForm();
   fireEvent.press(screen.getByTestId("loan-kind-amortized"));
-  fireEvent.changeText(screen.getByTestId("loan-principal"), "5000000");
-  fireEvent.changeText(screen.getByTestId("loan-rate"), "12");
-  fireEvent.changeText(screen.getByTestId("loan-term"), "12");
+  typeAmount("loan-principal", "50000");
+  typeAmount("loan-rate", "12");
+  typeAmount("loan-term", "12");
   screen.getByText("About ₱4,442.44 a month.");
 
-  fireEvent.changeText(screen.getByTestId("loan-term"), "24");
+  // A field already holding "12" would APPEND "24" onto it rather than
+  // replace it — clear first, the way backspacing the field would.
+  clearAmount("loan-term");
+  typeAmount("loan-term", "24");
 
   expect(screen.queryByText("About ₱4,442.44 a month.")).toBeNull();
   screen.getByTestId("loan-payment-preview");
@@ -80,8 +131,9 @@ test("a zero-rate amortized loan previews without NaN", () => {
   renderForm();
 
   fireEvent.press(screen.getByTestId("loan-kind-amortized"));
-  fireEvent.changeText(screen.getByTestId("loan-principal"), "1200000");
-  fireEvent.changeText(screen.getByTestId("loan-term"), "12");
+  // ₱12,000 — the old test typed "1200000" as raw centavo digits.
+  typeAmount("loan-principal", "12000");
+  typeAmount("loan-term", "12");
 
   screen.getByText("About ₱1,000.00 a month.");
 });
@@ -103,7 +155,8 @@ test("a free-form loan saves with no schedule and no rate", () => {
   const { onSubmit } = renderForm();
 
   fireEvent.changeText(screen.getByTestId("loan-counterparty"), "Aling Nena");
-  fireEvent.changeText(screen.getByTestId("loan-principal"), "500000");
+  // ₱5,000 — the old test typed "500000" as raw centavo digits.
+  typeAmount("loan-principal", "5000");
   fireEvent.press(screen.getByTestId("loan-save"));
 
   expect(submitted(onSubmit)).toMatchObject({
@@ -140,7 +193,7 @@ test("DESELECTING EVERY OFFSET SHOWS THE NO-NOTIFICATIONS COPY AND SUBMITS AN EM
   screen.getByText("No notifications. The loan still shows its due date in the app.");
 
   fireEvent.changeText(screen.getByTestId("loan-counterparty"), "Aling Nena");
-  fireEvent.changeText(screen.getByTestId("loan-principal"), "500000");
+  typeAmount("loan-principal", "5000");
   fireEvent.press(screen.getByTestId("loan-save"));
 
   expect(submitted(onSubmit).reminderOffsets).toEqual([]);
@@ -151,7 +204,7 @@ test("TOGGLING TO A CUSTOM SUBSET SUBMITS EXACTLY THAT SUBSET", () => {
 
   fireEvent.press(screen.getByTestId("loan-offset-3")); // deselect "3 days after"
   fireEvent.changeText(screen.getByTestId("loan-counterparty"), "Aling Nena");
-  fireEvent.changeText(screen.getByTestId("loan-principal"), "500000");
+  typeAmount("loan-principal", "5000");
   fireEvent.press(screen.getByTestId("loan-save"));
 
   expect(submitted(onSubmit).reminderOffsets).toEqual([-3, 0]);
@@ -162,10 +215,10 @@ test("an amortized loan saves a MATERIALIZED schedule with its splits", () => {
 
   fireEvent.press(screen.getByTestId("loan-kind-amortized"));
   fireEvent.changeText(screen.getByTestId("loan-counterparty"), "GLoan");
-  fireEvent.changeText(screen.getByTestId("loan-principal"), "5000000");
-  fireEvent.changeText(screen.getByTestId("loan-rate"), "12");
-  fireEvent.changeText(screen.getByTestId("loan-term"), "12");
-  fireEvent.changeText(screen.getByTestId("loan-first-due"), "2026-09-15");
+  typeAmount("loan-principal", "50000");
+  typeAmount("loan-rate", "12");
+  typeAmount("loan-term", "12");
+  pickDate("loan-first-due", 2026, 9, 15);
   fireEvent.press(screen.getByTestId("loan-save"));
 
   const values = submitted(onSubmit);
@@ -189,11 +242,18 @@ test("A FLAT LOAN'S PRINCIPAL IS THE TOTAL REPAYABLE, not the cash borrowed", ()
 
   fireEvent.press(screen.getByTestId("loan-kind-flat"));
   fireEvent.changeText(screen.getByTestId("loan-counterparty"), "Aling Nena");
-  fireEvent.changeText(screen.getByTestId("loan-principal"), "500000");
-  fireEvent.changeText(screen.getByTestId("loan-installment"), "100000");
-  fireEvent.changeText(screen.getByTestId("loan-count"), "6");
-  fireEvent.changeText(screen.getByTestId("loan-interval"), "7");
-  fireEvent.changeText(screen.getByTestId("loan-first-due"), "2026-08-22");
+  // The principal field itself is not what gets submitted for a flat loan
+  // (installment * count is, below) — any positive amount just satisfies
+  // canSave.
+  typeAmount("loan-principal", "5000");
+  // ₱1,000 each — the old test typed "100000" as raw centavo digits.
+  typeAmount("loan-installment", "1000");
+  typeAmount("loan-count", "6");
+  // Already the field's own default; cleared and retyped so the test states
+  // its dependency on interval=7 explicitly instead of leaning on that default.
+  clearAmount("loan-interval");
+  typeAmount("loan-interval", "7");
+  pickDate("loan-first-due", 2026, 8, 22);
   screen.getByText("₱6,000.00 in total.");
   fireEvent.press(screen.getByTestId("loan-save"));
 
@@ -220,9 +280,22 @@ test("a scheduled loan cannot be saved without a first due date", () => {
 
   fireEvent.press(screen.getByTestId("loan-kind-amortized"));
   fireEvent.changeText(screen.getByTestId("loan-counterparty"), "GLoan");
-  fireEvent.changeText(screen.getByTestId("loan-principal"), "5000000");
-  fireEvent.changeText(screen.getByTestId("loan-term"), "12");
+  typeAmount("loan-principal", "50000");
+  typeAmount("loan-term", "12");
   fireEvent.press(screen.getByTestId("loan-save"));
 
   expect(onSubmit).not.toHaveBeenCalled();
+});
+
+// ---------------------------------------------------------------------------
+// The behaviour change — numeric-input-system Task 10. Typed digits are now
+// read as PESOS, not centavos: "13437.72" means ₱13,437.72, not the
+// ₱134,377.20 the old centavo-digit reading would have produced.
+// ---------------------------------------------------------------------------
+test("a P13,437.72 loan is entered as 13437.72", () => {
+  renderForm();
+
+  typeAmount("loan-principal", "13437.72");
+
+  expect(screen.getByTestId("loan-principal-preview").props.children).toBe("₱13,437.72");
 });
