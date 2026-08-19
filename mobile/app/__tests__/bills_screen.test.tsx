@@ -24,6 +24,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { ReactNode } from "react";
 
+import { KeypadHost } from "@/components/ui/keypad_host";
+import { KeypadProvider } from "@/contexts/keypad_context";
 import { ThemeProvider } from "@/contexts/theme_context";
 import { closeDatabase } from "@/lib/db/database";
 import { createBill, listBillPayments, listCycles } from "@/lib/db/repos/bills_repo";
@@ -34,6 +36,7 @@ import { systemClock } from "@/lib/clock";
 import { addDaysIso, toDateIso } from "@/lib/dates";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
+import { typeAmount } from "@/test_support/keypad";
 import type { Wallet } from "@/types/domain";
 
 import BillsScreen from "../(tabs)/plan/bills";
@@ -69,10 +72,19 @@ function makeTestClient(): QueryClient {
   });
 }
 
+// NumericField (inside BillForm, inside NewBillScreen) throws without a
+// KeypadProvider above it, and the panel it opens has to be hosted somewhere
+// — see test_support/keypad.ts's header. Harmless for the routes that never
+// touch BillForm: KeypadHost renders nothing while no field is focused.
 function renderScreen(ui: ReactNode) {
   return render(
     <QueryClientProvider client={makeTestClient()}>
-      <ThemeProvider>{ui}</ThemeProvider>
+      <ThemeProvider>
+        <KeypadProvider>
+          {ui}
+          <KeypadHost />
+        </KeypadProvider>
+      </ThemeProvider>
     </QueryClientProvider>,
   );
 }
@@ -165,7 +177,8 @@ test("A BILL SAVES WITH NO TIER GATE ANYWHERE IN THE WAY", async () => {
   await screen.findByTestId("bill-name");
 
   fireEvent.changeText(screen.getByTestId("bill-name"), "Maynilad");
-  fireEvent.changeText(screen.getByTestId("bill-amount"), "90000");
+  // ₱900 — the old test typed "90000" as raw centavo digits.
+  typeAmount("bill-amount", "900");
   fireEvent.press(screen.getByTestId("bill-save"));
 
   await waitFor(() => expect(mockBack).toHaveBeenCalled(), { timeout: 30_000 });

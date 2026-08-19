@@ -3,9 +3,20 @@
 // The sheet is the user's last chance to say "not that much" before the ledger
 // records a movement. Every test here is about what it hands back on confirm —
 // and about the fact that it hands back NOTHING until then.
+//
+// THE SHEET IS NOT A FormScreen (numeric-input-system Task 11). It renders
+// inside BottomSheet, which is its own native Modal window; FormScreen is a
+// screen-level wrapper and does not belong here, and this file's layout is
+// otherwise untouched. What DOES change: the row amount fields now go through
+// NumericField, and BottomSheet already mounts its own KeypadHost inside its
+// Modal — see the "keypad draws above the sheet" test below, the first in
+// this branch to exercise that mount for real.
 import { fireEvent, render, screen } from "@testing-library/react-native";
 
+import { KeypadHost } from "@/components/ui/keypad_host";
+import { KeypadProvider } from "@/contexts/keypad_context";
 import type { AllocationProposal } from "@/lib/goals/goals_service";
+import { clearAmount, typeAmount } from "@/test_support/keypad";
 
 import { AllocationSheet } from "../allocation_sheet";
 
@@ -27,18 +38,25 @@ const TRAVEL: AllocationProposal = {
   toWalletId: "w-seabank",
 };
 
+// NumericField (inside each row's amount field) throws without a
+// KeypadProvider above it — see test_support/keypad.ts's header. The root
+// <KeypadHost /> here stands in for app/_layout.tsx's; BottomSheet mounts a
+// second one itself, inside its Modal, whenever `visible` is true.
 function renderSheet(over: Partial<Parameters<typeof AllocationSheet>[0]> = {}) {
   const onConfirm = jest.fn();
   const onDismiss = jest.fn();
   render(
-    <AllocationSheet
-      visible
-      proposals={[EMERGENCY, TRAVEL]}
-      paydayAmount={1850000}
-      onConfirm={onConfirm}
-      onDismiss={onDismiss}
-      {...over}
-    />,
+    <KeypadProvider>
+      <AllocationSheet
+        visible
+        proposals={[EMERGENCY, TRAVEL]}
+        paydayAmount={1850000}
+        onConfirm={onConfirm}
+        onDismiss={onDismiss}
+        {...over}
+      />
+      <KeypadHost />
+    </KeypadProvider>,
   );
   return { onConfirm, onDismiss };
 }
@@ -60,7 +78,10 @@ test("NOTHING IS COMMITTED UNTIL CONFIRM", () => {
   const { onConfirm } = renderSheet();
 
   fireEvent.press(screen.getByTestId(`allocation-toggle-${TRAVEL.goalId}`));
-  fireEvent.changeText(screen.getByTestId(`allocation-amount-${EMERGENCY.goalId}`), "150000");
+  // ₱1,500 — the field defaults to EMERGENCY's seeded ₱2,000, so it is
+  // cleared before retyping (typeAmount appends, it does not replace).
+  clearAmount(`allocation-amount-${EMERGENCY.goalId}`);
+  typeAmount(`allocation-amount-${EMERGENCY.goalId}`, "1500");
 
   expect(onConfirm).not.toHaveBeenCalled();
 });
@@ -82,7 +103,8 @@ test("an EDITED amount is what gets committed", () => {
   // it is simply wrong.
   const { onConfirm } = renderSheet();
 
-  fireEvent.changeText(screen.getByTestId(`allocation-amount-${EMERGENCY.goalId}`), "150000");
+  clearAmount(`allocation-amount-${EMERGENCY.goalId}`);
+  typeAmount(`allocation-amount-${EMERGENCY.goalId}`, "1500");
   fireEvent.press(screen.getByTestId("allocation-confirm"));
 
   const accepted = onConfirm.mock.calls[0][0] as AllocationProposal[];
@@ -117,7 +139,9 @@ test("editing back under the payday clears the warning", () => {
   renderSheet({ paydayAmount: 250000 });
   screen.getByTestId("allocation-over-warning");
 
-  fireEvent.changeText(screen.getByTestId(`allocation-amount-${EMERGENCY.goalId}`), "100000");
+  // ₱1,000 — the old test typed "100000" as raw centavo digits.
+  clearAmount(`allocation-amount-${EMERGENCY.goalId}`);
+  typeAmount(`allocation-amount-${EMERGENCY.goalId}`, "1000");
 
   expect(screen.queryByTestId("allocation-over-warning")).toBeNull();
 });
@@ -147,7 +171,8 @@ test("unchecking everything disables confirm", () => {
 test("an amount edited to zero drops that row rather than committing ₱0.00", () => {
   const { onConfirm } = renderSheet();
 
-  fireEvent.changeText(screen.getByTestId(`allocation-amount-${TRAVEL.goalId}`), "0");
+  clearAmount(`allocation-amount-${TRAVEL.goalId}`);
+  typeAmount(`allocation-amount-${TRAVEL.goalId}`, "0");
   fireEvent.press(screen.getByTestId("allocation-confirm"));
 
   const accepted = onConfirm.mock.calls[0][0] as AllocationProposal[];
@@ -167,4 +192,25 @@ test("an invisible sheet renders nothing", () => {
   renderSheet({ visible: false });
 
   expect(screen.queryByTestId("allocation-sheet")).toBeNull();
+});
+
+// ---------------------------------------------------------------------------
+// The keypad inside the sheet — numeric-input-system Task 11. BottomSheet is
+// built on the platform Modal, its own native window, so a keypad hosted only
+// at the root (renderSheet's own <KeypadHost />, standing in for
+// app/_layout.tsx's) would paint BEHIND it. BottomSheet mounts a SECOND
+// KeypadHost inside its own Modal for exactly this reason, and
+// keypad_context.tsx's token registry hands the panel to the most recently
+// mounted host. This is the first test in the branch to exercise that path.
+// ---------------------------------------------------------------------------
+test("the keypad draws above the sheet, not behind it", () => {
+  renderSheet();
+
+  clearAmount(`allocation-amount-${EMERGENCY.goalId}`);
+  typeAmount(`allocation-amount-${EMERGENCY.goalId}`, "500");
+
+  // "₱500" (no forced decimals) is the field's OWN live display — distinct
+  // from the row's separate formatCentavos summary a line below, which would
+  // read "₱500.00", so this is not an ambiguous match.
+  expect(screen.getByText("₱500")).toBeTruthy();
 });

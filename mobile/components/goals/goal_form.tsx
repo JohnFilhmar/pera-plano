@@ -12,15 +12,18 @@ import { useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 
 import { PlusGate } from "@/components/gates/plus_gate";
-import { centavosFromDigits, formatCentavos } from "@/components/ui/amount_text";
+import { formatCentavos } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import type { ContributionRule, Wallet } from "@/types/domain";
+import { DateField } from "@/components/ui/date_field";
+import { NumericField } from "@/components/ui/numeric_field";
+import { centavosFrom } from "@/lib/money/peso_input";
+import type { ContributionRule, IsoDate, Wallet } from "@/types/domain";
 
 export type GoalFormValues = {
   name: string;
   targetAmount: number;
-  targetDate: string | null;
+  targetDate: IsoDate | null;
   linkedWalletId: string;
   contributionRule: ContributionRule | null;
 };
@@ -41,18 +44,26 @@ export function GoalForm({
   busy = false,
 }: GoalFormProps) {
   const [name, setName] = useState("");
-  const [targetDigits, setTargetDigits] = useState("");
-  const [targetDate, setTargetDate] = useState("");
+  const [targetText, setTargetText] = useState("");
+  const [targetDate, setTargetDate] = useState<IsoDate | null>(null);
   const [walletId, setWalletId] = useState<string | null>(null);
-  const [ruleDigits, setRuleDigits] = useState("");
+  const [ruleText, setRuleText] = useState("");
 
-  const targetAmount = centavosFromDigits(targetDigits);
+  const targetAmount = centavosFrom(targetText);
   // Rule 3's three requirements, and 001_core.sql's `CHECK (target_amount > 0)`.
   // A disabled button beats a constraint violation surfacing as a crash.
   const canSave = name.trim() !== "" && targetAmount > 0 && walletId !== null && !busy;
 
   return (
-    <View className="gap-6">
+    // bg-bg/px-4/pt-4 move in from the route (numeric-input-system Task 11)
+    // now that FormScreen wraps this form there instead of a plain
+    // ScrollView. pt-4 is a bare utility, not insets.top: this screen lives
+    // inside (tabs)/_layout.tsx's <Tabs>, which already pads every tab
+    // screen's top edge for the status bar in one place — pt-4 only restores
+    // the 16px breathing room the removed wrapper's p-4 gave on top of that
+    // inset. No bottom padding here: FormScreen's contentContainerStyle owns
+    // that edge, so a symmetric p-4 would double-count it (Task 9's fix).
+    <View className="gap-6 bg-bg px-4 pt-4 dark:bg-bg-dark">
       <View>
         <Text className="font-semibold text-fg dark:text-fg-dark">
           What are you saving for?
@@ -68,16 +79,14 @@ export function GoalForm({
 
       <View>
         <Text className="font-semibold text-fg dark:text-fg-dark">How much?</Text>
-        <TextInput
+        <NumericField
           testID="goal-target"
-          className="mt-2 rounded-xl bg-surface p-3 text-fg dark:bg-surface-dark dark:text-fg-dark"
-          keyboardType="numeric"
+          label="How much?"
+          mode="peso"
           placeholder="Amount, e.g. 50000"
-          value={targetDigits}
-          onChangeText={setTargetDigits}
+          value={targetText}
+          onChangeText={setTargetText}
         />
-        {/* Echoed back, because the field takes DIGITS — the same hazard the
-            limit and income amount fields echo back for. */}
         <Text testID="goal-target-preview" className="mt-2 text-fg-2 dark:text-fg-2-dark">
           {formatCentavos(targetAmount)}
         </Text>
@@ -88,12 +97,15 @@ export function GoalForm({
         <Text className="mt-1 text-fg-2 dark:text-fg-2-dark">
           A deadline turns on the pace chip. Without one the goal just tracks progress.
         </Text>
-        <TextInput
+        <DateField
           testID="goal-target-date"
-          className="mt-2 rounded-xl bg-surface p-3 text-fg dark:bg-surface-dark dark:text-fg-dark"
+          label="By when? (optional)"
           placeholder="YYYY-MM-DD"
           value={targetDate}
-          onChangeText={setTargetDate}
+          onChange={setTargetDate}
+          // A goal deadline is always in the future — GoalForm has no
+          // injected clock (no `now` prop), so `new Date()` is the read.
+          minimumDate={new Date()}
         />
       </View>
 
@@ -163,13 +175,13 @@ export function GoalForm({
             PeraPlano will remind you to move this amount each payday. It never moves money on its
             own — you do it in your banking app and it records the transfer.
           </Text>
-          <TextInput
+          <NumericField
             testID="goal-rule-amount"
-            className="mt-2 rounded-xl bg-surface p-3 text-fg dark:bg-surface-dark dark:text-fg-dark"
-            keyboardType="numeric"
+            label="Move money automatically on payday"
+            mode="peso"
             placeholder="Amount each payday, e.g. 2000"
-            value={ruleDigits}
-            onChangeText={setRuleDigits}
+            value={ruleText}
+            onChangeText={setRuleText}
           />
         </View>
       </PlusGate>
@@ -181,12 +193,14 @@ export function GoalForm({
         loading={busy}
         onPress={() => {
           if (!canSave || walletId === null) return;
-          const ruleAmount = centavosFromDigits(ruleDigits);
+          const ruleAmount = centavosFrom(ruleText);
           onSubmit({
             name: name.trim(),
             targetAmount,
-            // An empty field is no deadline, not an invalid one (rule 4).
-            targetDate: targetDate.trim() === "" ? null : targetDate.trim(),
+            // No deadline picked is no deadline, not an invalid one (rule 4)
+            // — DateField's value is already IsoDate | null, null while
+            // untouched.
+            targetDate,
             linkedWalletId: walletId,
             contributionRule: ruleAmount > 0 ? { kind: "fixed", amount: ruleAmount } : null,
           });

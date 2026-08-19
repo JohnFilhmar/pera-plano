@@ -10,11 +10,13 @@
 // user is about to move by hand. If they move ₱1,800 instead of ₱2,000, the
 // ledger has to record ₱1,800 or it is simply wrong.
 import { useState } from "react";
-import { Pressable, Text, TextInput, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 
-import { centavosFromDigits, formatCentavos } from "@/components/ui/amount_text";
+import { formatCentavos } from "@/components/ui/amount_text";
 import { BottomSheet } from "@/components/ui/bottom_sheet";
 import { Button } from "@/components/ui/button";
+import { NumericField } from "@/components/ui/numeric_field";
+import { centavosFrom, pesoInputFrom } from "@/lib/money/peso_input";
 import type { AllocationProposal } from "@/lib/goals/goals_service";
 import type { Centavos } from "@/types/domain";
 
@@ -28,7 +30,7 @@ export type AllocationSheetProps = {
   busy?: boolean;
 };
 
-type RowState = { checked: boolean; digits: string };
+type RowState = { checked: boolean; text: string };
 
 export function AllocationSheet({
   visible,
@@ -45,18 +47,23 @@ export function AllocationSheet({
     Object.fromEntries(
       proposals.map((proposal) => [
         proposal.goalId,
-        { checked: true, digits: String(proposal.amount) },
+        // pesoInputFrom, NOT String(proposal.amount) — proposal.amount is
+        // CENTAVOS, and centavosFrom below reads a seeded field as PESOS.
+        // String(200000) would seed "200000" and round-trip as ₱200,000.00,
+        // a 100x inflation baked into the default rather than typed by the
+        // user (numeric-input-system Task 11).
+        { checked: true, text: pesoInputFrom(proposal.amount) },
       ]),
     ),
   );
 
   const rowFor = (proposal: AllocationProposal): RowState =>
-    rows[proposal.goalId] ?? { checked: true, digits: String(proposal.amount) };
+    rows[proposal.goalId] ?? { checked: true, text: pesoInputFrom(proposal.amount) };
 
   const accepted = proposals
     .map((proposal) => ({ proposal, row: rowFor(proposal) }))
-    .filter(({ row }) => row.checked && centavosFromDigits(row.digits) > 0)
-    .map(({ proposal, row }) => ({ ...proposal, amount: centavosFromDigits(row.digits) }));
+    .filter(({ row }) => row.checked && centavosFrom(row.text) > 0)
+    .map(({ proposal, row }) => ({ ...proposal, amount: centavosFrom(row.text) }));
 
   const total = accepted.reduce((sum, proposal) => sum + proposal.amount, 0);
   const overPayday = total > paydayAmount;
@@ -64,7 +71,7 @@ export function AllocationSheet({
   const setRow = (goalId: string, patch: Partial<RowState>) =>
     setRows((current) => ({
       ...current,
-      [goalId]: { ...(current[goalId] ?? { checked: true, digits: "0" }), ...patch },
+      [goalId]: { ...(current[goalId] ?? { checked: true, text: "0" }), ...patch },
     }));
 
   return (
@@ -99,16 +106,23 @@ export function AllocationSheet({
                 </Text>
               </Pressable>
 
-              <TextInput
-                testID={`allocation-amount-${proposal.goalId}`}
-                className="rounded-xl bg-surface p-3 text-fg dark:bg-surface-dark dark:text-fg-dark"
-                keyboardType="numeric"
-                editable={row.checked}
-                value={row.digits}
-                onChangeText={(digits) => setRow(proposal.goalId, { digits })}
-              />
+              {/* NumericField has no `editable`/`disabled` prop — pointerEvents
+                  is how PlusGate disables a Pressable subtree elsewhere in
+                  this app (components/gates/plus_gate.tsx), and it is the
+                  same mechanism here: a skipped row's amount stays visible
+                  but genuinely un-pressable, matching the old
+                  editable={row.checked}. */}
+              <View pointerEvents={row.checked ? "auto" : "none"}>
+                <NumericField
+                  testID={`allocation-amount-${proposal.goalId}`}
+                  label={proposal.goalName}
+                  mode="peso"
+                  value={row.text}
+                  onChangeText={(text) => setRow(proposal.goalId, { text })}
+                />
+              </View>
               <Text className="text-fg-2 dark:text-fg-2-dark">
-                {formatCentavos(centavosFromDigits(row.digits))}
+                {formatCentavos(centavosFrom(row.text))}
               </Text>
 
               {/* Rule 3's shortfall, surfaced. The user planned one figure and

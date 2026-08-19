@@ -19,9 +19,11 @@ import { useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 
 import { DueRulePicker } from "@/components/bills/due_rule_picker";
-import { centavosFromDigits, formatCentavos } from "@/components/ui/amount_text";
+import { formatCentavos } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
+import { NumericField } from "@/components/ui/numeric_field";
 import { DEFAULT_REMINDER_OFFSETS } from "@/constants/bills";
+import { centavosFrom } from "@/lib/money/peso_input";
 import type { BillAmountMode, DueRule } from "@/types/domain";
 
 export type BillFormValues = {
@@ -66,7 +68,7 @@ const OFFSETS: readonly { value: number; label: string }[] = [
 
 export function BillForm({ today, onSubmit, busy = false, testID }: BillFormProps) {
   const [name, setName] = useState("");
-  const [digits, setDigits] = useState("");
+  const [amountText, setAmountText] = useState("");
   const [amountMode, setAmountMode] = useState<BillAmountMode>("estimated");
   const [dueRule, setDueRule] = useState<DueRule>({
     kind: "day-of-month",
@@ -74,7 +76,7 @@ export function BillForm({ today, onSubmit, busy = false, testID }: BillFormProp
   });
   const [offsets, setOffsets] = useState<number[]>([...DEFAULT_REMINDER_OFFSETS]);
 
-  const amount = centavosFromDigits(digits);
+  const amount = centavosFrom(amountText);
   const canSave = name.trim().length > 0 && amount > 0;
 
   const toggleOffset = (offset: number) => {
@@ -86,7 +88,15 @@ export function BillForm({ today, onSubmit, busy = false, testID }: BillFormProp
   };
 
   return (
-    <View testID={testID} className="gap-5">
+    // bg-bg/px-4/pt-4 move in from the route (numeric-input-system Task 11)
+    // now that FormScreen wraps this form there instead of a plain
+    // ScrollView. pt-4 is a bare utility, not insets.top: this screen lives
+    // inside (tabs)/_layout.tsx's <Tabs>, which already pads every tab
+    // screen's top edge for the status bar in one place — pt-4 only restores
+    // the 16px breathing room the removed wrapper's p-4 gave on top of that
+    // inset. No bottom padding here: FormScreen's contentContainerStyle owns
+    // that edge, so a symmetric p-4 would double-count it (Task 9's fix).
+    <View testID={testID} className="gap-5 bg-bg px-4 pt-4 dark:bg-bg-dark">
       <View className="gap-1">
         <Text className="text-sm font-medium text-fg-2 dark:text-fg-2-dark">What is it?</Text>
         <TextInput
@@ -125,12 +135,13 @@ export function BillForm({ today, onSubmit, busy = false, testID }: BillFormProp
         <Text className="text-sm font-medium text-fg-2 dark:text-fg-2-dark">
           {amountMode === "fixed" ? "How much is it?" : "Roughly how much?"}
         </Text>
-        <TextInput
+        <NumericField
           testID="bill-amount"
-          value={digits}
-          onChangeText={setDigits}
-          keyboardType="number-pad"
-          className="rounded-lg bg-surface px-3 py-2 text-fg dark:bg-surface-dark dark:text-fg-dark"
+          label={amountMode === "fixed" ? "How much is it?" : "Roughly how much?"}
+          mode="peso"
+          placeholder="Amount, e.g. 5000"
+          value={amountText}
+          onChangeText={setAmountText}
         />
         <Text testID="bill-amount-preview" className="text-fg-2 dark:text-fg-2-dark">
           {formatCentavos(amount)}

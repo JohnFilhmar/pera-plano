@@ -12,10 +12,43 @@ jest.mock("expo-router", () => ({
   }),
 }));
 
+// DateField (inside GoalForm, for the optional deadline) imports the native
+// picker at module load regardless of whether a test ever opens it — matches
+// components/ui/__tests__/date_field.test.tsx's own mock and
+// loan_form.test.tsx's. `mock`-prefixed so babel-plugin-jest-hoist allows the
+// factory to close over it. Captures the `minimumDate` the real picker would
+// have received, so a test can assert the bound is actually wired up (same
+// pattern as numeric-input-system Task 10's `loan-first-due`).
+let mockPickedDate = new Date(2026, 7, 13);
+let mockReceivedMinimumDate: Date | undefined;
+
+jest.mock("@react-native-community/datetimepicker", () => {
+  const { Pressable, Text } = require("react-native");
+  return {
+    __esModule: true,
+    default: ({
+      onChange,
+      minimumDate,
+    }: {
+      onChange: (event: { type: string }, date?: Date) => void;
+      minimumDate?: Date;
+    }) => {
+      mockReceivedMinimumDate = minimumDate;
+      return (
+        <Pressable testID="date-picker-pick" onPress={() => onChange({ type: "set" }, mockPickedDate)}>
+          <Text>pick</Text>
+        </Pressable>
+      );
+    },
+  };
+});
+
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { ReactNode } from "react";
 
+import { KeypadHost } from "@/components/ui/keypad_host";
+import { KeypadProvider } from "@/contexts/keypad_context";
 import { ThemeProvider } from "@/contexts/theme_context";
 import { closeDatabase } from "@/lib/db/database";
 import { seedDefaultCategories } from "@/lib/db/repos/categories_repo";
@@ -24,6 +57,7 @@ import { createWallet } from "@/lib/db/repos/wallets_repo";
 import { __setTierForTests } from "@/lib/entitlements";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
+import { typeAmount } from "@/test_support/keypad";
 import type { Wallet } from "@/types/domain";
 
 import GoalsScreen from "../(tabs)/plan/goals";
@@ -46,12 +80,29 @@ function makeTestClient(): QueryClient {
   });
 }
 
+// NumericField (inside GoalForm's target and auto-move fields) throws without
+// a KeypadProvider above it, and the panel it opens has to be hosted
+// somewhere — see test_support/keypad.ts's header. Harmless for the routes
+// that never touch GoalForm: KeypadHost renders nothing while no field is
+// focused.
 function renderScreen(ui: ReactNode) {
   return render(
     <QueryClientProvider client={makeTestClient()}>
-      <ThemeProvider>{ui}</ThemeProvider>
+      <ThemeProvider>
+        <KeypadProvider>
+          {ui}
+          <KeypadHost />
+        </KeypadProvider>
+      </ThemeProvider>
     </QueryClientProvider>,
   );
+}
+
+/** Opens the deadline field, mock-picks the given local day, and closes the dialog. */
+function pickDate(testID: string, year: number, month: number, day: number): void {
+  mockPickedDate = new Date(year, month - 1, day);
+  fireEvent.press(screen.getByTestId(testID));
+  fireEvent.press(screen.getByTestId("date-picker-pick"));
 }
 
 beforeEach(async () => {
@@ -141,8 +192,9 @@ test("THE FORM REQUIRES A NAME, A TARGET AND A WALLET", async () => {
   // Name only.
   fireEvent.changeText(screen.getByTestId("goal-name"), "Emergency Fund");
   fireEvent.press(screen.getByTestId("goal-save"));
-  // Name and target, still no wallet.
-  fireEvent.changeText(screen.getByTestId("goal-target"), "5000000");
+  // Name and target, still no wallet. ₱50,000 — the old test typed "5000000"
+  // as raw centavo digits.
+  typeAmount("goal-target", "50000");
   fireEvent.press(screen.getByTestId("goal-save"));
 
   await waitFor(async () => expect(await listGoals()).toEqual([]));
@@ -154,7 +206,8 @@ test("a complete form creates the goal", async () => {
   await screen.findByTestId(`goal-wallet-${gsave.id}`);
 
   fireEvent.changeText(screen.getByTestId("goal-name"), "Emergency Fund");
-  fireEvent.changeText(screen.getByTestId("goal-target"), "5000000");
+  // ₱50,000 — the old test typed "5000000" as raw centavo digits.
+  typeAmount("goal-target", "50000");
   fireEvent.press(screen.getByTestId(`goal-wallet-${gsave.id}`));
   fireEvent.press(screen.getByTestId("goal-save"));
 
@@ -226,11 +279,56 @@ test("a contribution amount is saved as a fixed rule", async () => {
   await screen.findByTestId(`goal-wallet-${gsave.id}`);
 
   fireEvent.changeText(screen.getByTestId("goal-name"), "Emergency Fund");
-  fireEvent.changeText(screen.getByTestId("goal-target"), "5000000");
+  // ₱50,000 target, ₱2,000 contribution — the old test typed "5000000" and
+  // "200000" as raw centavo digits.
+  typeAmount("goal-target", "50000");
   fireEvent.press(screen.getByTestId(`goal-wallet-${gsave.id}`));
-  fireEvent.changeText(screen.getByTestId("goal-rule-amount"), "200000");
+  typeAmount("goal-rule-amount", "2000");
   fireEvent.press(screen.getByTestId("goal-save"));
 
   await waitFor(async () => expect((await listGoals()).length).toBe(1));
   expect((await listGoals())[0].contributionRule).toEqual({ kind: "fixed", amount: 200000 });
+});
+
+// ---------------------------------------------------------------------------
+// The deadline field — numeric-input-system Task 11
+// ---------------------------------------------------------------------------
+test("the deadline picker's floor is today, so a past date cannot be picked", async () => {
+  // GoalForm has no injected clock (no `now`/`today` prop) — it reads
+  // `new Date()` directly for minimumDate. Freeze the wall clock so this
+  // assertion is not flaky against whatever instant the suite runs at.
+  // goal-target-date is present on the very first synchronous render, unlike
+  // the wallet-dependent fields elsewhere in this file, so the assertion
+  // itself needs no `await`.
+  jest.useFakeTimers();
+  jest.setSystemTime(new Date(2026, 7, 19, 9, 0));
+  try {
+    renderScreen(<NewGoalScreen />);
+
+    fireEvent.press(screen.getByTestId("goal-target-date"));
+
+    expect(mockReceivedMinimumDate).toEqual(new Date(2026, 7, 19, 9, 0));
+  } finally {
+    jest.useRealTimers();
+  }
+  // renderScreen still kicked off real (SQLite-backed) useWallets/useGoals
+  // queries. React Query batches its update notification through a
+  // setTimeout, which fake timers above would have blocked — awaiting this,
+  // AFTER real timers are restored, lets that update land inside this test's
+  // act scope instead of leaking into whichever test runs next.
+  await screen.findByTestId(`goal-wallet-${gsave.id}`);
+});
+
+test("a picked deadline is saved as the goal's target date", async () => {
+  renderScreen(<NewGoalScreen />);
+  await screen.findByTestId(`goal-wallet-${gsave.id}`);
+
+  fireEvent.changeText(screen.getByTestId("goal-name"), "Emergency Fund");
+  typeAmount("goal-target", "50000");
+  fireEvent.press(screen.getByTestId(`goal-wallet-${gsave.id}`));
+  pickDate("goal-target-date", 2027, 6, 1);
+  fireEvent.press(screen.getByTestId("goal-save"));
+
+  await waitFor(async () => expect((await listGoals()).length).toBe(1));
+  expect((await listGoals())[0].targetDate).toBe("2027-06-01");
 });

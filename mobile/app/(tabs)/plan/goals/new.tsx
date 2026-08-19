@@ -1,8 +1,17 @@
 // app/(tabs)/plan/goals/new.tsx — create a Goal (m2b Task 4, rules 3-4).
+//
+// NO ScrollView AROUND THE FORM (numeric-input-system Task 11). FormScreen IS
+// a (keyboard-avoiding) vertical scroll view; nesting it inside another one
+// left the OUTER ScrollView — which knows nothing about the keypad's height
+// — as the only one with real scroll range, so FormScreen's own keyboard
+// avoidance became a no-op. Same fix as app/(tabs)/plan/loans/new.tsx. The
+// gated early return below is a SEPARATE render path with its own `p-6` —
+// left alone, it never holds a form.
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { ScrollView, Text, View } from "react-native";
+import { Text, View } from "react-native";
 
 import { GoalForm } from "@/components/goals/goal_form";
+import { FormScreen } from "@/components/ui/form_screen";
 import { useCreateGoal } from "@/hooks/mutations/use_create_goal";
 import { useGoals } from "@/hooks/queries/use_goals";
 import { useWallets } from "@/hooks/queries/use_wallets";
@@ -41,7 +50,7 @@ export default function NewGoalScreen() {
   );
 
   return (
-    <ScrollView className="flex-1 bg-bg dark:bg-bg-dark" contentContainerClassName="p-4">
+    <FormScreen>
       <GoalForm
         availableWallets={available}
         busy={create.isPending}
@@ -54,6 +63,6 @@ export default function NewGoalScreen() {
           router.back();
         }}
       />
-    </ScrollView>
+    </FormScreen>
   );
 }

@@ -12,8 +12,9 @@
 // applies — the spec scopes it to month-based rules, and offering it on a
 // weekly bill would ask the user to overrule the only thing that rule says.
 import { useState } from "react";
-import { Pressable, Text, TextInput, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 
+import { NumericField } from "@/components/ui/numeric_field";
 import { occurrencesBetween } from "@/lib/bills/due_rules";
 import { addDaysIso, parseDateIso } from "@/lib/dates";
 import { formatDate } from "@/lib/datetime";
@@ -230,15 +231,15 @@ function LabelledNumber({
   return (
     <View className="gap-1">
       <Text className="text-sm font-medium text-fg-2 dark:text-fg-2-dark">{label}</Text>
-      <TextInput
+      <NumericField
         testID={testID}
+        label={label}
+        mode="integer"
         value={text}
         onChangeText={(next) => {
           setText(next);
           onChange(next);
         }}
-        keyboardType="number-pad"
-        className="rounded-lg bg-surface px-3 py-2 text-fg dark:bg-surface-dark dark:text-fg-dark"
       />
       {hint === undefined ? null : (
         <Text className="text-xs text-fg-2 dark:text-fg-2-dark">{hint}</Text>
