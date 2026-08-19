@@ -845,8 +845,10 @@ Plan → Bills → add a bill.
       small extra gap above them versus before this branch — about 8px, from `NumericField`'s own
       built-in top margin. Confirm it reads as intentional spacing, not a layout glitch
       → `________________`
-- [ ] The decimal key is visibly dimmed and does nothing when tapped on "Day of the month"
-      → `________________`
+- [ ] The decimal key is visibly dimmed and does nothing when tapped on "Day of the month" (the
+      default due-date rule). Switch the rule to "Every few months" and check "Every how many
+      months?" too; switch to "Every few weeks" and check "Every how many weeks?" — same dimming
+      on all three → `________________`
 
 ### Loans
 
@@ -858,7 +860,8 @@ Plan → Loans → add a loan.
 - [ ] Choose **"Fixed installments."** The decimal key is dimmed and inert on "How many payments"
       and "Days between payments" → `________________`
 - [ ] Choose **"With interest."** The decimal key stays ACTIVE on "Annual rate" — it is not an
-      integer field, and a rate like 12.5% needs one → `________________`
+      integer field, and a rate like 12.5% needs one — but is dimmed and inert on "Months" right
+      below it, the same as the other integer fields on this form → `________________`
 - [ ] The "First payment due" date picker refuses a past date, and **today is still pickable**
       → `________________`
 
