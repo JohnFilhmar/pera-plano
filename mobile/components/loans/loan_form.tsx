@@ -136,10 +136,18 @@ export function LoanForm({ onSubmit, busy = false }: LoanFormProps) {
 
   return (
     <FormScreen>
-      {/* flex-1 gap-6 was already here; bg-bg/px-4 move in from the route
+      {/* flex-1 gap-6 was already here; bg-bg/px-4/pt-4 move in from the route
           (numeric-input-system Task 10 fix round) now that FormScreen is the
-          only scroll view — see app/(tabs)/plan/loans/new.tsx's header. */}
-      <View className="flex-1 gap-6 bg-bg px-4 dark:bg-bg-dark">
+          only scroll view — see app/(tabs)/plan/loans/new.tsx's header. pt-4
+          is a BARE utility, not insets.top: this screen lives inside
+          (tabs)/_layout.tsx's <Tabs>, which already pads every tab screen's
+          top edge for the status bar in one place. pt-4 only restores the
+          16px breathing room the removed wrapper's p-4 gave on top of that
+          inset — the same convention as bills/goals/limits' own `new` routes.
+          No bottom padding here: FormScreen's contentContainerStyle owns that
+          edge (Math.max(keypadHeight, 0) + BASE_PADDING), so a symmetric p-4
+          would double-count it, same defect Task 9's fix round removed. */}
+      <View className="flex-1 gap-6 bg-bg px-4 pt-4 dark:bg-bg-dark">
         <View>
           <Text className="font-semibold text-fg dark:text-fg-dark">Which way?</Text>
           <View className="mt-2 flex-row gap-2">
