@@ -151,3 +151,23 @@ export function useKeypad(): KeypadContextValue {
   if (!context) throw new Error("useKeypad must be used within KeypadProvider");
   return context;
 }
+
+/**
+ * The same read, answering `null` instead of throwing.
+ *
+ * FOR HOSTS ONLY, and it exists because of one mount point:
+ * components/ui/bottom_sheet.tsx renders a <KeypadHost /> inside its Modal,
+ * and BottomSheet is a shared primitive that dozens of suites mount on its
+ * own, with no app around it. A throwing read there would make KeypadProvider
+ * a hard dependency of every sheet render in the codebase — the provider is
+ * mounted once in app/_layout.tsx, so on a real device the host always finds
+ * it, and a suite rendering a lone sheet is asking a question the keypad is
+ * not part of.
+ *
+ * FIELDS MUST KEEP USING useKeypad. A field that silently no-ops when the
+ * provider is missing is a number the user typed and the app never saw; that
+ * one deserves the loud crash.
+ */
+export function useKeypadOptional(): KeypadContextValue | null {
+  return useContext(KeypadContext);
+}

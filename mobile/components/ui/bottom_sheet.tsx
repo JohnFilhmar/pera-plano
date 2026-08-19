@@ -10,6 +10,8 @@ import type { ReactNode } from "react";
 import { Modal, Pressable, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { KeypadHost } from "./keypad_host";
+
 /**
  * The `pb-8` this sheet used to carry, kept as a FLOOR rather than replaced.
  *
@@ -86,6 +88,13 @@ export function BottomSheet({
           {children}
         </View>
       </View>
+      {/* A SECOND HOST, NOT A DUPLICATE. This Modal is its own native window, so
+          the root host in app/_layout.tsx paints behind it. keypad_context.tsx
+          gives the most recently mounted host the panel, which while this sheet is
+          open is this one. It reads the context optionally and renders nothing
+          when there is no provider, so a sheet mounted on its own — in a test, or
+          anywhere outside the app tree — is unaffected. */}
+      <KeypadHost />
     </Modal>
   );
 }

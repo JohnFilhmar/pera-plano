@@ -57,8 +57,10 @@ import { KeyboardProvider } from "react-native-keyboard-controller";
 import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
 import { AllocationSheet } from "@/components/goals/allocation_sheet";
 import { PaydayDetectedSheet } from "@/components/income/payday_detected_sheet";
+import { KeypadHost } from "@/components/ui/keypad_host";
 import { palette } from "@/constants/colors";
 import { ThemeProvider, useTheme } from "@/contexts/theme_context";
+import { KeypadProvider } from "@/contexts/keypad_context";
 import { LockProvider, useLock } from "@/contexts/lock_context";
 import { systemClock } from "@/lib/clock";
 import { applyGlobalFont } from "@/lib/fonts";
@@ -313,6 +315,12 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
       ) : (
         <>
           <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: bg } }} />
+          {/* AFTER the Stack, not inside it: a later sibling paints on top, and
+              the keypad has to sit over whatever screen is focused. It renders
+              nothing until a field opens it. A sheet mounts its OWN host —
+              components/ui/keypad_host.tsx explains why this one cannot serve
+              a Modal. */}
+          <KeypadHost />
           <StatusBar style="auto" />
           <PaydaySheets />
         </>
@@ -358,7 +366,12 @@ export default function RootLayout() {
     <KeyboardProvider>
       <ThemeProvider>
         <LockProvider>
-          <AppShell fontsLoaded={fontsLoaded} />
+          {/* INSIDE the lock, not outside it: which field is focused and what
+              has been keyed into it is ledger data like any other, and it is
+              torn down with the lock rather than surviving into a locked app. */}
+          <KeypadProvider>
+            <AppShell fontsLoaded={fontsLoaded} />
+          </KeypadProvider>
         </LockProvider>
       </ThemeProvider>
     </KeyboardProvider>
