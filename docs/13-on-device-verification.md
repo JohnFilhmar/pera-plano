@@ -709,3 +709,227 @@ git commit --allow-empty -m "test(mobile): record M1 on-device walkthrough resul
 
 Paste the recorded outcomes into that message. An empty commit whose message says nothing is worth
 nothing.
+
+---
+
+## W1 — Numeric input system
+
+W1 replaced every numeric `TextInput` in the app with the app-owned floating keypad
+(`NumericField` / `KeypadHost`) and every `YYYY-MM-DD` text box with `DateField`'s native date
+dialog. Jest has no layout engine and mocks the keyboard library wholesale, so **every layout and
+interaction claim below is unverified until a human walks it on a real phone.**
+
+**Two prerequisites, before anything else below:**
+
+- [ ] **Rebuild the dev client.** `@react-native-community/datetimepicker` is a native module — a
+      JS reload will not pick it up, and every date field in this section fails until a fresh
+      `npx expo run:android` (or a new EAS dev build) is installed → `________________`
+- [ ] **Switch the phone to 3-button navigation** (Settings → System → Gestures → System
+      navigation) for this whole walkthrough. It is the tightest case for every scroll / Save-
+      reachability check below — the nav bar eats the most screen height, so if a Save button
+      clears it here, gesture navigation was never the mode that would hide it. Spot-check
+      gesture navigation afterward if time allows → `________________`
+
+Work top to bottom — the order follows the app's own navigation, first run to daily use, so
+nothing needs a second lap. Record what you actually saw in every box, same rule as the rest of
+this document; "OK" is not an outcome.
+
+### Onboarding (fresh install)
+
+Run this on a fresh install — uninstall first, not just clear data. A reused install skips
+straight past the fresh-install screens.
+
+- [ ] None of these screens have an amount field: device lock, recovery phrase, the provider
+      picker, welcome, how it works, notification access, battery/OEM guidance, and the finish
+      summary. Confirm each looks exactly as it did before this branch as you pass through it —
+      spacing, text, nothing shifted → `________________`
+- [ ] Wallet setup: type `1000` into any proposed wallet's opening balance. It reads ₱1,000.00.
+      Type `1000.50` — it reads ₱1,000.50 → `________________`
+- [ ] **The original bug report, same field:** type `100000` into a wallet's opening balance. It
+      must read **₱100,000.00**, not ₱1,000.00 → `________________`
+- [ ] Uncheck a proposed wallet. Its whole row dims, including the opening-balance field — visibly
+      greyed out — and the field stops responding to taps → `________________`
+- [ ] Income step: tap the amount field. The keypad opens and "Save my income" stays reachable
+      without scrolling under it → `________________`
+  > **Judgement call — no test covers this.** Nothing scrolls the focused field into view when
+  > the keypad panel shrinks the onboarding frame's viewport, and this field sits below a
+  > four-row cadence picker. It may scroll out of sight on the very tap that focuses it.
+  > Survivable — the panel still shows the value and the field's name — but note how it actually
+  > feels on the device.
+- [ ] Income step, with the keypad open and an amount typed: tap **"Save my income."** The keypad
+      closes and does not reappear on the next screen. Reopen the keypad, then instead tap the
+      frame's own **"Let PeraPlano figure it out"** — same result → `________________`
+
+### Home
+
+- [ ] On a fresh install with notification access granted and nothing captured yet, Home shows
+      the "Watching for your first transaction" empty state. Read its action button closely —
+      does it say **"Add manually,"** or is it clipped to **"Add"**? → `________________`
+  > **Still unresolved from the original report — diagnose here.** The string is correct in
+  > `components/ui/empty_states.tsx` and correctly wired in `app/(tabs)/index.tsx`; the component
+  > applies no width constraint and no `numberOfLines`. Suspect a reflow when the Inter font
+  > finishes loading, after the label has already painted once. Try backgrounding and reopening
+  > the app, or rotating the screen, once the font would have had time to load, and see whether
+  > the label corrects itself. Do **NOT** fix it by shortening the label — the point is to find
+  > where the reflow happens, not to hide it.
+
+### Manual transaction entry
+
+Reach it from Home's empty-state action — on this build that is the ONLY in-app entry point,
+and it stops appearing the moment the ledger holds a single row (the Transactions tab's own
+empty state renders no action button). If you need to come back a second time in this session:
+
+```bash
+adb shell am start -a android.intent.action.VIEW -d "peraplano://transaction/new"
+```
+
+- [ ] The screen lands with the keypad already open on the amount field, and Save is reachable
+      without scrolling under it → `________________`
+- [ ] Type `1000` — reads ₱1,000.00. Type `1000.50` — reads ₱1,000.50 → `________________`
+- [ ] With the keypad open, tap the category row, then the "Spent"/"Received" toggle. Each
+      registers on the very FIRST tap — neither is swallowed by the panel closing
+      → `________________`
+- [ ] Press hardware Back while the keypad is open. The keypad closes; you are still on the
+      manual-entry screen → `________________`
+- [ ] The date field opens the Android date dialog, not a text box. It refuses a future date, and
+      **today is still pickable** (the bound is "now," including the current time of day —
+      confirm the clock has not already excluded the rest of today) → `________________`
+- [ ] The date dialog itself renders acceptably — default Android colours/theme, nothing clipped
+      or mis-tinted. (Its optional colour-theming plugin could not be auto-added to this app's
+      dynamic `app.config.js`, so this runs on Android's own defaults rather than a themed build —
+      cosmetic only; just confirm it looks right) → `________________`
+- [ ] No screen so far has raised the Android on-screen keyboard for typing a number. Keep this in
+      mind for every screen still to come, and flag it immediately if one ever does
+      → `________________`
+
+### Wallets
+
+The Wallets tab has no "Add wallet" button once the list is non-empty — onboarding already
+creates at least a cash wallet, so this screen normally has nothing to tap. Reach the New screen
+directly:
+
+```bash
+adb shell am start -a android.intent.action.VIEW -d "peraplano://wallet/new"
+```
+
+- [ ] **Wallet → New:** tap the opening-balance field. The keypad opens, the form scrolls, and
+      Save stays reachable without being hidden under the panel → `________________`
+- [ ] **Wallet detail → Edit** (any wallet): the form scrolls correctly and Save is reachable. This
+      is the screen from the original bug report → `________________`
+
+### Income
+
+There is no Income row on the Plan hub — the only in-app path to this screen is Plan → Limits →
+add a limit → "% of income" → "Set my income," and that link only shows up while income is still
+unknown. Once income is known there is no menu path back to it, so reach it directly instead:
+
+```bash
+adb shell am start -a android.intent.action.VIEW -d "peraplano://plan/income"
+```
+
+- [ ] Re-open **"Change my income"** on income PeraPlano detected on its own (not one you set
+      manually). Detection produces an average, rarely a round peso — e.g. ₱18,333.33 — so the
+      field seeds already at two decimal places, the maximum the input allows: **every digit key
+      is inert until you backspace first.** No error, no explanation — the field just appears not
+      to respond. This is documented behaviour of the input rules, not a new bug, but W1 is what
+      makes this screen reachable in the first place. Judge whether it needs addressing. If your
+      test account's income was set manually instead, this needs an account where detection
+      produced the figure — note if you could not reproduce the setup this session
+      → `________________`
+
+### Bills
+
+Plan → Bills → add a bill.
+
+- [ ] The amount field and the "Day of the month" field (the default due-date rule) each carry a
+      small extra gap above them versus before this branch — about 8px, from `NumericField`'s own
+      built-in top margin. Confirm it reads as intentional spacing, not a layout glitch
+      → `________________`
+- [ ] The decimal key is visibly dimmed and does nothing when tapped on "Day of the month"
+      → `________________`
+
+### Loans
+
+Plan → Loans → add a loan.
+
+- [ ] The screen's top spacing, below the tab bar, looks right — no extra gap and nothing crowding
+      the first row, now that this route's own wrapper was removed and its `pt-4` restored
+      directly on the form → `________________`
+- [ ] Choose **"Fixed installments."** The decimal key is dimmed and inert on "How many payments"
+      and "Days between payments" → `________________`
+- [ ] Choose **"With interest."** The decimal key stays ACTIVE on "Annual rate" — it is not an
+      integer field, and a rate like 12.5% needs one → `________________`
+- [ ] The "First payment due" date picker refuses a past date, and **today is still pickable**
+      → `________________`
+
+### Goals
+
+Plan → Goals → create a goal.
+
+- [ ] The optional deadline date picker refuses a past date, and **today is still pickable**
+      → `________________`
+
+### Bottom sheets
+
+Four sheets now host the keypad: goal allocation, wallet balance correction, cash reconcile, and
+the review-queue correction sheet. By now you have already passed through Wallets and Goals above
+— Review Queue is the one new stop. Reach them here:
+
+- **Balance correction** — Wallet detail on any bank / savings / e-wallet (not cash) → "Adjust
+  balance."
+- **Cash reconcile** — Wallet detail on a **cash** wallet → "Reconcile."
+- **Review-queue correction** — the Review Queue banner/badge is absent at zero, by design, so
+  force an item into it first: post a notification from a package no wallet's matchers cover
+  (same technique as Part 3's live-capture check, e.g.
+  `adb shell cmd notification post -S bigtext -t "TEST" tag1 "Sent PHP 500.00 to a friend."` from
+  an unmatched app) — it lands as an unknown-provider card. Then Transactions tab → the "Needs
+  your review" banner → "Correct."
+- **Goal allocation** — opportunistic, not a button: it only appears once a payday is detected and
+  at least one goal has a "move money automatically on payday" rule set. It may not surface in one
+  sitting — verify the other three fully, and leave this one recorded as not-reached this session
+  if it never appears.
+
+Verify these three on every sheet you can reach:
+
+- [ ] The keypad draws ABOVE the sheet, never behind it → `________________`
+- [ ] The sheet's own Confirm/Save button is never covered by the panel → `________________`
+- [ ] Closing the sheet (backdrop tap, or hardware Back) while the keypad is open closes the
+      keypad first, rather than closing both at once or leaving the panel floating
+      → `________________`
+
+- [ ] **On the review-queue correction sheet specifically, with the keypad open on the amount
+      field:** its content runs to roughly 830dp, and the panel may now clip off the TOP of the
+      sheet — the grab handle and the "Fix what's wrong" title — while Save stays reachable.
+      Judge whether that reads acceptably in practice on this device → `________________`
+  > **A known trade, not an oversight.** The alternative was an unreachable Save. If the clipping
+  > does not read as acceptable, the named remedy is a `maxHeight` from `useWindowDimensions()`
+  > on the panel, or shrinking the sheet's own `max-h-96` scroll area while a panel is open.
+
+### Reports
+
+More → Reports.
+
+- [ ] Pick a period with little or no data (or scroll past the summary on an empty one). The
+      background below the short content is the same colour as the rest of the screen — no visible
+      seam or mismatched band, even though it is now painted by the navigator rather than by the
+      scroll view itself → `________________`
+- [ ] Open **"Custom range."** The Start and End date pickers bound each other — End cannot be set
+      before Start, and Start cannot be set after End → `________________`
+- [ ] With no End date chosen yet, Start's picker still allows **today** → `________________`
+
+### Wrap-up
+
+- [ ] Across this entire walkthrough, no screen ever raised the Android on-screen keyboard for a
+      number → `________________`
+- [ ] Every other migrated form not already named above — bills, loans, and goals — also kept its
+      Save button reachable without being hidden under the panel, in the same 3-button navigation
+      this walkthrough started in. Flag any exception → `________________`
+
+### Commit the results
+
+```bash
+git commit --allow-empty -m "test(mobile): record W1 on-device verification results"
+```
+
+Paste the recorded outcomes into that message. An empty commit whose message says nothing is worth
+nothing.
