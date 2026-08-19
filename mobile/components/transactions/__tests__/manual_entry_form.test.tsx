@@ -36,16 +36,31 @@ import { ManualEntryForm } from "../manual_entry_form";
 // (today, a backdate, a refused future date) rather than one fixed value.
 // `mock`-prefixed so babel-plugin-jest-hoist allows the factory to close over it.
 let mockPickedDate = new Date(2026, 7, 13);
+// Captures the `maximumDate` the real DateTimePicker would have received, so
+// a test can assert the bound is actually wired up. The mock itself is
+// deliberately permissive (it fires `onChange` with `mockPickedDate`
+// regardless of this bound) the way the real OS dialog is NOT — see "a future
+// date is refused with an explanation" below for why that matters.
+let mockReceivedMaximumDate: Date | undefined;
 
 jest.mock("@react-native-community/datetimepicker", () => {
   const { Pressable, Text } = require("react-native");
   return {
     __esModule: true,
-    default: ({ onChange }: { onChange: (event: { type: string }, date?: Date) => void }) => (
-      <Pressable testID="date-picker-pick" onPress={() => onChange({ type: "set" }, mockPickedDate)}>
-        <Text>pick</Text>
-      </Pressable>
-    ),
+    default: ({
+      onChange,
+      maximumDate,
+    }: {
+      onChange: (event: { type: string }, date?: Date) => void;
+      maximumDate?: Date;
+    }) => {
+      mockReceivedMaximumDate = maximumDate;
+      return (
+        <Pressable testID="date-picker-pick" onPress={() => onChange({ type: "set" }, mockPickedDate)}>
+          <Text>pick</Text>
+        </Pressable>
+      );
+    },
   };
 });
 
@@ -481,7 +496,27 @@ describe("the secondary fields", () => {
     );
   });
 
+  test("the date picker is bounded by the injected clock, not the wall clock", () => {
+    renderForm(<Harness />);
+
+    fireEvent.press(screen.getByTestId("manual-entry-date"));
+
+    // Every other date decision in this form (localDayOf, occurredAtFor) uses
+    // the injected `now` — the picker's own bound has to match it, or the
+    // real OS dialog and the form's own validation could disagree about what
+    // "today" is the moment a clock edge separates them.
+    expect(mockReceivedMaximumDate).toEqual(new Date(NOW));
+  });
+
   test("a future date is refused with an explanation", () => {
+    // Defence-in-depth: the test above pins that the real picker receives
+    // maximumDate, so a future day is not reachable through the actual UI —
+    // the OS dialog would grey it out. The mock below is deliberately
+    // permissive (it doesn't enforce the bound the way the real dialog
+    // would), so this test exercises the dateInvalid/manual-entry-date-error
+    // branch as a backstop for any caller that could reach this form with an
+    // already-future `day` some other way, not as proof the picker is
+    // reachable-future in practice.
     renderForm(<Harness />);
 
     typeAmount("manual-amount", "1234");

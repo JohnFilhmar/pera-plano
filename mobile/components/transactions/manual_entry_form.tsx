@@ -58,8 +58,19 @@ export type ManualEntryFormProps = {
   onCreateCashWallet: () => void;
 };
 
-/** The `p-4` this form used to carry, kept as the floor its system-bar insets
- * are added to (see the root View below). */
+/**
+ * The `p-4` this form used to carry, kept as the floor the status-bar inset is
+ * added to on the TOP edge only (see the root View below).
+ *
+ * The bottom edge is FormScreen's job (numeric-input-system W1 Task 9 fix
+ * round): this form is now scroll content inside a KeyboardAwareScrollView
+ * whose contentContainerStyle already pads for the keypad panel's height, and
+ * app/_layout.tsx's rule is that an edge is padded exactly once, by whichever
+ * component actually touches it. Padding the bottom here too would
+ * double-count against that padding — and `insets.bottom` is also the wrong
+ * quantity now anyway, since what covers the last control is the panel, not
+ * the nav bar.
+ */
 const FORM_PADDING = 16;
 
 /** `'YYYY-MM-DD'` for a local day — never `toISOString`, which is UTC. */
@@ -154,17 +165,20 @@ export function ManualEntryForm({
   }
 
   return (
-    // `px-4` on the class, the vertical padding in `style`: a `style` prop
+    // `px-4` on the class, the top padding in `style`: a `style` prop
     // REPLACES the padding NativeWind compiles from `className` rather than
-    // adding to it, so `p-4` and a `paddingBottom` inset cannot both be
+    // adding to it, so `p-4` and a `paddingTop` inset cannot both be
     // expressed here. FORM_PADDING is the same 16dp `p-4` was, kept as the
-    // floor a gesture-navigation phone (inset ≈ 0) still gets.
+    // floor a gesture-navigation phone (inset ≈ 0) still gets. No
+    // `paddingBottom` here — see FORM_PADDING's header on why the bottom
+    // edge is FormScreen's alone now. `flex-1` is safe against FormScreen's
+    // KeyboardAwareScrollView because its contentContainerStyle sets
+    // `flexGrow: 1` for it to grow into.
     <View
       testID={testID}
       className="flex-1 gap-6 bg-bg px-4 dark:bg-bg-dark"
       style={{
         paddingTop: FORM_PADDING + insets.top,
-        paddingBottom: FORM_PADDING + insets.bottom,
       }}
     >
       <NumericField
@@ -262,8 +276,12 @@ export function ManualEntryForm({
           placeholder="Pick a date"
           value={day}
           onChange={setDay}
-          // A manual transaction is something that already happened.
-          maximumDate={new Date()}
+          // A manual transaction is something that already happened. `now`,
+          // not the wall clock: every other date decision in this file
+          // (localDayOf, occurredAtFor above) reads the injected clock, and
+          // the picker's own bound has to agree with them rather than being
+          // a second, independent source of "today".
+          maximumDate={new Date(now)}
         />
         {showErrors && dateInvalid ? (
           <Text testID="manual-entry-date-error" className="text-danger dark:text-danger-dark">

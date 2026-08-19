@@ -21,6 +21,15 @@
 // obvious place documenting that this value is a best-effort measurement, not
 // a guarantee, so a future stale/negative reading clamps to "no extra
 // padding" instead of collapsing the content container.
+//
+// contentContainerStyle CARRIES flexGrow: 1, FIXED HERE RATHER THAN PER-FORM
+// (numeric-input-system W1 Task 9 fix round). A form's own `flex-1` root View
+// is scroll content once wrapped here, and a `flex: 1` child of a content
+// container with no main-axis size collapses to zero height — the classic
+// flexBasis-resolves-to-0 case. Every migrated form still wants `flex-1` (so
+// it fills the screen when short and scrolls when long), so the container
+// that makes that possible belongs in the wrapper all of them share, not
+// copy-pasted into each of the five forms still to be migrated.
 import type { ReactNode } from "react";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 
@@ -45,7 +54,10 @@ export function FormScreen({
       // FIRST press rather than being spent dismissing whatever is focused.
       keyboardShouldPersistTaps="handled"
       bottomOffset={BASE_PADDING}
-      contentContainerStyle={{ paddingBottom: Math.max(keypadHeight, 0) + BASE_PADDING }}
+      contentContainerStyle={{
+        flexGrow: 1,
+        paddingBottom: Math.max(keypadHeight, 0) + BASE_PADDING,
+      }}
     >
       {children}
     </KeyboardAwareScrollView>

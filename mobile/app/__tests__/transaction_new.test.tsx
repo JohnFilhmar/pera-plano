@@ -76,24 +76,39 @@ function makeTestClient(): QueryClient {
 
 // NumericField throws without a KeypadProvider above it, and the panel it
 // opens has to be hosted somewhere — see test_support/keypad.ts's header.
+//
+// `tree()` keeps Wrapper/KeypadProvider/KeypadHost at stable positions so
+// `unmountScreen` (below) can swap ONLY the screen out via `rerender` — the
+// same shape a real stack navigation pop takes: the root KeypadHost beside
+// the Stack (app/_layout.tsx) never unmounts, only the screen that pushed it
+// does. Calling `.unmount()` on the whole render result would take the host
+// down too, which would pass even without the fix Finding 1 requires.
 function renderForm(ui: ReactElement) {
   const client = makeTestClient();
   function Wrapper({ children }: { children: ReactNode }) {
     return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
   }
-  return render(
-    <Wrapper>
-      <KeypadProvider>
-        {ui}
-        <KeypadHost />
-      </KeypadProvider>
-    </Wrapper>,
-  );
+  function tree(inner: ReactElement | null) {
+    return (
+      <Wrapper>
+        <KeypadProvider>
+          {inner}
+          <KeypadHost />
+        </KeypadProvider>
+      </Wrapper>
+    );
+  }
+  const view = render(tree(ui));
+  return {
+    ...view,
+    unmountScreen: () => view.rerender(tree(null)),
+  };
 }
 
-async function renderNew(): Promise<void> {
-  renderForm(<NewTransactionScreen />);
+async function renderNew() {
+  const view = renderForm(<NewTransactionScreen />);
   await waitFor(() => expect(screen.getByTestId("manual-entry-form")).toBeTruthy());
+  return view;
 }
 
 function save(): void {
@@ -316,5 +331,19 @@ describe("the amount panel", () => {
     // now with FormScreen's keyboard-avoidance underneath.
     expect(screen.getByTestId("keypad-host")).toBeTruthy();
     expect(screen.getByTestId("keypad-label").props.children).toBe("How much?");
+  });
+
+  test("closes when the screen unmounts, so it doesn't survive navigation", async () => {
+    const view = await renderNew();
+    expect(screen.getByTestId("keypad-host")).toBeTruthy(); // sanity: open first
+
+    // Models router.back()/router.push() unmounting this screen while the
+    // root KeypadHost beside the Stack (app/_layout.tsx) survives — see
+    // renderForm's header. Without the mount effect's close() cleanup, the
+    // panel would still be showing here, wired to a setAmount that belongs
+    // to a component which no longer exists.
+    view.unmountScreen();
+
+    expect(screen.queryByTestId("keypad-host")).toBeNull();
   });
 });

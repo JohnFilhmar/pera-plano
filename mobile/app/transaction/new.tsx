@@ -41,7 +41,7 @@ export default function NewTransactionScreen() {
   const createTransaction = useCreateTransaction();
 
   const [amount, setAmount] = useState("");
-  const { open } = useKeypad();
+  const { open, close } = useKeypad();
 
   // The amount is deliberately the first and only thing on screen (m1c rule
   // 1), so the panel is already up when the screen appears. Same landing
@@ -49,6 +49,15 @@ export default function NewTransactionScreen() {
   // and it inherits FormScreen's avoidance so Save stops hiding.
   useEffect(() => {
     open({ fieldId: "manual-amount", label: "How much?", mode: "peso", text: amount, onChangeText: setAmount });
+    // THE SCREEN THAT RAISED THE PANEL TAKES IT DOWN. The panel is global
+    // state hosted by the root KeypadHost beside the Stack (app/_layout.tsx),
+    // which never unmounts on navigation — only this screen does, whether
+    // via handleSubmit's router.back() or onCreateCashWallet's router.push().
+    // Without this cleanup the panel would keep floating over whatever
+    // screen comes next, showing "How much?" and wired to a setAmount that
+    // no longer does anything, and keypadHeight would stay non-zero so every
+    // other FormScreen would keep padding for a keypad that isn't there.
+    return () => close();
     // Mount only: re-opening on every amount change would fight a user who
     // dismissed the panel to reach the category picker.
     // eslint-disable-next-line react-hooks/exhaustive-deps
