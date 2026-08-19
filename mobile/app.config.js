@@ -1,0 +1,35 @@
+// Dynamic Expo config: layers build-variant identity on top of the static app.json.
+//
+// Expo reads app.json first and passes it in as `config`; this function overrides
+// only the fields that must differ per build so the three variants install side by
+// side on one device:
+//
+//   APP_VARIANT=development -> PeraPlano(Dev)   com.filldev.peraplano.dev
+//   APP_VARIANT=preview     -> PeraPlano(Prev)  com.filldev.peraplano.prev
+//   (unset) / production    -> PeraPlano        com.filldev.peraplano
+//
+// Driving the Android package from here (instead of a hand-edited applicationIdSuffix
+// in the gitignored android/ project) means `expo prebuild` regenerates it every time,
+// so the suffix can no longer be dropped on a --clean.
+
+const VARIANT = process.env.APP_VARIANT;
+const IS_DEV = VARIANT === 'development';
+const IS_PREVIEW = VARIANT === 'preview';
+
+const BASE_PACKAGE = 'com.filldev.peraplano';
+
+const name = IS_DEV ? 'PeraPlano(Dev)' : IS_PREVIEW ? 'PeraPlano(Prev)' : 'PeraPlano';
+const androidPackage = IS_DEV
+  ? `${BASE_PACKAGE}.dev`
+  : IS_PREVIEW
+    ? `${BASE_PACKAGE}.prev`
+    : BASE_PACKAGE;
+
+module.exports = ({ config }) => ({
+  ...config,
+  name,
+  android: {
+    ...config.android,
+    package: androidPackage,
+  },
+});

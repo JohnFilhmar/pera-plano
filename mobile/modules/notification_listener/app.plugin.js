@@ -48,7 +48,7 @@ const BOOT_PERMISSION = "android.permission.RECEIVE_BOOT_COMPLETED";
  */
 
 /** One `<service>` element, in the xml2js shape the manifest mod works in. */
-function listenerServiceElement() {
+function listenerServiceElement(label) {
   return {
     $: {
       "android:name": SERVICE_CLASS,
@@ -56,7 +56,9 @@ function listenerServiceElement() {
       // intent-filter action below, which `exported="false"` does not block.
       "android:exported": "false",
       // What the system Notification Access screen shows next to the toggle.
-      "android:label": "PeraPlano",
+      // Tracks the app name so each build variant -- PeraPlano, PeraPlano(Dev),
+      // PeraPlano(Prev) -- is distinguishable when granting access.
+      "android:label": label,
       "android:permission": BIND_PERMISSION,
     },
     "intent-filter": [{ action: [{ $: { "android:name": LISTENER_ACTION } }] }],
@@ -65,9 +67,10 @@ function listenerServiceElement() {
 
 /**
  * @param {import("expo/config-plugins").AndroidManifest} androidManifest
+ * @param {string} label human-readable name shown on the Notification Access screen
  * @returns {import("expo/config-plugins").AndroidManifest}
  */
-function injectListenerService(androidManifest) {
+function injectListenerService(androidManifest, label) {
   const application =
     AndroidConfig.Manifest.getMainApplicationOrThrow(androidManifest);
 
@@ -84,11 +87,11 @@ function injectListenerService(androidManifest) {
   );
 
   if (alreadyDeclared === -1) {
-    existing.push(listenerServiceElement());
+    existing.push(listenerServiceElement(label));
   } else {
     // Rewritten rather than skipped, so a stale element left by an older
     // version of this plugin cannot survive with weaker attributes.
-    existing[alreadyDeclared] = listenerServiceElement();
+    existing[alreadyDeclared] = listenerServiceElement(label);
   }
 
   application.service = existing;
@@ -101,10 +104,17 @@ function injectListenerService(androidManifest) {
 }
 
 /** @type {import("expo/config-plugins").ConfigPlugin} */
-const withNotificationListener = (config) =>
-  withAndroidManifest(config, (manifestConfig) => {
-    manifestConfig.modResults = injectListenerService(manifestConfig.modResults);
+const withNotificationListener = (config) => {
+  // Resolved app name (varies per build variant); falls back to the product
+  // name if a caller ever applies the plugin to a config without one.
+  const label = config.name ?? "PeraPlano";
+  return withAndroidManifest(config, (manifestConfig) => {
+    manifestConfig.modResults = injectListenerService(
+      manifestConfig.modResults,
+      label,
+    );
     return manifestConfig;
   });
+};
 
 module.exports = withNotificationListener;
