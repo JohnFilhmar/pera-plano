@@ -23,16 +23,32 @@ import type { LoanFormValues } from "../loan_form";
 // manual_entry_form.test.tsx's. `mock`-prefixed so babel-plugin-jest-hoist
 // allows the factory to close over it.
 let mockPickedDate = new Date(2026, 7, 13);
+// Captures the `minimumDate` the real DateTimePicker would have received, so
+// a test can assert the bound is actually wired up (numeric-input-system
+// Task 10 fix round — same pattern as manual_entry_form.test.tsx's own
+// mockReceivedMaximumDate). The mock itself is deliberately permissive (it
+// fires `onChange` with `mockPickedDate` regardless of this bound) the way
+// the real OS dialog is NOT.
+let mockReceivedMinimumDate: Date | undefined;
 
 jest.mock("@react-native-community/datetimepicker", () => {
   const { Pressable, Text } = require("react-native");
   return {
     __esModule: true,
-    default: ({ onChange }: { onChange: (event: { type: string }, date?: Date) => void }) => (
-      <Pressable testID="date-picker-pick" onPress={() => onChange({ type: "set" }, mockPickedDate)}>
-        <Text>pick</Text>
-      </Pressable>
-    ),
+    default: ({
+      onChange,
+      minimumDate,
+    }: {
+      onChange: (event: { type: string }, date?: Date) => void;
+      minimumDate?: Date;
+    }) => {
+      mockReceivedMinimumDate = minimumDate;
+      return (
+        <Pressable testID="date-picker-pick" onPress={() => onChange({ type: "set" }, mockPickedDate)}>
+          <Text>pick</Text>
+        </Pressable>
+      );
+    },
   };
 });
 
@@ -285,6 +301,24 @@ test("a scheduled loan cannot be saved without a first due date", () => {
   fireEvent.press(screen.getByTestId("loan-save"));
 
   expect(onSubmit).not.toHaveBeenCalled();
+});
+
+test("the first-due picker's floor is today, so a past date cannot be picked", () => {
+  // LoanForm has no injected clock (no `now` prop, unlike ManualEntryForm) —
+  // it reads `new Date()` directly for minimumDate. Freeze the wall clock so
+  // this assertion is not flaky against whatever instant the suite runs at.
+  jest.useFakeTimers();
+  jest.setSystemTime(new Date(2026, 7, 19, 9, 0));
+  try {
+    renderForm();
+    fireEvent.press(screen.getByTestId("loan-kind-amortized"));
+
+    fireEvent.press(screen.getByTestId("loan-first-due"));
+
+    expect(mockReceivedMinimumDate).toEqual(new Date(2026, 7, 19, 9, 0));
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 // ---------------------------------------------------------------------------

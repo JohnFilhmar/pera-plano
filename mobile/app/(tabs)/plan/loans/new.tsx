@@ -1,6 +1,13 @@
 // app/(tabs)/plan/loans/new.tsx — add a Loan (m2b Task 8, rules 3 and 6).
+//
+// NO ScrollView HERE (numeric-input-system Task 10 fix round). LoanForm wraps
+// itself in FormScreen, which IS a (keyboard-avoiding) vertical scroll view;
+// nesting it inside another one left the OUTER ScrollView — which knows
+// nothing about the keypad's height — as the only one with real scroll range,
+// so FormScreen's own keyboard-avoidance became a no-op. Same fix as
+// app/transaction/new.tsx, which never had a wrapper here to begin with.
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { ScrollView, Text, View } from "react-native";
+import { Text, View } from "react-native";
 
 import { LoanForm } from "@/components/loans/loan_form";
 import { useCreateLoan } from "@/hooks/mutations/use_create_loan";
@@ -30,14 +37,12 @@ export default function NewLoanScreen() {
   }
 
   return (
-    <ScrollView className="flex-1 bg-bg dark:bg-bg-dark" contentContainerClassName="p-4">
-      <LoanForm
-        busy={create.isPending}
-        onSubmit={async (values) => {
-          await create.mutateAsync(values);
-          router.back();
-        }}
-      />
-    </ScrollView>
+    <LoanForm
+      busy={create.isPending}
+      onSubmit={async (values) => {
+        await create.mutateAsync(values);
+        router.back();
+      }}
+    />
   );
 }

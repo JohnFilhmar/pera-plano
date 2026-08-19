@@ -136,7 +136,10 @@ export function LoanForm({ onSubmit, busy = false }: LoanFormProps) {
 
   return (
     <FormScreen>
-      <View className="flex-1 gap-6">
+      {/* flex-1 gap-6 was already here; bg-bg/px-4 move in from the route
+          (numeric-input-system Task 10 fix round) now that FormScreen is the
+          only scroll view — see app/(tabs)/plan/loans/new.tsx's header. */}
+      <View className="flex-1 gap-6 bg-bg px-4 dark:bg-bg-dark">
         <View>
           <Text className="font-semibold text-fg dark:text-fg-dark">Which way?</Text>
           <View className="mt-2 flex-row gap-2">
