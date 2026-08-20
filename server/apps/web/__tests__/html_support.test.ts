@@ -33,4 +33,10 @@ describe("html test support", () => {
   it("throws when the table id is absent, so a renamed table cannot pass vacuously", () => {
     expect(() => extractTable("<p>nothing</p>", "lifecycle")).toThrow(/lifecycle/);
   });
+
+  it("throws when the matching table has no <tr> elements, so a gutted table cannot pass as an empty-vs-empty match", () => {
+    const html = '<table data-table-id="lifecycle"><caption>c</caption></table>';
+    expect(() => extractTable(html, "lifecycle")).toThrow(/lifecycle/);
+    expect(() => extractTable(html, "lifecycle")).toThrow(/no <tr> rows/);
+  });
 });

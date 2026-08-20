@@ -38,6 +38,14 @@ export function extractTable(html: string, tableId: string): MarkdownTable {
   }
   const body = match[1];
   const rowMatches = [...body.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)];
+  // A matching table with zero <tr> elements (e.g. a caption-only fragment, or markup that
+  // lost its <thead>/<tbody> content) must not silently become { headers: [], rows: [] } —
+  // that is exactly the empty-vs-empty comparison this parser exists to prevent.
+  if (rowMatches.length === 0) {
+    throw new Error(
+      `extractTable: <table data-table-id="${tableId}"> has no <tr> rows in the rendered HTML`,
+    );
+  }
   const parsed = rowMatches.map((row) =>
     [...(row[1] ?? "").matchAll(/<(th|td)\b[^>]*>([\s\S]*?)<\/\1>/gi)].map((cell) =>
       stripTags(cell[2] ?? ""),

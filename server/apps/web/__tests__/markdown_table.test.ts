@@ -79,4 +79,19 @@ describe("extractStatusLine", () => {
       "Draft v1 · 2026-08-02",
     );
   });
+
+  // A single fixed expected value can't distinguish "parses the line" from "echoes a
+  // hardcoded string that happens to match." A second, differently-valued document proves
+  // the function actually reads what's there.
+  it("parses a different document's status line rather than a memorized constant", () => {
+    expect(extractStatusLine("# T\n\n**Status:** Final v3 · 2030-01-01\n\n---\n")).toBe(
+      "Final v3 · 2030-01-01",
+    );
+  });
+
+  it("throws when no '**Status:**' line exists, rather than returning an empty string", () => {
+    expect(() => extractStatusLine("# T\n\nno status line here\n")).toThrow(
+      /no '\*\*Status:\*\*' line found/,
+    );
+  });
 });
