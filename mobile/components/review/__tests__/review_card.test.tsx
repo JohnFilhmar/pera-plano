@@ -39,8 +39,10 @@ import type { RawCapture, ReviewKind, ReviewQueueItem, Wallet } from "@/types/do
 
 import { ConfidenceMeter, confidencePercent } from "../confidence_meter";
 import {
+  hasParsedAmount,
   REASON_FALLBACKS,
   REVIEW_ACTIONS,
+  REVIEW_REJECT_LABEL,
   ReviewCard,
   reviewReason,
 } from "../review_card";
@@ -282,6 +284,223 @@ describe("the action pair", () => {
     // ship, and a dead tap on a money decision is worse than a dimmed one.
     const primary = await screen.findByTestId(`review-primary-${queued.id}`);
     expect(primary.props.accessibilityState.disabled).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// No amount, no one-tap accept — task 4b: a card whose payload never carried
+// an amount must not be one tap from a committed ledger row (data integrity,
+// not cosmetic: `proposalFrom` already refuses such a row, but the button
+// tapping it silently did nothing instead of visibly refusing).
+// ---------------------------------------------------------------------------
+
+describe("hasParsedAmount", () => {
+  test("false for a payload whose amount is null", () => {
+    const queued = item({ kind: "low-confidence", payload: { amount: null, direction: null, confidence: 0 } });
+    expect(hasParsedAmount(queued)).toBe(false);
+  });
+
+  test("true once the payload carries a real amount", () => {
+    const queued = itemOfKind("low-confidence");
+    expect(hasParsedAmount(queued)).toBe(true);
+  });
+
+  // Round 1 fix. `parseAmountToCentavos` (lib/ingest/amount.ts) returns `0`,
+  // never `null`, for a genuine "₱0.00" notification — "0 is a legitimate
+  // amount and must stay distinguishable from a refusal" (that file's own
+  // words, pinned by amount.test.ts's `parseAmountToCentavos("0.00") === 0`).
+  // So a low-confidence item can reach this card with `amount: 0`, and
+  // `resolve_actions.ts`'s OWN `readAmount` requires `value > 0` before
+  // `proposalFrom` will build a Transaction from it — `hasParsedAmount` has to
+  // agree with THAT rule, not merely "is it a number", or a ₱0.00 card renders
+  // an enabled primary whose tap throws and shows the user nothing: the exact
+  // silent dead tap this task exists to close.
+  test("false for a payload whose amount is exactly zero — the ledger will not accept it either", () => {
+    const queued = item({
+      kind: "low-confidence",
+      payload: { amount: 0, direction: "out", confidence: 0.4 },
+    });
+    expect(hasParsedAmount(queued)).toBe(false);
+  });
+});
+
+describe("a low-confidence card with no amount cannot be confirmed", () => {
+  test("the primary is disabled and the blocked line explains why", async () => {
+    const queued = item({
+      id: "r-noamount",
+      kind: "low-confidence",
+      payload: gatedPayload({ amount: null }),
+    });
+    render(
+      <ReviewCard item={queued} wallets={[gcash, bpi]} onPrimary={jest.fn()} onSecondary={jest.fn()} />,
+      { wrapper: Wrapper },
+    );
+
+    const primary = await screen.findByTestId(`review-primary-${queued.id}`);
+    expect(primary.props.accessibilityState.disabled).toBe(true);
+    expect(await screen.findByTestId(`review-blocked-${queued.id}`)).toBeTruthy();
+  });
+
+  // Round 1 fix's card-level regression: a genuine ₱0.00 notification is a
+  // real, non-null `amount`, so this is a distinct case from "amount is
+  // null" above — the primary must refuse it too, for the same reason
+  // `hasParsedAmount`'s own test does.
+  test("a payload with amount: 0 is treated the same as no amount at all", async () => {
+    const queued = item({
+      id: "r-zero",
+      kind: "low-confidence",
+      payload: gatedPayload({ amount: 0 }),
+    });
+    render(
+      <ReviewCard item={queued} wallets={[gcash, bpi]} onPrimary={jest.fn()} onSecondary={jest.fn()} />,
+      { wrapper: Wrapper },
+    );
+
+    const primary = await screen.findByTestId(`review-primary-${queued.id}`);
+    expect(primary.props.accessibilityState.disabled).toBe(true);
+    expect(await screen.findByTestId(`review-blocked-${queued.id}`)).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Branch review, 2026-08-21 — THE SAME DEAD TAP, REACHED THROUGH A DIFFERENT
+// FIELD. Task 4b guarded `amount` alone, but `resolve_actions.ts`'s
+// `proposalFrom` refuses THREE fields before it will build a Transaction —
+// amount, direction and wallet — and an unmapped wallet is a ROUTINE hard
+// route (`GATE_REASONS.unmappedWallet`, "PeraPlano could not tell which
+// account this came from"), not an exotic one. So a `low-confidence` card
+// carrying `walletId: null` rendered an ENABLED primary whose tap threw
+// `IncompleteReviewItemError(item.id, "wallet")` into a mutation with no
+// `onError`: the identical silent dead tap task 4 exists to close, just via
+// the wallet instead of the amount.
+// ---------------------------------------------------------------------------
+
+describe("a low-confidence card missing any ledger-required field cannot be confirmed", () => {
+  test("no wallet disables the primary and the blocked line names the wallet", async () => {
+    const queued = item({
+      id: "r-nowallet",
+      kind: "low-confidence",
+      payload: gatedPayload({ walletId: null }),
+    });
+    render(
+      <ReviewCard item={queued} wallets={[gcash, bpi]} onPrimary={jest.fn()} onSecondary={jest.fn()} />,
+      { wrapper: Wrapper },
+    );
+
+    const primary = await screen.findByTestId(`review-primary-${queued.id}`);
+    expect(primary.props.accessibilityState.disabled).toBe(true);
+    expect(await screen.findByTestId(`review-blocked-${queued.id}`)).toHaveTextContent(
+      /PeraPlano needs the wallet before this can be recorded./,
+    );
+  });
+
+  test("no direction disables the primary too", async () => {
+    const queued = item({
+      id: "r-nodirection",
+      kind: "low-confidence",
+      payload: gatedPayload({ direction: null }),
+    });
+    render(
+      <ReviewCard item={queued} wallets={[gcash, bpi]} onPrimary={jest.fn()} onSecondary={jest.fn()} />,
+      { wrapper: Wrapper },
+    );
+
+    const primary = await screen.findByTestId(`review-primary-${queued.id}`);
+    expect(primary.props.accessibilityState.disabled).toBe(true);
+  });
+
+  // "Correct" is the way OFF a blocked card, so it stays live whichever field
+  // is missing. Disabling it too would strand the user on a card whose only
+  // remaining exit is rejecting a transaction that really happened.
+  test("Correct stays enabled on a card blocked by its wallet", async () => {
+    const queued = item({
+      id: "r-nowallet-correct",
+      kind: "low-confidence",
+      payload: gatedPayload({ walletId: null }),
+    });
+    render(
+      <ReviewCard item={queued} wallets={[gcash, bpi]} onPrimary={jest.fn()} onSecondary={jest.fn()} />,
+      { wrapper: Wrapper },
+    );
+
+    const secondary = await screen.findByTestId(`review-secondary-${queued.id}`);
+    expect(secondary.props.accessibilityState.disabled).toBe(false);
+  });
+
+  // The deliberate split between this file's DISPLAY reader (`readAmount`,
+  // any finite number) and its ledger-facing predicate (`> 0`) was pinned on
+  // the LEDGER side only. Without this test, a "simplification" that made the
+  // display reader require `> 0` as well would silently turn a genuine ₱0.00
+  // into the false statement "Amount not read" — exactly what `Side`'s own
+  // comment forbids, and invisible to every other test on this branch.
+  test("a ₱0.00 card still SHOWS ₱0.00, never 'Amount not read'", async () => {
+    const queued = item({
+      id: "r-zero-display",
+      kind: "low-confidence",
+      payload: gatedPayload({ amount: 0 }),
+    });
+    render(
+      <ReviewCard item={queued} wallets={[gcash, bpi]} onPrimary={jest.fn()} onSecondary={jest.fn()} />,
+      { wrapper: Wrapper },
+    );
+
+    const candidate = await screen.findByTestId(`review-candidate-${queued.id}`);
+    expect(candidate).toHaveTextContent(new RegExp(`${MINUS}₱0\.00`));
+    expect(candidate).not.toHaveTextContent("Amount not read");
+  });
+});
+
+describe("a low-confidence card WITH an amount is still confirmable", () => {
+  test("the primary stays enabled and no blocked line renders", async () => {
+    const queued = itemOfKind("low-confidence");
+    render(
+      <ReviewCard item={queued} wallets={[gcash, bpi]} onPrimary={jest.fn()} onSecondary={jest.fn()} />,
+      { wrapper: Wrapper },
+    );
+
+    const primary = await screen.findByTestId(`review-primary-${queued.id}`);
+    expect(primary.props.accessibilityState.disabled).toBe(false);
+    expect(screen.queryByTestId(`review-blocked-${queued.id}`)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The reject affordance — task 4a: a card kind that can be pure noise must
+// have a way out, but only when the screen supplies one (rule 4's pair is
+// definitional to every kind; the reject is an extra outcome only some kinds
+// have, so its absence renders nothing rather than a permanently disabled
+// third button that would read as broken on a kind that has no such outcome).
+// ---------------------------------------------------------------------------
+
+describe("the reject button renders only when a handler is supplied", () => {
+  test("absent without onReject", async () => {
+    const queued = itemOfKind("low-confidence");
+    render(<ReviewCard item={queued} wallets={[gcash, bpi]} onPrimary={jest.fn()} onSecondary={jest.fn()} />, {
+      wrapper: Wrapper,
+    });
+
+    await screen.findByTestId(`review-primary-${queued.id}`);
+    expect(screen.queryByTestId(`review-reject-${queued.id}`)).toBeNull();
+  });
+
+  test("present and pressable with onReject", async () => {
+    const onReject = jest.fn();
+    const queued = itemOfKind("low-confidence");
+    render(
+      <ReviewCard
+        item={queued}
+        wallets={[gcash, bpi]}
+        onPrimary={jest.fn()}
+        onSecondary={jest.fn()}
+        onReject={onReject}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    const reject = await screen.findByTestId(`review-reject-${queued.id}`);
+    expect(reject.props.accessibilityLabel).toBe(REVIEW_REJECT_LABEL);
+    fireEvent.press(reject);
+    expect(onReject).toHaveBeenCalledWith(queued);
   });
 });
 

@@ -144,6 +144,34 @@ function secondaryActionFor(item: ReviewQueueItem): ReviewAction | "correct" {
   }
 }
 
+/**
+ * The reject affordance (task 4a) — `null` for a kind whose own pair already
+ * offers a way out, or that must never offer one at all.
+ *
+ *   `low-confidence`     → the only kind with no rejection anywhere in its
+ *                          pair ("Looks right" / "Correct" both keep the
+ *                          card's proposal alive), and the one kind that can
+ *                          be pure noise: a failed parse, an unmapped wallet,
+ *                          a foreign currency PeraPlano cannot read at all.
+ *                          Ten such rows sat in the owner's queue with no way
+ *                          to clear them — this is that way.
+ *   `possible-duplicate` → its PRIMARY ("Same transaction") already discards
+ *                          the held twin; a second "Not money" button would
+ *                          be a second way to do what one button already
+ *                          does.
+ *   `unknown-provider`   → its SECONDARY IS "Not money" (`REVIEW_ACTIONS`) —
+ *                          the exact outcome this function exists to add
+ *                          elsewhere is already that card's own pair.
+ *   `ambiguous-transfer` → real money moved and the amount parsed; the open
+ *                          question is HOW to record it (as a transfer or
+ *                          not), never WHETHER. Dismissing would lose a real
+ *                          transaction, so this kind deliberately gets none —
+ *                          not an oversight, the one case reject must refuse.
+ */
+function rejectActionFor(item: ReviewQueueItem): ReviewAction | null {
+  return item.kind === "low-confidence" ? { kind: "dismiss", itemId: item.id } : null;
+}
+
 export default function ReviewQueueScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -214,21 +242,34 @@ export default function ReviewQueueScreen() {
       ) : (
         <ScrollView testID="review-queue-list">
           <View className="pb-8 pt-1">
-            {ordered.map((entry) => (
-              <ReviewCard
-                key={entry.id}
-                item={entry}
-                wallets={wallets}
-                categories={categories}
-                providers={ruleset?.providers}
-                // Supplying the handlers is what lights the pair up: without
-                // them the card renders DISABLED rather than live-but-inert —
-                // see review_card.tsx's header on why a dead tap on a money
-                // decision is the one affordance worth withholding.
-                onPrimary={(item) => dispatch(primaryActionFor(item), item)}
-                onSecondary={(item) => dispatch(secondaryActionFor(item), item)}
-              />
-            ))}
+            {ordered.map((entry) => {
+              // Resolved once per entry rather than inline in `onReject`
+              // below: the prop must be `undefined` (not a handler that
+              // happens to no-op) whenever this kind has none, because
+              // review_card.tsx renders NOTHING for an absent `onReject` —
+              // see its header on why that is the opposite of the pair's
+              // "absent means disabled" rule.
+              const rejectAction = rejectActionFor(entry);
+              return (
+                <ReviewCard
+                  key={entry.id}
+                  item={entry}
+                  wallets={wallets}
+                  categories={categories}
+                  providers={ruleset?.providers}
+                  // Supplying the handlers is what lights the pair up:
+                  // without them the card renders DISABLED rather than
+                  // live-but-inert — see review_card.tsx's header on why a
+                  // dead tap on a money decision is the one affordance worth
+                  // withholding.
+                  onPrimary={(item) => dispatch(primaryActionFor(item), item)}
+                  onSecondary={(item) => dispatch(secondaryActionFor(item), item)}
+                  onReject={
+                    rejectAction === null ? undefined : (item) => dispatch(rejectAction, item)
+                  }
+                />
+              );
+            })}
           </View>
         </ScrollView>
       )}

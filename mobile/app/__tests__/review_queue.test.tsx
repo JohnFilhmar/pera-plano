@@ -246,9 +246,16 @@ describe("the review queue screen", () => {
   });
 
   test("the actions are live now that Task 10 has wired them", async () => {
+    // `gatedPayload({ walletId })`, not the bare `gatedPayload()` this used
+    // to pass. The bare helper defaults to `walletId: null`, and since the
+    // whole-branch review widened review_card.tsx's guard to every field
+    // `proposalFrom` requires, a null wallet now legitimately DISABLES the
+    // primary. Left as it was, this test would have asserted the opposite of
+    // what it is about: that supplying the handlers is what lights the pair
+    // up, not which fields the payload happens to carry.
     const queued = await enqueueAt(NOW - HOUR, {
       kind: "low-confidence",
-      payload: gatedPayload(),
+      payload: gatedPayload({ walletId }),
     });
 
     await renderScreen();
@@ -385,5 +392,41 @@ describe("triaging from the queue", () => {
     // happens, and the DedupeGate holding the second one is a QUESTION, not a
     // verdict. "Different" has to be able to answer it.
     await waitFor(async () => expect(await listTransactions({})).toHaveLength(2));
+  });
+
+  // Task 4a's regression test: the ten `low-confidence` rows already sitting
+  // in the owner's queue had no way out at all, because `low-confidence` was
+  // the one kind with no `dismiss` wired anywhere on its card. A button that
+  // merely renders is not the fix — the backlog has to actually drain.
+  test("rejecting a low-confidence item resolves it out of the queue", async () => {
+    const queued = await enqueueAt(NOW - HOUR, {
+      kind: "low-confidence",
+      payload: gatedPayload({ walletId }),
+    });
+
+    await renderScreen();
+    fireEvent.press(await screen.findByTestId(`review-reject-${queued.id}`));
+
+    await waitFor(async () => expect(await countOpen()).toBe(0));
+    // "Not money" discards the capture — it must not write a Transaction, and
+    // it must not create a rule (that mute is a SEPARATE feature, offered
+    // only after a second dismissal of the same source).
+    expect(await listTransactions({})).toEqual([]);
+    expect(await listUserRules()).toEqual([]);
+  });
+
+  // `possible-duplicate`'s own PRIMARY ("Same transaction") already dismisses
+  // the held twin, so a second, separate reject button would offer the user
+  // two different buttons for the same outcome on the same card.
+  test("a possible-duplicate card offers no separate reject", async () => {
+    const queued = await enqueueAt(NOW - HOUR, {
+      kind: "possible-duplicate",
+      payload: gatedPayload({ walletId, duplicateOfTransactionId: "t-missing" }),
+    });
+
+    await renderScreen();
+
+    await screen.findByTestId(`review-primary-${queued.id}`);
+    expect(screen.queryByTestId(`review-reject-${queued.id}`)).toBeNull();
   });
 });

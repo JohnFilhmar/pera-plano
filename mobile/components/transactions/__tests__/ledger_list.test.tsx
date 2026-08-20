@@ -486,6 +486,17 @@ describe("empty states", () => {
     expect(screen.queryByTestId("ledger-empty-filtered")).toBeNull();
   });
 
+  test("the filtered empty state offers no add action", () => {
+    // task-1-brief.md: a user looking at "No transactions match these
+    // filters" has a filter problem, not a missing-row problem. Offering
+    // "Add manual Transaction" here would invite them to invent data just to
+    // satisfy a filter, so `onAddManual` must be ignored on this branch even
+    // when the caller supplies it.
+    renderLedger([], { filtered: true, onAddManual: jest.fn() });
+
+    expect(screen.queryByTestId("empty-state-action")).toBeNull();
+  });
+
   test("a filter that matches nothing says SO, and never claims nothing was tracked", () => {
     // The most alarming false statement a money app can make: telling a user
     // with a full ledger that the app recorded nothing.

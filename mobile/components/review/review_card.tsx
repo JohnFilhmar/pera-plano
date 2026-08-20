@@ -33,6 +33,15 @@
 // renders its pair DISABLED rather than live-but-inert: rule 4 is about what the
 // card shows, and a money decision that silently does nothing when tapped is the
 // affordance Tasks 4 and 6 both refused to ship.
+//
+// A SECOND, NARROWER REASON THE PRIMARY CAN BE DISABLED: task 4b's guard,
+// widened by the whole-branch review to `missingLedgerField`. A
+// `low-confidence` card whose payload is missing ANY field the ledger
+// requires — a positive amount, a direction, or a wallet — disables ITS OWN
+// primary even with a handler supplied, because tapping it could only throw
+// inside `proposalFrom` and be swallowed. See `ReviewCardProps.onPrimary`'s
+// doc comment for why that one kind is the only exception to "disabled means
+// no handler".
 import { Text, View } from "react-native";
 
 import { AmountText } from "@/components/ui/amount_text";
@@ -81,6 +90,18 @@ export const REVIEW_ACTIONS: Record<ReviewKind, ReviewActionPair> = {
   "ambiguous-transfer": { primary: "It's a transfer", secondary: "Not a transfer" },
   "unknown-provider": { primary: "This is a money notification", secondary: "Not money" },
 };
+
+/**
+ * The reject affordance's label — task 4a.
+ *
+ * THE SAME WORDS `unknown-provider`'s SECONDARY already uses ("Not money" in
+ * `REVIEW_ACTIONS`) and the same words `use_review_action.ts`'s own doc
+ * comment uses for `dismiss`. A third wording for the same outcome ("Reject",
+ * "Dismiss", "Ignore") would ask the user to learn that they mean the same
+ * thing, on the one card kind where they are seeing the sentence for the
+ * first time.
+ */
+export const REVIEW_REJECT_LABEL = "Not money";
 
 /**
  * The sentence to show when the payload carries none — one `GATE_REASONS` entry
@@ -146,9 +167,78 @@ function readAmount(payload: ReviewItemPayload): Centavos | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+/**
+ * True when this card's payload carries an amount the ledger could accept.
+ *
+ * DELIBERATELY NOT "is `readAmount` non-null" — that reader above only feeds
+ * DISPLAY (`Side`'s amount), and a genuine ₱0.00 notification should still
+ * render as ₱0.00, not as "Amount not read". Whether the ledger will accept
+ * the row is a stricter, different question, and `resolve_actions.ts`'s OWN
+ * `readAmount` is the authority on it: that function requires `value > 0`
+ * before `proposalFrom` will build a Transaction, so this predicate mirrors
+ * that positivity rule rather than this file's own display reader.
+ *
+ * THE FAILURE MODE THIS PREVENTS, SPECIFICALLY: `lib/ingest/amount.ts`'s
+ * `parseAmountToCentavos` returns `0`, never `null`, for a genuine "₱0.00" —
+ * by that module's own words, "0 is a legitimate amount and must stay
+ * distinguishable from a refusal". So a low-confidence item can reach this
+ * card with a real, non-null `amount: 0`. Treating that as "parsed" would
+ * render the primary ENABLED, and the tap would still throw
+ * `IncompleteReviewItemError` inside `proposalFrom` with no `onError` to
+ * catch it — the exact silent dead tap this task exists to close, just
+ * reachable through a different payload than "amount is missing".
+ */
+export function hasParsedAmount(item: ReviewQueueItem): boolean {
+  const amount = readAmount(item.payload);
+  return amount !== null && amount > 0;
+}
+
 function readDirection(payload: ReviewItemPayload): TxDirection | null {
   return payload.direction === "in" || payload.direction === "out" ? payload.direction : null;
 }
+
+/** The three fields `proposalFrom` refuses to build a Transaction without. */
+export type LedgerRequiredField = "amount" | "direction" | "wallet";
+
+/**
+ * Which ledger-required field this payload is missing, or `null` when it
+ * carries all three.
+ *
+ * MIRRORS `resolve_actions.ts`'s `proposalFrom` — same three checks, in the
+ * same order — because that function is the one that actually decides, and
+ * any disagreement between the two shows up as a button that looks live and
+ * does nothing. `hasParsedAmount` above answers only the first of the three;
+ * this answers all of them.
+ *
+ * THE FAILURE MODE THIS PREVENTS, AND WHY THE WALLET IS THE IMPORTANT ONE: an
+ * unmapped wallet is a ROUTINE hard route, not an edge case.
+ * `GATE_REASONS.unmappedWallet` ("PeraPlano could not tell which account this
+ * came from. Choose the wallet.") fires for every notification from an
+ * account the user has not added yet, and `pipeline.ts` enqueues those as
+ * `low-confidence` with `walletId: null`. Before this guard their primary
+ * rendered ENABLED: the tap threw `IncompleteReviewItemError(id, "wallet")`
+ * inside `proposalFrom`, `useReviewAction`'s mutation carries no `onError`,
+ * and the biggest, greenest button on the card did nothing at all. That is
+ * the identical trap task 4b closed for `amount`, reached through a different
+ * field — found by the whole-branch review, 2026-08-21.
+ */
+export function missingLedgerField(item: ReviewQueueItem): LedgerRequiredField | null {
+  if (!hasParsedAmount(item)) return "amount";
+  if (readDirection(item.payload) === null) return "direction";
+  if (readString(item.payload, "walletId") === null) return "wallet";
+  return null;
+}
+
+/**
+ * What the blocked line calls each field. The user's words, not the schema's:
+ * "direction" is a column name, and someone reading a card about their own
+ * money thinks in "money in or out".
+ */
+const BLOCKED_FIELD_LABEL: Record<LedgerRequiredField, string> = {
+  amount: "the amount",
+  direction: "whether this was money in or out",
+  wallet: "the wallet",
+};
 
 /**
  * The score, or `null` when the payload never carried one.
@@ -420,9 +510,28 @@ export type ReviewCardProps = {
    * m1c Task 10. ABSENT MEANS DISABLED, not inert: the pair still renders (rule
    * 4 is about what the card shows) but cannot be tapped, so no triage decision
    * is ever silently dropped on the floor.
+   *
+   * NOT THE ONLY WAY THE PRIMARY ENDS UP DISABLED, as of task 4b: a
+   * `low-confidence` item with no positive `hasParsedAmount` disables the
+   * primary even when this prop IS supplied. That is a data-integrity guard,
+   * not a missing-handler state — see `missingLedgerField` and `missingField` below.
    */
   onPrimary?: (item: ReviewQueueItem) => void;
   onSecondary?: (item: ReviewQueueItem) => void;
+  /**
+   * Task 4a. ABSENT MEANS NOT RENDERED — the opposite rule from the pair
+   * above, and deliberately so. The pair is DEFINITIONAL to the item's kind
+   * (rule 4: every kind has one), so a card handed no primary/secondary
+   * handler still shows what the two outcomes ARE, disabled. A reject is not
+   * definitional — only `low-confidence` gets one from the screen
+   * (`app/review/index.tsx`'s `rejectActionFor`), because it is the only kind
+   * that can be pure noise with no pairing question attached. A permanently
+   * disabled "Not money" on a duplicate or transfer card would read as a
+   * broken button on a card that never had that outcome, not as an
+   * inapplicable one — so the screen not supplying the handler means this
+   * card simply has no third button, full stop.
+   */
+  onReject?: (item: ReviewQueueItem) => void;
   testID?: string;
 };
 
@@ -433,6 +542,7 @@ export function ReviewCard({
   providers = [],
   onPrimary,
   onSecondary,
+  onReject,
   testID,
 }: ReviewCardProps) {
   const actions = REVIEW_ACTIONS[item.kind];
@@ -440,6 +550,25 @@ export function ReviewCard({
   const counterpartId = counterpartIdOf(item);
   const amount = readAmount(item.payload);
   const categoryId = readString(item.payload, "categoryId");
+
+  // Task 4b, WIDENED BY THE WHOLE-BRANCH REVIEW (2026-08-21).
+  // `low-confidence` is the ONLY kind whose primary can commit an incomplete
+  // payload: `possible-duplicate` and `ambiguous-transfer` come from a
+  // normalized event (`pipeline.ts`'s two gated queue sites) and always carry
+  // amount, direction and wallet, and `unknown-provider`'s primary opens the
+  // correction form (`primaryActionFor` in app/review/index.tsx returns
+  // `"correct"` for it) rather than committing anything — so there is nothing
+  // for those three kinds to guard against here.
+  //
+  // `resolve_actions.ts`'s `proposalFrom` already throws on any of its three
+  // required fields, which is why the LEDGER was never at risk; what this
+  // guards is the OTHER failure — that throw becomes a rejected mutation with
+  // no `onError` on `useReviewAction`, so the biggest, greenest button on the
+  // card did nothing at all when tapped. This originally checked the amount
+  // alone, and the WALLET turned out to be the far more common way in, because
+  // an unmapped wallet is a routine hard route rather than an edge case. See
+  // `missingLedgerField`. Also defensive against a hand-built or older row.
+  const missingField = item.kind === "low-confidence" ? missingLedgerField(item) : null;
 
   return (
     <View testID={testID ?? `review-card-${item.id}`} className="px-4 pb-3">
@@ -496,11 +625,15 @@ export function ReviewCard({
                 testID={`review-primary-${item.id}`}
                 title={actions.primary}
                 variant="primary"
-                disabled={onPrimary === undefined}
+                disabled={onPrimary === undefined || missingField !== null}
                 onPress={onPrimary ? () => onPrimary(item) : () => undefined}
               />
             </View>
             <View className="flex-1">
+              {/* "Correct" stays enabled even while the primary is blocked —
+                  supplying the amount is exactly the way forward, and
+                  disabling the one path off this card would strand the
+                  user on it. */}
               <Button
                 testID={`review-secondary-${item.id}`}
                 title={actions.secondary}
@@ -510,6 +643,24 @@ export function ReviewCard({
               />
             </View>
           </View>
+
+          {missingField === null ? null : (
+            <Text
+              testID={`review-blocked-${item.id}`}
+              className="text-xs text-fg-2 dark:text-fg-2-dark"
+            >
+              {`PeraPlano needs ${BLOCKED_FIELD_LABEL[missingField]} before this can be recorded. Add the details, or reject it.`}
+            </Text>
+          )}
+
+          {onReject ? (
+            <Button
+              testID={`review-reject-${item.id}`}
+              title={REVIEW_REJECT_LABEL}
+              variant="ghost"
+              onPress={() => onReject(item)}
+            />
+          ) : null}
         </View>
       </Card>
     </View>
