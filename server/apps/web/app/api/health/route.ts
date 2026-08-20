@@ -18,6 +18,10 @@ const STARTED_AT = Date.now();
 export function GET(): Response {
   const report = buildHealthReport({
     service: "peraplano-web",
+    // npm_package_version is set by `npm run`, and the container CMD is `node` directly,
+    // so this reports "0.0.0" inside the image. That is a placeholder, not a bug to chase:
+    // it becomes meaningful the day a release pipeline injects a version, and inventing one
+    // here would report a build number nothing produced.
     version: process.env["npm_package_version"] ?? "0.0.0",
     startedAt: STARTED_AT,
     now: Date.now(),
