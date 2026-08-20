@@ -1,0 +1,16 @@
+.section {
+  margin: 2rem 0;
+}
+
+.section p {
+  margin: 0.75rem 0;
+}
+
+.section ul {
+  margin: 0.75rem 0;
+  padding-left: 1.25rem;
+}
+
+.section li {
+  margin: 0.35rem 0;
+}

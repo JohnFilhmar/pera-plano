@@ -24,8 +24,28 @@
     "supportHeading": "Support",
     "copyright": "© 2026 PeraPlano"
   },
-  "serviceStatus": { "heading": "", "paragraphs": [] },
-  "counselRequired": { "heading": "", "intro": "", "clauses": [], "consequence": "" },
+  "serviceStatus": {
+    "heading": "What PeraPlano runs today",
+    "paragraphs": [
+      "PeraPlano is an Android app. It has no sign-in, no user accounts, and no multi-device sync.",
+      "Everything the app records lives in an encrypted database on your own phone. There is no copy on our servers to look at, to hand over, or to delete.",
+      "Cloud backup and multi-device sync are described in our planning documents as future PeraPlano Plus features. They are not available, and no part of your ledger is transmitted anywhere today."
+    ]
+  },
+  "counselRequired": {
+    "heading": "Clauses a lawyer still has to write",
+    "intro": "These terms are incomplete, and we would rather say so than publish something that looks finished. The following have not been drafted:",
+    "clauses": [
+      "Governing law and venue.",
+      "Limitation of liability and warranty disclaimer, including for an inaccurate parse.",
+      "Subscription term, renewal, cancellation and refund terms.",
+      "Intellectual property, and the licence granted to you when you install the app.",
+      "Termination and suspension.",
+      "How changes to these terms are notified, and when they take effect.",
+      "The effective date of this document."
+    ],
+    "consequence": "PeraPlano Plus cannot be offered for sale until these exist."
+  },
   "marketing": {},
   "support": {},
   "privacy": {},
