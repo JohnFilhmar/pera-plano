@@ -1,0 +1,35 @@
+{
+  "meta": {
+    "siteName": "PeraPlano",
+    "tagline": "You never log a transaction; you only set the rules.",
+    "description": "PeraPlano is a Philippines-first Android app that tracks your money automatically by reading the notifications your banks and e-wallets already send you — on your phone, never on a server.",
+    "locale": "en",
+    "localeLabel": "English"
+  },
+  "nav": {
+    "home": "Home",
+    "support": "Support",
+    "privacy": "Privacy",
+    "terms": "Terms",
+    "installedApps": "Installed apps",
+    "dataDeletion": "Delete your data",
+    "skipToContent": "Skip to content",
+    "toggleTheme": "Toggle dark mode"
+  },
+  "footer": {
+    "promise": "Local-first · No ads · Your data is never sold",
+    "controllerHeading": "Personal Information Controller",
+    "dpoHeading": "Data Protection Officer",
+    "npcHeading": "NPC registration",
+    "supportHeading": "Support",
+    "copyright": "© 2026 PeraPlano"
+  },
+  "serviceStatus": { "heading": "", "paragraphs": [] },
+  "counselRequired": { "heading": "", "intro": "", "clauses": [], "consequence": "" },
+  "marketing": {},
+  "support": {},
+  "privacy": {},
+  "terms": {},
+  "installedApps": {},
+  "dataDeletion": {}
+}
