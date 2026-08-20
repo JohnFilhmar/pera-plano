@@ -302,7 +302,7 @@ test("a low-confidence parse is queued and commits nothing", async () => {
   expect(open[0].payload).toMatchObject({ amount: 50000, direction: "out", confidence: 0.65 });
 });
 
-test("malformed text from a known provider is ignored as unreadable, never queued", async () => {
+test("malformed text from a known provider is ignored as unreadable, never thrown", async () => {
   // UPDATED 2026-08-20 (review-floor amendment): this used to assert the card
   // was queued. A matched provider with nothing readable in the text scores
   // 0 with no parsed amount, which is now at-or-below `reviewFloorThreshold`
@@ -310,17 +310,25 @@ test("malformed text from a known provider is ignored as unreadable, never queue
   // case. See "a capture from a known provider that parses to nothing is
   // ignored rather than queued" below for the same behaviour asserted from
   // scratch, and its neighbour for proof the raw capture still survives.
+  //
+  // THIS TEST'S OWN VALUE, DISTINCT FROM THOSE TWO: pinning that a garbled
+  // provider match resolves rather than rejects — never throws out of a
+  // background notification handler — the same "never thrown" guarantee the
+  // test's original name made before this task's rename.
+  // `.resolves.toEqual` states that directly, matching the guarantee's own
+  // wording, rather than leaving it implicit in a bare `await` the way the
+  // two tests below (which are about the ROUTE, not the throw) do.
   const wallet = await createWallet({ name: "GCash", type: "e-wallet" });
   await addMatcher(wallet.id, GCASH);
 
-  const outcome = await processCapture(
-    capture({
-      id: "cap-garbled",
-      text: "Your GCash transaction of ₱500.00 could not be completed at this time.",
-    }),
-  );
-
-  expect(outcome).toEqual({ kind: "ignored", reason: "unreadable" });
+  await expect(
+    processCapture(
+      capture({
+        id: "cap-garbled",
+        text: "Your GCash transaction of ₱500.00 could not be completed at this time.",
+      }),
+    ),
+  ).resolves.toEqual({ kind: "ignored", reason: "unreadable" });
   expect(await ledger()).toHaveLength(0);
   expect(await listOpen()).toHaveLength(0);
 });
@@ -352,14 +360,22 @@ test("the raw capture survives being ignored", async () => {
   // the Privacy Centre for its full 30-day TTL even though no card was made.
   // Pinned rather than assumed: it is the one fact that separates "ignored,
   // no card" from "the evidence was destroyed".
+  //
+  // THE OUTCOME IS ASSERTED HERE TOO, not only `getRawCapture` below. Without
+  // it this test would pass identically whether the capture was discarded OR
+  // queued — a `low-confidence` card also leaves the raw row intact — so it
+  // would never go red if the discard path regressed back to queuing. Pinning
+  // `{ kind: "ignored", reason: "unreadable" }` first is what ties this
+  // retention property to the DISCARD path specifically.
   await createWallet({ name: "GCash", type: "e-wallet" });
   const raw = capture({
     id: "cap-unreadable-raw",
     text: "Your GCash transaction of ₱500.00 could not be completed at this time.",
   });
 
-  await processCapture(raw);
+  const outcome = await processCapture(raw);
 
+  expect(outcome).toEqual({ kind: "ignored", reason: "unreadable" });
   expect(await getRawCapture("cap-unreadable-raw")).toEqual(raw);
 });
 

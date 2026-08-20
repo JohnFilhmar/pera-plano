@@ -22,8 +22,8 @@
 // unmapped-wallet event being one tap from correct and being a raw notification
 // the user retypes. See `decideRoute`.
 //
-// Pure: no I/O, no clock, no database, no `now`. Both thresholds arrive in
-// `tunables`, so the entire stage is a function of its one argument.
+// Pure: no I/O, no clock, no database, no `now`. All three thresholds arrive
+// in `tunables`, so the entire stage is a function of its one argument.
 import type { DedupeVerdict } from "@/lib/ingest/dedupe_gate";
 import type { PipelineTunables } from "@/lib/ingest/ruleset_types";
 import type { RoutedCapture } from "@/lib/ingest/source_router";
@@ -140,35 +140,46 @@ const toScaled = (value: number): number => Math.round(value * SCORE_SCALE);
 type ScoreBand = "auto_commit" | "review_prefilled" | "review_needs_details" | "discard";
 
 /**
- * §9.2 rule 1 — `≥ 0.90` auto-commit · `0.60`–`0.89` prefilled · `< 0.60` needs
- * details · `<= reviewFloorThreshold` discard (§9.2 amendment, 2026-08-20).
+ * §9.2 rule 1 — `≥ 0.90` auto-commit · `0.60`–`0.89` prefilled · above the
+ * floor and below 0.60 needs details · `<= reviewFloorThreshold` discard
+ * (§9.2 amendment, 2026-08-20).
  *
- * ALL THREE COMPARISONS ARE INCLUSIVE AT THEIR OWN HIGHER SIDE — except the
- * new one, and that difference is deliberate, not an inconsistency to "fix".
- * The first two are `>=`: the spec writes "≥ 0.90" and "0.60 – 0.89", so a
- * score landing exactly on an edge belongs to the band ABOVE it, and 0.90 is
- * not an exotic score — it is a 1.00 exact match carrying one 0.10
- * wallet-fallback penalty. The discard check is `<=`, inclusive at its LOWER
- * side, because the owner's rule is "higher than 50" — 0.50 itself is
- * discarded, not queued. Writing it as `<` would silently promote 0.50 into
- * the Review Queue and contradict the rule's own wording.
+ * THE FIRST TWO COMPARISONS ARE INCLUSIVE AT THEIR HIGHER SIDE; THE NEW ONE IS
+ * INCLUSIVE AT ITS LOWER SIDE, DELIBERATELY. The first two are `>=`: the spec
+ * writes "≥ 0.90" and "0.60 – 0.89", so a score landing exactly on an edge
+ * belongs to the band ABOVE it, and 0.90 is not an exotic score — it is a
+ * 1.00 exact match carrying one 0.10 wallet-fallback penalty. The discard
+ * check is `<=`, inclusive at its LOWER side, because the owner's rule is
+ * "higher than 50" — 0.50 itself is discarded, not queued. Writing it as `<`
+ * would silently promote 0.50 into the Review Queue and contradict the
+ * rule's own wording.
  *
  * All three values are read from the ruleset rather than written here because
  * §9.2's table "ships as tunable ruleset data (§11)" and these are the likeliest
  * numbers in the whole pipeline to be recalibrated against the corpus (§11.3).
  * Inlined, the remote tuning knob would turn and change nothing.
  *
- * THE DISCARD CHECK IS ORDERED LAST, AND THAT ORDER IS LOAD-BEARING. It is
- * checked after both `>=` checks so that a `confidence` that is not a number
- * still loses every comparison in this function and falls through to
- * `review_needs_details` — the safe end, matching the two checks above it.
- * The risk this guards against is the same one already named for the first
- * two thresholds, applied to the one branch where it is worse: written as the
- * INVERSE — "discard unless the score is above the floor" — the same NaN
- * would satisfy that inverted test (every comparison against NaN is `false`,
- * so "not above" reads `true`) and get silently thrown away, which is exactly
- * the failure this file's existing NaN handling exists to prevent, now
- * costing the capture entirely rather than just under-filling its card.
+ * THE DISCARD CHECK IS WRITTEN DIRECTLY, NOT AS THE INVERSE OF "above the
+ * floor" — that is what protects a non-number `confidence`. `NaN <= x` is
+ * `false` no matter where the check sits, so it already loses this comparison
+ * the same way it loses the two `>=` checks above and falls through to
+ * `review_needs_details`, the safe end. Written instead as the inverse —
+ * "discard unless the score is above the floor" — the same NaN would satisfy
+ * that inverted test (`NaN > x` is also `false`, so "not above" reads `true`)
+ * and get silently thrown away regardless of where the check sits, which is
+ * exactly the failure this file's existing NaN handling exists to prevent.
+ *
+ * THE ORDER — checked LAST, after both `>=` checks — IS STILL LOAD-BEARING,
+ * for a different reason: it keeps `auto_commit` and `review_prefilled`
+ * winning if a remote bundle ever retunes `reviewFloorThreshold` to at or
+ * above `prefilledThreshold`. Nothing in this file validates that the three
+ * thresholds stay ordered `reviewFloorThreshold < prefilledThreshold <
+ * autoCommitThreshold`, so a misconfigured floor checked FIRST would discard
+ * scores the two bands above it were meant to keep. This is already pinned
+ * incidentally — `confidence_gate.test.ts`'s "a lowered prefilledThreshold
+ * lifts a needs-details score up to prefilled" retunes `prefilledThreshold`
+ * below a confidence that also sits at-or-under the shipped
+ * `reviewFloorThreshold`, and fails if `scoreBand` checks the floor first.
  */
 function scoreBand(confidence: number, tunables: PipelineTunables): ScoreBand {
   const scaled = toScaled(confidence);
@@ -284,7 +295,10 @@ function hardRouteReason(input: GateInput): string | null {
 export function decideRoute(input: GateInput): GateDecision {
   const scored = scoreBand(input.confidence, input.tunables);
 
-  if (scored === "discard" && !input.hasAmount) return { route: "discard" };
+  // `=== false`, not `!input.hasAmount`: a missing/non-boolean `hasAmount` must
+  // fall to the safe side (queued, not discarded), matching this file's own
+  // doctrine that ambiguity resolves to the end that never throws data away.
+  if (scored === "discard" && input.hasAmount === false) return { route: "discard" };
 
   const band = scored === "discard" ? "review_needs_details" : scored;
   const hardReason = hardRouteReason(input);

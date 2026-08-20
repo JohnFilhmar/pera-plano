@@ -314,9 +314,11 @@ async function runStages(
     confidence,
     // Every event reaching here came through `parseCapture`, which refuses to
     // return a `ParsedEvent` without an amount — so this is always `true` on
-    // this path. Passed explicitly rather than hardcoded so the gate's
-    // discard band never has to guess which caller it was reached from.
-    hasAmount: event.amount > 0,
+    // this path. Literal `true`, not `event.amount > 0`: `amount.ts` returns
+    // `null`, never `0`, for anything it will not vouch for, and pins `0` as
+    // a legitimate parsed amount (`parseAmountToCentavos("0.00") === 0`).
+    // `> 0` would misreport a genuine ₱0.00 notification as unparsed.
+    hasAmount: true,
     walletId: event.walletId,
     dedupe: verdicts.dedupe,
     transfer: verdicts.transfer,

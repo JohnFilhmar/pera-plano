@@ -127,7 +127,7 @@ export type PartialPipelineTunables = Partial<Omit<PipelineTunables, "penalties"
  * A bundle as it ARRIVES — from the bundled seed JSON or the server. The only
  * difference from `RulesetBundle` is that `tunables` may be absent or partial:
  * a payload that only wants to change one threshold must not have to restate
- * the other thirteen, and one that cares about none omits the key entirely
+ * the other fourteen, and one that cares about none omits the key entirely
  * (plan Task 1 rule 3). Every `RulesetBundle` is a valid input, so callers
  * holding a complete bundle need no conversion.
  */

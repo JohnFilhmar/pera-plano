@@ -31,10 +31,13 @@
 // would promote both, which is how a remotely retuned penalty finer than the
 // spec's two decimals (§11.1) would silently stop working.
 //
-// BOTH THRESHOLDS ARE RETUNED IN THIS FILE, in both directions. §9.2's table
-// ships as ruleset data and these two values are the likeliest in the whole
-// pipeline to be recalibrated against the corpus, so a gate that hardcodes
-// `0.90` and `0.60` is a gate whose remote tuning knob is a placebo.
+// ALL THREE THRESHOLDS ARE RETUNED IN THIS FILE, in both directions where it
+// applies. §9.2's table ships as ruleset data and `autoCommitThreshold` /
+// `prefilledThreshold` are the likeliest in the whole pipeline to be
+// recalibrated against the corpus, so a gate that hardcodes `0.90` and `0.60`
+// is a gate whose remote tuning knob is a placebo. The third,
+// `reviewFloorThreshold` (shipped at `0.5`, the review-floor amendment of
+// 2026-08-20), is retuned the same way for the same reason.
 import { decideRoute, GATE_REASONS } from "@/lib/ingest/confidence_gate";
 import { DEFAULT_TUNABLES } from "@/lib/ingest/ruleset_types";
 
@@ -479,6 +482,18 @@ test("exactly at the floor is discarded — the rule is 'higher than 50', not 'a
   );
 });
 
+test("0.8 minus a 0.2 minus a 0.1 lands exactly on the floor, computed in floats", () => {
+  // WRITTEN AS ARITHMETIC, NOT AS A LITERAL — this file's own header rule.
+  // `0.8 - 0.2 - 0.1` is `0.5000000000000001` in IEEE-754: a RAW `<=`
+  // comparison against `reviewFloorThreshold` (0.5) reads `false` and would
+  // wrongly queue this as `review_needs_details`, letting a dust-inflated
+  // score slip one hair above the floor. `toScaled` rounds it back to exactly
+  // `5000`, which is `<=` the scaled floor, so it must discard.
+  expect(
+    decideRoute(clean({ confidence: 0.8 - 0.2 - 0.1, hasAmount: false })),
+  ).toEqual({ route: "discard" });
+});
+
 test("a below-floor capture that DID parse an amount is queued, never discarded", () => {
   // The most important test in this task: the data-safety constraint that
   // outranks the owner's "ignore at or below 50%" rule. Losing a parsed
@@ -515,8 +530,11 @@ test("the floor comes from the ruleset, not from this file", () => {
 
 test("a confidence that is not a number is queued, never discarded", () => {
   // NaN must lose the `<=` comparison too, the same NaN property the score
-  // bands already rely on — the comparison runs LAST so a non-number falls
-  // through to the safe end instead of being silently discarded.
+  // bands already rely on. `NaN <= x` is `false` regardless of where the
+  // check sits — the safety comes from writing the comparison DIRECTLY
+  // rather than as the inverse "discard unless above the floor" (see
+  // `scoreBand`'s doc comment) — so a non-number falls through to the safe
+  // end instead of being silently discarded.
   expect(
     decideRoute(clean({ confidence: Number.NaN, hasAmount: false })).route,
   ).toBe("review_needs_details");
