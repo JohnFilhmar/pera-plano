@@ -59,6 +59,10 @@ function tunables(overrides: Partial<PipelineTunables> = {}): PipelineTunables {
 function clean(overrides: Partial<GateInput> = {}): GateInput {
   return {
     confidence: 1,
+    // Everything arriving from `runStages` has an amount by construction (the
+    // parser refuses to return a `ParsedEvent` without one); `false` is the
+    // unreadable-capture path and every test below states it explicitly.
+    hasAmount: true,
     walletId: WALLET,
     dedupe: { kind: "unique" },
     transfer: { kind: "none" },
@@ -69,9 +73,11 @@ function clean(overrides: Partial<GateInput> = {}): GateInput {
   };
 }
 
-/** The `reason` of a decision, or `undefined` when it auto-committed. */
+/** The `reason` of a decision, or `undefined` when nothing is shown (`auto_commit`, `discard`). */
 function reasonOf(decision: ReturnType<typeof decideRoute>): string | undefined {
-  return decision.route === "auto_commit" ? undefined : decision.reason;
+  return decision.route === "auto_commit" || decision.route === "discard"
+    ? undefined
+    : decision.reason;
 }
 
 // ---------------------------------------------------------------------------
@@ -449,4 +455,69 @@ test("the gate is a pure function of its arguments", () => {
 
   expect(decideRoute(input)).toEqual(decideRoute(input));
   expect(JSON.stringify(input)).toBe(snapshot);
+});
+
+// ---------------------------------------------------------------------------
+// The review floor (§9.2 amendment, 2026-08-20) — an unreadable capture is
+// never queued, but a parsed amount is never thrown away on a score alone.
+// ---------------------------------------------------------------------------
+
+test("a capture with nothing parsed is discarded, not queued", () => {
+  expect(
+    decideRoute(clean({ confidence: 0, hasAmount: false, walletId: null })),
+  ).toEqual({ route: "discard" });
+});
+
+test("exactly at the floor is discarded — the rule is 'higher than 50', not 'at least 50'", () => {
+  expect(decideRoute(clean({ confidence: 0.5, hasAmount: false }))).toEqual({
+    route: "discard",
+  });
+  // One step above the floor, the other direction: moving the edge either way
+  // fails one of these two.
+  expect(decideRoute(clean({ confidence: 0.5001, hasAmount: false })).route).toBe(
+    "review_needs_details",
+  );
+});
+
+test("a below-floor capture that DID parse an amount is queued, never discarded", () => {
+  // The most important test in this task: the data-safety constraint that
+  // outranks the owner's "ignore at or below 50%" rule. Losing a parsed
+  // amount is invisible to the user and corrupts totals with no trace.
+  expect(decideRoute(clean({ confidence: 0.2, hasAmount: true })).route).toBe(
+    "review_needs_details",
+  );
+});
+
+test("a hard route does not rescue an unreadable capture", () => {
+  // The unmappedWallet hard route is live (walletId: null) but there is no
+  // candidate transaction to ask a wallet question about, so it must not
+  // pull an unreadable capture back into the queue.
+  expect(
+    decideRoute(clean({ confidence: 0, hasAmount: false, walletId: null })),
+  ).toEqual({ route: "discard" });
+});
+
+test("the floor comes from the ruleset, not from this file", () => {
+  const lax = clean({
+    confidence: 0.3,
+    hasAmount: false,
+    tunables: tunables({ reviewFloorThreshold: 0.2 }),
+  });
+  expect(decideRoute(lax).route).toBe("review_needs_details");
+
+  const strict = clean({
+    confidence: 0.3,
+    hasAmount: false,
+    tunables: tunables({ reviewFloorThreshold: 0.4 }),
+  });
+  expect(decideRoute(strict)).toEqual({ route: "discard" });
+});
+
+test("a confidence that is not a number is queued, never discarded", () => {
+  // NaN must lose the `<=` comparison too, the same NaN property the score
+  // bands already rely on — the comparison runs LAST so a non-number falls
+  // through to the safe end instead of being silently discarded.
+  expect(
+    decideRoute(clean({ confidence: Number.NaN, hasAmount: false })).route,
+  ).toBe("review_needs_details");
 });

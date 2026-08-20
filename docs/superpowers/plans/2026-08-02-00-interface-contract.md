@@ -270,7 +270,15 @@ export async function processCapture(capture: RawCapture): Promise<PipelineOutco
 export type PipelineOutcome =
   | { kind: "committed"; transactionId: string }
   | { kind: "queued"; reviewItemId: string }
-  | { kind: "ignored"; reason: "not_financial" | "duplicate" | "unknown-provider" | "paused" };
+  | {
+      kind: "ignored";
+      reason:
+        | "not_financial"
+        | "duplicate"
+        | "unknown-provider"
+        | "paused"
+        | "unreadable"; // "unreadable" ADDED 2026-08-20 — see note below
+    };
 
 // parser.ts — rules come from the parser_rulesets table (seeded from bundled JSON, updatable from server)
 export type ParsedEvent = {
@@ -285,6 +293,16 @@ export function parseCapture(
 ): ParsedEvent | null;
 ```
 
+> **`"unreadable"` added 2026-08-20 (review-floor amendment).** A provider match with nothing
+> readable in the text used to enqueue unconditionally (`pipeline.ts`'s `parsed === null`
+> branch), which is how the Review Queue filled with identical cards carrying no amount, no
+> merchant and no wallet — items the user could neither act on nor get rid of. That branch now
+> asks `confidence_gate.ts`'s `decideRoute`, whose new `"discard"` route only fires when nothing
+> parsed AND the score is at or below `PipelineTunables.reviewFloorThreshold`; a capture that DID
+> parse an amount is never discarded on a score alone. `"unreadable"` is the resulting outcome:
+> additive to the `reason` union, every existing reason unchanged, and the raw capture stays
+> stored and visible in the Privacy Centre for its full 30-day TTL regardless.
+>
 > **`tunables` added 2026-08-10 (after M1b Task 4).** The signature previously ended at `rules`,
 > which made a spec requirement unimplementable: spec §9.1's penalty table "ships as tunable
 > ruleset data (§11)", but with no `tunables` parameter the parser could only read

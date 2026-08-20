@@ -39,11 +39,18 @@ import type { TransferVerdict } from "@/lib/ingest/transfer_detector";
  * reach the queue and a card that cannot say why it is there is exactly the
  * mystery that rule exists to prevent. `auto_commit` carries none because
  * nothing is shown: the row simply appears in the ledger.
+ *
+ * `discard` (§9.2 amendment, 2026-08-20) ALSO CARRIES NO REASON, for the same
+ * reason `auto_commit` doesn't: nothing is shown to anybody. This is the one
+ * route that neither writes the ledger nor asks the user anything — see
+ * `decideRoute`'s discard branch for what earns it and, more importantly,
+ * what never does.
  */
 export type GateDecision =
   | { route: "auto_commit" }
   | { route: "review_prefilled"; reason: string }
-  | { route: "review_needs_details"; reason: string };
+  | { route: "review_needs_details"; reason: string }
+  | { route: "discard" };
 
 /**
  * Everything the gate reads. Named only so tests and the orchestrator can
@@ -59,6 +66,18 @@ export type GateDecision =
  */
 export type GateInput = {
   confidence: number;
+  /**
+   * Did an amount actually parse out of this capture. Everything arriving
+   * from `runStages` has one by construction — the parser refuses to return a
+   * `ParsedEvent` without an amount — so `true` is the ordinary path.
+   *
+   * `false` is the unreadable-capture path: `pipeline.ts`'s `parsed === null`
+   * branch, a provider was matched but nothing in the text could be read. It
+   * exists so the review-floor discard (see `decideRoute`) can tell "nothing
+   * to show" apart from "a real number scored low", because only the first of
+   * those is safe to drop without a trace.
+   */
+  hasAmount: boolean;
   walletId: string | null;
   dedupe: DedupeVerdict;
   transfer: TransferVerdict;
@@ -117,32 +136,46 @@ const SCORE_SCALE = 10_000;
 
 const toScaled = (value: number): number => Math.round(value * SCORE_SCALE);
 
-/** The three bands of §9.2's table, as the route each would take on its own. */
-type ScoreBand = "auto_commit" | "review_prefilled" | "review_needs_details";
+/** The four bands of §9.2's table (plus its 2026-08-20 amendment), as the route each would take on its own. */
+type ScoreBand = "auto_commit" | "review_prefilled" | "review_needs_details" | "discard";
 
 /**
  * §9.2 rule 1 — `≥ 0.90` auto-commit · `0.60`–`0.89` prefilled · `< 0.60` needs
- * details.
+ * details · `<= reviewFloorThreshold` discard (§9.2 amendment, 2026-08-20).
  *
- * BOTH COMPARISONS ARE `>=`, INCLUSIVELY, and both thresholds come from
- * `tunables`. The spec writes "≥ 0.90" and "0.60 – 0.89": a score landing
- * exactly on an edge belongs to the higher band, and 0.90 is not an exotic
- * score — it is a 1.00 exact match carrying one 0.10 wallet-fallback penalty.
+ * ALL THREE COMPARISONS ARE INCLUSIVE AT THEIR OWN HIGHER SIDE — except the
+ * new one, and that difference is deliberate, not an inconsistency to "fix".
+ * The first two are `>=`: the spec writes "≥ 0.90" and "0.60 – 0.89", so a
+ * score landing exactly on an edge belongs to the band ABOVE it, and 0.90 is
+ * not an exotic score — it is a 1.00 exact match carrying one 0.10
+ * wallet-fallback penalty. The discard check is `<=`, inclusive at its LOWER
+ * side, because the owner's rule is "higher than 50" — 0.50 itself is
+ * discarded, not queued. Writing it as `<` would silently promote 0.50 into
+ * the Review Queue and contradict the rule's own wording.
  *
- * The two values are read from the ruleset rather than written here because
+ * All three values are read from the ruleset rather than written here because
  * §9.2's table "ships as tunable ruleset data (§11)" and these are the likeliest
  * numbers in the whole pipeline to be recalibrated against the corpus (§11.3).
  * Inlined, the remote tuning knob would turn and change nothing.
  *
- * A `confidence` that is not a number loses both comparisons and falls through
- * to `review_needs_details` — the safe end. Written as "auto-commit unless
- * below the threshold" the same NaN would commit an unscored event silently.
+ * THE DISCARD CHECK IS ORDERED LAST, AND THAT ORDER IS LOAD-BEARING. It is
+ * checked after both `>=` checks so that a `confidence` that is not a number
+ * still loses every comparison in this function and falls through to
+ * `review_needs_details` — the safe end, matching the two checks above it.
+ * The risk this guards against is the same one already named for the first
+ * two thresholds, applied to the one branch where it is worse: written as the
+ * INVERSE — "discard unless the score is above the floor" — the same NaN
+ * would satisfy that inverted test (every comparison against NaN is `false`,
+ * so "not above" reads `true`) and get silently thrown away, which is exactly
+ * the failure this file's existing NaN handling exists to prevent, now
+ * costing the capture entirely rather than just under-filling its card.
  */
 function scoreBand(confidence: number, tunables: PipelineTunables): ScoreBand {
   const scaled = toScaled(confidence);
 
   if (scaled >= toScaled(tunables.autoCommitThreshold)) return "auto_commit";
   if (scaled >= toScaled(tunables.prefilledThreshold)) return "review_prefilled";
+  if (scaled <= toScaled(tunables.reviewFloorThreshold)) return "discard";
   return "review_needs_details";
 }
 
@@ -229,9 +262,31 @@ function hardRouteReason(input: GateInput): string | null {
  * amount must be re-entered, and a `review_prefilled` item is editable by
  * definition. That branch is also unreachable today (see `GateInput`), so
  * special-casing it would be untested complexity guarding nothing.
+ *
+ * THE DISCARD BAND (§9.2 amendment, 2026-08-20) IS RESOLVED BEFORE THE HARD
+ * ROUTES, and that ordering is the point. A hard route is a QUESTION ABOUT A
+ * CANDIDATE TRANSACTION — which wallet, is this a duplicate, is this a
+ * transfer. Below the floor with nothing parsed there is no candidate, so
+ * there is no question worth waking the user for, and letting a hard route
+ * such as `unmappedWallet` run first would rescue the whole pile of unreadable
+ * captures straight back into the Review Queue this amendment exists to keep
+ * clear.
+ *
+ * BUT A PARSED AMOUNT IS NEVER THROWN AWAY ON A SCORE ALONE. It is real money
+ * data, and losing it is invisible to the user and corrupts totals with no
+ * trace — the exact top risk this whole pipeline is built around (see the
+ * file header). That constraint is in tension with the owner's "ignore at or
+ * below 50%" rule, and the constraint wins: a below-floor score that DID parse
+ * an amount drops only to the lowest band that still ASKS
+ * (`review_needs_details`), never to `discard`, and the ordinary hard-route /
+ * band logic below then runs exactly as it always has.
  */
 export function decideRoute(input: GateInput): GateDecision {
-  const band = scoreBand(input.confidence, input.tunables);
+  const scored = scoreBand(input.confidence, input.tunables);
+
+  if (scored === "discard" && !input.hasAmount) return { route: "discard" };
+
+  const band = scored === "discard" ? "review_needs_details" : scored;
   const hardReason = hardRouteReason(input);
 
   if (hardReason !== null) {

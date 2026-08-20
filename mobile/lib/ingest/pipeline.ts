@@ -19,7 +19,7 @@
 import { systemClock } from "@/lib/clock";
 import { categorize } from "@/lib/ingest/categorizer";
 import { checkDuplicate } from "@/lib/ingest/dedupe_gate";
-import { decideRoute } from "@/lib/ingest/confidence_gate";
+import { decideRoute, GATE_REASONS } from "@/lib/ingest/confidence_gate";
 import { detectTransfer } from "@/lib/ingest/transfer_detector";
 import { emitAppEvent } from "@/lib/events/app_events";
 import { getActiveRuleset } from "@/lib/db/repos/parser_rulesets_repo";
@@ -43,11 +43,21 @@ import type { ProviderRuleset, RulesetBundle } from "@/lib/ingest/ruleset_types"
 import type { RecentEvent } from "@/lib/ingest/dedupe_gate";
 import type { RawCapture, ReviewKind, Transaction, UserRule } from "@/types/domain";
 
-/** Contract §5 — do not reshape. */
+/**
+ * Contract §5 — do not reshape. `"unreadable"` ADDED 2026-08-20 (see
+ * docs/superpowers/plans/2026-08-02-00-interface-contract.md §5): a provider
+ * was matched but nothing in the text could be read, and the confidence gate's
+ * review floor now discards that case rather than filling the Review Queue
+ * with a card carrying nothing to act on. Additive only — every existing
+ * reason keeps its exact meaning.
+ */
 export type PipelineOutcome =
   | { kind: "committed"; transactionId: string }
   | { kind: "queued"; reviewItemId: string }
-  | { kind: "ignored"; reason: "not_financial" | "duplicate" | "unknown-provider" | "paused" };
+  | {
+      kind: "ignored";
+      reason: "not_financial" | "duplicate" | "unknown-provider" | "paused" | "unreadable";
+    };
 
 /**
  * Ten-thousandths, matching `parser.ts` and `confidence_gate.ts`.
@@ -260,8 +270,28 @@ async function runStages(
   }
 
   if (parsed === null) {
-    // Matched a provider but nothing readable in the text. The user still gets
-    // a card, with nothing presented as parsed.
+    // THE UNREADABLE PATH NOW ASKS THE GATE TOO. This branch used to enqueue
+    // unconditionally, which is how the Review Queue filled with identical
+    // cards carrying no amount, no merchant and no wallet — items the user
+    // could neither act on nor get rid of. The verdicts are the truthful
+    // neutral ones: nothing was read, so nothing could match a duplicate or a
+    // transfer counterpart.
+    const decision = decideRoute({
+      confidence: 0,
+      hasAmount: false,
+      walletId: null,
+      dedupe: { kind: "unique" },
+      transfer: { kind: "none" },
+      routed: "known",
+      nonPhpCurrency: false,
+      tunables,
+    });
+    if (decision.route === "discard") {
+      // The raw capture is already stored and stays visible in the Privacy
+      // Centre for its full 30-day TTL, so "ignored" here means "no card was
+      // made", never "the evidence was destroyed".
+      return { kind: "ignored", reason: "unreadable" };
+    }
     return queue("low-confidence", capture.id, { amount: null, direction: null, confidence: 0 });
   }
 
@@ -282,6 +312,11 @@ async function runStages(
 
   const decision = decideRoute({
     confidence,
+    // Every event reaching here came through `parseCapture`, which refuses to
+    // return a `ParsedEvent` without an amount — so this is always `true` on
+    // this path. Passed explicitly rather than hardcoded so the gate's
+    // discard band never has to guess which caller it was reached from.
+    hasAmount: event.amount > 0,
     walletId: event.walletId,
     dedupe: verdicts.dedupe,
     transfer: verdicts.transfer,
@@ -300,7 +335,16 @@ async function runStages(
       walletId: event.walletId,
       categoryId: category.categoryId,
       confidence,
-      reason: decision.reason,
+      // UNREACHABLE ON THIS PATH, HANDLED ANYWAY: `hasAmount` above is always
+      // `true` (the parser refuses to return a `ParsedEvent` without an
+      // amount), and `decideRoute` only ever chooses "discard" when
+      // `hasAmount` is `false` — so `decision.route` can never actually be
+      // "discard" here. `GATE_REASONS.unreadable` is the safe fallback text
+      // rather than a thrown assertion, the same doctrine `hardRouteReason`'s
+      // own unreachable branches follow: a throw here would lose an
+      // already-verdicted capture with no trace instead of showing one extra,
+      // harmlessly-worded Review Queue card.
+      reason: decision.route === "discard" ? GATE_REASONS.unreadable : decision.reason,
       // The counterpart the card has to be able to show. A "possible duplicate"
       // or "possible transfer" the user cannot see the other half of is
       // unresolvable — they would be asked to judge a pairing without being

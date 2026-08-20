@@ -302,7 +302,14 @@ test("a low-confidence parse is queued and commits nothing", async () => {
   expect(open[0].payload).toMatchObject({ amount: 50000, direction: "out", confidence: 0.65 });
 });
 
-test("malformed text from a known provider is queued, never thrown", async () => {
+test("malformed text from a known provider is ignored as unreadable, never queued", async () => {
+  // UPDATED 2026-08-20 (review-floor amendment): this used to assert the card
+  // was queued. A matched provider with nothing readable in the text scores
+  // 0 with no parsed amount, which is now at-or-below `reviewFloorThreshold`
+  // (0.5) with `hasAmount: false` — the exact "discard" case, not a review
+  // case. See "a capture from a known provider that parses to nothing is
+  // ignored rather than queued" below for the same behaviour asserted from
+  // scratch, and its neighbour for proof the raw capture still survives.
   const wallet = await createWallet({ name: "GCash", type: "e-wallet" });
   await addMatcher(wallet.id, GCASH);
 
@@ -313,12 +320,47 @@ test("malformed text from a known provider is queued, never thrown", async () =>
     }),
   );
 
-  expect(outcome.kind).toBe("queued");
+  expect(outcome).toEqual({ kind: "ignored", reason: "unreadable" });
   expect(await ledger()).toHaveLength(0);
-  const open = await listOpen();
-  expect(open[0].kind).toBe("low-confidence");
-  // No parse, so nothing may be presented as parsed.
-  expect(open[0].payload).toMatchObject({ amount: null, direction: null });
+  expect(await listOpen()).toHaveLength(0);
+});
+
+// ---------------------------------------------------------------------------
+// The review floor (§9.2 amendment, 2026-08-20) — an unreadable capture from
+// a recognized provider must not fill the Review Queue with cards carrying
+// nothing to act on, but the raw capture must still be recoverable.
+// ---------------------------------------------------------------------------
+
+test("a capture from a known provider that parses to nothing is ignored rather than queued", async () => {
+  const wallet = await createWallet({ name: "GCash", type: "e-wallet" });
+  await addMatcher(wallet.id, GCASH);
+
+  const outcome = await processCapture(
+    capture({
+      id: "cap-unreadable",
+      text: "Your GCash transaction of ₱500.00 could not be completed at this time.",
+    }),
+  );
+
+  expect(outcome).toEqual({ kind: "ignored", reason: "unreadable" });
+  expect(await ledger()).toHaveLength(0);
+  expect(await listOpen()).toHaveLength(0);
+});
+
+test("the raw capture survives being ignored", async () => {
+  // This is what makes the discard safe — the raw capture stays visible in
+  // the Privacy Centre for its full 30-day TTL even though no card was made.
+  // Pinned rather than assumed: it is the one fact that separates "ignored,
+  // no card" from "the evidence was destroyed".
+  await createWallet({ name: "GCash", type: "e-wallet" });
+  const raw = capture({
+    id: "cap-unreadable-raw",
+    text: "Your GCash transaction of ₱500.00 could not be completed at this time.",
+  });
+
+  await processCapture(raw);
+
+  expect(await getRawCapture("cap-unreadable-raw")).toEqual(raw);
 });
 
 test("the raw capture is stored even when the parse fails", async () => {

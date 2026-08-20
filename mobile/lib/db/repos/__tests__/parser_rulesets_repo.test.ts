@@ -221,6 +221,9 @@ test("DEFAULT_TUNABLES matches the spec values exactly", () => {
   expect(DEFAULT_TUNABLES.transferFeeRate).toBe(0.01); // §7.3.2 — 1%
   expect(DEFAULT_TUNABLES.autoCommitThreshold).toBe(0.9); // §9.2 — ≥ 0.90
   expect(DEFAULT_TUNABLES.prefilledThreshold).toBe(0.6); // §9.2 — 0.60-0.89
+  // §9.2 amendment, 2026-08-20 — the owner's rule verbatim: confidence
+  // "higher than 50 should only be recognized for user to confirm".
+  expect(DEFAULT_TUNABLES.reviewFloorThreshold).toBe(0.5);
   expect(DEFAULT_TUNABLES.penalties.weakDirection).toBe(0.15); // §9.1
   expect(DEFAULT_TUNABLES.penalties.amountAmbiguity).toBe(0.3); // §9.1
   expect(DEFAULT_TUNABLES.penalties.walletFallback).toBe(0.1); // §9.1
@@ -239,6 +242,7 @@ test("DEFAULT_TUNABLES matches the spec values exactly", () => {
     "dedupeTwinWindowMs",
     "penalties",
     "prefilledThreshold",
+    "reviewFloorThreshold",
     "transferExtendedWindowMs",
     "transferFeeFloorCentavos",
     "transferFeeRate",
@@ -304,6 +308,7 @@ test("a partial tunables object is completed from DEFAULT_TUNABLES", async () =>
     transferFeeRate: 0.01,
     autoCommitThreshold: 0.95,
     prefilledThreshold: 0.6,
+    reviewFloorThreshold: 0.5,
     balanceDriftToleranceCentavos: 100,
     penalties: {
       weakDirection: 0.15,

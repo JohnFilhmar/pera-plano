@@ -66,6 +66,23 @@ export type PipelineTunables = {
   autoCommitThreshold: number;
   prefilledThreshold: number;
   /**
+   * At or below this score, a capture with NOTHING PARSED is discarded rather
+   * than queued (§9.2 amendment, 2026-08-20). The owner's rule, verbatim:
+   * confidence "higher than 50 should only be recognized for user to
+   * confirm" — 0.50 itself is the discard side, not the queue side.
+   *
+   * Ruleset data, not a literal in the gate, for the same reason
+   * `autoCommitThreshold` and `prefilledThreshold` are: it is the number most
+   * likely to be recalibrated once the Review Queue's real false-negative
+   * rate is known against the corpus.
+   *
+   * DOES NOT APPLY to a capture that DID parse an amount — see
+   * `confidence_gate.ts`'s `decideRoute`. A parsed amount is real money data
+   * and this threshold never discards it; it only decides whether a capture
+   * with nothing readable in it reaches the user at all.
+   */
+  reviewFloorThreshold: number;
+  /**
    * How far a reported balance-after may sit from the computed expectation
    * before the Wallet enters the balance-drift attention state
    * (docs/04-features/02-wallets.md §balance handling rule 3). The snap happens
@@ -141,6 +158,12 @@ export const DEFAULT_TUNABLES: PipelineTunables = {
   autoCommitThreshold: 0.9,
   /** §9.2 — `0.60`-`0.89` routes to the Review Queue prefilled; below, needs details. */
   prefilledThreshold: 0.6,
+  /**
+   * §9.2 amendment, 2026-08-20 — the owner's rule verbatim: "higher than 50
+   * should only be recognized for user to confirm". A capture with nothing
+   * parsed at or below this score is discarded, not queued.
+   */
+  reviewFloorThreshold: 0.5,
   /**
    * ₱1.00, in centavos. docs/04-features/02-wallets.md §14 open question 1 — an
    * initial value, not a measured one: below ₱1.00 is rounding, above it is a
