@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { decodeEntities, extractTable, firstHeadingText, stripTags } from "@/test_support/html.js";
+import {
+  decodeEntities,
+  extractTable,
+  firstHeadingText,
+  sectionHeadingText,
+  stripTags,
+} from "@/test_support/html.js";
 
 describe("html test support", () => {
   it("decodes the five entities React escapes", () => {
@@ -38,5 +44,20 @@ describe("html test support", () => {
     const html = '<table data-table-id="lifecycle"><caption>c</caption></table>';
     expect(() => extractTable(html, "lifecycle")).toThrow(/lifecycle/);
     expect(() => extractTable(html, "lifecycle")).toThrow(/no <tr> rows/);
+  });
+
+  it("reads the heading inside a section, so an anchor alone is not enough to pass", () => {
+    const html =
+      '<section id="a"><h2>Who is <em>responsible</em></h2><h3>sub</h3></section>' +
+      '<section id="b"><h2>Other</h2></section>';
+    expect(sectionHeadingText(html, "a")).toBe("Who is responsible");
+    expect(sectionHeadingText(html, "b")).toBe("Other");
+  });
+
+  it("throws for a section that kept its anchor but lost its heading", () => {
+    expect(() => sectionHeadingText('<section id="a"><h3>sub</h3></section>', "a")).toThrow(
+      /no <h2> heading/,
+    );
+    expect(() => sectionHeadingText("<p>nothing</p>", "a")).toThrow(/no <section id="a">/);
   });
 });

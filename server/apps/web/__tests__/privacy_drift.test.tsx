@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { PrivacyPage } from "@/components/pages/privacy_page.js";
 import { getMessages } from "@/messages/index.js";
-import { extractTable } from "@/test_support/html.js";
+import { extractTable, sectionHeadingText } from "@/test_support/html.js";
 import { extractSection, extractStatusLine, parseFirstTable } from "@/test_support/markdown_table.js";
 import { COMPLETE_CONFIG } from "@/test_support/env_fixtures.js";
 
@@ -62,6 +62,9 @@ describe("privacy notice / lifecycle table drift", () => {
     expect(html).toContain("<h1");
   });
 
+  // The anchors alone are not the requirement. Asserting `id="..."` substring presence
+  // passes for a section emptied down to its own opening tag, which is exactly how a
+  // required disclosure disappears without anyone noticing — so read the heading too.
   it("covers every item RA 10173 §2.4 requires the notice to contain", () => {
     const html = renderedPrivacy();
     for (const anchor of [
@@ -78,6 +81,24 @@ describe("privacy notice / lifecycle table drift", () => {
       "if-something-goes-wrong",
     ]) {
       expect(html).toContain(`id="${anchor}"`);
+      expect(sectionHeadingText(html, anchor).length).toBeGreaterThan(0);
     }
+  });
+
+  // §2.5 calls NPC registration a planning position with confirmation deferred to
+  // counsel, and §2.7's breach preparation is written down but unbuilt. Neither may be
+  // rendered as settled — the same rule that kept the unwritten PIA off this page.
+  it("does not render planning positions or unbuilt preparations as facts", () => {
+    const sections = getMessages("en").privacy.sections;
+    const responsible = sections.whoIsResponsible.paragraphs.join(" ");
+    expect(responsible).toContain("planning position");
+    expect(responsible).toContain("counsel");
+
+    const breach = sections.ifSomethingGoesWrong.paragraphs.join(" ");
+    expect(breach).toContain("none of it has been built yet");
+
+    // §2.1 requires the outsourcing agreement *before* cloud backup ships, and
+    // SERVICE_CAPABILITIES.cloudBackup is false, so no processor holds anything today.
+    expect(sections.whoReceivesIt.paragraphs[0]).toContain("has not shipped");
   });
 });

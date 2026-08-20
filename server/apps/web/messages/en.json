@@ -61,7 +61,7 @@
           "The company operating PeraPlano is the Personal Information Controller under the Data Privacy Act of 2012 (Republic Act 10173) for any personal data it actually receives and controls: cloud backup contents, the sign-in identity used for backup, support correspondence, and aggregate telemetry.",
           "Any infrastructure vendor that stores encrypted backups on the company's behalf acts as a Personal Information Processor. A written outsourcing agreement covering confidentiality, security measures, sub-processing and breach assistance is required before cloud backup ships.",
           "Data processed entirely on your own device, for your own household finances, arguably falls under the Act's personal and household exemption as far as your own processing is concerned. PeraPlano does not rely on that argument. The app is designed, documented and reviewed as if every piece of data it touches were fully in scope, because that keeps the compliance story simple and truthful.",
-          "A Data Protection Officer is appointed before public launch regardless of whether registration thresholds are met, and the appointment is registered with the National Privacy Commission along with the backup data processing system before cloud backup goes live."
+          "A Data Protection Officer is appointed before public launch regardless of whether registration thresholds are met. Registering that appointment with the National Privacy Commission, together with the backup data processing system, is our planning position rather than a settled conclusion: which registration obligations actually attach, given that the free tier keeps everything on your own phone, is still with Philippine privacy counsel. Where registration is required it happens before cloud backup goes live, and no later than public launch. The status as it stands today is printed below."
         ],
         "controllerHeading": "Personal Information Controller",
         "dpoHeading": "Data Protection Officer",
@@ -101,7 +101,7 @@
       },
       "whatDataExists": {
         "heading": "What data exists, where it lives, how long it stays",
-        "note": "The table below is reproduced unchanged from the lifecycle table in PeraPlano's internal privacy document, including the rows for aggregate telemetry and cloud backup. Those two rows describe planned capabilities: neither is running today, as the status block at the top of this page states.",
+        "note": "The table below is reproduced unchanged from the lifecycle table in PeraPlano's internal privacy document, so it describes the full design and not only the parts that have shipped. Cloud backup, row 6, is a planned PeraPlano Plus feature that is not available today, so nothing currently takes the path that row describes. Row 5 covers aggregate telemetry, and the row states its own limits: no notification content, no amounts, no merchants, no counterparties, and opt-out available.",
         "caption": "Every category of data PeraPlano touches: where it comes from, where it is kept, how long it stays, and whether it ever leaves your phone.",
         "headers": [
           "#",
@@ -201,7 +201,7 @@
       "whoReceivesIt": {
         "heading": "Who receives your data",
         "paragraphs": [
-          "Nobody, with one designed exception. If you switch on cloud backup, the infrastructure vendor that holds those encrypted backups on the company's behalf acts as a Personal Information Processor under a written outsourcing agreement. No other party receives your ledger.",
+          "Nobody today. There is one designed exception and it has not shipped: when cloud backup is released, the infrastructure vendor holding those encrypted backups on the company's behalf will act as a Personal Information Processor, and a written outsourcing agreement covering confidentiality, security measures, sub-processing and breach assistance has to be in place before that release. No such vendor holds anything of yours now, and no other party receives your ledger.",
           "There is no advertising, no data selling, and no third-party advertising or marketing recipient of any kind.",
           "Two things reach the company rather than a third party: content-free aggregate telemetry, which you can switch off without losing a feature, and any support message you choose to send.",
           "Purchase processing for PeraPlano Plus is handled by Google Play under its own policies. PeraPlano stores no payment instrument data."
@@ -299,7 +299,7 @@
           "A company breach means a compromise of systems the company controls: backup storage, the telemetry pipeline, the sign-in identity store. Losing your phone, or having it stolen, is not a company breach — that is what on-device encryption and your device lock are for — but the wipe control and recovery guidance are documented in our support materials.",
           "The Act's list of sensitive personal information does not name financial transaction data. PeraPlano treats your whole ledger, and everything derived from your notifications, at that higher protection level anyway: notification text can incidentally contain things that are on the list, such as fragments of a government ID number in a verification message, and loan records reveal indebtedness.",
           "So where a breach involves that data and there is a real risk of serious harm, the company notifies the National Privacy Commission and the people affected within 72 hours of knowing, or having reason to believe, that a breach occurred.",
-          "The preparation ships with the product rather than after it: an internal breach response runbook covering detection, containment, assessment, notification and remediation; pre-drafted notification templates for users and for the Commission; a breach log kept even for incidents that do not require notification; and an annual rehearsal.",
+          "Our internal document commits to the preparation shipping with the product rather than after it: a breach response runbook covering detection, containment, assessment, notification and remediation; pre-drafted notification templates for users and for the Commission; a breach log kept even for incidents that do not require notification; and an annual rehearsal. That is the standard we hold ourselves to and it is written down, but none of it has been built yet, and we would rather say so than let this page imply a readiness we have not reached.",
           "The architecture limits the damage. Backups are encrypted, and raw notification text is never on any server, so the worst case on the server side exposes structured records — never the text of your notifications."
         ]
       }
