@@ -22,6 +22,7 @@ function statusOf(over: LoanStatusOverride = {}): LoanStatus {
     nextDueDate: "2026-09-18",
     nextDueAmount: 100000,
     reminderOffsets: [-3, 0, 3],
+    archivedAt: null,
     createdAt: 0,
     updatedAt: 0,
     ...over.loan,

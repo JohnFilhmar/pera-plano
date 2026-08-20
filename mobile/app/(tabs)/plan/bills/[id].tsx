@@ -14,10 +14,12 @@ import { estimateLabel } from "@/components/bills/estimate_text";
 import { AmountText } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/ui/confirm_dialog";
 import { EmptyState } from "@/components/ui/empty_state";
 import { SectionHeader } from "@/components/ui/section_header";
 import { useBillCandidates } from "@/hooks/queries/use_bill_candidates";
 import { useBills } from "@/hooks/queries/use_bills";
+import { useArchiveBill } from "@/hooks/mutations/use_archive_bill";
 import {
   useRecordBillPayment,
   useRejectBillMatch,
@@ -31,6 +33,8 @@ export default function BillDetailScreen() {
   const router = useRouter();
   const { data: statuses } = useBills();
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [confirmingArchive, setConfirmingArchive] = useState(false);
+  const archive = useArchiveBill();
 
   const record = useRecordBillPayment();
   const reject = useRejectBillMatch();
@@ -113,6 +117,48 @@ export default function BillDetailScreen() {
           onPress={() => skip.mutate({ billId: status.bill.id, dueDate: status.dueDate })}
         />
       ) : null}
+
+      {/* THE TWO ACTIONS ON THE BILL ITSELF, as opposed to on this cycle
+          (owner: bills are "unarchivable ... should also be modifable").
+          `updateBill` and `archiveBill` have both existed in the repository
+          since m2c and nothing in the app ever called either. */}
+      <View className="flex-row flex-wrap gap-3">
+        <Button
+          title="Edit bill"
+          variant="secondary"
+          testID="bill-edit"
+          onPress={() =>
+            router.push({ pathname: "/plan/bills/[id]/edit", params: { id: status.bill.id } })
+          }
+        />
+        {/* SPEC RULE 27, WORD FOR WORD: stops future cycles, reminders and
+            matching; history and linked transactions are untouched. There is no
+            hard delete on offer at all — the payment history keeps feeding the
+            estimator, and rule 27's "never deletes or alters any ledger
+            Transaction" is easiest to guarantee by not removing the rows that
+            point at them. */}
+        <Button
+          title="Archive bill"
+          variant="destructive"
+          testID="bill-archive"
+          onPress={() => setConfirmingArchive(true)}
+          loading={archive.isPending}
+        />
+      </View>
+
+      <ConfirmDialog
+        visible={confirmingArchive}
+        title="Archive this bill?"
+        body="No more cycles, reminders or automatic matching. Everything you have already paid stays in your ledger, and the amounts still inform your other estimates."
+        confirmLabel="Archive"
+        destructive
+        onCancel={() => setConfirmingArchive(false)}
+        onConfirm={async () => {
+          setConfirmingArchive(false);
+          await archive.mutateAsync(status.bill.id);
+          router.back();
+        }}
+      />
 
       <SectionHeader title="Payment history" />
       {history.length === 0 ? (

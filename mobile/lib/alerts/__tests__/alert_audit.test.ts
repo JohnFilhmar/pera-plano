@@ -93,6 +93,7 @@ function loanStatusOf(over: Partial<Omit<LoanStatus, "loan">> & { loan?: Partial
     nextDueDate: "2026-09-15",
     nextDueAmount: 100000,
     reminderOffsets: [-3, 0, 3],
+    archivedAt: null,
     createdAt: 0,
     updatedAt: 0,
     ...over.loan,

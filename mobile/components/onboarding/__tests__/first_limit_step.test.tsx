@@ -104,9 +104,17 @@ describe("FirstLimitForm", () => {
     // The SAME ₱10,000.00, so the sentence below is unchanged.
     typeAmount("first-limit-amount", "10000");
 
-    // 1,000,000 centavos = ₱10,000.00 a month; ₱10,000.00 / 30 ≈ ₱333.33 a day.
+    // ₱328.77, NOT the ₱333.33 THIS TEST USED TO EXPECT, and the change is
+    // deliberate (2026-08-20). The daily figure came from a hardcoded `÷ 30`,
+    // which was only defensible while monthly was the sole cadence. Now that
+    // the user picks one, it comes from `dailyRateOf` — 12 periods a year over
+    // 365 days, the same ratio `baseFor` uses to resolve a percent-of-income
+    // limit. Keeping `÷ 30` would make this sentence disagree with the limit
+    // the app actually enforces afterwards.
+    //
+    //   1,000,000 centavos × 12 ÷ 365 = 32,876.7 centavos = ₱328.77
     expect(screen.getByTestId("first-limit-preview")).toHaveTextContent(
-      "₱10,000.00 every month is about ₱333.33 a day.",
+      "₱10,000.00 every month is about ₱328.77 a day.",
     );
   });
 
@@ -149,9 +157,14 @@ describe("FirstLimitForm", () => {
     fireEvent.press(screen.getByTestId("first-limit-basis-percent"));
     typeAmount("first-limit-percent", "20");
 
-    // 20% of ₱30,000.00 = ₱6,000.00 a month; /30 = ₱200.00 a day.
+    // 20% of ₱30,000.00 = ₱6,000.00 a month — now resolved by `baseFor` itself
+    // rather than by a local `monthlyIncome × percent ÷ 10,000` helper, so the
+    // percent path and the engine cannot drift.
+    //
+    //   600,000 centavos × 12 ÷ 365 = 19,726.0 centavos = ₱197.26 a day
+    //   (was ₱200.00 under the old hardcoded ÷ 30 — see the note above).
     expect(screen.getByTestId("first-limit-preview")).toHaveTextContent(
-      "₱6,000.00 every month is about ₱200.00 a day.",
+      "₱6,000.00 every month is about ₱197.26 a day.",
     );
   });
 
@@ -164,7 +177,63 @@ describe("FirstLimitForm", () => {
     fireEvent.press(screen.getByTestId("first-limit-save"));
 
     // The trap task-3-brief warns about: 20% must store 2000, never 20.
-    expect(onSubmit).toHaveBeenCalledWith({ basis: "percent-of-income", value: 2000 });
+    // `scope` joined the payload on 2026-08-20 and defaults to monthly.
+    expect(onSubmit).toHaveBeenCalledWith({
+      basis: "percent-of-income",
+      value: 2000,
+      scope: "monthly",
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // The cadence, which used to be pinned (owner, 2026-08-20: the onboarding
+  // limit is "unmodifiable and it should be modifiable to change it to daily,
+  // weekly, monthly, or annually").
+  // -------------------------------------------------------------------------
+
+  test("monthly is preselected, keeping docs rule 14's default", () => {
+    const onSubmit = jest.fn();
+    renderForm(<FirstLimitForm monthlyIncome={null} onSubmit={onSubmit} />);
+
+    expect(screen.getByTestId("first-limit-scope-monthly").props.accessibilityState.selected).toBe(
+      true,
+    );
+  });
+
+  test("picking a cadence reports it", () => {
+    const onSubmit = jest.fn();
+    renderForm(<FirstLimitForm monthlyIncome={null} onSubmit={onSubmit} />);
+
+    fireEvent.press(screen.getByTestId("first-limit-scope-weekly"));
+    typeAmount("first-limit-amount", "2000");
+    fireEvent.press(screen.getByTestId("first-limit-save"));
+
+    expect(onSubmit).toHaveBeenCalledWith({ basis: "fixed", value: 200_000, scope: "weekly" });
+  });
+
+  test("the preview sentence names the period the user actually picked", () => {
+    const onSubmit = jest.fn();
+    renderForm(<FirstLimitForm monthlyIncome={null} onSubmit={onSubmit} />);
+
+    typeAmount("first-limit-amount", "2000");
+    fireEvent.press(screen.getByTestId("first-limit-scope-weekly"));
+
+    // Rule 4's sentence has to follow the cadence; "every month" on a weekly
+    // limit would be a live preview of something the user did not ask for.
+    expect(screen.getByTestId("first-limit-preview").props.children).toContain("every week");
+  });
+
+  test("a daily limit does not say its own figure twice", () => {
+    const onSubmit = jest.fn();
+    renderForm(<FirstLimitForm monthlyIncome={null} onSubmit={onSubmit} />);
+
+    typeAmount("first-limit-amount", "500");
+    fireEvent.press(screen.getByTestId("first-limit-scope-daily"));
+
+    // "…every day is about ₱500 a day" states the same thing twice.
+    const preview = String(screen.getByTestId("first-limit-preview").props.children);
+    expect(preview).not.toContain("a day.");
+    expect(preview).toContain("every day.");
   });
 });
 
@@ -179,18 +248,52 @@ describe("FirstLimitScreen", () => {
     typeAmount("first-limit-amount", "10000"); // was "1000000" in centavos
     fireEvent.press(screen.getByTestId("first-limit-save"));
 
-    await waitFor(async () => expect(await listLimits()).toHaveLength(1));
-    const [limit] = await listLimits();
-    expect(limit!.scope).toBe("monthly");
-    expect(limit!.basis).toBe("fixed");
-    expect(limit!.value).toBe(1_000_000);
-    expect(limit!.rollover).toBe(false);
-    expect(limit!.thresholdsFired).toEqual([]);
+    // FOUR LIMITS, NOT ONE (owner, 2026-08-20). The entered one plus the same
+    // limit restated at the other three cadences, so Plan -> Limits is
+    // populated rather than showing the single row that was typed. See
+    // lib/limits/limit_derivation.ts.
+    await waitFor(async () => expect(await listLimits()).toHaveLength(4));
+
+    const limits = await listLimits();
+    const entered = limits.find((candidate) => candidate.derivedFrom === null);
+    expect(entered!.scope).toBe("monthly");
+    expect(entered!.basis).toBe("fixed");
+    expect(entered!.value).toBe(1_000_000);
+    expect(entered!.rollover).toBe(false);
+    expect(entered!.thresholdsFired).toEqual([]);
+
+    // EXACTLY ONE IS THE USER'S. The other three must be marked derived, or
+    // they would count against the free tier's one-active-limit cap and gate a
+    // user who has just finished onboarding.
+    expect(limits.filter((candidate) => candidate.derivedFrom === null)).toHaveLength(1);
+    expect(limits.filter((candidate) => candidate.derivedFrom === entered!.id)).toHaveLength(3);
+    expect(limits.map((candidate) => candidate.scope).sort()).toEqual([
+      "annual",
+      "daily",
+      "monthly",
+      "weekly",
+    ]);
+
     // With no `onDone` supplied — which is how the router mounts it — saving
     // still has to move the flow on by itself, and "done" is the one
     // transition onboarding_state.ts's `nextStep` doc calls out as stranding
     // the user if it is wrong.
     await waitFor(() => expect(mockPush).toHaveBeenCalledWith("/(onboarding)/done"));
+  });
+
+  test("the cadence the user picks is the one that is NOT derived", async () => {
+    await renderScreen();
+
+    fireEvent.press(screen.getByTestId("first-limit-scope-weekly"));
+    typeAmount("first-limit-amount", "2000");
+    fireEvent.press(screen.getByTestId("first-limit-save"));
+
+    await waitFor(async () => expect(await listLimits()).toHaveLength(4));
+
+    const limits = await listLimits();
+    const entered = limits.find((candidate) => candidate.derivedFrom === null);
+    expect(entered!.scope).toBe("weekly");
+    expect(entered!.value).toBe(200_000);
   });
 
   test("percent-of-income is unavailable until an income has actually been declared", async () => {

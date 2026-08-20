@@ -23,7 +23,7 @@ import { formatCentavos } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
 import { NumericField } from "@/components/ui/numeric_field";
 import { DEFAULT_REMINDER_OFFSETS } from "@/constants/bills";
-import { centavosFrom } from "@/lib/money/peso_input";
+import { centavosFrom, pesoInputFrom } from "@/lib/money/peso_input";
 import type { BillAmountMode, DueRule } from "@/types/domain";
 
 export type BillFormValues = {
@@ -39,6 +39,20 @@ export type BillFormProps = {
   onSubmit: (values: BillFormValues) => void;
   busy?: boolean;
   testID?: string;
+  /**
+   * Seeds the form for an EDIT (owner's device report: a bill "should also be
+   * modifable"). Omitted on the create route, where every field starts blank.
+   *
+   * `Partial`, and the shape WalletForm already uses — a caller that knows only
+   * some of the values does not have to invent the rest.
+   */
+  initial?: Partial<BillFormValues>;
+  /**
+   * "Save bill" on create, "Save changes" on edit. A prop rather than a
+   * `mode: "create" | "edit"` flag, because the label is the only thing that
+   * actually differs and a mode would invite behaviour to be hung off it later.
+   */
+  submitLabel?: string;
 };
 
 const MODES: readonly { value: BillAmountMode; label: string; hint: string }[] = [
@@ -66,15 +80,32 @@ const OFFSETS: readonly { value: number; label: string }[] = [
   { value: 0, label: "On the due date" },
 ];
 
-export function BillForm({ today, onSubmit, busy = false, testID }: BillFormProps) {
-  const [name, setName] = useState("");
-  const [amountText, setAmountText] = useState("");
-  const [amountMode, setAmountMode] = useState<BillAmountMode>("estimated");
-  const [dueRule, setDueRule] = useState<DueRule>({
-    kind: "day-of-month",
-    day: new Date(`${today}T00:00:00`).getDate(),
-  });
-  const [offsets, setOffsets] = useState<number[]>([...DEFAULT_REMINDER_OFFSETS]);
+export function BillForm({
+  today,
+  onSubmit,
+  busy = false,
+  testID,
+  initial,
+  submitLabel = "Save bill",
+}: BillFormProps) {
+  const [name, setName] = useState(initial?.name ?? "");
+  // pesoInputFrom, NEVER String(). `initial.amount` is Centavos and this field
+  // holds PESO TEXT, so `String(initial.amount)` would seed ₱5,000.88 as
+  // "500088" — a silent 100×, and the exact bug wallet_form.tsx's own seeding
+  // note records having been found twice already in this workstream.
+  const [amountText, setAmountText] = useState(
+    initial?.amount !== undefined ? pesoInputFrom(initial.amount) : "",
+  );
+  const [amountMode, setAmountMode] = useState<BillAmountMode>(initial?.amountMode ?? "estimated");
+  const [dueRule, setDueRule] = useState<DueRule>(
+    initial?.dueRule ?? {
+      kind: "day-of-month",
+      day: new Date(`${today}T00:00:00`).getDate(),
+    },
+  );
+  const [offsets, setOffsets] = useState<number[]>(
+    initial?.reminderOffsets ? [...initial.reminderOffsets] : [...DEFAULT_REMINDER_OFFSETS],
+  );
 
   const amount = centavosFrom(amountText);
   const canSave = name.trim().length > 0 && amount > 0;
@@ -185,7 +216,7 @@ export function BillForm({ today, onSubmit, busy = false, testID }: BillFormProp
       </View>
 
       <Button
-        title="Save bill"
+        title={submitLabel}
         testID="bill-save"
         disabled={!canSave || busy}
         onPress={() =>

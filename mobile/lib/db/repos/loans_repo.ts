@@ -90,6 +90,8 @@ type LoanRow = {
   reminder_offsets_json: string;
   created_at: number;
   updated_at: number;
+  /** 010_soft_delete_and_derived_limits — appended by ALTER TABLE, hence last. */
+  archived_at: number | null;
 };
 
 /**
@@ -136,6 +138,10 @@ function rowToLoan(row: LoanRow): Loan {
     nextDueDate: row.next_due_date,
     nextDueAmount: row.next_due_amount,
     reminderOffsets: JSON.parse(row.reminder_offsets_json) as number[],
+    // Added by ALTER TABLE in migration 010, so every loan written before it
+    // reads NULL — which is exactly right: nothing was archived before there
+    // was a way to archive it.
+    archivedAt: row.archived_at ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -188,10 +194,19 @@ export async function getLoan(id: string): Promise<Loan | null> {
 export async function listLoans(opts?: {
   direction?: LoanDirection;
   includeSettled?: boolean;
+  includeArchived?: boolean;
 }): Promise<Loan[]> {
   const db = await getDatabase();
   const clauses: string[] = [];
   const params: (string | number)[] = [];
+
+  // ARCHIVED LOANS ARE HIDDEN UNLESS ASKED FOR — the default `listBills`
+  // already takes, and a DIFFERENT idea from `includeSettled` right below.
+  // Settled means the balance reached zero, which the spec keeps visible in
+  // its own list; archived means the user retired the loan on purpose.
+  if (opts?.includeArchived !== true) {
+    clauses.push("loans.archived_at IS NULL");
+  }
 
   if (opts?.direction !== undefined) {
     clauses.push("loans.direction = ?");
@@ -273,9 +288,41 @@ export async function updateLoan(id: string, patch: Partial<NewLoan>): Promise<L
   return updated;
 }
 
+/**
+ * Retires a loan by setting `archived_at`. IT NEVER DELETES.
+ *
+ * Owner's report on Plan -> Loans: "unarchivable, softdelete data, no hard
+ * delete". Same rule and the same mechanism `archiveBill` already applies to
+ * Bills, and for a stronger reason here: `loan_payments` rows point at real
+ * ledger Transactions, and a deleted loan would strand its own payment history
+ * with nothing to attribute it to.
+ *
+ * IDEMPOTENT AND SILENT, like `archiveWallet` and `archiveBill` — an unknown or
+ * already-archived id is a no-op rather than an error, so a stray double tap
+ * cannot produce a crash for a state that already holds.
+ */
+export async function archiveLoan(id: string): Promise<void> {
+  const db = await getDatabase();
+  const now = Date.now();
+  await db.runAsync(
+    "UPDATE loans SET archived_at = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL",
+    [now, now, id],
+  );
+}
+
+/**
+ * Live loans only — archived ones do not count.
+ *
+ * WHAT THIS FEEDS: `canCreateLoan` (lib/entitlements.ts) caps the free tier.
+ * Counting archived loans would let a user hit that cap with loans they have
+ * already retired and give them no way back under it, since nothing is ever
+ * deleted.
+ */
 export async function countLoans(): Promise<number> {
   const db = await getDatabase();
-  const row = await db.getFirstAsync<{ n: number }>("SELECT COUNT(*) AS n FROM loans");
+  const row = await db.getFirstAsync<{ n: number }>(
+    "SELECT COUNT(*) AS n FROM loans WHERE archived_at IS NULL",
+  );
   return row?.n ?? 0;
 }
 

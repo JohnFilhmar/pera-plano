@@ -39,6 +39,7 @@ function statusOf(over: LoanStatusOverride = {}): LoanStatus {
     // Rule 15's default three — most fixtures want the out-of-box behaviour;
     // the off/custom tests override this explicitly.
     reminderOffsets: [-3, 0, 3],
+    archivedAt: null,
     createdAt: 0,
     updatedAt: 0,
     ...over.loan,

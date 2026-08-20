@@ -24,6 +24,7 @@ function loanOf(over: Partial<Loan> = {}): Loan {
     nextDueDate: null,
     nextDueAmount: null,
     reminderOffsets: [-3, 0, 3],
+    archivedAt: null,
     createdAt: 0,
     updatedAt: 0,
     ...over,

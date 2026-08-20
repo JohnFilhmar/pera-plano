@@ -19,6 +19,7 @@ import { freshDb } from "@/test_support/db";
 import type { Wallet } from "@/types/domain";
 
 import {
+  archiveLoan,
   countLoans,
   createLoan,
   deleteAdjustment,
@@ -458,4 +459,68 @@ test("a settled loan reopens when its balance moves again", async () => {
 test("listLoans is empty on a fresh database", async () => {
   expect(await listLoans()).toEqual([]);
   expect(await countLoans()).toBe(0);
+});
+
+// ---------------------------------------------------------------------------
+// Archive — migration 010. Loans had NO retirement path at all before it: no
+// column, no function, nothing. Owner's device report: "plan loans
+// unarchivable, softdelete data, no hard delete".
+// ---------------------------------------------------------------------------
+
+test("archiving a loan hides it without destroying its payment history", async () => {
+  const loan = await createLoan({
+    direction: "i-owe",
+    counterparty: "Tita",
+    principal: 500000,
+  });
+  const recorded = await recordPayment({ loanId: loan.id, transactionId: await payment(100000) });
+
+  await archiveLoan(loan.id);
+
+  expect(await listLoans()).toEqual([]);
+  // THE WHOLE REASON THERE IS NO HARD DELETE: `loan_payments` rows point at
+  // real ledger Transactions. Deleting the loan would leave the money visibly
+  // gone from the ledger with nothing to explain it.
+  expect((await listPayments(loan.id)).map((p) => p.id)).toEqual([recorded.id]);
+  expect((await getLoan(loan.id))?.archivedAt).toEqual(expect.any(Number));
+  expect((await listLoans({ includeArchived: true })).map((l) => l.id)).toEqual([loan.id]);
+});
+
+test("an archived loan stops counting against the free tier's cap", async () => {
+  // `canCreateLoan` reads `countLoans`. Counting retired loans would let a user
+  // reach the cap with loans they are finished with and give them no way back
+  // under it, since nothing is ever deleted.
+  const loan = await createLoan({ direction: "i-owe", counterparty: "Kuya", principal: 100000 });
+  expect(await countLoans()).toBe(1);
+
+  await archiveLoan(loan.id);
+
+  expect(await countLoans()).toBe(0);
+});
+
+test("ARCHIVED IS NOT SETTLED — they are separate filters", async () => {
+  // A settled loan reached zero and the spec keeps it in a visible settled
+  // list. An archived one is a loan the user is done tracking, whatever its
+  // balance. Collapsing the two would hide loans that are still owed.
+  const loan = await createLoan({ direction: "i-owe", counterparty: "Ate", principal: 500000 });
+
+  await archiveLoan(loan.id);
+
+  // Still unsettled — the balance never moved — yet correctly absent.
+  expect(await outstandingBalance(loan.id)).toBe(500000);
+  expect(await listLoans({ includeSettled: false })).toEqual([]);
+});
+
+test("archiving is idempotent and does not restamp the date", async () => {
+  const loan = await createLoan({ direction: "owed-to-me", counterparty: "Boss", principal: 1000 });
+
+  await archiveLoan(loan.id);
+  const first = (await getLoan(loan.id))?.archivedAt;
+  await archiveLoan(loan.id);
+
+  expect((await getLoan(loan.id))?.archivedAt).toBe(first);
+});
+
+test("archiving an unknown id is silent", async () => {
+  await expect(archiveLoan("no-such-loan")).resolves.toBeUndefined();
 });

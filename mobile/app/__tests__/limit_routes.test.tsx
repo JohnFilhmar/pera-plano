@@ -48,6 +48,7 @@ import { createLimit, getLimit, listLimits } from "@/lib/db/repos/limits_repo";
 import { insertTransaction } from "@/lib/db/repos/transactions_repo";
 import { createWallet } from "@/lib/db/repos/wallets_repo";
 import { __setTierForTests } from "@/lib/entitlements";
+import { derivedLimitsFrom } from "@/lib/limits/limit_derivation";
 import { getLimitAlertState } from "@/lib/db/repos/limits_repo";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
@@ -243,6 +244,57 @@ test("the cap counts ACTIVE limits, so a deactivated one leaves room", async () 
   expect(mockPush).toHaveBeenCalledWith("/plan/limits/new");
 });
 
+test("AND IT DOES NOT COUNT THE ONES THE APP DERIVED", async () => {
+  // Owner-approved 2026-08-20. Entering one limit now also creates the
+  // equivalent at the other three cadences, so counting those would take a
+  // Free user from "one limit" to "gated" the instant they finished
+  // onboarding — tripping a cap they never approached, over rows they never
+  // asked for.
+  __setTierForTests("free");
+  const source = await createLimit({ scope: "monthly", basis: "fixed", value: 1000000 });
+  for (const derived of derivedLimitsFrom(source)) await createLimit(derived);
+
+  renderScreen(<LimitsScreen />);
+  await screen.findByTestId(`limit-row-${source.id}`);
+
+  fireEvent.press(screen.getByTestId("limits-add"));
+
+  // Four active limits on screen, one of them the user's — so still gated at
+  // exactly the point the cap actually means.
+  expect((await listLimits()).length).toBe(4);
+  expect(mockPush).toHaveBeenCalledWith("/plan/limits/new?gated=1");
+});
+
+// ---------------------------------------------------------------------------
+// Gap warnings between limits (owner, 2026-08-20).
+// ---------------------------------------------------------------------------
+
+test("a weekly limit looser than the monthly one is called out", async () => {
+  // ₱10,000/week is ~₱1,425/day against ₱20,000/month's ~₱657/day: spending to
+  // the weekly cap blows the monthly one before the month is out, and the user
+  // would otherwise only find out at the end of it.
+  await createLimit({ scope: "weekly", basis: "fixed", value: 1_000_000 });
+  await createLimit({ scope: "monthly", basis: "fixed", value: 2_000_000 });
+
+  renderScreen(<LimitsScreen />);
+
+  await screen.findByTestId("limit-gap-contradiction");
+});
+
+test("A DERIVED SET RAISES NO WARNING AT ALL", async () => {
+  // The test that keeps the feature credible: onboarding creates all four
+  // cadences at once, and a warning on the set the app itself just built is
+  // how users learn to ignore warnings.
+  const source = await createLimit({ scope: "monthly", basis: "fixed", value: 2_000_000 });
+  for (const derived of derivedLimitsFrom(source)) await createLimit(derived);
+
+  renderScreen(<LimitsScreen />);
+  await screen.findByTestId(`limit-row-${source.id}`);
+
+  expect(screen.queryByTestId("limit-gap-contradiction")).toBeNull();
+  expect(screen.queryByTestId("limit-gap-never-binds")).toBeNull();
+});
+
 // ---------------------------------------------------------------------------
 // Create
 // ---------------------------------------------------------------------------
@@ -259,12 +311,37 @@ test("saving a fixed limit stores CENTAVOS, from the PESOS typed", async () => {
   screen.getByText("₱8,000.00");
   fireEvent.press(screen.getByTestId("limit-save"));
 
-  await waitFor(async () => expect((await listLimits()).length).toBe(1));
-  const [saved] = await listLimits();
+  // FOUR ROWS, NOT ONE (owner-approved 2026-08-20): the entered limit plus the
+  // same limit restated at the other three cadences. The assertions below are
+  // about the one the user actually typed, which is the one that is NOT
+  // derived — see lib/limits/limit_derivation.ts.
+  await waitFor(async () => expect((await listLimits()).length).toBe(4));
+  const saved = (await listLimits()).find((limit) => limit.derivedFrom === null)!;
   expect(saved.value).toBe(800000);
   expect(saved.basis).toBe("fixed");
   expect(saved.scope).toBe("monthly");
   expect(mockBack).toHaveBeenCalled();
+});
+
+test("the derived limits are marked, so the free tier's cap ignores them", async () => {
+  // `canCreateLimit` caps Free at ONE active limit. Without `derivedFrom` the
+  // four rows above would gate a user the instant they saved their first one.
+  renderScreen(<NewLimitScreen />);
+
+  typeAmount("limit-amount", "8000");
+  fireEvent.press(screen.getByTestId("limit-save"));
+
+  await waitFor(async () => expect((await listLimits()).length).toBe(4));
+  const limits = await listLimits();
+  const entered = limits.find((limit) => limit.derivedFrom === null)!;
+  expect(limits.filter((limit) => limit.derivedFrom === null)).toHaveLength(1);
+  expect(limits.filter((limit) => limit.derivedFrom === entered.id)).toHaveLength(3);
+  expect(limits.map((limit) => limit.scope).sort()).toEqual([
+    "annual",
+    "daily",
+    "monthly",
+    "weekly",
+  ]);
 });
 
 test("the scope chips choose the period, and rollover defaults OFF", async () => {
@@ -275,10 +352,14 @@ test("the scope chips choose the period, and rollover defaults OFF", async () =>
   typeAmount("limit-amount", "1500"); // was changeText "150000" — same ₱1,500.00
   fireEvent.press(screen.getByTestId("limit-save"));
 
-  await waitFor(async () => expect((await listLimits()).length).toBe(1));
-  const [saved] = await listLimits();
+  await waitFor(async () => expect((await listLimits()).length).toBe(4));
+  const saved = (await listLimits()).find((limit) => limit.derivedFrom === null)!;
   expect(saved.scope).toBe("weekly");
   expect(saved.rollover).toBe(false);
+  // NOT INHERITED by the derived rows either: rollover changes how much may be
+  // spent, and switching it on for three cadences nobody chose it for would do
+  // that silently.
+  expect((await listLimits()).every((limit) => limit.rollover === false)).toBe(true);
 });
 
 test("an empty or zero amount cannot be saved", async () => {
@@ -389,18 +470,42 @@ test("mute records the mute without silencing the visual state", async () => {
   screen.getByTestId("limit-detail-card");
 });
 
-test("delete removes the limit and goes back, touching no transactions", async () => {
+// WAS "delete removes the limit". REWRITTEN, not renamed (owner-approved
+// 2026-08-20): the old assertion was `getLimit(...)` resolving to null after a
+// literal `DELETE FROM limits`, and the claim is now the opposite one — the
+// row survives, and it is the LIST it leaves.
+test("archive retires the limit and goes back, touching no transactions", async () => {
   const limit = await createLimit({ scope: "monthly", basis: "fixed", value: 1000000 });
   await spend(food.id, 250000);
   mockParams = { id: limit.id };
 
   renderScreen(<LimitDetailScreen />);
-  await screen.findByTestId("limit-delete");
+  await screen.findByTestId("limit-archive");
 
-  fireEvent.press(screen.getByTestId("limit-delete"));
+  fireEvent.press(screen.getByTestId("limit-archive"));
+  // BEHIND A CONFIRMATION. The row leaves the list and there is no un-archive
+  // screen yet, so an accidental tap must not be how a user finds that out.
+  fireEvent.press(await screen.findByTestId("confirm-dialog-confirm"));
 
-  await waitFor(async () => expect(await getLimit(limit.id)).toBeNull());
-  expect(mockBack).toHaveBeenCalled();
+  await waitFor(() => expect(mockBack).toHaveBeenCalled());
+  // Gone from the list...
+  expect(await listLimits()).toEqual([]);
+  // ...and still on file, with the spend it was watching untouched.
+  const archived = await getLimit(limit.id);
+  expect(archived).not.toBeNull();
+  expect(archived!.archivedAt).toEqual(expect.any(Number));
+});
+
+test("archiving asks first, and cancelling leaves the limit alone", async () => {
+  const limit = await createLimit({ scope: "monthly", basis: "fixed", value: 1000000 });
+  mockParams = { id: limit.id };
+
+  renderScreen(<LimitDetailScreen />);
+  fireEvent.press(await screen.findByTestId("limit-archive"));
+  fireEvent.press(await screen.findByTestId("confirm-dialog-cancel"));
+
+  await waitFor(async () => expect((await listLimits()).length).toBe(1));
+  expect(mockBack).not.toHaveBeenCalled();
 });
 
 test("a limit that no longer exists says so instead of rendering blank", async () => {

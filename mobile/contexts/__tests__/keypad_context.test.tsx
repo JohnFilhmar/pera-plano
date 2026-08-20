@@ -367,13 +367,14 @@ describe("the two keyboards", () => {
     // The reverse trip: panel open on an amount, user taps a text field. The
     // OS raises its keyboard, and ours must get out of the way rather than
     // stack in front of it.
-    const handlers: Record<string, () => void> = {};
-    const add = jest
-      .spyOn(Keyboard, "addListener")
-      .mockImplementation((event: string, handler: () => void) => {
-        handlers[event] = handler;
-        return { remove: jest.fn() } as never;
-      });
+    const handlers: Record<string, (...args: never[]) => void> = {};
+    const add = jest.spyOn(Keyboard, "addListener").mockImplementation(((
+      event: string,
+      handler: (...args: never[]) => void,
+    ) => {
+      handlers[event] = handler;
+      return { remove: jest.fn() };
+    }) as never);
 
     render(
       <KeypadProvider>

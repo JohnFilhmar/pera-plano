@@ -208,6 +208,32 @@ export type Limit = {
   rollover: boolean;
   isActive: boolean;
   thresholdsFired: LimitThreshold[];
+  /**
+   * When the user retired this limit, or `null` while it is live (migration
+   * 010). A limit is never hard-deleted: it is the thing breach history is
+   * attributed to, and 004_limit_alert_state.sql records that `app_settings`
+   * has no foreign key back here — so a real DELETE orphans that state rather
+   * than cleaning it up.
+   *
+   * DISTINCT FROM `isActive`. Inactive means "not being enforced right now"
+   * (the free tier's gated card, kept and dimmed). Archived means "the user is
+   * done with this one" and it leaves the list entirely.
+   */
+  archivedAt: EpochMs | null;
+  /**
+   * The limit this one was worked out FROM, or `null` if the user created it
+   * themselves (migration 010).
+   *
+   * Onboarding asks for one limit and creates the equivalent at every other
+   * cadence, so Plan -> Limits is populated rather than showing the single row
+   * that was typed. This field exists for the entitlement gate:
+   * `lib/entitlements.ts` caps Free at one active limit, and limits the app
+   * invented for you must not consume that allowance.
+   *
+   * IT DOES NOT MAKE THE ROW DEPENDENT. Derived limits are ordinary limits from
+   * the moment they are written — editing one leaves the others alone.
+   */
+  derivedFrom: string | null;
   createdAt: EpochMs;
   updatedAt: EpochMs;
 };
@@ -272,6 +298,15 @@ export type Loan = {
    * shows up"), the same convention `Bill.reminderOffsets` already uses.
    */
   reminderOffsets: number[];
+  /**
+   * When the user retired this loan, or `null` while it is live (migration
+   * 010) — the same column and the same meaning `Bill.archivedAt` already has.
+   *
+   * NEVER A HARD DELETE. A loan is what recorded payments point at; removing
+   * the row would strand its payment history in the ledger with nothing to
+   * attribute it to.
+   */
+  archivedAt: EpochMs | null;
   createdAt: EpochMs;
   updatedAt: EpochMs;
 };

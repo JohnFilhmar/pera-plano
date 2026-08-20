@@ -11,8 +11,8 @@ import { freshDb } from "@/test_support/db";
 import type { LimitAlertState } from "@/types/control";
 
 import {
+  archiveLimit,
   createLimit,
-  deleteLimit,
   getLimit,
   getLimitAlertState,
   LimitNotFoundError,
@@ -205,25 +205,80 @@ test("updateLimit throws LimitNotFoundError for an unknown id", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Delete
+// Archive — migration 010. These two tests used to assert a hard `deleteLimit`
+// and were REWRITTEN, not merely renamed: the owner's rule across the plan
+// entities is now "no hard delete" (2026-08-20), so the claim being made about
+// a retired limit is the opposite of what it was. A limit is what a breach is
+// attributed to, and archiving keeps that attributable.
 // ---------------------------------------------------------------------------
-test("deletes a limit", async () => {
+test("archiving a limit takes it out of the list without destroying it", async () => {
   const limit = await createLimit({ scope: "annual", basis: "fixed", value: 12000000 });
 
-  await deleteLimit(limit.id);
+  await archiveLimit(limit.id);
 
-  expect(await getLimit(limit.id)).toBeNull();
+  // Gone from the list the Plan tab reads...
+  expect((await listLimits()).map((l) => l.id)).not.toContain(limit.id);
+  // ...but still on file, and stamped with WHEN rather than merely THAT.
+  const archived = await getLimit(limit.id);
+  expect(archived).not.toBeNull();
+  expect(archived!.archivedAt).toEqual(expect.any(Number));
+  expect((await listLimits({ includeArchived: true })).map((l) => l.id)).toContain(limit.id);
 });
 
-test("deleting a limit deletes its alert state with it", async () => {
-  // The reason the state lives in a COLUMN rather than an app_settings map:
-  // there is no orphan to clean up, because the row carries it.
+test("an archived limit keeps its alert state, rather than losing it to a delete", async () => {
+  // 004_limit_alert_state.sql put this state in a COLUMN on `limits`
+  // deliberately, listing "app_settings has no foreign key to limits, so
+  // deleteLimit would orphan the entry forever" among its reasons. That made
+  // the old hard delete clean — it took the state with it. Archiving keeps
+  // BOTH, which is the point: the limit can still explain a breach it was
+  // present for.
   const limit = await createLimit({ scope: "monthly", basis: "fixed", value: 800000 });
   await setLimitAlertState(limit.id, STATE);
 
-  await deleteLimit(limit.id);
+  await archiveLimit(limit.id);
 
-  expect(await getLimitAlertState(limit.id)).toBeNull();
+  expect(await getLimitAlertState(limit.id)).toEqual(STATE);
+});
+
+test("archiving is idempotent and does not move the timestamp on a second call", async () => {
+  // Matches `archiveWallet` and `archiveBill`: a stray double tap is a state
+  // that already holds, not an error — and must not restamp the date the user
+  // actually retired it.
+  const limit = await createLimit({ scope: "weekly", basis: "fixed", value: 200000 });
+
+  await archiveLimit(limit.id);
+  const first = (await getLimit(limit.id))!.archivedAt;
+  await archiveLimit(limit.id);
+
+  expect((await getLimit(limit.id))!.archivedAt).toBe(first);
+});
+
+test("archiving an unknown id is silent", async () => {
+  await expect(archiveLimit("no-such-limit")).resolves.toBeUndefined();
+});
+
+// ---------------------------------------------------------------------------
+// Derived limits — migration 010's other column.
+// ---------------------------------------------------------------------------
+test("a limit the user created is not derived from anything", async () => {
+  const limit = await createLimit({ scope: "monthly", basis: "fixed", value: 800000 });
+
+  expect(limit.derivedFrom).toBeNull();
+});
+
+test("a derived limit remembers which limit it came from", async () => {
+  // What the entitlement gate reads: `canCreateLimit` must not charge the user
+  // for limits the app worked out on their behalf.
+  const source = await createLimit({ scope: "monthly", basis: "fixed", value: 2000000 });
+
+  const derived = await createLimit({
+    scope: "weekly",
+    basis: "fixed",
+    value: 461538,
+    derivedFrom: source.id,
+  });
+
+  expect(derived.derivedFrom).toBe(source.id);
 });
 
 // ---------------------------------------------------------------------------
