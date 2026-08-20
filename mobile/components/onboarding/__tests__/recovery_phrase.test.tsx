@@ -74,7 +74,8 @@ jest.mock("react-native", () => {
 });
 
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
-import { Share } from "react-native";
+import { Share, StyleSheet } from "react-native";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 import { authenticateAsync } from "expo-local-authentication";
 import { initializeKeys } from "@/lib/crypto/key_manager";
 import { generatePhrase } from "@/lib/crypto/recovery_phrase";
@@ -563,4 +564,99 @@ test('"Try again" after a failed generatePhrase DOES generate a new phrase -- no
   // phrase to retry initialization WITH.
   expect(mockGeneratePhrase).toHaveBeenCalledTimes(2);
   expect(mockInitializeKeys).not.toHaveBeenCalled();
+});
+
+// ---------------------------------------------------------------------------
+// THE BURIED "Setting up your encryption keys…" MESSAGE (owner's device
+// report: "onboarding encrypting message footer is blocked by hardware bottom
+// navbar").
+//
+// WHY THIS SCREEN AND NOT OnboardingFrame. components/onboarding/
+// onboarding_frame.tsx already solved exactly this — its header records the
+// same defect, measured at 126px on a physical A54 — but this screen does not
+// use that frame. It is reached from app/lock.tsx's first-run flow, before any
+// navigator exists, and renders its own column.
+//
+// AND NOT PhraseConfirm EITHER. That component DOES pad itself by
+// `insets.bottom` (its own header says so). The two Texts below it —
+// `recovery-phrase-auth-notice` and `recovery-phrase-initializing` — are its
+// SIBLINGS in the column, outside that padding, carrying a flat `pb-4`/`pb-6`.
+// Against a 126px navigation bar, 24dp of flat padding is not enough, so the
+// message the user is meant to read while their keys are generated sits under
+// the ▢ ◁ strip.
+//
+// THE PROVIDER IS THE TEST. test_support/safe_area_mock.ts answers ZERO insets
+// unless a real SafeAreaProvider is mounted, which is why every other test in
+// this file passes today: with no navigation bar there is nothing to be buried
+// under. This one supplies the bar.
+// ---------------------------------------------------------------------------
+
+/** The A54's navigation bar — the device this defect was found on. */
+const NAV_BAR = 126;
+
+function footerPadding(): number {
+  const flat = StyleSheet.flatten(screen.getByTestId("recovery-phrase-footer").props.style) ?? {};
+  return (flat as { paddingBottom?: number }).paddingBottom ?? 0;
+}
+
+/** Holds initializeKeys in flight so the "initializing" stage stays rendered. */
+function holdInitializeKeys(): () => void {
+  let resolveInit!: () => void;
+  mockInitializeKeys.mockReturnValue(
+    new Promise<void>((resolve) => {
+      resolveInit = resolve;
+    }),
+  );
+  return () => resolveInit();
+}
+
+test("the encrypting message clears the hardware navigation bar", async () => {
+  const releaseInit = holdInitializeKeys();
+
+  render(
+    <SafeAreaProvider
+      initialMetrics={{
+        frame: { x: 0, y: 0, width: 320, height: 640 },
+        insets: { top: 0, bottom: NAV_BAR, left: 0, right: 0 },
+      }}
+    >
+      <RecoveryPhraseScreen />
+    </SafeAreaProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("phrase-display")).toBeTruthy(), {
+    timeout: FIRST_RENDER_TIMEOUT_MS,
+  });
+
+  const words = getDisplayedWords();
+  await act(async () => {
+    fireEvent.press(screen.getByTestId("phrase-continue-button"));
+  });
+  await waitFor(() => expect(screen.getByTestId("phrase-confirm")).toBeTruthy());
+  await submitConfirmation(words);
+
+  // The exact stage the owner photographed: keys genuinely in flight.
+  expect(screen.getByTestId("recovery-phrase-initializing")).toBeTruthy();
+  expect(footerPadding()).toBeGreaterThanOrEqual(NAV_BAR);
+
+  await act(async () => {
+    releaseInit();
+  });
+});
+
+// The other half, and it is a SEPARATE claim: the footer must not reserve a
+// navigation bar that is not there. A flat `paddingBottom: 126` would satisfy
+// the test above on every device and leave a dead band on a gesture-navigation
+// phone — the same double-counting trap onboarding_frame.tsx documents.
+test("it reserves nothing extra when there is no navigation bar", async () => {
+  const releaseInit = holdInitializeKeys();
+
+  const words = await proceedToConfirm();
+  await submitConfirmation(words);
+
+  expect(screen.getByTestId("recovery-phrase-initializing")).toBeTruthy();
+  expect(footerPadding()).toBe(0);
+
+  await act(async () => {
+    releaseInit();
+  });
 });

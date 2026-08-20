@@ -54,11 +54,17 @@ import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { KeyboardProvider } from "react-native-keyboard-controller";
+// Aliased: this file already imports a ThemeProvider — ours, from
+// contexts/theme_context.tsx, which holds the light/dark PREFERENCE. This one
+// is react-navigation's, and it tells NAVIGATORS what to paint. Two different
+// jobs that happen to share a name.
+import { ThemeProvider as NavigationThemeProvider } from "@react-navigation/native";
 import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
 import { AllocationSheet } from "@/components/goals/allocation_sheet";
 import { PaydayDetectedSheet } from "@/components/income/payday_detected_sheet";
 import { KeypadHost } from "@/components/ui/keypad_host";
 import { palette } from "@/constants/colors";
+import { navThemeFor } from "@/constants/nav_theme";
 import { ThemeProvider, useTheme } from "@/contexts/theme_context";
 import { KeypadProvider } from "@/contexts/keypad_context";
 import { LockProvider, useLock } from "@/contexts/lock_context";
@@ -313,7 +319,20 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
       {bootstrapState === "pending" ? null : bootstrapState === "error" ? (
         <BootstrapErrorScreen onRetry={runBootstrap} />
       ) : (
-        <>
+        // EVERY NAVIGATOR IN THE APP READS ITS COLOURS HERE. Without it they
+        // fall back to react-navigation's built-in LIGHT default, which is
+        // where the "broken UI" screenshots' grey void came from: the root
+        // Stack's `contentStyle` below paints only the root Stack's own
+        // screens, and `(tabs)` is one of them — the Tabs navigator inside it,
+        // and the `plan/` and `more/` Stacks inside that, each paint their own
+        // scenes over it. constants/nav_theme.ts has the full account and why
+        // this is one provider rather than a `contentStyle` per navigator.
+        <NavigationThemeProvider value={navThemeFor(resolved)}>
+          {/* `contentStyle` KEPT even though the theme now covers it. The two
+              are not redundant in one case: a screen rendered before any theme
+              consumer resolves still gets the right colour from the explicit
+              prop, and it costs nothing to state the root Stack's own
+              background where the root Stack is declared. */}
           <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: bg } }} />
           {/* AFTER the Stack, not inside it: a later sibling paints on top, and
               the keypad has to sit over whatever screen is focused. It renders
@@ -323,7 +342,7 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
           <KeypadHost />
           <StatusBar style="auto" />
           <PaydaySheets />
-        </>
+        </NavigationThemeProvider>
       )}
     </PersistQueryClientProvider>
   );
