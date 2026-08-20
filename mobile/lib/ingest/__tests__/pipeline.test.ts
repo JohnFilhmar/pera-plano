@@ -379,6 +379,50 @@ test("the raw capture survives being ignored", async () => {
   expect(await getRawCapture("cap-unreadable-raw")).toEqual(raw);
 });
 
+test("a genuine ₱0.00 capture below the floor is queued, never discarded", async () => {
+  // WHAT THIS PINS: that a genuine ₱0.00 notification survives ingest as a
+  // real card carrying `amount: 0`, which is the input the Review Queue's own
+  // zero-amount guard is written against. Nothing in this suite exercised a
+  // ₱0.00 notification before, so the two halves of that story — the parser
+  // treating `0` as a legitimate amount, and the review floor refusing to
+  // throw it away — were only ever reasoned about, never driven end to end.
+  //
+  // The template vouches for itself at exactly the shipped
+  // `reviewFloorThreshold` (0.5), so the score (0.45 after the merchant-missing
+  // penalty) genuinely lands in the DISCARD band rather than merely being
+  // assumed to; the wallet is mapped, so no hard route rescues the capture
+  // either. It reaches the queue on the strength of having parsed an amount.
+  //
+  // WHAT THIS DOES NOT PIN, stated so nobody reads more into it: NOT
+  // `pipeline.ts`'s literal `hasAmount: true`. Verified by mutation — writing
+  // that field as `event.amount > 0` leaves this test green, because the
+  // parsed path queues on `decision.route !== "auto_commit"` and so cannot act
+  // on a `discard` verdict at all; both spellings produce a byte-identical
+  // payload, `GATE_REASONS.unreadable` reason included. That literal is a
+  // truthfulness fix, not a data-safety one, exactly as its own comment says.
+  // What DOES turn this red is `amount.ts` ceasing to treat `0` as a real
+  // amount: the parse then fails and the capture is discarded as unreadable
+  // (confirmed by mutation before this test was committed).
+  await upsertRuleset(ZERO_FLOOR_BUNDLE);
+  const wallet = await createWallet({ name: "GCash", type: "e-wallet" });
+  await addMatcher(wallet.id, GCASH);
+
+  const outcome = await processCapture(
+    capture({ id: "cap-zero-peso", text: "You sent ₱0.00 to Juan Dela Cruz." }),
+  );
+
+  expect(outcome).toEqual({ kind: "queued", reviewItemId: expect.any(String) });
+  const open = await listOpen();
+  expect(open).toHaveLength(1);
+  expect(open[0].kind).toBe("low-confidence");
+  // `amount: 0` verbatim in the payload — this is what `review_card.tsx`
+  // renders as ₱0.00 and what its `missingLedgerField` guard then refuses to
+  // let the primary commit, because the ledger's own `CHECK (amount > 0)`
+  // would reject the row.
+  expect(open[0].payload).toMatchObject({ amount: 0, direction: "out" });
+  expect(await ledger()).toHaveLength(0);
+});
+
 test("the raw capture is stored even when the parse fails", async () => {
   await createWallet({ name: "GCash", type: "e-wallet" });
   const raw = capture({ id: "cap-unparsed", text: "GCash: ₱500.00 something went wrong." });
@@ -985,6 +1029,32 @@ const LEARNED_BUNDLE: RulesetBundleInput = {
           match: String.raw`\bdebited (?<amount>(?:₱|PHP|Php)\s?[\d,]+(?:\.\d{2})?)(?!\.?\d) at (?<merchant>[^.,\n]{1,48}?)(?=\.|,|$)`,
           direction: "out",
           confidence: 1,
+        },
+      ],
+    },
+  ],
+};
+
+/**
+ * A provider whose template vouches for itself at exactly the shipped review
+ * floor (0.5), so anything it parses lands in the DISCARD band with no
+ * threshold retuned. It is the only way to drive `decideRoute`'s "parsed a
+ * real amount but scored at or below the floor" branch end to end from here.
+ */
+const ZERO_FLOOR_BUNDLE: RulesetBundleInput = {
+  version: 2,
+  providers: [
+    {
+      providerKey: "gcash",
+      packageNames: [GCASH],
+      version: 2,
+      channel: "push",
+      templates: [
+        {
+          id: "gcash_sent_at_floor",
+          match: String.raw`\bYou sent (?<amount>(?:₱|PHP|Php)\s?[\d,]+(?:\.\d{2})?)(?!\.?\d)`,
+          direction: "out",
+          confidence: 0.5,
         },
       ],
     },

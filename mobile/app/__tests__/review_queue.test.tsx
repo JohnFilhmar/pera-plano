@@ -246,9 +246,16 @@ describe("the review queue screen", () => {
   });
 
   test("the actions are live now that Task 10 has wired them", async () => {
+    // `gatedPayload({ walletId })`, not the bare `gatedPayload()` this used
+    // to pass. The bare helper defaults to `walletId: null`, and since the
+    // whole-branch review widened review_card.tsx's guard to every field
+    // `proposalFrom` requires, a null wallet now legitimately DISABLES the
+    // primary. Left as it was, this test would have asserted the opposite of
+    // what it is about: that supplying the handlers is what lights the pair
+    // up, not which fields the payload happens to carry.
     const queued = await enqueueAt(NOW - HOUR, {
       kind: "low-confidence",
-      payload: gatedPayload(),
+      payload: gatedPayload({ walletId }),
     });
 
     await renderScreen();

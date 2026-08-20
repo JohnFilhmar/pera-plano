@@ -34,11 +34,14 @@
 // card shows, and a money decision that silently does nothing when tapped is the
 // affordance Tasks 4 and 6 both refused to ship.
 //
-// A SECOND, NARROWER REASON THE PRIMARY CAN BE DISABLED: task 4b's
-// `hasParsedAmount` guard. A `low-confidence` card whose payload has no
-// positive amount disables ITS OWN primary even with a handler supplied — see
-// `ReviewCardProps.onPrimary`'s doc comment for why that one kind is the only
-// exception to "disabled means no handler".
+// A SECOND, NARROWER REASON THE PRIMARY CAN BE DISABLED: task 4b's guard,
+// widened by the whole-branch review to `missingLedgerField`. A
+// `low-confidence` card whose payload is missing ANY field the ledger
+// requires — a positive amount, a direction, or a wallet — disables ITS OWN
+// primary even with a handler supplied, because tapping it could only throw
+// inside `proposalFrom` and be swallowed. See `ReviewCardProps.onPrimary`'s
+// doc comment for why that one kind is the only exception to "disabled means
+// no handler".
 import { Text, View } from "react-native";
 
 import { AmountText } from "@/components/ui/amount_text";
@@ -193,6 +196,49 @@ export function hasParsedAmount(item: ReviewQueueItem): boolean {
 function readDirection(payload: ReviewItemPayload): TxDirection | null {
   return payload.direction === "in" || payload.direction === "out" ? payload.direction : null;
 }
+
+/** The three fields `proposalFrom` refuses to build a Transaction without. */
+export type LedgerRequiredField = "amount" | "direction" | "wallet";
+
+/**
+ * Which ledger-required field this payload is missing, or `null` when it
+ * carries all three.
+ *
+ * MIRRORS `resolve_actions.ts`'s `proposalFrom` — same three checks, in the
+ * same order — because that function is the one that actually decides, and
+ * any disagreement between the two shows up as a button that looks live and
+ * does nothing. `hasParsedAmount` above answers only the first of the three;
+ * this answers all of them.
+ *
+ * THE FAILURE MODE THIS PREVENTS, AND WHY THE WALLET IS THE IMPORTANT ONE: an
+ * unmapped wallet is a ROUTINE hard route, not an edge case.
+ * `GATE_REASONS.unmappedWallet` ("PeraPlano could not tell which account this
+ * came from. Choose the wallet.") fires for every notification from an
+ * account the user has not added yet, and `pipeline.ts` enqueues those as
+ * `low-confidence` with `walletId: null`. Before this guard their primary
+ * rendered ENABLED: the tap threw `IncompleteReviewItemError(id, "wallet")`
+ * inside `proposalFrom`, `useReviewAction`'s mutation carries no `onError`,
+ * and the biggest, greenest button on the card did nothing at all. That is
+ * the identical trap task 4b closed for `amount`, reached through a different
+ * field — found by the whole-branch review, 2026-08-21.
+ */
+export function missingLedgerField(item: ReviewQueueItem): LedgerRequiredField | null {
+  if (!hasParsedAmount(item)) return "amount";
+  if (readDirection(item.payload) === null) return "direction";
+  if (readString(item.payload, "walletId") === null) return "wallet";
+  return null;
+}
+
+/**
+ * What the blocked line calls each field. The user's words, not the schema's:
+ * "direction" is a column name, and someone reading a card about their own
+ * money thinks in "money in or out".
+ */
+const BLOCKED_FIELD_LABEL: Record<LedgerRequiredField, string> = {
+  amount: "the amount",
+  direction: "whether this was money in or out",
+  wallet: "the wallet",
+};
 
 /**
  * The score, or `null` when the payload never carried one.
@@ -468,7 +514,7 @@ export type ReviewCardProps = {
    * NOT THE ONLY WAY THE PRIMARY ENDS UP DISABLED, as of task 4b: a
    * `low-confidence` item with no positive `hasParsedAmount` disables the
    * primary even when this prop IS supplied. That is a data-integrity guard,
-   * not a missing-handler state — see `blockedByMissingAmount` below.
+   * not a missing-handler state — see `missingLedgerField` and `missingField` below.
    */
   onPrimary?: (item: ReviewQueueItem) => void;
   onSecondary?: (item: ReviewQueueItem) => void;
@@ -505,19 +551,24 @@ export function ReviewCard({
   const amount = readAmount(item.payload);
   const categoryId = readString(item.payload, "categoryId");
 
-  // Task 4b. `low-confidence` is the ONLY kind whose primary can commit a
-  // payload with no amount: `possible-duplicate` and `ambiguous-transfer`
-  // come from a normalized event (`pipeline.ts`'s two gated queue sites) and
-  // always carry one, and `unknown-provider`'s primary opens the correction
-  // form (`primaryActionFor` in app/review/index.tsx returns `"correct"` for
-  // it) rather than committing anything — so there is nothing for those three
-  // kinds to guard against here. `resolve_actions.ts`'s `proposalFrom` already
-  // throws on a missing amount, which is why the ledger was never actually at
-  // risk; what this guards against is the OTHER failure — the mutation
-  // rejecting with no `onError` on `useReviewAction`, so the biggest, greenest
-  // button on the card did nothing at all when tapped. This is also defensive
-  // against a hand-built or older row that predates this guard existing.
-  const blockedByMissingAmount = item.kind === "low-confidence" && !hasParsedAmount(item);
+  // Task 4b, WIDENED BY THE WHOLE-BRANCH REVIEW (2026-08-21).
+  // `low-confidence` is the ONLY kind whose primary can commit an incomplete
+  // payload: `possible-duplicate` and `ambiguous-transfer` come from a
+  // normalized event (`pipeline.ts`'s two gated queue sites) and always carry
+  // amount, direction and wallet, and `unknown-provider`'s primary opens the
+  // correction form (`primaryActionFor` in app/review/index.tsx returns
+  // `"correct"` for it) rather than committing anything — so there is nothing
+  // for those three kinds to guard against here.
+  //
+  // `resolve_actions.ts`'s `proposalFrom` already throws on any of its three
+  // required fields, which is why the LEDGER was never at risk; what this
+  // guards is the OTHER failure — that throw becomes a rejected mutation with
+  // no `onError` on `useReviewAction`, so the biggest, greenest button on the
+  // card did nothing at all when tapped. This originally checked the amount
+  // alone, and the WALLET turned out to be the far more common way in, because
+  // an unmapped wallet is a routine hard route rather than an edge case. See
+  // `missingLedgerField`. Also defensive against a hand-built or older row.
+  const missingField = item.kind === "low-confidence" ? missingLedgerField(item) : null;
 
   return (
     <View testID={testID ?? `review-card-${item.id}`} className="px-4 pb-3">
@@ -574,7 +625,7 @@ export function ReviewCard({
                 testID={`review-primary-${item.id}`}
                 title={actions.primary}
                 variant="primary"
-                disabled={onPrimary === undefined || blockedByMissingAmount}
+                disabled={onPrimary === undefined || missingField !== null}
                 onPress={onPrimary ? () => onPrimary(item) : () => undefined}
               />
             </View>
@@ -593,15 +644,14 @@ export function ReviewCard({
             </View>
           </View>
 
-          {blockedByMissingAmount ? (
+          {missingField === null ? null : (
             <Text
               testID={`review-blocked-${item.id}`}
               className="text-xs text-fg-2 dark:text-fg-2-dark"
             >
-              PeraPlano needs the amount before this can be recorded. Add the details, or reject
-              it.
+              {`PeraPlano needs ${BLOCKED_FIELD_LABEL[missingField]} before this can be recorded. Add the details, or reject it.`}
             </Text>
-          ) : null}
+          )}
 
           {onReject ? (
             <Button

@@ -362,6 +362,94 @@ describe("a low-confidence card with no amount cannot be confirmed", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Branch review, 2026-08-21 — THE SAME DEAD TAP, REACHED THROUGH A DIFFERENT
+// FIELD. Task 4b guarded `amount` alone, but `resolve_actions.ts`'s
+// `proposalFrom` refuses THREE fields before it will build a Transaction —
+// amount, direction and wallet — and an unmapped wallet is a ROUTINE hard
+// route (`GATE_REASONS.unmappedWallet`, "PeraPlano could not tell which
+// account this came from"), not an exotic one. So a `low-confidence` card
+// carrying `walletId: null` rendered an ENABLED primary whose tap threw
+// `IncompleteReviewItemError(item.id, "wallet")` into a mutation with no
+// `onError`: the identical silent dead tap task 4 exists to close, just via
+// the wallet instead of the amount.
+// ---------------------------------------------------------------------------
+
+describe("a low-confidence card missing any ledger-required field cannot be confirmed", () => {
+  test("no wallet disables the primary and the blocked line names the wallet", async () => {
+    const queued = item({
+      id: "r-nowallet",
+      kind: "low-confidence",
+      payload: gatedPayload({ walletId: null }),
+    });
+    render(
+      <ReviewCard item={queued} wallets={[gcash, bpi]} onPrimary={jest.fn()} onSecondary={jest.fn()} />,
+      { wrapper: Wrapper },
+    );
+
+    const primary = await screen.findByTestId(`review-primary-${queued.id}`);
+    expect(primary.props.accessibilityState.disabled).toBe(true);
+    expect(await screen.findByTestId(`review-blocked-${queued.id}`)).toHaveTextContent(
+      /PeraPlano needs the wallet before this can be recorded./,
+    );
+  });
+
+  test("no direction disables the primary too", async () => {
+    const queued = item({
+      id: "r-nodirection",
+      kind: "low-confidence",
+      payload: gatedPayload({ direction: null }),
+    });
+    render(
+      <ReviewCard item={queued} wallets={[gcash, bpi]} onPrimary={jest.fn()} onSecondary={jest.fn()} />,
+      { wrapper: Wrapper },
+    );
+
+    const primary = await screen.findByTestId(`review-primary-${queued.id}`);
+    expect(primary.props.accessibilityState.disabled).toBe(true);
+  });
+
+  // "Correct" is the way OFF a blocked card, so it stays live whichever field
+  // is missing. Disabling it too would strand the user on a card whose only
+  // remaining exit is rejecting a transaction that really happened.
+  test("Correct stays enabled on a card blocked by its wallet", async () => {
+    const queued = item({
+      id: "r-nowallet-correct",
+      kind: "low-confidence",
+      payload: gatedPayload({ walletId: null }),
+    });
+    render(
+      <ReviewCard item={queued} wallets={[gcash, bpi]} onPrimary={jest.fn()} onSecondary={jest.fn()} />,
+      { wrapper: Wrapper },
+    );
+
+    const secondary = await screen.findByTestId(`review-secondary-${queued.id}`);
+    expect(secondary.props.accessibilityState.disabled).toBe(false);
+  });
+
+  // The deliberate split between this file's DISPLAY reader (`readAmount`,
+  // any finite number) and its ledger-facing predicate (`> 0`) was pinned on
+  // the LEDGER side only. Without this test, a "simplification" that made the
+  // display reader require `> 0` as well would silently turn a genuine ₱0.00
+  // into the false statement "Amount not read" — exactly what `Side`'s own
+  // comment forbids, and invisible to every other test on this branch.
+  test("a ₱0.00 card still SHOWS ₱0.00, never 'Amount not read'", async () => {
+    const queued = item({
+      id: "r-zero-display",
+      kind: "low-confidence",
+      payload: gatedPayload({ amount: 0 }),
+    });
+    render(
+      <ReviewCard item={queued} wallets={[gcash, bpi]} onPrimary={jest.fn()} onSecondary={jest.fn()} />,
+      { wrapper: Wrapper },
+    );
+
+    const candidate = await screen.findByTestId(`review-candidate-${queued.id}`);
+    expect(candidate).toHaveTextContent(new RegExp(`${MINUS}₱0\.00`));
+    expect(candidate).not.toHaveTextContent("Amount not read");
+  });
+});
+
 describe("a low-confidence card WITH an amount is still confirmable", () => {
   test("the primary stays enabled and no blocked line renders", async () => {
     const queued = itemOfKind("low-confidence");
