@@ -48,7 +48,263 @@
   },
   "marketing": {},
   "support": {},
-  "privacy": {},
+  "privacy": {
+    "title": "Privacy notice",
+    "intro": "PeraPlano is local-first by architecture, not by policy promise: the notification text your banks and e-wallets already send you is read on your own phone, stored encrypted on that phone with a 30-day time-to-live, and never leaves it under any configuration. By design, the only thing that ever moves off the device is committed transaction records — structured fields, never raw text — and only if you explicitly switch on cloud backup, a PeraPlano Plus feature. There are no ads, no data selling, and no third-party analytics that receive notification content.",
+    "sourceStatus": "Draft v1 · 2026-08-02",
+    "sourceHeading": "Where this notice comes from, and what it still lacks",
+    "sourceNote": "This notice is derived from PeraPlano's internal privacy and compliance document, which is marked {status}. That document has not been reviewed by Philippine privacy counsel, so neither has this page.",
+    "sections": {
+      "whoIsResponsible": {
+        "heading": "Who is responsible",
+        "paragraphs": [
+          "The company operating PeraPlano is the Personal Information Controller under the Data Privacy Act of 2012 (Republic Act 10173) for any personal data it actually receives and controls: cloud backup contents, the sign-in identity used for backup, support correspondence, and aggregate telemetry.",
+          "Any infrastructure vendor that stores encrypted backups on the company's behalf acts as a Personal Information Processor. A written outsourcing agreement covering confidentiality, security measures, sub-processing and breach assistance is required before cloud backup ships.",
+          "Data processed entirely on your own device, for your own household finances, arguably falls under the Act's personal and household exemption as far as your own processing is concerned. PeraPlano does not rely on that argument. The app is designed, documented and reviewed as if every piece of data it touches were fully in scope, because that keeps the compliance story simple and truthful.",
+          "A Data Protection Officer is appointed before public launch regardless of whether registration thresholds are met, and the appointment is registered with the National Privacy Commission along with the backup data processing system before cloud backup goes live."
+        ],
+        "controllerHeading": "Personal Information Controller",
+        "dpoHeading": "Data Protection Officer",
+        "npcHeading": "NPC registration"
+      },
+      "whyWeProcess": {
+        "heading": "Why we process your data",
+        "caption": "The purpose and the lawful basis for each thing PeraPlano does with your data.",
+        "headers": ["Processing activity", "Lawful basis", "Notes"],
+        "rows": [
+          [
+            "Reading transaction notifications and keeping your on-device ledger",
+            "Consent, recorded in the app before you grant Notification Access",
+            "The consent is specific to one purpose — automatically recording money movements from your notifications. It is freely given: every permission is skippable and the app degrades to manual entry. It is withdrawable: you can pause listening, revoke access, or wipe everything."
+          ],
+          [
+            "Cloud backup and multi-device sync (PeraPlano Plus)",
+            "Consent, plus necessity for a service you asked for",
+            "Strictly opt-in and off by default. Switching it off deletes the server-side copies."
+          ],
+          [
+            "Aggregate telemetry: parse success and failure counts, crash rates, listener uptime",
+            "Legitimate interest",
+            "Content-free counters only: no notification text, no amounts, no merchants, no counterparties. You can opt out in settings without losing a single feature."
+          ],
+          [
+            "Support correspondence",
+            "Consent, or necessity for a contract",
+            "Only what you send us. Please do not paste raw notification text into a support message."
+          ],
+          [
+            "The app's own alerts: limit thresholds, bill reminders, loan reminders, goal updates, the daily Review Queue digest, listener health, and the payday summary",
+            "Necessity for the service you configured",
+            "Delivered on your device. On Android 13 and later this needs the notification-posting permission; declining it blocks nothing, because every alert also appears inside the app."
+          ]
+        ]
+      },
+      "whatDataExists": {
+        "heading": "What data exists, where it lives, how long it stays",
+        "note": "The table below is reproduced unchanged from the lifecycle table in PeraPlano's internal privacy document, including the rows for aggregate telemetry and cloud backup. Those two rows describe planned capabilities: neither is running today, as the status block at the top of this page states.",
+        "caption": "Every category of data PeraPlano touches: where it comes from, where it is kept, how long it stays, and whether it ever leaves your phone.",
+        "headers": [
+          "#",
+          "Data",
+          "Where it originates",
+          "Where it is stored",
+          "Retention",
+          "Ever leaves the device?"
+        ],
+        "rows": [
+          [
+            "1",
+            "Raw notification text (target of rawNotificationRef), including unknown-bin captures",
+            "Posted by other apps; captured by the listener",
+            "Encrypted on-device only",
+            "30-day TTL, then purged (domain invariant)",
+            "Never. Not in backups, not in telemetry, not in support flows."
+          ],
+          [
+            "2",
+            "Committed Transaction records (structured fields only)",
+            "Ingest pipeline auto-commit, Review Queue confirmation, manual entry, recurring rules, import",
+            "Encrypted on-device",
+            "Kept until the user deletes or wipes. Free-tier History gating limits the visible window to 90 days; data is never deleted at the gate (see §8).",
+            "Only if the user enables cloud backup (Plus); encrypted in transit and at rest."
+          ],
+          [
+            "3",
+            "Configuration entities: Wallet, Limit, Goal, Loan, Bill, Category, RecurringPattern, UserRule, IncomeProfile",
+            "User setup and pipeline learning",
+            "Encrypted on-device",
+            "Until user deletes or wipes",
+            "Same as row 2 — only with opt-in Plus backup."
+          ],
+          [
+            "4",
+            "Entitlements state (tier: free | plus)",
+            "Purchase state managed by Google Play; evaluated locally",
+            "On-device flag",
+            "While the app is installed",
+            "Purchase processing is handled by Google Play per its own policies; PeraPlano stores no payment instrument data."
+          ],
+          [
+            "5",
+            "Aggregate telemetry: parse success/failure counts per provider, dedupe rates, listener uptime, crash data",
+            "Generated on-device",
+            "Company analytics store (aggregate, content-free)",
+            "Raw event records ≤ 90 days; aggregated statistics ≤ 24 months",
+            "Yes, but contains no notification content, amounts, merchants, or counterparties. Opt-out available."
+          ],
+          [
+            "6",
+            "Cloud backup snapshots (Plus, opt-in)",
+            "Encrypted sync of rows 2–3",
+            "Company backup infrastructure (via PIP under contract)",
+            "Until the user disables backup, wipes, or deletes the sign-in identity; server copies removed within 30 days of any of those",
+            "Yes — this is the only path user financial data ever takes off the device, and it is opt-in."
+          ],
+          [
+            "7",
+            "Export files (CSV)",
+            "Generated on demand by the user",
+            "Wherever the user saves or shares them",
+            "User-controlled",
+            "Only by the user's own action; the app warns that exports are unencrypted and outside its protection."
+          ],
+          [
+            "8",
+            "Support correspondence",
+            "User-initiated",
+            "Company support mailbox",
+            "≤ 24 months after case closure",
+            "Yes, by the user's own action; users are advised not to paste raw notification text."
+          ]
+        ],
+        "invariantsHeading": "Three rules that bind the table above",
+        "invariants": [
+          "Raw notification text never syncs, and is purged after 30 days.",
+          "Every automatically recorded transaction keeps a reference to the notification it came from for as long as that raw text is retained, so you can always answer \"why did the app record this?\" After the 30-day purge the structured record remains and the raw text view says the original notification is no longer retained.",
+          "Wipe means wipe: on-device stores and, where backup was enabled, server copies."
+        ]
+      },
+      "howProcessingHappens": {
+        "heading": "How processing happens",
+        "paragraphs": [
+          "Processing happens on your phone. Your bank or e-wallet posts a notification, the listener receives it, the parser reads structured fields out of the text, and the result is written to an encrypted database on the device. The raw text is kept only so the app can show you why it recorded something and re-read it if a parser improves — and only for 30 days.",
+          "The minimization stance behind that design:"
+        ],
+        "bullets": [
+          "Extract, then discard. Only structured fields are kept: amount, direction, merchant, reference number, the balance after the transaction where the notification gives one, and the timestamp.",
+          "The unknown-notification bin is not a dragnet. Notifications from apps PeraPlano does not recognize are captured only so you can flag \"this is a money notification\" in the Review Queue, and they follow the same on-device-only, 30-day-purge rule as raw notification text.",
+          "Telemetry counts, never content. A parser failure report carries the provider's identity and a failure class, never the text that failed to parse.",
+          "No enrichment. PeraPlano does not look up, buy, or infer additional data about you or the people you transact with from any outside source.",
+          "Collection follows function. Every field in the data model exists because a shipped feature reads it; nothing is collected speculatively. Adding a field to anything that syncs requires an update to the table above, a review of the Play Data safety declaration, and a check of this notice in the same release."
+        ]
+      },
+      "whoReceivesIt": {
+        "heading": "Who receives your data",
+        "paragraphs": [
+          "Nobody, with one designed exception. If you switch on cloud backup, the infrastructure vendor that holds those encrypted backups on the company's behalf acts as a Personal Information Processor under a written outsourcing agreement. No other party receives your ledger.",
+          "There is no advertising, no data selling, and no third-party advertising or marketing recipient of any kind.",
+          "Two things reach the company rather than a third party: content-free aggregate telemetry, which you can switch off without losing a feature, and any support message you choose to send.",
+          "Purchase processing for PeraPlano Plus is handled by Google Play under its own policies. PeraPlano stores no payment instrument data."
+        ]
+      },
+      "automatedDecisions": {
+        "heading": "Automated decisions, and how to correct them",
+        "paragraphs": [
+          "PeraPlano processes your data automatically. It parses notifications into structured transactions, assigns categories, detects recurring payments, removes duplicates, and links transfers between your own wallets.",
+          "Every one of those decisions is correctable by you. Low-confidence parses go to the Review Queue for you to confirm or fix, every parsed field — amount, direction, wallet, category, merchant, note — is editable, and your corrections become rules that replay going forward.",
+          "You can also see why a decision was made. For any automatically recorded transaction, the transparency screen shows the parsed fields side by side with the notification text they came from, for as long as that text is retained."
+        ]
+      },
+      "yourRights": {
+        "heading": "Your rights",
+        "caption": "Your rights under the Data Privacy Act of 2012, and the control in the app that delivers each one.",
+        "headers": ["Your right", "How PeraPlano honors it"],
+        "rows": [
+          [
+            "To be informed",
+            "This notice, plus short plain-language explainers shown in the app at the moment of each permission ask."
+          ],
+          [
+            "To object",
+            "Every permission is skippable. Reading can be paused globally or for one provider, telemetry can be switched off, and consent can be withdrawn at any time."
+          ],
+          [
+            "To access",
+            "Transparency screens: each automatically recorded transaction keeps a reference to the notification it came from while that text is retained, so you can see exactly why the app recorded it. You can also export everything."
+          ],
+          [
+            "To rectification",
+            "Every parsed field is editable, the Review Queue lets you correct low-confidence parses, and corrections become rules that replay going forward."
+          ],
+          [
+            "To erasure or blocking",
+            "Delete any single transaction, or wipe everything — on-device data and, where backup was enabled, server copies. Switching backup off deletes the server copies."
+          ],
+          [
+            "To data portability",
+            "Export everything: a CSV of the ledger plus a full structured export of your wallets, limits, goals, loans, bills, recurring patterns, rules and income profile."
+          ],
+          [
+            "To damages, and to complain",
+            "The Data Protection Officer's contact is at the top of this notice, and the complaint route to the National Privacy Commission is below."
+          ]
+        ]
+      },
+      "complaints": {
+        "heading": "Complaints",
+        "paragraphs": [
+          "Write to the Data Protection Officer first, at the address at the top of this notice. Most things are fixed faster that way.",
+          "You also have the right to complain to the National Privacy Commission, the Philippine authority for the Data Privacy Act of 2012, and you can do that independently of anything PeraPlano does.",
+          "This page deliberately does not print an address, phone number or web link for the Commission. PeraPlano's own documents record no verified contact detail for it, and publishing one we have not verified would be worse than publishing none. Use the Commission's own published channels."
+        ]
+      },
+      "notRequested": {
+        "heading": "What we deliberately do not ask for",
+        "caption": "Permissions and data sources PeraPlano does not request, and why.",
+        "headers": ["Not requested", "Why"],
+        "rows": [
+          [
+            "SMS permissions (reading your text messages)",
+            "Google Play's SMS and Call Log policy effectively prohibits reading SMS for expense tracking. Bank SMS still reach PeraPlano as notifications posted by your default SMS app, which the listener reads like any other notification."
+          ],
+          ["Call log permissions", "No product use."],
+          [
+            "Accessibility services as a way in",
+            "Explicitly ruled out. Using accessibility APIs to collect data violates Play policy and would poison the trust story this product is built on."
+          ],
+          ["Location", "No product use."],
+          [
+            "Contacts",
+            "No product use. Counterparty names come only from the notification text your providers already sent you."
+          ]
+        ]
+      },
+      "otherPeoplesNames": {
+        "heading": "Other people's names in your notifications",
+        "paragraphs": [
+          "Notifications can carry personal data about people who do not use PeraPlano and never agreed to anything — most often the name of whoever sent you money (a padala, or remittance) or the other party to a loan. That is worth addressing directly rather than leaving unsaid.",
+          "PeraPlano's stance:"
+        ],
+        "bullets": [
+          "Context of origin. Those names were already delivered to your own device by your own provider; PeraPlano introduces no new disclosure. Your record of who paid you is ordinary household record-keeping.",
+          "Minimize anyway. Only the short counterparty label needed for the merchant field, for category matching and for matching loan payments is kept in structured form. Everything else in the raw text disappears with the 30-day purge.",
+          "On-device by default. Third-party names sit on your device. They would reach company infrastructure only inside an encrypted backup of your own ledger, where the company acts as controller of your data — not as a collector of theirs.",
+          "You can edit them. Counterparty and merchant labels can be changed or removed at any time, and a rule can rename them permanently.",
+          "Never used beyond your ledger. Third-party names are never aggregated across users, never used to match one user to another, and never included in telemetry."
+        ]
+      },
+      "ifSomethingGoesWrong": {
+        "heading": "If something goes wrong",
+        "paragraphs": [
+          "A company breach means a compromise of systems the company controls: backup storage, the telemetry pipeline, the sign-in identity store. Losing your phone, or having it stolen, is not a company breach — that is what on-device encryption and your device lock are for — but the wipe control and recovery guidance are documented in our support materials.",
+          "The Act's list of sensitive personal information does not name financial transaction data. PeraPlano treats your whole ledger, and everything derived from your notifications, at that higher protection level anyway: notification text can incidentally contain things that are on the list, such as fragments of a government ID number in a verification message, and loan records reveal indebtedness.",
+          "So where a breach involves that data and there is a real risk of serious harm, the company notifies the National Privacy Commission and the people affected within 72 hours of knowing, or having reason to believe, that a breach occurred.",
+          "The preparation ships with the product rather than after it: an internal breach response runbook covering detection, containment, assessment, notification and remediation; pre-drafted notification templates for users and for the Commission; a breach log kept even for incidents that do not require notification; and an annual rehearsal.",
+          "The architecture limits the damage. Backups are encrypted, and raw notification text is never on any server, so the worst case on the server side exposes structured records — never the text of your notifications."
+        ]
+      }
+    }
+  },
   "terms": {},
   "installedApps": {},
   "dataDeletion": {}
