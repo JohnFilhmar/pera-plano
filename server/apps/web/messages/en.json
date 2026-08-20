@@ -461,7 +461,68 @@
       }
     }
   },
-  "terms": {},
+  "terms": {
+    "title": "Terms",
+    "intro": "This page states what PeraPlano is and is not, what the free and paid tiers contain, and what a lawyer still has to write before anything here can be sold. The last part is on the page rather than in a backlog, because a terms document with an invisible hole in it is one nobody ever fills.",
+    "sections": {
+      "whatPeraPlanoIs": {
+        "heading": "What PeraPlano is, in contractual terms",
+        "paragraphs": [
+          "PeraPlano is an app that observes and plans. It never holds, moves, or touches funds. It is not a bank, an e-money issuer, a payment service, or any kind of regulated financial institution, and it never becomes one — this is a permanent product commitment, not a description of the current release.",
+          "PeraPlano is not a financial advisor. It reports facts against rules you set yourself. It does not recommend products, investments or credit, and nothing it shows you is advice.",
+          "There are no ads and no data selling, ever. The intended business model is a subscription, and monetising your attention or your data would destroy the one thing this product depends on."
+        ]
+      },
+      "theLedgerIsDerived": {
+        "heading": "Your ledger is derived, and checking it is on you",
+        "paragraphs": [
+          "PeraPlano builds your ledger by reading notifications your banks and e-wallets already send you, and by interpreting text those providers can change without telling anyone. High-confidence readings are recorded automatically; low-confidence ones wait in the Review Queue for you to confirm or correct.",
+          "That means a parse can be wrong. An amount can be misread, a transfer can be counted twice, a provider can change a message format overnight and break a rule that worked yesterday. Every recorded transaction shows you the notification it came from, and every field is editable, precisely because you are the one who has to be able to check it.",
+          "PeraPlano is not a substitute for your bank's or e-wallet's own records. Where the app and your provider disagree, your provider is right.",
+          "What follows from that legally — how liability for an inaccurate parse is limited, and what warranty is or is not given — is a lawyer question and has not been drafted. It is listed at the bottom of this page with the rest of what is missing."
+        ]
+      },
+      "tiers": {
+        "heading": "Free and Plus",
+        "intro": "Automatic tracking is never limited by tier. The free tier is meant to stay genuinely useful forever; paying buys depth — more wallets, unlimited limits and goals, full loan amortisation, longer history, projection and backup.",
+        "caption": "The locked capability matrix for the free and Plus tiers.",
+        "headers": ["Capability", "Free", "Plus"],
+        "rows": [
+          ["Auto-tracking (notification ingest)", "Unlimited", "Unlimited"],
+          ["Wallets", "3", "Unlimited"],
+          ["Limits", "1 active", "Unlimited + per-category"],
+          ["Goals", "1", "Unlimited + payday auto-allocate"],
+          ["Loans", "1, basic tracking (balance + next due)", "Unlimited + full amortization schedule"],
+          ["History", "90 days", "Unlimited"],
+          ["Reports", "Basic monthly", "Full + trends + custom range"],
+          ["Export", "—", "CSV (PDF later)"],
+          ["Cloud backup / multi-device sync", "—", "✓"],
+          ["Recurring/subscription detection", "—", "✓"],
+          ["Safe-to-Spend", "Today only", "Projected to end of period"]
+        ],
+        "afterTable": [
+          "The matrix above is the locked definition of the tiers. It is not enforced in the current build: every capability is built and working, and the entitlement layer that applies these caps is switched on later, in one place. When it is, the caps apply going forward and not retroactively.",
+          "Hitting a cap blocks creation, never destruction. If you are a free user over a cap — more than 90 days of history, say — the data beyond it is kept and hidden, not deleted. Restoring Plus restores visibility. Existing data is never deleted and never retroactively hidden because of a tier.",
+          "Privacy controls are never Plus-gated. Pausing, wiping, the transparency screens, telemetry opt-out and the full data export are available on every tier, because a right is not a feature. The Export row in the matrix above refers only to the Plus convenience export in Reports; exporting everything you own is ungated and always will be.",
+          "One privacy consequence of the matrix is worth stating plainly: because cloud backup is a Plus capability, the app never transmits a free-tier user's financial data off the device at all."
+        ]
+      },
+      "pricingNotPublished": {
+        "heading": "Pricing is not published yet",
+        "paragraphs": [
+          "No price for PeraPlano Plus has been decided, so none is published here. Nothing on this site is an offer to sell you anything, and there is currently no way to buy Plus at any price.",
+          "Prices, the billing period, and the renewal, cancellation and refund terms will appear on this page before any purchase is possible. If you are reading this and cannot find a price, that is not an omission — it is the current state of the product."
+        ]
+      },
+      "purchases": {
+        "heading": "Purchases, when they exist, run through Google Play",
+        "paragraphs": [
+          "When PeraPlano Plus becomes purchasable it will be sold through Google Play, and purchase state will be managed by Google Play under its own policies and its own terms with you. Your subscription, its renewal and any refund are handled there.",
+          "PeraPlano stores no payment instrument data. No card number, no bank account, no wallet credential ever reaches the app or the company; what the app keeps is a local flag saying which tier you are on."
+        ]
+      }
+    }
+  },
   "installedApps": {
     "title": "Which apps you have installed",
     "intro": "During setup, PeraPlano has to show you the bank and e-wallet apps you actually have, so you can choose whose notifications it should read. Doing that means asking Android which apps are installed on the phone. This page states exactly what that check reads, what it does not, the permission it needs, and the fact that Google may not accept it.",
