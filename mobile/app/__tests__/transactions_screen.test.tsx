@@ -331,6 +331,38 @@ describe("opening a transaction", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Manual transaction entry stays reachable (task-1-brief.md)
+// ---------------------------------------------------------------------------
+//
+// `app/transaction/new.tsx` existed but was reachable from exactly one place
+// in the whole app: Home's empty state, which disappears the moment the
+// first transaction lands. These two tests pin the durable entry point this
+// screen now owns instead — a floating button that renders regardless of the
+// ledger's data, plus the ledger's own empty state offering the same route.
+describe("manual transaction entry stays reachable (task-1-brief)", () => {
+  test("manual entry stays reachable once the ledger has rows", async () => {
+    // The regression test for the actual reported bug: it must have rows,
+    // not an empty ledger, or it would pass against the old Home-only wiring.
+    await seedGrid();
+
+    renderScreen();
+    await screen.findByText("Jollibee");
+
+    fireEvent.press(screen.getByTestId("transactions-add"));
+
+    expect(mockPush).toHaveBeenCalledWith("/transaction/new");
+  });
+
+  test("the empty ledger offers manual entry", async () => {
+    renderScreen();
+
+    fireEvent.press(await screen.findByTestId("empty-state-action"));
+
+    expect(mockPush).toHaveBeenCalledWith("/transaction/new");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // The Review Queue entry point (m1c Task 10)
 // ---------------------------------------------------------------------------
 //

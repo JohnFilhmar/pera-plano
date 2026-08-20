@@ -32,6 +32,7 @@ import { ScrollView, View } from "react-native";
 import { ReviewQueueEntry } from "@/components/review/review_queue_entry";
 import { FilterBar } from "@/components/transactions/filter_bar";
 import { LedgerList } from "@/components/transactions/ledger_list";
+import { Button } from "@/components/ui/button";
 import { useCategories } from "@/hooks/queries/use_categories";
 import { useReviewCount } from "@/hooks/queries/use_review_count";
 import { useTransactions } from "@/hooks/queries/use_transactions";
@@ -89,9 +90,28 @@ export default function TransactionsScreen() {
             onSelect={(transaction) =>
               router.push({ pathname: "/transaction/[id]", params: { id: transaction.id } })
             }
+            // task-1-brief.md: the ledger's own empty state offers the same
+            // route the floating button below does, so manual entry is
+            // reachable the instant the ledger is empty too, not only once
+            // it already has rows.
+            onAddManual={() => router.push("/transaction/new")}
           />
+          {/* Clears the floating add button on short devices. */}
+          <View className="h-16" />
         </View>
       </ScrollView>
+      {/* task-1-brief.md: manual entry's ONE durable entry point. Unlike
+          Home's empty-state action, this renders whether the ledger is
+          empty, full, filtered, or still loading -- its whole point is that
+          it does not depend on the data, so it survives past the moment the
+          first transaction lands (the bug this task exists to fix). */}
+      <View className="absolute bottom-6 right-6">
+        <Button
+          title="Add"
+          testID="transactions-add"
+          onPress={() => router.push("/transaction/new")}
+        />
+      </View>
     </View>
   );
 }

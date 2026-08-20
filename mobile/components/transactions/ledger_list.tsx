@@ -67,13 +67,29 @@ export { localDateKey };
  * Transactions empty state that assumes access is missing would be wrong for
  * every user who granted it and simply has not spent anything yet.
  *
- * There is no action button. The spec's primary action is "Add manual
- * Transaction", which is m1c Task 8's `app/transaction/new.tsx` — a button that
- * opens nothing is worse than no button (the same call Task 4 made on the
- * Wallets tab's empty state).
+ * OFFERS THE ACTION WHEN THE CALLER SUPPLIES ONE (task-1-brief.md). This used
+ * to ship with no button on purpose — the route it would have opened,
+ * `app/transaction/new.tsx`, did not exist yet, and "a button that opens
+ * nothing is worse than no button" (the same call Task 4 made on the Wallets
+ * tab's empty state). That reason expired the day the route shipped, and left
+ * behind a worse one: Home's "Add manually" affordance lives inside ITS OWN
+ * empty state, which disappears the moment the first transaction lands — so
+ * manual entry had no durable entry point anywhere in the app once the ledger
+ * had a single row in it. `onAddManual` is optional and undecorated (no
+ * routing here) so this stays true to `onSelect` below: THE LIST REPORTS, THE
+ * SCREEN NAVIGATES. The wallet detail screen, which supplies its own `empty`
+ * override, never reaches this branch and is unaffected either way.
  */
 export const LEDGER_EMPTY_TITLE = "Nothing tracked yet";
 export const LEDGER_EMPTY_BODY = "Your transactions will appear here automatically.";
+
+/**
+ * The label on the action above, when a caller opts in. Copied VERBATIM from
+ * the `transactions` row's `actionLabel` in `components/ui/empty_states.tsx`
+ * — that catalogue is the source of truth for this copy and is not edited
+ * here.
+ */
+export const LEDGER_EMPTY_ACTION = "Add manual Transaction";
 
 /**
  * The queue-aware variant of the body above (task-7-brief.md rule 1).
@@ -263,6 +279,16 @@ export type LedgerListProps = {
    * to send the user should get inert rows rather than dead taps.
    */
   onSelect?: (transaction: Transaction) => void;
+  /**
+   * Opens `app/transaction/new.tsx` from the ledger's own empty state
+   * (task-1-brief.md). Wired on the two UNFILTERED empty states only — never
+   * on the filtered one, where "No transactions match these filters" is a
+   * filter problem, and offering to add a row would invite the user to
+   * invent data just to satisfy it. Optional, same contract as `onSelect`:
+   * THE LIST REPORTS, THE SCREEN NAVIGATES, so this file still imports no
+   * router. Left off, both empty states render exactly as before.
+   */
+  onAddManual?: () => void;
   testID?: string;
 };
 
@@ -276,6 +302,7 @@ export function LedgerList({
   empty,
   reviewQueueCount,
   onSelect,
+  onAddManual,
   testID = "ledger-list",
 }: LedgerListProps) {
   // Nothing at all until the first read resolves. An empty state that flashes
@@ -300,16 +327,29 @@ export function LedgerList({
       );
     }
     if (empty !== undefined) return <>{empty}</>;
+    // Both branches below share the same optional action: only when the
+    // caller supplies `onAddManual` does either one grow a button, so a
+    // caller that leaves it off (the wallet detail screen) renders neither
+    // state any differently than it did before this prop existed.
+    const action = onAddManual ? { label: LEDGER_EMPTY_ACTION, onPress: onAddManual } : undefined;
     if (reviewQueueCount !== undefined && reviewQueueCount > 0) {
       return (
         <EmptyState
           testID="ledger-empty-review-pending"
           title={LEDGER_EMPTY_TITLE}
           body={ledgerEmptyReviewPendingBody(reviewQueueCount)}
+          action={action}
         />
       );
     }
-    return <EmptyState testID="ledger-empty" title={LEDGER_EMPTY_TITLE} body={LEDGER_EMPTY_BODY} />;
+    return (
+      <EmptyState
+        testID="ledger-empty"
+        title={LEDGER_EMPTY_TITLE}
+        body={LEDGER_EMPTY_BODY}
+        action={action}
+      />
+    );
   }
 
   const categoriesById = new Map(categories.map((category) => [category.id, category]));
