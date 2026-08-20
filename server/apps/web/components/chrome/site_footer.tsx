@@ -1,5 +1,6 @@
 import type { Locale, Messages } from "@/messages/index";
 import type { ComplianceContacts } from "@peraplano/common";
+import { ContactBlock } from "@/components/content/contact_block";
 import { NAV_ITEMS } from "./site_header";
 import styles from "./site_footer.module.css";
 
@@ -51,23 +52,18 @@ export function SiteFooter({
             </a>
           ))}
         </nav>
+        {/* ContactBlock, not a second hand-rolled copy of its markup. The duplicate that
+            used to live here existed only because this file was written before the shared
+            primitive was, and two renderers for the same four contact fields is exactly how
+            the footer ends up disagreeing with the page above it. */}
         <div className={styles.contacts}>
           {contactBlocks.map((block) => (
-            <div key={block.heading} className={styles.contactBlock}>
-              <h3>{block.heading}</h3>
-              {block.lines.map((line, index) => {
-                const isLastLine = index === block.lines.length - 1;
-                return (
-                  <p key={`${block.heading}-${String(index)}`}>
-                    {isLastLine && block.mailto !== undefined ? (
-                      <a href={`mailto:${block.mailto}`}>{line}</a>
-                    ) : (
-                      line
-                    )}
-                  </p>
-                );
-              })}
-            </div>
+            <ContactBlock
+              key={block.heading}
+              heading={block.heading}
+              lines={block.lines}
+              mailto={block.mailto}
+            />
           ))}
         </div>
         <p className={styles.promise}>{messages.footer.promise}</p>
