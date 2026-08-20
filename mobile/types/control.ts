@@ -77,6 +77,13 @@ export type NewLimit = {
   walletFilter?: string[] | null;
   rollover?: boolean;
   isActive?: boolean;
+  /**
+   * Set only by the derivation that fills in the other cadences from the limit
+   * the user actually entered (lib/limits/limit_derivation.ts). A limit someone
+   * created by hand omits it and is stored with `derived_from` NULL, which is
+   * what makes it count against the free tier's cap.
+   */
+  derivedFrom?: string | null;
 };
 
 /**

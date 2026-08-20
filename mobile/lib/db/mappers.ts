@@ -217,6 +217,11 @@ export type LimitRow = {
   updated_at: number;
   /** 004_limit_alert_state — appended by ALTER TABLE, hence last. */
   limit_alert_state_json: string | null;
+  /** 010_soft_delete_and_derived_limits — appended by ALTER TABLE, hence after
+   * `limit_alert_state_json`, not next to the other timestamps. */
+  archived_at: number | null;
+  /** 010_soft_delete_and_derived_limits — see the note above. */
+  derived_from: string | null;
 };
 
 /**
@@ -242,6 +247,11 @@ export function rowToLimit(row: LimitRow): Limit {
     // NOT NULL DEFAULT '[]' in 001_core.sql, so the `??` is for rows selected
     // by an older code path rather than for the schema.
     thresholdsFired: JSON.parse(row.thresholds_fired_json ?? "[]") as LimitThreshold[],
+    // Both added by ALTER TABLE in migration 010, so every row written before
+    // it reads NULL — which is the right answer for both: not archived, and
+    // not derived from anything.
+    archivedAt: row.archived_at ?? null,
+    derivedFrom: row.derived_from ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

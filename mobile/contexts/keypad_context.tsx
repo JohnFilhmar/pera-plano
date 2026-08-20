@@ -26,11 +26,13 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
   type ReactNode,
 } from "react";
+import { Keyboard } from "react-native";
 
 import type { KeypadMode } from "@/components/ui/numeric_keypad";
 
@@ -102,6 +104,24 @@ export function KeypadProvider({ children }: { children: ReactNode }) {
   activeHostRef.current = activeHost;
 
   const open = useCallback(({ onChangeText, ...next }: KeypadOpenRequest) => {
+    // ONLY ONE KEYBOARD IS EVER UP (owner's device report: "app opens numpad
+    // user keyboard does not close by itself").
+    //
+    // components/ui/numeric_field.tsx is a Pressable and that is deliberate —
+    // a component with no TextInput in its tree cannot raise the OS keyboard
+    // however it is later edited. The same property is why it cannot BLUR one
+    // either: nothing about pressing a Pressable touches focus. So a user
+    // moving from a name field to an amount field got our panel stacked in
+    // front of the OS keyboard, and had to dismiss the OS one by hand.
+    //
+    // HERE RATHER THAN IN THE FIELD, and rather than an `onFocus` on each of
+    // the TextInputs across the nine forms that mix the two: this is the one
+    // function every path to an open panel goes through, so "the OS keyboard
+    // is down whenever ours is up" holds for a field added tomorrow too.
+    //
+    // SAFE ON A SWAP. Opening a second field while one is already open calls
+    // this again, and dismissing an already-dismissed keyboard is a no-op.
+    Keyboard.dismiss();
     onChangeRef.current = onChangeText;
     // Every open starts untouched, including one with an empty `text`: there
     // the replacement and the append are the same string, so nothing special
@@ -112,6 +132,36 @@ export function KeypadProvider({ children }: { children: ReactNode }) {
   const close = useCallback(() => {
     onChangeRef.current = null;
     setRequest(null);
+  }, []);
+
+  // THE RETURN TRIP: the OS keyboard coming up takes our panel down.
+  //
+  // `open` above covers "panel opens while the OS keyboard is up". This covers
+  // the other order — panel already open on an amount, user taps a text field —
+  // which is just as reachable on every one of the nine forms that mix the two
+  // kinds of input, and leaves the same two-keyboard pile-up.
+  //
+  // A LISTENER, NOT AN onFocus ON EVERY TextInput. The OS raising its keyboard
+  // is the actual event; subscribing to it means a TextInput added anywhere in
+  // the app, in a screen or a sheet, is covered without knowing this file
+  // exists.
+  //
+  // NO LOOP WITH `open`. That path calls `Keyboard.dismiss()`, which raises
+  // `keyboardDidHide` — never `keyboardDidShow` — so it cannot re-enter here.
+  //
+  // `keyboardDidShow`, NOT `keyboardWillShow`: Android does not emit the
+  // `will` events at all (react-native's own Keyboard docs), and Android is
+  // this app's only platform today.
+  useEffect(() => {
+    const subscription = Keyboard.addListener("keyboardDidShow", () => {
+      onChangeRef.current = null;
+      setRequest(null);
+    });
+    // The provider is torn down and rebuilt on every lock/unlock — it is
+    // mounted INSIDE the lock gate in app/_layout.tsx, deliberately — so an
+    // un-removed listener would call setState on a dead tree once per keyboard
+    // raise, for the rest of the process's life.
+    return () => subscription.remove();
   }, []);
 
   const emit = useCallback((text: string) => {

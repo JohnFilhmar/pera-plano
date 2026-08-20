@@ -27,9 +27,9 @@ import type { LimitAlertState, NewLimit } from "@/types/control";
 
 /**
  * Thrown by `updateLimit` and `setLimitAlertState` when `id` has no row — the
- * shape wallets_repo.ts and categories_repo.ts already use. `deleteLimit` does
- * NOT throw it: deleting is idempotent, and a caller retrying a delete is
- * asking for a state that already holds.
+ * shape wallets_repo.ts and categories_repo.ts already use. `archiveLimit` does
+ * NOT throw it: archiving is idempotent, and a caller retrying is asking for a
+ * state that already holds.
  */
 export class LimitNotFoundError extends Error {
   constructor(public readonly limitId: string) {
@@ -61,8 +61,8 @@ export async function createLimit(input: NewLimit): Promise<Limit> {
   await db.runAsync(
     `INSERT INTO limits (id, scope, basis, value, category_filter_json, wallet_filter_json,
                          rollover, is_active, thresholds_fired_json, created_at, updated_at,
-                         limit_alert_state_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, NULL)`,
+                         limit_alert_state_json, archived_at, derived_from)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, NULL, NULL, ?)`,
     [
       id,
       input.scope,
@@ -77,6 +77,10 @@ export async function createLimit(input: NewLimit): Promise<Limit> {
       input.isActive === false ? 0 : 1,
       now,
       now,
+      // NULL unless the caller is lib/limits/limit_derivation.ts filling in the
+      // other cadences. A limit the user typed themselves is not derived, and
+      // that is what makes it count against the free tier's cap.
+      input.derivedFrom ?? null,
     ],
   );
 
@@ -93,12 +97,28 @@ export async function getLimit(id: string): Promise<Limit | null> {
   return row ? rowToLimit(row) : null;
 }
 
-export async function listLimits(opts?: { activeOnly?: boolean }): Promise<Limit[]> {
+/**
+ * Limits, oldest first.
+ *
+ * ARCHIVED ONES ARE HIDDEN BY DEFAULT, the same way `listBills` hides archived
+ * bills. `activeOnly` is a DIFFERENT question and both can apply: `is_active`
+ * is whether the limit is being ENFORCED (the free tier's gated card is kept
+ * and dimmed, not removed), while `archived_at` is whether the user is done
+ * with it at all. A gated limit still belongs on the screen; an archived one
+ * does not.
+ */
+export async function listLimits(opts?: {
+  activeOnly?: boolean;
+  includeArchived?: boolean;
+}): Promise<Limit[]> {
   const db = await getDatabase();
+  const clauses: string[] = [];
+  if (opts?.includeArchived !== true) clauses.push("archived_at IS NULL");
+  if (opts?.activeOnly) clauses.push("is_active = 1");
+
   const rows = await db.getAllAsync<LimitRow>(
-    opts?.activeOnly
-      ? "SELECT * FROM limits WHERE is_active = 1 ORDER BY created_at"
-      : "SELECT * FROM limits ORDER BY created_at",
+    `SELECT * FROM limits${clauses.length > 0 ? ` WHERE ${clauses.join(" AND ")}` : ""}
+      ORDER BY created_at`,
   );
   return rows.map(rowToLimit);
 }
@@ -157,13 +177,40 @@ export async function updateLimit(id: string, patch: Partial<NewLimit>): Promise
 }
 
 /**
- * Deletes a limit. Idempotent — deleting an id that is already gone is not an
- * error. Never touches Transactions (m2 Global Constraint 11): a limit is a
- * view over the ledger, and removing the view removes no money.
+ * Retires a limit by setting `archived_at`. IT NEVER DELETES.
+ *
+ * REPLACES A REAL `DELETE FROM limits` (owner-approved 2026-08-20, extending
+ * "no hard delete" from Bills and Loans to Limits).
+ *
+ * THE OLD DELETE WAS NOT LEAKY, AND THAT IS WORTH SAYING because it is the
+ * obvious reason to expect and it is not the reason. 004_limit_alert_state.sql
+ * deliberately put the alert state in a COLUMN on this table rather than in
+ * `app_settings`, listing "app_settings has no foreign key to limits, so
+ * deleteLimit would orphan the entry forever" as one of the three costs that
+ * decided it. A column dies with its row, so the delete cleaned up after itself
+ * exactly as intended.
+ *
+ * WHAT ACTUALLY CHANGED IS THE POLICY. A limit is the thing a breach is
+ * attributed TO, and the owner's rule across the plan entities is now that
+ * retiring something never destroys what it explains. Bills reached that answer
+ * first (spec rule 27, `archiveBill`), Loans have the same need, and a Limit
+ * differing from both would be an inconsistency with no argument behind it.
+ * The cost is one nullable column.
+ *
+ * IDEMPOTENT AND SILENT, matching `archiveBill` and `archiveWallet`: an unknown
+ * or already-archived id is a no-op, not an error — a caller retrying is asking
+ * for a state that already holds.
+ *
+ * Still never touches Transactions (m2 Global Constraint 11): a limit is a view
+ * over the ledger, and retiring the view removes no money.
  */
-export async function deleteLimit(id: string): Promise<void> {
+export async function archiveLimit(id: string): Promise<void> {
   const db = await getDatabase();
-  await db.runAsync("DELETE FROM limits WHERE id = ?", [id]);
+  const now = Date.now();
+  await db.runAsync(
+    "UPDATE limits SET archived_at = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL",
+    [now, now, id],
+  );
 }
 
 /**

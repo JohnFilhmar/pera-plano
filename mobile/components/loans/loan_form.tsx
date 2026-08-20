@@ -42,8 +42,8 @@ import { FormScreen } from "@/components/ui/form_screen";
 import { NumericField } from "@/components/ui/numeric_field";
 import { DEFAULT_LOAN_REMINDER_OFFSETS } from "@/constants/loans";
 import { buildAmortizationSchedule, buildFlatSchedule, monthlyPayment } from "@/lib/loans/loan_math";
-import { centavosFrom } from "@/lib/money/peso_input";
-import type { Installment, LoanDirection } from "@/types/domain";
+import { centavosFrom, pesoInputFrom } from "@/lib/money/peso_input";
+import type { Installment, Loan, LoanDirection } from "@/types/domain";
 
 export type ScheduleKind = "amortized" | "flat" | "free-form";
 
@@ -65,9 +65,86 @@ const REMINDER_OFFSETS: readonly { value: number; label: string }[] = [
   { value: 3, label: "3 days after" },
 ];
 
+/**
+ * What seeds an EDIT (owner's device report: a loan "should also be
+ * modifable").
+ *
+ * ITS OWN SHAPE, NOT `Partial<LoanFormValues>`. Those are the form's OUTPUT —
+ * `schedule` there is a built `Installment[]`, while the form's inputs are the
+ * term/installment/count/interval the schedule was BUILT FROM. Seeding from the
+ * output would make the form reverse-engineer its own inputs on every render.
+ * `loanFormInitialFrom` does that reconstruction once, where it can be tested.
+ */
+export type LoanFormInitial = {
+  direction?: LoanDirection;
+  kind?: ScheduleKind;
+  counterparty?: string;
+  /** Centavos. Converted to peso text with `pesoInputFrom`, never `String`. */
+  principal?: number;
+  interestRate?: number | null;
+  termMonths?: number;
+  /** Centavos, as above. */
+  installmentAmount?: number;
+  installmentCount?: number;
+  intervalDays?: number;
+  firstDue?: string;
+  reminderOffsets?: number[];
+};
+
+/**
+ * Rebuilds a loan's form inputs from the loan itself.
+ *
+ * THE SCHEDULE IS STORED AS INSTALLMENTS, not as the parameters that generated
+ * it, so this is genuinely a reconstruction rather than a lookup:
+ *
+ *   kind      no schedule -> free-form; a rate -> amortized; otherwise flat
+ *   count     how many installments there are
+ *   interval  the gap between the first two due dates
+ *   firstDue  the first installment's due date
+ *
+ * WHY IT MATTERS THAT THIS IS RIGHT. An edit screen that seeded these wrong
+ * would rebuild a DIFFERENT schedule on save, silently rewriting a repayment
+ * plan the user only opened to fix a typo in the lender's name.
+ */
+export function loanFormInitialFrom(loan: Loan): LoanFormInitial {
+  const schedule = loan.schedule ?? [];
+  const kind: ScheduleKind =
+    schedule.length === 0 ? "free-form" : loan.interestRate !== null ? "amortized" : "flat";
+
+  const firstDue = schedule[0]?.dueDate ?? loan.nextDueDate ?? "";
+  // Whole days between the first two due dates. Two installments are the
+  // minimum that can express an interval; with fewer, the form's own default
+  // stands rather than a number invented from one date.
+  const intervalDays =
+    schedule.length >= 2
+      ? Math.round(
+          (Date.parse(`${schedule[1].dueDate}T00:00:00`) -
+            Date.parse(`${schedule[0].dueDate}T00:00:00`)) /
+            86_400_000,
+        )
+      : undefined;
+
+  return {
+    direction: loan.direction,
+    kind,
+    counterparty: loan.counterparty,
+    principal: loan.principal,
+    interestRate: loan.interestRate,
+    termMonths: kind === "amortized" ? schedule.length : undefined,
+    installmentAmount: kind === "flat" ? schedule[0]?.amountDue : undefined,
+    installmentCount: kind === "flat" ? schedule.length : undefined,
+    intervalDays,
+    firstDue,
+    reminderOffsets: loan.reminderOffsets,
+  };
+}
+
 export type LoanFormProps = {
   onSubmit: (values: LoanFormValues) => void;
   busy?: boolean;
+  initial?: LoanFormInitial;
+  /** "Save loan" on create, "Save changes" on edit. */
+  submitLabel?: string;
 };
 
 const DIRECTIONS: readonly { value: LoanDirection; label: string }[] = [
@@ -81,20 +158,38 @@ const KINDS: readonly { value: ScheduleKind; label: string; hint: string }[] = [
   { value: "amortized", label: "With interest", hint: "A rate and a term, like a bank loan" },
 ];
 
-export function LoanForm({ onSubmit, busy = false }: LoanFormProps) {
-  const [direction, setDirection] = useState<LoanDirection>("i-owe");
-  const [kind, setKind] = useState<ScheduleKind>("free-form");
-  const [counterparty, setCounterparty] = useState("");
-  const [principalText, setPrincipalText] = useState("");
-  const [rateText, setRateText] = useState("");
-  const [termText, setTermText] = useState("");
-  const [installmentText, setInstallmentText] = useState("");
-  const [countText, setCountText] = useState("");
-  const [intervalText, setIntervalText] = useState("7");
-  const [firstDue, setFirstDue] = useState("");
-  const [reminderOffsets, setReminderOffsets] = useState<number[]>([
-    ...DEFAULT_LOAN_REMINDER_OFFSETS,
-  ]);
+/** Centavos -> peso text, or "" when there is nothing to seed. NEVER String(). */
+function seedPeso(amount: number | undefined): string {
+  return amount === undefined ? "" : pesoInputFrom(amount);
+}
+
+/** A count/term/rate -> its text, or "" — these are plain numbers, not money. */
+function seedNumber(value: number | null | undefined): string {
+  return value === undefined || value === null ? "" : String(value);
+}
+
+export function LoanForm({
+  onSubmit,
+  busy = false,
+  initial,
+  submitLabel = "Save loan",
+}: LoanFormProps) {
+  const [direction, setDirection] = useState<LoanDirection>(initial?.direction ?? "i-owe");
+  const [kind, setKind] = useState<ScheduleKind>(initial?.kind ?? "free-form");
+  const [counterparty, setCounterparty] = useState(initial?.counterparty ?? "");
+  // pesoInputFrom, not String: these hold PESO TEXT and the seed is Centavos.
+  const [principalText, setPrincipalText] = useState(seedPeso(initial?.principal));
+  const [rateText, setRateText] = useState(seedNumber(initial?.interestRate));
+  const [termText, setTermText] = useState(seedNumber(initial?.termMonths));
+  const [installmentText, setInstallmentText] = useState(seedPeso(initial?.installmentAmount));
+  const [countText, setCountText] = useState(seedNumber(initial?.installmentCount));
+  const [intervalText, setIntervalText] = useState(
+    initial?.intervalDays !== undefined ? String(initial.intervalDays) : "7",
+  );
+  const [firstDue, setFirstDue] = useState(initial?.firstDue ?? "");
+  const [reminderOffsets, setReminderOffsets] = useState<number[]>(
+    initial?.reminderOffsets ? [...initial.reminderOffsets] : [...DEFAULT_LOAN_REMINDER_OFFSETS],
+  );
 
   const principal = centavosFrom(principalText);
   const rate = Number(rateText) || 0;
@@ -335,7 +430,7 @@ export function LoanForm({ onSubmit, busy = false }: LoanFormProps) {
         </View>
 
         <Button
-          title="Save loan"
+          title={submitLabel}
           testID="loan-save"
           disabled={!canSave}
           loading={busy}

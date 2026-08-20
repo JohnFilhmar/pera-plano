@@ -231,7 +231,24 @@ test("a user who taps through every step reaches the end, and onboarding actuall
   typeAmount("first-limit-amount", "10000"); // was "1000000" in centavos
   fireEvent.press(screen.getByTestId("first-limit-save"));
   await waitFor(() => expect(screen.getByTestId("done-step-intro")).toBeTruthy());
-  expect(await listLimits()).toHaveLength(1);
+
+  // FOUR LIMITS FROM ONE ANSWER, not the one this used to expect
+  // (owner-approved 2026-08-20). Entering a limit also creates the equivalent
+  // at the other three cadences, so Plan -> Limits is populated rather than
+  // showing the single row that was typed — the owner's report was that it
+  // "only shows the entered onboarding data, not calculated". See
+  // lib/limits/limit_derivation.ts.
+  const limits = await listLimits();
+  expect(limits).toHaveLength(4);
+
+  // EXACTLY ONE IS THE USER'S. The other three carry `derivedFrom`, which is
+  // what keeps them off the free tier's one-active-limit cap — without it a
+  // user would be gated the moment they finished onboarding.
+  const entered = limits.filter((limit) => limit.derivedFrom === null);
+  expect(entered).toHaveLength(1);
+  expect(entered[0].scope).toBe("monthly");
+  expect(entered[0].value).toBe(1_000_000);
+  expect(limits.filter((limit) => limit.derivedFrom === entered[0].id)).toHaveLength(3);
 
   // 8. done -> out of onboarding entirely.
   expect(await getSetting("onboarding_complete")).toBe(false);

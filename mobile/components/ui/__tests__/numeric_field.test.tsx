@@ -1,6 +1,7 @@
 // mobile/components/ui/__tests__/numeric_field.test.tsx — W1 Task 5.
-import { fireEvent, render, screen } from "@testing-library/react-native";
+import { act, fireEvent, render, screen } from "@testing-library/react-native";
 import { TextInput } from "react-native";
+import { NavigationContext } from "@react-navigation/native";
 import { useState, type ReactNode } from "react";
 
 import { KeypadProvider } from "@/contexts/keypad_context";
@@ -289,4 +290,117 @@ describe("a seeded value", () => {
 
     expect(String(screen.getByTestId("keypad-display").props.children)).toBe("₱7");
   });
+});
+
+// ---------------------------------------------------------------------------
+// THE PANEL DOES NOT FOLLOW THE USER TO THE NEXT SCREEN (owner's device
+// report, reproduced from Plan -> Limits -> new with no income declared: open
+// the amount keypad, then tap "Set my income" in the percent-blocked card. The
+// second screenshot shows the panel still up, on the income screen, focused on
+// a field that is no longer visible).
+//
+// WHY THE EXISTING UNMOUNT CLEANUP DOES NOT CATCH IT. This file's subject
+// already closes the panel when the focused field unmounts, and that header
+// calls out "navigate away / host unmounts -> close". But `router.push` does
+// not unmount the pushing screen — react-navigation keeps it mounted in the
+// stack, which is the whole point of a stack. So the field lives, its cleanup
+// never runs, and the root host (mounted beside the Stack in app/_layout.tsx,
+// outside every screen) keeps drawing over whatever is on top.
+//
+// SO THE SIGNAL IS BLUR, NOT UNMOUNT. Exactly what the owner asked for:
+// "whether the input is still in sight/focus".
+//
+// NavigationContext IS READ, NOT useNavigation. `useNavigation` THROWS outside
+// a navigator, and this field is mounted outside one on real paths — app/
+// lock.tsx renders the first-run onboarding flow with no navigator at all, and
+// a dozen suites mount forms bare. Reading the context directly answers
+// `undefined` there instead, which is the honest answer: no navigator means no
+// blur to listen for.
+// ---------------------------------------------------------------------------
+
+/** The slice of a navigation object this field uses, and nothing more. */
+function fakeNavigation(): { navigation: object; blur: () => void } {
+  const listeners = new Set<() => void>();
+  return {
+    navigation: {
+      addListener: (event: string, handler: () => void) => {
+        if (event === "blur") listeners.add(handler);
+        return () => listeners.delete(handler);
+      },
+    },
+    blur: () => listeners.forEach((handler) => handler()),
+  };
+}
+
+function NavigatedHarness({ navigation }: { navigation: object }) {
+  const [value, setValue] = useState("");
+  return (
+    <KeypadProvider>
+      <NavigationContext.Provider value={navigation as never}>
+        <NumericField
+          testID="amount"
+          label="How much?"
+          value={value}
+          onChangeText={setValue}
+        />
+      </NavigationContext.Provider>
+      <KeypadHost />
+    </KeypadProvider>
+  );
+}
+
+test("leaving the screen closes the panel, even though the field stays mounted", () => {
+  const { navigation, blur } = fakeNavigation();
+  render(<NavigatedHarness navigation={navigation} />);
+
+  fireEvent.press(screen.getByTestId("amount"));
+  expect(screen.queryByTestId("keypad-host")).toBeTruthy();
+
+  // What `router.push("/plan/income")` does to this screen. The field is still
+  // mounted — that is the bug's whole shape — so nothing else can notice.
+  act(() => blur());
+
+  expect(screen.queryByTestId("keypad-host")).toBeNull();
+});
+
+test("a blur with nothing focused is not an excuse to close someone else's panel", () => {
+  // Two fields, one navigator. Only the field the request actually names may
+  // take the panel down — the same ownership check the unmount cleanup makes,
+  // for the same reason: a sibling must not close a panel that was never its.
+  const { navigation, blur } = fakeNavigation();
+
+  function TwoFields() {
+    const [a, setA] = useState("");
+    return (
+      <KeypadProvider>
+        <NavigationContext.Provider value={navigation as never}>
+          <NumericField testID="amount" label="How much?" value={a} onChangeText={setA} />
+        </NavigationContext.Provider>
+        {/* Outside the navigator on purpose: a sheet's field, say. */}
+        <NumericField testID="other" label="Other" value="" onChangeText={() => {}} />
+        <KeypadHost />
+      </KeypadProvider>
+    );
+  }
+
+  render(<TwoFields />);
+  fireEvent.press(screen.getByTestId("other"));
+  expect(screen.getByTestId("keypad-label").props.children).toBe("Other");
+
+  act(() => blur());
+
+  // "other" never blurred — it is not in that navigator — so its panel stands.
+  expect(screen.queryByTestId("keypad-host")).toBeTruthy();
+  expect(screen.getByTestId("keypad-label").props.children).toBe("Other");
+});
+
+test("a field with no navigator above it still works", () => {
+  // app/lock.tsx renders the whole first-run onboarding flow before any
+  // navigator exists, and most form suites mount their subject bare. A
+  // `useNavigation` here would turn every one of those into a crash.
+  render(<Harness />);
+
+  fireEvent.press(screen.getByTestId("amount"));
+
+  expect(screen.queryByTestId("keypad-host")).toBeTruthy();
 });

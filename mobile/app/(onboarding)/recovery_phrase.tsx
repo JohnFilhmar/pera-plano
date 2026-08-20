@@ -83,6 +83,7 @@
 // place to ship one.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Pressable, Share, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as LocalAuthentication from "expo-local-authentication";
 import { generatePhrase } from "@/lib/crypto/recovery_phrase";
 import { initializeKeys } from "@/lib/crypto/key_manager";
@@ -129,6 +130,12 @@ async function authenticateForKeySetup(): Promise<boolean> {
 }
 
 export default function RecoveryPhraseScreen({ onDone }: { onDone?: () => void } = {}) {
+  // For the confirm/initializing stage's footer only — see that branch below.
+  // Every OTHER stage on this route delegates its edges to a child that already
+  // insets itself (PhraseDisplay, PhraseConfirm), which is exactly why the two
+  // Texts that are NOT inside one of those were the ones sitting under the
+  // navigation bar.
+  const insets = useSafeAreaInsets();
   const [stage, setStage] = useState<Stage>("generating");
   const [words, setWords] = useState<string[] | null>(null);
   const [retryKey, setRetryKey] = useState(0);
@@ -286,24 +293,49 @@ export default function RecoveryPhraseScreen({ onDone }: { onDone?: () => void }
   }
 
   if (stage === "confirm" || stage === "initializing") {
+    // THE MESSAGES BELOW PhraseConfirm ARE THE SCREEN'S FOOTER, and they were
+    // the one thing on this route nothing held clear of Android's navigation
+    // bar (owner's device report: "onboarding encrypting message footer is
+    // blocked by hardware bottom navbar").
+    //
+    // PhraseConfirm PADS ITSELF — its own header says so, `SCREEN_PADDING +
+    // insets.bottom`. These two Texts are its SIBLINGS in this column, outside
+    // that padding, and carried a flat `pb-4`/`pb-6`. 24dp against the A54's
+    // 126px strip is not a near miss; "Setting up your encryption keys…" sat
+    // under the ▢ ◁ buttons entirely, which is the one moment in setup where
+    // the user has nothing to do but read it.
+    //
+    // ONE FOOTER RATHER THAN AN INSET ON EACH Text, so the bar is cleared once
+    // no matter which of the two is showing — and so a third message added
+    // later inherits it instead of repeating the bug.
+    //
+    // RENDERED ONLY WHEN IT HAS SOMETHING IN IT. An always-mounted footer
+    // carrying `paddingBottom: insets.bottom` would push PhraseConfirm up by a
+    // navigation bar's height on the plain confirm step, which has no footer
+    // text at all and already handles that edge itself.
+    const footer = confirmNotice !== null || stage === "initializing";
     return (
-      <View className="flex-1">
+      <View className="flex-1 bg-bg dark:bg-bg-dark">
         <PhraseConfirm key={confirmAttempt} words={words} onConfirmed={handleConfirmed} />
-        {confirmNotice ? (
-          <Text
-            testID="recovery-phrase-auth-notice"
-            className="px-6 pb-4 text-center text-fg-2 dark:text-fg-2-dark"
-          >
-            {confirmNotice}
-          </Text>
-        ) : null}
-        {stage === "initializing" ? (
-          <Text
-            testID="recovery-phrase-initializing"
-            className="pb-6 text-center text-fg-2 dark:text-fg-2-dark"
-          >
-            Setting up your encryption keys…
-          </Text>
+        {footer ? (
+          <View testID="recovery-phrase-footer" style={{ paddingBottom: insets.bottom }}>
+            {confirmNotice ? (
+              <Text
+                testID="recovery-phrase-auth-notice"
+                className="px-6 pb-4 text-center text-fg-2 dark:text-fg-2-dark"
+              >
+                {confirmNotice}
+              </Text>
+            ) : null}
+            {stage === "initializing" ? (
+              <Text
+                testID="recovery-phrase-initializing"
+                className="pb-6 text-center text-fg-2 dark:text-fg-2-dark"
+              >
+                Setting up your encryption keys…
+              </Text>
+            ) : null}
+          </View>
         ) : null}
       </View>
     );

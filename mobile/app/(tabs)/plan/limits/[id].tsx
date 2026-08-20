@@ -6,6 +6,12 @@
 // days left, and the list of transactions counted this period." Rule 4 adds the
 // three actions: edit, mute for the period, delete.
 //
+// ALL THREE ARE FINALLY HERE (2026-08-20). "Edit" was never built — the owner's
+// report is that limits "should still be modifiable" — and "delete" is now
+// ARCHIVE: `deleteLimit`'s literal `DELETE FROM limits` is gone, because a
+// limit is what a breach is attributed to and the rule across the plan entities
+// is that retiring something never destroys what it explains.
+//
 // THE DRILL-DOWN LIST USES THE LIMIT'S OWN FILTERS. The m2 plan's version
 // passes a wallet id only when the limit filters on exactly one wallet, and
 // never passes the category filter at all — so a category-filtered limit lists
@@ -15,6 +21,7 @@
 // (`expandCategoryIds`, rule 4's descendants rule), so the list adds up to the
 // number printed above it.
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ScrollView, Text, View } from "react-native";
 
@@ -22,10 +29,11 @@ import { LimitCard } from "@/components/limits/limit_card";
 import { AmountText, formatCentavos } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/ui/confirm_dialog";
 import { EmptyState } from "@/components/ui/empty_state";
 import { SectionHeader } from "@/components/ui/section_header";
 import { queryKeys } from "@/constants/query_keys";
-import { useDeleteLimit } from "@/hooks/mutations/use_delete_limit";
+import { useArchiveLimit } from "@/hooks/mutations/use_archive_limit";
 import { useMuteLimit } from "@/hooks/mutations/use_mute_limit";
 import { useCategories } from "@/hooks/queries/use_categories";
 import { useLimitStatuses } from "@/hooks/queries/use_limit_statuses";
@@ -42,7 +50,8 @@ export default function LimitDetailScreen() {
   const { data: statuses } = useLimitStatuses();
   const { data: categories } = useCategories();
   const mute = useMuteLimit();
-  const remove = useDeleteLimit();
+  const archive = useArchiveLimit();
+  const [confirmingArchive, setConfirmingArchive] = useState(false);
 
   const status = (statuses ?? []).find((candidate) => candidate.limit.id === id);
 
@@ -85,14 +94,14 @@ export default function LimitDetailScreen() {
   }
 
   if (status === undefined) {
-    // Reachable by pressing Delete on this very screen — the mutation
+    // Reachable by pressing Archive on this very screen — the mutation
     // invalidates, the status disappears, and this renders for a frame before
     // `router.back()` lands. It is also what a stale deep link hits.
     return (
       <View testID="limit-detail-missing" className="flex-1 justify-center bg-bg dark:bg-bg-dark">
         <EmptyState
           title="This limit is gone"
-          body="It was deleted. Your transactions are untouched — a limit only ever watched them."
+          body="It was archived. Your transactions are untouched — a limit only ever watched them."
           action={{ label: "Back to limits", onPress: () => router.back() }}
         />
       </View>
@@ -144,7 +153,21 @@ export default function LimitDetailScreen() {
         </Card>
       ) : null}
 
-      <View className="flex-row gap-3">
+      {/* Rule 4's three actions, all three finally present: edit, mute, and
+          retire. "Edit" was the missing one (owner: limits "should still be
+          modifiable"), and "Delete" is now "Archive" — see below. */}
+      <View className="flex-row flex-wrap gap-3">
+        <Button
+          title="Edit"
+          variant="secondary"
+          testID="limit-edit"
+          onPress={() =>
+            router.push({
+              pathname: "/plan/limits/[id]/edit",
+              params: { id: status.limit.id },
+            })
+          }
+        />
         <Button
           title="Mute this period"
           variant="secondary"
@@ -152,17 +175,36 @@ export default function LimitDetailScreen() {
           onPress={() => mute.mutate(status.limit.id)}
           loading={mute.isPending}
         />
+        {/* ARCHIVE, NOT DELETE (owner-approved 2026-08-20). It used to run a
+            real `DELETE FROM limits`; a limit is what a breach is attributed
+            to, and the rule across the plan entities is now that retiring
+            something never destroys what it explains.
+
+            BEHIND A CONFIRMATION, because the row leaves the list and the only
+            way back is a screen that does not exist yet — an accidental tap
+            should not be the way a user discovers that. */}
         <Button
-          title="Delete"
+          title="Archive"
           variant="destructive"
-          testID="limit-delete"
-          onPress={async () => {
-            await remove.mutateAsync(status.limit.id);
-            router.back();
-          }}
-          loading={remove.isPending}
+          testID="limit-archive"
+          onPress={() => setConfirmingArchive(true)}
+          loading={archive.isPending}
         />
       </View>
+
+      <ConfirmDialog
+        visible={confirmingArchive}
+        title="Archive this limit?"
+        body="It stops appearing in Plan and stops alerting you. Nothing you have spent is deleted, and the breaches it recorded stay readable."
+        confirmLabel="Archive"
+        destructive
+        onCancel={() => setConfirmingArchive(false)}
+        onConfirm={async () => {
+          setConfirmingArchive(false);
+          await archive.mutateAsync(status.limit.id);
+          router.back();
+        }}
+      />
 
       <SectionHeader title="Counted this period" />
       {transactions === undefined || transactions.length === 0 ? (

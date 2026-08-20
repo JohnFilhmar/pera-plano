@@ -13,10 +13,12 @@ import { ScheduleTable } from "@/components/loans/schedule_table";
 import { AmountText } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/ui/confirm_dialog";
 import { EmptyState } from "@/components/ui/empty_state";
 import { SectionHeader } from "@/components/ui/section_header";
 import { useConfirmPaymentMatch } from "@/hooks/mutations/use_confirm_payment_match";
 import { useLoans } from "@/hooks/queries/use_loans";
+import { useArchiveLoan } from "@/hooks/mutations/use_archive_loan";
 import { usePaymentCandidates } from "@/hooks/queries/use_payment_candidates";
 import { systemClock } from "@/lib/clock";
 import type { ScheduleRow } from "@/lib/loans/loan_math";
@@ -28,6 +30,8 @@ export default function LoanDetailScreen() {
   const { data: candidates } = usePaymentCandidates(id);
   const confirm = useConfirmPaymentMatch();
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [confirmingArchive, setConfirmingArchive] = useState(false);
+  const archive = useArchiveLoan();
 
   if (statuses === undefined) {
     return <View testID="loan-detail-loading" className="flex-1 bg-bg dark:bg-bg-dark" />;
@@ -89,6 +93,45 @@ export default function LoanDetailScreen() {
           onPress={() => setSheetOpen(true)}
         />
       ) : null}
+
+      {/* Owner's device report: loans are "unarchivable, softdelete data, no
+          hard delete, should also be modifable". `updateLoan` existed and
+          nothing called it; archiving had no column, no repository function and
+          no UI until migration 010. */}
+      <View className="flex-row flex-wrap gap-3">
+        <Button
+          title="Edit loan"
+          variant="secondary"
+          testID="loan-edit"
+          onPress={() =>
+            router.push({ pathname: "/plan/loans/[id]/edit", params: { id: status.loan.id } })
+          }
+        />
+        {/* NEVER A DELETE. `loan_payments` rows point at real ledger
+            Transactions, so removing the loan would leave the money visibly
+            gone from the ledger with nothing left to explain it. */}
+        <Button
+          title="Archive loan"
+          variant="destructive"
+          testID="loan-archive"
+          onPress={() => setConfirmingArchive(true)}
+          loading={archive.isPending}
+        />
+      </View>
+
+      <ConfirmDialog
+        visible={confirmingArchive}
+        title="Archive this loan?"
+        body="It stops appearing in Plan and its reminders stop. Every payment you recorded stays in your ledger exactly as it is."
+        confirmLabel="Archive"
+        destructive
+        onCancel={() => setConfirmingArchive(false)}
+        onConfirm={async () => {
+          setConfirmingArchive(false);
+          await archive.mutateAsync(status.loan.id);
+          router.back();
+        }}
+      />
 
       <SectionHeader title="Schedule" />
       <ScheduleTable testID="loan-schedule" rows={rows} totalPaid={paid} />

@@ -1,0 +1,63 @@
+-- 010_soft_delete_and_derived_limits.sql — owner-approved 2026-08-20.
+--
+-- THREE COLUMNS, TWO DECISIONS.
+--
+-- 1. `loans.archived_at` and `limits.archived_at` — SOFT DELETE, NO HARD
+--    DELETE. The owner's report on Plan -> Bills and Plan -> Loans was
+--    "unarchivable, soft-delete data, no hard delete, should also be
+--    modifiable", extended to Limits when asked.
+--
+--    Bills already have this: 006_bill_cycles.sql added `bills.archived_at`,
+--    and `archiveBill` (lib/db/repos/bills_repo.ts) has existed since — with
+--    no UI anywhere reaching it. So this migration is not inventing a
+--    convention; it is finishing one that was applied to a third of the plan
+--    entities and then stopped.
+--
+--    Loans had NO retirement path at all. Limits had the wrong one:
+--    `deleteLimit` runs a literal `DELETE FROM limits`, and a limit is the
+--    thing breach history is attributed TO — 004_limit_alert_state.sql's own
+--    header records that `app_settings` has no foreign key back to `limits`,
+--    so a hard delete leaves that state orphaned rather than cleaned up. An
+--    archived limit keeps its own history readable and keeps the orphan from
+--    existing in the first place.
+--
+--    NULLABLE, NOT `NOT NULL DEFAULT 0`. `archived_at` carries WHEN, not
+--    merely WHETHER, matching `bills.archived_at` exactly. Every existing row
+--    gets NULL, which reads as "not archived" — the correct answer for every
+--    loan and limit already on a device, and the reason this needs no backfill.
+--
+--    NOT the `is_archived INTEGER NOT NULL DEFAULT 0` spelling `wallets` uses
+--    (001_core.sql). That one predates the timestamp convention; bills chose
+--    the timestamp when the question came up again, and two entities added
+--    together should not disagree with the most recent answer AND with each
+--    other's neighbour.
+--
+-- 2. `limits.derived_from` — WHICH LIMITS THE APP CREATED FOR YOU.
+--
+--    Onboarding asks for one limit. The owner's decision (2026-08-20) is that
+--    entering it also creates the equivalent limit at every OTHER cadence, so
+--    Plan -> Limits shows daily/weekly/monthly/annual rather than only the one
+--    row that was typed — "its okay because user can update it anyways".
+--
+--    THE COLUMN EXISTS FOR THE ENTITLEMENT GATE, NOT FOR THE ARITHMETIC.
+--    lib/entitlements.ts caps Free at ONE active limit, and four rows from one
+--    onboarding answer would trip a gate the user never chose to approach. The
+--    owner's ruling: derived limits do not count. That needs the database to
+--    remember which ones it made up, and nothing else does.
+--
+--    A LIMIT ID, NOT A BOOLEAN, so a derived row can name the row it came from
+--    — enough to explain itself in the UI ("worked out from your monthly
+--    limit") without a second lookup table.
+--
+--    NO FOREIGN KEY, DELIBERATELY. The source limit can be archived, and the
+--    derived rows are independent from the moment they are written (the owner's
+--    choice: "edit any one -> the others stay put"). A REFERENCES clause would
+--    imply a lifecycle link this design specifically does not have, and
+--    004_limit_alert_state.sql already documents this schema's preference for
+--    leaving such links out rather than pretending to a cascade nobody
+--    implements.
+--
+-- Never edit 001-009 — add a new numbered migration instead.
+ALTER TABLE loans ADD COLUMN archived_at INTEGER;
+ALTER TABLE limits ADD COLUMN archived_at INTEGER;
+ALTER TABLE limits ADD COLUMN derived_from TEXT;
