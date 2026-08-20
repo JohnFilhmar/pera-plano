@@ -35,6 +35,16 @@ describe("/data-deletion", () => {
     expect(stripTags(deletion())).toContain("30 days");
   });
 
+  // Both figures below come from a document still marked as a draft. privacy_drift.test.tsx
+  // binds privacy.sourceStatus to the document status line, and this page substitutes that
+  // same key, so the chain is: document -> privacy.sourceStatus -> this page.
+  it("names the draft it takes its retention figures from", () => {
+    const text = stripTags(deletion());
+    expect(text).toContain("24 months");
+    expect(text).toContain(messages.privacy.sourceStatus);
+    expect(text).toContain("has not been reviewed by Philippine privacy counsel");
+  });
+
   it("describes a future deletion route only in the conditional", () => {
     const text = stripTags(deletion());
     expect(text).toContain("does not offer accounts today");

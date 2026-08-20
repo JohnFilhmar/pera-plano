@@ -67,3 +67,14 @@
   border-radius: 0.75rem;
   background: var(--surface);
 }
+
+/* Quieter than the /privacy status callout on purpose: this page is read mid-task by
+   someone trying to delete something, and a full warning box above the instructions would
+   compete with them. The fact still has to be on the page — it just does not need to shout. */
+.sourceNote {
+  margin: 0 0 1.5rem;
+  padding-left: 0.85rem;
+  border-left: 3px solid var(--line);
+  color: var(--muted);
+  font-size: 0.94rem;
+}

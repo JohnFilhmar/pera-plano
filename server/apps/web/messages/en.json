@@ -522,6 +522,7 @@
   "dataDeletion": {
     "title": "Delete your data",
     "intro": "Everything PeraPlano records lives in an encrypted database on the phone you installed it on. Deleting it is therefore something you do on the device, and it is final: there is no copy on our servers to restore it from, and nothing held there for us to delete on your behalf. Every deletion route the app has is below, from the smallest to the largest.",
+    "sourceNote": "The two retention periods on this page — the 30-day purge of raw notification text, and the 24-month limit on support correspondence — are taken from PeraPlano's internal privacy and compliance document, which is still marked {status} and has not been reviewed by Philippine privacy counsel. They are commitments we intend to keep, not clauses a lawyer has signed off.",
     "sections": {
       "deleteOne": {
         "heading": "Delete a single record",

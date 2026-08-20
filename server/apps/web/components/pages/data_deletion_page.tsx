@@ -26,6 +26,16 @@ export function DataDeletionPage({ messages, config }: { messages: Messages; con
 
       <p className={styles.intro}>{dataDeletion.intro}</p>
 
+      {/* Task 9 review: this page restates two retention figures — the 30-day raw-text TTL
+          and the 24-month support-mail window — from a document that is still a draft, while
+          /privacy carries a status treatment and this page did not. The status string is
+          substituted from privacy.sourceStatus rather than retyped, because that one key is
+          bound to the document by __tests__/privacy_drift.test.tsx; a second literal here
+          would be free to go stale on its own. */}
+      <p className={styles.sourceNote}>
+        {dataDeletion.sourceNote.replace("{status}", messages.privacy.sourceStatus)}
+      </p>
+
       {/* The same component, from the same catalog entry, as /privacy. A cross-page test
           in __tests__/data_deletion.test.tsx compares the two rendered blocks, because two
           pages disagreeing about whether a server holds your ledger is exactly what a
