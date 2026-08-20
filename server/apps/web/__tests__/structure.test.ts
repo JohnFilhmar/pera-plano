@@ -53,13 +53,18 @@ describe("route inventory", () => {
   // file for the Edge runtime too (proxy.ts runs there), and @peraplano/common writes to
   // process.stdout, which Edge does not have. Without the guard the production build fails.
   it("keeps the production boot gate wired to instrumentation, node-side only", () => {
-    const source = readFileSync(`${WEB_ROOT}instrumentation.ts`, "utf8");
-    expect(source).toContain("assertProductionConfig");
-    expect(source).toContain("export async function register");
-    expect(source).toContain("NEXT_RUNTIME");
+    const hook = readFileSync(`${WEB_ROOT}instrumentation.ts`, "utf8");
+    expect(hook).toContain("export async function register");
+    // The hook only delegates. Everything the gate needs — node:fs, process.exit — makes
+    // Turbopack warn if it can statically reach it from the Edge compilation of this file.
+    expect(hook).toContain("NEXT_RUNTIME");
+    expect(hook).toContain("./instrumentation_node");
+
+    const gate = readFileSync(`${WEB_ROOT}instrumentation_node.ts`, "utf8");
+    expect(gate).toContain("assertProductionConfig");
     // Throwing out of register() is not enough: Next logs the rejection and keeps
     // listening, so the gate has to end the process itself.
-    expect(source).toContain("process.exit(1)");
+    expect(gate).toContain("process.exit(1)");
   });
 
   // Next 16 renamed the middleware convention to proxy; the old filename still works but
