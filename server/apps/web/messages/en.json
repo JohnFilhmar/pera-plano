@@ -306,7 +306,63 @@
     }
   },
   "terms": {},
-  "installedApps": {},
+  "installedApps": {
+    "title": "Which apps you have installed",
+    "intro": "During setup, PeraPlano has to show you the bank and e-wallet apps you actually have, so you can choose whose notifications it should read. Doing that means asking Android which apps are installed on the phone. This page states exactly what that check reads, what it does not, the permission it needs, and the fact that Google may not accept it.",
+    "sections": {
+      "whatIsRead": {
+        "heading": "What is read",
+        "paragraphs": [
+          "PeraPlano reads the package names of the applications installed on your phone — identifier strings such as com.globe.gcash.android. That is the whole of it.",
+          "A package name is a label, not a window. It says that an app is present on the phone. It says nothing about what is inside it, and the check asks Android for nothing else."
+        ]
+      },
+      "whatIsNeverRead": {
+        "heading": "What is never read",
+        "paragraphs": [
+          "The check returns a list of names. None of the following is requested, and none of it becomes available to PeraPlano as a result of it:"
+        ],
+        "bullets": [
+          "Nothing inside any other app: no contents, no screens, no data of any kind.",
+          "No usage statistics. PeraPlano does not read how often you open an app or when you last used one, and it does not hold the usage-access permission that would make that possible.",
+          "No accessibility service. Using accessibility APIs to collect data is ruled out for this product, and violates Play policy besides.",
+          "No SMS permission. Bank SMS reach PeraPlano only as notifications posted by your own messaging app, like any other notification.",
+          "No location, no contacts, no call log. None of them has any use in this product."
+        ]
+      },
+      "why": {
+        "heading": "Why it is done at all",
+        "paragraphs": [
+          "Setup asks you which providers PeraPlano should read. For that question to be answerable, the list in front of you has to be the apps you actually have.",
+          "Before this check existed, that list was built from thirteen guessed, unverified package names, matched against a listener history that is empty on a fresh install. It asked you to recognise something you had no way to recognise. Reading the installed list replaces a guess with a fact.",
+          "It also makes the choice that follows mean something. When the list is one you recognise, ticking nothing is a decision; when it is a list of guesses, ticking nothing usually means the list was unrecognisable."
+        ]
+      },
+      "thePermission": {
+        "heading": "The permission, and what it means at review",
+        "paragraphs": [
+          "Reading the full list of installed apps on current Android versions requires QUERY_ALL_PACKAGES, which Google Play classifies as a restricted permission. Declaring it means submitting a declaration form with every release.",
+          "What follows is what PeraPlano's own decision record says about that form, published here rather than kept internal."
+        ],
+        "riskHeading": "This is not settled",
+        "risk": "Google's enumerated permitted uses do not obviously cover detecting which bank apps you have installed — the financial carve-out is worded for fraud and security checks. We make the declaration on the basis that the check exists only to configure which notifications you have asked PeraPlano to read. Google may disagree, and a rejection is a live possibility."
+      },
+      "theAlternative": {
+        "heading": "If the declaration is refused",
+        "paragraphs": [
+          "App discovery sits behind a single interface with two implementations. One is the check described above. The other is a <queries> manifest allowlist: a fixed list of known Philippine bank and e-wallet package names, declared in the app's manifest, which Android will answer without any restricted permission. If a review ever bounces, the swap is one implementation, not a redesign of setup.",
+          "What that would cost you, stated plainly: only apps on the list could be detected. A newly launched e-wallet, or one that has not been added yet, would not appear in your picker until an app update ships with its package name on the list. The check has no such limit, which is why it is the one in use."
+        ]
+      },
+      "whereItGoes": {
+        "heading": "Where the result goes",
+        "paragraphs": [
+          "The result configures the picker you see during setup. What is kept afterwards is your provider selection — the providers you chose — not a copy of your app inventory.",
+          "Nothing about it is transmitted. The check runs on the phone, its answer is used on the phone, and no part of it is sent anywhere. The privacy notice describes how everything else PeraPlano holds is stored and for how long."
+        ]
+      }
+    }
+  },
   "dataDeletion": {
     "title": "Delete your data",
     "intro": "Everything PeraPlano records lives in an encrypted database on the phone you installed it on. Deleting it is therefore something you do on the device, and it is final: there is no copy on our servers to restore it from, and nothing held there for us to delete on your behalf. Every deletion route the app has is below, from the smallest to the largest.",
