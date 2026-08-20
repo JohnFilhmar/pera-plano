@@ -46,7 +46,117 @@
     ],
     "consequence": "PeraPlano Plus cannot be offered for sale until these exist."
   },
-  "marketing": {},
+  "marketing": {
+    "hero": {
+      "eyebrow": "Philippines-first · Android",
+      "tagline": "You never log a transaction; you only set the rules.",
+      "lede": "PeraPlano tracks your money automatically by reading the notifications your banks and e-wallets already send you, parses them on your phone, and builds a complete, categorised ledger without you typing anything.",
+      "sub": "Pera is Filipino for money, plano for plan. The name is the whole product.",
+      "storeBadge": null,
+      "storeBadgeNote": "There is no Play listing yet, so there is no download button here. When there is one, it will be a real link."
+    },
+    "whatItDoes": {
+      "heading": "How it works",
+      "intro": "Five steps, and you are involved in exactly one of them.",
+      "steps": [
+        {
+          "verb": "Explain",
+          "detail": "Before any system screen appears, the app tells you what Notification Access is for, what it will read, and what it discards. Every permission is skippable; skip it and the app falls back to manual entry rather than refusing to work."
+        },
+        {
+          "verb": "Listen",
+          "detail": "The listener runs continuously. Each notification from a provider it recognises is read on the device — never uploaded — and turned into a structured record: amount, direction, merchant, wallet, category, confidence."
+        },
+        {
+          "verb": "Parse",
+          "detail": "High-confidence readings are recorded automatically. Anything the app is unsure about waits in the Review Queue for a one-tap confirmation, and every correction you make becomes a rule that replays on future notifications."
+        },
+        {
+          "verb": "Dedupe and link transfers",
+          "detail": "A push and an SMS announcing the same payment are collapsed into one record. Moving money between your own wallets is detected as a transfer and excluded from both spending and income, so your own money does not look like expenditure."
+        },
+        {
+          "verb": "Enforce your rules",
+          "detail": "Committed transactions update your limits, goals, bills and your Safe-to-Spend number in real time. The app notifies you when something you set a rule about happens, and stays quiet otherwise."
+        }
+      ],
+      "exampleHeading": "What one notification becomes",
+      "exampleDisclaimer": "Illustrative only. This notification text is invented for the example; real provider formats are captured and versioned during implementation, and no bank message is reproduced here.",
+      "exampleNotification": "You have sent ₱1,500.00 to JUAN D. via GCash.",
+      "exampleResult": "Recorded as: ₱1,500.00 out, merchant JUAN D., wallet GCash, source notification — with a suggested category if you have a rule for that counterparty."
+    },
+    "whoItIsFor": {
+      "heading": "Who it is for",
+      "intro": "Three people, one app, no mode switches. Most readers are more than one of them.",
+      "personas": [
+        {
+          "name": "The salaried kinsenas earner",
+          "summary": "Paid kinsenas — twice a month, on the 15th and 30th, with the 30th also called katapusan. Salary lands in a payroll bank account, part of it moves to GCash for daily spending, and rent, bills and padala cluster right after payday.",
+          "pain": "The second week of each half-month, when the money runs thin and there is no answer to where it went.",
+          "gives": "Income cadence tuned to a twice-monthly pay cycle, limits that reset on your real payday rather than on the first of the month, and a Safe-to-Spend number that understands how many days are left until the 15th."
+        },
+        {
+          "name": "The gig or informal-income worker",
+          "summary": "Driver, freelancer, online seller, service provider. Income arrives irregularly through GCash, Maya or bank transfers, sometimes several small payments in a day.",
+          "pain": "No payroll summary exists. Your notification history is your income record, and a manual app asks you to type it all again.",
+          "gives": "Automatic capture of every incoming payment, an irregular income cadence you can override, in-versus-out reporting that says whether a week actually netted positive, and loan tracking for the informal credit that bridges slow weeks."
+        },
+        {
+          "name": "The e-wallet-heavy spender",
+          "summary": "Often the designated money person in the family. Daily life runs through GCash and Maya — load, transport, food delivery, online shopping, bills, padala to the province — across three or more apps at once.",
+          "pain": "Internal transfers make the history in every app double-count, and no single place shows the whole picture.",
+          "gives": "Multiple wallets modelled properly, automatic transfer detection so a GCash-to-bank move is never counted as spending, and recurring-subscription detection that surfaces the quiet monthly commitments you forgot about."
+        }
+      ],
+      "glossaryHeading": "The words on this page",
+      "glossary": [
+        "kinsenas — being paid twice a month, on the 15th and 30th. Katapusan is the end-of-month payday.",
+        "utang — personal debt, owed to or by friends and family. PeraPlano tracks it in both directions, because money owed to you shapes what is safe to spend just as much as money you owe.",
+        "padala — money sent to family, from another city or from abroad. In PeraPlano it is a default category, not something you have to invent."
+      ]
+    },
+    "whyThePhilippines": {
+      "heading": "Why the Philippines",
+      "intro": "Six facts about Filipino financial life. No global competitor is built around all six at once, and that is the whole reason this app exists.",
+      "facts": [
+        "E-wallet saturation. GCash and Maya are default payment rails for tens of millions of people. QR payments, send-money and buy-load are daily events, and every one of them emits a notification that can be read.",
+        "Notification-rich banking. Philippine banks and digital banks send push or SMS alerts for debits and credits. Even a bank SMS surfaces as a notification from your default messaging app, which the listener can read without ever requesting SMS permission.",
+        "A distinct pay rhythm. Salaried workers are paid kinsenas — twice a month, on the 15th and 30th. Budgeting apps built for monthly cycles never fit; PeraPlano treats the twice-monthly cadence as first-class.",
+        "A distinct debt culture. Informal borrowing is everywhere: utang between friends and family, 5-6 lending, appliance instalments, salary loans, credit cards. PeraPlano tracks loans in both directions.",
+        "Remittance flows. Padala is routine and budgeted, not an edge case, so it is a category the app ships with.",
+        "Android dominance. The market is overwhelmingly Android, which is also the only platform where notification listening is possible at all. Android-only is a fit, not a compromise."
+      ]
+    },
+    "whatItIsNot": {
+      "heading": "What it is not",
+      "intro": "Leading with the limits, because a money app that oversells itself is a money app you should not trust.",
+      "bullets": [
+        "Not a bank or an e-money issuer. PeraPlano never holds, moves or touches your funds. It observes and it plans.",
+        "Not a financial advisor. It reports facts against rules you set. It does not recommend products, investments or credit.",
+        "No ads and no data selling, ever. The intended business model is a subscription.",
+        "No SMS permission, ever. Bank SMS is read as a notification from your messaging app, so the permission is neither requested nor needed.",
+        "Not a bookkeeping tool. No invoicing, VAT, payroll or BIR features — gig workers are served as people managing personal cash flow, not as businesses."
+      ],
+      "linkLabel": "The full list, and the terms",
+      "linkPath": "/terms"
+    },
+    "privacyPromise": {
+      "heading": "Where your data lives",
+      "paragraphs": [
+        "Raw notification text never leaves your phone. It is stored encrypted on the device with a 30-day time-to-live so you can always answer the question why did the app record this, and then it is purged.",
+        "This is architecture, not a policy promise. There is no account, no sign-in and no server copy of your ledger, so there is nothing on our side to hand over, to lose, or to be asked for.",
+        "Cloud backup of committed transaction records — structured fields, never raw text — is a planned paid feature and is opt-in. It does not exist yet."
+      ],
+      "linkLabel": "Read the full privacy notice",
+      "linkPath": "/privacy"
+    },
+    "tiersLink": {
+      "heading": "Free and Plus",
+      "body": "Automatic tracking is never limited by tier, and privacy controls are never behind a paywall. What paying adds is depth. The full comparison sits with the commercial terms rather than here, and no price is published yet because none has been decided.",
+      "linkLabel": "Compare Free and Plus",
+      "linkPath": "/terms"
+    }
+  },
   "support": {
     "title": "Support",
     "intro": "This page is two things: how to reach a person, and the complete list of what you can switch off, correct, export or destroy without reaching anyone at all. The second list is longer, and for most questions it is the faster answer.",
