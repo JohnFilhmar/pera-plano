@@ -1,0 +1,110 @@
+:root {
+  color-scheme: light;
+  --brand: #15803d;
+  --brand-2: #22c55e;
+  --on-brand: #ffffff;
+  --mint: #dcfce7;
+  --bg: #f7faf7;
+  --surface: #ffffff;
+  --text: #10201a;
+  --muted: #5b6e64;
+  --danger: #dc2626;
+  --warn: #d97706;
+  --line: rgba(16, 32, 26, 0.12);
+  --ph-blue: #0038a8;
+  --ph-red: #ce1126;
+  --ph-yellow: #fcd116;
+  --shadow: 0 24px 60px -24px rgba(16, 32, 26, 0.28);
+  --measure: 1120px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --brand: #22c55e;
+    --brand-2: #4ade80;
+    --on-brand: #06130c;
+    --mint: #14261c;
+    --bg: #0b1210;
+    --surface: #111a16;
+    --text: #e8f0ec;
+    --muted: #9bb0a6;
+    --danger: #f87171;
+    --warn: #fbbf24;
+    --line: rgba(232, 240, 236, 0.14);
+    --shadow: 0 24px 60px -24px rgba(0, 0, 0, 0.6);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --brand: #22c55e;
+  --brand-2: #4ade80;
+  --on-brand: #06130c;
+  --mint: #14261c;
+  --bg: #0b1210;
+  --surface: #111a16;
+  --text: #e8f0ec;
+  --muted: #9bb0a6;
+  --danger: #f87171;
+  --warn: #fbbf24;
+  --line: rgba(232, 240, 236, 0.14);
+  --shadow: 0 24px 60px -24px rgba(0, 0, 0, 0.6);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-manrope), system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.65;
+  text-wrap: pretty;
+}
+
+a { color: var(--brand); text-underline-offset: 0.2em; }
+a:hover { color: var(--brand-2); }
+
+h1, h2, h3 { line-height: 1.2; letter-spacing: -0.015em; text-wrap: balance; }
+
+/* A six-column prose table cannot fit a phone. It scrolls inside its own box so the
+   page body never scrolls sideways — the most common way a content site breaks. */
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.table-scroll table { border-collapse: collapse; width: 100%; min-width: 46rem; }
+.table-scroll th, .table-scroll td {
+  border: 1px solid var(--line);
+  padding: 0.6rem 0.75rem;
+  text-align: left;
+  vertical-align: top;
+  font-size: 0.925rem;
+}
+.table-scroll th { background: var(--mint); font-weight: 700; }
+
+/* The delivered peraplano-logo-animated.svg carries no animation of its own — its
+   #plane and #trail ids exist so the web front end can drive them, which is what these
+   two keyframe sets do. Motion is opt-in by OS preference. */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes pp-float {
+    0%, 100% { transform: translateY(2.5px) rotate(-1.6deg); }
+    50% { transform: translateY(-3.5px) rotate(2deg); }
+  }
+  @keyframes pp-flow { to { stroke-dashoffset: -2.22; } }
+  .brand-mark--animated #plane { animation: pp-float 4.2s ease-in-out infinite; transform-origin: 12px 12px; }
+  .brand-mark--animated #trail { animation: pp-flow 1.8s linear infinite; }
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+}
+.skip-link:focus {
+  left: 1rem;
+  top: 1rem;
+  z-index: 100;
+  background: var(--surface);
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+}

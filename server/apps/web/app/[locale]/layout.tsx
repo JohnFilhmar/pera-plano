@@ -1,5 +1,7 @@
 import { notFound } from "next/navigation";
 import { getConfig } from "@peraplano/common";
+import { SiteFooter } from "@/components/chrome/site_footer";
+import { SiteHeader } from "@/components/chrome/site_header";
 import { SUPPORTED_LOCALES, getMessages, isSupportedLocale } from "@/messages/index";
 
 /**
@@ -27,11 +29,9 @@ export default async function LocaleLayout({
   const config = getConfig();
   return (
     <>
-      {/* SiteHeader and SiteFooter arrive in Task 5. */}
+      <SiteHeader messages={messages} locale={locale} localeCount={SUPPORTED_LOCALES.length} />
       <main id="content">{children}</main>
-      <span hidden data-locale={locale} data-base-url={config.publicBaseUrl}>
-        {messages.meta.siteName}
-      </span>
+      <SiteFooter messages={messages} contacts={config.contacts} locale={locale} />
     </>
   );
 }
