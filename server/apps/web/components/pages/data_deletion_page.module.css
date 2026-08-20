@@ -1,0 +1,69 @@
+.page {
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: 2.5rem 1.5rem 4rem;
+}
+
+.intro {
+  font-size: 1.075rem;
+  margin: 0.75rem 0 1.5rem;
+}
+
+.section {
+  margin: 2rem 0;
+}
+
+.section p {
+  margin: 0.75rem 0;
+}
+
+.section ul {
+  margin: 0.75rem 0;
+  padding-left: 1.25rem;
+}
+
+.section li {
+  margin: 0.35rem 0;
+}
+
+/* The three destructive routes are numbered and boxed rather than run together as prose:
+   someone reading this page is usually mid-task on a phone, and a wipe instruction that
+   has to be picked out of a paragraph is an instruction that gets half-followed. */
+.routes {
+  list-style: decimal;
+  margin: 1.25rem 0;
+  padding-left: 1.25rem;
+}
+
+.route {
+  margin: 0.75rem 0;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  background: var(--surface);
+}
+
+.routeWhere {
+  display: block;
+  color: var(--muted);
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.routeAction {
+  margin: 0.35rem 0 0;
+  font-weight: 600;
+}
+
+.routeDetail {
+  margin: 0.35rem 0 0;
+}
+
+.contacts {
+  margin: 1.5rem 0;
+  padding: 1.25rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  background: var(--surface);
+}

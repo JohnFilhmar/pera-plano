@@ -307,5 +307,78 @@
   },
   "terms": {},
   "installedApps": {},
-  "dataDeletion": {}
+  "dataDeletion": {
+    "title": "Delete your data",
+    "intro": "Everything PeraPlano records lives in an encrypted database on the phone you installed it on. Deleting it is therefore something you do on the device, and it is final: there is no copy on our servers to restore it from, and nothing held there for us to delete on your behalf. Every deletion route the app has is below, from the smallest to the largest.",
+    "sections": {
+      "deleteOne": {
+        "heading": "Delete a single record",
+        "paragraphs": [
+          "Most of the time the thing you want gone is one transaction — a parse that was wrong, or a payment you would rather not keep. Open it and delete it from its detail screen. Nothing else is affected.",
+          "If the record should exist but a field is wrong, change the field instead of destroying the record. Every parsed field — amount, direction, wallet, category, merchant and note — is editable on that same screen, and a correction you make in the Review Queue becomes a rule that applies to what arrives afterwards."
+        ]
+      },
+      "stopWithoutDeleting": {
+        "heading": "Stop the app recording anything, without deleting what it has",
+        "paragraphs": [
+          "Stopping and deleting are different problems, and PeraPlano keeps them apart. These controls live in More → Settings → Privacy, and none of them touches what you have already recorded."
+        ],
+        "bullets": [
+          "Pause listening. Reading stops entirely until you turn it back on. The change is visible on Home and in settings, so a paused app never looks like a working one.",
+          "Pause one provider. Stop parsing a single provider's notifications while the rest keep working.",
+          "Turn off diagnostics. Stops the aggregate telemetry counters described in the privacy notice. Nothing in the app is gated behind leaving it on, and no feature is lost by switching it off."
+        ]
+      },
+      "deleteEverything": {
+        "heading": "Delete everything",
+        "intro": "Three routes destroy all of it. They differ mainly in how much they tell you before they act.",
+        "routes": [
+          {
+            "where": "In the app",
+            "action": "More → Settings → Privacy → Wipe everything.",
+            "detail": "The confirmation screen states exactly what will be destroyed, before anything is destroyed."
+          },
+          {
+            "where": "From the phone's own settings",
+            "action": "Settings → Apps → PeraPlano → Storage → Clear data.",
+            "detail": "This destroys the encrypted database and every setting. The app stays installed and returns to its first-run state, as though it had just been downloaded."
+          },
+          {
+            "where": "By removing the app",
+            "action": "Uninstall PeraPlano.",
+            "detail": "Removes the app and its data together."
+          }
+        ],
+        "recommendationHeading": "Which one to use",
+        "recommendation": "Use the first. It is the only route that knows what it is deleting, and therefore the only one that can tell you. Clear data and Uninstall are the phone's blunt instruments: they work, and they say nothing about what went with them. All three are irreversible, and an export taken beforehand is the only way back."
+      },
+      "selfDeleting": {
+        "heading": "Some of it deletes itself",
+        "paragraphs": [
+          "The raw text of the notifications PeraPlano reads is kept for 30 days and then purged, with or without any action from you. While it is kept it stays on the phone — never in a backup, never in diagnostics, never in a support message.",
+          "After the purge, a transaction the app recorded automatically keeps its structured fields, but the screen that answers \"why was this recorded?\" can no longer show you the notification behind it. It says the original is no longer retained, rather than showing you nothing."
+        ]
+      },
+      "outOfOurReach": {
+        "heading": "What deleting in the app cannot reach",
+        "paragraphs": [
+          "Two things survive a wipe, because neither was ever inside the app's boundary."
+        ],
+        "bullets": [
+          "Exports you saved or shared. A CSV export is an ordinary unencrypted file that lives wherever you put it — a downloads folder, a chat thread, a cloud drive. The app warns you of that when it makes one. It is outside the app's protection from that moment, and wiping the app does not touch it; delete those copies yourself.",
+          "Support correspondence. Anything you have written to support sits in the support mailbox and is kept no longer than 24 months after the case is closed. Ask for it to be deleted sooner and it will be. This is also why the app asks you not to paste raw notification text into a support message."
+        ],
+        "supportHeading": "Ask for support correspondence to be deleted"
+      },
+      "ifAccountsEverExist": {
+        "heading": "If accounts ever exist",
+        "paragraphs": [
+          "PeraPlano does not offer accounts today. There is no sign-in, no identity held on any server, and so nothing of that kind that could be deleted — which is why this page is a set of instructions for your phone rather than a form.",
+          "If a sign-in identity is ever introduced, it would arrive with cloud backup, which our planning documents describe as a future paid feature. Google Play's account-deletion policy would then apply, and a deletion route would appear on this page beside the instructions above: reachable from the web without installing anything, as well as from inside the app.",
+          "That route would remove the sign-in identity and all server-side backup data within 30 days. The ledger on the phone would survive unless you asked for that to go as well, and the screen would say so plainly before you chose.",
+          "None of it exists yet. Until it does, the instructions above are the only deletion there is to describe, because on-device storage is the only storage there is."
+        ]
+      }
+    }
+  }
 }
