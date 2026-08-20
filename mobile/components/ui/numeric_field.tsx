@@ -18,8 +18,9 @@
 // THE COST, STATED: no caret, no selection, no paste. The keypad's
 // press-to-backspace and hold-to-clear cover correction. A paste path is a
 // later workstream, not something to smuggle in here.
-import { useEffect, useRef } from "react";
+import { useContext, useEffect, useRef } from "react";
 import { Pressable, Text } from "react-native";
+import { NavigationContext } from "@react-navigation/native";
 
 import { useKeypad } from "@/contexts/keypad_context";
 import { formatPesoInput } from "@/lib/money/peso_input";
@@ -98,6 +99,37 @@ export function NumericField({
     },
     [close],
   );
+
+  // AND THE PANEL DOES NOT FOLLOW THE USER TO THE NEXT SCREEN EITHER.
+  //
+  // The unmount cleanup above covers "the field went away". It cannot cover
+  // "the user went away", because `router.push` does NOT unmount the pushing
+  // screen — react-navigation keeps it mounted in the stack, which is the whole
+  // point of a stack. Owner's device report, reproduced exactly on Plan ->
+  // Limits -> new with no income declared: open the amount keypad, tap "Set my
+  // income" in the percent-blocked card, and the panel is still up on the
+  // income screen, editing a field that is no longer on screen. The root host
+  // lives beside the Stack in app/_layout.tsx, outside every screen, so nothing
+  // else is in a position to notice.
+  //
+  // BLUR IS THE SIGNAL — the owner's own words were "whether the input is still
+  // in sight/focus".
+  //
+  // NavigationContext RATHER THAN useNavigation, AND THE DIFFERENCE MATTERS:
+  // `useNavigation` THROWS outside a navigator, and this field really is
+  // mounted outside one on live paths — app/lock.tsx renders the entire
+  // first-run onboarding flow before any navigator exists, and a dozen suites
+  // mount forms bare. Reading the context answers `undefined` there, which is
+  // the truthful answer: no navigator, no blur to hear.
+  //
+  // OWNERSHIP-CHECKED, like the cleanup above. Only the field the request
+  // actually names takes the panel down, so a blur cannot close a panel opened
+  // from a sheet mounted over this screen.
+  const navigation = useContext(NavigationContext);
+  useEffect(() => {
+    if (!focused || !navigation) return;
+    return navigation.addListener("blur", () => close());
+  }, [focused, navigation, close]);
 
   const empty = value === "";
   const shown = empty ? placeholder : shownFor(mode, value);

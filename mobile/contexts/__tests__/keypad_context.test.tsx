@@ -6,7 +6,7 @@
 // fields live inside sheets. The rule is "the most recently mounted host
 // wins", and these tests pin it without a renderer for the panel itself.
 import { act, render, screen } from "@testing-library/react-native";
-import { Text } from "react-native";
+import { Keyboard, Text } from "react-native";
 import { useEffect, useRef } from "react";
 
 import { KeypadProvider, useKeypad } from "../keypad_context";
@@ -304,4 +304,110 @@ test("useKeypad outside a provider throws rather than silently no-opping", () =>
   }
   expect(() => render(<Bare />)).toThrow("useKeypad must be used within KeypadProvider");
   spy.mockRestore();
+});
+
+// ---------------------------------------------------------------------------
+// TWO KEYBOARDS MUST NEVER BE UP AT ONCE (owner's device report).
+//
+// The reenactment, in their words: "user selects an input to enter an
+// alphanumeric characters; user types; user sees another input; user focuses to
+// the number only input price etc.; app behaves as user phone keyboard still
+// open, app opens numpad user keyboard does not close by itself."
+//
+// WHY IT HAPPENS. components/ui/numeric_field.tsx is a Pressable, and that is
+// the whole point of its design — a component with no TextInput in its tree
+// cannot raise the OS keyboard however it is later edited. But the same
+// property means tapping it never BLURS the TextInput that is currently
+// focused either, because nothing about a Pressable press touches focus. The
+// OS keyboard therefore stays up, our panel rises in front of it, and the user
+// has to dismiss the OS one by hand. `Keyboard.dismiss` appeared nowhere in
+// this codebase before these tests.
+//
+// WHY BOTH DIRECTIONS ARE ENFORCED HERE AND NOT IN THE FORMS. Nine screens mix
+// TextInputs with NumericFields (bill_form, goal_form, loan_form,
+// first_limit_form, income_quick_form, quick_wallet_list, correct_sheet,
+// manual_entry_form, wallet_form). Wiring an `onFocus` into every TextInput on
+// all nine is a convention someone forgets on the tenth; doing it once in the
+// provider makes "only one keyboard is ever up" a property of the system, the
+// same argument numeric_field.tsx's own header makes for being a Pressable.
+//
+// NO FEEDBACK LOOP. `Keyboard.dismiss()` raises `keyboardDidHide`, never
+// `keyboardDidShow`, so the dismissal below cannot re-enter the close path.
+// ---------------------------------------------------------------------------
+
+describe("the two keyboards", () => {
+  function OpenerOnly({ fieldId = "a" }: { fieldId?: string }) {
+    const { open } = useKeypad();
+    openField = () =>
+      open({ fieldId, label: "A", mode: "peso", text: "", onChangeText: () => {} });
+    return null;
+  }
+
+  let openField: () => void = () => {};
+
+  test("opening the panel dismisses the system keyboard", () => {
+    const dismiss = jest.spyOn(Keyboard, "dismiss").mockImplementation(() => {});
+
+    render(
+      <KeypadProvider>
+        <Probe />
+        <OpenerOnly />
+      </KeypadProvider>,
+    );
+    expect(dismiss).not.toHaveBeenCalled(); // not merely on mount
+
+    act(() => openField());
+
+    expect(dismiss).toHaveBeenCalledTimes(1);
+    expect(state()).toBe("a");
+    dismiss.mockRestore();
+  });
+
+  test("the system keyboard appearing closes the panel", () => {
+    // The reverse trip: panel open on an amount, user taps a text field. The
+    // OS raises its keyboard, and ours must get out of the way rather than
+    // stack in front of it.
+    const handlers: Record<string, () => void> = {};
+    const add = jest
+      .spyOn(Keyboard, "addListener")
+      .mockImplementation((event: string, handler: () => void) => {
+        handlers[event] = handler;
+        return { remove: jest.fn() } as never;
+      });
+
+    render(
+      <KeypadProvider>
+        <Probe />
+        <OpenerOnly />
+      </KeypadProvider>,
+    );
+
+    act(() => openField());
+    expect(state()).toBe("a");
+
+    act(() => handlers.keyboardDidShow?.());
+
+    expect(state()).toBe("closed");
+    add.mockRestore();
+  });
+
+  test("it unsubscribes from the keyboard when the provider goes away", () => {
+    // A provider is torn down and rebuilt on every lock/unlock (app/_layout.tsx
+    // mounts it INSIDE the lock gate, deliberately). A listener that outlived
+    // it would call setState on a dead tree once per keyboard raise, forever.
+    const remove = jest.fn();
+    const add = jest
+      .spyOn(Keyboard, "addListener")
+      .mockImplementation(() => ({ remove }) as never);
+
+    const { unmount } = render(
+      <KeypadProvider>
+        <Probe />
+      </KeypadProvider>,
+    );
+    unmount();
+
+    expect(remove).toHaveBeenCalled();
+    add.mockRestore();
+  });
 });
