@@ -83,6 +83,18 @@ export const REVIEW_ACTIONS: Record<ReviewKind, ReviewActionPair> = {
 };
 
 /**
+ * The reject affordance's label — task 4a.
+ *
+ * THE SAME WORDS `unknown-provider`'s SECONDARY already uses ("Not money" in
+ * `REVIEW_ACTIONS`) and the same words `use_review_action.ts`'s own doc
+ * comment uses for `dismiss`. A third wording for the same outcome ("Reject",
+ * "Dismiss", "Ignore") would ask the user to learn that they mean the same
+ * thing, on the one card kind where they are seeing the sentence for the
+ * first time.
+ */
+export const REVIEW_REJECT_LABEL = "Not money";
+
+/**
  * The sentence to show when the payload carries none — one `GATE_REASONS` entry
  * per kind, never a string written here.
  *
@@ -144,6 +156,19 @@ function readString(payload: ReviewItemPayload, key: string): string | null {
 function readAmount(payload: ReviewItemPayload): Centavos | null {
   const value = payload.amount;
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * True when this card's payload carries an amount the ledger could accept.
+ *
+ * THE SCREEN AND THE TESTS SHARE THIS DEFINITION rather than each re-deriving
+ * it from `readAmount`, because the one place that actually enforces "no
+ * amount, no commit" is `resolve_actions.ts`'s `proposalFrom` — a second,
+ * slightly different reader here would let the button's disabled state and
+ * the write path disagree about the exact same payload.
+ */
+export function hasParsedAmount(item: ReviewQueueItem): boolean {
+  return readAmount(item.payload) !== null;
 }
 
 function readDirection(payload: ReviewItemPayload): TxDirection | null {
@@ -423,6 +448,20 @@ export type ReviewCardProps = {
    */
   onPrimary?: (item: ReviewQueueItem) => void;
   onSecondary?: (item: ReviewQueueItem) => void;
+  /**
+   * Task 4a. ABSENT MEANS NOT RENDERED — the opposite rule from the pair
+   * above, and deliberately so. The pair is DEFINITIONAL to the item's kind
+   * (rule 4: every kind has one), so a card handed no primary/secondary
+   * handler still shows what the two outcomes ARE, disabled. A reject is not
+   * definitional — only `low-confidence` gets one from the screen
+   * (`app/review/index.tsx`'s `rejectActionFor`), because it is the only kind
+   * that can be pure noise with no pairing question attached. A permanently
+   * disabled "Not money" on a duplicate or transfer card would read as a
+   * broken button on a card that never had that outcome, not as an
+   * inapplicable one — so the screen not supplying the handler means this
+   * card simply has no third button, full stop.
+   */
+  onReject?: (item: ReviewQueueItem) => void;
   testID?: string;
 };
 
@@ -433,6 +472,7 @@ export function ReviewCard({
   providers = [],
   onPrimary,
   onSecondary,
+  onReject,
   testID,
 }: ReviewCardProps) {
   const actions = REVIEW_ACTIONS[item.kind];
@@ -440,6 +480,20 @@ export function ReviewCard({
   const counterpartId = counterpartIdOf(item);
   const amount = readAmount(item.payload);
   const categoryId = readString(item.payload, "categoryId");
+
+  // Task 4b. `low-confidence` is the ONLY kind whose primary can commit a
+  // payload with no amount: `possible-duplicate` and `ambiguous-transfer`
+  // come from a normalized event (`pipeline.ts`'s two gated queue sites) and
+  // always carry one, and `unknown-provider`'s primary opens the correction
+  // form (`primaryActionFor` in app/review/index.tsx returns `"correct"` for
+  // it) rather than committing anything — so there is nothing for those three
+  // kinds to guard against here. `resolve_actions.ts`'s `proposalFrom` already
+  // throws on a missing amount, which is why the ledger was never actually at
+  // risk; what this guards against is the OTHER failure — the mutation
+  // rejecting with no `onError` on `useReviewAction`, so the biggest, greenest
+  // button on the card did nothing at all when tapped. This is also defensive
+  // against a hand-built or older row that predates this guard existing.
+  const blockedByMissingAmount = item.kind === "low-confidence" && !hasParsedAmount(item);
 
   return (
     <View testID={testID ?? `review-card-${item.id}`} className="px-4 pb-3">
@@ -496,11 +550,15 @@ export function ReviewCard({
                 testID={`review-primary-${item.id}`}
                 title={actions.primary}
                 variant="primary"
-                disabled={onPrimary === undefined}
+                disabled={onPrimary === undefined || blockedByMissingAmount}
                 onPress={onPrimary ? () => onPrimary(item) : () => undefined}
               />
             </View>
             <View className="flex-1">
+              {/* "Correct" stays enabled even while the primary is blocked —
+                  supplying the amount is exactly the way forward, and
+                  disabling the one path off this card would strand the
+                  user on it. */}
               <Button
                 testID={`review-secondary-${item.id}`}
                 title={actions.secondary}
@@ -510,6 +568,25 @@ export function ReviewCard({
               />
             </View>
           </View>
+
+          {blockedByMissingAmount ? (
+            <Text
+              testID={`review-blocked-${item.id}`}
+              className="text-xs text-fg-2 dark:text-fg-2-dark"
+            >
+              PeraPlano needs the amount before this can be recorded. Add the details, or reject
+              it.
+            </Text>
+          ) : null}
+
+          {onReject ? (
+            <Button
+              testID={`review-reject-${item.id}`}
+              title={REVIEW_REJECT_LABEL}
+              variant="ghost"
+              onPress={() => onReject(item)}
+            />
+          ) : null}
         </View>
       </Card>
     </View>

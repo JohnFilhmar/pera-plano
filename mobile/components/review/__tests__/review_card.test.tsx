@@ -39,8 +39,10 @@ import type { RawCapture, ReviewKind, ReviewQueueItem, Wallet } from "@/types/do
 
 import { ConfidenceMeter, confidencePercent } from "../confidence_meter";
 import {
+  hasParsedAmount,
   REASON_FALLBACKS,
   REVIEW_ACTIONS,
+  REVIEW_REJECT_LABEL,
   ReviewCard,
   reviewReason,
 } from "../review_card";
@@ -282,6 +284,97 @@ describe("the action pair", () => {
     // ship, and a dead tap on a money decision is worse than a dimmed one.
     const primary = await screen.findByTestId(`review-primary-${queued.id}`);
     expect(primary.props.accessibilityState.disabled).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// No amount, no one-tap accept — task 4b: a card whose payload never carried
+// an amount must not be one tap from a committed ledger row (data integrity,
+// not cosmetic: `proposalFrom` already refuses such a row, but the button
+// tapping it silently did nothing instead of visibly refusing).
+// ---------------------------------------------------------------------------
+
+describe("hasParsedAmount", () => {
+  test("false for a payload whose amount is null", () => {
+    const queued = item({ kind: "low-confidence", payload: { amount: null, direction: null, confidence: 0 } });
+    expect(hasParsedAmount(queued)).toBe(false);
+  });
+
+  test("true once the payload carries a real amount", () => {
+    const queued = itemOfKind("low-confidence");
+    expect(hasParsedAmount(queued)).toBe(true);
+  });
+});
+
+describe("a low-confidence card with no amount cannot be confirmed", () => {
+  test("the primary is disabled and the blocked line explains why", async () => {
+    const queued = item({
+      id: "r-noamount",
+      kind: "low-confidence",
+      payload: gatedPayload({ amount: null }),
+    });
+    render(
+      <ReviewCard item={queued} wallets={[gcash, bpi]} onPrimary={jest.fn()} onSecondary={jest.fn()} />,
+      { wrapper: Wrapper },
+    );
+
+    const primary = await screen.findByTestId(`review-primary-${queued.id}`);
+    expect(primary.props.accessibilityState.disabled).toBe(true);
+    expect(await screen.findByTestId(`review-blocked-${queued.id}`)).toBeTruthy();
+  });
+});
+
+describe("a low-confidence card WITH an amount is still confirmable", () => {
+  test("the primary stays enabled and no blocked line renders", async () => {
+    const queued = itemOfKind("low-confidence");
+    render(
+      <ReviewCard item={queued} wallets={[gcash, bpi]} onPrimary={jest.fn()} onSecondary={jest.fn()} />,
+      { wrapper: Wrapper },
+    );
+
+    const primary = await screen.findByTestId(`review-primary-${queued.id}`);
+    expect(primary.props.accessibilityState.disabled).toBe(false);
+    expect(screen.queryByTestId(`review-blocked-${queued.id}`)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The reject affordance — task 4a: a card kind that can be pure noise must
+// have a way out, but only when the screen supplies one (rule 4's pair is
+// definitional to every kind; the reject is an extra outcome only some kinds
+// have, so its absence renders nothing rather than a permanently disabled
+// third button that would read as broken on a kind that has no such outcome).
+// ---------------------------------------------------------------------------
+
+describe("the reject button renders only when a handler is supplied", () => {
+  test("absent without onReject", async () => {
+    const queued = itemOfKind("low-confidence");
+    render(<ReviewCard item={queued} wallets={[gcash, bpi]} onPrimary={jest.fn()} onSecondary={jest.fn()} />, {
+      wrapper: Wrapper,
+    });
+
+    await screen.findByTestId(`review-primary-${queued.id}`);
+    expect(screen.queryByTestId(`review-reject-${queued.id}`)).toBeNull();
+  });
+
+  test("present and pressable with onReject", async () => {
+    const onReject = jest.fn();
+    const queued = itemOfKind("low-confidence");
+    render(
+      <ReviewCard
+        item={queued}
+        wallets={[gcash, bpi]}
+        onPrimary={jest.fn()}
+        onSecondary={jest.fn()}
+        onReject={onReject}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    const reject = await screen.findByTestId(`review-reject-${queued.id}`);
+    expect(reject.props.accessibilityLabel).toBe(REVIEW_REJECT_LABEL);
+    fireEvent.press(reject);
+    expect(onReject).toHaveBeenCalledWith(queued);
   });
 });
 
