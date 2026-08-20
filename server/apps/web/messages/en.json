@@ -47,7 +47,163 @@
     "consequence": "PeraPlano Plus cannot be offered for sale until these exist."
   },
   "marketing": {},
-  "support": {},
+  "support": {
+    "title": "Support",
+    "intro": "This page is two things: how to reach a person, and the complete list of what you can switch off, correct, export or destroy without reaching anyone at all. The second list is longer, and for most questions it is the faster answer.",
+    "sections": {
+      "howToReachUs": {
+        "heading": "How to reach us",
+        "paragraphs": [
+          "Support is by email. There is no in-app chat and no phone line, and we would rather say so than leave you looking for one.",
+          "The company operating PeraPlano is the Personal Information Controller for any personal data it actually receives — which, today, means support correspondence and content-free diagnostics, and nothing from your ledger."
+        ],
+        "supportHeading": "Support mailbox",
+        "controllerHeading": "Personal Information Controller"
+      },
+      "beforeYouWrite": {
+        "heading": "Before you write to us",
+        "paragraphs": [
+          "Please do not paste raw notification text into a support message. The text your bank or e-wallet sends you is the most sensitive thing the app handles: on your phone it is encrypted and purged after 30 days, and it is never transmitted anywhere. Pasted into an email it becomes an ordinary message in an ordinary mailbox, and none of that protection follows it.",
+          "Describe the problem instead — which provider, roughly when, and what the app got wrong. That is almost always enough, and where it is not we will ask for the smallest thing that is.",
+          "Support correspondence is kept for no longer than 24 months after your case is closed, and sooner if you ask for it to be deleted."
+        ]
+      },
+      "unshipped": {
+        "heading": "Two rows in the tables below describe something that has not shipped",
+        "body": "Cloud backup, and the sign-in identity that exists only to carry it, are planned PeraPlano Plus features. They are listed because this is the complete list of controls the product commits to, not the list of controls that are live today. Nothing of yours is on a server, so there is currently nothing for those two controls to act on."
+      },
+      "controls": {
+        "heading": "Every control you have",
+        "intro": "Reproduced in full from PeraPlano's internal privacy document. Controls are named with honest verbs — pause, wipe, delete — and every control screen in the app states what it does and what it does not do.",
+        "caption": "Every control PeraPlano gives you, what it does, and where to find it.",
+        "headers": ["Control", "What it does", "Where"],
+        "rows": [
+          [
+            "Pause listening (global)",
+            "Ingest stops entirely until you resume it, and the status changes visibly on Home and in settings.",
+            "More → Settings → Privacy"
+          ],
+          [
+            "Pause per provider",
+            "Stop parsing one provider while the rest keep working — pause GCash but keep BPI, for example.",
+            "More → Settings → Privacy"
+          ],
+          [
+            "Listener health",
+            "Shows whether the listener is alive, when it last saw an event, and fix guidance specific to your phone maker; a recovery banner appears when tracking was interrupted.",
+            "More → Settings; Home banner when degraded"
+          ],
+          [
+            "Transparency screen (why was this recorded?)",
+            "For any automatically recorded transaction, shows the parsed fields side by side with the captured notification text, for as long as that text is retained.",
+            "Transaction detail"
+          ],
+          [
+            "Parser diagnostics",
+            "Per-provider parse activity and success rates, so you can see what the pipeline is doing. It runs entirely on your phone; there is nobody else's anything to expose.",
+            "More → Settings"
+          ],
+          [
+            "Review Queue",
+            "Confirm or correct every low-confidence parse. Your corrections become rules the app applies from then on.",
+            "Transactions tab (badge)"
+          ],
+          [
+            "Edit anything",
+            "Every parsed field is editable: amount, direction, wallet, category, merchant and note.",
+            "Transaction detail"
+          ],
+          [
+            "Export everything",
+            "A CSV export of the ledger plus a full structured export of every configuration entity. Available on every tier, because it is a data-portability right rather than a feature.",
+            "More → Settings → Privacy"
+          ],
+          [
+            "Wipe everything",
+            "Deletes all on-device data and, where backup was enabled, server copies. The confirmation flow states exactly what will be destroyed.",
+            "More → Settings → Privacy"
+          ],
+          [
+            "Cloud backup toggle (Plus)",
+            "Off by default. Turning it on states what syncs; turning it off deletes server copies within 30 days.",
+            "More → Settings → Privacy"
+          ],
+          [
+            "Telemetry opt-out",
+            "Stops aggregate diagnostics. No feature is lost.",
+            "More → Settings → Privacy"
+          ],
+          [
+            "App-alert controls",
+            "Per-type toggles for the app's own notifications — limits, bills, loans, goals, the review digest, listener health and the payday summary — mirrored with the system notification channels.",
+            "More → Settings → Notifications"
+          ],
+          [
+            "Sign-in identity deletion",
+            "In-app and through a web link, as Play policy requires; removes the identity and its server data within 30 days.",
+            "More → Settings → Privacy (only exists if a backup identity exists)"
+          ],
+          [
+            "Consent review",
+            "Re-read the disclosure and the privacy notice, and withdraw consent — which is pausing, and wiping if you want it gone.",
+            "More → Settings → Privacy"
+          ]
+        ]
+      },
+      "rights": {
+        "heading": "Your rights under RA 10173, and how to use them",
+        "intro": "The Data Privacy Act of 2012 gives you these rights. Each one maps to a control that already exists in the app rather than to a request form, because a right you have to ask us to honour is slower than a right you can exercise yourself.",
+        "caption": "Each right under the Data Privacy Act of 2012, and the control that delivers it.",
+        "headers": ["Your right", "How PeraPlano honours it"],
+        "rows": [
+          [
+            "Right to be informed",
+            "A layered privacy notice, plus short in-flow explainers shown at the moment of each permission ask."
+          ],
+          [
+            "Right to object",
+            "Every permission is skippable; ingest can be paused globally or per provider; telemetry can be switched off; consent can be withdrawn at any time."
+          ],
+          [
+            "Right to access",
+            "Transparency screens show exactly why the app recorded a transaction, for as long as the notification text is retained, plus a full data export."
+          ],
+          [
+            "Right to rectification",
+            "Every parsed field is editable, Review Queue corrections apply immediately, and those corrections become rules that replay going forward."
+          ],
+          [
+            "Right to erasure or blocking",
+            "Delete any single transaction; wipe everything on the device and, where backup was enabled, the server copies; turning backup off deletes server copies."
+          ],
+          [
+            "Right to data portability",
+            "Export everything: a CSV of the ledger plus a full structured export of wallets, limits, goals, loans, bills, recurring patterns, rules and your income profile."
+          ],
+          [
+            "Right to damages, or to complain",
+            "The Data Protection Officer's contact and the complaint route to the National Privacy Commission are both stated below."
+          ]
+        ]
+      },
+      "dpo": {
+        "heading": "Data Protection Officer",
+        "paragraphs": [
+          "A Data Protection Officer is appointed before public launch regardless of whether registration thresholds are met. Write to the officer directly about anything on this page, or about a right you want to exercise that the app does not already hand you.",
+          "Registration with the National Privacy Commission is our planning position rather than a settled conclusion — which obligations attach, given that the free tier keeps everything on your own phone, is still with Philippine privacy counsel. The status as it stands today is printed below."
+        ],
+        "dpoHeading": "Data Protection Officer",
+        "npcHeading": "NPC registration"
+      },
+      "complaints": {
+        "heading": "Complaining to the National Privacy Commission",
+        "paragraphs": [
+          "If you are not satisfied with how we handled your data or your request, you can complain to the National Privacy Commission, the Philippine regulator for the Data Privacy Act of 2012.",
+          "We are not printing an address, a phone number or a link for the Commission here. Contact details for a regulator change, and a stale one on a page like this sends someone somewhere that no longer answers. Look the Commission up directly. If you tell us you intend to complain, that is not a reason for us to close your case."
+        ]
+      }
+    }
+  },
   "privacy": {
     "title": "Privacy notice",
     "intro": "PeraPlano is local-first by architecture, not by policy promise: the notification text your banks and e-wallets already send you is read on your own phone, stored encrypted on that phone with a 30-day time-to-live, and never leaves it under any configuration. The only thing designed to sync off the device is committed transaction records — structured fields, never raw text — and only if you explicitly switch on cloud backup, a PeraPlano Plus feature. Syncing is not the only way data can leave a phone, so the table below lists every category that does: content-free diagnostics you can switch off, any export file you create yourself, and anything you choose to put in a support message. There are no ads, no data selling, and no third-party analytics that receive notification content.",
