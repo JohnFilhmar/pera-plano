@@ -304,6 +304,24 @@ describe("hasParsedAmount", () => {
     const queued = itemOfKind("low-confidence");
     expect(hasParsedAmount(queued)).toBe(true);
   });
+
+  // Round 1 fix. `parseAmountToCentavos` (lib/ingest/amount.ts) returns `0`,
+  // never `null`, for a genuine "₱0.00" notification — "0 is a legitimate
+  // amount and must stay distinguishable from a refusal" (that file's own
+  // words, pinned by amount.test.ts's `parseAmountToCentavos("0.00") === 0`).
+  // So a low-confidence item can reach this card with `amount: 0`, and
+  // `resolve_actions.ts`'s OWN `readAmount` requires `value > 0` before
+  // `proposalFrom` will build a Transaction from it — `hasParsedAmount` has to
+  // agree with THAT rule, not merely "is it a number", or a ₱0.00 card renders
+  // an enabled primary whose tap throws and shows the user nothing: the exact
+  // silent dead tap this task exists to close.
+  test("false for a payload whose amount is exactly zero — the ledger will not accept it either", () => {
+    const queued = item({
+      kind: "low-confidence",
+      payload: { amount: 0, direction: "out", confidence: 0.4 },
+    });
+    expect(hasParsedAmount(queued)).toBe(false);
+  });
 });
 
 describe("a low-confidence card with no amount cannot be confirmed", () => {
@@ -312,6 +330,26 @@ describe("a low-confidence card with no amount cannot be confirmed", () => {
       id: "r-noamount",
       kind: "low-confidence",
       payload: gatedPayload({ amount: null }),
+    });
+    render(
+      <ReviewCard item={queued} wallets={[gcash, bpi]} onPrimary={jest.fn()} onSecondary={jest.fn()} />,
+      { wrapper: Wrapper },
+    );
+
+    const primary = await screen.findByTestId(`review-primary-${queued.id}`);
+    expect(primary.props.accessibilityState.disabled).toBe(true);
+    expect(await screen.findByTestId(`review-blocked-${queued.id}`)).toBeTruthy();
+  });
+
+  // Round 1 fix's card-level regression: a genuine ₱0.00 notification is a
+  // real, non-null `amount`, so this is a distinct case from "amount is
+  // null" above — the primary must refuse it too, for the same reason
+  // `hasParsedAmount`'s own test does.
+  test("a payload with amount: 0 is treated the same as no amount at all", async () => {
+    const queued = item({
+      id: "r-zero",
+      kind: "low-confidence",
+      payload: gatedPayload({ amount: 0 }),
     });
     render(
       <ReviewCard item={queued} wallets={[gcash, bpi]} onPrimary={jest.fn()} onSecondary={jest.fn()} />,

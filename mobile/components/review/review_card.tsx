@@ -33,6 +33,12 @@
 // renders its pair DISABLED rather than live-but-inert: rule 4 is about what the
 // card shows, and a money decision that silently does nothing when tapped is the
 // affordance Tasks 4 and 6 both refused to ship.
+//
+// A SECOND, NARROWER REASON THE PRIMARY CAN BE DISABLED: task 4b's
+// `hasParsedAmount` guard. A `low-confidence` card whose payload has no
+// positive amount disables ITS OWN primary even with a handler supplied — see
+// `ReviewCardProps.onPrimary`'s doc comment for why that one kind is the only
+// exception to "disabled means no handler".
 import { Text, View } from "react-native";
 
 import { AmountText } from "@/components/ui/amount_text";
@@ -161,14 +167,27 @@ function readAmount(payload: ReviewItemPayload): Centavos | null {
 /**
  * True when this card's payload carries an amount the ledger could accept.
  *
- * THE SCREEN AND THE TESTS SHARE THIS DEFINITION rather than each re-deriving
- * it from `readAmount`, because the one place that actually enforces "no
- * amount, no commit" is `resolve_actions.ts`'s `proposalFrom` — a second,
- * slightly different reader here would let the button's disabled state and
- * the write path disagree about the exact same payload.
+ * DELIBERATELY NOT "is `readAmount` non-null" — that reader above only feeds
+ * DISPLAY (`Side`'s amount), and a genuine ₱0.00 notification should still
+ * render as ₱0.00, not as "Amount not read". Whether the ledger will accept
+ * the row is a stricter, different question, and `resolve_actions.ts`'s OWN
+ * `readAmount` is the authority on it: that function requires `value > 0`
+ * before `proposalFrom` will build a Transaction, so this predicate mirrors
+ * that positivity rule rather than this file's own display reader.
+ *
+ * THE FAILURE MODE THIS PREVENTS, SPECIFICALLY: `lib/ingest/amount.ts`'s
+ * `parseAmountToCentavos` returns `0`, never `null`, for a genuine "₱0.00" —
+ * by that module's own words, "0 is a legitimate amount and must stay
+ * distinguishable from a refusal". So a low-confidence item can reach this
+ * card with a real, non-null `amount: 0`. Treating that as "parsed" would
+ * render the primary ENABLED, and the tap would still throw
+ * `IncompleteReviewItemError` inside `proposalFrom` with no `onError` to
+ * catch it — the exact silent dead tap this task exists to close, just
+ * reachable through a different payload than "amount is missing".
  */
 export function hasParsedAmount(item: ReviewQueueItem): boolean {
-  return readAmount(item.payload) !== null;
+  const amount = readAmount(item.payload);
+  return amount !== null && amount > 0;
 }
 
 function readDirection(payload: ReviewItemPayload): TxDirection | null {
@@ -445,6 +464,11 @@ export type ReviewCardProps = {
    * m1c Task 10. ABSENT MEANS DISABLED, not inert: the pair still renders (rule
    * 4 is about what the card shows) but cannot be tapped, so no triage decision
    * is ever silently dropped on the floor.
+   *
+   * NOT THE ONLY WAY THE PRIMARY ENDS UP DISABLED, as of task 4b: a
+   * `low-confidence` item with no positive `hasParsedAmount` disables the
+   * primary even when this prop IS supplied. That is a data-integrity guard,
+   * not a missing-handler state — see `blockedByMissingAmount` below.
    */
   onPrimary?: (item: ReviewQueueItem) => void;
   onSecondary?: (item: ReviewQueueItem) => void;
