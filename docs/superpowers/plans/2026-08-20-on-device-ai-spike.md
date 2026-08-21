@@ -82,6 +82,28 @@ The remaining verification — the seven tool-handler bindings — belongs to th
 
 ## Task 1: Settle the A54 RAM variant — no spike required, and it goes first
 
+> **RESOLVED 2026-08-21, out of band — the phone answered before the spike started.**
+>
+> `free -h` under Termux reported `MemTotal` ≈ **7.3 GiB → the 8 GB retail variant**, exactly the
+> carve-out the trap below warns about (7.3 read from an 8 GB phone). Recorded in
+> `docs/13-on-device-verification.md`. Spec §6 risk 2 is closed for this device and **open for the
+> 6 GB variant, which stays UNKNOWN and is never assumed fine** — inference runs 6 GB → 8 GB only,
+> never the reverse, so every result below is captioned "on 8 GB; 6 GB unmeasured".
+>
+> **What the reading also produced, which this task did not ask for:** 4.2 G used, **2.9 G available**,
+> **1.6 G of zram already swapped at idle** with PeraPlano not even running. Two consequences that
+> reach past this task:
+>
+> 1. **Tier 5 (`qwen3-4b-2507-q6`, ~3.3 GB) cannot load on this device** — it exceeds measured
+>    available memory outright. Tier 4 (~2.5 GB) leaves nothing for the app. On the 8 GB A54 the
+>    practical ceiling is **tier 3**, not tier 4. §2.2's `minRamBytes` gate has to be set from
+>    *available* memory under real conditions, not from total RAM minus a guess.
+> 2. **A phone that is already swapping at idle** is the baseline Task 7 measures against. Do not
+>    treat 2.9 G as a budget; treat it as the high-water mark of a device under existing pressure.
+>
+> Steps 1–4 below are kept as the written method. Re-run them with `adb` if the retail-variant
+> cross-check in step 2 is ever wanted as corroboration; the conclusion will not change.
+
 **Files:**
 - Modify: `docs/13-on-device-verification.md` (append a row to the "What is already proven" table at :110-116)
 

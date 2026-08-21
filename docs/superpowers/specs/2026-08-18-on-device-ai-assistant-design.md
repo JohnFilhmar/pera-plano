@@ -222,6 +222,50 @@ measured on an A54.** They exist to size the design (§4.4 assumes slowness) and
 spike's real numbers. Wherever a speed appears in the UI it is the *device's own measured* number from
 §2.5, never a value from this table.
 
+> **Amended 2026-08-21 — tier 1 has now been measured, and the estimates are badly optimistic.**
+>
+> `qwen3-0.6b-q4` under llama.cpp CLI in Termux on the owner's A54 (build b10553,
+> `QuantFactory/Qwen3-0.6B-GGUF:Q4_K_M`): **138 t/s prompt warm, 7.5–10.8 t/s generation.** The table
+> above estimated **25–45**. The real figure is roughly **a third of the estimate, and that is the
+> best case** — measured by a CLI process that owned the entire device, with no React Native, Hermes,
+> op-sqlite or SQLCipher competing. In-app will be worse, not better.
+>
+> **Treat every remaining tok/s cell as optimistic by the same factor until measured.** Scaled down,
+> tier 3 lands near 3–5 t/s and tiers 4–5 near 1.5–3 t/s. §4.4 already assumes slowness; it now has to
+> assume roughly three times more of it, and any latency budget derived from this table needs redoing
+> against the scaled figures rather than the printed ones.
+>
+> **Memory, from the same reading:** the A54 is the **8 GB variant** (§2.2's open question, closed),
+> but showed only **2.9 GB available with 1.6 GB of zram already in use at idle**. Tier 5 (~3.3 GB)
+> does not fit on this device at all and tier 4 (~2.5 GB) leaves nothing for the app, so **the
+> practical ceiling on an 8 GB A54 is tier 3**. This does not remove tiers 4–5 from the catalogue —
+> §2.2 already hides what will not fit — but it does mean `minRamBytes` must be derived from
+> *available* memory on a device under normal pressure, not from total RAM minus an allowance.
+>
+> Full record: `docs/13-on-device-verification.md`; spike Task 1 is closed by it.
+
+**Quant policy — owner's decision, 2026-08-21.** The catalogue's shape was questioned and is
+**confirmed as-is**: exactly one quant at tier 1, and higher precision offered only above it.
+
+- **Tier 1 is fixed at Q4_K_M. Q6_K and Q8_0 variants of the 0.6B will not be built or shipped.** The
+  floor tier's job (§4) is to answer with computed data and refuse anything requiring reasoning, so
+  precision spent there buys nothing a user can perceive — it cannot make a template more articulate.
+  The ~300 MB is better left unspent on the phones that can least afford it.
+- **Q6_K and Q8_0 exist only at tiers 2–5**, where prose quality and reasoning are the product and
+  extra precision reaches something the user notices.
+- **Quant is never a user-facing axis.** It is not a selectable rung and it does not appear in the
+  menu as a quant. The catalogue is presented as tiers; §2.2's RAM gate decides which tiers exist on
+  a given device, and the device-appropriate one is marked as suggested with a short reason. Exposing
+  Q2–Q8 as choices was considered and rejected: sub-1B models have no redundancy to absorb low quant,
+  the damage lands on tool-pick accuracy and digit fidelity (surfacing as a rising §3.5 refusal rate
+  rather than as visibly worse prose), users have no feedback loop to judge it, and it would multiply
+  the §2.5 eval matrix and the SHA-256 hosting burden several times over for a solo build.
+- **If memory pressure ever forces a saving, quantize the KV cache, not the weights.** Cache grows
+  with context length and weights do not, so that is where the savings actually are, at far lower
+  quality cost.
+- **Below Q4 is out entirely at every tier.** Q3_K and Q2_K on a sub-1B model degrade the two things
+  §3.5 depends on most.
+
 ```ts
 export type ModelSpec = {
   id: string;              // stable forever — it is the on-disk filename (§2.3)

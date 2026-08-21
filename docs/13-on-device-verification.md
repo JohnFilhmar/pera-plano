@@ -114,6 +114,16 @@ happened. Never "OK" — the point of the exercise is the value, not the tick.
 | `tsc --noEmit` | clean |
 | Prebuild → generated manifest | `<service>`, its intent-filter, and `RECEIVE_BOOT_COMPLETED` verified present; no `READ_SMS`. Re-verified 2026-08-14 after the provider-selection plan: eight permissions, unchanged, and **no `QUERY_ALL_PACKAGES`** — the observed-package list is learned from `sbn.packageName`, not from a package query |
 | Log hygiene | no key, DEK, phrase, or notification text reachable from any log or exception message |
+| A54 5G RAM variant | `MemTotal` ≈ 7.3 GiB (`free -h` under Termux, 2026-08-21) → **8 GB retail variant**. Resolves AI spec §6 risk 2 and closes spike Task 1. **The 6 GB variant remains UNKNOWN and is never assumed fine** — every peak-RSS result carries the caveat "on 8 GB; 6 GB unmeasured" |
+| A54 idle memory pressure | 4.2 G used, **2.9 G available**, and **1.6 G of 8 G zram already in use at idle** — measured with Termux running and PeraPlano *not* (2026-08-21). Available, not total, is what weights compete for, and the app's own RN + Hermes + SQLCipher footprint still has to come out of that 2.9 G before a tier is sized |
+| Qwen3-0.6B Q4_K_M throughput | **138 t/s prompt (warm), 7.5–10.8 t/s generation** — llama.cpp CLI under Termux, `QuantFactory/Qwen3-0.6B-GGUF:Q4_K_M`, build b10553 (2026-08-21). The first-turn 8.4 t/s prompt reading is cold model load, not the steady rate. `/no_think` moved generation 7.5 → 10.8 |
+
+**The throughput row is a Termux CLI measurement, not an in-app one, and it does not close spike Task 4
+or Task 7.** `llama-cli` had the whole device; inside PeraPlano the model shares RAM with React Native,
+Hermes, op-sqlite and SQLCipher, and llama.cpp `mmap`s the GGUF as clean file-backed pages that Android
+evicts under pressure and re-reads from UFS. Nothing here says what happens when the user switches to
+Messenger and back — that is still unmeasured, and it is a low-memory-killer question rather than a
+speed one.
 
 What remains is everything that depends on **Android actually behaving like Android**: delivering
 notifications to a bound service, honouring Keystore auth windows, surviving process death and

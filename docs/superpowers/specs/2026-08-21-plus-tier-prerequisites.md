@@ -413,6 +413,84 @@ Reports rather than to the ungated data-portability export (privacy §7 and §8)
 
 ---
 
+### 2.12 The AI capability tier, and the two axes that must not collapse into one
+
+**Owner's decision, 2026-08-21.** The assistant is tiered by **what it is allowed to do**, not by how
+big its model is. Two axes, deliberately independent:
+
+| Axis | Determined by | User sees |
+|---|---|---|
+| **Model tier** (catalogue tier 1–5) | detected device capability | a suggested tier, with a 2–3 word reason |
+| **Capability tier** (direct vs conversational) | subscription | the Free/Plus distinction |
+
+**Why they are kept apart.** Gating model *size* by payment means two download paths, two prompt sets,
+two eval suites and two sets of failure reports, on a solo build. It also rests on an assumption that
+does not hold: that people who pay own better phones. §4.2 breaks it outright — **early installers and
+beta testers are promised Plus permanently**, and they are whoever installs first, on whatever phone
+they own. Selling that cohort a premium conversational agent their device cannot run is a promise made
+to exactly the users least able to be disappointed. Splitting the axes lets a Plus subscriber on a 4 GB
+phone get the warm persona at tier 1 — worse than on a flagship, but not a broken commitment.
+
+**The Free tier's behaviour is enforced architecturally, not by picking a small model.** The floor
+answers with computed data and does not reason or opine. That is a property of the pipeline — tool
+output rendered through a template, with **no free-text generation on the Free path at all** — not a
+hope that a 0.6B will behave. Small models editorialize constantly. The wall gets built, not wished
+for. A useful side effect: with nothing generating prose, the §3.5 verbatim numeric grounding check is
+trivially satisfied on the Free path, and the whole class of confidently-wrong-number failures cannot
+occur there. Plus is where generation happens and where §3.5 has to earn its keep.
+
+**Two refusals, and they are not the same refusal.** Conflating them is the expensive mistake here.
+
+| Ask | Free | Plus |
+|---|---|---|
+| "How much can I spend today?" | answers | answers, conversationally |
+| "Why did I overspend last week?" | **paywall refusal** — Plus can explain this | reasons over their data |
+| "Suggest cheap recipes" | **scope refusal** — no upsell | **also a scope refusal** |
+
+A paywall refusal on an out-of-scope ask promises Plus subscribers a feature that will never exist. The
+buyer asks again after paying, is refused again, and that is a refund plus a review saying the app lied.
+**Upsell only where Plus genuinely delivers; everywhere else, a clean "PeraPlano doesn't do that."**
+
+**Copy rules for the paywall refusal.** These are binding, not stylistic:
+
+1. **State the paywall as a paywall.** "Explaining trends needs Plus", never "this is too complex".
+   Blaming complexity for a commercial gate is a lie the user disproves the moment they subscribe on
+   the same phone. §2.4's rule — the notice never claims more than the architecture delivers — is the
+   same principle, pointed outward at the customer instead of at the regulator.
+2. **Never tell a user to buy a better phone.** Inside a budgeting app, aimed at a Philippine
+   mid-to-low-end market, that line is tone-deaf, actionable by nobody, and the single most
+   screenshottable sentence in the product. It does not ship.
+3. **Do not sell Plus to a device that cannot run what Plus promises.** Check capability at the
+   purchase point and either suppress the offer or state the requirement before payment. Selling a
+   subscription that will not run on the buyer's handset is a chargeback and a Play policy exposure,
+   not merely a disappointment.
+4. **Cap the upsell.** Once per session, or once per distinct gated capability, then silence. A
+   finance app that answers "pay me" to every third question stops reading as a tool.
+
+**This touches a published page — see §2.11.** The tier matrix on `/terms` is a representation a
+stranger can read. If the AI capability split becomes a matrix row, or moves an existing row between
+columns, that is a page revision and not a build detail. Backlog §1 forbids silently modifying locked
+rows. **Nothing in this section is applied to `/terms` yet**; it is recorded here as a pending page
+edit for the moment the assistant is actually built.
+
+**One question left open, deliberately.** Where a device qualifies for more than one tier — say tiers
+1–3 all fit — this section assumes **the system picks and marks a suggestion, and the user may override
+in settings**. It does not assume the user chooses between quant levels, which §2.1 of the design spec
+now rules out. What is *not* settled is whether the override list should be shown at all on first run,
+or buried in settings behind the auto-selection. Recommendation on file: **no picker during onboarding**
+— detect, choose, state the choice in one line, and let the minority who go looking find the override.
+Every option in a finance app's first-run flow asks someone to decide something they cannot yet judge.
+Owner's call, not blocking.
+
+**Detection inputs, when this is built.** Total RAM via `Device.totalMemory` (stable) for the gate, free
+storage for the download check, and a **one-time on-device decode benchmark** for the speed signal.
+**Never advertised CPU clock** — big.LITTLE and governor scaling make it meaningless, and a real
+20-token decode also catches thermal behaviour and cheap-SoC reality that a spec sheet hides. Available
+memory is reported as a situational warning, never used as the gate: it is measured in the seconds
+before a download and the phone will not look like that later.
+
+---
+
 ## 3. Commonly assumed deferrable, and not
 
 The point of this section is that the list of things a testing track *can* skip is shorter than it
