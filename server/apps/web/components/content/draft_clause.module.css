@@ -1,0 +1,26 @@
+/* A drafted-but-unreviewed clause is styled to be legible as such at a glance, not to be
+   decorative. The left rule is the same 4px marker Callout uses in --warn, so "this block
+   is not settled" reads the same way everywhere on the site. */
+.clause {
+  margin: 2rem 0;
+  padding-left: 1.25rem;
+  border-left: 4px solid var(--warn);
+}
+
+.clause p {
+  margin: 0.75rem 0;
+}
+
+.clause h2 {
+  margin-bottom: 0.35rem;
+}
+
+/* The stamp. Uppercase and tracked because it has to survive being skimmed past — a
+   reader who reads only the heading must still see that the clause below it is a draft. */
+.mark {
+  margin: 0 0 0.75rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--warn);
+}

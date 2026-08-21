@@ -6,6 +6,7 @@
 // the App Router), so a ".js" specifier here is a hard "Module not found" at build time.
 export * from "./config/env";
 export * from "./config/capabilities";
+export * from "./content/site_facts";
 export * from "./logging/logger";
 export * from "./correlation/request_id";
 export * from "./health/health";

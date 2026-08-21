@@ -16,3 +16,9 @@
 .section p {
   margin: 0.75rem 0;
 }
+
+/* The published effective date. Emphasised because it is the one line on this page a
+   reader may have been sent here specifically to check. */
+.effective {
+  font-weight: 600;
+}

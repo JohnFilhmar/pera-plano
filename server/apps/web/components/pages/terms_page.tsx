@@ -1,16 +1,24 @@
 import type { AppConfig } from "@peraplano/common";
+import { TERMS_EFFECTIVE_DATE, formatPublicationDate } from "@peraplano/common";
+import { Callout } from "@/components/content/callout";
 import { CounselRequiredNotice } from "@/components/content/counsel_required_notice";
+import { DraftClause } from "@/components/content/draft_clause";
 import { DataTable } from "@/components/content/data_table";
 import { Prose } from "@/components/content/prose";
 import type { Messages } from "@/messages/index";
 import styles from "./terms_page.module.css";
 
 /**
- * Spec §4.4, and the spec calls this the weakest page in the set. Brief §8 and §9 are a
+ * Spec §4.4, and the spec called this the weakest page in the set. Brief §8 and §9 are a
  * product position, not a contract: they say what the tiers are and what the app refuses
- * to be, and nothing about what a terms document exists to say. Sections 1-5 are real
- * derivations; the sixth is a hole with a label on it, rendered as a visible block per
- * spec rule §4.0.2 so that removing it has to be a conscious act in a diff.
+ * to be, and nothing about what a terms document exists to say.
+ *
+ * The hole the spec left has shrunk. On the owner's decision of 2026-08-21, five of the
+ * seven missing clauses are drafted in-house and published stamped DRAFT (see DraftClause
+ * for why that is spec rule §4.0.2 honoured rather than broken). The two that remain in
+ * CounselRequiredNotice are the two that are not drafting problems at all: governing law
+ * needs a registered entity to have a domicile, and the subscription terms need a price.
+ * Neither exists, so neither can be written by anyone, lawyer or not.
  *
  * `config` is unused today and is still in the signature on purpose: every page component
  * in this app takes the same pair, and the day a governing-law jurisdiction or a company
@@ -66,10 +74,87 @@ export function TermsPage({ messages }: { messages: Messages; config: AppConfig 
         ]}
       />
 
-      {/* Spec §4.0.2 and §4.4 section 6. Seven clauses no non-lawyer should write, named
-          instead of approximated. A plausible governing-law clause written here would
-          create the appearance of a reviewed document, which is how a document stops ever
-          being reviewed. Its presence is asserted by __tests__/terms.test.tsx. */}
+      {/* The five in-house drafts. Order is the order a reader needs them in: what you are
+          licensed to do, how it ends, what is not warranted when it goes wrong, how the
+          document itself changes, and from when. Each carries the same DRAFT stamp from a
+          single catalog string, so no clause can quietly lose it. */}
+
+      {/* brief §9 non-goal 3 (the business model is the subscription, never the data) is
+          what makes the third paragraph a commitment rather than a nicety: the licence has
+          to be explicit that the company takes no rights over the user's ledger, because
+          the whole product rests on that being true. */}
+      <DraftClause
+        id="intellectual-property"
+        mark={terms.draftMark}
+        heading={s.intellectualProperty.heading}
+        paragraphs={s.intellectualProperty.paragraphs}
+      />
+
+      {/* Written against SERVICE_CAPABILITIES rather than against today's build: the last
+          paragraph says what changes if a sign-in identity ever lands, so Firebase auth
+          arriving does not falsify this clause — it triggers the revision the clause itself
+          already promises, next to the Play account-deletion route privacy §3.7 requires. */}
+      <DraftClause
+        id="termination-and-suspension"
+        mark={terms.draftMark}
+        heading={s.terminationAndSuspension.heading}
+        paragraphs={s.terminationAndSuspension.paragraphs}
+      />
+
+      {/* The failure modes are lifted from theLedgerIsDerived above, deliberately: a
+          warranty disclaimer grounded in this product's actual parse failures is worth more
+          than a generic one, and it cannot drift from what the page already admits.
+
+          The Callout is not decoration. Liability caps are the one clause here where a
+          confident-sounding draft is actively dangerous — Civil Code arts. 1170-1174 and the
+          Consumer Act constrain what may be disclaimed to a Philippine consumer, and a
+          US-shaped cap can be void. So the draft states the shape and no number, and says
+          out loud that counsel sets the limits. */}
+      <DraftClause
+        id="limitation-of-liability"
+        mark={terms.draftMark}
+        heading={s.limitationOfLiability.heading}
+        paragraphs={s.limitationOfLiability.paragraphs}
+      >
+        <Callout tone="warn" heading={s.limitationOfLiability.jurisdictionHeading}>
+          <p>{s.limitationOfLiability.jurisdictionNote}</p>
+        </Callout>
+      </DraftClause>
+
+      <DraftClause
+        id="changes-to-these-terms"
+        mark={terms.draftMark}
+        heading={s.changesToTheseTerms.heading}
+        paragraphs={s.changesToTheseTerms.paragraphs}
+      />
+
+      {/* The date is imported, never typed. A date living in a catalog sentence rots in
+          total silence: the terms change, the sentence does not, and no test anywhere
+          fails. TERMS_EFFECTIVE_DATE is the single edit that moves it, and the /terms test
+          derives its expectation from the same constant so the two cannot disagree.
+          <time datetime> because a machine-readable publication date on a legal page is
+          worth the four extra characters. */}
+      <DraftClause
+        id="effective-date"
+        mark={terms.draftMark}
+        heading={s.effectiveDate.heading}
+        lead={
+          <p className={styles.effective}>
+            {s.effectiveDate.label}{" "}
+            <time dateTime={TERMS_EFFECTIVE_DATE}>
+              {formatPublicationDate(TERMS_EFFECTIVE_DATE)}
+            </time>
+            .
+          </p>
+        }
+        paragraphs={s.effectiveDate.paragraphs}
+      />
+
+      {/* Spec §4.0.2 and §4.4 section 6, now down to two clauses. Both are blocked on a
+          decision that does not exist rather than on drafting effort, which is why they are
+          named instead of approximated: a plausible governing-law clause written here would
+          create the appearance of a reviewed document, and that is how a document stops
+          ever being reviewed. Its presence is asserted by __tests__/terms.test.tsx. */}
       <CounselRequiredNotice messages={messages} />
     </article>
   );

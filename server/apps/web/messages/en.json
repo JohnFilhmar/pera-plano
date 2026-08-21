@@ -34,17 +34,12 @@
   },
   "counselRequired": {
     "heading": "Clauses a lawyer still has to write",
-    "intro": "These terms are incomplete, and we would rather say so than publish something that looks finished. The following have not been drafted:",
+    "intro": "Five clauses on this page were drafted in-house and are published above, each stamped as a draft, so you can at least read what we intend to be bound by. Two were not drafted, and neither is a writing problem — each is blocked on a decision that does not exist yet:",
     "clauses": [
-      "Governing law and venue.",
-      "Limitation of liability and warranty disclaimer, including for an inaccurate parse.",
-      "Subscription term, renewal, cancellation and refund terms.",
-      "Intellectual property, and the licence granted to you when you install the app.",
-      "Termination and suspension.",
-      "How changes to these terms are notified, and when they take effect.",
-      "The effective date of this document."
+      "Governing law and venue — blocked on the company. There is no registered entity behind PeraPlano yet, so there is no domicile to name and no seat to sue in. Naming a court before the company that would answer in it exists is guesswork dressed up as a clause.",
+      "Subscription term, renewal, cancellation and refund terms — blocked on Google Play's subscription policies, which set much of what these terms are even allowed to say, and on a price that has not been decided. There is nothing to renew and nothing to refund yet."
     ],
-    "consequence": "PeraPlano Plus cannot be offered for sale until these exist."
+    "consequence": "PeraPlano Plus cannot be offered for sale until these exist. The five drafted above are also waiting on counsel; the difference is that those can be read today and these two cannot yet be written."
   },
   "marketing": {
     "hero": {
@@ -573,6 +568,7 @@
   },
   "terms": {
     "title": "Terms",
+    "draftMark": "DRAFT — drafted in-house and not yet reviewed by Philippine counsel. It is published rather than withheld so you can read what we intend to be bound by, and it may change.",
     "intro": "This page states what PeraPlano is and is not, what the free and paid tiers contain, and what a lawyer still has to write before anything here can be sold. The last part is on the page rather than in a backlog, because a terms document with an invisible hole in it is one nobody ever fills.",
     "sections": {
       "whatPeraPlanoIs": {
@@ -611,10 +607,10 @@
           ["Safe-to-Spend", "Today only", "Projected to end of period"]
         ],
         "afterTable": [
-          "The matrix above is the locked definition of the tiers. It is not enforced in the current build: every capability is built and working, and the entitlement layer that applies these caps is switched on later, in one place. When it is, the caps apply going forward and not retroactively.",
-          "Hitting a cap blocks creation, never destruction. If you are a free user over a cap — more than 90 days of history, say — the data beyond it is kept and hidden, not deleted. Restoring Plus restores visibility. Existing data is never deleted and never retroactively hidden because of a tier.",
+          "The matrix above is the locked definition of the tiers, and it describes the intended shape of the product on the day PeraPlano Plus becomes purchasable — not the app you can install right now. No one is on a limited tier today: tier limits are not enforced at all in the current build, every capability is built and working, and everyone using the app has full capability whatever the Free column says. The entitlement layer that applies these caps is switched on later, in one place; when it is, the caps apply going forward and never retroactively.",
+          "When that happens, hitting a cap will block creation, never destruction. A free user over a cap — more than 90 days of history, say — keeps the data beyond it: it is hidden, not deleted, and restoring Plus restores visibility. Existing data is never deleted and never retroactively hidden because of a tier.",
           "Privacy controls are never Plus-gated. Pausing, wiping, the transparency screens, telemetry opt-out and the full data export are available on every tier, because a right is not a feature. The Export row in the matrix above refers only to the Plus convenience export in Reports; exporting everything you own is ungated and always will be.",
-          "One privacy consequence of the matrix is worth stating plainly: because cloud backup is a Plus capability, the app never transmits a free-tier user's financial data off the device at all."
+          "One privacy consequence of the matrix is worth stating plainly: because cloud backup is a Plus capability, the app never transmits a free-tier user's financial data off the device at all. Today it transmits nobody's — cloud backup has not shipped in any tier."
         ]
       },
       "pricingNotPublished": {
@@ -629,6 +625,52 @@
         "paragraphs": [
           "When PeraPlano Plus becomes purchasable it will be sold through Google Play, and purchase state will be managed by Google Play under its own policies and its own terms with you. Your subscription, its renewal and any refund are handled there.",
           "PeraPlano stores no payment instrument data. No card number, no bank account, no wallet credential ever reaches the app or the company; what the app keeps is a local flag saying which tier you are on."
+        ]
+      },
+      "intellectualProperty": {
+        "heading": "Intellectual property, and the licence you get when you install",
+        "paragraphs": [
+          "PeraPlano belongs to the company that operates it — the app, its source code, the parsers and provider rules that read your notifications, the designs, this text, and the PeraPlano name and logo. Installing the app transfers none of that to you.",
+          "What you get is a licence: a personal, non-exclusive, non-transferable and revocable right to install and use PeraPlano on devices you control, for your own household finances. You may not sell, rent, sublicense or redistribute the app, and you may not reverse-engineer, decompile or disassemble it — except to the extent Philippine law permits you to regardless of what this paragraph says.",
+          "The reverse of that matters more, and it is not a courtesy. Your ledger is yours. Every transaction, wallet, limit, goal, loan and rule you create — and everything the app derives on your behalf — belongs to you, not to us. This licence gives the company no ownership of your financial data and no right to use it. The ungated export control exists so that is something you can act on rather than something you have to take our word for.",
+          "The PeraPlano name and logo are reserved. Using the app does not give you any right to use them."
+        ]
+      },
+      "terminationAndSuspension": {
+        "heading": "Termination and suspension",
+        "paragraphs": [
+          "This clause is unusually short, and the reason is architectural rather than generous: PeraPlano has no account, no sign-in and no server-side identity. There is nothing of yours that we hold, and therefore nothing of yours that we could suspend.",
+          "You end this agreement by uninstalling the app, or by wiping its data from inside it. No notice to us is required, because there is nothing on our side that knows you were ever here. Nothing has to be closed, cancelled or requested.",
+          "We can stop distributing the app, stop publishing updates, or withdraw it from Google Play. That ends what we owe you going forward; it does not reach into your phone. A copy already installed keeps working on the data already on your device until you remove it.",
+          "If a sign-in identity is ever introduced — it would arrive with cloud backup, which is a Plus capability that has not shipped — then suspending that identity becomes possible for the first time, and this clause is revised in the same release, alongside the account-deletion route Google Play requires. Until that day, the paragraphs above are the whole of it."
+        ]
+      },
+      "limitationOfLiability": {
+        "heading": "Limitation of liability, and what is not warranted",
+        "paragraphs": [
+          "PeraPlano is provided as it is. We do not warrant that it is free of defects, that it will run uninterrupted on your device, or — the one that matters — that any particular reading of a notification is correct.",
+          "The failure modes are named two sections above, and they are real rather than theoretical: an amount can be misread, a transfer can be counted twice, a provider can change its message format overnight and break a rule that worked yesterday, and a notification that never arrives is a transaction the app never sees. The product is built to make each of those visible and correctable — every record shows the notification it came from, every field is editable, low-confidence readings wait in the Review Queue — and none of that makes it a system of record.",
+          "So: your bank's and your e-wallet's own statements are the record. PeraPlano is not a substitute for them, and checking any figure you are about to act on is your responsibility. We do not accept liability for a decision taken on a number the app derived, for money moved or not moved, or for a charge, fee or penalty that followed.",
+          "Nothing in this clause limits liability that cannot lawfully be limited, including liability for fraud or for our own wilful misconduct."
+        ],
+        "jurisdictionHeading": "Why this clause needs a lawyer more than the other four",
+        "jurisdictionNote": "This is the most jurisdiction-sensitive clause in these terms, and that is why no number appears in it. Liability caps are not boilerplate in the Philippines: the Civil Code — articles 1170 to 1174 — governs when liability for negligence or bad faith may be limited at all, and the Consumer Act constrains what a supplier may disclaim to a consumer. A limitation clause copied from a United States or European agreement can simply be void here. No cap is stated here, deliberately. What is above is the shape of the clause; the limits inside it are for Philippine counsel to set, or to replace."
+      },
+      "changesToTheseTerms": {
+        "heading": "How these terms change, and when a change takes effect",
+        "paragraphs": [
+          "These terms will change. Five clauses are drafts waiting on counsel and two have not been written at all, so change here is not a possibility, it is a certainty. When it happens we say so before it takes effect, not after.",
+          "A material change — anything that alters what you are agreeing to, what we disclaim, what a subscription costs or how it renews — is announced on this page and inside the app before it takes effect, and the effective date below is updated in the same release. Corrections that change no obligation, such as a typo or a sentence made clearer, are made without an announcement.",
+          "Continuing to use PeraPlano after a change takes effect is how you accept it. If you do not accept it, uninstalling ends the agreement — there is no account to close and nothing to cancel.",
+          "Earlier versions of these terms are not archived on this site today. When they are, they will be linked from here."
+        ]
+      },
+      "effectiveDate": {
+        "heading": "Effective date",
+        "label": "This version of these terms takes effect on",
+        "paragraphs": [
+          "The date above is rendered from a single constant in this site's source rather than typed into a sentence, so an edit to these terms that forgets to move the date is an edit that cannot happen quietly.",
+          "It says when this text became the published text. It does not say the text is finished: this version has not been reviewed by Philippine counsel, five of its clauses are stamped as drafts, and two more have not been drafted at all."
         ]
       }
     }
