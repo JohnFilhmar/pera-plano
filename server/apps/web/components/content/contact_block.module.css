@@ -1,0 +1,13 @@
+.block h3 {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin: 0 0 0.4rem;
+}
+
+.block p {
+  margin: 0 0 0.2rem;
+  font-size: 0.925rem;
+  word-break: break-word;
+}

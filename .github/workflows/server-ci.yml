@@ -1,0 +1,48 @@
+name: server-ci
+
+on:
+  push:
+    paths: &paths
+      - "server/**"
+      - "docker-compose.yml"
+      - ".github/workflows/server-ci.yml"
+      # The drift test exists to fail when this file changes. A path filter that omits
+      # it makes the test unreachable from the only edit that should trigger it.
+      - "docs/07-privacy-and-compliance.md"
+  pull_request:
+    paths: *paths
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build -w @peraplano/web
+      # SMOKE_SKIP_BUILD reuses the build from the step above rather than doing it twice;
+      # the smoke setup still boots the real standalone server and asserts the pages serve
+      # runtime compliance values rather than build-time markers.
+      - run: SMOKE_SKIP_BUILD=1 npm run test:smoke
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks scans history, not just the tip commit — a value deleted in a later
+          # commit is still published if it was ever pushed.
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

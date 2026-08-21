@@ -1,0 +1,11 @@
+{
+  "//": "The build and test harness: the vitest configs and the smoke setup that boots a real server. Neither app tsconfig covers them, which meant `npm run typecheck` skipped them entirely and ESLint could only lint them without type information. They are real TypeScript with real logic — the smoke setup spawns a process and polls a socket — so they get the same strict settings as everything else.",
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": { "@/*": ["./apps/web/*"] }
+  },
+  "include": ["vitest.config.ts", "vitest.smoke.config.ts", "smoke/**/*.ts"],
+  "exclude": ["node_modules"]
+}
