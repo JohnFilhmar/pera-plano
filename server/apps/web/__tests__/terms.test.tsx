@@ -134,4 +134,9 @@ describe("/terms", () => {
       expect(sectionHeadingText(rendered, anchor).length).toBeGreaterThan(0);
     }
   });
+
+  // Same ruling as /privacy: the terms body is not where a company asks for a DPO.
+  it("carries no partner invitation in the terms body", () => {
+    expect(html()).not.toContain("data-unfilled-roles");
+  });
 });

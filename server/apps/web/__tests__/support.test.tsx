@@ -47,6 +47,17 @@ describe("/support", () => {
     expect(render(HOLLOW_CONFIG)).toContain("[ REQUIRED: DPO_NAME ]");
   });
 
+  // Owner's ruling of 2026-08-21. Naming the empty seats on the page where someone would
+  // actually write to us is the point: the tone that attracts a real DPO is the tone that
+  // admits the seat is empty.
+  it("names the three unfilled compliance roles and says why they are visible", () => {
+    const text = stripTags(render());
+    expect(text).toContain("Personal Information Controller");
+    expect(text).toContain("Data Protection Officer");
+    expect(text).toContain("National Privacy Commission");
+    expect(text).toContain("worse than an admitted gap");
+  });
+
   it("keeps every section anchor backed by a real heading", () => {
     const html = render();
     for (const anchor of [
@@ -55,6 +66,7 @@ describe("/support", () => {
       "controls",
       "rights",
       "dpo",
+      "unfilled-roles",
       "complaints",
     ]) {
       expect(sectionHeadingText(html, anchor).length).toBeGreaterThan(0);

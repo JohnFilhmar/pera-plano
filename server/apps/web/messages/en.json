@@ -41,6 +41,16 @@
     ],
     "consequence": "PeraPlano Plus cannot be offered for sale until these exist. The five drafted above are also waiting on counsel; the difference is that those can be read today and these two cannot yet be written."
   },
+  "unfilledRoles": {
+    "heading": "Three roles behind this app are unfilled",
+    "paragraphs": [
+      "PeraPlano is built by one person, and three things Philippine data-protection practice expects of an organisation handling personal data do not exist yet. There is no registered company acting as the Personal Information Controller. There is no appointed Data Protection Officer. There is no registration with the National Privacy Commission.",
+      "You are reading that here rather than finding it out later. Everywhere on this site where one of those identifiers belongs, the page prints a marker saying the value is required and missing, and a deployment that tried to publish a plausible-looking placeholder instead would refuse to start. An invented controller name or a made-up officer is worse than an admitted gap, because it reads as compliance to everyone who does not check.",
+      "This is survivable today for one reason: the app keeps your ledger on your phone and sends none of it anywhere, so there is no company-held copy of anyone's financial data for a controller to be responsible for. It stops being survivable the day cloud backup ships — which is why PeraPlano Plus is not offered for sale until all three exist."
+    ],
+    "invitation": "If you are a Philippine privacy practitioner, a Data Protection Officer, or a lawyer who works on RA 10173, and this is the kind of gap you would rather help close than read about, write to the support address below.",
+    "contactHeading": "Where to write"
+  },
   "marketing": {
     "hero": {
       "eyebrow": "Philippines-first · Android",
@@ -150,6 +160,11 @@
       "body": "Automatic tracking is never limited by tier, and privacy controls are never behind a paywall. What paying adds is depth. The full comparison sits with the commercial terms rather than here, and no price is published yet because none has been decided.",
       "linkLabel": "Compare Free and Plus",
       "linkPath": "/terms"
+    },
+    "builtAlongside": {
+      "heading": "Built alongside",
+      "body": "PeraPlano is one of several projects by the same independent developer, built and maintained alone.",
+      "linkLabel": "Other work by the same developer"
     }
   },
   "support": {

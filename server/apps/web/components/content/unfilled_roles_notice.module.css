@@ -1,0 +1,15 @@
+.section {
+  margin: 2rem 0;
+}
+
+.section p {
+  margin: 0.75rem 0;
+}
+
+/* The invitation is one sentence and has to read as an offer rather than as more prose,
+   so it is set apart without being made loud. A pitch on this block would undo it. */
+.invitation {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+}

@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { PrivacyPage } from "@/components/pages/privacy_page.js";
 import { getMessages } from "@/messages/index.js";
-import { extractTable, sectionHeadingText } from "@/test_support/html.js";
+import { extractTable, sectionHeadingText, stripTags } from "@/test_support/html.js";
 import { extractSection, extractStatusLine, parseFirstTable } from "@/test_support/markdown_table.js";
 import { COMPLETE_CONFIG } from "@/test_support/env_fixtures.js";
 
@@ -100,5 +100,16 @@ describe("privacy notice / lifecycle table drift", () => {
     // §2.1 requires the outsourcing agreement *before* cloud backup ships, and
     // SERVICE_CAPABILITIES.cloudBackup is false, so no processor holds anything today.
     expect(sections.whoReceivesIt.paragraphs[0]).toContain("has not shipped");
+  });
+
+  // Owner's explicit ruling, 2026-08-21: the unfilled-roles admission and its invitation
+  // appear on /support and / and nowhere else. An RA 10173 notice that also solicits
+  // business reads as unserious to the exact two audiences this page is written for — a
+  // Play reviewer and the NPC. The notice states the gap through the fail-loud markers
+  // instead, which is a disclosure rather than an appeal.
+  it("carries no partner invitation, which belongs on /support and / only", () => {
+    const rendered = renderedPrivacy();
+    expect(rendered).not.toContain("data-unfilled-roles");
+    expect(stripTags(rendered)).not.toContain("write to the support address");
   });
 });

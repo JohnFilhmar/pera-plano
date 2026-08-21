@@ -1,6 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { OWNER_SITE_URL } from "@peraplano/common";
 import { MarketingPage } from "@/components/pages/marketing_page.js";
+import { SupportPage } from "@/components/pages/support_page.js";
 import { getMessages } from "@/messages/index.js";
 import { firstHeadingText, stripTags } from "@/test_support/html.js";
 import { COMPLETE_CONFIG } from "@/test_support/env_fixtures.js";
@@ -71,5 +73,47 @@ describe("/", () => {
   it("sends the reader to /terms for the tier comparison instead of restating it", () => {
     expect(html()).toContain('href="/en/terms"');
     expect(html()).toContain('href="/en/privacy"');
+  });
+
+  // The owner's ruling of 2026-08-21: the unfilled-roles admission goes on / and /support
+  // and nowhere else. Saying it here is not self-flagellation — a visitor deciding whether
+  // to hand a finance app their notification stream is owed the fact that the company
+  // behind it does not exist yet.
+  it("names the three unfilled compliance roles instead of leaving them to be discovered", () => {
+    const text = stripTags(html());
+    expect(text).toContain("Personal Information Controller");
+    expect(text).toContain("Data Protection Officer");
+    expect(text).toContain("National Privacy Commission");
+  });
+
+  // Candour, not a pitch: one sentence, and the only way to answer it is the support
+  // mailbox that already has to exist for the Play listing.
+  it("invites qualified people through the support mailbox", () => {
+    expect(html()).toContain(`mailto:${COMPLETE_CONFIG.contacts.SUPPORT_EMAIL}`);
+  });
+
+  // Two pages disagreeing about what is missing from a privacy programme is exactly what a
+  // regulator finds by reading both in one sitting. One catalog entry, one component.
+  it("renders the same unfilled-roles text as /support, byte for byte", () => {
+    const extract = (rendered: string): string => {
+      const match = /<section\b[^>]*data-unfilled-roles[^>]*>([\s\S]*?)<\/section>/i.exec(rendered);
+      if (match?.[1] === undefined) throw new Error("no unfilled-roles block found");
+      return stripTags(match[1]);
+    };
+    expect(extract(html())).toBe(
+      extract(
+        renderToStaticMarkup(
+          <SupportPage messages={getMessages("en")} config={COMPLETE_CONFIG} />,
+        ),
+      ),
+    );
+  });
+
+  // The hostname lives in libs/common beside DEFAULT_PUBLIC_BASE_URL, because
+  // apps/web/{app,components,messages} is under a blanket ban on the literal and the ban
+  // is worth more without an exception list. structure.test.ts enforces the other half.
+  it("links the owner's other work from the shared constant, never a catalog literal", () => {
+    expect(html()).toContain(`href="${OWNER_SITE_URL}"`);
+    expect(JSON.stringify(getMessages("en").marketing.builtAlongside)).not.toContain("filhmar");
   });
 });

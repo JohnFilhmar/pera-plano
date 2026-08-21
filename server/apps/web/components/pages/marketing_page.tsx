@@ -1,5 +1,7 @@
 import type { AppConfig } from "@peraplano/common";
+import { OWNER_SITE_URL } from "@peraplano/common";
 import { BrandMark } from "@/components/content/brand_mark";
+import { UnfilledRolesNotice } from "@/components/content/unfilled_roles_notice";
 import type { Locale, Messages } from "@/messages/index";
 import styles from "./marketing_page.module.css";
 
@@ -20,6 +22,7 @@ import styles from "./marketing_page.module.css";
  */
 export function MarketingPage({
   messages,
+  config,
   locale,
 }: {
   messages: Messages;
@@ -136,6 +139,13 @@ export function MarketingPage({
         </p>
       </section>
 
+      {/* Owner's ruling, 2026-08-21. It follows the privacy promise deliberately: the
+          promise above is what the architecture delivers, and this is what the organisation
+          around it does not yet. Leaving the second half out would make the first half a
+          claim rather than a description. See the component for why it is on this page and
+          on /support only. */}
+      <UnfilledRolesNotice messages={messages} config={config} />
+
       {/* Spec §4.1 section 7: a "free tier" claim is a commercial representation and belongs
           with the others. This is a pointer, not a restatement. */}
       <section id="tiers" className={styles.section}>
@@ -143,6 +153,21 @@ export function MarketingPage({
         <p>{m.tiersLink.body}</p>
         <p>
           <a href={`/${locale}${m.tiersLink.linkPath}`}>{m.tiersLink.linkLabel}</a>
+        </p>
+      </section>
+
+      {/* The one external link on the site. The href comes from OWNER_SITE_URL in
+          libs/common rather than from the catalog, because apps/web/{app,components,
+          messages} is under a blanket ban on this project's own hostname literal — a
+          hostname in a page silently beats PUBLIC_BASE_URL on a staging deploy, and the ban
+          is worth more as a blanket than as a rule with an exception list, so the one
+          legitimate link imports the constant. Note the constant is the APEX domain; this
+          site is served from a subdomain of it, so it cannot shadow it. */}
+      <section id="built-alongside" className={styles.section}>
+        <h2>{m.builtAlongside.heading}</h2>
+        <p>{m.builtAlongside.body}</p>
+        <p>
+          <a href={OWNER_SITE_URL}>{m.builtAlongside.linkLabel}</a>
         </p>
       </section>
     </article>

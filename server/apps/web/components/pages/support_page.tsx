@@ -4,6 +4,7 @@ import { Callout } from "@/components/content/callout";
 import { ContactBlock } from "@/components/content/contact_block";
 import { DataTable } from "@/components/content/data_table";
 import { Prose } from "@/components/content/prose";
+import { UnfilledRolesNotice } from "@/components/content/unfilled_roles_notice";
 import type { Messages } from "@/messages/index";
 import styles from "./support_page.module.css";
 
@@ -104,6 +105,13 @@ export function SupportPage({ messages, config }: { messages: Messages; config: 
           <ContactBlock heading={s.dpo.npcHeading} lines={[contacts.NPC_REGISTRATION]} />
         </div>
       </section>
+
+      {/* Owner's ruling, 2026-08-21. It sits immediately after the DPO block on purpose:
+          that block prints [ REQUIRED: DPO_NAME ] on an unconfigured deployment, and a
+          reader who has just met a fail-loud marker is owed the explanation of it in the
+          next breath rather than nowhere. See the component for why it is on this page and
+          on / only. */}
+      <UnfilledRolesNotice messages={messages} config={config} />
 
       {/* privacy §2.4 (the notice must state the complaint route) and §2.8's last row.
           The Commission is named and nothing else: no repo document supplies a verified
