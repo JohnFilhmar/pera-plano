@@ -1,0 +1,38 @@
+import { render, screen } from "@testing-library/react-native";
+
+import { Chip } from "../chip";
+
+function stylesOf(testID: string): Record<string, unknown> {
+  const style = screen.getByTestId(testID).props.style;
+  return Array.isArray(style) ? Object.assign({}, ...style) : (style ?? {});
+}
+
+test("solid is the default fill, so every existing call site is unchanged", () => {
+  render(<Chip testID="c" label="Bills" tone="brand" />);
+  expect(String(screen.getByTestId("c").props.className)).toContain("bg-brand");
+});
+
+test("a soft chip paints a translucent tint, not the solid token", () => {
+  render(<Chip testID="c" label="due today" tone="warn" fill="soft" />);
+  expect(String(stylesOf("c").backgroundColor)).toContain("rgba(217, 119, 6");
+});
+
+test("soft warn inks with warn-ink, never warn", () => {
+  render(<Chip testID="c" label="due today" tone="warn" fill="soft" />);
+  expect(String(screen.getByTestId("c-label").props.className)).toContain("text-warn-ink");
+});
+
+test("an outline chip has a border and no fill", () => {
+  render(<Chip testID="c" label="SOON" tone="neutral" fill="outline" />);
+  const classes = String(screen.getByTestId("c").props.className);
+  expect(classes).toContain("border");
+  expect(classes).toContain("border-line");
+  expect(classes).toContain("bg-chip");
+});
+
+test("soon ignores fill entirely and stays solid grey", () => {
+  render(<Chip testID="c" label="SOON" tone="soon" fill="soft" />);
+  const classes = String(screen.getByTestId("c").props.className);
+  expect(classes).toContain("bg-fg-2");
+  expect(stylesOf("c").backgroundColor).toBeUndefined();
+});
