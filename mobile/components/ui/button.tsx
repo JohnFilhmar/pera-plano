@@ -39,15 +39,29 @@ cssInterop(ActivityIndicator, {
   className: { target: "style", nativeStyleToProp: { color: true } },
 });
 
-export type ButtonVariant = "primary" | "secondary" | "ghost" | "destructive";
+export type ButtonVariant =
+  | "primary"
+  | "secondary"
+  | "ghost"
+  | "destructive"
+  | "outline-destructive";
+
+export type ButtonSize = "md" | "lg";
 
 export type ButtonProps = {
   title: string;
   onPress: () => void;
   variant?: ButtonVariant;
+  size?: ButtonSize;
   loading?: boolean;
   disabled?: boolean;
   icon?: IconComponent;
+  /**
+   * Renders the icon alone — no visible label — for a compact, square button.
+   * `title` is still required and still backs `accessibilityLabel`, so the
+   * button stays announced correctly even though nothing on screen says it.
+   */
+  iconOnly?: boolean;
   testID?: string;
 };
 
@@ -58,6 +72,10 @@ const VARIANT_BG: Record<ButtonVariant, string> = {
   // `danger` is reserved for actions that destroy data. Nothing else in the
   // app may claim it, or the colour stops carrying a warning.
   destructive: "bg-danger dark:bg-danger-dark",
+  // The design's "Wipe everything": surface fill, danger border, danger ink.
+  // A destructive action the user should be able to READ calmly before
+  // pressing gets an outline; one they are confirming gets the fill.
+  "outline-destructive": "bg-surface border border-danger dark:bg-surface-dark dark:border-danger-dark",
 };
 
 const VARIANT_FG: Record<ButtonVariant, string> = {
@@ -69,15 +87,23 @@ const VARIANT_FG: Record<ButtonVariant, string> = {
   secondary: "text-brand dark:text-brand-dark",
   ghost: "text-brand dark:text-brand-dark",
   destructive: "text-on-brand dark:text-on-brand-dark",
+  "outline-destructive": "text-danger dark:text-danger-dark",
+};
+
+const SIZE_CLASS: Record<ButtonSize, string> = {
+  md: "px-5 py-2.5",
+  lg: "px-5 py-3.5",
 };
 
 export function Button({
   title,
   onPress,
   variant = "primary",
+  size = "md",
   loading = false,
   disabled = false,
   icon,
+  iconOnly = false,
   testID,
 }: ButtonProps) {
   const inactive = loading || disabled;
@@ -90,6 +116,15 @@ export function Button({
   // which on a confirm dialog is a mis-tap on the other action.
   const hidden = loading ? " opacity-0" : "";
 
+  const containerClass = [
+    "min-h-[44px] flex-row items-center justify-center gap-2 rounded-full",
+    iconOnly ? "aspect-square px-0" : SIZE_CLASS[size],
+    VARIANT_BG[variant],
+    disabled || loading ? "opacity-40" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
     <Pressable
       testID={testID}
@@ -101,20 +136,19 @@ export function Button({
       accessibilityRole="button"
       accessibilityLabel={title}
       accessibilityState={{ disabled: inactive, busy: loading }}
-      className={[
-        "flex-row items-center justify-center gap-2 rounded-xl px-4 py-3",
-        VARIANT_BG[variant],
-        // Dim only for `disabled`. A loading button is still an active
-        // commitment the user made and should not look switched off.
-        disabled && !loading ? "opacity-50" : "",
-      ]
-        .filter(Boolean)
-        .join(" ")}
+      className={containerClass}
     >
       {Icon ? <Icon size={18} className={`${foreground}${hidden}`} /> : null}
-      <Text className={`text-base font-semibold ${foreground}${hidden}`}>
-        {title}
-      </Text>
+      {/* `iconOnly` drops the label from the tree rather than hiding it —
+          there is no width to preserve for a spinner to grow into, unlike
+          the loading case above, and a hidden-but-present "x" would still
+          take up flex-row space next to the icon in an `aspect-square`
+          button that has none to spare. */}
+      {iconOnly ? null : (
+        <Text className={`text-body font-semibold ${foreground}${hidden}`}>
+          {title}
+        </Text>
+      )}
       {loading ? (
         <View className="absolute inset-0 items-center justify-center">
           <ActivityIndicator testID="button-spinner" className={foreground} />
