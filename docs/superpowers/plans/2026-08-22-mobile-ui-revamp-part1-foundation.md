@@ -13,7 +13,9 @@
 ## Global Constraints
 
 - **`testID`s are preserved.** No existing `testID` is renamed or removed anywhere in this revamp. Adding new ones is fine.
-- **Tokens are the only colour source.** No literal hex in a component. The single new hex introduced anywhere in this revamp is `#B45309` (soft-`warn` ink, Task 2).
+- **Tokens are the only colour source.** No literal hex in a component. Two authorised exceptions, both outside `components/`, both with their reasoning written into the file:
+  - **Soft-chip inks** in `constants/colors.ts` — `brand-ink` `#166534`, `danger-ink` `#991B1B`, `warn-ink` `#92400E`. These are tokens; they are listed here because they are new. *(This line originally named `#B45309` as the single new hex. That value measured 4.13:1 and failed AA, and the problem turned out to affect all three tones, not just amber — see Task 3.)*
+  - **Provider identity colours** in `constants/providers.ts` — 13 brand colours plus one grey fallback, as literal hex. They are deliberately NOT in `palette`: a provider colour identifies a company and must never signal a state.
 - **`chart-1..8` is non-semantic.** Never paint a status with a chart colour, never paint a chart slice with a semantic one. `components/reports/donut_chart.tsx` is its only reader.
 - **`soon` grey never moves.** `SoonGate` renders `Chip` with `tone="soon"`. Grey means "not built"; brand green means "needs Plus". A chip that picks the wrong one makes a promise the app will not keep.
 - **Naming:** files and functions `snake_case`; React components and their files `PascalCase`; types/interfaces `PascalCase`; constants `UPPER_SNAKE_CASE`. Match the surrounding file when it already differs.
