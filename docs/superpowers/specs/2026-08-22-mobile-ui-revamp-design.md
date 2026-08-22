@@ -92,10 +92,33 @@ Dark-mode elevation is **not** a token. `constants/__tests__/colors.test.ts` ass
 is not a colour. `Card` keeps `shadow-sm` in light and gains a `dark:border dark:border-line-dark`
 hairline instead; a drop shadow on `#0B1210` is invisible regardless.
 
-**Soft chip tones are computed, not tokenised.** Background is the semantic token at 12–14% alpha;
-text is that same token at full strength. This is the design's own rule — `rgba(217,119,6,.14)`
-with `var(--wn)` for "due today", `rgba(220,38,38,.12)` with `var(--dg)` for "overdue 2d". No new
-hexes, with one exception in §7.6.
+**Soft chip backgrounds are computed; their INK is tokenised.** The background is the semantic token
+at 14% alpha — the design's own rule, `rgba(217,119,6,.14)` with `var(--wn)` for "due today",
+`rgba(220,38,38,.12)` with `var(--dg)` for "overdue 2d".
+
+The ink is **not** that same token at full strength, which is what this section originally said. That
+rule is the design handoff's, and it fails WCAG AA in light mode for **every** tone — measured
+against each tone's own tint composited over `bg` `#F7FAF7`:
+
+| ink as drawn | measured | verdict |
+|---|---|---|
+| `brand` `#15803D` | 3.96:1 | fails |
+| `danger` `#DC2626` | 3.69:1 | fails |
+| `warn` `#D97706` | 2.63:1 | fails |
+
+Lowering the alpha does not rescue it: brand and danger cross back under 4.5:1 at alpha ≈0.045 and
+≈0.014, so only a tint too faint to read as a tint would pass. Three darkened ink tokens ship
+instead, each the Tailwind 800-weight shade of its hue so they read as one family:
+
+| token | light | measured on its own soft tint | dark |
+|---|---|---|---|
+| `brand-ink` | `#166534` | 5.63:1 | `#22C55E` |
+| `danger-ink` | `#991B1B` | 6.36:1 | `#F87171` |
+| `warn-ink` | `#92400E` | 5.85:1 | `#FBBF24` |
+
+Dark mode needs no ink overrides — every dark tone already clears on its own tint (amber 8.66:1).
+`components/ui/__tests__/chip_contrast.test.ts` asserts all six pairings at 4.5:1 so this cannot
+regress silently. See §7.6.
 
 The `chart-1..8` ramp is untouched and stays non-semantic. Nothing in this revamp may paint a
 status with a chart colour, or a chart slice with a semantic one.
@@ -325,16 +348,26 @@ regression — "Utang" silently reverting to "Loans" — pass CI unnoticed.
 
 ### R6 · Soft chips break a contrast guarantee the code documents
 `components/ui/chip.tsx` carries recomputed WCAG figures for the *solid* fills only (brand
-5.0/7.79, danger 4.8/6.42, warn-dark 10.63). A soft chip is semantic-colour text on a 12–14% tint
-of itself — a pairing none of those numbers cover. `warn` `#D97706` on its own 14% tint lands near
-**3.6:1**, under AA at the 11sp the design sets "due today" in.
+5.0/7.79, danger 4.8/6.42, warn-dark 10.63). A soft chip is semantic-colour text on a 14% tint of
+itself — a pairing none of those numbers cover, and one that **fails AA in light mode for every
+tone**: brand 3.96:1, danger 3.69:1, warn 2.63:1.
 
-**Resolution.** Soft-`warn` text drops to `#B45309` — the one new hex in this revamp. All six soft
-pairings are computed and written into `chip.tsx`'s comment block in the existing style, and a unit
-test asserts each clears 4.5:1.
+**This section originally said something weaker and wrong.** It claimed only amber was affected, put
+`warn` at "~3.6:1", and prescribed `#B45309` as a fix that "clears 4.5:1". Three of those four claims
+were false. `#B45309` measures **4.13:1** and does not clear AA. The error survived a spec review and
+one round of correction before a task reviewer recomputed the figures from the WCAG formula and a
+task implementer found that brand and danger fail too.
 
-**What breaks if skipped.** Without the test it re-breaks silently the next time anyone moves
-`warn` or `bg` — which is the exact incident that comment block already records.
+**Resolution.** Three ink tokens, per §3.1 — `brand-ink` `#166534` (5.63:1), `danger-ink` `#991B1B`
+(6.36:1), `warn-ink` `#92400E` (5.85:1), each measured on its own tone's tint. Dark mode is
+unchanged; every dark tone already clears. All six pairings are computed into `constants/colors.ts`'s
+comment block in the existing style, and `components/ui/__tests__/chip_contrast.test.ts` asserts each
+at 4.5:1.
+
+**What breaks if skipped.** Without the test it re-breaks silently the next time anyone moves a token
+— which is the exact incident `constants/colors.ts`'s own header already records, and which then
+happened twice more inside this revamp. Prose cannot fail CI; the test can. **Do not hand-compute a
+contrast figure into a comment again — use `lib/ui/contrast.ts` and let the test assert it.**
 
 ### R7 · The beta tag has nothing behind it
 Deferred by decision — see §6.3. Recorded, not solved.
