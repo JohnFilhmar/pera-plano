@@ -86,7 +86,11 @@ Every semantic token in the app already equals the design's VARBLOCK exactly: `b
 |---|---|---|---|
 | `line` | `#E3EBE5` | `#22302A` | Dividers, chip borders, dark-mode card hairline |
 | `chip` | `#EDF3EE` | `#18231E` | Unfilled chip and segment-track surface |
-| `elevation` | `0 1px 3px rgba(16,32,26,.07)` | `0 0 0 1px rgba(255,255,255,.04)` | Dark swaps shadow for hairline — a drop shadow on `#0B1210` is invisible |
+
+Dark-mode elevation is **not** a token. `constants/__tests__/colors.test.ts` asserts every
+`palette` key has a `-dark` sibling, and a shadow string has no meaningful dark sibling — it
+is not a colour. `Card` keeps `shadow-sm` in light and gains a `dark:border dark:border-line-dark`
+hairline instead; a drop shadow on `#0B1210` is invisible regardless.
 
 **Soft chip tones are computed, not tokenised.** Background is the semantic token at 12–14% alpha;
 text is that same token at full strength. This is the design's own rule — `rgba(217,119,6,.14)`
@@ -166,7 +170,9 @@ the motion commit lands. Rationale in §7.8.
 Greeting header — `Kumusta, Beta User` over `Kinsenas period · 8 days left`. No bell. The hero
 gains 7-day `MiniBars` tinted to state, and the eye toggle that hides amounts. `StatTile` row:
 Balance (wallet sum), Spent so far (period spend), Saved (goal balances) — all three already
-computed elsewhere in the app. Limits list gains `See all`. Bills strip restyled. FAB added.
+computed elsewhere in the app. Limits list gains `See all`. Bills strip restyled. FAB added. The Transactions tab badge already exists
+(`app/(tabs)/_layout.tsx` sets `badged: true` and renders `ReviewCountBadge`); it is
+recoloured from `bg-brand` to `bg-danger` to match the board, not built from scratch.
 
 The four hero states already exist in `components/home/safe_to_spend_hero.tsx`. This is colour and
 layout, not logic.
@@ -258,6 +264,13 @@ alone. Every `font-semibold` and `font-bold` in the app today falls through to t
 **Resolution.** All four weights (500/600/700/800) land as their own commit containing no screen
 changes, followed by an A54 pass over the five tab roots and every `numberOfLines={1}` row, with
 any truncation fixed inside that same commit.
+
+The weights are wired through a Tailwind plugin that overrides `font-normal` /
+`font-medium` / `font-semibold` / `font-bold` / `font-extrabold` to emit `fontFamily`
+rather than `fontWeight`. React Native does not synthesise weight for a single-weight
+registered family, so `fontWeight` is inert on Android; overriding the utilities keeps all
+166 existing call sites working and makes them render the correct weight for the first
+time, with no codemod across 76 files.
 
 **What breaks if skipped.** Glyph metrics shift on every screen simultaneously — wider button
 labels, rows that fit today beginning to truncate, and the tab bar's longest label
