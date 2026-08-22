@@ -52,11 +52,20 @@ export type ReviewBadgeProps = {
  * The bubble itself. Presentational — it is handed a number and renders it or
  * nothing.
  *
- * BRAND GREEN, NOT `danger`. Items in the queue are work waiting, not errors:
- * the pipeline behaved correctly by refusing to guess. `danger` is reserved for
- * actions that destroy data (see components/ui/chip.tsx), and a red bubble on
- * the Transactions tab would tell the user something went wrong every time the
- * app did exactly the right thing.
+ * Why red. The design draws this badge red on the Transactions tab. Green in
+ * this app means "healthy" — it is the colour of a limit under budget and of
+ * a listening wallet. A green count on a tab that means "three things need
+ * your attention" says the opposite of what it is for. `on-brand` is still
+ * the correct ink: it is the token for ink on a filled control, and
+ * `constants/colors.ts` records `on-brand` on `danger` at 4.83:1 and
+ * `on-brand-dark` on `danger-dark` at 6.42:1, both clearing AA.
+ *
+ * This is not a claim that the queue holds errors. An item lands here because
+ * the pipeline behaved correctly by refusing to guess — low confidence, an
+ * unrecognised provider, a possible duplicate — not because anything broke.
+ * `danger` is doing a second job here, "needs your attention", alongside its
+ * original one, actions that destroy data (see components/ui/chip.tsx); it is
+ * not relabelling this queue as a set of mistakes.
  */
 export function ReviewBadge({ count, testID = "review-badge" }: ReviewBadgeProps) {
   const label = reviewBadgeLabel(count);
@@ -70,10 +79,10 @@ export function ReviewBadge({ count, testID = "review-badge" }: ReviewBadgeProps
       // Absolutely positioned so it rides the tab icon without changing the
       // icon's own layout — a badge that reflowed the tab bar would shift every
       // other tab under a thumb already on its way down.
-      className="absolute -right-3 -top-1 min-w-[18px] items-center justify-center rounded-full bg-brand px-1 py-0.5 dark:bg-brand-dark"
+      className="absolute -right-3 -top-1 min-w-[18px] items-center justify-center rounded-full bg-danger px-1 py-0.5 dark:bg-danger-dark"
       accessibilityLabel={`${label} ${items} waiting for review`}
     >
-      <Text className="text-[10px] font-semibold text-surface dark:text-surface-dark">{label}</Text>
+      <Text className="text-badge font-bold text-on-brand dark:text-on-brand-dark">{label}</Text>
     </View>
   );
 }

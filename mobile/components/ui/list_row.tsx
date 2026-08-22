@@ -37,14 +37,14 @@ export function ListRow({
           numberOfLines={1}
           className={
             destructive
-              ? "text-base text-danger dark:text-danger-dark"
-              : "text-base text-fg dark:text-fg-dark"
+              ? "text-row font-semibold text-danger dark:text-danger-dark"
+              : "text-row font-semibold text-fg dark:text-fg-dark"
           }
         >
           {title}
         </Text>
         {subtitle ? (
-          <Text numberOfLines={1} className="text-sm text-fg-2 dark:text-fg-2-dark">
+          <Text numberOfLines={1} className="text-secondary font-medium text-fg-2 dark:text-fg-2-dark">
             {subtitle}
           </Text>
         ) : null}

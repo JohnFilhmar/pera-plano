@@ -65,12 +65,17 @@ export function formatCentavos(amount: Centavos): string {
   return `${negative ? "-" : ""}₱${grouped}.${fraction}`;
 }
 
+/**
+ * `hero` is the safe-to-spend figure: 40sp, 800 weight, tabular. Tabular
+ * figures matter here specifically — the number re-renders as transactions
+ * land, and proportional digits make it jitter sideways while the user is
+ * reading it.
+ */
 const SIZE_CLASS: Record<AmountSize, string> = {
-  sm: "text-sm",
-  md: "text-base",
-  lg: "text-xl font-semibold",
-  // The Safe-to-Spend number on Home (rule 4) — must stay legible very large.
-  hero: "text-5xl font-bold",
+  sm: "text-secondary",
+  md: "text-body",
+  lg: "text-title font-semibold",
+  hero: "text-hero font-extrabold",
 };
 
 /**
@@ -105,6 +110,10 @@ export function AmountText({
     <Text
       testID={testID}
       className={`${SIZE_CLASS[size]} ${colorClass(direction, muted)}`}
+      // Tabular figures at every size, not only `hero` — a balance in a
+      // `ListRow`'s `right` slot re-renders on the same feed as the hero
+      // number and must not jitter either.
+      style={{ fontVariant: ["tabular-nums"] }}
       // The formatted string is one token to a screen reader; splitting the
       // sign into its own element would read the amount as two fragments.
       accessibilityLabel={`${signFor(direction, signed)}${formatCentavos(amount)}`}

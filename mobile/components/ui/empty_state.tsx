@@ -35,10 +35,10 @@ export function EmptyState({
       <View className="rounded-full bg-brand-soft p-4 dark:bg-brand-soft-dark">
         <Icon size={32} className="text-brand dark:text-brand-dark" />
       </View>
-      <Text className="text-center text-lg font-semibold text-fg dark:text-fg-dark">
+      <Text className="text-center text-title font-bold text-fg dark:text-fg-dark">
         {title}
       </Text>
-      <Text className="text-center text-fg-2 dark:text-fg-2-dark">{body}</Text>
+      <Text className="text-center text-body font-medium text-fg-2 dark:text-fg-2-dark">{body}</Text>
       {action ? (
         <View className="mt-2">
           <Button

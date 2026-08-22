@@ -18,7 +18,7 @@ export function SectionHeader({ title, action, testID }: SectionHeaderProps) {
       testID={testID}
       className="flex-row items-center justify-between px-4 pb-2 pt-5"
     >
-      <Text className="text-base font-semibold text-fg dark:text-fg-dark">
+      <Text className="text-section font-bold text-fg dark:text-fg-dark">
         {title}
       </Text>
       {action ? (

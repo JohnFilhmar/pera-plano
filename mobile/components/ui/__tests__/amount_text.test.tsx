@@ -112,6 +112,13 @@ test("every size renders, and hero is the largest", () => {
   }
 });
 
+test("every size renders tabular figures so the number cannot jitter", () => {
+  render(<AmountText testID="amt" amount={123456} size="hero" />);
+  const style = screen.getByTestId("amt").props.style;
+  const flat = Array.isArray(style) ? Object.assign({}, ...style) : style;
+  expect(flat.fontVariant).toContain("tabular-nums");
+});
+
 test("no hard-coded hex reaches the rendered output", () => {
   // Global Constraints: contract §2 tokens only, so light and dark follow
   // automatically. A literal colour renders identically in both themes.
