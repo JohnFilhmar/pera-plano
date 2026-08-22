@@ -23,6 +23,27 @@ split described in §6 — the same animation cannot ship as one file to both pl
 
 Both deliverables must state token changes **explicitly** (§7), never one-off values.
 
+### 0.1 About the files attached to this message
+
+Attached are four `.dc.html` canvases and the paper-plane brand images. **The canvases are the
+pre-build design intent, not the app.** Read them for brand feel and typography only. Where any
+of them contradicts §2 of this brief, §2 is the truth:
+
+| Attached | Status | How to treat it |
+|---|---|---|
+| `Landing.dc.html` | superseded | The real site is six pages (§2.1), not one landing page. |
+| `About.dc.html` | **no such page exists** | There is no About route. Either fold it into `/` or propose it as a new page and say so. |
+| `Pricing.dc.html` | **no such page exists, and the model is not settled** | There is no pricing page. Everyone currently runs as Plus (§2.1) and the AI tier is explicitly free (§5). Do not design a price grid as if the tiers were decided. |
+| `PeraPlano Mobile UI.dc.html` | partially superseded | Predates the lock layer, the review queue, the Privacy centre, the Plan hub's five features, and the five-tab bar as shipped. |
+
+**The plane images attached are static renders.** The real assets are SMIL-animated SVGs; a PNG
+cannot show you the motion. §6.1 lists every source file by name with what it does, and §6.2 is
+the rule every new asset must follow. Ask for any SVG source you want pasted in full.
+
+**Design system is set to "None" in this composer on purpose** — the tokens are not in a package
+you can import. They are the two hand-aligned definitions in §7, and the real values are listed
+there. Use those, not a fresh palette.
+
 ---
 
 ## 1. What PeraPlano is
@@ -233,8 +254,26 @@ by hand, so any token change has to name both sides:
 
 - **Mobile** — `mobile/constants/colors.ts` exports `palette`; `mobile/tailwind.config.ts` maps
   it to NativeWind classes. Every colour ships a `dark:` counterpart; raw hex in a component is
-  a review failure. Token families: `bg`, `surface`, `fg` / `fg-2`, `brand` / `brand-soft`,
-  `on-brand`, `danger`, `warn`, and PH-flag accents `ph-blue` / `ph-red` / `ph-yellow`.
+  a review failure. The actual values, light / dark:
+
+  | Token | Light | Dark |
+  |---|---|---|
+  | `brand` | `#15803D` | `#22C55E` |
+  | `brand-soft` | `#DCFCE7` | `#14261C` |
+  | `on-brand` | `#FFFFFF` | `#111A16` |
+  | `bg` | `#F7FAF7` | `#0B1210` |
+  | `surface` | `#FFFFFF` | `#111A16` |
+  | `fg` | `#10201A` | `#E8F0EC` |
+  | `fg-2` | `#5B6E64` | `#9BB0A6` |
+  | `danger` | `#DC2626` | `#F87171` |
+  | `warn` | `#D97706` | `#FBBF24` |
+  | `ph-blue` | `#0038A8` | `#4D7CDB` |
+  | `ph-red` | `#CE1126` | `#E4566A` |
+  | `ph-yellow` | `#FCD116` | `#FCD116` |
+
+  Plus an eight-step categorical `chart-1…8` ramp for Reports, also light/dark paired. Contrast
+  ratios are recorded in comments beside the palette and every pair passes AA — **any token you
+  change must keep that true and you must state the new ratio.**
 - **Web** — CSS custom properties in `server/apps/web/app/globals.css`, defined on bare `:root`,
   redefined under `prefers-color-scheme: dark` guarded as `:root:not([data-theme="light"])`,
   and again under `:root[data-theme="dark"]`. Same names in spirit, plus `--mint`, `--line`,
