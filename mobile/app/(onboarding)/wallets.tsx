@@ -19,12 +19,22 @@
 // this task's file list, this screen re-derives candidates the SAME way
 // providers.tsx does — `listObservedPackages()` plus the active ruleset,
 // through the shared, pure `buildProviderChoices` — and proposes a Wallet for
-// every OBSERVED provider (`seen: true`): the strongest on-device signal of
-// real usage, and the same "seen beats guessed" reasoning
+// every OBSERVED provider the ruleset actually RECOGNISES (`seen: true &&
+// suggested: true`), not merely `seen: true`. `buildProviderChoices`
+// deliberately emits a choice for EVERY observed package, `displayName`
+// falling back to the raw package name and `suggested: false` when the
+// ruleset has no provider for it — the right behaviour for the provider
+// PICKER, where an unrecognised bank must still be tickable, but wrong here:
+// treating "seen" alone as "propose a Wallet" turned every app that had ever
+// posted a notification (`com.facebook.orca`, `com.termux`, `android`, ...)
+// into a pre-checked, junk-named Wallet proposal (task-2-brief). The
+// strongest on-device signal of real usage is therefore "seen AND
+// recognised", the same "seen beats guessed" reasoning
 // docs/04-features/01-onboarding.md rules 19-20 already settled for the
-// picker itself. A provider the user ticked but that has never yet posted a
-// notification is not auto-proposed; it is one tap away in "Add another
-// wallet" below, which lists the rest of the catalogue. This is flagged as a
+// picker itself — narrowed to packages the ruleset can actually name. A
+// provider the user ticked but that has never yet posted a notification is
+// not auto-proposed; it is one tap away in "Add another wallet" below, which
+// lists the rest of the catalogue. This is flagged as a
 // known gap, not a silent one — closing it for real needs a native
 // `getProviderFilter()` getter, which is out of this task's scope.
 //
@@ -252,7 +262,20 @@ export default function WalletsScreen({
     // Google Messages and Samsung Messages posting sms_relay traffic) used to
     // propose two identically-named wallets, splitting one provider's
     // notifications across two Wallet rows by default.
-    const observedChoices = dedupeByProvider(choices.filter((choice) => choice.seen));
+    //
+    // Bug fix (task-2-brief): `choice.seen` alone is not "this is a bank the
+    // user uses" — `buildProviderChoices` emits a choice for every OBSERVED
+    // package regardless of whether the ruleset recognises it, precisely so
+    // the provider PICKER can still offer an unrecognised package as a
+    // tickable, raw-named entry. Left unfiltered here, every app that had
+    // ever posted a notification (com.facebook.orca, com.termux, android,
+    // ...) became a pre-checked, junk-named Wallet proposal. Only a
+    // RECOGNISED observed provider (`suggested: true`) is a real proposal;
+    // `lib/ingest/provider_catalogue.ts` itself is untouched — this is a
+    // filter at the call site, not a change to what it emits.
+    const observedChoices = dedupeByProvider(
+      choices.filter((choice) => choice.seen && choice.suggested),
+    );
     const suggestedOnly = choices.filter((choice) => !choice.seen);
 
     setProposals([...observedChoices.map((choice) => proposalFor(choice, true)), CASH_PROPOSAL]);

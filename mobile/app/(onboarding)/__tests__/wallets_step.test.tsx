@@ -236,6 +236,44 @@ describe("the observed (auto-proposed) row respects provider boundaries too (rev
   });
 });
 
+describe("only RECOGNISED observed providers are proposed (task-2-brief)", () => {
+  const UNKNOWN_APP = "com.termux";
+
+  test("an observed package the ruleset does not recognise gets no proposal", async () => {
+    // com.termux has posted a notification (`seen: true`) but no provider in
+    // the ruleset claims it (`suggested: false`) — buildProviderChoices still
+    // emits it, raw-named, for the picker. This screen must not turn that
+    // into a pre-checked "com.termux" Wallet.
+    await renderReady([UNKNOWN_APP]);
+
+    expect(screen.queryByTestId(`wallet-proposal-${UNKNOWN_APP}`)).toBeNull();
+    const names = screen.queryAllByTestId(/^wallet-proposal-name-/).map((el) => el.props.value);
+    expect(names).not.toContain(UNKNOWN_APP);
+    // The quick-add row is unaffected — it was never sourced from `seen`
+    // packages in the first place, only from the rest of the catalogue.
+    expect(screen.queryByTestId(`wallet-add-${UNKNOWN_APP}`)).toBeNull();
+  });
+
+  test("an observed AND recognised provider still gets proposed, checked", async () => {
+    await renderReady([GCASH]);
+
+    expect(screen.getByTestId(`wallet-proposal-${GCASH}`)).toBeTruthy();
+  });
+
+  test("no recognised observed package still leaves a usable step — cash alone, Continue creates no junk", async () => {
+    await renderReady([UNKNOWN_APP]);
+
+    fireEvent.press(screen.getByTestId("onboarding-primary-button"));
+
+    // Only the cash wallet the screen always proposes — nothing named after
+    // the raw, unrecognised package.
+    await waitFor(async () => expect(await listWallets()).toHaveLength(1));
+    const wallets = await listWallets();
+    expect(wallets[0].type).toBe("cash");
+    expect(wallets.some((wallet) => wallet.name === UNKNOWN_APP)).toBe(false);
+  });
+});
+
 describe("opening balances at creation (task-4-brief rule 1)", () => {
   test("a blank opening balance creates the wallet at zero and does not block continue", async () => {
     await renderReady([GCASH]);
