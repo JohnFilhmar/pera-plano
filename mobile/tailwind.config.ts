@@ -48,13 +48,36 @@ export default {
       },
     },
   },
+  // Tailwind's core font-weight utilities are switched OFF, not merely
+  // overridden. `addUtilities` below reuses the same class names, but it only
+  // sets `fontFamily` — it never sets `fontWeight`, so the core rule is not
+  // contested, it simply survives as a second declaration block for the same
+  // selector. NativeWind merges those at the property level, which would leave
+  // every weight class resolving to BOTH a numeric weight and a family.
+  //
+  // That is inert on Android against a single-face family and would stay inert
+  // for as long as this app ships Android-only. Disabling the core plugin makes
+  // the mechanism match what its name claims instead of relying on a platform
+  // quirk to stay harmless — and stops a future variable-font Inter from having
+  // two sources of truth for weight.
+  //
+  // `font-thin`, `font-extralight`, `font-light` and `font-black` disappear with
+  // it. No loaded Inter face backs any of them and none has a call site.
+  corePlugins: { fontWeight: false },
   plugins: [
-    // React Native does not synthesise weight for a family registered through
-    // expo-font: `Inter_600SemiBold` is a FAMILY NAME, not a weight of `Inter`,
-    // so `fontWeight: "600"` is inert on Android. Tailwind's own font-weight
-    // utilities therefore did nothing here — every `font-semibold` in the app
-    // rendered at 400. Overriding them to emit `fontFamily` makes all 166
-    // existing call sites correct without renaming any of them.
+    // Core font-weight utilities are switched off above, so these class names
+    // are redefined here to select a family — not overridden in place, since
+    // the core rule they used to emit no longer exists to contest.
+    // `expo-font` registers one family name per file, so `Inter_600SemiBold`
+    // is a FAMILY NAME, not a weight of `Inter`, which is why
+    // `fontWeight: "600"` was inert on Android in the first place — every
+    // `font-semibold` in the app rendered at 400. Renaming the loaded fonts
+    // instead of redefining these classes was not an option either: Tailwind
+    // emits both `font-{family}` and `font-{weight}` under the same `font-`
+    // prefix, so a family named `semibold` would collide with the weight
+    // utility of the same name. Redefining `.font-semibold` (and its
+    // siblings) to emit `fontFamily` sidesteps both problems and leaves all
+    // 166 existing call sites correct without renaming any of them.
     plugin(({ addUtilities }) => {
       addUtilities({
         ".font-normal": { fontFamily: "Inter_400Regular" },

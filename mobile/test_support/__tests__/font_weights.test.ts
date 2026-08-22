@@ -40,3 +40,7 @@ test("the design's type scale is present and sized as the spec's table states", 
   expect(sizes.micro[0]).toBe("11px");
   expect(sizes.badge[0]).toBe("10px");
 });
+
+test("core font-weight utilities are disabled, so nothing emits a competing numeric weight", () => {
+  expect(config.corePlugins).toEqual({ fontWeight: false });
+});
