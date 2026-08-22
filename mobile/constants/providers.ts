@@ -93,3 +93,47 @@ export function providerLabelForPackage(
   const knownKey = PACKAGE_PROVIDER_KEYS[packageName];
   return knownKey ? providerLabel(knownKey) : packageName;
 }
+
+/**
+ * Colour + initial per provider, for the 14dp rounded square the design draws
+ * beside every wallet row and every provider-picker tile (00 Component sheet's
+ * "GCash" chip; 04 Wallets' list).
+ *
+ * COLOURED INITIALS, NOT LOGOS, ON PURPOSE. No provider artwork is bundled
+ * with the app. A letter on a brand-adjacent colour is recognisable at 14dp,
+ * costs nothing to ship, and creates no trademark surface — which matters for
+ * an app that names thirteen banks and e-wallets it has no relationship with.
+ *
+ * These colours are for identification only. None of them may be used as a
+ * status: they are not in `palette` for exactly that reason.
+ */
+export const PROVIDER_BADGE: Record<string, { color: string; letter: string }> = {
+  gcash: { color: "#0038A8", letter: "G" },
+  maya: { color: "#12B76A", letter: "M" },
+  bpi: { color: "#B32017", letter: "B" },
+  bdo: { color: "#0B2B63", letter: "B" },
+  unionbank: { color: "#E36C0A", letter: "U" },
+  metrobank: { color: "#0A3D91", letter: "M" },
+  seabank: { color: "#F4511E", letter: "S" },
+  gotyme: { color: "#00B5AD", letter: "G" },
+  cimb: { color: "#A6192E", letter: "C" },
+  landbank: { color: "#00713C", letter: "L" },
+  shopeepay: { color: "#EE4D2D", letter: "S" },
+  grabpay: { color: "#00B14F", letter: "G" },
+  sms_relay: { color: "#5B6E64", letter: "S" },
+};
+
+const UNKNOWN_PROVIDER_COLOR = "#5B6E64";
+
+/**
+ * Badge for a provider key, falling back the same way `providerLabel` does:
+ * the ruleset is remote-updatable and can name a provider this file has never
+ * heard of. A grey square with the key's own initial is worse than the real
+ * badge and much better than a blank square.
+ */
+export function providerBadge(providerKey: string): { color: string; letter: string } {
+  const known = PROVIDER_BADGE[providerKey];
+  if (known !== undefined) return known;
+  const initial = providerKey.trim().charAt(0).toUpperCase();
+  return { color: UNKNOWN_PROVIDER_COLOR, letter: initial === "" ? "?" : initial };
+}

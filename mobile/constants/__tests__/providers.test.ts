@@ -9,6 +9,7 @@
 import type { ProviderRuleset } from "@/lib/ingest/ruleset_types";
 
 import { providerLabel, providerLabelForPackage } from "../providers";
+import { PROVIDER_BADGE, PROVIDER_LABELS, providerBadge } from "../providers";
 
 const GCASH_PACKAGE = "com.globe.gcash.android";
 
@@ -62,4 +63,30 @@ describe("providerLabelForPackage", () => {
   test("a package nothing claims still renders something readable", () => {
     expect(providerLabelForPackage([], "com.unknown.bank")).toBe("com.unknown.bank");
   });
+});
+
+test("every labelled provider has a badge", () => {
+  for (const key of Object.keys(PROVIDER_LABELS)) {
+    expect(PROVIDER_BADGE[key]).toBeDefined();
+  }
+});
+
+test("every badge letter is a single uppercase character", () => {
+  for (const badge of Object.values(PROVIDER_BADGE)) {
+    expect(badge.letter).toMatch(/^[A-Z]$/);
+  }
+});
+
+test("every badge colour is a six-digit hex", () => {
+  for (const badge of Object.values(PROVIDER_BADGE)) {
+    expect(badge.color).toMatch(/^#[0-9A-F]{6}$/);
+  }
+});
+
+test("an unknown provider falls back to its own initial, never to blank", () => {
+  expect(providerBadge("chipmunk-bank")).toEqual({ color: "#5B6E64", letter: "C" });
+});
+
+test("an empty key still yields a letter rather than an empty badge", () => {
+  expect(providerBadge("").letter).toBe("?");
 });
