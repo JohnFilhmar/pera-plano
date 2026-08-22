@@ -41,3 +41,14 @@ test("each segment clears the 44dp touch target", () => {
   render(<SegmentedControl testID="s" segments={SEGMENTS} value="limits" onChange={() => {}} />);
   expect(String(screen.getByTestId("s-limits").props.className)).toContain("min-h-[44px]");
 });
+
+test("a value matching no segment selects nothing rather than defaulting to the first", () => {
+  render(
+    // @ts-expect-error - NoInfer pins T to segments' literal union: a value naming no real segment must fail to compile, not silently render with nothing selected.
+    <SegmentedControl testID="s" segments={SEGMENTS} value="not-a-real-segment" onChange={() => {}} />,
+  );
+  expect(screen.getByTestId("s-limits").props.accessibilityState).toMatchObject({ selected: false });
+  expect(screen.getByTestId("s-goals").props.accessibilityState).toMatchObject({ selected: false });
+  expect(screen.getByTestId("s-utang").props.accessibilityState).toMatchObject({ selected: false });
+  expect(screen.getByTestId("s-bills").props.accessibilityState).toMatchObject({ selected: false });
+});

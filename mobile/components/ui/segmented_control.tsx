@@ -13,10 +13,26 @@ import { Pressable, Text, View } from "react-native";
 
 export type Segment<T extends string> = { value: T; label: string };
 
+// `value` and `onChange` are typed `NoInfer<T>`, not `T` — `segments` is the
+// ONLY position `T` may be inferred from, deliberately. TypeScript infers a
+// generic independently at every position where it appears and then unions
+// the candidates, so with plain `T` on all three properties a stale or
+// typo'd `value` — one that names no real segment — does not error. It just
+// becomes another candidate, and `T` inflates to include it. That compiles
+// clean and fails silently at runtime instead: `segment.value === value` is
+// false for every segment, so nothing paints as selected, and — because the
+// press handler only withholds `onChange` when a segment IS selected — every
+// press fires it regardless of which segment was pressed. `NoInfer` removes
+// `value`/`onChange` from inference entirely, so a mismatched `value` is a
+// compile error instead of a silent no-op. That still only protects a caller
+// whose `segments` type is a literal union (an `as const` array, e.g.) — a
+// caller typed as plain `string` gives `T = string` and reopens the hole,
+// which is what the runtime-asserting test below (and the `@ts-expect-error`
+// pin next to it) both exist to catch.
 export type SegmentedControlProps<T extends string> = {
   segments: ReadonlyArray<Segment<T>>;
-  value: T;
-  onChange: (value: T) => void;
+  value: NoInfer<T>;
+  onChange: (value: NoInfer<T>) => void;
   testID?: string;
 };
 
