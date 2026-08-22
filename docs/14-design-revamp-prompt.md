@@ -25,9 +25,18 @@ Both deliverables must state token changes **explicitly** (§7), never one-off v
 
 ### 0.1 About the files attached to this message
 
-Attached are four `.dc.html` canvases and the paper-plane brand images. **The canvases are the
-pre-build design intent, not the app.** Read them for brand feel and typography only. Where any
-of them contradicts §2 of this brief, §2 is the truth:
+Two kinds of attachment, and they are **not** equally trustworthy.
+
+**Screenshots of the running app and the live web pages — these are the ground truth.** They are
+captures from a real Samsung A54 in dark mode and from the deployed site. They outrank the
+`.dc.html` canvases, and they outrank this brief's prose: if a screen looks different from how
+§2 describes it, **believe the screenshot and tell me the brief was wrong.** They are also the
+one honest read on the thing hardest to write down — how crowded, how quiet, how unfinished each
+screen actually feels under a thumb. Some of them are unflattering on purpose. Not every screen
+is captured; where there is no screenshot, fall back to §2.
+
+**The four `.dc.html` canvases are pre-build design intent, not the app.** Read them for brand
+feel and typography only. Where any contradicts §2 or a screenshot, they lose:
 
 | Attached | Status | How to treat it |
 |---|---|---|
