@@ -371,7 +371,7 @@ One commit per row. Each lands with its own tests green.
 | # | Commit | Notes |
 |---|---|---|
 | 1 | Inter 500/600/700/800 + A54 truncation audit | R1. No screen changes in this commit. |
-| 2 | Tokens: `line`, `chip`, `elevation` | §3.1 |
+| 2 | Tokens: `line`, `chip` | §3.1 |
 | 3 | Atoms: `Chip` fills, `Button`, `Card`, `ProviderBadge`, `SegmentedControl`, `StatTile`, `MiniBars`, `ShareBar`, `Fab`, soft-contrast test | R6 lands here |
 | 4 | 02 Home — header, hero bars, tri-tile, FAB, tab badge, `useDailySpend(7)` | R9 lands here |
 | 5 | 03 Transactions | |
