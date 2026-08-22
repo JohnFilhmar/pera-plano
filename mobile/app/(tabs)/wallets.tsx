@@ -61,12 +61,19 @@ export default function WalletsScreen() {
             spec disagree, the spec wins" — and they disagree here. The plan's
             wording survives as the body, because it says the one useful thing
             the spec's does not: WHICH wallet to add first.
-            The "Add wallet" action itself belongs to Task 5, which owns
-            app/wallet/new.tsx — a button here would open nothing. */}
+            The "Add wallet" action used to be commented out here because
+            app/wallet/new.tsx did not exist yet (Task 5 hadn't landed) — a
+            button here would have opened nothing. That route exists now, so
+            the empty state gets the same action the populated view's flows
+            already use (transaction/new.tsx, plan/goals/new.tsx): a plain
+            `router.push("/wallet/new")`, labelled "Add wallet" to match
+            app/wallet/new.tsx's own submit button (task-3-brief) rather than
+            inventing new wording for the same destination. */}
         <EmptyState
           testID="wallets-empty"
           title="Add your first Wallet"
           body="Start with the bank or e-wallet you use most."
+          action={{ label: "Add wallet", onPress: () => router.push("/wallet/new") }}
         />
       </View>
     );

@@ -414,6 +414,20 @@ describe("empty state", () => {
     expect(screen.queryByText("Add your first Wallet")).toBeNull();
     await screen.findByText("BPI");
   });
+
+  // task-3-brief: a user who skips onboarding entirely used to hit a dead
+  // end here — no button anywhere on the screen. The action now routes to
+  // the same app/wallet/new.tsx destination the populated view's own flows
+  // use (transaction/new.tsx, plan/goals/new.tsx).
+  test("offers an action that opens the new-wallet screen", async () => {
+    renderScreen();
+    await screen.findByText("Add your first Wallet");
+
+    fireEvent.press(screen.getByTestId("empty-state-action"));
+
+    expect(mockPush).toHaveBeenCalledTimes(1);
+    expect(mockPush).toHaveBeenCalledWith("/wallet/new");
+  });
 });
 
 describe("navigation", () => {
