@@ -1,16 +1,32 @@
 // lib/privacy/data_wipe.ts — the Privacy centre's "Wipe everything" (m3b
 // Task 6 rule 5; docs/04-features/11-settings-privacy.md Flow F, rules 10-11).
 //
-// DISTINCT FROM `lib/security/wipe.ts`'s `wipeAndStartOver`. That function is
-// the §11a break-glass recovery primitive: it deletes the SQLCipher database
-// FILE outright (see `wipeDatabase()`'s own doc — "not a logical clear
-// (DELETE FROM ...)") and destroys both key wraps, because it exists for the
-// state where NO key can ever open the file again. This function is the
-// opposite case: the user's own choice, made from inside a session that is
-// already unlocked. It empties every table with `DELETE FROM` and leaves the
-// database file, its encryption key, and the app's ability to keep using
-// itself untouched — the wipe the Privacy centre promises is "erase my data",
-// never "destroy my ability to open the app again".
+// NO LONGER THE PRIVACY CENTRE'S WIPE — READ THIS BEFORE CALLING IT. This
+// file's header used to draw a distinction against `lib/security/wipe.ts`'s
+// `wipeAndStartOver` in exactly the wrong direction: that function deletes
+// the SQLCipher database FILE outright (see `wipeDatabase()`'s own doc — "not
+// a logical clear (DELETE FROM ...)") and destroys both key wraps, and this
+// one empties every table with `DELETE FROM` while leaving the file, its
+// encryption key, and the device's key wraps intact. The claim that the
+// Privacy centre wanted the second shape — "erase my data", never "destroy my
+// ability to open the app again" — turned out to be false in the only place
+// it mattered: on a real device, "Erase everything" cleared the ledger and
+// then dropped the user into onboarding with the SAME recovery phrase and the
+// SAME fingerprint enrolment, because the keys this function preserves are
+// exactly what makes `app/(onboarding)/index.tsx` skip its device-lock and
+// phrase screens. The destructive copy promises a factory reset, so
+// `app/(tabs)/more/privacy.tsx` now calls the lock context's
+// `wipeAndStartOver` instead, and the state this function leaves behind is
+// not what that screen wants.
+//
+// KEPT, NOT DELETED, because the logical sweep is still the only correct
+// primitive for "empty every table while the session stays usable" — no
+// production caller wants that today (the screen was the only one), but the
+// behaviour is fully specified and proven by lib/privacy/__tests__/
+// data_wipe.test.ts, and `listWipeableTables` below is the schema-derived
+// table enumeration that suite and any future in-session reset both build on.
+// Anything that adopts it must be a caller that genuinely wants the keys and
+// the file to survive.
 //
 // "EVERY TABLE", ENUMERATED FROM THE SCHEMA ITSELF, NOT A HAND-WRITTEN LIST.
 // This schema has grown across nine migration files (001_core.sql plus
@@ -55,8 +71,10 @@ export async function listWipeableTables(db: SQLiteDatabase): Promise<string[]> 
 
 /**
  * Empties every data table, resets settings to their defaults, and drains
- * and discards the native pending-capture buffer — the complete "erase
- * everything" the Privacy centre's wipe flow promises (interface: m3b Task 6).
+ * and discards the native pending-capture buffer, leaving the database file
+ * and both key wraps in place so the current session stays usable. That last
+ * clause is why this is no longer what the Privacy centre's wipe flow calls —
+ * see this file's header.
  *
  * FOREIGN KEYS ARE TURNED OFF FOR THE DURATION OF THIS WIPE, DELIBERATELY.
  * `database.ts` keeps `PRAGMA foreign_keys = ON` for the connection's whole

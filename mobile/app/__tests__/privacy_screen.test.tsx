@@ -8,12 +8,26 @@
 //
 // `modules/notification_listener` is a native module and cannot be required
 // under Jest — mocked the same way app/__tests__/home_screen.test.tsx mocks
-// it. `lib/privacy/data_export.ts`/`data_wipe.ts` and `lib/bootstrap.ts` are
-// mocked wholesale here: their own behaviour is proven against a real
-// database in lib/privacy/__tests__/{data_export,data_wipe}.test.ts and
-// lib/__tests__/bootstrap.test.ts — this file's job is to prove the SCREEN
-// calls them correctly and only when it should, not to re-prove what they do
-// internally.
+// it. `lib/privacy/data_export.ts` and `contexts/lock_context.tsx` are mocked
+// wholesale here: their own behaviour is proven elsewhere (lib/privacy/
+// __tests__/data_export.test.ts; contexts/__tests__/lock_context.test.tsx and
+// lib/security/__tests__/wipe.test.ts for the wipe) — this file's job is to
+// prove the SCREEN calls them correctly and only when it should, not to
+// re-prove what they do internally.
+//
+// WHAT THE WIPE ASSERTIONS MOCK, AND WHY IT CHANGED. This suite used to mock
+// `@/lib/privacy/data_wipe` and assert `wipeAllData` fired. That call was the
+// bug: a logical `DELETE FROM` sweep that kept the SQLCipher file and both key
+// wraps, so the user landed back in onboarding with the SAME recovery phrase
+// and the SAME device-lock enrolment (observed on a real Samsung A54) despite
+// copy promising a permanent, unrecoverable erase. The screen now calls the
+// lock context's `wipeAndStartOver` — wipeDatabase → wipeKeys →
+// clearCaptureBuffer, then status "needs_onboarding", which is the fresh-
+// install branch that re-runs device lock and issues a brand-new phrase — so
+// that is what these tests mock and assert against. Every guarantee the old
+// suite carried is kept verbatim below: both confirmations required,
+// cancelling either wipes nothing, a wrong word never enables the button, and
+// a failure surfaces `privacy-wipe-error` instead of a stuck spinner.
 jest.mock("@/modules/notification_listener", () => ({
   setCaptureEnabled: jest.fn().mockResolvedValue(undefined),
   setProviderFilter: jest.fn().mockResolvedValue(undefined),
@@ -23,14 +37,19 @@ jest.mock("@/lib/privacy/data_export", () => ({
   exportAllData: jest.fn().mockResolvedValue("file:///cache/peraplano-export-fake.json"),
 }));
 
-jest.mock("@/lib/privacy/data_wipe", () => ({
-  wipeAllData: jest.fn().mockResolvedValue(undefined),
+// The whole lock context is stubbed to a single spy: the screen's only use of
+// it is this one call, and mounting a real LockProvider here would drag in
+// expo-local-authentication and the native key manager for no added proof.
+const mockWipeAndStartOver = jest.fn().mockResolvedValue(undefined);
+jest.mock("@/contexts/lock_context", () => ({
+  useLock: () => ({ wipeAndStartOver: mockWipeAndStartOver }),
 }));
 
-jest.mock("@/lib/bootstrap", () => ({
-  bootstrapApp: jest.fn().mockResolvedValue({ onboardingComplete: false }),
-}));
-
+// Nothing in the screen navigates any more — the lock context's status change
+// to "needs_onboarding" is what swaps the whole tree for the lock gate (see
+// handleWipeConfirmed's own doc). The mock stays so that any router use
+// reintroduced here fails loudly rather than reaching the real module, and
+// `mockReplace` is asserted to stay untouched on the wipe paths below.
 const mockReplace = jest.fn();
 jest.mock("expo-router", () => ({
   useRouter: () => ({ replace: (...args: unknown[]) => mockReplace(...args) }),
@@ -40,16 +59,14 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { ReactNode } from "react";
 
-import { WIPE_STEP_ONE_BODY } from "@/components/privacy/wipe_flow";
+import { WIPE_STEP_ONE_BODY, WIPE_STEP_TWO_BODY } from "@/components/privacy/wipe_flow";
 import { closeDatabase } from "@/lib/db/database";
 import { getSetting, setSetting } from "@/lib/db/repos/app_settings_repo";
 import { seedDefaultCategories } from "@/lib/db/repos/categories_repo";
 import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { storeRawCapture, RAW_CAPTURE_TTL_MS } from "@/lib/db/repos/raw_notifications_repo";
 import { listDataTableNames } from "@/lib/db/table_names";
-import { bootstrapApp } from "@/lib/bootstrap";
 import { exportAllData } from "@/lib/privacy/data_export";
-import { wipeAllData } from "@/lib/privacy/data_wipe";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
 import { setCaptureEnabled, setProviderFilter } from "@/modules/notification_listener";
@@ -60,8 +77,6 @@ import type { SQLiteDatabase } from "@/lib/db/database";
 const mockSetCaptureEnabled = setCaptureEnabled as jest.Mock;
 const mockSetProviderFilter = setProviderFilter as jest.Mock;
 const mockExportAllData = exportAllData as jest.Mock;
-const mockWipeAllData = wipeAllData as jest.Mock;
-const mockBootstrapApp = bootstrapApp as jest.Mock;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const GCASH_PACKAGE = "com.globe.gcash.android";
@@ -276,15 +291,16 @@ test("an export failure surfaces an error and releases the busy spinner", async 
 });
 
 // ---------------------------------------------------------------------------
-// The wipe's failure path (coordinator finding). `clearCaptureBuffer()` and
-// `bootstrapApp()` both run AFTER `wipeAllData()`'s own DELETEs are already
-// committed — see privacy.tsx's own doc on `handleWipeConfirmed`. Before this
-// fix, a rejection from either left `router.replace("/")` never called: a
-// stopped spinner, no error, and an un-reseeded app.
+// The wipe's failure path (coordinator finding). `wipeKeys()` and
+// `clearCaptureBuffer()` both run AFTER `wipeDatabase()` has already deleted
+// the file irreversibly — see privacy.tsx's own doc on `handleWipeConfirmed`
+// and lib/security/wipe.ts's header on that ordering. Before this catch
+// existed, a rejection from either left the user with a stopped spinner, no
+// error, and an app whose data was already gone.
 // ---------------------------------------------------------------------------
 
 test("a wipe failure after the database is cleared surfaces an error instead of leaving the spinner stuck", async () => {
-  mockBootstrapApp.mockRejectedValueOnce(new Error("bootstrap: seed write failed"));
+  mockWipeAndStartOver.mockRejectedValueOnce(new Error("wipe: keystore delete failed"));
   await renderPrivacyScreen();
 
   fireEvent.press(screen.getByTestId("wipe-everything-trigger"));
@@ -292,13 +308,13 @@ test("a wipe failure after the database is cleared surfaces an error instead of 
   fireEvent.changeText(screen.getByTestId("wipe-confirm-input"), "DELETE");
   fireEvent.press(screen.getByTestId("wipe-confirm-erase"));
 
-  await waitFor(() => expect(mockWipeAllData).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(mockWipeAndStartOver).toHaveBeenCalledTimes(1));
   await waitFor(() => expect(screen.getByTestId("privacy-wipe-error")).toBeTruthy());
   screen.getByText(
     "Your data was erased, but PeraPlano could not finish resetting. Please close and reopen the app.",
   );
-  // Never reached "/" — the user is not silently left on a half-reset app
-  // that LOOKS like it navigated away when it did not.
+  // Nothing navigated — the user is not silently left on a half-reset app
+  // that LOOKS like it moved on when it did not.
   expect(mockReplace).not.toHaveBeenCalled();
   expect(screen.getByTestId("wipe-confirm-erase").props.accessibilityState.busy).toBe(false);
 });
@@ -311,23 +327,47 @@ test("wipe requires both confirmations", async () => {
   await renderPrivacyScreen();
 
   fireEvent.press(screen.getByTestId("wipe-everything-trigger"));
-  expect(mockWipeAllData).not.toHaveBeenCalled();
+  expect(mockWipeAndStartOver).not.toHaveBeenCalled();
 
   fireEvent.press(screen.getByTestId("confirm-dialog-confirm"));
   // Step 1 alone must not wipe anything — the typed confirmation is still owed.
-  expect(mockWipeAllData).not.toHaveBeenCalled();
+  expect(mockWipeAndStartOver).not.toHaveBeenCalled();
   expect(screen.getByTestId("wipe-confirm-input")).toBeTruthy();
 
   // The final button stays disabled until the exact word is typed.
   fireEvent.press(screen.getByTestId("wipe-confirm-erase"));
-  expect(mockWipeAllData).not.toHaveBeenCalled();
+  expect(mockWipeAndStartOver).not.toHaveBeenCalled();
 
   fireEvent.changeText(screen.getByTestId("wipe-confirm-input"), "DELETE");
   fireEvent.press(screen.getByTestId("wipe-confirm-erase"));
 
-  await waitFor(() => expect(mockWipeAllData).toHaveBeenCalledTimes(1));
-  await waitFor(() => expect(mockBootstrapApp).toHaveBeenCalledTimes(1));
-  await waitFor(() => expect(mockReplace).toHaveBeenCalledWith("/"));
+  await waitFor(() => expect(mockWipeAndStartOver).toHaveBeenCalledTimes(1));
+});
+
+// ---------------------------------------------------------------------------
+// The fix itself (real-device bug): the erase runs the FULL start-over and
+// nothing else. Asserting the absences is the point — a `wipeAllData()` call
+// would leave the keys alive, and a `bootstrapApp()` call would run against a
+// database file that no longer exists.
+// ---------------------------------------------------------------------------
+
+test("the erase runs the lock context's full start-over — key material included — and never the logical table sweep", async () => {
+  await renderPrivacyScreen();
+
+  fireEvent.press(screen.getByTestId("wipe-everything-trigger"));
+  fireEvent.press(screen.getByTestId("confirm-dialog-confirm"));
+  fireEvent.changeText(screen.getByTestId("wipe-confirm-input"), "DELETE");
+  fireEvent.press(screen.getByTestId("wipe-confirm-erase"));
+
+  await waitFor(() => expect(mockWipeAndStartOver).toHaveBeenCalledTimes(1));
+  expect(mockWipeAndStartOver).toHaveBeenCalledWith();
+
+  // No bootstrap, no navigation: the DEK is gone, so bootstrapApp() could only
+  // throw, and the lock context's own status change swaps the tree for the
+  // lock gate. Nothing else is asserted about the destination here — that
+  // belongs to the lock context's suite, not the screen's.
+  expect(mockReplace).not.toHaveBeenCalled();
+  expect(screen.getByTestId("wipe-confirm-erase").props.accessibilityState.busy).toBe(false);
 });
 
 test("cancelling the first confirmation wipes nothing", async () => {
@@ -337,8 +377,7 @@ test("cancelling the first confirmation wipes nothing", async () => {
   fireEvent.press(screen.getByTestId("confirm-dialog-cancel"));
 
   expect(screen.queryByTestId("wipe-confirm-input")).toBeNull();
-  expect(mockWipeAllData).not.toHaveBeenCalled();
-  expect(mockBootstrapApp).not.toHaveBeenCalled();
+  expect(mockWipeAndStartOver).not.toHaveBeenCalled();
   expect(mockReplace).not.toHaveBeenCalled();
 });
 
@@ -350,8 +389,7 @@ test("cancelling the second confirmation wipes nothing", async () => {
   fireEvent.changeText(screen.getByTestId("wipe-confirm-input"), "DELETE");
   fireEvent.press(screen.getByTestId("wipe-confirm-cancel"));
 
-  expect(mockWipeAllData).not.toHaveBeenCalled();
-  expect(mockBootstrapApp).not.toHaveBeenCalled();
+  expect(mockWipeAndStartOver).not.toHaveBeenCalled();
   expect(mockReplace).not.toHaveBeenCalled();
 });
 
@@ -363,7 +401,7 @@ test("a wrong word never enables the final button", async () => {
   fireEvent.changeText(screen.getByTestId("wipe-confirm-input"), "delete");
   fireEvent.press(screen.getByTestId("wipe-confirm-erase"));
 
-  expect(mockWipeAllData).not.toHaveBeenCalled();
+  expect(mockWipeAndStartOver).not.toHaveBeenCalled();
 });
 
 // ---------------------------------------------------------------------------
@@ -399,6 +437,18 @@ test("the wipe warning names a real domain entity for every major table currentl
     review_queue_items: "review",
     app_settings: "setting",
   };
+
+  // Both steps must also warn that the key material and the recovery phrase
+  // go with it — the promise the screen only started keeping once it stopped
+  // calling wipeAllData(). Without this, copy could quietly drift back to
+  // "erase my data" while the code performs a factory reset.
+  for (const copy of [WIPE_STEP_ONE_BODY, WIPE_STEP_TWO_BODY]) {
+    const lowered = copy.toLowerCase();
+    expect(lowered).toContain("encryption key");
+    expect(lowered).toContain("recovery phrase");
+  }
+  expect(WIPE_STEP_ONE_BODY.toLowerCase()).toContain("from scratch");
+  expect(WIPE_STEP_TWO_BODY.toLowerCase()).toContain("from scratch");
 
   for (const [table, keyword] of Object.entries(keywordByTable)) {
     // Guards the guard: if a table is renamed or dropped, this fails loudly

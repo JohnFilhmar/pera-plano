@@ -1,9 +1,17 @@
 // components/privacy/wipe_flow.tsx — "Wipe everything" (m3b Task 6 rule 5;
 // docs §04-features/11-settings-privacy.md Flow F, rules 10-11).
 //
-// THE MOST DANGEROUS CODE IN THIS TASK. It is the trigger for
-// `lib/privacy/data_wipe.ts`'s `wipeAllData()`, which deletes the user's
-// entire ledger irrecoverably — so a single tap must never be enough.
+// THE MOST DANGEROUS CODE IN THIS TASK. It is the trigger for the Privacy
+// centre's full factory reset — `contexts/lock_context.tsx`'s
+// `wipeAndStartOver`, which runs `lib/security/wipe.ts` (wipeDatabase →
+// wipeKeys → clearCaptureBuffer) and then drops the app back to
+// "needs_onboarding". That deletes the user's entire ledger AND the key
+// material and recovery phrase that could ever have reopened it, all
+// irrecoverably — so a single tap must never be enough. It used to trigger
+// only `lib/privacy/data_wipe.ts`'s `wipeAllData()`, a logical `DELETE FROM`
+// sweep that left the keys and the phrase in place; see
+// app/(tabs)/more/privacy.tsx's `handleWipeConfirmed` for why that was a bug
+// and what the copy below had to start saying once it was fixed.
 //
 // TWO CONFIRMATIONS, NEITHER OF WHICH IS THE OTHER'S RUBBER STAMP:
 //
@@ -24,7 +32,7 @@
 // CANCELLING EITHER STEP WIPES NOTHING. Backing out of step 1 never opens
 // step 2; backing out of step 2 returns to idle with `onConfirmed` never
 // called — asserted directly in app/__tests__/privacy_screen.test.tsx via
-// the mocked `wipeAllData`/`exportAllData` never firing.
+// the mocked `wipeAndStartOver`/`exportAllData` never firing.
 import { useState } from "react";
 import { Text, TextInput, View } from "react-native";
 
@@ -37,19 +45,28 @@ const CONFIRM_WORD = "DELETE";
 
 /**
  * Enumerates what is destroyed, in plain domain nouns rather than raw SQL
- * table names. Every noun here names a real entity `wipeAllData()` actually
- * empties — app/__tests__/privacy_screen.test.tsx's wipe-copy test checks
- * each one against the live table list from `lib/db/table_names.ts`, not a
- * hand-trusted guess. `data_wipe.test.ts` separately proves the FUNCTION
- * empties every single table, including the junction/history tables no
+ * table names. Every noun in the first sentence names a real entity the wipe
+ * actually destroys — app/__tests__/privacy_screen.test.tsx's wipe-copy test
+ * checks each one against the live table list from `lib/db/table_names.ts`,
+ * not a hand-trusted guess. `data_wipe.test.ts` separately proves a table
+ * sweep reaches every single table, including the junction/history tables no
  * user-facing sentence would name individually (`loan_payments`,
  * `bill_cycles`, `income_profile_sources`, and so on) — this copy's job is a
  * truthful summary, not a literal schema dump.
+ *
+ * THE SECOND SENTENCE IS THE ONE THIS FLOW USED TO OWE THE USER. The wipe is
+ * now `lib/security/wipe.ts`'s full start-over: the database FILE, both key
+ * wraps, and the capture buffer, which means the 12-word recovery phrase the
+ * user wrote down and the device-lock enrolment behind it stop working too,
+ * and the next launch is a genuine first run. Copy that promised only "your
+ * data" would be understating a destruction the user cannot reverse and
+ * cannot be warned about afterwards, so it says so here, before the typed
+ * confirmation rather than after it.
  */
 export const WIPE_STEP_ONE_BODY =
-  "This permanently deletes every wallet, transaction, transfer, category, limit, income profile, goal, loan, bill, recurring pattern, and rule on this device — along with every captured notification, pending review item, and setting. This cannot be undone.";
+  "This permanently deletes every wallet, transaction, transfer, category, limit, income profile, goal, loan, bill, recurring pattern, and rule on this device — along with every captured notification, pending review item, and setting. It also destroys this device's encryption keys, so your current 12-word recovery phrase stops working and PeraPlano starts over from scratch: a new device-lock step and a brand-new phrase to write down. This cannot be undone.";
 
-export const WIPE_STEP_TWO_BODY = `Type ${CONFIRM_WORD} to confirm. This is permanent — there is no way to recover your data afterward.`;
+export const WIPE_STEP_TWO_BODY = `Type ${CONFIRM_WORD} to confirm. This is permanent — your data, your encryption keys, and your current recovery phrase are all destroyed, and you will set PeraPlano up from scratch afterward.`;
 
 export type WipeFlowProps = {
   /** Called only once BOTH confirmations are satisfied. */

@@ -17,7 +17,6 @@
 // `lib/db/repos/**` import the global constraints forbid.
 import { useMemo, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
-import { useRouter } from "expo-router";
 
 import { CaptureToggle } from "@/components/privacy/capture_toggle";
 import { CapturedList } from "@/components/privacy/captured_list";
@@ -30,9 +29,8 @@ import { useSetProviderPause } from "@/hooks/mutations/use_set_provider_pause";
 import { useCaptureEnabled, usePausedProviderPackages } from "@/hooks/queries/use_capture_settings";
 import { useRawCaptures } from "@/hooks/queries/use_raw_captures";
 import { useRuleset } from "@/hooks/queries/use_ruleset";
-import { bootstrapApp } from "@/lib/bootstrap";
+import { useLock } from "@/contexts/lock_context";
 import { exportAllData } from "@/lib/privacy/data_export";
-import { wipeAllData } from "@/lib/privacy/data_wipe";
 import type { ProviderSwitchItem } from "@/components/privacy/provider_switch_list";
 
 /**
@@ -51,7 +49,7 @@ const CAPTURED_LIST_BODY =
   "Every notification PeraPlano captured from your banks and e-wallets, kept for 30 days, then deleted automatically.";
 
 export default function PrivacyScreen() {
-  const router = useRouter();
+  const { wipeAndStartOver } = useLock();
 
   const { data: captureEnabled } = useCaptureEnabled();
   const { data: pausedPackages } = usePausedProviderPackages();
@@ -119,34 +117,61 @@ export default function PrivacyScreen() {
   };
 
   /**
-   * `wipeAllData()` empties every table but never re-seeds one — that keeps
-   * its own "every table is empty afterward" promise checkable (see
-   * data_wipe.test.ts). Re-seeding is `bootstrapApp()`'s job, and it is
-   * idempotent by design (lib/bootstrap.ts's own header: "safe to call twice
-   * ... without doubling any seeded data"), so calling it again here restores
-   * the default categories and the bundled parser ruleset immediately —
-   * rule 6's "returns to the onboarding entry state rather than an empty
-   * logged-in shell" needs the app to be USABLE the instant it lands on
-   * onboarding, not merely empty. `router.replace("/")` then remounts
-   * app/index.tsx, which re-reads `onboarding_complete` (now `false`, from
-   * `resetSettings()`) and redirects to `/(onboarding)` on its own.
+   * A FACTORY RESET, NOT A LOGICAL CLEAR — and that distinction is the whole
+   * bug this handler used to be. It called `lib/privacy/data_wipe.ts`'s
+   * `wipeAllData()`, a `DELETE FROM` sweep that empties every table but
+   * deliberately KEEPS the SQLCipher file, both key wraps, and therefore the
+   * user's existing 12-word recovery phrase and device-lock enrolment. The
+   * app then bounced through `bootstrapApp()` and `router.replace("/")` into
+   * the numbered onboarding flow, where `app/(onboarding)/index.tsx` saw keys
+   * already on disk and SKIPPED the device-lock and recovery-phrase screens
+   * (branch 2 of its own header comment). Observed on a real Samsung A54: the
+   * data was gone, but the same phrase and the same fingerprint enrolment
+   * were still live — the opposite of what "Erase everything. This is
+   * permanent" promises. `WIPE_STEP_ONE_BODY`/`WIPE_STEP_TWO_BODY` in
+   * components/privacy/wipe_flow.tsx now say plainly that the recovery phrase
+   * dies too, and this handler is what makes that sentence true.
    *
-   * THE CATCH BELOW IS NOT OPTIONAL. `wipeAllData()`'s own DELETEs are
-   * already committed by the time this function can throw — `bootstrapApp()`
-   * and the native `clearCaptureBuffer()` inside `wipeAllData()` itself both
-   * run AFTER the database is irreversibly wiped (see that function's own
-   * header). Without this catch, either one throwing would leave
-   * `router.replace("/")` never called: the user sits on this screen with a
-   * stopped spinner, no error, and an un-reseeded app — the single most
+   * ROUTED THROUGH THE LOCK CONTEXT, NOT DIRECTLY AT `lib/security/wipe.ts`.
+   * `wipeAndStartOver()` there performs the destruction (wipeDatabase →
+   * wipeKeys → clearCaptureBuffer), but destruction alone would leave the
+   * lock context still reporting "unlocked" over a database file that no
+   * longer exists. The context's own `wipeAndStartOver`
+   * (contexts/lock_context.tsx) wraps that same call with the double-tap
+   * guard AND the state transition that actually matters here: status becomes
+   * `needs_onboarding`, the one status `app/lock.tsx` renders
+   * `app/(onboarding)/index.tsx` from directly — the fresh-install branch
+   * that DOES run device lock and DOES issue a brand-new phrase. That is also
+   * why nothing here navigates any more: with no keys, `app/_layout.tsx`'s
+   * AppShell stops rendering the Stack this screen lives in and renders the
+   * lock gate instead, so a `router.replace("/")` would only push router
+   * state at a navigator that is being unmounted underneath it.
+   *
+   * AND NOTHING HERE CALLS `bootstrapApp()` ANY MORE. It cannot run: the
+   * database FILE is deleted by this point and bootstrap needs a DEK that no
+   * longer exists, so it would throw DatabaseLockedError every time. Verified
+   * against the onboarding path rather than assumed — the three pre-flow
+   * screens (device_lock → recovery_phrase → providers) never bootstrap;
+   * provisioning ends in `keysProvisioned()`, which moves the lock to
+   * "locked", and it is the ordinary unlock afterwards that flips AppShell's
+   * `lockStatus` to "unlocked" and fires `bootstrapApp()` from its own effect
+   * there. Re-seeding the default categories and the bundled ruleset
+   * therefore still happens on the way back in, just at the one moment there
+   * is a key to do it with.
+   *
+   * THE CATCH BELOW IS STILL NOT OPTIONAL, for the same reason as before:
+   * `wipeKeys()` and `clearCaptureBuffer()` both run AFTER `wipeDatabase()`
+   * has already deleted the file irreversibly (see lib/security/wipe.ts's
+   * header on why that order is deliberate). Without this catch, either one
+   * throwing would leave the user on this screen with a stopped spinner, no
+   * message, and an app whose data is already gone — the single most
    * dangerous silent failure this feature could have.
    */
   const handleWipeConfirmed = async () => {
     setWiping(true);
     setWipeError(null);
     try {
-      await wipeAllData();
-      await bootstrapApp();
-      router.replace("/");
+      await wipeAndStartOver();
     } catch (error) {
       console.warn("privacy: wipe could not finish after the database was cleared", error);
       setWipeError(
