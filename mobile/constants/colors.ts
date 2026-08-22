@@ -7,6 +7,24 @@ export const palette = {
   "fg-2": "#5B6E64",       "fg-2-dark": "#9BB0A6",
   danger: "#DC2626",       "danger-dark": "#F87171",
   warn: "#D97706",         "warn-dark": "#FBBF24",
+  line: "#E3EBE5",         "line-dark": "#22302A",
+  chip: "#EDF3EE",         "chip-dark": "#18231E",
+
+  // SOFT-CHIP INK FOR `warn` ONLY — NOT a second warning colour, and never a
+  // fill. The design's soft chips are semantic-colour text on a 12-14% tint of
+  // that same colour (`rgba(217,119,6,.14)` + `var(--wn)` for "due today" on
+  // the 00 Component sheet). That pairing works for `danger` and `brand` and
+  // fails for `warn`: #D97706 on its own 14% tint over `bg` #F7FAF7 measures
+  // ~3.6:1, under AA for the 11sp the design sets "due today" in — and "due
+  // today" is precisely the chip that has to be read on a phone outdoors.
+  // #B45309 is the same hue two steps darker and clears 4.5:1 on that tint.
+  // components/ui/__tests__/chip_contrast.test.ts asserts it, so this cannot
+  // regress silently the way the figures above this line once did.
+  //
+  // Dark mode keeps `warn-dark` unchanged: amber on a dark tint is already
+  // well clear of AA, and darkening it there would make it harder to read,
+  // not easier.
+  "warn-ink": "#B45309",   "warn-ink-dark": "#FBBF24",
   "ph-blue": "#0038A8",    "ph-blue-dark": "#4D7CDB",
   "ph-red": "#CE1126",     "ph-red-dark": "#E4566A",
   "ph-yellow": "#FCD116",  "ph-yellow-dark": "#FCD116",

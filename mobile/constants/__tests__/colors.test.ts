@@ -32,3 +32,15 @@ test("contract §2 values are verbatim", () => {
   expect(palette["ph-yellow"]).toBe("#FCD116");
   expect(palette["ph-yellow-dark"]).toBe("#FCD116");
 });
+
+test("the design's line and chip surfaces are verbatim", () => {
+  expect(palette.line).toBe("#E3EBE5");
+  expect(palette["line-dark"]).toBe("#22302A");
+  expect(palette.chip).toBe("#EDF3EE");
+  expect(palette["chip-dark"]).toBe("#18231E");
+});
+
+test("warn-ink is darker than warn, and exists only as soft-chip ink", () => {
+  expect(palette["warn-ink"]).toBe("#B45309");
+  expect(palette["warn-ink-dark"]).toBe("#FBBF24");
+});
