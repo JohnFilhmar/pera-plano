@@ -24,10 +24,10 @@ function composite(tokenHex: string, alpha: number, backdropHex: string): string
 const AA = 4.5;
 
 test.each([
-  ["brand light", palette.brand, palette.brand, palette.bg],
-  ["brand dark", palette["brand-dark"], palette["brand-dark"], palette["bg-dark"]],
-  ["danger light", palette.danger, palette.danger, palette.bg],
-  ["danger dark", palette["danger-dark"], palette["danger-dark"], palette["bg-dark"]],
+  ["brand light", palette["brand-ink"], palette.brand, palette.bg],
+  ["brand dark", palette["brand-ink-dark"], palette["brand-dark"], palette["bg-dark"]],
+  ["danger light", palette["danger-ink"], palette.danger, palette.bg],
+  ["danger dark", palette["danger-ink-dark"], palette["danger-dark"], palette["bg-dark"]],
   ["warn light", palette["warn-ink"], palette.warn, palette.bg],
   ["warn dark", palette["warn-ink-dark"], palette["warn-dark"], palette["bg-dark"]],
 ])("soft chip %s clears WCAG AA", (_label, ink, tint, backdrop) => {

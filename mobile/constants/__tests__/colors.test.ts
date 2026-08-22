@@ -40,7 +40,11 @@ test("the design's line and chip surfaces are verbatim", () => {
   expect(palette["chip-dark"]).toBe("#18231E");
 });
 
-test("warn-ink is darker than warn, and exists only as soft-chip ink", () => {
-  expect(palette["warn-ink"]).toBe("#B45309");
+test("brand-ink, danger-ink, and warn-ink are darker than their base tone, and exist only as soft-chip ink", () => {
+  expect(palette["brand-ink"]).toBe("#166534");
+  expect(palette["brand-ink-dark"]).toBe("#22C55E");
+  expect(palette["danger-ink"]).toBe("#991B1B");
+  expect(palette["danger-ink-dark"]).toBe("#F87171");
+  expect(palette["warn-ink"]).toBe("#92400E");
   expect(palette["warn-ink-dark"]).toBe("#FBBF24");
 });

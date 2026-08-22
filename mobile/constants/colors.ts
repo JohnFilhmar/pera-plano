@@ -10,21 +10,71 @@ export const palette = {
   line: "#E3EBE5",         "line-dark": "#22302A",
   chip: "#EDF3EE",         "chip-dark": "#18231E",
 
-  // SOFT-CHIP INK FOR `warn` ONLY — NOT a second warning colour, and never a
-  // fill. The design's soft chips are semantic-colour text on a 12-14% tint of
-  // that same colour (`rgba(217,119,6,.14)` + `var(--wn)` for "due today" on
-  // the 00 Component sheet). That pairing works for `danger` and `brand` and
-  // fails for `warn`: #D97706 on its own 14% tint over `bg` #F7FAF7 measures
-  // ~3.6:1, under AA for the 11sp the design sets "due today" in — and "due
-  // today" is precisely the chip that has to be read on a phone outdoors.
-  // #B45309 is the same hue two steps darker and clears 4.5:1 on that tint.
-  // components/ui/__tests__/chip_contrast.test.ts asserts it, so this cannot
-  // regress silently the way the figures above this line once did.
+  // SOFT-CHIP INK for `brand`, `danger`, AND `warn` — three tokens, one job,
+  // and NEVER a fill. A soft chip is semantic-colour text on a 12-14% tint of
+  // that same colour, composited over `bg` #F7FAF7 (`rgba(217,119,6,.14)` +
+  // `var(--wn)` for "due today" on the 00 Component sheet). The design's
+  // original rule was simpler than this: no separate ink token at all, just
+  // the base tone at full strength as its own ink. That rule fails AA for
+  // every tone it was tried on, not only `warn` — at the shipped
+  // `SOFT_ALPHA` (chip.tsx, 0.14), ink-on-its-own-tint measures:
+  //   - `brand`  #15803D on its own 14% tint over `bg`: 3.96:1
+  //   - `danger` #DC2626 on its own 14% tint over `bg`: 3.69:1
+  //   - `warn`   #D97706 on its own 14% tint over `bg`: 2.63:1 — the worst
+  //     of the three, because amber is the lightest of the three hues and
+  //     has the least luminance contrast against `bg` to begin with, before
+  //     any tint dilutes it further.
+  // All three sit under AA's 4.5:1 floor for normal text (WCAG 2.1 SC 1.4.3).
+  // components/ui/__tests__/chip_contrast.test.ts asserts all three (plus
+  // both dark rows), so none of this can regress silently the way the
+  // figures below once did.
   //
-  // Dark mode keeps `warn-dark` unchanged: amber on a dark tint is already
-  // well clear of AA, and darkening it there would make it harder to read,
-  // not easier.
-  "warn-ink": "#B45309",   "warn-ink-dark": "#FBBF24",
+  // The first fix tried, for `warn` alone, was `#B45309` — the same hue two
+  // steps darker. It shipped, and this file's comment used to claim it
+  // cleared 4.5:1. It does not: it measures 4.14:1, still under the bar.
+  // Naming it here so nobody re-proposes it: one step darker is not enough
+  // headroom once the tint is composited back onto `bg`.
+  //
+  // Alpha cannot rescue any of the three either. `warn`'s ceiling — contrast
+  // with ZERO visible tint, ink painted straight on `bg`, the best case
+  // physically possible — is 3.03:1, already under 4.5 before any tint
+  // dilutes it further, so no alpha helps `warn` at all. `brand` (4.77:1)
+  // and `danger` (4.59:1) technically clear 4.5 at that same zero-tint
+  // limit, but zero tint is not a soft chip, it is ink on an invisible
+  // background; walking alpha back up toward anything a user would actually
+  // call "tinted" drops both back under 4.5 almost immediately — brand
+  // around alpha≈0.045, danger around alpha≈0.015 — nowhere near the 12-14%
+  // the design calls for, and far below the level `SOFT_ALPHA`'s own comment
+  // (chip.tsx) says 0.14 was chosen to clear: visible against `surface`
+  // white. There is no usable alpha at which any of the three read AA on
+  // their own colour. The ink has to change, not the alpha.
+  //
+  // The shipped fix darkens each tone by one Tailwind 800-weight step,
+  // chosen together rather than one at a time so the three read as one
+  // family instead of three ad-hoc picks:
+  //   - `brand-ink`  #166534 on brand's 14% tint:  5.63:1 — clears AA.
+  //   - `danger-ink` #991B1B on danger's 14% tint:  6.36:1 — clears AA.
+  //   - `warn-ink`   #92400E on warn's 14% tint:    5.85:1 — clears AA.
+  //
+  // These are INK ONLY. Never reach for `brand-ink` / `danger-ink` /
+  // `warn-ink` as a fill, a border, or an icon colour on a SOLID background —
+  // they exist for exactly one job, text sitting on that hue's own soft
+  // tint, and they are tuned for contrast against that composited tint
+  // specifically, not against `surface`, `bg`, or a solid fill of the base
+  // tone.
+  //
+  // Dark mode needs no equivalent for any of the three. Every dark tone
+  // already clears AA comfortably on its own tint — `warn-dark` measures
+  // 8.66:1 against its own 14% tint over `bg-dark`, `brand-dark` 6.68:1, and
+  // `danger-dark` 5.74:1 — because the dark-mode fills were already picked
+  // bright enough to read against a near-black page, and that same
+  // brightness is what makes each legible on a translucent tint of itself
+  // too. Darkening any of them further for a soft chip would fight that
+  // design, not help it, so `*-ink-dark` below is an alias of the existing
+  // bright token, not a new colour.
+  "brand-ink": "#166534",  "brand-ink-dark": "#22C55E",
+  "danger-ink": "#991B1B", "danger-ink-dark": "#F87171",
+  "warn-ink": "#92400E",   "warn-ink-dark": "#FBBF24",
   "ph-blue": "#0038A8",    "ph-blue-dark": "#4D7CDB",
   "ph-red": "#CE1126",     "ph-red-dark": "#E4566A",
   "ph-yellow": "#FCD116",  "ph-yellow-dark": "#FCD116",

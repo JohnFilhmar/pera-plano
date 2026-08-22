@@ -44,6 +44,8 @@ export default {
         warn: { DEFAULT: palette.warn, dark: palette["warn-dark"] },
         line: { DEFAULT: palette.line, dark: palette["line-dark"] },
         chip: { DEFAULT: palette.chip, dark: palette["chip-dark"] },
+        "brand-ink": { DEFAULT: palette["brand-ink"], dark: palette["brand-ink-dark"] },
+        "danger-ink": { DEFAULT: palette["danger-ink"], dark: palette["danger-ink-dark"] },
         "warn-ink": { DEFAULT: palette["warn-ink"], dark: palette["warn-ink-dark"] },
         "ph-blue": { DEFAULT: palette["ph-blue"], dark: palette["ph-blue-dark"] },
         "ph-red": { DEFAULT: palette["ph-red"], dark: palette["ph-red-dark"] },

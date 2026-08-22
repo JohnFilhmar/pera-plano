@@ -29,11 +29,15 @@ const SOFT_TINT: Partial<Record<ChipTone, { light: string; dark: string }>> = {
   danger: { light: palette.danger, dark: palette["danger-dark"] },
 };
 
+// Every tone here maps to its own `-ink` token, never the base tone itself —
+// see constants/colors.ts on `brand-ink` / `danger-ink` / `warn-ink` for why:
+// the base tones fail WCAG AA as ink on their own soft tint, in all three
+// cases, not just `warn`. components/ui/__tests__/chip_contrast.test.ts is
+// what guards this from regressing silently.
 const SOFT_INK: Partial<Record<ChipTone, string>> = {
-  brand: "text-brand dark:text-brand-dark",
-  // NOT `text-warn`: see constants/colors.ts on `warn-ink`.
+  brand: "text-brand-ink dark:text-brand-ink-dark",
   warn: "text-warn-ink dark:text-warn-ink-dark",
-  danger: "text-danger dark:text-danger-dark",
+  danger: "text-danger-ink dark:text-danger-ink-dark",
 };
 
 export type ChipProps = {
