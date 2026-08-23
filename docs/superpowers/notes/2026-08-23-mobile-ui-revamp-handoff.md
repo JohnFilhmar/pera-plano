@@ -118,6 +118,17 @@ git-ignored directories and there is no root `package.json` to hoist from.
 This cost one agent its entire session chasing a phantom test failure
 (Ruling PF-5). Install inside `mobile/` before dispatching anyone.
 
+**A fresh install never renders `app/index.tsx`.** `lock_context.tsx`'s
+`needs_onboarding` status routes through `app/lock.tsx` **straight** to
+`app/(onboarding)/index.tsx`, bypassing the splash screen entirely; the flow
+then starts at `welcome`. So anything placed on `app/index.tsx` — the splash
+brand mark included — is seen only by returning users, and the first screen a
+brand-new user actually sees is `welcome.tsx`. This is stated in
+`app/index.tsx`'s own header (lines 7-8) and is easy to get backwards: I
+assumed the splash animation covered the first-run moment, and it does not.
+Check which entry path a screen sits on before reasoning about what a new user
+experiences.
+
 **Suite-level flakiness under parallel load is broader than any fixed list.**
 `bills_screen`, `home_screen`, `transactions_screen` and `filter_bar` are the
 ones seen most often under `maxWorkers: 60%`, but two independent runs on this
@@ -210,6 +221,13 @@ alone, because `rows=[]` returns before reaching `PlusGate`.
 These are my own errors, and they share a shape: an instruction that is
 correct where it was written and destructive where it lands.
 
+- **A deferral that lands only in prose has no owner.** Task 6's report
+  deferred a decision "to Part 3 Task 7"; Task 7's Files list never received
+  the file, so its implementer correctly left it alone as out of scope.
+  Neither agent erred — the handoff itself was unowned, and the gap survived
+  two reviews because each task was individually complete. When one task
+  defers a decision to a later one, put the file in that task's **file list**,
+  not only in its narrative.
 - **An instruction can be arithmetically right and physically wrong.** I told
   an agent to reach a 44×44 touch target with `hitSlop` and said nothing about
   row spacing. It did exactly that — uniform slop of 12 against an 8px
