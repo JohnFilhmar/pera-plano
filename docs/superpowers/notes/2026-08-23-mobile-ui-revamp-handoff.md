@@ -201,6 +201,16 @@ Related: a fault-injecting reviewer holds a **write** lock on the files it
 touches, so it cannot run concurrently with an implementer in the same area
 (Ruling P2-3).
 
+**Never fault-inject with `git stash`.** An agent here injected a fault by
+`git stash push --keep-index`, running the test, then `git stash pop`. It
+worked, and the risk was real: the stash stack is shared with the main
+checkout and every other worktree and session, so a `pop` can restore — or a
+concurrent push can displace — work belonging to someone else entirely. My
+dispatches forbade `git add -A` and `git commit -a` and said nothing about
+stash, which is the more dangerous of the three because it silently touches
+state outside this worktree. **To inject a fault, edit the file and edit it
+back.** Every dispatch should say so explicitly.
+
 **Do not pipe a backgrounded test run through `tail`.** It truncated the
 output file here and destroyed 7 of 9 failure records. Redirect the full
 output; read the tail afterwards.
