@@ -191,6 +191,16 @@ compared a different thing. When you add a child to a row that any test
 queries by prefix, re-read that test. Prefer a query narrow enough that a new
 sibling cannot join it.
 
+**A negative assertion needs a positive anchor.** A guard made only of
+`queryBy…toBeNull` passes against a component that renders *nothing at all* —
+it cannot tell "the bad control is gone" from "the whole screen is gone".
+Confirmed here by forcing `ProviderSuccessMeter` to `return null`: the
+no-report guard stayed green while three sibling tests correctly failed. Fixed
+by asserting the row is present *before* asserting the control is absent. My
+own dispatch caused this by phrasing the requirement purely negatively
+("assert the screen renders no control claiming to report") — **when you ask
+for a guard against something, also say what must still be there.**
+
 **A jest pattern matching zero files exits zero.** Naming a test file that
 does not exist produces a confident green that tested nothing (Ruling PF-13).
 Check the file count in the run output.
@@ -269,6 +279,16 @@ correct where it was written and destructive where it lands.
   call sites" does not. See `components/ui/numeric_field.tsx`.
 - **Check a type before referencing its fields.** `Wallet` has no
   `providerKey` — that field is on `UserRuleMatcher`.
+- **A defect fixed at its known sites is not a defect fixed.** The
+  whole-branch review found *three separate classes* we had already fixed on
+  this branch still live elsewhere: `subtitleLines` applied at five clipping
+  sites while six more in `more/index.tsx` still clip; `brand-ink` replacing
+  `text-brand`-on-`bg-brand-soft` in `plus_gate.tsx` while two new files
+  reintroduced the same failing pairing; `hitSlop` given to `Chip` while
+  comparable wallet pills stayed under 44pt. Each fix was correct, tested,
+  reviewed, and local. **When a review finds an instance, the deliverable is a
+  sweep for the class, not a patch for the instance** — and the sweep's result
+  belongs in the report as a count, so the next reader knows it happened.
 - **Most errors on this branch were measuring a proxy instead of the thing.**
   It is worth stating as one rule because it looked like several different
   bugs. A test read the wrapper's className instead of the node that renders
