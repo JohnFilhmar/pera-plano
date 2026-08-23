@@ -49,6 +49,7 @@ import { ThemePicker } from "@/components/settings/theme_picker";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ListRow } from "@/components/ui/list_row";
+import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { SectionHeader } from "@/components/ui/section_header";
 import { useSetSetting } from "@/hooks/mutations/use_set_setting";
 import { useSettings } from "@/hooks/queries/use_settings";
@@ -167,7 +168,11 @@ export default function SettingsScreen() {
   // before the real stored values reads as the app forgetting what the user
   // chose, even for the instant before the read resolves.
   if (settings === undefined) {
-    return <View testID="settings-loading" className="flex-1 bg-bg dark:bg-bg-dark" />;
+    return (
+      <View testID="settings-loading" className="flex-1 bg-bg dark:bg-bg-dark">
+        <LoadingSkeleton rows={6} />
+      </View>
+    );
   }
 
   const multiplier = settings.recurring_forget_multiplier;

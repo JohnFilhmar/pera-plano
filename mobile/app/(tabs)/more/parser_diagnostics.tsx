@@ -19,6 +19,7 @@ import { useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 
 import { ProviderSuccessMeter } from "@/components/privacy/provider_success_meter";
+import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { useParseStats } from "@/hooks/queries/use_parse_stats";
 import type { ProviderParseStats } from "@/lib/diagnostics/parse_stats_repo";
 
@@ -31,7 +32,11 @@ export default function ParserDiagnosticsScreen() {
   }
 
   if (stats === undefined) {
-    return <View testID="parser-diagnostics-loading" className="flex-1 bg-bg dark:bg-bg-dark" />;
+    return (
+      <View testID="parser-diagnostics-loading" className="flex-1 bg-bg dark:bg-bg-dark">
+        <LoadingSkeleton rows={4} />
+      </View>
+    );
   }
 
   return (

@@ -19,6 +19,7 @@ import { SummaryTiles } from "@/components/reports/summary_tiles";
 import { TrendLine } from "@/components/reports/trend_line";
 import { EmptyState } from "@/components/ui/empty_state";
 import { FormScreen } from "@/components/ui/form_screen";
+import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { useAvailableScopes, useReport } from "@/hooks/queries/use_report";
 import { systemClock } from "@/lib/clock";
 import { toDateIso } from "@/lib/dates";
@@ -46,7 +47,11 @@ export default function ReportsScreen() {
   const reportQuery = useReport(scope);
 
   if (scopesQuery.data === undefined || reportQuery.data === undefined) {
-    return <View testID="reports-loading" className="flex-1 bg-bg dark:bg-bg-dark" />;
+    return (
+      <View testID="reports-loading" className="flex-1 bg-bg dark:bg-bg-dark">
+        <LoadingSkeleton rows={6} />
+      </View>
+    );
   }
 
   const { summary, categories, trend, merchants, truncatedByTier } = reportQuery.data;

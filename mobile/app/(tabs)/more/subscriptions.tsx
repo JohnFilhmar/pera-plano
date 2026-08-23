@@ -57,6 +57,7 @@ import { LockedInHeader } from "@/components/recurring/locked_in_header";
 import { PatternCard } from "@/components/recurring/pattern_card";
 import { Chip } from "@/components/ui/chip";
 import { EmptyState } from "@/components/ui/empty_state";
+import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { useAcknowledgePattern } from "@/hooks/mutations/use_acknowledge_pattern";
 import { useDismissPattern } from "@/hooks/mutations/use_dismiss_pattern";
 import { usePromoteToBill } from "@/hooks/mutations/use_promote_to_bill";
@@ -114,7 +115,11 @@ export default function SubscriptionsScreen() {
   }
 
   if (patterns === undefined) {
-    return <View testID="subscriptions-loading" className="flex-1 bg-bg dark:bg-bg-dark" />;
+    return (
+      <View testID="subscriptions-loading" className="flex-1 bg-bg dark:bg-bg-dark">
+        <LoadingSkeleton rows={5} />
+      </View>
+    );
   }
 
   if (patterns.length === 0) {
