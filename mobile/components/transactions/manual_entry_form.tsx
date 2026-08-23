@@ -24,7 +24,6 @@ import { Pressable, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { CategoryPicker } from "@/components/transactions/category_picker";
-import { formatCentavos } from "@/components/ui/amount_text";
 import { Button, registerIcon } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { DateField } from "@/components/ui/date_field";
@@ -180,11 +179,6 @@ export function ManualEntryForm({
   // them: the full wallet list and `DateField` below stay the only controls,
   // so this never has to duplicate their validation or selection state.
   const selectedWallet = wallets.find((wallet) => wallet.id === walletId);
-  // Always starts with "₱" for a non-negative amount — `amountCentavos` can
-  // never be negative (the shared keypad has no minus key) — so slicing off
-  // the first character is a safe way to give the peso mark and the digits
-  // two different sizes without reimplementing `formatCentavos`.
-  const pesoFigure = formatCentavos(amountCentavos);
 
   function handleSave(): void {
     if (!canSave) return;
@@ -252,34 +246,36 @@ export function ManualEntryForm({
         />
       </View>
 
-      {/* The amount, large and centred (task-4b). `formatCentavos`, not
-          `AmountText` — `AmountText` sets its own size unconditionally with
-          no override prop, which would silently swallow the `text-hero` this
-          board asks for. Purely a read-out: `NumericField` right below is
-          still the only pressable amount control, so this is hidden from
-          screen readers rather than announced twice. */}
+      {/* The amount, large and centred (task-4b, REVISED per review round 2).
+          `NumericField` itself is now the hero figure (`size="hero"`) rather
+          than a small, easy-to-miss real control sitting under a decorative
+          duplicate that did nothing when pressed — that first version put
+          the most prominent thing on the screen exactly where a tap
+          accomplished nothing. The caption above is hidden from screen
+          readers, not omitted: `NumericField`'s own `accessibilityLabel`
+          already speaks "How much?, {amount}" on press-focus, so a visible
+          "How much?" here is for sighted users only — without it, nothing
+          on screen said what this large number even was. */}
       <View className="items-center gap-1 pt-2">
         <Text
           accessibilityElementsHidden
           importantForAccessibility="no-hide-descendants"
-          className="text-fg dark:text-fg-dark"
-          style={{ fontVariant: ["tabular-nums"] }}
+          className="text-center text-secondary text-fg-2 dark:text-fg-2-dark"
         >
-          <Text className="text-title font-extrabold">{pesoFigure.slice(0, 1)}</Text>
-          <Text className="text-hero font-extrabold">{pesoFigure.slice(1)}</Text>
+          How much?
         </Text>
-        <Text className="text-secondary text-fg-2 dark:text-fg-2-dark">
+        <NumericField
+          testID="manual-amount"
+          label="How much?"
+          placeholder="₱0"
+          value={amount}
+          onChangeText={onAmountChange}
+          size="hero"
+        />
+        <Text className="text-center text-secondary text-fg-2 dark:text-fg-2-dark">
           {`${selectedWallet?.name ?? "No wallet yet"} · ${day}`}
         </Text>
       </View>
-
-      <NumericField
-        testID="manual-amount"
-        label="How much?"
-        placeholder="₱0"
-        value={amount}
-        onChangeText={onAmountChange}
-      />
 
       {/* Direction — one of the four screens `SegmentedControl` was built
           for (task-4b). `testID="manual-entry-direction"` renders children at

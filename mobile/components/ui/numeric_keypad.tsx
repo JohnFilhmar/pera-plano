@@ -38,7 +38,16 @@ const ROWS: readonly (readonly string[])[] = [
   [".", "0", "backspace"],
 ];
 
-const KEY_CLASS = "h-14 flex-1 items-center justify-center rounded-2xl bg-surface dark:bg-surface-dark";
+// task-4b review round 2: "the mechanism is protected, the paint is not" —
+// `numeric_keypad.test.tsx` pins twelve keys in a 3-per-row grid and the
+// press/long-press behaviour below, and asserts no className anywhere, so
+// restyling these two constants changes nothing that file (or
+// `no_numeric_keyboard.test.ts`, which never looks at styling at all) can
+// see fail.
+const KEY_CLASS = "h-14 flex-1 items-center justify-center rounded-xl bg-surface dark:bg-surface-dark";
+/** The backspace key's own face, distinct from a digit's (task-4b). */
+const BACKSPACE_CLASS =
+  "h-14 flex-1 items-center justify-center rounded-xl bg-brand-soft dark:bg-brand-soft-dark";
 
 export function NumericKeypad({ mode, onKey, onBackspace, onClear }: NumericKeypadProps) {
   const decimalInert = mode === "integer";
@@ -58,9 +67,14 @@ export function NumericKeypad({ mode, onKey, onBackspace, onClear }: NumericKeyp
                   accessibilityHint="Press and hold to clear"
                   onPress={onBackspace}
                   onLongPress={onClear}
-                  className={KEY_CLASS}
+                  className={BACKSPACE_CLASS}
                 >
-                  <Delete className="text-fg dark:text-fg-dark" size={22} />
+                  {/* `text-brand`/`text-brand-dark` — the same ink
+                      `components/ui/empty_state.tsx` already pairs with a
+                      `bg-brand-soft` disc, not the neutral `text-fg` a digit
+                      key uses, so the one key that is not a digit reads as
+                      a distinct, brand-toned action. */}
+                  <Delete className="text-brand dark:text-brand-dark" size={22} />
                 </Pressable>
               );
             }
@@ -78,7 +92,7 @@ export function NumericKeypad({ mode, onKey, onBackspace, onClear }: NumericKeyp
                 onPress={inert ? undefined : () => onKey(key)}
                 className={`${KEY_CLASS}${inert ? " opacity-30" : ""}`}
               >
-                <Text className="text-2xl font-semibold text-fg dark:text-fg-dark">{key}</Text>
+                <Text className="text-title font-semibold text-fg dark:text-fg-dark">{key}</Text>
               </Pressable>
             );
           })}

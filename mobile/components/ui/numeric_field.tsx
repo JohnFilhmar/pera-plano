@@ -26,6 +26,8 @@ import { useKeypad } from "@/contexts/keypad_context";
 import { formatPesoInput } from "@/lib/money/peso_input";
 import type { KeypadMode } from "./numeric_keypad";
 
+export type NumericFieldSize = "md" | "hero";
+
 export type NumericFieldProps = {
   /** Also the focus identity the context compares against — must be unique on screen. */
   testID: string;
@@ -49,6 +51,23 @@ export type NumericFieldProps = {
    * makes the dimming impossible to forget.
    */
   disabled?: boolean;
+  /**
+   * `"hero"` (task-4b, review round 2) — the board's large centred amount
+   * figure IS this field, sized up in place, rather than a decorative
+   * duplicate rendered beside a small, easy-to-miss real one. That duplicate
+   * shipped first and was wrong: the decorative figure was the most
+   * prominent thing on the screen and did nothing when pressed, while the
+   * live control sat below it, smaller, with no visible caption.
+   *
+   * DEFAULTS TO `"md"` — the field this always was — so every one of this
+   * component's other seventeen call sites (bills, goals, limits, loans,
+   * `correct_sheet.tsx`, wallets, onboarding...) renders byte-for-byte what
+   * it always has; only `manual_entry_form.tsx` opts in. SIZING ONLY: the
+   * Pressable-not-TextInput mechanism `no_numeric_keyboard.test.ts` guards,
+   * and every prop and testID `numeric_field.test.tsx` pins, are identical
+   * at both sizes — nothing here touches the keypad's own files.
+   */
+  size?: NumericFieldSize;
 };
 
 function shownFor(mode: KeypadMode, value: string): string {
@@ -65,6 +84,7 @@ export function NumericField({
   mode = "peso",
   placeholder = "",
   disabled = false,
+  size = "md",
 }: NumericFieldProps) {
   const { request, open, close, syncFocused } = useKeypad();
   const focused = request?.fieldId === testID;
@@ -133,6 +153,29 @@ export function NumericField({
 
   const empty = value === "";
   const shown = empty ? placeholder : shownFor(mode, value);
+  const hero = size === "hero";
+
+  // Built with `.filter(Boolean).join(" ")` (the same pattern
+  // `components/ui/button.tsx`'s `containerClass` already uses) rather than
+  // string interpolation, so the `"md"` branch — every call site but
+  // manual entry — comes out as the EXACT SAME classes, in the EXACT SAME
+  // order, as before this prop existed.
+  const containerClass = [
+    hero
+      ? "items-center justify-center rounded-2xl bg-surface px-4 py-5 dark:bg-surface-dark"
+      : "mt-2 rounded-xl bg-surface p-3 dark:bg-surface-dark",
+    focused ? "border border-brand dark:border-brand-dark" : "",
+    disabled ? "opacity-50" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const textClass = [
+    hero ? "text-hero font-extrabold text-center" : "",
+    empty ? "text-fg-2 dark:text-fg-2-dark" : "text-fg dark:text-fg-dark",
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   return (
     <Pressable
@@ -144,11 +187,15 @@ export function NumericField({
       // field announces as an ordinary button and then ignores the tap.
       accessibilityState={{ selected: focused, disabled }}
       onPress={() => open({ fieldId: testID, label, mode, text: value, onChangeText })}
-      className={`mt-2 rounded-xl bg-surface p-3 dark:bg-surface-dark${
-        focused ? " border border-brand dark:border-brand-dark" : ""
-      }${disabled ? " opacity-50" : ""}`}
+      className={containerClass}
     >
-      <Text className={empty ? "text-fg-2 dark:text-fg-2-dark" : "text-fg dark:text-fg-dark"}>
+      <Text
+        className={textClass}
+        // Tabular figures at hero size only — a `"md"` field is a short
+        // label/value row, not a number a user's eye tracks as it grows
+        // digit by digit the way the manual-entry amount does.
+        style={hero ? { fontVariant: ["tabular-nums"] } : undefined}
+      >
         {shown}
       </Text>
     </Pressable>
