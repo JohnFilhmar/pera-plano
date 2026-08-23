@@ -46,3 +46,14 @@ test("soon ignores fill entirely and stays solid grey", () => {
   expect(classes).toContain("bg-fg-2");
   expect(stylesOf("c").backgroundColor).toBeUndefined();
 });
+
+test("neutral ignores soft fill and stays solid, rather than rendering transparent", () => {
+  // `SOFT_TINT`/`SOFT_INK` have no `neutral` entry — `neutral` is the only
+  // unfilled tone by design — so `tone="neutral" fill="soft"` used to paint
+  // no background and no border at all: label text on a fully transparent
+  // pill.
+  render(<Chip testID="c" label="Groceries" tone="neutral" fill="soft" />);
+  const classes = String(screen.getByTestId("c").props.className);
+  expect(classes).toContain("bg-bg");
+  expect(stylesOf("c").backgroundColor).toBeUndefined();
+});

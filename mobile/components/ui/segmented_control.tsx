@@ -53,7 +53,14 @@ export function SegmentedControl<T extends string>({
             onPress={() => {
               if (!selected) onChange(segment.value);
             }}
-            accessibilityRole="button"
+            // "radio", not "button": this is one-of-N, and this codebase
+            // already has the pattern for it — `cadence_picker.tsx` and
+            // `category_picker.tsx` both use `"radio"` for the same
+            // semantic, with no `"radiogroup"` on their container, so this
+            // follows that rather than inventing a third shape. A `"button"`
+            // role announces four unrelated actions instead of a set of
+            // mutually exclusive options.
+            accessibilityRole="radio"
             accessibilityLabel={segment.label}
             accessibilityState={{ selected }}
             className={`min-h-[44px] flex-1 items-center justify-center rounded-full px-3 ${

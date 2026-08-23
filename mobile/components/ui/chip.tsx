@@ -70,14 +70,21 @@ const TONE_BG: Record<ChipTone, string> = {
 };
 
 /**
- * Filled tones invert to the surface colour, which lands near-white on light
- * fills and near-black on the brighter dark-mode fills — the same pairing the
- * shipped Plus badge and Soon chip already use. Contrast against 12px
- * semibold text clears WCAG AA (4.5:1) on all of them: brand 5.0, danger 4.8,
- * soon 5.4 in light; brand 7.79, danger 6.42, soon 7.74 in dark (recomputed
- * 2026-08-18 device-testing review — "9:1 or better in dark" was wrong for
- * all three; none of them reach 9:1, and the one tone that does, warn-dark at
- * 10.63, is the exception this comment excludes below).
+ * Filled tones ink with `on-brand`/`on-brand-dark` — the token for ink ON A
+ * FILLED CONTROL — never `surface`/`surface-dark`, which means "a page/card
+ * BACKGROUND". See constants/colors.ts's ON-BRAND FOREGROUND block for the
+ * full reasoning: `on-brand` happens to equal `surface` BY VALUE today
+ * (#FFFFFF light, #111A16 dark), so borrowing `surface` here rendered
+ * correctly by coincidence, not by design — `button.tsx`, `review_badge.tsx`,
+ * `fab.tsx` and `segmented_control.tsx` all name the relationship instead of
+ * borrowing it, and this file should not be the one place that states the
+ * opposite rule.
+ *
+ * Contrast against 12px semibold text clears WCAG AA (4.5:1) on every filled
+ * tone: brand 5.02, danger 4.83, soon 5.44 in light; brand 7.79, danger 6.42,
+ * soon 7.74 in dark. `soon` fills with `fg-2`/`fg-2-dark`, not `brand`/
+ * `danger`, so its pairing is measured separately here rather than reusing
+ * the brand/danger figures `colors.ts` already cites.
  *
  * `warn` is the exception and takes dark ink in BOTH themes. Amber is the one
  * token bright enough that white sits at 3.2:1 against it — legible on a
@@ -86,10 +93,10 @@ const TONE_BG: Record<ChipTone, string> = {
  */
 const TONE_TEXT: Record<ChipTone, string> = {
   neutral: "text-fg-2 dark:text-fg-2-dark",
-  brand: "text-surface dark:text-surface-dark",
+  brand: "text-on-brand dark:text-on-brand-dark",
   warn: "text-fg dark:text-surface-dark",
-  danger: "text-surface dark:text-surface-dark",
-  soon: "text-surface dark:text-surface-dark",
+  danger: "text-on-brand dark:text-on-brand-dark",
+  soon: "text-on-brand dark:text-on-brand-dark",
 };
 
 export function Chip({ label, tone = "neutral", fill = "solid", onPress, testID }: ChipProps) {
@@ -112,7 +119,19 @@ export function Chip({ label, tone = "neutral", fill = "solid", onPress, testID 
   // grey-versus-green contract (docs/11 "TWO GATING STATES") is what tells a
   // user "not built yet" apart from "built, needs Plus". A soft `soon` chip
   // would blur the two.
-  const effectiveFill: ChipFill = tone === "soon" ? "solid" : fill;
+  //
+  // `neutral` + `soft` is coerced the same way, for a different reason:
+  // `neutral` is the only tone with no entry in `SOFT_TINT` or `SOFT_INK`
+  // (it is deliberately the one unfilled tone — see TONE_BG below), so a
+  // soft `neutral` chip paints no background and no border. Label on
+  // nothing. A type-level fix (narrowing `tone`/`fill` to a discriminated
+  // pair) was rejected here: `goal_card.tsx` assigns a plain `ChipTone`
+  // variable to `tone` from a lookup table, which a discriminant on that
+  // prop would break for a combination that call site never actually hits —
+  // real churn to close a hole nothing exercises. Coercing at runtime closes
+  // it without that cost.
+  const effectiveFill: ChipFill =
+    tone === "soon" || (tone === "neutral" && fill === "soft") ? "solid" : fill;
   const tint = effectiveFill === "soft" ? SOFT_TINT[tone] : undefined;
   const tintHex = tint === undefined ? undefined : (colorScheme === "dark" ? tint.dark : tint.light);
 

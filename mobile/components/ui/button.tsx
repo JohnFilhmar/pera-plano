@@ -48,22 +48,39 @@ export type ButtonVariant =
 
 export type ButtonSize = "md" | "lg";
 
-export type ButtonProps = {
+type ButtonBaseProps = {
   title: string;
   onPress: () => void;
   variant?: ButtonVariant;
   size?: ButtonSize;
   loading?: boolean;
   disabled?: boolean;
-  icon?: IconComponent;
-  /**
-   * Renders the icon alone — no visible label — for a compact, square button.
-   * `title` is still required and still backs `accessibilityLabel`, so the
-   * button stays announced correctly even though nothing on screen says it.
-   */
-  iconOnly?: boolean;
   testID?: string;
 };
+
+/**
+ * `icon` and `iconOnly` are a discriminated pair, not two independent
+ * optionals. `iconOnly: true` with no `icon` used to compile cleanly and
+ * render a blank-but-tappable 44x44 pill: no label (dropped by `iconOnly`),
+ * no icon (never provided), and a live `onPress` underneath nothing on
+ * screen. Requiring `icon` the moment `iconOnly` is `true` turns that state
+ * into a compile error instead of a runtime one. This costs nothing at any
+ * existing call site — nothing in the app sets `iconOnly` yet.
+ */
+export type ButtonProps = ButtonBaseProps &
+  (
+    | { icon?: IconComponent; iconOnly?: false }
+    | {
+        icon: IconComponent;
+        /**
+         * Renders the icon alone — no visible label — for a compact, square
+         * button. `title` is still required and still backs
+         * `accessibilityLabel`, so the button stays announced correctly even
+         * though nothing on screen says it.
+         */
+        iconOnly: true;
+      }
+  );
 
 const VARIANT_BG: Record<ButtonVariant, string> = {
   primary: "bg-brand dark:bg-brand-dark",

@@ -23,6 +23,11 @@ test("the selected segment is filled and announced as selected", () => {
   expect(screen.getByTestId("s-limits").props.accessibilityState).toMatchObject({ selected: false });
 });
 
+test("a segment announces itself as a radio, not a button — one of N, not an action", () => {
+  render(<SegmentedControl testID="s" segments={SEGMENTS} value="limits" onChange={() => {}} />);
+  expect(screen.getByTestId("s-limits").props.accessibilityRole).toBe("radio");
+});
+
 test("pressing a segment reports its value", () => {
   const onChange = jest.fn();
   render(<SegmentedControl testID="s" segments={SEGMENTS} value="limits" onChange={onChange} />);
