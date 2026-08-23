@@ -37,11 +37,19 @@ test("it lists what the feature will do", () => {
 
 test("renders no pressable at all — informational only, per docs/11 TWO GATING STATES", () => {
   render(<SharedBudgetsScreen />);
-  // The invariant the spec actually wants for a Soon full-screen placeholder:
-  // "Whole card/row/screen-entry rendered desaturated grey, NON-INTERACTIVE."
-  // Same query components/wallets/__tests__/wallet_card.test.tsx already uses
-  // for "no control rendered here".
-  expect(screen.queryByRole("button")).toBeNull();
+  // NOT a role query. `queryByRole("button")` only matches an element
+  // carrying an explicit `accessibilityRole`/`role` of "button" — a bare
+  // `<Pressable>` with no role at all slips straight through it (proved
+  // empirically: injecting one left a `queryByRole("button")` version of
+  // this exact assertion green; see task-3-report.md for the transcript).
+  // React Native's `Pressable` marks itself `focusable: true` purely because
+  // it has a press handler — WITH OR WITHOUT an explicit role — while every
+  // plain, non-interactive `View`/`Text` on this screen carries no such prop
+  // (confirmed by dumping this screen's own rendered JSON with a role-less
+  // probe attached: every ordinary node here has only `className`, or no
+  // props at all). Whole-tree structural sweep, the same technique the
+  // brand-green guard below uses, keyed on that signal instead of role.
+  expect(JSON.stringify(screen.toJSON())).not.toMatch(/"focusable":true/);
 });
 
 test("the disclosure is honest and does not lean on a mechanism that doesn't exist", () => {
