@@ -211,6 +211,7 @@ export function LimitForm({
             testID="limit-category-everything"
             label="Everything"
             fill={categoryFilter === null ? "solid" : "outline"}
+            selected={categoryFilter === null}
             onPress={() => setCategoryFilter(null)}
           />
           {topLevelCategories.map((category) => (
@@ -219,6 +220,7 @@ export function LimitForm({
               testID={`limit-category-${category.id}`}
               label={category.name}
               fill={(categoryFilter ?? []).includes(category.id) ? "solid" : "outline"}
+              selected={(categoryFilter ?? []).includes(category.id)}
               onPress={() => toggleCategory(category.id)}
             />
           ))}

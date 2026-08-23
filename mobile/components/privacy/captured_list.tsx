@@ -137,6 +137,7 @@ export function CapturedList({ items, now = Date.now(), testID = "captured-list"
             testID="captured-filter-all"
             label="All"
             tone={selectedPackage === null ? "brand" : "neutral"}
+            selected={selectedPackage === null}
             onPress={() => handleSelectPackage(null)}
           />
           {packageOptions.map((option) => (
@@ -145,6 +146,7 @@ export function CapturedList({ items, now = Date.now(), testID = "captured-list"
               testID={`captured-filter-${option.packageName}`}
               label={`${option.label} · ${option.count}`}
               tone={selectedPackage === option.packageName ? "brand" : "neutral"}
+              selected={selectedPackage === option.packageName}
               onPress={() => handleSelectPackage(option.packageName)}
             />
           ))}

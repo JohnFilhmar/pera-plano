@@ -152,6 +152,7 @@ export function GoalForm({
                 testID={`goal-wallet-${wallet.id}`}
                 label={`${wallet.name} · ${formatCentavos(wallet.balance)}`}
                 fill={wallet.id === walletId ? "solid" : "outline"}
+                selected={wallet.id === walletId}
                 onPress={() => setWalletId(wallet.id)}
               />
             ))}

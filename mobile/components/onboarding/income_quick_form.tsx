@@ -121,6 +121,7 @@ export function IncomeQuickForm({ wallets, busy = false, onSubmit }: IncomeQuick
                   label={wallet.name}
                   tone="brand"
                   fill={selected ? "solid" : "outline"}
+                  selected={selected}
                   onPress={() => toggleWallet(wallet.id)}
                 />
               );

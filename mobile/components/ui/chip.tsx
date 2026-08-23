@@ -23,6 +23,27 @@ export type ChipFill = "solid" | "soft" | "outline";
  */
 export const SOFT_ALPHA = 0.14;
 
+/**
+ * Brings the Pressable branch's effective touch target to >= 44x44 — the
+ * "smallest reliably tappable target" `components/ui/list_row.tsx` documents
+ * — without touching the painted pill at all: `hitSlop` only widens the
+ * responder region, it never changes what is drawn.
+ *
+ * THE MATH. `containerClass`'s `py-1` (4px top + 4px bottom) plus
+ * `text-micro`'s 14px line-height (`tailwind.config.ts`'s `fontSize.micro`)
+ * paints a pill 22px tall regardless of label — so 12px on every edge brings
+ * that to 46px, clearing 44 with room to spare. The same 12px clears width
+ * too, even for the app's narrowest real labels — the three-letter weekday
+ * abbreviations `components/bills/due_rule_picker.tsx` renders ("Sun" ...
+ * "Sat"): `px-2.5`'s 20px of horizontal padding plus a few narrow glyphs
+ * plus 24px of hitSlop clears 44 with plenty to spare.
+ *
+ * `components/home/safe_to_spend_hero.tsx`'s eye toggle already sets
+ * `hitSlop={12}` for the same reason on a different small control — matched
+ * here rather than picked afresh.
+ */
+const CHIP_HIT_SLOP = 12;
+
 const SOFT_TINT: Partial<Record<ChipTone, { light: string; dark: string }>> = {
   brand: { light: palette.brand, dark: palette["brand-dark"] },
   warn: { light: palette.warn, dark: palette["warn-dark"] },
@@ -45,6 +66,31 @@ export type ChipProps = {
   tone?: ChipTone;
   fill?: ChipFill;
   onPress?: () => void;
+  /**
+   * Drives `accessibilityState={{ selected }}` on the Pressable branch — the
+   * only way a screen-reader user can tell a chosen chip (a filter pill, a
+   * cadence or due-rule pick, a segment-style chooser) from an unchosen one,
+   * since the two are otherwise distinguished purely by fill and colour.
+   *
+   * ONLY MEANINGFUL TOGETHER WITH `onPress`. A chip with no `onPress` renders
+   * a plain `View` (see the `if (!onPress)` branch below), which this prop
+   * never reaches — so passing `selected` on a label chip is not an error,
+   * it is simply inert: read here, attached nowhere. Nothing throws.
+   *
+   * UNDEFINED BY DEFAULT, and that is the invariant this prop makes: every
+   * call site that does not pass `selected` renders byte-for-byte what it did
+   * before this prop existed. React Native's `Pressable` already normalizes
+   * `accessibilityState` on the underlying host node to a fixed five-key
+   * shape (`busy`/`checked`/`disabled`/`expanded`/`selected`, each
+   * `undefined` unless supplied) regardless of whether a caller passes the
+   * prop at all — confirmed empirically in chip.test.tsx against the
+   * pre-`selected` component — so `selected: undefined` here reads exactly as
+   * `undefined` always did. The same invariant
+   * `components/ui/numeric_field.tsx`'s `size` prop states about its own
+   * default, and deliberately not a count of who opts in: a count is exactly
+   * the kind of number the next new selectable chip quietly invalidates.
+   */
+  selected?: boolean;
   testID?: string;
 };
 
@@ -99,7 +145,14 @@ const TONE_TEXT: Record<ChipTone, string> = {
   soon: "text-on-brand dark:text-on-brand-dark",
 };
 
-export function Chip({ label, tone = "neutral", fill = "solid", onPress, testID }: ChipProps) {
+export function Chip({
+  label,
+  tone = "neutral",
+  fill = "solid",
+  onPress,
+  selected,
+  testID,
+}: ChipProps) {
   // NativeWind cannot express a translucent `dark:` background through
   // `className` — there is no utility class for "this token at 14% alpha",
   // so the tint has to be picked in JS and painted with an inline `style`
@@ -177,6 +230,16 @@ export function Chip({ label, tone = "neutral", fill = "solid", onPress, testID 
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={label}
+      // React Native's `Pressable` normalizes `accessibilityState` on the
+      // underlying host node to a fixed five-key shape (`busy`/`checked`/
+      // `disabled`/`expanded`/`selected`, each `undefined` unless supplied)
+      // regardless of whether a caller passes this prop at all — confirmed
+      // empirically in chip.test.tsx against the pre-`selected` component.
+      // So `{ selected }` here reads exactly as it always has, for every
+      // call site that leaves `selected` undefined. See `ChipProps.selected`
+      // for the full invariant.
+      accessibilityState={{ selected }}
+      hitSlop={CHIP_HIT_SLOP}
       className={containerClass}
       style={style}
     >

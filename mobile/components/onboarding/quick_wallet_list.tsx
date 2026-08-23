@@ -202,10 +202,14 @@ function ProposalRow({
               label={WALLET_TYPE_LABELS[candidate]}
               tone="brand"
               fill={type === candidate ? "soft" : "outline"}
+              selected={type === candidate}
               // A Chip with no `onPress` renders as an inert label rather
               // than a disabled Pressable (its own header explains why) —
               // the right shape for a row the user unchecked: nothing left
-              // here to edit until it is checked again.
+              // here to edit until it is checked again. `selected` above is
+              // passed regardless of `included` — chip.tsx's own
+              // `ChipProps.selected` doc covers this exact shape: it is inert
+              // without `onPress`, not an error.
               onPress={included ? () => onChangeType(key, candidate) : undefined}
             />
           ))}

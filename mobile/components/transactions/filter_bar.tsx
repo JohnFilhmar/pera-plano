@@ -135,6 +135,7 @@ export function FilterBar({
           label="All"
           tone={allSelected ? "brand" : "neutral"}
           fill={allSelected ? "solid" : "outline"}
+          selected={allSelected}
           onPress={() => onChange({})}
         />
         {reviewCount !== undefined && reviewCount > 0 ? (
@@ -163,6 +164,7 @@ export function FilterBar({
             // `neutral` is the same pairing the All chip above already uses.
             tone={value.walletId === wallet.id ? "brand" : "neutral"}
             fill={value.walletId === wallet.id ? "solid" : "outline"}
+            selected={value.walletId === wallet.id}
             onPress={() => onChange(toggled(value, "walletId", wallet.id))}
           />
         ))}
@@ -173,6 +175,7 @@ export function FilterBar({
             label={category.name}
             tone={value.categoryId === category.id ? "brand" : "neutral"}
             fill={value.categoryId === category.id ? "solid" : "outline"}
+            selected={value.categoryId === category.id}
             onPress={() => onChange(toggled(value, "categoryId", category.id))}
           />
         ))}
