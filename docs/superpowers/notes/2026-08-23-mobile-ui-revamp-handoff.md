@@ -137,6 +137,20 @@ examples, not as the set — always re-run a suspected failure in isolation
 before treating it as a regression, and equally, never assume a red test is
 "just the flake" because it appeared during a parallel run.
 
+**The ink tokens are for soft tints only — they fail on a solid fill.**
+`brand-ink`/`danger-ink`/`warn-ink` were tuned against a 14% tint and measure
+**1.4–2.2:1** on the Home hero's solid state fill, far worse than what they
+replace. Reaching for them reflexively is wrong; measure for the actual
+background. On that hero the fix was removing an 80% opacity entirely — no
+partial value clears AA for all three states, since over/light fails even at
+95%.
+
+**`Centavos` vs `number` tells you what "Hide amounts" must mask.** The
+branded `Centavos` type marks a money figure; a plain `number` (like
+`reviewQueueCount`) is an item count and stays visible when amounts are
+hidden. A useful, checkable discriminator when sweeping a privacy toggle —
+and better than judging by the label's wording.
+
 **Contrast is measured, never eyeballed.** All three soft tones failed AA on
 their own tints (brand 3.96, danger 3.69, warn 2.63); the "obvious" fix
 `#B45309` reached only 4.13. The shipped answer is three dedicated ink
