@@ -45,11 +45,20 @@ export default function WelcomeScreen() {
       primaryLabel="Get started"
     >
       <View className="items-center gap-4 py-4">
-        {/* `static`, deliberately -- Part 3 Task 7 ("place the motion") is
-            the task that decides whether and how this plays the `launch`
-            take-off, and it lands last, on finished screens. This anchor is
-            what it upgrades. */}
-        <BrandMark size={72} testID="welcome-brand-mark" />
+        {/* `launch` (task-7-brief.md follow-up). app/index.tsx also plays a
+            launch beat during its own splash handoff, but that route is
+            never reached on a fresh install: lock_context.tsx's
+            "needs_onboarding" status sends a brand-new user through
+            app/lock.tsx straight to app/(onboarding)/index.tsx, which lands
+            here first (ONBOARDING_STEPS starts at "welcome" -
+            lib/onboarding/onboarding_state.ts). This mark, not the splash's,
+            is the first brand mark such a user ever sees -- and since
+            onboarding progress is never persisted, every path back into this
+            flow (including a restart mid-flow) passes through here again. No
+            `playToken`: a fresh mount alone is enough to replay the one-shot
+            (BrandMark's own effect fires on mount regardless of the prop's
+            value), and this screen mounts fresh on every visit. */}
+        <BrandMark variant="launch" size={72} testID="welcome-brand-mark" />
         <Text
           testID="welcome-promise"
           className="text-center text-section font-semibold text-fg dark:text-fg-dark"
