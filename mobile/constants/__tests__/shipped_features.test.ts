@@ -28,6 +28,7 @@ const ALL_KEYS: FeatureKey[] = [
   "privacy_center",
   "listener_health",
   "parser_diagnostics",
+  "shared_budgets",
 ];
 
 describe("SHIPPED_FEATURES", () => {
@@ -53,7 +54,11 @@ describe("SHIPPED_FEATURES", () => {
    * Plan tab; M3 Part 2 Task 7 flipped `safe_to_spend` and `recurring`; m3b
    * Task 8 flipped the last five — `reports`, `csv_export`, `privacy_center`,
    * `listener_health` and `parser_diagnostics` — which finishes the rollout
-   * table. Every FeatureKey is now "shipped"; there is nothing left to flip.
+   * table: every key IT named is "shipped". `shared_budgets` (mobile UI
+   * revamp Part 3 Task 3) is the first key added after that table closed. It
+   * was never flipped — it arrived seeded "soon" — so SHIPPED_SO_FAR below
+   * deliberately leaves it out, and it is the one key this file expects to
+   * stay "soon".
    */
   const SHIPPED_SO_FAR: readonly FeatureKey[] = [
     "limits",
@@ -76,6 +81,21 @@ describe("SHIPPED_FEATURES", () => {
         key,
         SHIPPED_SO_FAR.includes(key) ? "shipped" : "soon",
       ]);
+    }
+  });
+
+  // The two tests below are this task's own live coverage of `shared_budgets`
+  // — narrower and independent of ALL_KEYS/SHIPPED_SO_FAR above, so they keep
+  // failing on their own even if either of those two literals ever drifts.
+  test("shared_budgets is the one key still soon", () => {
+    expect(SHIPPED_FEATURES.shared_budgets).toBe("soon");
+    expect(isShipped("shared_budgets")).toBe(false);
+  });
+
+  test("every other key is shipped", () => {
+    for (const [key, state] of Object.entries(SHIPPED_FEATURES)) {
+      if (key === "shared_budgets") continue;
+      expect(state).toBe("shipped");
     }
   });
 });

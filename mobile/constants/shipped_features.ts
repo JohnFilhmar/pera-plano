@@ -7,10 +7,13 @@
 // flipped back. See the Task 15 plan's rollout table for which plan flips
 // which key.
 //
-// As of m3b Task 8 every key below is "shipped" — the rollout table's last
-// row. `SoonGate` and `ShipState`'s "soon" branch stay in the codebase (a
-// future feature can still be built ahead of its own rollout), but nothing
-// currently gated by this map renders that state.
+// As of m3b Task 8 every key the Task 15 rollout table named was "shipped" —
+// that table's last row. `SoonGate` and `ShipState`'s "soon" branch stayed in
+// the codebase on the strength of one argument: a future feature could still
+// land ahead of its own rollout. The mobile UI revamp Part 3 Task 3 is that
+// future feature — `shared_budgets` below is the first key added AFTER the
+// rollout table closed, seeded "soon" on arrival rather than flipped by it,
+// and it is what gives `SoonGate` a live user again.
 
 export type FeatureKey =
   | "limits"
@@ -24,7 +27,8 @@ export type FeatureKey =
   | "csv_export"
   | "privacy_center"
   | "listener_health"
-  | "parser_diagnostics";
+  | "parser_diagnostics"
+  | "shared_budgets";
 
 export type ShipState = "shipped" | "soon";
 
@@ -56,13 +60,19 @@ export const SHIPPED_FEATURES: Readonly<Record<FeatureKey, ShipState>> = {
   // and Listener health / Parser diagnostics (Task 7) were all built ahead of
   // this flip; Task 8 is only the switch plus the More-hub wiring those four
   // screens needed once SoonGate stopped blocking their rows. Every
-  // FeatureKey is now "shipped" — there is no key left for a future plan to
-  // flip.
+  // FeatureKey the Task 15 rollout table named was "shipped" as of this flip
+  // — that table itself had nothing left to give a future plan to flip.
   reports: "shipped",
   csv_export: "shipped",
   privacy_center: "shipped",
   listener_health: "shipped",
   parser_diagnostics: "shipped",
+  // The first key added after the rollout table closed. Every other key here
+  // was flipped to "shipped" by a plan that had built the thing behind it;
+  // this one is seeded "soon" and stays that way until shared budgets exists.
+  // It also gives SoonGate a live user again — before this, the gate could not
+  // close for any key, which made it read as dead machinery.
+  shared_budgets: "soon",
 };
 
 export function isShipped(key: FeatureKey): boolean {

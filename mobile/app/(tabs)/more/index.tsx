@@ -18,21 +18,28 @@
 //
 // STILL NOT A DATA-DRIVEN LIST like app/(tabs)/plan/index.tsx's `SECTIONS`.
 // Reports, Privacy centre, Listener health and Parser diagnostics are all
-// `SoonGate` rows that navigate for real now that every key ships;
-// Subscriptions is `PlusGate` (tier paywall) instead; Settings is ungated and
-// navigates for real; About is not a gate or a navigating row at all — it is
-// a static line. Three distinct row behaviours through one field is more
-// machinery than seven rows need.
+// `SoonGate` rows that navigate for real now that every key THEIR rollout
+// plan owned ships; Shared budgets is a fifth `SoonGate` row that does NOT —
+// `shared_budgets` is seeded "soon" and stays that way until the feature
+// exists (constants/shipped_features.ts) — so it is the one row on this hub
+// that still actually blocks a press. Subscriptions is `PlusGate` (tier
+// paywall) instead; Settings is ungated and navigates for real; About is not
+// a gate or a navigating row at all — it is a static line. Four distinct row
+// behaviours through one field is more machinery than eight rows need.
 //
-// `SoonGate` STAYS WRAPPED on all four rows below even though every feature
-// key it names is now "shipped" — the same call m2c Task 6 made on the Plan
-// hub once `bills` shipped (app/(tabs)/plan/index.tsx's own comment, and
-// app/__tests__/plan_hub.test.tsx's "SoonGate is still wrapped around every
-// section" test). A later feature can still land ahead of its own rollout, so
-// a future plan adding one should not have to rediscover where the gate
-// goes; with nothing soon it no longer blocks anything, which is exactly why
-// every row below is asserted to actually navigate, not just "no Soon chip
-// renders" (app/__tests__/more_tab.test.tsx, app/__tests__/more_hub.test.tsx).
+// `SoonGate` STAYS WRAPPED on the four "shipped" rows below even though every
+// feature key each one names is "shipped" — the same call m2c Task 6 made on
+// the Plan hub once `bills` shipped (app/(tabs)/plan/index.tsx's own comment,
+// and app/__tests__/plan_hub.test.tsx's "SoonGate is still wrapped around
+// every section" test). A later feature can still land ahead of its own
+// rollout, so a future plan adding one should not have to rediscover where
+// the gate goes; with nothing soon on THOSE four it no longer blocks
+// anything, which is exactly why each of them is asserted to actually
+// navigate, not just "no Soon chip renders" (app/__tests__/more_tab.test.tsx,
+// app/__tests__/more_hub.test.tsx). Shared budgets is the fifth `SoonGate`
+// row and the odd one out: its key is genuinely "soon" today, so its own
+// coverage asserts the opposite — the chip renders and the press does not
+// navigate.
 //
 // EACH GATED/NAVIGATING ROW IS A MANUALLY-WRAPPED `Pressable` AROUND A
 // `ListRow` THAT HAS NO `onPress` OF ITS OWN — the same split
@@ -55,13 +62,13 @@
 // the same left-aligned rhythm as every other row in the "App" group) but
 // drops the chevron and the Pressable both.
 //
-// "SHARED BUDGETS" IS NOT IN THIS FILE. This task's brief lists the Insights
-// group as "Reports, Subscriptions, Shared budgets" — but nothing named
-// `shared budgets` exists anywhere in this codebase (no route, no
-// `FeatureKey`, no screen), and the task instructions that accompanied that
-// brief list Insights as Reports and Subscriptions only. Treated as a stale
-// brief claim rather than a row invented for a destination that does not
-// exist.
+// "SHARED BUDGETS" JOINS THIS FILE (mobile UI revamp Part 3 Task 3). The
+// comment this replaces recorded that "Shared budgets" was a stale brief
+// claim with no `FeatureKey`, no route and no screen behind it — an earlier
+// task correctly declined to invent a row for a destination that did not
+// exist. All three now exist (constants/shipped_features.ts's
+// `shared_budgets` key, seeded "soon"; app/(tabs)/more/shared_budgets.tsx),
+// so this task adds the row that earlier task was right to skip.
 import { useRouter } from "expo-router";
 import {
   Activity,
@@ -71,6 +78,7 @@ import {
   Repeat,
   Settings as SettingsIcon,
   ShieldCheck,
+  Users,
   Wrench,
 } from "lucide-react-native";
 import { Pressable, ScrollView, View } from "react-native";
@@ -88,6 +96,7 @@ const APP_VERSION = "0.1.0";
 
 const ReportsGlyph = registerIcon(BarChart3);
 const SubscriptionsGlyph = registerIcon(Repeat);
+const SharedBudgetsGlyph = registerIcon(Users);
 const SettingsGlyph = registerIcon(SettingsIcon);
 const ListenerGlyph = registerIcon(Activity);
 const ParserGlyph = registerIcon(Wrench);
@@ -161,6 +170,33 @@ export default function MoreScreen() {
           />
         </Pressable>
       </PlusGate>
+
+      {/* `shared_budgets` is the first FeatureKey seeded "soon" since the
+          rollout table closed (constants/shipped_features.ts) — this is the
+          row SoonGate has a live user for again. The route exists
+          (app/(tabs)/more/shared_budgets.tsx) so it can still be opened
+          directly during development; SoonGate's own `pointerEvents="none"`
+          means this Pressable will not fire its `onPress` while the key
+          stays "soon" (components/gates/soon_gate.tsx). Same manually-
+          labelled-Pressable-around-a-bare-ListRow shape every other row on
+          this hub uses, and deliberately NOT `ListRow`'s own `onPress` — see
+          this file's header comment on why the two branches announce
+          differently. */}
+      <SoonGate feature="shared_budgets">
+        <Pressable
+          testID="more-shared-budgets"
+          onPress={() => router.push("/more/shared_budgets")}
+          accessibilityRole="button"
+          accessibilityLabel="Shared budgets"
+        >
+          <ListRow
+            title="Shared budgets"
+            subtitle="Split a household budget — one pool, separate phones."
+            left={<RowIconDisc icon={SharedBudgetsGlyph} />}
+            right={<RowChevron />}
+          />
+        </Pressable>
+      </SoonGate>
 
       <SectionHeader title="Tracking" />
 

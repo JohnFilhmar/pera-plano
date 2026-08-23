@@ -80,21 +80,37 @@ test("BOTH ROWS RENDER", () => {
   screen.getByText("Subscriptions");
 });
 
-test("NOTHING ON THIS HUB IS SOON — no row carries the grey chip", () => {
-  // Every FeatureKey is "shipped" as of m3b Task 8, so SoonGate renders every
-  // wrapped row's children verbatim, with no chip. `soon-chip` is SoonGate's
-  // own sibling to its children (components/gates/soon_gate.tsx), not nested
+test("EXACTLY ONE ROW IS SOON — Shared budgets, the only key not yet flipped", () => {
+  // Every OTHER FeatureKey is "shipped" as of m3b Task 8, so SoonGate renders
+  // each of THOSE wrapped rows' children verbatim, with no chip.
+  // `shared_budgets` (mobile UI revamp Part 3 Task 3) is the first key seeded
+  // "soon" since that rollout table closed, so its row is the one exception
+  // — this test used to read "no row carries the grey chip", which this key
+  // is precisely what makes no longer true. `soon-chip` is SoonGate's own
+  // sibling to its children (components/gates/soon_gate.tsx), not nested
   // inside the Pressable itself, so this checks a total count rather than
   // scoping inside a testID it isn't nested under.
   renderScreen(<MoreScreen />);
 
-  expect(screen.queryAllByTestId("soon-chip")).toHaveLength(0);
+  expect(screen.queryAllByTestId("soon-chip")).toHaveLength(1);
   // The cross-gate invariant that does NOT depend on rollout state at all:
   // Subscriptions is PlusGate, never SoonGate, so it never gets the grey
   // chip — the two gates are deliberately coloured opposite ways (SoonGate's
   // own header comment) so a user can never confuse "not built yet" with
   // "needs Plus".
   expect(within(screen.getByTestId("more-subscriptions")).queryByTestId("soon-chip")).toBeNull();
+});
+
+test("SHARED BUDGETS CARRIES THE SOON CHIP AND DOES NOT NAVIGATE", () => {
+  // Unlike `reports` below (forced back to "soon" only for the next test),
+  // `shared_budgets` really is "soon" by default — nothing has flipped it —
+  // so this is the row-level counterpart to the hub-wide chip count above:
+  // proof that the one row carrying the chip is also the one row whose press
+  // the gate actually swallows.
+  renderScreen(<MoreScreen />);
+
+  fireEvent.press(screen.getByTestId("more-shared-budgets"));
+  expect(mockPush).not.toHaveBeenCalledWith("/more/shared_budgets");
 });
 
 test("IF REPORTS WERE EVER SOON AGAIN, ITS ROW WOULD STILL BLOCK THE PRESS", () => {
@@ -106,11 +122,14 @@ test("IF REPORTS WERE EVER SOON AGAIN, ITS ROW WOULD STILL BLOCK THE PRESS", () 
   // and restored by the file's own afterEach. `soon-chip` is SoonGate's own
   // sibling to its children, not nested inside the Pressable itself (see the
   // note on the test above), so this checks the chip exists at all rather
-  // than scoping inside a testID it isn't nested under.
+  // than scoping inside a testID it isn't nested under — and now counts TWO,
+  // not one: `shared_budgets` carries its own permanent chip regardless of
+  // what this test does to `reports`, so `getByTestId` (which requires a
+  // single match) would throw here even though nothing is wrong.
   setShipState("reports", "soon");
   renderScreen(<MoreScreen />);
 
-  expect(screen.getByTestId("soon-chip")).toBeTruthy();
+  expect(screen.getAllByTestId("soon-chip")).toHaveLength(2);
   fireEvent.press(screen.getByTestId("more-reports"));
   expect(mockPush).not.toHaveBeenCalled();
 });

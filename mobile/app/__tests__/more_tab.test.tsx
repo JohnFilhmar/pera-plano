@@ -80,6 +80,7 @@ describe("the More hub", () => {
 
     screen.getByTestId("more-reports");
     screen.getByTestId("more-subscriptions");
+    screen.getByTestId("more-shared-budgets");
     screen.getByTestId("more-settings");
     screen.getByTestId("more-privacy-center");
     screen.getByTestId("more-listener-health");
@@ -88,6 +89,7 @@ describe("the More hub", () => {
 
     screen.getByText("Reports");
     screen.getByText("Subscriptions");
+    screen.getByText("Shared budgets");
     screen.getByText("Settings");
     screen.getByText("Privacy centre");
     screen.getByText("Listener health");
@@ -95,10 +97,14 @@ describe("the More hub", () => {
     screen.getByText("About");
   });
 
-  test("no entry renders a Soon chip — every FeatureKey ships as of m3b Task 8", () => {
+  // `shared_budgets` (mobile UI revamp Part 3 Task 3) is the first FeatureKey
+  // seeded "soon" since the Task 15 rollout table closed — every OTHER key
+  // still ships as of m3b Task 8, but this test's old title ("no entry
+  // renders a Soon chip") stopped being true the moment that row was added.
+  test("exactly one entry — Shared budgets — still carries a Soon chip", () => {
     renderScreen(<MoreScreen />);
 
-    expect(screen.queryAllByTestId("soon-chip")).toHaveLength(0);
+    expect(screen.queryAllByTestId("soon-chip")).toHaveLength(1);
   });
 
   test("Privacy centre navigates to /more/privacy", () => {
