@@ -9,7 +9,7 @@ import { SHIPPED_FEATURES } from "@/constants/shipped_features";
 import type { FeatureKey, ShipState } from "@/constants/shipped_features";
 import { __setTierForTests } from "@/lib/entitlements";
 import { SoonGate } from "../soon_gate";
-import { PlusGate } from "../plus_gate";
+import { PLUS_BETA_LABEL, PlusGate } from "../plus_gate";
 import { UpgradeSheet } from "../upgrade_sheet";
 
 // Registers cssInterop on the core RN host components (View/Text/Pressable/...)
@@ -158,7 +158,14 @@ describe("PlusGate", () => {
     expect(screen.getByTestId("upgrade-sheet")).toBeTruthy();
   });
 
-  test("plus tier renders children untouched, with no badge", () => {
+  // INVERTED from the pre-R2-fix version of this test, which asserted the
+  // opposite: `expect(screen.queryByText("Plus")).toBeNull()` AND
+  // `expect(screen.toJSON()?.type).toBe("Text")` — i.e. it asserted that NO
+  // badge, and no wrapper of any kind, ever rendered on the unlocked path.
+  // That was only true because `getTier() === "plus"` returned bare children
+  // (plus_gate.tsx:31 before this task); R2 makes the badge render, so the
+  // old expectation is now exactly the regression this suite exists to catch.
+  test("plus tier renders children AND the unlocked badge, not the locked 'Plus' label", () => {
     __setTierForTests("plus");
     render(
       <PlusGate capability={CAPABILITY}>
@@ -166,8 +173,48 @@ describe("PlusGate", () => {
       </PlusGate>,
     );
     expect(screen.getByTestId("plus-child")).toBeTruthy();
+    // The LOCKED label never appears on the unlocked path — the two
+    // treatments use different copy on purpose (PLUS_BETA_LABEL below).
     expect(screen.queryByText("Plus")).toBeNull();
-    expect(screen.toJSON()?.type).toBe("Text");
+    expect(screen.getByTestId("plus-badge")).toBeTruthy();
+  });
+
+  test("on plus, children render AND the badge shows — it is not silently absent", () => {
+    __setTierForTests("plus");
+    render(
+      <PlusGate capability={CAPABILITY}>
+        <Text>Subscriptions</Text>
+      </PlusGate>,
+    );
+    screen.getByText("Subscriptions");
+    screen.getByTestId("plus-badge");
+    screen.getByText(PLUS_BETA_LABEL);
+  });
+
+  test("the unlocked badge does not intercept presses", () => {
+    __setTierForTests("plus");
+    const onPress = jest.fn();
+    render(
+      <PlusGate capability={CAPABILITY}>
+        <Pressable testID="inner" onPress={onPress}>
+          <Text>Subscriptions</Text>
+        </Pressable>
+      </PlusGate>,
+    );
+    fireEvent.press(screen.getByTestId("inner"));
+    expect(onPress).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("plus-gate")).toBeNull();
+  });
+
+  test("on free, the gate still intercepts and still opens the sheet", () => {
+    __setTierForTests("free");
+    render(
+      <PlusGate capability={CAPABILITY}>
+        <Text>Subscriptions</Text>
+      </PlusGate>,
+    );
+    screen.getByTestId("plus-gate");
+    screen.getByTestId("plus-badge");
   });
 
   test("plus tier children stay fully interactive (no lingering Pressable swallows touches)", () => {
@@ -216,19 +263,27 @@ describe("UpgradeSheet", () => {
     ).toBeTruthy();
   });
 
-  test("the upgrade button is inert — billing is post-MVP", () => {
-    const onClose = jest.fn();
-    render(<UpgradeSheet visible onClose={onClose} capability="backup" />);
-    // Firing press on a `disabled` Pressable must not run any handler; there
-    // is deliberately no onPress wired up at all in MVP.
-    fireEvent.press(screen.getByTestId("upgrade-button"));
-    expect(onClose).not.toHaveBeenCalled();
-  });
-
+  // REMOVED (not inverted): "the upgrade button is inert — billing is
+  // post-MVP" used to press `testID="upgrade-button"`, the disabled "Upgrade
+  // to Plus" CTA. That element is deleted, not merely disabled — "Also in
+  // scope" in this task's brief: "Delete the price blocks and the 'Start
+  // 14-day free trial' button entirely. Do not render them disabled — a
+  // disabled price is still a published price." A testID that no longer
+  // exists has nothing left to assert; keeping this test would fail on a
+  // `getByTestId` throw, not on a meaningful assertion.
   test("'Not now' calls onClose", () => {
     const onClose = jest.fn();
     render(<UpgradeSheet visible onClose={onClose} capability="backup" />);
     fireEvent.press(screen.getByTestId("upgrade-sheet-close"));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  test("no free-tier count is published anywhere in the sheet", () => {
+    __setTierForTests("free");
+    render(<UpgradeSheet visible onClose={() => {}} capability="wallets" />);
+    // entitlements.ts caps limits, goals and loans at 1; the design's table says
+    // 3. Until docs/05 settles it, the app publishes neither number.
+    expect(screen.queryByText("3")).toBeNull();
+    expect(screen.queryByText(/^1,/)).toBeNull();
   });
 });
