@@ -84,3 +84,21 @@ export function totalActiveBalance(wallets: readonly Wallet[]): Centavos {
     .filter((wallet) => !wallet.isArchived && wallet.type !== "credit")
     .reduce((total, wallet) => total + wallet.balance, 0);
 }
+
+/**
+ * How many wallets make up `totalActiveBalance` — the count behind the
+ * Wallets tab's "Total across N wallets" label.
+ *
+ * SAME TWO EXCLUSIONS AS `totalActiveBalance`, ON PURPOSE, AND FOR THE SAME
+ * REASON: this label sits directly above that peso figure, so a count built
+ * from a different filter silently disagrees with the total it labels. That
+ * is not hypothetical — `app/(tabs)/wallets.tsx` used to compute this count
+ * inline with only the archived exclusion, so a non-archived credit wallet
+ * was counted here while the same wallet's balance was excluded two lines
+ * below. Sharing this one filter is what makes that drift impossible instead
+ * of merely unlikely, the identical argument this file's header already
+ * makes for keeping `totalActiveBalance` itself out of the screen.
+ */
+export function totalActiveWalletCount(wallets: readonly Wallet[]): number {
+  return wallets.filter((wallet) => !wallet.isArchived && wallet.type !== "credit").length;
+}

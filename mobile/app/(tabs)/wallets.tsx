@@ -41,6 +41,7 @@ import {
   archivedWallets,
   groupWalletsByType,
   totalActiveBalance,
+  totalActiveWalletCount,
   WALLET_TYPE_LABELS,
 } from "@/lib/wallets/summary";
 import type { Wallet } from "@/types/domain";
@@ -127,10 +128,12 @@ export default function WalletsScreen() {
   const archived = archivedWallets(wallets);
   // The toggle changes what is VISIBLE, never what is counted (rule 17, the
   // same principle `totalActiveBalance` already applies to the peso figure
-  // above it) — so this counts non-archived wallets out of the CURRENT list
-  // regardless of whether `showArchived` has widened it, rather than reading
-  // `wallets.length` directly.
-  const activeWalletCount = wallets.filter((wallet) => !wallet.isArchived).length;
+  // above it) — so this counts the CURRENT list regardless of whether
+  // `showArchived` has widened it, rather than reading `wallets.length`
+  // directly. `totalActiveWalletCount` shares `totalActiveBalance`'s exact
+  // filter (non-archived, non-credit), so this label and the total it sits
+  // above can no longer disagree about which wallets compose "the total".
+  const activeWalletCount = totalActiveWalletCount(wallets);
 
   function openWallet(wallet: Wallet): void {
     router.push({ pathname: "/wallet/[id]", params: { id: wallet.id } });

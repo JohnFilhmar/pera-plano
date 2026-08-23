@@ -16,6 +16,7 @@ import {
   archivedWallets,
   groupWalletsByType,
   totalActiveBalance,
+  totalActiveWalletCount,
   WALLET_TYPE_LABELS,
   WALLET_TYPE_ORDER,
 } from "../summary";
@@ -168,5 +169,35 @@ describe("totalActiveBalance", () => {
 
   test("sums in centavos, never rounding to pesos", () => {
     expect(totalActiveBalance([wallet("A", "cash", 5), wallet("B", "cash", 7)])).toBe(12);
+  });
+});
+
+describe("totalActiveWalletCount", () => {
+  // The label and the figure it sits above must count the same wallets — see
+  // this function's own header. Every case here mirrors a `totalActiveBalance`
+  // case above, on the same MIXED fixture, so the two can be read side by side.
+  test("counts the same wallets totalActiveBalance sums — 4, not all 5", () => {
+    expect(totalActiveWalletCount(MIXED)).toBe(4);
+  });
+
+  test("EXCLUDES credit, the exact wallet a naive `!isArchived`-only filter used to count", () => {
+    const withoutCredit = MIXED.filter((w) => w.type !== "credit");
+    expect(totalActiveWalletCount(MIXED)).toBe(totalActiveWalletCount(withoutCredit));
+    // The count a filter on archived-only (the bug this function replaces)
+    // would have produced.
+    expect(totalActiveWalletCount(MIXED)).not.toBe(5);
+  });
+
+  test("a credit wallet alone counts zero, not one", () => {
+    expect(totalActiveWalletCount([wallet("Visa", "credit", 12_345_00)])).toBe(0);
+  });
+
+  test("EXCLUDES archived wallets, even while the toggle shows them", () => {
+    const withArchived = [...MIXED, wallet("Closed BDO", "bank", 999_00, true)];
+    expect(totalActiveWalletCount(withArchived)).toBe(4);
+  });
+
+  test("no wallets counts zero", () => {
+    expect(totalActiveWalletCount([])).toBe(0);
   });
 });

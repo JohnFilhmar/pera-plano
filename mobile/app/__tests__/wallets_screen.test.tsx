@@ -534,6 +534,27 @@ describe("the total label", () => {
 
     expect(screen.getByText("Total across 2 wallets")).toBeTruthy();
   });
+
+  // Regression for correctness review F5: the count used to filter only
+  // `!isArchived`, so a non-archived credit wallet was counted here while
+  // `totalActiveBalance` — the peso figure one line below — already excluded
+  // it (rule 23: a credit balance is owed, not held). The label and the total
+  // it sits above must describe the same set of wallets.
+  test("EXCLUDES a non-archived credit wallet from the count too — it must agree with the total it labels", async () => {
+    await createWallet({ name: "BPI", type: "bank", openingBalance: 10_000 });
+    await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 5_000 });
+    await createWallet({ name: "Visa", type: "credit", openingBalance: 1_234_500 });
+
+    renderScreen();
+    await screen.findByTestId("wallets-total-amount");
+
+    // Three wallets exist, but only two compose the total beneath this label —
+    // a naive `!isArchived`-only count would say "Total across 3 wallets"
+    // right above a total that only reflects two of them.
+    expect(screen.getByText("Total across 2 wallets")).toBeTruthy();
+    expect(screen.queryByText("Total across 3 wallets")).toBeNull();
+    expect(screen.getByTestId("wallets-total-amount")).toHaveTextContent("₱150.00");
+  });
 });
 
 describe("no wallet cap in beta (spec D10)", () => {
