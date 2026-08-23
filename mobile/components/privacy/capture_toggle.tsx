@@ -41,6 +41,11 @@ export function CaptureToggle({ enabled, onChange, busy = false, testID = "captu
       <ListRow
         title="Tracking"
         subtitle={enabled === false ? PAUSED_BODY : ACTIVE_BODY}
+        // Sized to PAUSED_BODY, the longer of the two (126 characters) —
+        // ACTIVE_BODY (95) wraps to fewer lines and simply does not use the
+        // headroom. Both sit beside a bare Switch, same as the telemetry
+        // row. fix-round-1.
+        subtitleLines={4}
         right={
           <Switch
             testID="capture-toggle-switch"

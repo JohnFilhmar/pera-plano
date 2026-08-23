@@ -84,6 +84,16 @@ export function ProviderSwitchList({
               }
             />
             {item.paused ? (
+              // fix-round-1, Minor: this Text's spacing depends on two
+              // numbers it does not own. `px-4` matches `ListRow`'s own
+              // horizontal inset (components/ui/list_row.tsx) so "Paused"
+              // lines up under the title rather than the row's outer edge,
+              // and `-mt-2` (-8px) only partially cancels that same row's
+              // `py-3` (12px) bottom padding, leaving the small gap this was
+              // tuned by eye to have — not a full cancel, and not derived
+              // from either constant in code. Correct today; if `ListRow`'s
+              // own padding ever changes, this drifts and nobody here would
+              // notice.
               <Text
                 testID={`provider-switch-paused-${item.providerKey}`}
                 className="-mt-2 px-4 pb-2 text-xs text-fg-2 dark:text-fg-2-dark"

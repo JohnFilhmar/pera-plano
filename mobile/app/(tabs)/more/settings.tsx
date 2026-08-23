@@ -101,17 +101,20 @@ function stepMinuteOfDay(minute: number, delta: number): number {
 function SettingCard({
   title,
   subtitle,
+  subtitleLines,
   control,
   testID,
 }: {
   title: string;
   subtitle?: string;
+  /** Forwarded to `ListRow` untouched — see that prop's own doc for the default. */
+  subtitleLines?: number;
   control: ReactNode;
   testID?: string;
 }) {
   return (
     <Card testID={testID}>
-      <ListRow title={title} subtitle={subtitle} right={control} />
+      <ListRow title={title} subtitle={subtitle} subtitleLines={subtitleLines} right={control} />
     </Card>
   );
 }
@@ -198,6 +201,8 @@ export default function SettingsScreen() {
         testID="settings-alerts-row"
         title="Notification settings"
         subtitle="Limit warnings and due-date reminders are separate channels — mute or reshape either one in your phone's settings."
+        // 114 characters beside an "Open" button — fix-round-1.
+        subtitleLines={4}
         control={
           <Button
             testID="settings-open-notification-settings"
@@ -213,6 +218,8 @@ export default function SettingsScreen() {
         testID="settings-quiet-hours-row"
         title="Quiet hours"
         subtitle="Alerts raised while you're asleep wait until the window ends and arrive together — nothing is dropped. Warnings that tracking has stopped still come through."
+        // 157 characters, this row's longest — fix-round-1.
+        subtitleLines={5}
         control={
           <Switch
             testID="settings-quiet-hours-toggle"
@@ -267,6 +274,11 @@ export default function SettingsScreen() {
         testID="settings-recurring-forget-row"
         title={`Forget a subscription after ${formatMultiplier(multiplier)} ${paymentsWord}`}
         subtitle="We can only see a charge arrive, never a cancellation — this is how much silence, scaled to how often it charges, counts as gone."
+        // 129 characters beside the three-part −/value/+ stepper — the
+        // narrowest control of the four rows here, so despite being
+        // shorter than quiet-hours' subtitle this one needs more lines,
+        // not fewer. fix-round-1.
+        subtitleLines={6}
         control={
           <View className="flex-row items-center gap-2">
             <Button
@@ -303,6 +315,11 @@ export default function SettingsScreen() {
         // ships in m3c Task 6; this copy is the contract that implementation
         // must satisfy, not the other way around.
         subtitle="When on, PeraPlano shares only counts of successful and failed notification parses, per provider. Never notification content, amounts, or merchant names."
+        // 153 characters beside a bare Switch — fix-round-1, the Critical
+        // finding: this is the row whose clipped last clause was the
+        // "never notification content, amounts, or merchant names"
+        // promise itself.
+        subtitleLines={5}
         control={
           <Switch
             testID="settings-telemetry-toggle"

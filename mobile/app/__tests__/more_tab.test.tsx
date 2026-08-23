@@ -202,7 +202,7 @@ describe("the Settings screen", () => {
     );
   });
 
-  test("the telemetry copy names exactly what is sent", async () => {
+  test("the telemetry copy names exactly what is sent, and is not clipped to one line", async () => {
     renderScreen(<SettingsScreen />);
     await screen.findByTestId("settings-telemetry-row");
 
@@ -210,9 +210,18 @@ describe("the Settings screen", () => {
     // provider, and nothing else — no notification content, no amounts, no
     // merchants. If this text ever stops being true, the copy is what has to
     // change to match the implementation — never the other way around.
-    screen.getByText(
+    const subtitle = screen.getByText(
       "When on, PeraPlano shares only counts of successful and failed notification parses, per provider. Never notification content, amounts, or merchant names.",
     );
+
+    // fix-round-1: `getByText` alone passed against this exact bug — RNTL
+    // never simulates a device's line-clamping, so a `ListRow` silently
+    // capped to one line still matches on full text here while a real
+    // phone would clip after roughly 30 characters, well before "never
+    // notification content, amounts, or merchant names" is reached. Only
+    // the rendered node's own `numberOfLines` can prove the clamp would
+    // not fire.
+    expect(subtitle.props.numberOfLines).toBeGreaterThan(1);
   });
 
   test("the subscription-forget multiplier defaults to 1.5, clamps to the floor at 1, and persists", async () => {

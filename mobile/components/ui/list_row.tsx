@@ -10,6 +10,25 @@ import { Pressable, Text, View } from "react-native";
 export type ListRowProps = {
   title: string;
   subtitle?: string;
+  /**
+   * How many lines the subtitle may wrap to before it clips with an
+   * ellipsis.
+   *
+   * DEFAULTS TO `1`, the row's original, unconditional behaviour. Every
+   * call site that does not pass this prop gets that default and renders
+   * byte-for-byte what it always has — the same invariant
+   * `components/ui/numeric_field.tsx`'s `size` prop states about its own
+   * default, and deliberately not a count of who relies on it: a count is
+   * exactly the kind of number the next new call site quietly invalidates.
+   *
+   * WHY THIS EXISTS (fix-round-1): a hard-coded single line was silently
+   * clipping full disclosure sentences to whatever fit on one line on a
+   * real phone — the telemetry row's "never notification content, amounts,
+   * or merchant names" promise among them. `getByText` in a Jest render
+   * cannot see a device's line clamp; only asserting `numberOfLines` on the
+   * rendered node proves it did not happen.
+   */
+  subtitleLines?: number;
   left?: ReactNode;
   right?: ReactNode;
   onPress?: () => void;
@@ -21,6 +40,7 @@ export type ListRowProps = {
 export function ListRow({
   title,
   subtitle,
+  subtitleLines = 1,
   left,
   right,
   onPress,
@@ -44,7 +64,10 @@ export function ListRow({
           {title}
         </Text>
         {subtitle ? (
-          <Text numberOfLines={1} className="text-secondary font-medium text-fg-2 dark:text-fg-2-dark">
+          <Text
+            numberOfLines={subtitleLines}
+            className="text-secondary font-medium text-fg-2 dark:text-fg-2-dark"
+          >
             {subtitle}
           </Text>
         ) : null}
