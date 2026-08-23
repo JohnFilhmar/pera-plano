@@ -232,6 +232,29 @@ The tier matrix itself is locked; pricing figures are intentionally not decided 
 17. **Enforcement flip timing.** Entitlements is hardcoded `plus` during MVP. Open: the criteria for flipping to enforced tiers — install base, retention threshold, or calendar date — and whether early users get a grace grant. **Decide by: Post-launch decision, criteria drafted Pre-launch.**
 18. **Downgrade mechanics — residuals.** The principle is locked (keep data, block creation of new, never delete), and the which-item-stays-active question is decided: the most recently edited eligible item stays active by default — deterministic, user-swappable, no forced choice at downgrade ([05-monetization.md](05-monetization.md) §3.3; for Limits that means the most recently edited active unfiltered Limit, and Wallets, Goals, Loans, and Bills have no active-item selection because all keep operating). Remaining open: whether a one-time downgrade summary screen should surface the swap action, and validating the default against real lapse behavior once enforcement is on. **Decide by: Pre-launch (enforcement design).**
 
+### Free-tier counts disagree between the code and the design handoff
+
+`lib/entitlements.ts` caps the free tier at `FREE_WALLET_CAP = 3`, `FREE_ACTIVE_LIMIT_CAP = 1`,
+`FREE_GOAL_CAP = 1`, `FREE_LOAN_CAP = 1`. The mobile design handoff's Free-vs-Plus board
+(`docs/pera-plano-mobile/PeraPlano Mobile UI.dc.html`) combines Limits and Goals into one row
+reading "Limits & goals — 3 each". Wallets agree at 3; Limits and Goals disagree by 3×. Loans
+carries no count on that board at all — "Loan amortization" there is a plain feature check, so
+`FREE_LOAN_CAP` has nothing to conflict with.
+
+This is not a gap in the table above: §3.4's own tier matrix already states Limits at "1 active"
+and Goals at "1", agreeing with the code, not the design board. The table is not being corrected
+here — the design board is what disagrees, and nobody has yet decided which side moves.
+
+**Blocking before pricing, not before launch.** Every cap is inert today because `MVP_TIER =
+"plus"`, so nothing behaves wrongly right now. The 2026-08-22 UI revamp responded by removing
+counts from the in-app Free-vs-Plus table entirely rather than publish a number that might be
+wrong (`components/gates/upgrade_sheet.tsx`'s `CAPABILITY_COPY` header carries the reasoning).
+The table cannot state a quantity again until this is settled.
+
+**Owner:** whoever settles [05-monetization.md](05-monetization.md) §2, the canonical tier
+matrix. The decision is a pricing one, not an engineering one — either the code's caps move to
+3, or the design board's "3 each" is corrected to 1.
+
 ### 3.5 Platform & device support
 
 19. **Minimum supported Android version.** Constrains listener behavior, notification-channel handling, and the POST_NOTIFICATIONS / foreground-service-type code paths. Open pending PH device-mix data for the target segments (heavily Xiaomi/Oppo/Vivo/realme at mid and low tiers). **Decide by: M1.**

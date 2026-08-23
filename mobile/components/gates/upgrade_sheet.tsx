@@ -34,13 +34,11 @@ export type PlusCapability =
  * UI.dc.html) instead reads "Limits & goals — 3 each". Wallets agree at 3;
  * limits and goals disagree by 3x, and nobody has decided which is right.
  *
- * Checked 2026-08-23: this specific 1-vs-3 conflict is NOT YET its own open
- * question in docs/08-risks-and-open-questions.md — that file's own §3.4
- * tier-matrix reference table still lists 1 for both Limits and Goals, i.e.
- * it currently agrees with the code, not with the design board. Someone
- * should add the conflict there before the pricing launch (§3.4 already logs
- * #16 Pricing and #17 Enforcement-flip timing as siblings); this comment
- * documents the discrepancy but is not a substitute for that entry.
+ * Logged 2026-08-23 as its own entry in docs/08-risks-and-open-questions.md —
+ * "Free-tier counts disagree between the code and the design handoff",
+ * appended to §3.4 after #16 Pricing, #17 Enforcement-flip timing and #18
+ * Downgrade mechanics. That entry, not this comment, is where the
+ * resolution belongs once someone settles it.
  *
  * Publishing either number advertises a plan the app may not honour — to an
  * audience that was promised permanent Plus. So the table states the SHAPE of
