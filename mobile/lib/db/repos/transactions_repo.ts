@@ -1,5 +1,6 @@
 // lib/db/repos/transactions_repo.ts — the only SQL surface for the ledger
 // (interface contract §3). Windows are [from, to): `from` inclusive, `to` exclusive.
+import { addDaysIso } from "@/lib/dates";
 import { getDatabase } from "@/lib/db/database";
 import { rowToTransaction, transactionToRow, type TransactionRow } from "@/lib/db/mappers";
 import { historyWindowDays } from "@/lib/entitlements";
@@ -544,4 +545,65 @@ export async function sumSpend(args: {
     params,
   );
   return row?.total ?? 0;
+}
+
+/**
+ * Daily outflow totals for the Home hero's seven-bar strip, oldest first,
+ * always exactly `days` long.
+ *
+ * AGGREGATES IN SQL RATHER THAN IN JS, and that is the entire point of the
+ * function. Home already held an unfiltered `useTransactions({})` and could
+ * have summed it in memory — but that list grows with the user's history and
+ * is re-read on every focus, to draw seven small bars. This returns seven rows
+ * on a ledger of seven transactions and seven rows on a ledger of seven
+ * thousand.
+ *
+ * WHAT COUNTS AS SPENDING here is the same rule `sumSpend` uses: outflows only,
+ * transfer legs excluded (invariant I2 — moving your own money between your own
+ * wallets is not spending, and counting it would double-count every top-up).
+ * `sumSpend` expresses "not a transfer leg" as `transfer_link_id IS NULL` —
+ * this schema has no `is_transfer` column at all (001_core.sql) — so this
+ * function matches that expression exactly rather than one that does not exist.
+ *
+ * NOT CLAMPED to the tier's history floor. Seven days is inside every window
+ * the tier matrix defines, so clamping would be arithmetic with no effect and
+ * one more thing to get wrong.
+ */
+export async function dailySpend(args: { days: number; endingOn: string }): Promise<number[]> {
+  const db = await getDatabase();
+
+  // `endingOn` is a local YYYY-MM-DD date, but `occurred_at` is stored as epoch
+  // MILLISECONDS (schema: `occurred_at INTEGER NOT NULL`; types/domain.ts's
+  // `EpochMs`). SQLite's `date()` reads a bare numeric argument as a Julian day
+  // count, not a timestamp — passed directly, a millisecond value resolves to a
+  // meaningless fixed date (verified: every row lands on 2000-01-01) rather than
+  // throwing, which would silently empty every window instead of erroring. The
+  // `unixepoch` modifier expects SECONDS, so the column is divided by 1000
+  // first. `'localtime'` then converts each row to the device's day before
+  // grouping, so a 23:40 purchase lands on the day the user made it rather than
+  // the following UTC one.
+  const rows = await db.getAllAsync<{ day: string; total: number }>(
+    `SELECT date(occurred_at / 1000, 'unixepoch', 'localtime') AS day,
+            COALESCE(SUM(amount), 0) AS total
+       FROM transactions
+      WHERE direction = 'out'
+        AND transfer_link_id IS NULL
+        AND date(occurred_at / 1000, 'unixepoch', 'localtime') > date(?, ?)
+        AND date(occurred_at / 1000, 'unixepoch', 'localtime') <= date(?)
+      GROUP BY day`,
+    [args.endingOn, `-${args.days} days`, args.endingOn],
+  );
+
+  const byDay = new Map(rows.map((row) => [row.day, row.total]));
+
+  // `addDaysIso` (lib/dates.ts) rather than a hand-rolled Date/padStart loop —
+  // it already does exactly this local-calendar arithmetic and is what every
+  // other window in this codebase is built from (lib/bills/due_rules.ts,
+  // lib/period.ts).
+  const series: number[] = [];
+  for (let offset = args.days - 1; offset >= 0; offset -= 1) {
+    const day = addDaysIso(args.endingOn, -offset);
+    series.push(byDay.get(day) ?? 0);
+  }
+  return series;
 }

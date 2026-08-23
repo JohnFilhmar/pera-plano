@@ -70,6 +70,13 @@ export const queryKeys = {
     all: ["transactions"] as const,
     list: (filters?: object) => ["transactions", "list", filters] as const,
     detail: (id: string) => ["transactions", "detail", id] as const,
+    /**
+     * The Home hero's seven-bar strip (mobile-ui-revamp Part 2 Task 1) —
+     * `dailySpend`'s per-day outflow totals, keyed on the window length so a
+     * seven-day strip and any other window a future screen asks for cache
+     * separately.
+     */
+    dailySpend: (days: number) => ["transactions", "daily_spend", days] as const,
   },
   reviewQueue: {
     all: ["review_queue"] as const,
