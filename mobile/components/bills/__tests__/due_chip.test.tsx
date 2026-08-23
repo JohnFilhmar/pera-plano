@@ -30,11 +30,26 @@ test.each(CASES)("the %s chip reads %s", (state, daysUntil, label) => {
   screen.getByText(label);
 });
 
+// Reads a Chip's own inline `style` prop (RN can hand back an array or a
+// single object) — the same helper `components/ui/__tests__/chip.test.tsx`
+// uses to check a soft fill's translucent background.
+function stylesOf(testID: string): Record<string, unknown> {
+  const style = screen.getByTestId(testID).props.style;
+  return Array.isArray(style) ? Object.assign({}, ...style) : (style ?? {});
+}
+
 test("DANGER IS RESERVED FOR ALREADY LATE", () => {
   // Red on "due in 3 days" leaves nothing louder for the day the payment is
   // genuinely overdue, and a user who sees red every week stops reading it.
-  // Asserted through the FILL, which is where `Chip` puts the tone — the text
-  // colour only inverts against that fill and says nothing about severity.
+  //
+  // Asserted through FILL, not through a solid `bg-*` class (task-4b:
+  // overdue and near-due are now `fill="soft"`, which paints its background
+  // through an inline `style`, not a Tailwind class — see components/ui/chip.tsx).
+  // A soft chip's severity lives in which INK token it takes
+  // (`danger-ink`/`warn-ink`, never the bare `danger`/`warn` that fail AA on
+  // their own tint — components/ui/__tests__/chip_contrast.test.ts), so that
+  // is what distinguishes "late" from "soon" here; "far" is the one that
+  // stays a plain outline with neither ink.
   render(
     <>
       <DueChip state="overdue" daysUntil={-1} testID="late" />
@@ -43,9 +58,16 @@ test("DANGER IS RESERVED FOR ALREADY LATE", () => {
     </>,
   );
 
-  expect(screen.getByTestId("late").props.className).toMatch(/bg-danger/);
-  expect(screen.getByTestId("soon").props.className).toMatch(/bg-warn/);
-  expect(screen.getByTestId("far").props.className).not.toMatch(/bg-danger|bg-warn/);
+  expect(String(screen.getByTestId("late-label").props.className)).toContain("text-danger-ink");
+  expect(stylesOf("late").backgroundColor).toBeDefined();
+  expect(String(screen.getByTestId("soon-label").props.className)).toContain("text-warn-ink");
+  expect(stylesOf("soon").backgroundColor).toBeDefined();
+  // "far" carries neither soft ink: it is the plain outline chip, not a
+  // solid-vs-soft danger/warn variant.
+  expect(String(screen.getByTestId("far-label").props.className)).not.toMatch(
+    /text-danger-ink|text-warn-ink/,
+  );
+  expect(stylesOf("far").backgroundColor).toBeUndefined();
 });
 
 test("a cycle settled outside the tracked wallets reads differently from paid", () => {

@@ -12,16 +12,35 @@
 // typed — "its okay because user can update it anyways". Each derived row is an
 // ordinary limit from the moment it is written; editing one leaves the rest
 // alone.
+//
+// "Create limit · with hindsight preview" (mobile-ui-revamp Part 3 Task 4b).
+// THERE IS NO HINDSIGHT PREVIEW ON THIS SCREEN, and that is not an oversight —
+// it is the board's own stated rule, applied. "If this were active last month"
+// needs a query that recomputes what a not-yet-saved limit would have measured
+// against last period's spend, and nothing in this codebase computes that:
+// `limit_form.tsx` has never held that arithmetic, and a repo-wide search for
+// "hindsight" (and for any "what this limit would have cost last period"-shaped
+// helper in lib/limits/) turns up nothing. The board's own text anticipates
+// exactly this: "if the figure does not exist yet, render no card rather than
+// inventing a query in a restyle task, and note it as follow-up." Noted here,
+// and in task-4b-report.md — this is a real gap, not a decision that a preview
+// is unwanted.
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { Text, View } from "react-native";
+import { X } from "lucide-react-native";
+import { Pressable, Text, View } from "react-native";
 
 import { LimitForm } from "@/components/limits/limit_form";
 import type { LimitFormValues } from "@/components/limits/limit_form";
+import { registerIcon } from "@/components/ui/button";
 import { FormScreen } from "@/components/ui/form_screen";
 import { useCreateLimit } from "@/hooks/mutations/use_create_limit";
+import { useCategories } from "@/hooks/queries/use_categories";
 import { useIncomeSummary } from "@/hooks/queries/use_income_summary";
 import { useLimitStatuses } from "@/hooks/queries/use_limit_statuses";
+import { useWallets } from "@/hooks/queries/use_wallets";
 import { derivedLimitsFrom } from "@/lib/limits/limit_derivation";
+
+const CloseGlyph = registerIcon(X);
 
 export default function NewLimitScreen() {
   const router = useRouter();
@@ -30,6 +49,8 @@ export default function NewLimitScreen() {
   const { data: income } = useIncomeSummary();
   // Read only to know which cadences already have a limit — see `onSave`.
   const { data: statuses } = useLimitStatuses();
+  const { data: categories } = useCategories();
+  const { data: wallets } = useWallets();
 
   // Limits rule 12's "usable IncomeProfile": a monthly-equivalent figure the
   // app can actually multiply. Anything else — unknown, or an amount it has not
@@ -88,12 +109,30 @@ export default function NewLimitScreen() {
     // with real scroll range, so the avoidance became a no-op. Same fix as
     // app/(tabs)/plan/bills/new.tsx and loans/new.tsx.
     <FormScreen testID="limit-new">
+      {/* Header: X close, "New limit" (task-4b board, item 1). The Save
+          action is not up here — unlike manual entry's ghost-button header,
+          this board pins a full-width primary button at the end of the form
+          instead, so the header names the screen and nothing else. */}
+      <View className="flex-row items-center gap-3 px-4 pt-4">
+        <Pressable
+          testID="limit-new-close"
+          accessibilityRole="button"
+          accessibilityLabel="Close"
+          onPress={() => router.back()}
+          className="h-11 w-11 items-center justify-center rounded-full bg-chip dark:bg-chip-dark"
+        >
+          <CloseGlyph size={20} className="text-fg dark:text-fg-dark" />
+        </Pressable>
+        <Text className="text-title font-bold text-fg dark:text-fg-dark">New limit</Text>
+      </View>
       <LimitForm
         onSubmit={onSave}
         incomeUsable={incomeUsable}
         onDeclareIncome={() => router.push("/plan/income")}
         busy={create.isPending}
-        submitLabel="Save"
+        submitLabel="Create limit"
+        categories={categories ?? []}
+        wallets={wallets ?? []}
       />
     </FormScreen>
   );

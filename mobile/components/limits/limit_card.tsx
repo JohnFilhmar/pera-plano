@@ -11,12 +11,30 @@
 // is reserved for the over state: an ordinary purchase inside a limit is not an
 // error, and colouring the bar red before the user has done anything wrong
 // teaches them to ignore the one colour that means something.
+//
+// RESTYLED (mobile-ui-revamp Part 3 Task 4b): a glyph disc on the left, and
+// "spend over cap" on the right of the header row. THE GLYPH IS GENERIC, not
+// resolved per category — `components/transactions/transaction_row.tsx`
+// already made this call and its own header names the reason: `Category.icon`
+// is a lucide icon name held as a plain string, and nothing in this codebase
+// maps an arbitrary icon-name string back to a lucide component. Inventing
+// that mapping here, in a restyle task, is exactly what this project's briefs
+// keep warning against; a generic mark is honest about what the app actually
+// knows about a limit (a cap, not a category glyph). `name` is unchanged and
+// still carries the scope word — `limitDisplayName` already renders "Monthly
+// limit · Kainan" — so a second, separate "scope" prop was not added: doing so
+// would have required a matching change in components/plan/limits_panel.tsx,
+// which mobile-ui-revamp Part 2 marked done and out of this task's reach.
+import { Wallet as WalletGlyphIcon } from "lucide-react-native";
 import { Text, View } from "react-native";
 
 import { formatCentavos } from "@/components/ui/amount_text";
+import { registerIcon } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import type { LimitUiState } from "@/types/control";
 import type { Centavos } from "@/types/domain";
+
+const LimitGlyph = registerIcon(WalletGlyphIcon);
 
 export type LimitCardProps = {
   /** What this limit caps — a category, a wallet, or its scope. */
@@ -68,9 +86,30 @@ export function LimitCard({
     <View className={uiState === "inactive" ? "opacity-60" : undefined}>
       <Card testID={testID}>
         <View className="flex-row items-center justify-between">
-          <Text className="font-semibold text-fg dark:text-fg-dark">{name}</Text>
+          <View className="flex-1 flex-row items-center gap-3 pr-3">
+            <View className="h-11 w-11 items-center justify-center rounded-full bg-brand-soft dark:bg-brand-soft-dark">
+              <LimitGlyph size={20} className="text-brand dark:text-brand-dark" />
+            </View>
+            <Text numberOfLines={1} className="flex-1 font-semibold text-fg dark:text-fg-dark">
+              {name}
+            </Text>
+          </View>
           {uiState === "inactive" ? (
             <Text className="text-xs uppercase text-fg-2 dark:text-fg-2-dark">Inactive</Text>
+          ) : measuring ? (
+            // "Amount over cap on the right" (task-4b board). The full
+            // sentence below the bar ("₱X left, N days to go" / "Over by ₱X")
+            // is untouched — components/limits/__tests__/limit_card.test.tsx
+            // asserts those strings exactly, so this is an ADDITION, not a
+            // replacement of the tested caption.
+            <Text
+              testID={testID === undefined ? undefined : `${testID}-cap`}
+              numberOfLines={1}
+              className="text-row font-semibold text-fg dark:text-fg-dark"
+              style={{ fontVariant: ["tabular-nums"] }}
+            >
+              {`${formatCentavos(spend)} / ${formatCentavos(effectiveLimit ?? 0)}`}
+            </Text>
           ) : null}
         </View>
 

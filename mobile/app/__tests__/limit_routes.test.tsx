@@ -322,6 +322,10 @@ test("the scope chips choose the period, and rollover defaults OFF", async () =>
   // Spec step 5: "Toggle rollover on or off (default off)."
   renderScreen(<NewLimitScreen />);
 
+  // task-4b: "Resets" is now a ListRow that opens the scope picker in a sheet
+  // (the board's "each opening its existing picker"), so choosing a scope is
+  // two presses now, not one — `limit-scope-weekly` itself is unchanged.
+  fireEvent.press(screen.getByTestId("limit-resets-row"));
   fireEvent.press(screen.getByTestId("limit-scope-weekly"));
   typeAmount("limit-amount", "1500"); // was changeText "150000" — same ₱1,500.00
   fireEvent.press(screen.getByTestId("limit-save"));

@@ -15,6 +15,7 @@ import { Pressable, Text, View } from "react-native";
 import { formatCentavos } from "@/components/ui/amount_text";
 import { BottomSheet } from "@/components/ui/bottom_sheet";
 import { Button } from "@/components/ui/button";
+import { Chip } from "@/components/ui/chip";
 import { NumericField } from "@/components/ui/numeric_field";
 import { centavosFrom, pesoInputFrom } from "@/lib/money/peso_input";
 import type { AllocationProposal } from "@/lib/goals/goals_service";
@@ -84,26 +85,22 @@ export function AllocationSheet({
         {proposals.map((proposal) => {
           const row = rowFor(proposal);
           return (
-            <View key={proposal.goalId} className="gap-2">
+            <View key={proposal.goalId} className="gap-2 rounded-xl bg-chip p-3 dark:bg-chip-dark">
               <Pressable
                 testID={`allocation-toggle-${proposal.goalId}`}
                 accessibilityRole="checkbox"
                 accessibilityState={{ checked: row.checked }}
                 onPress={() => setRow(proposal.goalId, { checked: !row.checked })}
-                className="flex-row items-center justify-between"
+                className="min-h-[44px] flex-row items-center justify-between"
               >
                 <Text className="font-semibold text-fg dark:text-fg-dark">
                   {proposal.goalName}
                 </Text>
-                <Text
-                  className={
-                    row.checked
-                      ? "text-brand dark:text-brand-dark"
-                      : "text-fg-2 dark:text-fg-2-dark"
-                  }
-                >
-                  {row.checked ? "Included" : "Skipped"}
-                </Text>
+                <Chip
+                  label={row.checked ? "Included" : "Skipped"}
+                  tone={row.checked ? "brand" : "neutral"}
+                  fill={row.checked ? "soft" : "outline"}
+                />
               </Pressable>
 
               {/* `disabled`, the direct replacement for the old

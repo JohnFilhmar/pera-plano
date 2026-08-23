@@ -25,8 +25,10 @@ import type { LimitFormValues } from "@/components/limits/limit_form";
 import { EmptyState } from "@/components/ui/empty_state";
 import { FormScreen } from "@/components/ui/form_screen";
 import { useUpdateLimit } from "@/hooks/mutations/use_update_limit";
+import { useCategories } from "@/hooks/queries/use_categories";
 import { useIncomeSummary } from "@/hooks/queries/use_income_summary";
 import { useLimitStatuses } from "@/hooks/queries/use_limit_statuses";
+import { useWallets } from "@/hooks/queries/use_wallets";
 import { View } from "react-native";
 
 export default function EditLimitScreen() {
@@ -34,6 +36,8 @@ export default function EditLimitScreen() {
   const router = useRouter();
   const { data: statuses } = useLimitStatuses();
   const { data: income } = useIncomeSummary();
+  const { data: categories } = useCategories();
+  const { data: wallets } = useWallets();
   const update = useUpdateLimit();
 
   // Render nothing until the data lands, rather than an empty form that then
@@ -75,6 +79,8 @@ export default function EditLimitScreen() {
         onDeclareIncome={() => router.push("/plan/income")}
         busy={update.isPending}
         submitLabel="Save changes"
+        categories={categories ?? []}
+        wallets={wallets ?? []}
       />
     </FormScreen>
   );

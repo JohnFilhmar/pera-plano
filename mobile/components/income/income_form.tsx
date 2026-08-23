@@ -5,15 +5,30 @@
 // decoration: the whole point of the override is that the user is taking over,
 // and an app that quietly reverted their figure a week later would be worse
 // than one that never offered the choice.
+//
+// RESTYLED (mobile-ui-revamp Part 3 Task 4b) to the shared field rhythm: a
+// `text-micro font-semibold text-fg-2` label above each control, and the
+// source-wallet picker as a `Chip` row — `income-wallet-${id}` presses are
+// unchanged, since no test in this project reads `accessibilityState` off
+// them (unlike the bill/loan reminder offsets, which stay hand-rolled for
+// exactly that reason).
 import { useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Text, View } from "react-native";
 
 import { CadencePicker } from "@/components/income/cadence_picker";
 import { formatCentavos } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
+import { Chip } from "@/components/ui/chip";
 import { NumericField } from "@/components/ui/numeric_field";
 import { centavosFrom, pesoInputFrom } from "@/lib/money/peso_input";
 import type { Centavos, IncomeCadence, Wallet } from "@/types/domain";
+
+/** Step 2's field rhythm: the label that sits above every control below. */
+function FieldLabel({ children }: { children: string }) {
+  return (
+    <Text className="text-micro font-semibold text-fg-2 dark:text-fg-2-dark">{children}</Text>
+  );
+}
 
 export type IncomeFormValues = {
   cadence: IncomeCadence;
@@ -53,17 +68,15 @@ export function IncomeForm({ wallets, initial, onSubmit, busy = false }: IncomeF
 
   return (
     <View className="gap-6">
-      <View>
-        <Text className="font-semibold text-fg dark:text-fg-dark">How often are you paid?</Text>
-        <View className="mt-2">
-          <CadencePicker value={cadence} onChange={setCadence} />
-        </View>
+      <View className="gap-2">
+        <FieldLabel>How often are you paid?</FieldLabel>
+        <CadencePicker value={cadence} onChange={setCadence} />
       </View>
 
-      <View>
-        <Text className="font-semibold text-fg dark:text-fg-dark">
+      <View className="gap-1">
+        <FieldLabel>
           {cadence === "irregular" ? "Roughly how much a month?" : "How much each time?"}
-        </Text>
+        </FieldLabel>
         <NumericField
           testID="income-amount"
           label={cadence === "irregular" ? "Roughly how much a month?" : "How much each time?"}
@@ -82,38 +95,21 @@ export function IncomeForm({ wallets, initial, onSubmit, busy = false }: IncomeF
         </Text>
       </View>
 
-      <View>
-        <Text className="font-semibold text-fg dark:text-fg-dark">Which account is it paid into?</Text>
-        <Text className="mt-1 text-fg-2 dark:text-fg-2-dark">
+      <View className="gap-1">
+        <FieldLabel>Which account is it paid into?</FieldLabel>
+        <Text className="text-fg-2 dark:text-fg-2-dark">
           Optional — it helps PeraPlano tell your pay apart from other money coming in.
         </Text>
         <View className="mt-2 flex-row flex-wrap gap-2">
-          {wallets.map((wallet) => {
-            const selected = walletIds.includes(wallet.id);
-            return (
-              <Pressable
-                key={wallet.id}
-                testID={`income-wallet-${wallet.id}`}
-                accessibilityState={{ selected }}
-                onPress={() => toggleWallet(wallet.id)}
-                className={`rounded-full px-4 py-2 ${
-                  selected
-                    ? "bg-brand dark:bg-brand-dark"
-                    : "bg-surface dark:bg-surface-dark"
-                }`}
-              >
-                <Text
-                  className={
-                    selected
-                      ? "text-surface dark:text-surface-dark"
-                      : "text-fg dark:text-fg-dark"
-                  }
-                >
-                  {wallet.name}
-                </Text>
-              </Pressable>
-            );
-          })}
+          {wallets.map((wallet) => (
+            <Chip
+              key={wallet.id}
+              testID={`income-wallet-${wallet.id}`}
+              label={wallet.name}
+              fill={walletIds.includes(wallet.id) ? "solid" : "outline"}
+              onPress={() => toggleWallet(wallet.id)}
+            />
+          ))}
         </View>
       </View>
 
@@ -126,6 +122,7 @@ export function IncomeForm({ wallets, initial, onSubmit, busy = false }: IncomeF
       <Button
         title="Save my income"
         testID="income-save"
+        size="lg"
         disabled={!canSave}
         loading={busy}
         onPress={() => onSubmit({ cadence, averageAmount: amount, sourceWalletIds: walletIds })}

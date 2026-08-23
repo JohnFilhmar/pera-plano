@@ -10,13 +10,29 @@
 // guess and offers both answers; a confirmed one is quiet; a lapsed one asks
 // rather than silently going stale. The one thing this card never does is show
 // a figure without saying where it came from.
+//
+// BUG FOUND WHILE RESTYLING (mobile-ui-revamp Part 3 Task 4b): the confirmed
+// checkmark below was a bare `<Check>`, never run through `registerIcon`.
+// Without that, `className` never reaches the glyph (`components/ui/button.tsx`'s
+// header explains the mechanism), and it renders in lucide's own default
+// colour regardless of theme rather than `text-brand`. It happened not to be
+// visibly broken only because `components/transactions/category_picker.tsx`
+// already calls `registerIcon(Check)` at its own module's top level, and
+// `cssInterop` registration is a side effect on the shared `Check` component
+// object — so on any screen where that module has already loaded, this icon
+// rode along for free. `IncomeScreen`'s own suite never imports
+// category_picker.tsx, so this file's `Check` was unstyled there, and would be
+// on-device the first time a user reaches this card before ever opening
+// transaction categorisation. Fixed here, not routed around.
 import { Check } from "lucide-react-native";
 import { Text, View } from "react-native";
 
-import { Button } from "@/components/ui/button";
+import { Button, registerIcon } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { formatCentavos } from "@/components/ui/amount_text";
 import type { IncomeSummary } from "@/lib/income/income_service";
+
+const CheckGlyph = registerIcon(Check);
 
 export type IncomeSummaryCardProps = {
   summary: IncomeSummary;
@@ -107,7 +123,7 @@ export function IncomeSummaryCard({
       {/* Rule 2, confirmed: a quiet checkmark. Nothing to do, so nothing to tap. */}
       {summary.status === "confirmed" && !summary.isManualOverride ? (
         <View testID="income-confirmed-mark" className="mt-3 flex-row items-center gap-2">
-          <Check size={16} className="text-brand dark:text-brand-dark" />
+          <CheckGlyph size={16} className="text-brand dark:text-brand-dark" />
           <Text className="text-fg-2 dark:text-fg-2-dark">Matched to your recent paydays</Text>
         </View>
       ) : null}

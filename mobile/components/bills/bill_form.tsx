@@ -15,6 +15,16 @@
 // the consequence spelled out rather than a bare toggle. A user who picks Fixed
 // for Meralco will fight the app every month; one who picks Estimated for rent
 // will see a `~` on a figure that never moves.
+//
+// RESTYLED (mobile-ui-revamp Part 3 Task 4b): the amount-mode toggle is now
+// `SegmentedControl` — a two-way exclusive choice, per the brief's field-
+// rhythm rule. `bill-mode-fixed`/`bill-mode-estimated` are the exact ids the
+// hand-rolled pills already used: `BillAmountMode`'s own literal values ARE
+// those suffixes, so `SegmentedControl`'s `${testID}-${value}` generation
+// reproduces them without a rename. THE REMINDER OFFSETS STAY HAND-ROLLED,
+// deliberately not `Chip` — `bill_form.test.tsx` reads
+// `.props.accessibilityState.selected` off `bill-offset-*` directly, and
+// `Chip` sets no `accessibilityState` at all.
 import { useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 
@@ -22,9 +32,17 @@ import { DueRulePicker } from "@/components/bills/due_rule_picker";
 import { formatCentavos } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
 import { NumericField } from "@/components/ui/numeric_field";
+import { SegmentedControl } from "@/components/ui/segmented_control";
 import { DEFAULT_REMINDER_OFFSETS } from "@/constants/bills";
 import { centavosFrom, pesoInputFrom } from "@/lib/money/peso_input";
 import type { BillAmountMode, DueRule } from "@/types/domain";
+
+/** Step 2's field rhythm: the label that sits above every control below. */
+function FieldLabel({ children }: { children: string }) {
+  return (
+    <Text className="text-micro font-semibold text-fg-2 dark:text-fg-2-dark">{children}</Text>
+  );
+}
 
 export type BillFormValues = {
   name: string;
@@ -67,6 +85,14 @@ const MODES: readonly { value: BillAmountMode; label: string; hint: string }[] =
     hint: "Meralco, Maynilad — the app learns the amount from what you pay.",
   },
 ];
+
+// NOT `as const` — that assertion only applies to a literal expression, and
+// `.map()`'s result is not one (TS1355). Unneeded regardless: `MODES`'s own
+// element type already carries the closed `BillAmountMode` union, not
+// `string`, so the destructured `value` — and everything derived from it —
+// stays that narrow union through plain inference, which is what
+// `SegmentedControl`'s `T` needs.
+const MODE_SEGMENTS = MODES.map(({ value, label }) => ({ value, label }));
 
 /**
  * Spec rule 10's supported offsets: 7, 5, 3, 1 days before, and on the due
@@ -129,43 +155,34 @@ export function BillForm({
     // that edge, so a symmetric p-4 would double-count it (Task 9's fix).
     <View testID={testID} className="gap-5 bg-bg px-4 pt-4 dark:bg-bg-dark">
       <View className="gap-1">
-        <Text className="text-sm font-medium text-fg-2 dark:text-fg-2-dark">What is it?</Text>
+        <FieldLabel>What is it?</FieldLabel>
         <TextInput
           testID="bill-name"
           value={name}
           onChangeText={setName}
           placeholder="Meralco"
-          className="rounded-lg bg-surface px-3 py-2 text-fg dark:bg-surface-dark dark:text-fg-dark"
+          className="min-h-[44px] rounded-xl bg-chip px-3 py-3 text-fg dark:bg-chip-dark dark:text-fg-dark"
         />
       </View>
 
       <View className="gap-2">
-        <Text className="text-sm font-medium text-fg-2 dark:text-fg-2-dark">
-          Does the amount change?
+        <FieldLabel>Does the amount change?</FieldLabel>
+        <SegmentedControl
+          testID="bill-mode"
+          segments={MODE_SEGMENTS}
+          value={amountMode}
+          onChange={setAmountMode}
+        />
+        {/* The selected mode's own consequence, spelled out — the pill has no
+            room for it, and the whole point of asking this as a real
+            decision (this file's header) is that the user reads it. */}
+        <Text className="text-fg-2 dark:text-fg-2-dark">
+          {MODES.find((mode) => mode.value === amountMode)?.hint}
         </Text>
-        {MODES.map((mode) => (
-          <Pressable
-            key={mode.value}
-            testID={`bill-mode-${mode.value}`}
-            accessibilityRole="button"
-            accessibilityState={{ selected: amountMode === mode.value }}
-            onPress={() => setAmountMode(mode.value)}
-            className={`rounded-2xl p-4 ${
-              amountMode === mode.value
-                ? "bg-brand-soft dark:bg-brand-soft-dark"
-                : "bg-surface dark:bg-surface-dark"
-            }`}
-          >
-            <Text className="font-semibold text-fg dark:text-fg-dark">{mode.label}</Text>
-            <Text className="mt-1 text-fg-2 dark:text-fg-2-dark">{mode.hint}</Text>
-          </Pressable>
-        ))}
       </View>
 
       <View className="gap-1">
-        <Text className="text-sm font-medium text-fg-2 dark:text-fg-2-dark">
-          {amountMode === "fixed" ? "How much is it?" : "Roughly how much?"}
-        </Text>
+        <FieldLabel>{amountMode === "fixed" ? "How much is it?" : "Roughly how much?"}</FieldLabel>
         <NumericField
           testID="bill-amount"
           label={amountMode === "fixed" ? "How much is it?" : "Roughly how much?"}
@@ -187,7 +204,10 @@ export function BillForm({
       <DueRulePicker testID="bill-due-rule" value={dueRule} onChange={setDueRule} today={today} />
 
       <View className="gap-2">
-        <Text className="text-sm font-medium text-fg-2 dark:text-fg-2-dark">Remind me</Text>
+        <FieldLabel>Remind me</FieldLabel>
+        {/* HAND-ROLLED, DELIBERATELY NOT `Chip` — see this file's header.
+            `bill_form.test.tsx` reads `accessibilityState.selected` off these
+            testIDs directly, which `Chip` never sets. */}
         <View className="flex-row flex-wrap gap-2">
           {OFFSETS.map((offset) => (
             <Pressable
@@ -196,10 +216,10 @@ export function BillForm({
               accessibilityRole="button"
               accessibilityState={{ selected: offsets.includes(offset.value) }}
               onPress={() => toggleOffset(offset.value)}
-              className={`rounded-lg px-3 py-2 ${
+              className={`min-h-[44px] justify-center rounded-lg px-3 py-2 ${
                 offsets.includes(offset.value)
                   ? "bg-brand-soft dark:bg-brand-soft-dark"
-                  : "bg-surface dark:bg-surface-dark"
+                  : "bg-chip dark:bg-chip-dark"
               }`}
             >
               <Text className="text-sm text-fg dark:text-fg-dark">{offset.label}</Text>
@@ -218,6 +238,7 @@ export function BillForm({
       <Button
         title={submitLabel}
         testID="bill-save"
+        size="lg"
         disabled={!canSave || busy}
         onPress={() =>
           onSubmit({ name: name.trim(), amount, amountMode, dueRule, reminderOffsets: offsets })

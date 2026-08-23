@@ -31,6 +31,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ui/confirm_dialog";
 import { EmptyState } from "@/components/ui/empty_state";
+import { ListRow } from "@/components/ui/list_row";
 import { SectionHeader } from "@/components/ui/section_header";
 import { queryKeys } from "@/constants/query_keys";
 import { useArchiveLimit } from "@/hooks/mutations/use_archive_limit";
@@ -213,19 +214,13 @@ export default function LimitDetailScreen() {
         </Text>
       ) : (
         transactions.map((transaction) => (
-          <View
+          <ListRow
             key={transaction.id}
             testID={`limit-tx-${transaction.id}`}
-            className="flex-row items-center justify-between py-2"
-          >
-            <View className="flex-1 pr-4">
-              <Text className="text-fg dark:text-fg-dark">{transaction.merchant ?? "Unknown"}</Text>
-              <Text className="text-xs text-fg-2 dark:text-fg-2-dark">
-                {formatDate(transaction.occurredAt)}
-              </Text>
-            </View>
-            <AmountText amount={transaction.amount} direction="out" />
-          </View>
+            title={transaction.merchant ?? "Unknown"}
+            subtitle={formatDate(transaction.occurredAt)}
+            right={<AmountText amount={transaction.amount} direction="out" />}
+          />
         ))
       )}
     </ScrollView>

@@ -9,11 +9,12 @@
 // one signal that is not modelled yet, so nothing reaches the ledger until a
 // tap here — and rejecting is silent, because rule 10 forbids the app inventing
 // a negative rule from a single "no".
-import { Pressable, Text, View } from "react-native";
+import { Text, View } from "react-native";
 
 import { AmountText, formatCentavos } from "@/components/ui/amount_text";
 import { BottomSheet } from "@/components/ui/bottom_sheet";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { formatDate } from "@/lib/datetime";
 import type { PaymentCandidate } from "@/lib/loans/loans_service";
 
@@ -42,42 +43,37 @@ export function PaymentMatchSheet({
         </Text>
 
         {candidates.map((candidate) => (
-          <View
-            key={candidate.transactionId}
-            testID={`match-candidate-${candidate.transactionId}`}
-            className="gap-2 rounded-2xl bg-surface p-4 dark:bg-surface-dark"
-          >
-            <View className="flex-row items-center justify-between">
-              <Text className="text-fg dark:text-fg-dark">
-                {candidate.merchant ?? "Unknown"}
-              </Text>
-              <AmountText amount={candidate.amount} />
-            </View>
-            <Text className="text-xs text-fg-2 dark:text-fg-2-dark">
-              {formatDate(candidate.occurredAt)}
-            </Text>
-
-            {/* Rule 5's "why". One line per signal that actually fired, so the
-                user can check the app's reasoning against what they remember. */}
-            <View testID={`match-reasons-${candidate.transactionId}`}>
-              {candidate.reasons.map((reason) => (
-                <Text key={reason} className="text-xs text-fg-2 dark:text-fg-2-dark">
-                  {`· ${reason}`}
+          <Card key={candidate.transactionId} testID={`match-candidate-${candidate.transactionId}`}>
+            <View className="gap-2">
+              <View className="flex-row items-center justify-between">
+                <Text className="text-fg dark:text-fg-dark">
+                  {candidate.merchant ?? "Unknown"}
                 </Text>
-              ))}
-            </View>
-
-            <Pressable
-              testID={`match-confirm-${candidate.transactionId}`}
-              disabled={busy}
-              onPress={() => onConfirm(candidate.transactionId)}
-              className="mt-1 self-start rounded-full bg-brand px-4 py-2 dark:bg-brand-dark"
-            >
-              <Text className="text-surface dark:text-surface-dark">
-                {`Yes, this paid ${formatCentavos(candidate.amount)}`}
+                <AmountText amount={candidate.amount} />
+              </View>
+              <Text className="text-xs text-fg-2 dark:text-fg-2-dark">
+                {formatDate(candidate.occurredAt)}
               </Text>
-            </Pressable>
-          </View>
+
+              {/* Rule 5's "why". One line per signal that actually fired, so
+                  the user can check the app's reasoning against what they
+                  remember. */}
+              <View testID={`match-reasons-${candidate.transactionId}`}>
+                {candidate.reasons.map((reason) => (
+                  <Text key={reason} className="text-xs text-fg-2 dark:text-fg-2-dark">
+                    {`· ${reason}`}
+                  </Text>
+                ))}
+              </View>
+
+              <Button
+                testID={`match-confirm-${candidate.transactionId}`}
+                title={`Yes, this paid ${formatCentavos(candidate.amount)}`}
+                disabled={busy}
+                onPress={() => onConfirm(candidate.transactionId)}
+              />
+            </View>
+          </Card>
         ))}
 
         {/* Rejecting is just dismissing. Rule 10: "Rejecting a suggestion never

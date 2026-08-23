@@ -10,10 +10,11 @@
 // excludes the offending keyword and resets the auto-match ladder — closing the
 // sheet must not be mistaken for it, or the app would keep proposing the same
 // wrong transaction while believing the user never objected.
-import { Pressable, Text, View } from "react-native";
+import { Text, View } from "react-native";
 
 import { AmountText } from "@/components/ui/amount_text";
 import { BottomSheet } from "@/components/ui/bottom_sheet";
+import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import type { BillPaymentCandidate } from "@/lib/bills/bills_service";
 import { formatDate } from "@/lib/datetime";
@@ -63,26 +64,23 @@ export function BillMatchSheet({
             </View>
 
             <View className="mt-3 flex-row gap-2">
-              <Pressable
-                testID={`bill-match-confirm-${candidate.transactionId}`}
-                accessibilityRole="button"
-                disabled={busy}
-                onPress={() => onConfirm(candidate.transactionId)}
-                className="flex-1 rounded-lg bg-brand px-3 py-2 dark:bg-brand-dark"
-              >
-                <Text className="text-center font-semibold text-surface dark:text-surface-dark">
-                  Yes, it did
-                </Text>
-              </Pressable>
-              <Pressable
-                testID={`bill-match-reject-${candidate.transactionId}`}
-                accessibilityRole="button"
-                disabled={busy}
-                onPress={() => onReject(candidate.transactionId)}
-                className="flex-1 rounded-lg bg-surface px-3 py-2 dark:bg-surface-dark"
-              >
-                <Text className="text-center font-semibold text-fg dark:text-fg-dark">No</Text>
-              </Pressable>
+              <View className="flex-1">
+                <Button
+                  testID={`bill-match-confirm-${candidate.transactionId}`}
+                  title="Yes, it did"
+                  disabled={busy}
+                  onPress={() => onConfirm(candidate.transactionId)}
+                />
+              </View>
+              <View className="flex-1">
+                <Button
+                  testID={`bill-match-reject-${candidate.transactionId}`}
+                  title="No"
+                  variant="secondary"
+                  disabled={busy}
+                  onPress={() => onReject(candidate.transactionId)}
+                />
+              </View>
             </View>
           </Card>
         ))}

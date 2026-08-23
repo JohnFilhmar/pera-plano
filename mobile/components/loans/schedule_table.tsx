@@ -9,6 +9,16 @@
 // children in normal colours with a badge and intercepts the press — so the
 // user can see exactly what they would get, which is the difference between a
 // paywall and a dead end.
+//
+// RESTYLED (mobile-ui-revamp Part 3 Task 4b): alternating `bg-chip` rows and
+// `font-mono` figures. THE GATE ITSELF IS UNTOUCHED — the `PlusGate` wrapper
+// below, and the `plus-badge`/`plus-gate` testIDs it renders, are exactly what
+// they were; this file's own header already explains why free sees the whole
+// table rather than a paywall, and nothing about a restyle changes that.
+// `font-mono` CARRIES NO WEIGHT CLASS ON THE SAME ELEMENT, deliberately —
+// both `font-mono` and a `font-*` weight utility set this app's `fontFamily`
+// (Global Constraints traps), and this file's own figures had none to begin
+// with, so there is nothing to fight.
 import { Text, View } from "react-native";
 
 import { PlusGate } from "@/components/gates/plus_gate";
@@ -65,11 +75,16 @@ export function ScheduleTable({ rows, totalPaid, testID }: ScheduleTableProps) {
           <Text className="w-24 text-right text-xs text-fg-2 dark:text-fg-2-dark">Balance</Text>
         </View>
 
-        {withStatus.map(({ row, paid }) => (
+        {withStatus.map(({ row, paid }, index) => (
           <View
             key={row.index}
             testID={`schedule-row-${row.index}`}
-            className="flex-row items-center py-2"
+            // Alternating `bg-chip` rows (task-4b board) — every other row,
+            // starting with the second, so a table of any length reads as
+            // banding rather than one row being singled out.
+            className={`flex-row items-center rounded-lg px-2 py-2 ${
+              index % 2 === 1 ? "bg-chip dark:bg-chip-dark" : ""
+            }`}
           >
             <Text
               className={`flex-1 text-xs ${
@@ -78,15 +93,24 @@ export function ScheduleTable({ rows, totalPaid, testID }: ScheduleTableProps) {
             >
               {formatDate(parseDateIso(row.dueDate).getTime())}
             </Text>
-            <Text className="w-24 text-right text-xs text-fg dark:text-fg-dark">
+            <Text
+              className="w-24 text-right text-xs font-mono text-fg dark:text-fg-dark"
+              style={{ fontVariant: ["tabular-nums"] }}
+            >
               {formatCentavos(row.payment)}
             </Text>
             {hasInterest ? (
-              <Text className="w-24 text-right text-xs text-fg-2 dark:text-fg-2-dark">
+              <Text
+                className="w-24 text-right text-xs font-mono text-fg-2 dark:text-fg-2-dark"
+                style={{ fontVariant: ["tabular-nums"] }}
+              >
                 {formatCentavos(row.interest)}
               </Text>
             ) : null}
-            <Text className="w-24 text-right text-xs text-fg-2 dark:text-fg-2-dark">
+            <Text
+              className="w-24 text-right text-xs font-mono text-fg-2 dark:text-fg-2-dark"
+              style={{ fontVariant: ["tabular-nums"] }}
+            >
               {formatCentavos(row.balanceAfter)}
             </Text>
           </View>

@@ -4,14 +4,24 @@
 // is per CYCLE rather than per bill, because rule 25 has two cycles of the same
 // bill open at once and each is resolved independently — a per-bill row could
 // not show February overdue while March is upcoming.
+//
+// RESTYLED (mobile-ui-revamp Part 3 Task 4b): a glyph disc, matching the disc
+// `limit_card.tsx` and `loan_card.tsx` both carry now — a generic mark, not
+// one resolved from a category or provider, for the same reason those two
+// give (no per-icon-name-to-lucide-component resolver exists in this
+// codebase; see `limit_card.tsx`'s header for the fuller account).
+import { FileText } from "lucide-react-native";
 import { Pressable, Text, View } from "react-native";
 
 import { DueChip } from "@/components/bills/due_chip";
 import { EstimateText } from "@/components/bills/estimate_text";
+import { registerIcon } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import type { BillStatus } from "@/lib/bills/bills_service";
 import { parseDateIso } from "@/lib/dates";
 import { formatDate } from "@/lib/datetime";
+
+const BillGlyph = registerIcon(FileText);
 
 export type BillRowProps = {
   status: BillStatus;
@@ -23,11 +33,16 @@ export function BillRow({ status, onPress, testID }: BillRowProps) {
   const body = (
     <Card>
       <View className="flex-row items-start justify-between">
-        <View className="flex-1 pr-3">
-          <Text className="font-semibold text-fg dark:text-fg-dark">{status.bill.name}</Text>
-          <Text className="mt-0.5 text-xs text-fg-2 dark:text-fg-2-dark">
-            {formatDate(parseDateIso(status.dueDate).getTime())}
-          </Text>
+        <View className="flex-1 flex-row items-start gap-3 pr-3">
+          <View className="h-11 w-11 items-center justify-center rounded-full bg-brand-soft dark:bg-brand-soft-dark">
+            <BillGlyph size={20} className="text-brand dark:text-brand-dark" />
+          </View>
+          <View className="flex-1">
+            <Text className="font-semibold text-fg dark:text-fg-dark">{status.bill.name}</Text>
+            <Text className="mt-0.5 text-xs text-fg-2 dark:text-fg-2-dark">
+              {formatDate(parseDateIso(status.dueDate).getTime())}
+            </Text>
+          </View>
         </View>
         <View className="items-end gap-2">
           <EstimateText

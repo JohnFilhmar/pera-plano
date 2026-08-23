@@ -32,6 +32,20 @@
 // at the two routes that render this form, because only this file was in
 // scope for the migration; its content container already sets `flexGrow: 1`,
 // which is why the root View below carries `flex-1`.
+//
+// RESTYLED (mobile-ui-revamp Part 3 Task 4b): "Which way?" (2 options) and
+// "How is it paid back?" (3 options) are now `SegmentedControl` — both are
+// two-to-four-way exclusive choices, per the brief's field-rhythm rule.
+// `loan-direction-i-owe`/`loan-direction-owed-to-me` and
+// `loan-kind-free-form`/`loan-kind-flat`/`loan-kind-amortized` are the exact
+// ids the hand-rolled pills already used, unchanged: `LoanDirection` and
+// `ScheduleKind`'s own literal values ARE the testID suffixes, so
+// `SegmentedControl`'s `${testID}-${value}` generation reproduces them without
+// a rename. THE REMINDER OFFSETS STAY HAND-ROLLED PRESSABLES, deliberately not
+// `Chip`: `loan_form.test.tsx` asserts `.props.accessibilityState.selected` on
+// `loan-offset-*` directly, and `Chip` sets no `accessibilityState` at all —
+// swapping it in would not fail loudly, it would throw
+// ("Cannot read properties of undefined") the moment that assertion ran.
 import { useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 
@@ -40,10 +54,18 @@ import { Button } from "@/components/ui/button";
 import { DateField } from "@/components/ui/date_field";
 import { FormScreen } from "@/components/ui/form_screen";
 import { NumericField } from "@/components/ui/numeric_field";
+import { SegmentedControl } from "@/components/ui/segmented_control";
 import { DEFAULT_LOAN_REMINDER_OFFSETS } from "@/constants/loans";
 import { buildAmortizationSchedule, buildFlatSchedule, monthlyPayment } from "@/lib/loans/loan_math";
 import { centavosFrom, pesoInputFrom } from "@/lib/money/peso_input";
 import type { Installment, Loan, LoanDirection } from "@/types/domain";
+
+/** Step 2's field rhythm: the label that sits above every control below. */
+function FieldLabel({ children }: { children: string }) {
+  return (
+    <Text className="text-micro font-semibold text-fg-2 dark:text-fg-2-dark">{children}</Text>
+  );
+}
 
 export type ScheduleKind = "amortized" | "flat" | "free-form";
 
@@ -147,16 +169,24 @@ export type LoanFormProps = {
   submitLabel?: string;
 };
 
-const DIRECTIONS: readonly { value: LoanDirection; label: string }[] = [
+const DIRECTION_SEGMENTS = [
   { value: "i-owe", label: "I owe" },
   { value: "owed-to-me", label: "Owed to me" },
-];
+] as const satisfies ReadonlyArray<{ value: LoanDirection; label: string }>;
 
 const KINDS: readonly { value: ScheduleKind; label: string; hint: string }[] = [
   { value: "free-form", label: "No fixed terms", hint: "Utang with no agreed schedule" },
   { value: "flat", label: "Fixed installments", hint: "A stated total, paid in equal parts" },
   { value: "amortized", label: "With interest", hint: "A rate and a term, like a bank loan" },
 ];
+
+// NOT `as const` — that assertion only applies to a literal expression, and
+// `.map()`'s result is not one (TS1355). Unneeded regardless: `KINDS`'s own
+// element type already carries the closed `ScheduleKind` union, not `string`,
+// so the destructured `value` — and everything derived from it — stays that
+// narrow union through plain inference, which is what `SegmentedControl`'s
+// `T` needs.
+const KIND_SEGMENTS = KINDS.map(({ value, label }) => ({ value, label }));
 
 /** Centavos -> peso text, or "" when there is nothing to seed. NEVER String(). */
 function seedPeso(amount: number | undefined): string {
@@ -243,49 +273,29 @@ export function LoanForm({
           edge (Math.max(keypadHeight, 0) + BASE_PADDING), so a symmetric p-4
           would double-count it, same defect Task 9's fix round removed. */}
       <View className="flex-1 gap-6 bg-bg px-4 pt-4 dark:bg-bg-dark">
-        <View>
-          <Text className="font-semibold text-fg dark:text-fg-dark">Which way?</Text>
-          <View className="mt-2 flex-row gap-2">
-            {DIRECTIONS.map((option) => (
-              <Pressable
-                key={option.value}
-                testID={`loan-direction-${option.value}`}
-                onPress={() => chooseDirection(option.value)}
-                className={`rounded-full px-4 py-2 ${
-                  direction === option.value
-                    ? "bg-brand dark:bg-brand-dark"
-                    : "bg-surface dark:bg-surface-dark"
-                }`}
-              >
-                <Text
-                  className={
-                    direction === option.value
-                      ? "text-surface dark:text-surface-dark"
-                      : "text-fg dark:text-fg-dark"
-                  }
-                >
-                  {option.label}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
+        <View className="gap-2">
+          <FieldLabel>Which way?</FieldLabel>
+          <SegmentedControl
+            testID="loan-direction"
+            segments={DIRECTION_SEGMENTS}
+            value={direction}
+            onChange={chooseDirection}
+          />
         </View>
 
-        <View>
-          <Text className="font-semibold text-fg dark:text-fg-dark">
-            {direction === "i-owe" ? "Who do you owe?" : "Who owes you?"}
-          </Text>
+        <View className="gap-1">
+          <FieldLabel>{direction === "i-owe" ? "Who do you owe?" : "Who owes you?"}</FieldLabel>
           <TextInput
             testID="loan-counterparty"
-            className="mt-2 rounded-xl bg-surface p-3 text-fg dark:bg-surface-dark dark:text-fg-dark"
+            className="min-h-[44px] rounded-xl bg-chip px-3 py-3 text-fg dark:bg-chip-dark dark:text-fg-dark"
             placeholder="Name or lender"
             value={counterparty}
             onChangeText={setCounterparty}
           />
         </View>
 
-        <View>
-          <Text className="font-semibold text-fg dark:text-fg-dark">How much?</Text>
+        <View className="gap-1">
+          <FieldLabel>How much?</FieldLabel>
           <NumericField
             testID="loan-principal"
             label="How much?"
@@ -299,31 +309,20 @@ export function LoanForm({
           </Text>
         </View>
 
-        <View>
-          <Text className="font-semibold text-fg dark:text-fg-dark">How is it paid back?</Text>
-          <View className="mt-2 gap-2">
-            {KINDS.map((option) => (
-              <Pressable
-                key={option.value}
-                testID={`loan-kind-${option.value}`}
-                accessibilityState={{ selected: kind === option.value }}
-                onPress={() => setKind(option.value)}
-                className={`rounded-2xl p-4 ${
-                  kind === option.value
-                    ? "bg-brand-soft dark:bg-brand-soft-dark"
-                    : "bg-surface dark:bg-surface-dark"
-                }`}
-              >
-                <Text className="font-semibold text-fg dark:text-fg-dark">{option.label}</Text>
-                <Text className="mt-1 text-fg-2 dark:text-fg-2-dark">{option.hint}</Text>
-              </Pressable>
-            ))}
-          </View>
+        <View className="gap-2">
+          <FieldLabel>How is it paid back?</FieldLabel>
+          <SegmentedControl testID="loan-kind" segments={KIND_SEGMENTS} value={kind} onChange={setKind} />
+          {/* The selected kind's own hint, since the pill itself has no room
+              for one — same relocation `cadence_picker.tsx`'s cadence row
+              takes for its own per-option explanation. */}
+          <Text className="text-fg-2 dark:text-fg-2-dark">
+            {KINDS.find((option) => option.value === kind)?.hint}
+          </Text>
         </View>
 
         {kind === "amortized" ? (
-          <View testID="loan-amortized-fields">
-            <Text className="font-semibold text-fg dark:text-fg-dark">Rate and term</Text>
+          <View testID="loan-amortized-fields" className="gap-1">
+            <FieldLabel>Rate and term</FieldLabel>
             <NumericField
               testID="loan-rate"
               label="Annual rate"
@@ -349,8 +348,8 @@ export function LoanForm({
         ) : null}
 
         {kind === "flat" ? (
-          <View testID="loan-flat-fields">
-            <Text className="font-semibold text-fg dark:text-fg-dark">Installments</Text>
+          <View testID="loan-flat-fields" className="gap-1">
+            <FieldLabel>Installments</FieldLabel>
             <NumericField
               testID="loan-installment"
               label="Each payment"
@@ -384,8 +383,8 @@ export function LoanForm({
         ) : null}
 
         {kind === "free-form" ? null : (
-          <View>
-            <Text className="font-semibold text-fg dark:text-fg-dark">First payment due</Text>
+          <View className="gap-1">
+            <FieldLabel>First payment due</FieldLabel>
             <DateField
               testID="loan-first-due"
               label="First payment due"
@@ -400,7 +399,13 @@ export function LoanForm({
         )}
 
         <View className="gap-2">
-          <Text className="text-sm font-medium text-fg-2 dark:text-fg-2-dark">Remind me</Text>
+          <FieldLabel>Remind me</FieldLabel>
+          {/* HAND-ROLLED, DELIBERATELY NOT `Chip` — see this file's header.
+              `loan_form.test.tsx` reads `accessibilityState.selected` off
+              these testIDs directly, which `Chip` never sets. The classes
+              below still take the design's option-group rhythm
+              (`bg-chip` resting state, `min-h-[44px]`), just without the
+              component `Chip`'s own accessibility surface swapped under it. */}
           <View className="flex-row flex-wrap gap-2">
             {REMINDER_OFFSETS.map((offset) => (
               <Pressable
@@ -409,10 +414,10 @@ export function LoanForm({
                 accessibilityRole="button"
                 accessibilityState={{ selected: reminderOffsets.includes(offset.value) }}
                 onPress={() => toggleReminderOffset(offset.value)}
-                className={`rounded-lg px-3 py-2 ${
+                className={`min-h-[44px] justify-center rounded-lg px-3 py-2 ${
                   reminderOffsets.includes(offset.value)
                     ? "bg-brand-soft dark:bg-brand-soft-dark"
-                    : "bg-surface dark:bg-surface-dark"
+                    : "bg-chip dark:bg-chip-dark"
                 }`}
               >
                 <Text className="text-sm text-fg dark:text-fg-dark">{offset.label}</Text>
@@ -432,6 +437,7 @@ export function LoanForm({
         <Button
           title={submitLabel}
           testID="loan-save"
+          size="lg"
           disabled={!canSave}
           loading={busy}
           onPress={() => {

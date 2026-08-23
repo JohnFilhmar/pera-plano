@@ -11,10 +11,22 @@
 // 20th", not `day-of-month`. The weekday adjustment is offered only where it
 // applies — the spec scopes it to month-based rules, and offering it on a
 // weekly bill would ask the user to overrule the only thing that rule says.
+//
+// RESTYLED (mobile-ui-revamp Part 3 Task 4b). THE FIVE KINDS STAY A WRAPPED
+// `Chip` ROW, NOT `SegmentedControl` — the brief's own example: "due_rule_picker
+// has five [options]", past `SegmentedControl`'s two-to-four-way ceiling. The
+// weekend-adjust row (three options) IS a `SegmentedControl`, and the seven
+// weekdays stay a wrapped `Chip` row for the same too-many-options reason as
+// the kinds. None of `due-kind-*`/`due-adjust-*`/`due-weekday-*` are read
+// through `accessibilityState` anywhere in this project's tests — unlike the
+// bill/loan reminder offsets next door — so all three are free to become real
+// `Chip`/`SegmentedControl` instances rather than hand-mirrored classNames.
 import { useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Text, View } from "react-native";
 
+import { Chip } from "@/components/ui/chip";
 import { NumericField } from "@/components/ui/numeric_field";
+import { SegmentedControl } from "@/components/ui/segmented_control";
 import { occurrencesBetween } from "@/lib/bills/due_rules";
 import { addDaysIso, parseDateIso } from "@/lib/dates";
 import { formatDate } from "@/lib/datetime";
@@ -38,11 +50,11 @@ const KINDS: readonly { value: DueRuleKind; label: string }[] = [
   { value: "every-n-months", label: "Every few months" },
 ];
 
-const ADJUSTS: readonly { value: WeekdayAdjust; label: string }[] = [
+const ADJUST_SEGMENTS = [
   { value: "none", label: "Keep the date" },
   { value: "earlier", label: "Move earlier" },
   { value: "later", label: "Move later" },
-];
+] as const satisfies ReadonlyArray<{ value: WeekdayAdjust; label: string }>;
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -94,18 +106,13 @@ export function DueRulePicker({ value, onChange, today, testID }: DueRulePickerP
 
       <View className="flex-row flex-wrap gap-2">
         {KINDS.map((kind) => (
-          <Pressable
+          <Chip
             key={kind.value}
             testID={`due-kind-${kind.value}`}
+            label={kind.label}
+            fill={value.kind === kind.value ? "solid" : "outline"}
             onPress={() => onChange(defaultFor(kind.value, today))}
-            className={`rounded-lg px-3 py-2 ${
-              value.kind === kind.value
-                ? "bg-brand-soft dark:bg-brand-soft-dark"
-                : "bg-surface dark:bg-surface-dark"
-            }`}
-          >
-            <Text className="text-sm text-fg dark:text-fg-dark">{kind.label}</Text>
-          </Pressable>
+          />
         ))}
       </View>
 
@@ -150,18 +157,13 @@ export function DueRulePicker({ value, onChange, today, testID }: DueRulePickerP
           <Text className="text-sm font-medium text-fg-2 dark:text-fg-2-dark">On which day?</Text>
           <View className="flex-row flex-wrap gap-2">
             {WEEKDAYS.map((label, weekday) => (
-              <Pressable
+              <Chip
                 key={label}
                 testID={`due-weekday-${weekday}`}
+                label={label}
+                fill={value.weekday === weekday ? "solid" : "outline"}
                 onPress={() => onChange({ ...value, weekday })}
-                className={`rounded-lg px-3 py-2 ${
-                  value.weekday === weekday
-                    ? "bg-brand-soft dark:bg-brand-soft-dark"
-                    : "bg-surface dark:bg-surface-dark"
-                }`}
-              >
-                <Text className="text-sm text-fg dark:text-fg-dark">{label}</Text>
-              </Pressable>
+              />
             ))}
           </View>
         </View>
@@ -172,22 +174,12 @@ export function DueRulePicker({ value, onChange, today, testID }: DueRulePickerP
           <Text className="text-sm font-medium text-fg-2 dark:text-fg-2-dark">
             If it lands on a weekend
           </Text>
-          <View className="flex-row flex-wrap gap-2">
-            {ADJUSTS.map((adjust) => (
-              <Pressable
-                key={adjust.value}
-                testID={`due-adjust-${adjust.value}`}
-                onPress={() => onChange({ ...value, weekdayAdjust: adjust.value })}
-                className={`rounded-lg px-3 py-2 ${
-                  (value.weekdayAdjust ?? "none") === adjust.value
-                    ? "bg-brand-soft dark:bg-brand-soft-dark"
-                    : "bg-surface dark:bg-surface-dark"
-                }`}
-              >
-                <Text className="text-sm text-fg dark:text-fg-dark">{adjust.label}</Text>
-              </Pressable>
-            ))}
-          </View>
+          <SegmentedControl
+            testID="due-adjust"
+            segments={ADJUST_SEGMENTS}
+            value={value.weekdayAdjust ?? "none"}
+            onChange={(weekdayAdjust) => onChange({ ...value, weekdayAdjust })}
+          />
         </View>
       ) : null}
 

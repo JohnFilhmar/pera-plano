@@ -8,17 +8,32 @@
 // THE CONTRIBUTION RULE IS PlusGated (rule 5): visible and explained on free,
 // active on Plus. Free keeps the goal and its live progress; only the payday
 // prompt is a paid capability (docs/05-monetization.md §3.2).
+//
+// RESTYLED (mobile-ui-revamp Part 3 Task 4b) to the field rhythm every plan
+// form now shares: a `text-micro font-semibold text-fg-2` label above each
+// control, controls on `bg-chip rounded-xl min-h-[44px]`, and the savings
+// wallet picker as a `Chip` row rather than hand-rolled pills — the same
+// option-group treatment `goal_routes.test.tsx`'s `goal-wallet-${id}` presses
+// already exercised and still exercise, unchanged.
 import { useState } from "react";
-import { Pressable, Text, TextInput, View } from "react-native";
+import { Text, TextInput, View } from "react-native";
 
 import { PlusGate } from "@/components/gates/plus_gate";
 import { formatCentavos } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Chip } from "@/components/ui/chip";
 import { DateField } from "@/components/ui/date_field";
 import { NumericField } from "@/components/ui/numeric_field";
 import { centavosFrom } from "@/lib/money/peso_input";
 import type { ContributionRule, IsoDate, Wallet } from "@/types/domain";
+
+/** Step 2's field rhythm: the label that sits above every control below. */
+function FieldLabel({ children }: { children: string }) {
+  return (
+    <Text className="text-micro font-semibold text-fg-2 dark:text-fg-2-dark">{children}</Text>
+  );
+}
 
 export type GoalFormValues = {
   name: string;
@@ -64,21 +79,19 @@ export function GoalForm({
     // inset. No bottom padding here: FormScreen's contentContainerStyle owns
     // that edge, so a symmetric p-4 would double-count it (Task 9's fix).
     <View className="gap-6 bg-bg px-4 pt-4 dark:bg-bg-dark">
-      <View>
-        <Text className="font-semibold text-fg dark:text-fg-dark">
-          What are you saving for?
-        </Text>
+      <View className="gap-1">
+        <FieldLabel>What are you saving for?</FieldLabel>
         <TextInput
           testID="goal-name"
-          className="mt-2 rounded-xl bg-surface p-3 text-fg dark:bg-surface-dark dark:text-fg-dark"
+          className="min-h-[44px] rounded-xl bg-chip px-3 py-3 text-fg dark:bg-chip-dark dark:text-fg-dark"
           placeholder="Emergency fund"
           value={name}
           onChangeText={setName}
         />
       </View>
 
-      <View>
-        <Text className="font-semibold text-fg dark:text-fg-dark">How much?</Text>
+      <View className="gap-1">
+        <FieldLabel>How much?</FieldLabel>
         <NumericField
           testID="goal-target"
           label="How much?"
@@ -92,9 +105,9 @@ export function GoalForm({
         </Text>
       </View>
 
-      <View>
-        <Text className="font-semibold text-fg dark:text-fg-dark">By when? (optional)</Text>
-        <Text className="mt-1 text-fg-2 dark:text-fg-2-dark">
+      <View className="gap-1">
+        <FieldLabel>By when? (optional)</FieldLabel>
+        <Text className="text-fg-2 dark:text-fg-2-dark">
           A deadline turns on the pace chip. Without one the goal just tracks progress.
         </Text>
         <DateField
@@ -109,9 +122,9 @@ export function GoalForm({
         />
       </View>
 
-      <View>
-        <Text className="font-semibold text-fg dark:text-fg-dark">Which savings account?</Text>
-        <Text className="mt-1 text-fg-2 dark:text-fg-2-dark">
+      <View className="gap-1">
+        <FieldLabel>Which savings account?</FieldLabel>
+        <Text className="text-fg-2 dark:text-fg-2-dark">
           Progress is this account&apos;s balance, so whatever is already in it counts toward the
           goal.
         </Text>
@@ -133,32 +146,15 @@ export function GoalForm({
           </Card>
         ) : (
           <View className="mt-2 flex-row flex-wrap gap-2">
-            {availableWallets.map((wallet) => {
-              const selected = wallet.id === walletId;
-              return (
-                <Pressable
-                  key={wallet.id}
-                  testID={`goal-wallet-${wallet.id}`}
-                  accessibilityState={{ selected }}
-                  onPress={() => setWalletId(wallet.id)}
-                  className={`rounded-full px-4 py-2 ${
-                    selected
-                      ? "bg-brand dark:bg-brand-dark"
-                      : "bg-surface dark:bg-surface-dark"
-                  }`}
-                >
-                  <Text
-                    className={
-                      selected
-                        ? "text-surface dark:text-surface-dark"
-                        : "text-fg dark:text-fg-dark"
-                    }
-                  >
-                    {`${wallet.name} · ${formatCentavos(wallet.balance)}`}
-                  </Text>
-                </Pressable>
-              );
-            })}
+            {availableWallets.map((wallet) => (
+              <Chip
+                key={wallet.id}
+                testID={`goal-wallet-${wallet.id}`}
+                label={`${wallet.name} · ${formatCentavos(wallet.balance)}`}
+                fill={wallet.id === walletId ? "solid" : "outline"}
+                onPress={() => setWalletId(wallet.id)}
+              />
+            ))}
           </View>
         )}
       </View>
@@ -167,11 +163,9 @@ export function GoalForm({
           on free — never desaturated, which is SoonGate's meaning — and opens
           the upgrade sheet on press. */}
       <PlusGate capability="goals">
-        <View>
-          <Text className="font-semibold text-fg dark:text-fg-dark">
-            Move money automatically on payday
-          </Text>
-          <Text className="mt-1 text-fg-2 dark:text-fg-2-dark">
+        <View className="gap-1">
+          <FieldLabel>Move money automatically on payday</FieldLabel>
+          <Text className="text-fg-2 dark:text-fg-2-dark">
             PeraPlano will remind you to move this amount each payday. It never moves money on its
             own — you do it in your banking app and it records the transfer.
           </Text>
@@ -189,6 +183,7 @@ export function GoalForm({
       <Button
         title="Create goal"
         testID="goal-save"
+        size="lg"
         disabled={!canSave}
         loading={busy}
         onPress={() => {

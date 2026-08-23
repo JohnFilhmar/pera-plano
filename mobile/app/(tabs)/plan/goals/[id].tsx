@@ -51,6 +51,7 @@ export default function GoalDetailScreen() {
         name={status.goal.name}
         progress={status.progress}
         targetDate={status.goal.targetDate}
+        contributionRule={status.goal.contributionRule}
       />
 
       <Card>
