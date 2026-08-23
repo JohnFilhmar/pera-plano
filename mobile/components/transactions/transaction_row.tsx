@@ -33,16 +33,44 @@
 // resolvable independently — the same trade `AmountText`'s own file warns
 // against making the other way (never let styling swallow structure).
 //
-// A ROW CANNOT BE "AWAITING REVIEW". task-4-brief.md Step 4 also asks for a
-// `Chip label="CHECK"` beside the title "when a row is awaiting review". No
-// field on `Transaction` (types/domain.ts) carries that state, and
-// review_queue_entry.tsx's own header comment is explicit about why: "review-
-// queue items are not Transactions... they never get smuggled into the ledger
-// to make the two agree." A committed row has therefore always already
-// cleared review by construction — there is no reachable state this chip
-// could ever render for, so it is left out rather than wired to a threshold
-// this file would have to invent (e.g. a `confidence` cutoff nothing else in
-// the app treats as a review signal).
+// NO CHECK CHIP — BUT THIS IS A MISSING QUERY, NOT AN IMPOSSIBLE STATE.
+// task-4-brief.md Step 4 also asks for a `Chip label="CHECK"` beside the title
+// "when a row is awaiting review". Corrected 2026-08-23 after review flagged
+// the first version of this comment for over-claiming: it said "a row cannot
+// be awaiting review," full stop, which is only true for two of the four
+// `ReviewKind`s (types/domain.ts).
+//
+// For `low-confidence` and `possible-duplicate` the invariant holds exactly
+// as originally stated: the item under review is HELD, not committed
+// (docs/04-features/08-review-queue.md rule 1: "the Transaction is held
+// uncommitted until triaged"; rule 4: "the twin is held uncommitted"), and
+// `ReviewResolution`'s own comment names it directly — "queue items are never
+// Transactions themselves — invariant I13" (types/domain.ts). No `Transaction`
+// row exists yet for these two kinds, so no ledger row could ever need the chip.
+//
+// For `ambiguous-transfer` IT DOES NOT HOLD. Both legs are already-committed
+// Transactions sitting in the ledger — docs/04-features/08-review-queue.md
+// says so twice: "Both legs are already-committed Transactions; the card asks
+// only whether to pair them" (Flow: resolve an ambiguous transfer, step 1) and
+// "Both legs are committed; only the pairing is queued" (Rules & edge cases,
+// rule 3). `components/review/review_card.tsx`'s `counterpartIdOf` resolves
+// `transferCounterpartTransactionId` through `useTransaction(...)`, a live
+// query against this same `transactions` table, which only works because the
+// counterpart is a real row. So a `TransactionRow` CAN legitimately be sitting
+// in this ledger, fully counted in spend, while the Review Queue holds an open
+// question about it — the user has no way to learn that from the row itself,
+// only by opening `/review` separately.
+//
+// THE CHIP IS STILL LEFT OUT, because the blocker is a missing lookup, not an
+// architectural wall. `lib/db/repos/review_queue_repo.ts` exposes only
+// `enqueue`/`listOpen`/`countOpen`/`resolve`/`purgeExpired` — nothing indexed
+// by referenced transaction id — and `payload` is deliberately opaque
+// (`Record<string, unknown>`), so this component has no query to ask "is this
+// row's id anyone's `transferCounterpartTransactionId` right now?" without one
+// being built first. Building that path (a payload-aware lookup, most likely a
+// new repo function plus a hook this presentational row still would not call
+// directly) is real, untested scope beyond a restyle. The next person picking
+// this up should start at `review_queue_repo.ts`, not at "is this possible."
 //
 // PRESENTATIONAL. The category and the wallet arrive resolved, from the list
 // that already holds both collections; a row that looked them up itself would
