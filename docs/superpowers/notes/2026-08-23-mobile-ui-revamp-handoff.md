@@ -56,6 +56,16 @@ way produces a plausible, entirely wrong chart. See
 **Spend filtering has no `is_transfer` column.** Match `sumSpend`:
 `direction = 'out'` and `transfer_link_id IS NULL`.
 
+**`ListRow` clamps its subtitle to one line, and no test can see it.**
+`components/ui/list_row.tsx` hard-codes `numberOfLines={1}` on the subtitle.
+Routing a long sentence through it clips to roughly 15-30 visible characters
+on a phone — and React Native Testing Library does **not** simulate device
+line-clamping, so `getByText` finds the full string and the test passes. This
+shipped once and reached a privacy disclosure whose own comment labels it a
+"verbatim promise". If a layout constraint is visual-only, assert the **prop**
+(`numberOfLines`), never the text. The same blindness applies to anything RTL
+does not lay out: width, overflow, and truncation are all invisible to it.
+
 **Nested `<Text>` wins over its parent in React Native.** A `tone` or size prop
 applied to a wrapper is *inert* if the visible text sits in a child `<Text>`
 that sets its own colour. This shipped once as a passing test that asserted
@@ -98,9 +108,13 @@ git-ignored directories and there is no root `package.json` to hoist from.
 This cost one agent its entire session chasing a phantom test failure
 (Ruling PF-5). Install inside `mobile/` before dispatching anyone.
 
-**Known parallel-load flakes**, not real failures: `bills_screen`,
-`home_screen`, `transactions_screen`, `filter_bar` fail under
-`maxWorkers: 60%` and pass in isolation.
+**Suite-level flakiness under parallel load is broader than any fixed list.**
+`bills_screen`, `home_screen`, `transactions_screen` and `filter_bar` are the
+ones seen most often under `maxWorkers: 60%`, but two independent runs on this
+branch each hit a *different* test, green in isolation. Treat the list as
+examples, not as the set — always re-run a suspected failure in isolation
+before treating it as a regression, and equally, never assume a red test is
+"just the flake" because it appeared during a parallel run.
 
 **Contrast is measured, never eyeballed.** All three soft tones failed AA on
 their own tints (brand 3.96, danger 3.69, warn 2.63); the "obvious" fix
@@ -114,11 +128,29 @@ see `constants/providers.ts`. Use `lib/ui/contrast.ts` — do not estimate.
 
 ## 3. How to verify work here
 
-**A green test proves nothing until it has been seen red.** Seven tests in
-this run passed *identically against the bug they were written to catch*.
-The standing method for any guard that matters: break the thing on purpose,
-watch the test go red **for the stated reason**, restore, confirm
-`git status` clean.
+**A green test proves nothing until it has been seen red.** Tests on this
+branch passed *identically against the bug they were written to catch* often
+enough that it is the default suspicion, not the exception — deliberately not
+a count here, because the number only ever goes up. The standing method for
+any guard that matters: break the thing on purpose, watch the test go red
+**for the stated reason**, restore, confirm `git status` clean.
+
+The recurring shape is a test asserting against **the wrong node or the wrong
+property**. Three confirmed instances, all the same mistake: `StatTile` read
+the wrapper's className while a nested `<Text>` decided the colour; `ListRow`
+read the text content while `numberOfLines` decided whether it was visible;
+`ErrorState` read a decorative wrapper's className while the icon it wrapped
+carried its own. Ask what the assertion would do if the defect were present,
+and answer it by making it present.
+
+**A brief can mandate a vacuous test, and then the implementer is blameless.**
+`loading_skeleton.test.tsx` pinned `accessibilityLabel` and never `accessible`
+— so removing `accessible` kept it green while TalkBack regressed to reading
+every row. That test's code was supplied verbatim by the plan; the implementer
+transcribed it exactly as instructed. **Test code written into a plan gets no
+review pass of its own unless someone deliberately gives it one.** When a plan
+hands over a test verbatim, check what it would fail against before shipping
+it — the pre-flight scan is meant to catch this and did not.
 
 **Fault injection only proves what you inject — this is its blind spot.**
 The sharpest lesson of the run: the shared-budgets no-pressable guard was
@@ -230,3 +262,55 @@ Font weights render correctly — **confirmed by owner**. Still open:
   account-linking work rather than built now — owner's call.
 - Soon-gated screens are **non-interactive**. No control on a Soon screen may
   imply a capability the backend cannot deliver.
+
+**The design's notification action buttons cannot be built, and were not.**
+The design draws four notification cards carrying five actions between them —
+"See breakdown", "Mute 7 days", "Move ₱{amount}", "Not now", "Fix now". A
+worktree-wide grep, TypeScript and native Android both, found **no
+notification action infrastructure of any kind**: no `categoryIdentifier`, no
+`setNotificationCategoryAsync`, no `actionIdentifier`, no response listeners —
+not for these, not for any notification the app posts. Adding them would be
+the rest-state-promise defect at OS level, where it is worse: a button in the
+shade that does nothing is not recoverable by backing out of a screen.
+Shipping title/body copy only. **Building these actions is real work — new
+Expo notification categories plus a response handler — and belongs on the
+roadmap, not in this revamp.**
+
+Related: the design's fourth board, **Capture** (`₱285 tracked at Jollibee`),
+**does not exist** — no builder, no notifier, no call site. Only Limit
+warning, Payday, and Listener down are real, via `notifyLimitAlerts`,
+`notifyPaydaySummary`, and `notifyTrackingInterrupted`. None of the three is
+wired to a live production trigger yet; that gap predates this branch.
+
+**The design's notification copy was written without checking the app's
+existing copy rules — three of four strings in one table conflicted.** The
+mockup is a visual artifact; its words are not automatically permissible here.
+
+- `Kinsenas landed — ₱9,250` violates a documented, tested rule: generated
+  sentences never use the cadence name. `components/income/income_summary_
+  card.tsx:4-5` states it ("twice a month, around ₱18,500 each time" — not
+  "kinsenas"; cadence names are internal vocabulary) and
+  `income_screen.test.tsx:153` pins it, literally named *"the kinsenas
+  sentence never says 'kinsenas'"*. The word is fine as a picker **label**
+  (`cadence_picker.tsx:29`), never inside generated prose.
+- `Notification access was revoked` is reserved in `health_card.tsx` for one
+  specific sub-cause that the notifier cannot distinguish from the others.
+  Asserting it unconditionally tells some users something false.
+- `Tracking paused` collided with `listener_health.tsx`'s reserved use of
+  "paused" for the user's own **voluntary** switch — the one case where
+  nothing is wrong. Shipped as `Tracking stopped working` instead.
+
+**Open, needs an owner decision:** the Limit warning board was left byte-for-
+byte unchanged. Its current wording is the named canonical example in
+`docs/12-encryption-and-app-lock.md` §7a, stated there as binding on every
+notification-posting task. The design's `80% of your Food limit is gone` shape
+needs a category name and a days-left figure that exist on `LimitAlert` but
+are not threaded into `limitThresholdAlertCopy`'s params. Closing that gap
+means either amending the binding doc or breaking the file's tested
+"one alert kind, one wording" delegation. **That is a spec-precedence call,
+not a copy edit.**
+
+**Where copy lives:** `lib/alerts/alert_copy.ts` decides *what* an alert says.
+`lib/alerts/alerts_service.ts` decides *whether, when, and on which channel* it
+is delivered — it holds no board copy at all, only two Android channel display
+names. The Part 3 plan gets this backwards; believe the files.
