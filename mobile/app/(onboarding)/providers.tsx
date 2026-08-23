@@ -134,7 +134,7 @@ export default function ProvidersScreen({ onDone }: { onDone?: () => void } = {}
         testID="provider-picker-loading"
         className="flex-1 items-center justify-center bg-bg px-6 dark:bg-bg-dark"
       >
-        <Text className="text-center text-fg-2 dark:text-fg-2-dark">
+        <Text className="text-center text-body font-medium text-fg-2 dark:text-fg-2-dark">
           Looking for apps on your phone…
         </Text>
       </View>

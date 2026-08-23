@@ -82,12 +82,13 @@
 // an unescapable prompt loop on a mandatory onboarding step is the worst
 // place to ship one.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Pressable, Share, Text, View } from "react-native";
+import { Share, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as LocalAuthentication from "expo-local-authentication";
 import { generatePhrase } from "@/lib/crypto/recovery_phrase";
 import { initializeKeys } from "@/lib/crypto/key_manager";
 import { NotAuthenticatedError } from "@/modules/notification_listener";
+import { Button } from "@/components/ui/button";
 import { PhraseDisplay } from "@/components/onboarding/phrase_display";
 import { PhraseConfirm } from "@/components/onboarding/phrase_confirm";
 
@@ -256,19 +257,13 @@ export default function RecoveryPhraseScreen({ onDone }: { onDone?: () => void }
         testID="recovery-phrase-error"
         className="flex-1 items-center justify-center gap-4 bg-bg px-6 dark:bg-bg-dark"
       >
-        <Text className="text-center text-fg dark:text-fg-dark">
+        <Text className="text-center text-body font-medium text-fg dark:text-fg-dark">
           Something went wrong preparing your recovery words. There is no way to continue
           without them, so please try again.
         </Text>
-        <Pressable
-          testID="recovery-phrase-retry-button"
-          onPress={handleRetry}
-          accessibilityRole="button"
-          accessibilityLabel="Try again"
-          className="rounded-lg bg-brand px-6 py-3 dark:bg-brand-dark"
-        >
-          <Text className="font-semibold text-surface dark:text-surface-dark">Try again</Text>
-        </Pressable>
+        <View className="w-full">
+          <Button testID="recovery-phrase-retry-button" title="Try again" size="lg" onPress={handleRetry} />
+        </View>
       </View>
     );
   }
@@ -279,7 +274,7 @@ export default function RecoveryPhraseScreen({ onDone }: { onDone?: () => void }
         testID="recovery-phrase-generating"
         className="flex-1 items-center justify-center bg-bg px-6 dark:bg-bg-dark"
       >
-        <Text className="text-center text-fg-2 dark:text-fg-2-dark">
+        <Text className="text-center text-body font-medium text-fg-2 dark:text-fg-2-dark">
           Preparing your recovery words…
         </Text>
       </View>
@@ -322,7 +317,7 @@ export default function RecoveryPhraseScreen({ onDone }: { onDone?: () => void }
             {confirmNotice ? (
               <Text
                 testID="recovery-phrase-auth-notice"
-                className="px-6 pb-4 text-center text-fg-2 dark:text-fg-2-dark"
+                className="px-6 pb-4 text-center text-secondary font-medium text-fg-2 dark:text-fg-2-dark"
               >
                 {confirmNotice}
               </Text>
@@ -330,7 +325,7 @@ export default function RecoveryPhraseScreen({ onDone }: { onDone?: () => void }
             {stage === "initializing" ? (
               <Text
                 testID="recovery-phrase-initializing"
-                className="pb-6 text-center text-fg-2 dark:text-fg-2-dark"
+                className="pb-6 text-center text-secondary font-medium text-fg-2 dark:text-fg-2-dark"
               >
                 Setting up your encryption keys…
               </Text>
@@ -360,22 +355,16 @@ export default function RecoveryPhraseScreen({ onDone }: { onDone?: () => void }
       testID="recovery-phrase-done"
       className="flex-1 items-center justify-center gap-3 bg-bg px-6 dark:bg-bg-dark"
     >
-      <Text className="text-center text-lg font-semibold text-fg dark:text-fg-dark">
+      <Text className="text-center text-title font-bold text-fg dark:text-fg-dark">
         Your recovery words are saved
       </Text>
-      <Text className="text-center text-fg-2 dark:text-fg-2-dark">
+      <Text className="text-center text-body font-medium text-fg-2 dark:text-fg-2-dark">
         Keep what you wrote down somewhere private and offline.
       </Text>
       {onDone ? (
-        <Pressable
-          testID="recovery-phrase-continue-button"
-          onPress={onDone}
-          accessibilityRole="button"
-          accessibilityLabel="Continue"
-          className="mt-2 rounded-lg bg-brand px-6 py-3 dark:bg-brand-dark"
-        >
-          <Text className="font-semibold text-surface dark:text-surface-dark">Continue</Text>
-        </Pressable>
+        <View className="mt-2 w-full">
+          <Button testID="recovery-phrase-continue-button" title="Continue" size="lg" onPress={onDone} />
+        </View>
       ) : null}
     </View>
   );

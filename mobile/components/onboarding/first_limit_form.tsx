@@ -38,16 +38,39 @@
 // numeric-input-system W1 that helper reads the keys as PESOS: "10000" is
 // ₱10,000.00, not the ₱100.00 the old centavos-by-digit field made of it.
 import { useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Text, View } from "react-native";
 
 import { formatCentavos } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
 import { NumericField } from "@/components/ui/numeric_field";
+import { SegmentedControl } from "@/components/ui/segmented_control";
 import { dailyRateOf } from "@/lib/limits/limit_derivation";
 import { baseFor } from "@/lib/limits/limit_engine";
 import { percentToValue } from "@/lib/limits/limit_input";
 import { centavosFrom } from "@/lib/money/peso_input";
 import type { Centavos, LimitBasis, LimitScope } from "@/types/domain";
+
+/**
+ * The basis toggle's OWN value space — deliberately not `LimitBasis` itself.
+ * `SegmentedControl` derives each segment's `testID` as `${controlID}-${value}`,
+ * and this screen's pinned testIDs are `first-limit-basis-fixed` /
+ * `first-limit-basis-percent` (components/onboarding/__tests__/
+ * first_limit_step.test.tsx, out of this task's file list). `LimitBasis`'s own
+ * `"percent-of-income"` would derive `first-limit-basis-percent-of-income`
+ * instead — a silent testID rename, which this revamp may not do anywhere.
+ * Translating one short-lived local union at the two call sites below is
+ * cheaper than that, and keeps `LimitBasis` itself exactly what the domain
+ * layer already agrees it means.
+ */
+type BasisSegment = "fixed" | "percent";
+
+function toLimitBasis(segment: BasisSegment): LimitBasis {
+  return segment === "percent" ? "percent-of-income" : "fixed";
+}
+
+function toBasisSegment(basis: LimitBasis): BasisSegment {
+  return basis === "percent-of-income" ? "percent" : "fixed";
+}
 
 export type FirstLimitFormValues = {
   basis: LimitBasis;
@@ -124,89 +147,53 @@ export function FirstLimitForm({ monthlyIncome, busy = false, onSubmit }: FirstL
     setBasis(next);
   }
 
+  // The basis SegmentedControl's own segment list — built fresh each render
+  // so "percent" only ever appears once income makes it a real choice (rule
+  // 5), the same condition the old hand-rolled Pressable used to gate on.
+  const basisSegments = [
+    { value: "fixed" as const, label: "Fixed ₱" },
+    ...(percentAvailable ? [{ value: "percent" as const, label: "% of income" }] : []),
+  ];
+
   return (
     <View className="gap-6">
-      <Text testID="first-limit-form-intro" className="text-fg-2 dark:text-fg-2-dark">
+      <Text
+        testID="first-limit-form-intro"
+        className="text-body font-medium text-fg-2 dark:text-fg-2-dark"
+      >
         A spending Limit is the simplest guardrail — you can refine it any time in Plan.
       </Text>
 
       {/* THE CADENCE, ASKED RATHER THAN ASSUMED (owner, 2026-08-20). Monthly
           stays preselected — docs rule 14's default — but a user who thinks in
           weeks no longer has to enter a monthly figure and convert it in their
-          head, then find they cannot change it afterwards. */}
-      <View className="flex-row flex-wrap gap-2">
-        {SCOPES.map((option) => (
-          <Pressable
-            key={option}
-            testID={`first-limit-scope-${option}`}
-            onPress={() => setScope(option)}
-            accessibilityRole="button"
-            accessibilityState={{ selected: scope === option }}
-            className={`rounded-full px-4 py-2 ${
-              scope === option ? "bg-brand dark:bg-brand-dark" : "bg-surface dark:bg-surface-dark"
-            }`}
-          >
-            <Text
-              className={
-                scope === option
-                  ? "text-on-brand dark:text-on-brand-dark"
-                  : "text-fg dark:text-fg-dark"
-              }
-            >
-              {SCOPE_CHIP[option]}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
+          head, then find they cannot change it afterwards. `LimitScope`'s own
+          values ("daily"/"weekly"/"monthly"/"annual") already match this
+          screen's pinned `first-limit-scope-*` testIDs, so this segment's
+          value IS the domain type — no translation layer needed here, unlike
+          the basis control below. */}
+      <SegmentedControl
+        testID="first-limit-scope"
+        segments={SCOPES.map((option) => ({ value: option, label: SCOPE_CHIP[option] }))}
+        value={scope}
+        onChange={setScope}
+      />
 
-      <View className="flex-row gap-2">
-        <Pressable
-          testID="first-limit-basis-fixed"
-          onPress={() => chooseBasis("fixed")}
-          accessibilityRole="button"
-          accessibilityState={{ selected: basis === "fixed" }}
-          className={`rounded-full px-4 py-2 ${
-            basis === "fixed" ? "bg-brand dark:bg-brand-dark" : "bg-surface dark:bg-surface-dark"
-          }`}
-        >
-          <Text
-            className={
-              basis === "fixed" ? "text-surface dark:text-surface-dark" : "text-fg dark:text-fg-dark"
-            }
-          >
-            Fixed ₱
-          </Text>
-        </Pressable>
-
-        {/* Rule 5: hidden, not disabled, when no income was declared — there
-            is nothing here for the user to unlock, only a reason to state. */}
-        {percentAvailable ? (
-          <Pressable
-            testID="first-limit-basis-percent"
-            onPress={() => chooseBasis("percent-of-income")}
-            accessibilityRole="button"
-            accessibilityState={{ selected: basis === "percent-of-income" }}
-            className={`rounded-full px-4 py-2 ${
-              basis === "percent-of-income"
-                ? "bg-brand dark:bg-brand-dark"
-                : "bg-surface dark:bg-surface-dark"
-            }`}
-          >
-            <Text
-              className={
-                basis === "percent-of-income"
-                  ? "text-surface dark:text-surface-dark"
-                  : "text-fg dark:text-fg-dark"
-              }
-            >
-              % of income
-            </Text>
-          </Pressable>
-        ) : null}
-      </View>
+      {/* Rule 5: the percent segment is ABSENT, not disabled, when no income
+          was declared — there is nothing here for the user to unlock, only a
+          reason to state (the note just below). */}
+      <SegmentedControl
+        testID="first-limit-basis"
+        segments={basisSegments}
+        value={toBasisSegment(basis)}
+        onChange={(segment) => chooseBasis(toLimitBasis(segment))}
+      />
 
       {!percentAvailable ? (
-        <Text testID="first-limit-no-income-note" className="text-sm text-fg-2 dark:text-fg-2-dark">
+        <Text
+          testID="first-limit-no-income-note"
+          className="text-secondary font-medium text-fg-2 dark:text-fg-2-dark"
+        >
           You haven&apos;t told PeraPlano your income yet, so this Limit is a fixed peso amount.
           Once you do, you can switch it to a percentage any time.
         </Text>
@@ -242,7 +229,7 @@ export function FirstLimitForm({ monthlyIncome, busy = false, onSubmit }: FirstL
 
       {/* Rule 4 — the sentence that makes the abstraction land, live on every
           keystroke. */}
-      <Text testID="first-limit-preview" className="text-lg font-semibold text-fg dark:text-fg-dark">
+      <Text testID="first-limit-preview" className="text-section font-bold text-fg dark:text-fg-dark">
         {scope === "daily"
           ? // "…every day is about ₱X a day" says the same thing twice. On the
             // daily cadence the figure IS the daily figure, so the sentence

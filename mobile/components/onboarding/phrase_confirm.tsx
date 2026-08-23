@@ -18,8 +18,10 @@
 // there is no partial credit, because partial credit is exactly what would
 // let a user who wrote down nine of twelve words pass.
 import { useMemo, useState } from "react";
-import { Pressable, Text, TextInput, View } from "react-native";
+import { Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+
+import { Button } from "@/components/ui/button";
 
 const CHALLENGE_COUNT = 3;
 
@@ -97,16 +99,16 @@ export function PhraseConfirm({
         paddingBottom: SCREEN_PADDING + insets.bottom,
       }}
     >
-      <Text className="text-center text-lg font-semibold text-fg dark:text-fg-dark">
+      <Text className="text-center text-title font-bold text-fg dark:text-fg-dark">
         Confirm your recovery words
       </Text>
-      <Text className="mt-2 text-center text-fg-2 dark:text-fg-2-dark">
+      <Text className="mt-2 text-center text-body font-medium text-fg-2 dark:text-fg-2-dark">
         Type the words below from what you wrote down, to make sure you actually have them.
       </Text>
 
       {positions.map((position, i) => (
         <View key={position} className="mt-4 gap-1">
-          <Text testID={`confirm-label-${i}`} className="text-fg-2 dark:text-fg-2-dark">
+          <Text testID={`confirm-label-${i}`} className="text-row font-medium text-fg-2 dark:text-fg-2-dark">
             Word {position + 1}
           </Text>
           <TextInput
@@ -117,28 +119,26 @@ export function PhraseConfirm({
             autoCorrect={false}
             editable={!confirmed}
             accessibilityLabel={`Word ${position + 1}`}
-            className="rounded-lg border border-fg-2 p-3 text-fg dark:border-fg-2-dark dark:text-fg-dark"
+            className="rounded-xl border border-line p-3 text-body font-medium text-fg dark:border-line-dark dark:text-fg-dark"
           />
         </View>
       ))}
 
       {error ? (
-        <Text testID="confirm-error" className="mt-3 text-center text-danger dark:text-danger-dark">
+        <Text testID="confirm-error" className="mt-3 text-center text-body font-medium text-danger dark:text-danger-dark">
           {error}
         </Text>
       ) : null}
 
-      <Pressable
-        testID="confirm-submit-button"
-        onPress={handleSubmit}
-        disabled={confirmed}
-        accessibilityRole="button"
-        accessibilityLabel="Confirm recovery words"
-        accessibilityState={{ disabled: confirmed }}
-        className="mt-6 items-center rounded-lg bg-brand py-3 dark:bg-brand-dark"
-      >
-        <Text className="font-semibold text-surface dark:text-surface-dark">Confirm</Text>
-      </Pressable>
+      <View className="mt-6">
+        <Button
+          testID="confirm-submit-button"
+          title="Confirm"
+          size="lg"
+          disabled={confirmed}
+          onPress={handleSubmit}
+        />
+      </View>
     </View>
   );
 }

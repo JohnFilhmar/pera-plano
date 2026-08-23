@@ -127,6 +127,25 @@ export function OnboardingFrame({
       className="flex-1 bg-bg dark:bg-bg-dark"
       style={{ paddingTop: insets.top, paddingBottom: insets.bottom }}
     >
+      {/*
+        THE HEADER'S RIGHT SLOT IS "Skip", NOT A SPACER, per the design (back
+        chevron and a Skip text action share the header row). `SkipLink`
+        moved here from the footer wholesale -- same component, same
+        `onboarding-skip-link` testID, same `onSkip` wiring -- because no
+        test in this revamp asserts WHERE that testID sits, only whether it
+        exists and what pressing it does (setup_flow_e2e.test.tsx's own
+        `pressSkip()` helper is a bare `getByTestId` + `fireEvent.press`).
+        Moving it earns back the footer for a single full-width primary
+        button and avoids showing the same "leave this step" affordance
+        twice on one screen.
+
+        This does trade away the OLD header's left/right symmetry: a
+        variable-width "Skip for now" on the right no longer balances a
+        fixed 44dp chevron slot on the left the way the old empty spacer
+        did, so the dot row drifts a few dp off true-centre on a skippable
+        step. Accepted deliberately -- nothing here pins pixel-perfect
+        centring, and a shifted-but-legible progress row beats a duplicated
+        skip control. */}
       <View className="flex-row items-center gap-2 px-2 pb-2 pt-4">
         {onBack ? (
           <Pressable
@@ -147,7 +166,11 @@ export function OnboardingFrame({
         <View className="flex-1">
           <StepProgress current={step} />
         </View>
-        <View className="min-h-[44px] min-w-[44px]" />
+        {onSkip ? (
+          <SkipLink onPress={onSkip} label={skipLabel} />
+        ) : (
+          <View className="min-h-[44px] min-w-[44px]" />
+        )}
       </View>
 
       <ScrollView
@@ -155,7 +178,7 @@ export function OnboardingFrame({
         className="flex-1"
         contentContainerClassName="gap-4 px-6 py-4"
       >
-        <Text className="text-2xl font-bold text-fg dark:text-fg-dark">{title}</Text>
+        <Text className="text-title font-bold text-fg dark:text-fg-dark">{title}</Text>
         {children}
       </ScrollView>
 
@@ -167,11 +190,11 @@ export function OnboardingFrame({
         <Button
           testID="onboarding-primary-button"
           title={primaryLabel}
+          size="lg"
           onPress={onPrimary}
           disabled={primaryDisabled}
           loading={primaryBusy}
         />
-        {onSkip ? <SkipLink onPress={onSkip} label={skipLabel} /> : null}
       </View>
     </View>
   );

@@ -23,11 +23,22 @@
 // PURELY PRESENTATIONAL, same split every onboarding step keeps: the caller
 // (app/(onboarding)/income.tsx) owns the wallet list, the mutation and the
 // clock; this component only collects the answer.
+//
+// RESTYLE (mobile-ui-revamp Part 3 Task 6). `CadencePicker` itself is
+// deliberately UNCHANGED — it lives in components/income/, outside this
+// task's file list, and this file's own header already explains why a
+// second cadence list here (hand-rolled, or a `SegmentedControl` re-deriving
+// the same four values) is the exact drift rule 3 exists to prevent: the
+// order would live in two places the moment either one is next edited. The
+// design's "SegmentedControl for cadence" is therefore not reproduced
+// literally here — see this task's report. Everything else (labels, the
+// wallet chips, spacing) picks up the new tokens.
 import { useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Text, View } from "react-native";
 
 import { CadencePicker } from "@/components/income/cadence_picker";
 import { Button } from "@/components/ui/button";
+import { Chip } from "@/components/ui/chip";
 import { NumericField } from "@/components/ui/numeric_field";
 import { centavosFrom } from "@/lib/money/peso_input";
 import type { Centavos, IncomeCadence, Wallet } from "@/types/domain";
@@ -59,14 +70,17 @@ export function IncomeQuickForm({ wallets, busy = false, onSubmit }: IncomeQuick
 
   return (
     <View className="gap-6">
-      <Text testID="income-quick-form-intro" className="text-fg-2 dark:text-fg-2-dark">
+      <Text
+        testID="income-quick-form-intro"
+        className="text-body font-medium text-fg-2 dark:text-fg-2-dark"
+      >
         When does money usually come in?
       </Text>
 
       <CadencePicker value={cadence} onChange={setCadence} />
 
       <View>
-        <Text className="font-semibold text-fg dark:text-fg-dark">
+        <Text className="text-row font-semibold text-fg dark:text-fg-dark">
           {cadence === "irregular" ? "Roughly how much a month?" : "How much each time?"}
         </Text>
         {/* THE FIELD FINALLY MEANS WHAT ITS EXAMPLE SAYS (numeric-input-system
@@ -91,34 +105,24 @@ export function IncomeQuickForm({ wallets, busy = false, onSubmit }: IncomeQuick
 
       {wallets.length > 0 ? (
         <View>
-          <Text className="font-semibold text-fg dark:text-fg-dark">
+          <Text className="text-row font-semibold text-fg dark:text-fg-dark">
             Which wallet does it land in?
           </Text>
-          <Text className="mt-1 text-fg-2 dark:text-fg-2-dark">
+          <Text className="mt-1 text-secondary font-medium text-fg-2 dark:text-fg-2-dark">
             Optional — it helps PeraPlano tell your pay apart from other money coming in.
           </Text>
           <View className="mt-2 flex-row flex-wrap gap-2">
             {wallets.map((wallet) => {
               const selected = walletIds.includes(wallet.id);
               return (
-                <Pressable
+                <Chip
                   key={wallet.id}
                   testID={`income-quick-wallet-${wallet.id}`}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected }}
+                  label={wallet.name}
+                  tone="brand"
+                  fill={selected ? "solid" : "outline"}
                   onPress={() => toggleWallet(wallet.id)}
-                  className={`rounded-full px-4 py-2 ${
-                    selected ? "bg-brand dark:bg-brand-dark" : "bg-surface dark:bg-surface-dark"
-                  }`}
-                >
-                  <Text
-                    className={
-                      selected ? "text-on-brand dark:text-on-brand-dark" : "text-fg dark:text-fg-dark"
-                    }
-                  >
-                    {wallet.name}
-                  </Text>
-                </Pressable>
+                />
               );
             })}
           </View>

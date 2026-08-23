@@ -27,17 +27,29 @@
 // skippable, and skipping this one is SAFE: it writes an empty filter, which
 // CapturePrefs.shouldCapture already treats as allow-all. See the caller for
 // why that must never be confused with pausing capture.
+//
+// RESTYLE (mobile-ui-revamp Part 3 Task 6) — the two-column tile grid. The
+// former vertical list of hand-drawn checkbox squares becomes a grid of
+// `ProviderBadge` tiles: `border-2 border-brand bg-brand-soft` when selected,
+// a plain `border border-line bg-surface` otherwise, with a filled check
+// circle standing in for the old checkbox square. Every accessibility
+// contract this screen already shipped is untouched — see the tile below.
 import { useCallback, useState } from "react";
+import { Check } from "lucide-react-native";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { Button, registerIcon } from "@/components/ui/button";
+import { ProviderBadge } from "@/components/ui/provider_badge";
 import type { ProviderChoice } from "@/lib/ingest/provider_catalogue";
+
+const CheckGlyph = registerIcon(Check);
 
 /** The `py-8` this screen used to carry, kept as the floor its system-bar
  * insets are added to (see the root View below). */
 const SCREEN_PADDING = 32;
 
-function ChoiceRow({
+function ChoiceTile({
   choice,
   selected,
   onToggle,
@@ -51,28 +63,34 @@ function ChoiceRow({
       testID={`provider-choice-${choice.packageName}`}
       onPress={() => onToggle(choice.packageName)}
       accessibilityRole="checkbox"
-      // The tick below is a visual affordance only; this is what a screen
-      // reader announces, and the only thing that reports state without colour.
+      // The check circle below is a visual affordance only; this is what a
+      // screen reader announces, and the only thing that reports state
+      // without colour.
       accessibilityState={{ checked: selected }}
       accessibilityLabel={choice.displayName}
-      className="min-h-[44px] flex-row items-center gap-3 py-3"
+      className={`min-h-[44px] w-[48%] gap-2 rounded-2xl p-3 ${
+        selected
+          ? "border-2 border-brand bg-brand-soft dark:border-brand-dark dark:bg-brand-soft-dark"
+          : "border border-line bg-surface dark:border-line-dark dark:bg-surface-dark"
+      }`}
     >
-      <View
-        className={
-          selected
-            ? "h-5 w-5 items-center justify-center rounded border-2 border-brand bg-brand dark:border-brand-dark dark:bg-brand-dark"
-            : "h-5 w-5 rounded border-2 border-fg-2 dark:border-fg-2-dark"
-        }
-      >
-        {selected ? (
-          <Text className="text-xs font-semibold text-surface dark:text-surface-dark">✓</Text>
-        ) : null}
+      <View className="flex-row items-start justify-between">
+        <ProviderBadge providerKey={choice.displayName} size={20} />
+        <View
+          className={
+            selected
+              ? "h-5 w-5 items-center justify-center rounded-full bg-brand dark:bg-brand-dark"
+              : "h-5 w-5 rounded-full border border-line dark:border-line-dark"
+          }
+        >
+          {selected ? <CheckGlyph size={12} className="text-on-brand dark:text-on-brand-dark" /> : null}
+        </View>
       </View>
-      <View className="flex-1">
+      <View>
         <Text
           numberOfLines={1}
           testID={`provider-name-${choice.packageName}`}
-          className="text-base text-fg dark:text-fg-dark"
+          className="text-row font-semibold text-fg dark:text-fg-dark"
         >
           {choice.displayName}
         </Text>
@@ -83,7 +101,7 @@ function ChoiceRow({
           <Text
             numberOfLines={1}
             testID={`provider-package-${choice.packageName}`}
-            className="text-sm text-fg-2 dark:text-fg-2-dark"
+            className="text-micro font-medium text-fg-2 dark:text-fg-2-dark"
           >
             {choice.packageName}
           </Text>
@@ -136,13 +154,16 @@ export function ProviderPicker({
         paddingBottom: SCREEN_PADDING + insets.bottom,
       }}
     >
-      <Text className="text-center text-lg font-semibold text-fg dark:text-fg-dark">
+      <Text className="text-center text-title font-bold text-fg dark:text-fg-dark">
         Which apps should PeraPlano listen to?
       </Text>
       {/* Rule 5 — the one moment the privacy promise stops being an abstract
           claim in a settings screen and becomes a decision the user is making
           right now, about their own banking apps. */}
-      <Text testID="provider-picker-privacy" className="mt-2 text-center text-fg-2 dark:text-fg-2-dark">
+      <Text
+        testID="provider-picker-privacy"
+        className="mt-2 text-center text-body font-medium text-fg-2 dark:text-fg-2-dark"
+      >
         PeraPlano reads notifications only from the apps you pick here. Nothing else on your phone
         is read, and the text never leaves this device.
       </Text>
@@ -155,21 +176,23 @@ export function ProviderPicker({
           <View testID="provider-group-observed">
             <Text
               testID="provider-heading-observed"
-              className="pb-1 pt-2 text-base font-semibold text-fg dark:text-fg-dark"
+              className="pb-1 pt-2 text-section font-bold text-fg dark:text-fg-dark"
             >
               Apps we&apos;ve seen
             </Text>
-            <Text className="pb-2 text-sm text-fg-2 dark:text-fg-2-dark">
+            <Text className="pb-2 text-secondary font-medium text-fg-2 dark:text-fg-2-dark">
               These have posted a notification on this phone.
             </Text>
-            {seen.map((choice) => (
-              <ChoiceRow
-                key={choice.packageName}
-                choice={choice}
-                selected={selected.includes(choice.packageName)}
-                onToggle={toggle}
-              />
-            ))}
+            <View className="flex-row flex-wrap justify-between gap-y-3">
+              {seen.map((choice) => (
+                <ChoiceTile
+                  key={choice.packageName}
+                  choice={choice}
+                  selected={selected.includes(choice.packageName)}
+                  onToggle={toggle}
+                />
+              ))}
+            </View>
           </View>
         ) : null}
 
@@ -177,21 +200,23 @@ export function ProviderPicker({
           <View testID="provider-group-suggested">
             <Text
               testID="provider-heading-suggested"
-              className="pb-1 pt-5 text-base font-semibold text-fg dark:text-fg-dark"
+              className="pb-1 pt-5 text-section font-bold text-fg dark:text-fg-dark"
             >
               Common in the Philippines
             </Text>
-            <Text className="pb-2 text-sm text-fg-2 dark:text-fg-2-dark">
+            <Text className="pb-2 text-secondary font-medium text-fg-2 dark:text-fg-2-dark">
               We haven&apos;t seen these on your phone yet. Pick one anyway if you use it.
             </Text>
-            {unseen.map((choice) => (
-              <ChoiceRow
-                key={choice.packageName}
-                choice={choice}
-                selected={selected.includes(choice.packageName)}
-                onToggle={toggle}
-              />
-            ))}
+            <View className="flex-row flex-wrap justify-between gap-y-3">
+              {unseen.map((choice) => (
+                <ChoiceTile
+                  key={choice.packageName}
+                  choice={choice}
+                  selected={selected.includes(choice.packageName)}
+                  onToggle={toggle}
+                />
+              ))}
+            </View>
           </View>
         ) : null}
       </ScrollView>
@@ -202,23 +227,21 @@ export function ProviderPicker({
           worried about exactly that. */}
       <Text
         testID="provider-picker-allow-all-note"
-        className="mt-3 text-center text-sm text-fg-2 dark:text-fg-2-dark"
+        className="mt-3 text-center text-secondary font-medium text-fg-2 dark:text-fg-2-dark"
       >
         Pick nothing and PeraPlano keeps watching every app for money notifications instead. You
         can narrow this down any time in Settings.
       </Text>
 
-      <Pressable
-        testID="provider-picker-continue-button"
-        onPress={handleConfirm}
-        disabled={busy}
-        accessibilityRole="button"
-        accessibilityLabel="Continue"
-        accessibilityState={{ disabled: busy }}
-        className="mt-4 items-center rounded-lg bg-brand py-3 dark:bg-brand-dark"
-      >
-        <Text className="font-semibold text-surface dark:text-surface-dark">Continue</Text>
-      </Pressable>
+      <View className="mt-4">
+        <Button
+          testID="provider-picker-continue-button"
+          title="Continue"
+          size="lg"
+          onPress={handleConfirm}
+          disabled={busy}
+        />
+      </View>
 
       <Pressable
         testID="provider-picker-skip-button"
@@ -227,9 +250,9 @@ export function ProviderPicker({
         accessibilityRole="button"
         accessibilityLabel="Skip for now"
         accessibilityState={{ disabled: busy }}
-        className="mt-3 items-center py-3"
+        className="mt-1 min-h-[44px] items-center justify-center py-3"
       >
-        <Text className="font-semibold text-brand dark:text-brand-dark">Skip for now</Text>
+        <Text className="text-row font-semibold text-brand dark:text-brand-dark">Skip for now</Text>
       </Pressable>
     </View>
   );

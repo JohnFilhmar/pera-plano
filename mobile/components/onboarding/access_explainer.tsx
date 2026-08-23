@@ -32,7 +32,41 @@
 //
 // A future edit to any of those three files without a matching edit here (or
 // vice versa) is exactly the drift this comment exists to catch in review.
+//
+// RESTYLE (mobile-ui-revamp Part 3 Task 6): the local-first promise stays the
+// lead sentence, unstyled-list, exactly where rule 1 puts it. The three
+// claims under it (what's extracted, what's discarded, what happens next)
+// become a reassurance list -- one lucide glyph per row -- instead of three
+// stacked paragraphs with nothing to distinguish them at a glance. Every
+// testID and every word of copy is unchanged; only the wrapper each Text
+// sits in, and the glyph beside it, are new.
+import { Clock, FileText, Info, Smartphone } from "lucide-react-native";
 import { Text, View } from "react-native";
+
+import { registerIcon } from "@/components/ui/button";
+import type { IconComponent } from "@/components/ui/button";
+
+function ReassuranceRow({
+  icon,
+  testID,
+  children,
+}: {
+  icon: IconComponent;
+  testID: string;
+  children: string;
+}) {
+  const Icon = registerIcon(icon);
+  return (
+    <View className="flex-row items-start gap-3">
+      <View className="mt-0.5 h-8 w-8 items-center justify-center rounded-full bg-brand-soft dark:bg-brand-soft-dark">
+        <Icon size={16} className="text-brand dark:text-brand-dark" />
+      </View>
+      <Text testID={testID} className="flex-1 text-body font-medium text-fg-2 dark:text-fg-2-dark">
+        {children}
+      </Text>
+    </View>
+  );
+}
 
 export type AccessExplainerProps = {
   /** Set once the step has returned from Settings without the grant (rule 3). */
@@ -42,27 +76,36 @@ export type AccessExplainerProps = {
 export function AccessExplainer({ outcome }: AccessExplainerProps) {
   return (
     <View testID="access-explainer" className="gap-4">
-      <Text testID="access-explainer-local-first" className="text-base text-fg dark:text-fg-dark">
+      <Text
+        testID="access-explainer-local-first"
+        className="text-body font-semibold text-fg dark:text-fg-dark"
+      >
         PeraPlano reads your bank and e-wallet notifications, parses them on this device, and
         never sends the raw text anywhere.
       </Text>
-      <Text testID="access-explainer-extracted" className="text-fg-2 dark:text-fg-2-dark">
-        From each one it pulls four things: the amount, the direction — money in or out, the
-        merchant, and the reference number. That's what turns a notification into a transaction in
-        your ledger automatically, without you typing anything.
-      </Text>
-      <Text testID="access-explainer-discarded" className="text-fg-2 dark:text-fg-2-dark">
-        The notification text itself is kept for 30 days, then deleted automatically.
-      </Text>
-      <Text testID="access-explainer-system-preview" className="text-fg-2 dark:text-fg-2-dark">
-        Next, Android will ask you to turn on notification access for PeraPlano — that's a system
-        screen, not part of the app.
-      </Text>
+
+      <View className="gap-3">
+        <ReassuranceRow icon={FileText} testID="access-explainer-extracted">
+          {
+            "From each one it pulls four things: the amount, the direction — money in or out, the merchant, and the reference number. That's what turns a notification into a transaction in your ledger automatically, without you typing anything."
+          }
+        </ReassuranceRow>
+        <ReassuranceRow icon={Clock} testID="access-explainer-discarded">
+          The notification text itself is kept for 30 days, then deleted automatically.
+        </ReassuranceRow>
+        <ReassuranceRow icon={Smartphone} testID="access-explainer-system-preview">
+          {
+            "Next, Android will ask you to turn on notification access for PeraPlano — that's a system screen, not part of the app."
+          }
+        </ReassuranceRow>
+      </View>
+
       {outcome === "declined" ? (
-        <Text testID="access-explainer-declined-notice" className="text-fg-2 dark:text-fg-2-dark">
-          No problem — you can turn this on later from Settings. PeraPlano keeps working in manual
-          mode until you do.
-        </Text>
+        <ReassuranceRow icon={Info} testID="access-explainer-declined-notice">
+          {
+            "No problem — you can turn this on later from Settings. PeraPlano keeps working in manual mode until you do."
+          }
+        </ReassuranceRow>
       ) : null}
     </View>
   );

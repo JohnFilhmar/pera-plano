@@ -70,13 +70,14 @@
 // them, so nothing in the app depends on them either.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "expo-router";
-import { Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 
 import { OnboardingFrame } from "@/components/onboarding/onboarding_frame";
 import { QuickWalletList } from "@/components/onboarding/quick_wallet_list";
 import type { WalletProposal } from "@/components/onboarding/quick_wallet_list";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { ProviderBadge } from "@/components/ui/provider_badge";
 import { providerLabel } from "@/constants/providers";
 import { useCreateWallet } from "@/hooks/mutations/use_create_wallet";
 import { useSetWalletMatchers } from "@/hooks/mutations/use_set_wallet_matchers";
@@ -166,6 +167,14 @@ function proposalFor(choice: ProviderChoice, included: boolean): WalletProposal 
     name: defaultNameFor(choice),
     type: defaultTypeFor(choice),
     packageName: choice.packageName,
+    // `choice.displayName` IS the ruleset's providerKey here (e.g. "gcash"):
+    // every choice this function ever runs on has `suggested: true`
+    // (dedupeByProvider only ever receives seen-and-suggested or
+    // suggested-only choices — see the two call sites below), and
+    // `buildProviderChoices` only sets `suggested: true` when it resolved a
+    // real provider, in which case `displayName` is that provider's key, not
+    // a raw package id. `ProviderBadge` needs exactly this, not `packageName`.
+    providerKey: choice.displayName,
     included,
     // Task 4 rule 1: optional, blank by default — the user opts in by typing.
     openingBalanceText: "",
@@ -178,6 +187,7 @@ const CASH_PROPOSAL: WalletProposal = {
   name: "Cash",
   type: "cash",
   packageName: null,
+  providerKey: null,
   included: true,
   openingBalanceText: "",
 };
@@ -432,14 +442,24 @@ export default function WalletsScreen({
         onPrimary={advance}
         primaryLabel="Continue"
       >
+        {/*
+          NO FREE-PLAN CAP NOTE (spec D10: no cap in beta; the paywall sheet
+          is built but never triggered). This branch is already unreachable
+          from any real beta install — `wouldExceedCap` above can only ever
+          be true when a test forces `__setTierForTests("free")`
+          (components/onboarding/__tests__/providers_step.test.tsx, out of
+          this task's file list, still exercises it and still expects
+          `wallet-cap-note` to exist under that forced tier) — so the branch
+          itself stays, for that fail-safe test coverage, but the copy no
+          longer advertises a specific "free plan" cap number during beta.
+        */}
         <Card testID="wallet-cap-note">
-          <Text className="font-semibold text-fg dark:text-fg-dark">
-            You have more wallets than the free plan usually allows
+          <Text className="text-section font-bold text-fg dark:text-fg-dark">
+            You have more wallets than usual
           </Text>
-          <Text className="mt-2 text-fg-2 dark:text-fg-2-dark">
-            The free plan's usual cap is 3 — but every wallet you just set up is created and
-            working. The cap only applies when adding new wallets later, and nothing you already
-            have is ever removed.
+          <Text className="mt-2 text-body font-medium text-fg-2 dark:text-fg-2-dark">
+            Every wallet you just set up is created and working. Nothing you already have is ever
+            removed.
           </Text>
         </Card>
       </OnboardingFrame>
@@ -457,7 +477,7 @@ export default function WalletsScreen({
       onBack={goBack}
       onSkip={advance}
     >
-      <Text testID="wallets-step-intro" className="text-fg-2 dark:text-fg-2-dark">
+      <Text testID="wallets-step-intro" className="text-body font-medium text-fg-2 dark:text-fg-2-dark">
         PeraPlano sets up a wallet for each app you use, plus cash for what you spend by hand. Edit
         anything below, or uncheck what you don&apos;t want.
       </Text>
@@ -476,27 +496,29 @@ export default function WalletsScreen({
 
       {addable.length > 0 ? (
         <View className="gap-2">
-          <Text className="text-sm font-semibold text-fg dark:text-fg-dark">
-            Also have one of these?
-          </Text>
+          <Text className="text-section font-bold text-fg dark:text-fg-dark">Add another wallet</Text>
           <View className="flex-row flex-wrap gap-2">
             {addable.map((choice) => (
-              <Text
+              <Pressable
                 key={choice.packageName}
                 testID={`wallet-add-${choice.packageName}`}
                 onPress={() => addProvider(choice)}
                 accessibilityRole="button"
-                className="rounded-full bg-brand-soft px-3 py-2 text-sm text-brand dark:bg-brand-soft-dark dark:text-brand-dark"
+                accessibilityLabel={`Add ${defaultNameFor(choice)}`}
+                className="min-h-[44px] flex-row items-center gap-2 rounded-full border-2 border-dashed border-line bg-surface px-3 py-2 dark:border-line-dark dark:bg-surface-dark"
               >
-                + {defaultNameFor(choice)}
-              </Text>
+                <ProviderBadge providerKey={choice.displayName} size={16} />
+                <Text className="text-row font-semibold text-brand dark:text-brand-dark">
+                  + {defaultNameFor(choice)}
+                </Text>
+              </Pressable>
             ))}
           </View>
         </View>
       ) : null}
 
       {submitError ? (
-        <Text testID="wallets-step-error" className="text-danger dark:text-danger-dark">
+        <Text testID="wallets-step-error" className="text-body font-medium text-danger dark:text-danger-dark">
           {submitError}
         </Text>
       ) : null}

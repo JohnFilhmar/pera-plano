@@ -35,15 +35,20 @@
 // top of it.
 import { useCallback, useState } from "react";
 import { useRouter } from "expo-router";
+import { Check, Lock } from "lucide-react-native";
 import { Text, View } from "react-native";
 
 import { OnboardingFrame } from "@/components/onboarding/onboarding_frame";
 import { AmountText } from "@/components/ui/amount_text";
+import { registerIcon } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useIncomeSummary } from "@/hooks/queries/use_income_summary";
 import { useLimitStatuses } from "@/hooks/queries/use_limit_statuses";
 import { useWallets } from "@/hooks/queries/use_wallets";
 import { completeOnboarding } from "@/lib/onboarding/onboarding_state";
+
+const CheckGlyph = registerIcon(Check);
+const LockGlyph = registerIcon(Lock);
 
 const CADENCE_LABEL: Record<string, string> = {
   kinsenas: "kinsenas (15th and month-end)",
@@ -98,19 +103,34 @@ export default function DoneScreen({
       primaryBusy={finishing}
       onBack={goBack}
     >
-      <Text testID="done-step-intro" className="text-fg-2 dark:text-fg-2-dark">
+      {/* THE CHECK MEDALLION. A big, calm "you're done" mark rather than
+          another line of copy — the four cards below are the detail; this is
+          the one glance that says the setup succeeded. */}
+      <View className="items-center py-2">
+        <View
+          testID="done-medallion"
+          className="h-20 w-20 items-center justify-center rounded-full bg-brand-soft dark:bg-brand-soft-dark"
+        >
+          <CheckGlyph size={40} className="text-brand dark:text-brand-dark" />
+        </View>
+      </View>
+
+      <Text
+        testID="done-step-intro"
+        className="text-center text-body font-medium text-fg-2 dark:text-fg-2-dark"
+      >
         Here&apos;s what PeraPlano set up for you. Everything here can be changed any time.
       </Text>
 
       <Card testID="done-wallets-summary">
-        <Text className="font-semibold text-fg dark:text-fg-dark">
+        <Text className="text-row font-bold text-fg dark:text-fg-dark">
           {walletCount === 0
             ? "No wallets yet"
             : walletCount === 1
               ? "1 wallet ready"
               : `${walletCount} wallets ready`}
         </Text>
-        <Text className="mt-1 text-fg-2 dark:text-fg-2-dark">
+        <Text className="mt-1 text-secondary font-medium text-fg-2 dark:text-fg-2-dark">
           {walletCount === 0
             ? "Add one any time from the Wallets tab."
             : "PeraPlano will pick up transactions from these automatically."}
@@ -118,10 +138,10 @@ export default function DoneScreen({
       </Card>
 
       <Card testID="done-income-summary">
-        <Text className="font-semibold text-fg dark:text-fg-dark">
+        <Text className="text-row font-bold text-fg dark:text-fg-dark">
           {incomeKnown ? "Income declared" : "Income not set yet"}
         </Text>
-        <Text className="mt-1 text-fg-2 dark:text-fg-2-dark">
+        <Text className="mt-1 text-secondary font-medium text-fg-2 dark:text-fg-2-dark">
           {incomeKnown
             ? `Paid ${CADENCE_LABEL[income!.cadence as string] ?? income!.cadence}.`
             : "PeraPlano will work this out from your transactions over the next few paydays."}
@@ -129,19 +149,41 @@ export default function DoneScreen({
       </Card>
 
       <Card testID="done-limit-summary">
-        <Text className="font-semibold text-fg dark:text-fg-dark">
+        <Text className="text-row font-bold text-fg dark:text-fg-dark">
           {firstLimit ? "Your first Limit is active" : "No Limit set yet"}
         </Text>
         {firstLimit && firstLimit.effectiveLimit !== null ? (
           <View className="mt-1 flex-row items-center gap-1">
-            <Text className="text-fg-2 dark:text-fg-2-dark">Monthly limit:</Text>
+            <Text className="text-secondary font-medium text-fg-2 dark:text-fg-2-dark">
+              Monthly limit:
+            </Text>
             <AmountText amount={firstLimit.effectiveLimit} size="sm" showSign={false} />
           </View>
         ) : (
-          <Text className="mt-1 text-fg-2 dark:text-fg-2-dark">
+          <Text className="mt-1 text-secondary font-medium text-fg-2 dark:text-fg-2-dark">
             Add one any time from the Plan tab — Safe-to-Spend works better with one.
           </Text>
         )}
+      </Card>
+
+      {/* THE FOURTH CHECKLIST ITEM — the design's own count for this screen.
+          Deliberately static, unlike the three above: it names a standing
+          property of the app (docs/04-features/01-onboarding.md's local-first
+          promise, the same one access_explainer.tsx states) rather than a
+          fresh query, so it needs no new hook — this task may not add one
+          (lib/db/repos, hooks/queries and constants/query_keys.ts belong to a
+          concurrent task). */}
+      <Card testID="done-privacy-summary">
+        <View className="flex-row items-center gap-2">
+          <LockGlyph size={16} className="text-brand dark:text-brand-dark" />
+          <Text className="text-row font-bold text-fg dark:text-fg-dark">
+            Your data stays on this phone
+          </Text>
+        </View>
+        <Text className="mt-1 text-secondary font-medium text-fg-2 dark:text-fg-2-dark">
+          Notifications are parsed on-device. PeraPlano never sends your bank or e-wallet text
+          anywhere else.
+        </Text>
       </Card>
     </OnboardingFrame>
   );

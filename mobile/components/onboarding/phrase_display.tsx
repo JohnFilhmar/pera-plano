@@ -26,9 +26,21 @@
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { Button } from "@/components/ui/button";
+
 /** The `py-8` this screen used to carry, kept as the floor its system-bar
  * insets are added to (see the root View below). */
 const SCREEN_PADDING = 32;
+
+// RESTYLE (mobile-ui-revamp Part 3 Task 6) — TOKENS ONLY, NOT THE FRAME. See
+// device_lock_explainer.tsx's own header for the full reasoning: this screen
+// is reached both from app/(onboarding)/recovery_phrase.tsx AND, mid-life,
+// from app/lock.tsx's recovery path, neither of which is a numbered onboarding
+// step with a valid `OnboardingStep`. recovery_phrase.test.tsx additionally
+// pins the ABSENCE of any "skip"/"not now"/"later"/"maybe" wording anywhere on
+// this screen (task-10-brief rule 1) — `OnboardingFrame`'s skip affordance
+// must never reach this component, wrapped or not. Only className tokens
+// changed below.
 
 export function PhraseDisplay({
   words,
@@ -56,10 +68,10 @@ export function PhraseDisplay({
         paddingBottom: SCREEN_PADDING + insets.bottom,
       }}
     >
-      <Text className="text-center text-lg font-semibold text-fg dark:text-fg-dark">
+      <Text className="text-center text-title font-bold text-fg dark:text-fg-dark">
         Write down your recovery words
       </Text>
-      <Text className="mt-2 text-center text-fg-2 dark:text-fg-2-dark">
+      <Text className="mt-2 text-center text-body font-medium text-fg-2 dark:text-fg-2-dark">
         If you ever get a new phone, or turn off and reset your fingerprint or PIN, these 12
         recovery words are the only way back to your data -- PeraPlano cannot recover them for
         you.
@@ -67,18 +79,21 @@ export function PhraseDisplay({
 
       <ScrollView
         testID="phrase-word-list"
-        className="mt-6 max-h-96 rounded-lg border border-fg-2 dark:border-fg-2-dark"
+        className="mt-6 max-h-96 rounded-2xl border border-line dark:border-line-dark"
       >
         <View className="flex-row flex-wrap p-4">
           {words.map((word, index) => (
             <View key={`${index}-${word}`} className="w-1/3 flex-row gap-1 py-1.5">
-              <Text testID={`phrase-index-${index}`} className="text-fg-2 dark:text-fg-2-dark">
+              <Text
+                testID={`phrase-index-${index}`}
+                className="text-row font-medium text-fg-2 dark:text-fg-2-dark"
+              >
                 {index + 1}
               </Text>
               <Text
                 selectable
                 testID={`phrase-word-${index}`}
-                className="font-semibold text-fg dark:text-fg-dark"
+                className="text-row font-semibold text-fg dark:text-fg-dark"
               >
                 {word}
               </Text>
@@ -87,7 +102,7 @@ export function PhraseDisplay({
         </View>
       </ScrollView>
 
-      <Text className="mt-4 text-center text-warn dark:text-warn-dark">
+      <Text className="mt-4 text-center text-secondary font-medium text-warn dark:text-warn-dark">
         A screenshot saves these words to your phone's photo library, where other apps may be
         able to read them. Write them down somewhere private instead.
       </Text>
@@ -97,22 +112,19 @@ export function PhraseDisplay({
         onPress={onShare}
         accessibilityRole="button"
         accessibilityLabel="Copy or share your recovery words"
-        className="mt-4 items-center rounded-lg border border-brand py-3 dark:border-brand-dark"
+        className="mt-4 min-h-[44px] items-center justify-center rounded-full border-2 border-brand py-3 dark:border-brand-dark"
       >
-        <Text className="font-semibold text-brand dark:text-brand-dark">Copy or share</Text>
+        <Text className="text-body font-semibold text-brand dark:text-brand-dark">Copy or share</Text>
       </Pressable>
 
-      <Pressable
-        testID="phrase-continue-button"
-        onPress={onContinue}
-        accessibilityRole="button"
-        accessibilityLabel="I've written these down"
-        className="mt-3 items-center rounded-lg bg-brand py-3 dark:bg-brand-dark"
-      >
-        <Text className="font-semibold text-surface dark:text-surface-dark">
-          I've written these down
-        </Text>
-      </Pressable>
+      <View className="mt-3">
+        <Button
+          testID="phrase-continue-button"
+          title="I've written these down"
+          size="lg"
+          onPress={onContinue}
+        />
+      </View>
     </View>
   );
 }

@@ -25,6 +25,7 @@ import { useRouter } from "expo-router";
 import { Text, View } from "react-native";
 
 import { OnboardingFrame } from "@/components/onboarding/onboarding_frame";
+import { BrandMark } from "@/components/ui/brand_mark";
 
 export default function WelcomeScreen() {
   const router = useRouter();
@@ -43,11 +44,22 @@ export default function WelcomeScreen() {
       onPrimary={handlePrimary}
       primaryLabel="Get started"
     >
-      <View className="gap-4">
-        <Text testID="welcome-promise" className="text-lg text-fg dark:text-fg-dark">
+      <View className="items-center gap-4 py-4">
+        {/* `static`, deliberately -- Part 3 Task 7 ("place the motion") is
+            the task that decides whether and how this plays the `launch`
+            take-off, and it lands last, on finished screens. This anchor is
+            what it upgrades. */}
+        <BrandMark size={72} testID="welcome-brand-mark" />
+        <Text
+          testID="welcome-promise"
+          className="text-center text-section font-semibold text-fg dark:text-fg-dark"
+        >
           You never log a transaction. You only set the rules.
         </Text>
-        <Text testID="welcome-trust" className="text-fg-2 dark:text-fg-2-dark">
+        <Text
+          testID="welcome-trust"
+          className="text-center text-body font-medium text-fg-2 dark:text-fg-2-dark"
+        >
           No bank passwords. No account linking. Everything about your money stays on this phone.
         </Text>
       </View>

@@ -1,15 +1,23 @@
-// app/(onboarding)/__tests__/how_it_works.test.tsx — task-3-brief.md.
+// app/(onboarding)/__tests__/how_it_works.test.tsx — task-3-brief.md,
+// updated by mobile-ui-revamp Part 3 Task 6.
 //
-// Two named tests, both about the ValueCarousel this task adds ABOVE
-// how_it_works.tsx's existing content:
-//   - the regression on rule 7: the mechanism/example/trust copy (and its
-//     testIDs) must survive the carousel's addition untouched. This is
-//     narrower than setup_flow_e2e.test.tsx's own assertion on
-//     "how-it-works-mechanism" (the controller's regression gate), but
-//     pins the OTHER two testIDs that suite doesn't reach.
+// Two named tests, both about what sits ABOVE how_it_works.tsx's existing
+// mechanism/example/trust copy:
+//   - the regression on rule 7: that copy (and its testIDs) must survive
+//     untouched whatever renders above it. This is narrower than
+//     setup_flow_e2e.test.tsx's own assertion on "how-it-works-mechanism"
+//     (the controller's regression gate), but pins the OTHER two testIDs
+//     that suite doesn't reach.
 //   - the ordering test, written per the controller's Ruling 3: sibling
 //     order is read off the rendered JSON tree (a depth-first walk
 //     collecting `testID`s in render order), never off layout/coordinates.
+//
+// THE CAROUSEL ITSELF IS GONE FROM THIS SCREEN (Part 3 Task 6). The three
+// numbered "how it works" cards the design calls for replaced it — see
+// how_it_works.tsx's own header for why `ValueCarousel` is left intact but
+// unmounted rather than deleted. The ordering test below now asserts the new
+// "how-it-works-mechanism-cards" element leads the mechanism copy, in place
+// of the retired "how-it-works-value-carousel" assertion.
 //
 // components/onboarding/__tests__/how_it_works_step.test.tsx already covers
 // this screen's navigation and illustrative-notification wording; this file
@@ -58,15 +66,15 @@ test("how_it_works still renders its mechanism, example and trust copy", () => {
   expect(screen.getByTestId("how-it-works-trust")).toBeTruthy();
 });
 
-test("how_it_works renders the value carousel above the mechanism copy", () => {
+test("how_it_works renders the numbered mechanism cards above the mechanism copy", () => {
   render(<HowItWorksScreen />);
 
   const testIds: string[] = [];
   collectTestIds(screen.toJSON() as JsonNode, testIds);
 
-  const carouselIndex = testIds.indexOf("how-it-works-value-carousel");
+  const cardsIndex = testIds.indexOf("how-it-works-mechanism-cards");
   const mechanismIndex = testIds.indexOf("how-it-works-mechanism");
 
-  expect(carouselIndex).toBeGreaterThanOrEqual(0);
-  expect(mechanismIndex).toBeGreaterThan(carouselIndex);
+  expect(cardsIndex).toBeGreaterThanOrEqual(0);
+  expect(mechanismIndex).toBeGreaterThan(cardsIndex);
 });
