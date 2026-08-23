@@ -81,6 +81,7 @@ import {
 import { CashReconcileSheet } from "@/components/wallets/cash_reconcile_sheet";
 import { MatcherChipList } from "@/components/wallets/matcher_chip_list";
 import { WalletTypeIcon } from "@/components/wallets/wallet_type_icon";
+import { palette } from "@/constants/colors";
 import { providerBadge, providerKeyForPackage } from "@/constants/providers";
 import { useArchiveWallet } from "@/hooks/mutations/use_archive_wallet";
 import { useDismissDrift } from "@/hooks/mutations/use_dismiss_drift";
@@ -136,18 +137,28 @@ import { contrastRatio } from "@/lib/ui/contrast";
 const FILL_CONTRAST_FLOOR = 4.5;
 
 /**
- * The literal white this card's ink is measured against and painted with.
+ * The white this card's ink is measured against and painted with, as a FIXED
+ * value rather than the `on-brand`/`on-brand-dark` FLIPPING PAIR used on the
+ * `bg-brand` fallback below.
  *
- * A raw hex, not a token — the same class of exception `ProviderBadge`'s own
- * `ink` field already relies on (constants/providers.ts is Global
- * Constraints' authorised exception for provider identity colour). A
- * provider's colour is THEME-INDEPENDENT (one hex, not a light/dark pair), so
- * the ink paired with it has to be equally theme-independent — `on-brand`/
- * `on-brand-dark` is the token for ink on the `bg-brand` FALLBACK below (and
- * is used there instead), and is the WRONG one here: `on-brand-dark` is
- * near-black, chosen for a bright green fill, not for GCash blue.
+ * `on-brand-dark` is near-black (constants/colors.ts), chosen for a BRIGHT
+ * green fill in dark mode — right for `bg-brand`, which itself flips between
+ * a dark and a bright green, but wrong here: a provider's colour is
+ * THEME-INDEPENDENT (one hex, not a light/dark pair), so the ink paired with
+ * it has to stay fixed too, in both themes, matching the SAME white this
+ * file's contrast measurement checks against.
+ *
+ * `palette["on-brand"]`, NOT a literal — Global Constraints names exactly two
+ * authorised hex-literal locations, constants/colors.ts and
+ * constants/providers.ts, and this file is neither. `on-brand` (light theme's
+ * half of the pair above) already equals this exact value
+ * (constants/colors.ts: `"on-brand": "#FFFFFF"`), so referencing it costs
+ * nothing and removes a third place `"#FFFFFF"` could drift from the other
+ * two — the same reused-token pattern `app/(tabs)/wallets.tsx` and
+ * `components/reports/donut_chart.tsx` already use for a token VALUE needed
+ * as a raw `style` rather than a className.
  */
-const FILL_INK_WHITE = "#FFFFFF";
+const FILL_INK_WHITE = palette["on-brand"];
 
 type HeaderFill = { kind: "brand" } | { kind: "provider"; color: string };
 
