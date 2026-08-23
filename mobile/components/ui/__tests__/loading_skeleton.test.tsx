@@ -11,5 +11,9 @@ test("renders the requested number of placeholder rows", () => {
 
 test("the skeleton is announced as busy rather than read out as empty rows", () => {
   render(<LoadingSkeleton testID="s" rows={2} />);
+  // Both halves of the pair, not just the label: `accessible` is what
+  // collapses the group into one stop for a screen reader in the first
+  // place — a label with no `accessible` still reads every row.
+  expect(screen.getByTestId("s").props.accessible).toBe(true);
   expect(screen.getByTestId("s").props.accessibilityLabel).toBe("Loading");
 });

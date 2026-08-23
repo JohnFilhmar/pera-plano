@@ -21,13 +21,22 @@
 // own tests render it with no provider above it — the same reason `Chip`
 // reads the colour scheme this way instead (see that file's header).
 //
-// THE ICON'S TESTID SITS ON A WRAPPING VIEW, NOT THE SVG ITSELF —
-// `components/wallets/wallet_type_icon.tsx` made the same call first
-// ("react-native-svg's prop forwarding is not something this component
-// should depend on"), and this file's own test suite confirms it: a `testID`
-// passed straight to a lucide icon never reaches anything
-// `getByTestId` can find. The wrapper and the icon share one class-string
-// constant so the two can never silently drift apart.
+// NO WRAPPER AROUND THE ICON (fix round 1, task-5-fix1). An earlier revision
+// wrapped `AlertIcon` in a `testID`-carrying `View` and copied the icon's
+// className onto that wrapper, because a `testID` passed straight to a
+// lucide icon never reaches anything `getByTestId` can find
+// (`components/wallets/wallet_type_icon.tsx` documents the same finding).
+// That fix solved the wrong problem: the wrapper's className was a COPY, not
+// the real prop the glyph renders from, so retinting only the icon and
+// leaving the wrapper's copy behind shipped the wrong colour with the test
+// still green. `error_state.test.tsx` finds the real element instead — it
+// queries by component type (`TriangleAlert`, a stable, importable
+// reference) and reads `className` off its immediate parent, because
+// NativeWind's cssInterop wrapper consumes `className` before it reaches
+// `TriangleAlert` itself (confirmed by inspecting the rendered tree: the
+// wrapper receives `{ size, className }`, `TriangleAlert` underneath it
+// receives only `{ ref, size }`). Either way there is nothing left for a
+// hand-rolled wrapper to do here, so it is gone rather than patched again.
 import { TriangleAlert } from "lucide-react-native";
 import { useColorScheme } from "nativewind";
 import { Text, View } from "react-native";
@@ -47,10 +56,6 @@ export type ErrorStateProps = {
 
 const AlertIcon = registerIcon(TriangleAlert);
 
-/** Shared by the icon and its testID-carrying wrapper below, so a future
- * retint of one cannot drift from the other. */
-const ICON_TONE_CLASS = "text-danger dark:text-danger-dark";
-
 export function ErrorState({ title, body, onRetry, retryLabel, testID }: ErrorStateProps) {
   const { colorScheme } = useColorScheme();
   const tint = colorScheme === "dark" ? palette["danger-dark"] : palette.danger;
@@ -61,12 +66,7 @@ export function ErrorState({ title, body, onRetry, retryLabel, testID }: ErrorSt
         className="rounded-full p-4"
         style={{ backgroundColor: softBackground(tint, SOFT_ALPHA) }}
       >
-        <View
-          testID={testID === undefined ? undefined : `${testID}-icon`}
-          className={ICON_TONE_CLASS}
-        >
-          <AlertIcon size={32} className={ICON_TONE_CLASS} />
-        </View>
+        <AlertIcon size={32} className="text-danger dark:text-danger-dark" />
       </View>
       <Text className="text-center text-title font-bold text-fg dark:text-fg-dark">{title}</Text>
       <Text className="text-center text-body font-medium text-fg-2 dark:text-fg-2-dark">
