@@ -9,7 +9,16 @@ function stylesOf(testID: string): Record<string, unknown> {
 
 test("solid is the default fill, so every existing call site is unchanged", () => {
   render(<Chip testID="c" label="Bills" tone="brand" />);
-  expect(String(screen.getByTestId("c").props.className)).toContain("bg-brand");
+  const containerClasses = String(screen.getByTestId("c").props.className);
+  expect(containerClasses).toContain("bg-brand");
+  // Geometry too, not only colour: this branch changed it app-wide (padding
+  // px-2 py-0.5 -> px-2.5 py-1, label text-xs -> text-micro), and a test
+  // titled "every existing call site is unchanged" that checks only a
+  // colour class is not actually backing that claim.
+  expect(containerClasses).toContain("rounded-full");
+  expect(containerClasses).toContain("px-2.5");
+  expect(containerClasses).toContain("py-1");
+  expect(String(screen.getByTestId("c-label").props.className)).toContain("text-micro");
 });
 
 test("a soft chip paints a translucent tint, not the solid token", () => {

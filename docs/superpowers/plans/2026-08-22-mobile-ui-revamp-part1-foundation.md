@@ -14,7 +14,7 @@
 
 - **`testID`s are preserved.** No existing `testID` is renamed or removed anywhere in this revamp. Adding new ones is fine.
 - **Tokens are the only colour source.** No literal hex in a component. Two authorised exceptions, both outside `components/`, both with their reasoning written into the file:
-  - **Soft-chip inks** in `constants/colors.ts` — `brand-ink` `#166534`, `danger-ink` `#991B1B`, `warn-ink` `#92400E`. These are tokens; they are listed here because they are new. *(This line originally named `#B45309` as the single new hex. That value measured 4.13:1 and failed AA, and the problem turned out to affect all three tones, not just amber — see Task 3.)*
+  - **Soft-chip inks** in `constants/colors.ts` — `brand-ink` `#166534`, `danger-ink` `#991B1B`, `warn-ink` `#92400E`. These are tokens; they are listed here because they are new. *(This line originally named `#B45309` as the single new hex. That value measured 4.13:1 and failed AA, and the problem turned out to affect all three tones, not just amber — see Task 2's `warn-ink` step below and `constants/colors.ts`'s own SOFT-CHIP INK comment for the measured history. Task 2's body named the wrong task here too; the figures below had not been corrected the way this line was.)*
   - **Provider identity colours** in `constants/providers.ts` — 13 brand colours plus one grey fallback, as literal hex. They are deliberately NOT in `palette`: a provider colour identifies a company and must never signal a state.
 - **`chart-1..8` is non-semantic.** Never paint a status with a chart colour, never paint a chart slice with a semantic one. `components/reports/donut_chart.tsx` is its only reader.
 - **`soon` grey never moves.** `SoonGate` renders `Chip` with `tone="soon"`. Grey means "not built"; brand green means "needs Plus". A chip that picks the wrong one makes a promise the app will not keep.
@@ -280,7 +280,7 @@ git commit -m "feat(ui): load real Inter weights and the design's type scale"
   - `contrastRatio(foreground: string, background: string): number` — hex in, WCAG ratio out. Used by Task 3's contrast test.
   - `softBackground(hex: string, alpha: number): string` — returns `rgba(r, g, b, a)`. Used by `Chip`'s soft fill.
 
-**Why `warn-ink` exists.** `warn` `#D97706` on a 14% tint of itself lands near 3.6:1, under AA at the 11sp the design sets "due today" in. `#B45309` is the one new hex in this revamp, and it exists only as the ink for soft-`warn`. It is not a second warning colour and must never fill anything.
+**Why `warn-ink` exists.** `warn` `#D97706` on a 14% tint of itself fails AA at the 11sp the design sets "due today" in — the true figure is 2.63:1, not the "~3.6:1" this paragraph originally claimed. `#B45309` is NOT the value that ships: it measures 4.13:1, still under the 4.5:1 floor, and the same failure turned out to hit `brand` (3.96:1) and `danger` (3.69:1) too, not only `warn`. The value that ships is `constants/colors.ts`'s own SOFT-CHIP INK block (`warn-ink` `#92400E`, alongside `brand-ink` and `danger-ink`) — read the figure there and verify it with `lib/ui/contrast.ts` rather than copying a number out of this paragraph. This exact mistake, hand-computed and wrong, is why that rule exists (spec R6).
 
 - [ ] **Step 1: Write the failing contrast test**
 
@@ -393,10 +393,12 @@ test("the design's line and chip surfaces are verbatim", () => {
 });
 
 test("warn-ink is darker than warn, and exists only as soft-chip ink", () => {
-  expect(palette["warn-ink"]).toBe("#B45309");
+  expect(palette["warn-ink"]).toBe("#92400E");
   expect(palette["warn-ink-dark"]).toBe("#FBBF24");
 });
 ```
+
+**This step's own value has already been wrong once.** `#92400E` above is the value that ships — not `#B45309`, which this step originally specified and which measures 4.13:1, under the 4.5:1 floor. The shipped `constants/__tests__/colors.test.ts` also does not keep this as its own standalone test: it bundles this assertion with `brand-ink` and `danger-ink` into one `"brand-ink, danger-ink, and warn-ink are darker than their base tone..."` test, because the AA failure this step frames as warn-only turned out to hit all three tones (see Step 7 below).
 
 - [ ] **Step 6: Run test to verify it fails**
 
@@ -411,21 +413,27 @@ In `mobile/constants/colors.ts`, add immediately after the `warn` line in the to
   line: "#E3EBE5",         "line-dark": "#22302A",
   chip: "#EDF3EE",         "chip-dark": "#18231E",
 
-  // SOFT-CHIP INK FOR `warn` ONLY — NOT a second warning colour, and never a
-  // fill. The design's soft chips are semantic-colour text on a 12-14% tint of
-  // that same colour (`rgba(217,119,6,.14)` + `var(--wn)` for "due today" on
-  // the 00 Component sheet). That pairing works for `danger` and `brand` and
-  // fails for `warn`: #D97706 on its own 14% tint over `bg` #F7FAF7 measures
-  // ~3.6:1, under AA for the 11sp the design sets "due today" in — and "due
-  // today" is precisely the chip that has to be read on a phone outdoors.
-  // #B45309 is the same hue two steps darker and clears 4.5:1 on that tint.
-  // components/ui/__tests__/chip_contrast.test.ts asserts it, so this cannot
-  // regress silently the way the figures above this line once did.
+  // SOFT-CHIP INK. Never a fill. The design's soft chips are semantic-colour
+  // text on a 12-14% tint of that same colour (`rgba(217,119,6,.14)` +
+  // `var(--wn)` for "due today" on the 00 Component sheet). That pairing
+  // FAILS AA for every tone it was tried on, not only `warn`: #D97706 on its
+  // own 14% tint over `bg` #F7FAF7 measures 2.63:1, `brand` #15803D measures
+  // 3.96:1, `danger` #DC2626 measures 3.69:1 — all under the 4.5:1 floor, and
+  // "due today" is precisely the chip that has to be read on a phone
+  // outdoors.
+  //
+  // DO NOT HAND-COMPUTE A REPLACEMENT VALUE HERE. This block already shipped
+  // one wrong fix — `#B45309`, believed to be "the same hue two steps darker"
+  // and to clear 4.5:1 at that. It measures 4.13:1 and does not clear.
+  // `components/ui/__tests__/chip_contrast.test.ts` and
+  // `constants/__tests__/colors.test.ts` assert the shipped figure below so
+  // it cannot regress silently again — verify with `lib/ui/contrast.ts`,
+  // don't copy a number out of a comment (spec R6).
   //
   // Dark mode keeps `warn-dark` unchanged: amber on a dark tint is already
   // well clear of AA, and darkening it there would make it harder to read,
   // not easier.
-  "warn-ink": "#B45309",   "warn-ink-dark": "#FBBF24",
+  "warn-ink": "#92400E",   "warn-ink-dark": "#FBBF24",
 ```
 
 - [ ] **Step 8: Expose the tokens to Tailwind**
@@ -1246,7 +1254,14 @@ export function SegmentedControl<T extends string>({
             onPress={() => {
               if (!selected) onChange(segment.value);
             }}
-            accessibilityRole="button"
+            // "radio", not "button": this is one-of-N, the same semantic
+            // `cadence_picker.tsx` and `category_picker.tsx` already use
+            // `"radio"` for. (This step originally prescribed `"button"`,
+            // which announces four unrelated actions instead of a set of
+            // mutually exclusive options — corrected after a review found
+            // it, since this is one of the four screens this component
+            // replaces.)
+            accessibilityRole="radio"
             accessibilityLabel={segment.label}
             accessibilityState={{ selected }}
             className={`min-h-[44px] flex-1 items-center justify-center rounded-full px-3 ${

@@ -93,6 +93,13 @@ describe("ReviewBadge", () => {
     expect(screen.getByTestId("review-badge")).toHaveTextContent("99+");
   });
 
+  test("fills red, not the brand green — this queue needs attention, it is not a success state", () => {
+    render(<ReviewBadge count={4} />);
+    const classes = String(screen.getByTestId("review-badge").props.className);
+    expect(classes).toContain("bg-danger");
+    expect(classes).not.toContain("bg-brand");
+  });
+
   test("announces the waiting work to a screen reader", () => {
     render(<ReviewBadge count={2} />);
     expect(screen.getByTestId("review-badge").props.accessibilityLabel).toBe(

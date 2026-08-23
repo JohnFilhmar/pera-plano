@@ -38,8 +38,12 @@ import { Card } from "../card";
 import { Chip } from "../chip";
 import { ConfirmDialog } from "../confirm_dialog";
 import { EmptyState } from "../empty_state";
+import { Fab } from "../fab";
 import { ListRow } from "../list_row";
+import { MiniBars } from "../mini_bars";
 import { SectionHeader } from "../section_header";
+import { SegmentedControl } from "../segmented_control";
+import { StatTile } from "../stat_tile";
 
 const noop = () => {};
 
@@ -666,6 +670,20 @@ test("Card default carries a shadow and flat does not", () => {
 
 // ---------------------------------------------------------------------------
 // No hex literals anywhere — swept across every colour-bearing variant
+//
+// DELIBERATE EXCLUSIONS: `ProviderBadge` and `ShareBar` are not in this
+// sweep, and must not be added to it. Both legitimately RECEIVE or READ
+// identity colours as literal-hex VALUES rather than originate them —
+// `ProviderBadge` reads `constants/providers.ts`'s `PROVIDER_BADGE` map
+// (`color`/`ink`), and `ShareBar` paints whatever hex string its caller
+// passes in a `Share.color` prop, sourced from the same map. Both are the
+// Global Constraints' authorised exception: a provider colour identifies a
+// company, never a state, so it is deliberately kept OUT of `palette` and
+// painted with an inline `style` instead of a token `className`. A rendered
+// tree for either will always contain a real `#RRGGBB` and always should —
+// that is not the defect this sweep exists to catch. If this sweep is ever
+// extended to either component, it will fail immediately and correctly;
+// that failure means "this component still does its job," not "regression."
 // ---------------------------------------------------------------------------
 
 const COLOUR_BEARING: [name: string, element: ReactElement][] = [
@@ -680,10 +698,37 @@ const COLOUR_BEARING: [name: string, element: ReactElement][] = [
   ["Button secondary", <Button title="Save" onPress={noop} variant="secondary" />],
   ["Button ghost", <Button title="Save" onPress={noop} variant="ghost" />],
   ["Button destructive", <Button title="Delete" onPress={noop} variant="destructive" />],
+  [
+    "Button outline-destructive",
+    <Button title="Wipe everything" onPress={noop} variant="outline-destructive" />,
+  ],
   ["Button loading", <Button title="Save" onPress={noop} loading />],
   ["Button disabled", <Button title="Save" onPress={noop} disabled />],
   ["ListRow", <ListRow title="GCash" subtitle="Catches: GCash" />],
   ["ListRow destructive", <ListRow title="Delete all data" destructive />],
+  [
+    "SegmentedControl",
+    <SegmentedControl
+      segments={[
+        { value: "limits", label: "Limits" },
+        { value: "goals", label: "Goals" },
+      ]}
+      value="limits"
+      onChange={noop}
+    />,
+  ],
+  ["StatTile", <StatTile label="Spent so far" amount={1031200} tone="danger" />],
+  ["Fab", <Fab onPress={noop} accessibilityLabel="Add transaction" />],
+  [
+    "MiniBars",
+    <MiniBars
+      values={[10, 20, 40]}
+      barClassName="bg-on-brand/40"
+      labelClassName="text-on-brand/70"
+      startLabel="Mon"
+      endLabel="Sun"
+    />,
+  ],
   [
     "BottomSheet",
     <BottomSheet visible onDismiss={noop} title="Pick a wallet">
