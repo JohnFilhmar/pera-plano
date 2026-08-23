@@ -93,6 +93,15 @@ let gcash: Wallet;
 let bpi: Wallet;
 
 beforeEach(async () => {
+  // `mockPush` is a module-level `jest.fn()` with no global `clearMocks`
+  // (package.json's jest config sets none, and test_support/
+  // jest_setup_after_env.ts only configures RNTL's async timeout) — so
+  // without this, calls accumulate across every test in the file and a later
+  // `toHaveBeenCalledTimes(1)` only happens to hold because nothing earlier in
+  // FILE ORDER ever pressed anything that navigates. task-4-brief.md's new
+  // "the review chip ... opens the queue" test (below) is exactly such an
+  // earlier press, and exposed the gap.
+  mockPush.mockClear();
   await freshDb();
   await seedDefaultCategories();
   gcash = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100_000 });
@@ -102,6 +111,23 @@ beforeEach(async () => {
 afterEach(async () => {
   await closeDatabase();
 });
+
+/**
+ * Puts `count` low-confidence items in the Review Queue.
+ *
+ * Module-scoped rather than local to "the review queue entry point" describe
+ * block below: task-4-brief.md's new "Review N" filter chip (Step 1) needs the
+ * same seeding, and a second near-identical helper is how two describe blocks
+ * end up disagreeing about what "queued" means.
+ */
+async function queueItems(count: number): Promise<void> {
+  for (let index = 0; index < count; index++) {
+    await enqueue({
+      kind: "low-confidence",
+      payload: { amount: 1000 + index, direction: "out", confidence: 0.4 },
+    });
+  }
+}
 
 /** Four rows across two wallets and two categories — one per combination. */
 async function seedGrid(): Promise<void> {
@@ -186,8 +212,8 @@ describe("filters compose (AND), all the way to the SQL", () => {
     renderScreen();
     await screen.findByText("Jollibee");
 
-    fireEvent.press(screen.getByTestId(`filter-wallet-${gcash.id}`));
-    fireEvent.press(screen.getByTestId(`filter-category-${FOOD}`));
+    fireEvent.press(screen.getByTestId(`filter-chip-wallet-${gcash.id}`));
+    fireEvent.press(screen.getByTestId(`filter-chip-category-${FOOD}`));
 
     // Each filter change is a new cache key, so the list is briefly empty while
     // the new read resolves. Asserting through that gap would pass on a bar
@@ -199,46 +225,74 @@ describe("filters compose (AND), all the way to the SQL", () => {
     expect(screen.queryByText("Angkas")).toBeNull();
   });
 
-  test("clearing the category chip restores the wallet-only list, keeping the wallet", async () => {
+  test("pressing the category chip again restores the wallet-only list, keeping the wallet", async () => {
+    // task-4-brief.md's chip row has no separate removal affordance — a
+    // selected chip pressed a second time is the only way to clear it.
     await seedGrid();
 
     renderScreen();
     await screen.findByText("Jollibee");
 
-    fireEvent.press(screen.getByTestId(`filter-wallet-${gcash.id}`));
-    fireEvent.press(screen.getByTestId(`filter-category-${FOOD}`));
+    fireEvent.press(screen.getByTestId(`filter-chip-wallet-${gcash.id}`));
+    fireEvent.press(screen.getByTestId(`filter-chip-category-${FOOD}`));
     await settled();
     expect(screen.queryByText("Grab")).toBeNull();
 
-    fireEvent.press(screen.getByTestId("filter-chip-categoryId"));
+    fireEvent.press(screen.getByTestId(`filter-chip-category-${FOOD}`));
 
     // Grab is back (same wallet, other category); BPI's rows are still gone.
     await settled();
     expect(screen.getByText("Grab")).toBeTruthy();
     expect(screen.queryByText("Mang Inasal")).toBeNull();
   });
+});
 
-  test("direction filters to one side of the ledger", async () => {
+// ---------------------------------------------------------------------------
+// The chip filter row (task-4-brief.md Step 1)
+// ---------------------------------------------------------------------------
+//
+// The brief's own literal assertion for the first test reads
+// `String(...props.accessibilityState).toContain("selected")`, which cannot
+// pass for ANY object: `String({ selected: true })` is `"[object Object]"` in
+// plain JS, never a string containing "selected" (verified with `node -e`
+// before writing this). `Chip` (components/ui/chip.tsx) also has no
+// `accessibilityState` at all — its Pressable sets only `accessibilityRole`
+// and `accessibilityLabel` — and Chip is Part 1, out of this task's file list.
+// So "selected" is read the same way components/transactions/__tests__/
+// filter_bar.test.tsx's own pre-existing "a selected control reads as
+// selected" test already does: via the chip's OWN className, split on
+// whitespace and compared as exact tokens (the brief's own trap note: raw
+// `toContain` on an unsplit string also matches `bg-brand-dark`).
+describe("the chip filter row (task-4-brief.md)", () => {
+  test("the filter row is chips, and All is selected by default", async () => {
     await seedGrid();
-    await insertTransaction({
-      walletId: gcash.id,
-      categoryId: FOOD,
-      amount: 250_000,
-      direction: "in",
-      occurredAt: Date.now(),
-      merchant: "Sweldo",
-      source: "notification",
-      confidence: 0.9,
-    });
+    renderScreen();
+    await screen.findByText("Jollibee");
+
+    const classes = String(screen.getByTestId("filter-chip-all").props.className ?? "").split(
+      /\s+/,
+    );
+    expect(classes).toContain("bg-brand");
+  });
+
+  test("the review chip shows the open count and opens the queue", async () => {
+    await queueItems(2);
 
     renderScreen();
-    await screen.findByText("Sweldo");
 
-    fireEvent.press(screen.getByTestId("filter-direction-in"));
+    const reviewChip = await screen.findByTestId("filter-chip-review");
+    expect(reviewChip).toHaveTextContent("Review 2");
 
-    await settled();
-    expect(screen.getByText("Sweldo")).toBeTruthy();
-    expect(screen.queryByText("Jollibee")).toBeNull();
+    fireEvent.press(reviewChip);
+
+    expect(mockPush).toHaveBeenCalledWith("/review");
+  });
+
+  test("the add button is the fab, not a labelled button", async () => {
+    renderScreen();
+
+    await screen.findByTestId("transactions-add");
+    expect(screen.queryByText("Add")).toBeNull();
   });
 });
 
@@ -282,7 +336,7 @@ describe("the two empty states, reached through the screen", () => {
     renderScreen();
     await screen.findByText("Jollibee");
 
-    fireEvent.press(screen.getByTestId(`filter-category-${TRANSPORT}`));
+    fireEvent.press(screen.getByTestId(`filter-chip-category-${TRANSPORT}`));
 
     expect(await screen.findByTestId("ledger-empty-filtered")).toBeTruthy();
     expect(screen.getByText(LEDGER_FILTERED_EMPTY_TITLE)).toBeTruthy();
@@ -371,15 +425,6 @@ describe("manual transaction entry stays reachable (task-1-brief)", () => {
 // Task 10's file list touches this screen. The spec puts the queue at the top of
 // the Transactions tab (§UX states), and this is that entry point.
 describe("the review queue entry point", () => {
-  async function queueItems(count: number): Promise<void> {
-    for (let index = 0; index < count; index++) {
-      await enqueue({
-        kind: "low-confidence",
-        payload: { amount: 1000 + index, direction: "out", confidence: 0.4 },
-      });
-    }
-  }
-
   test("is absent when the queue is empty", async () => {
     await seedGrid();
 

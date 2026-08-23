@@ -1,7 +1,8 @@
-// components/transactions/transaction_row.tsx — m1c plan Task 6, rules 2 and 3.
+// components/transactions/transaction_row.tsx — m1c plan Task 6, rules 2 and 3;
+// restyled by task-4-brief.md (mobile UI revamp Part 2, Task 4).
 //
-// One row of the ledger: merchant or counterparty, a category chip, the wallet,
-// and the signed amount.
+// One row of the ledger: a category-icon medallion, merchant or counterparty,
+// a "Category · Wallet · time" detail line, and the signed amount.
 //
 // RULE 3 IS THE ONE THAT MATTERS. A TRANSFER LEG RENDERS MUTED, WITH A LINK
 // GLYPH AND THE SENTENCE "Transfer — not counted as spending".
@@ -19,17 +20,41 @@
 // user ever sees. Ship one without the other and the row either explains
 // nothing or explains it every time in a way that stops being read.
 //
+// THE DETAIL LINE IS THREE TEXT NODES, NOT ONE STRING. task-4-brief.md's
+// design draws "Category · Wallet · HH:mm" as a single subtitle, which reads
+// naturally as `ListRow`'s own `subtitle` slot — but that slot is typed as a
+// plain `string`, and components/transactions/__tests__/ledger_list.test.tsx
+// (outside this task's file list, and pinned in Task 4's own verification
+// command) queries the wallet name as its OWN exact text node
+// (`screen.getByText("GCash")`) and the category name through a dedicated
+// `transaction-category-${id}` testID. A single combined string would satisfy
+// neither query once it stopped being the wallet name alone. Three adjacent
+// `Text` nodes read as one line to a sighted user and keep both pinned queries
+// resolvable independently — the same trade `AmountText`'s own file warns
+// against making the other way (never let styling swallow structure).
+//
+// A ROW CANNOT BE "AWAITING REVIEW". task-4-brief.md Step 4 also asks for a
+// `Chip label="CHECK"` beside the title "when a row is awaiting review". No
+// field on `Transaction` (types/domain.ts) carries that state, and
+// review_queue_entry.tsx's own header comment is explicit about why: "review-
+// queue items are not Transactions... they never get smuggled into the ledger
+// to make the two agree." A committed row has therefore always already
+// cleared review by construction — there is no reachable state this chip
+// could ever render for, so it is left out rather than wired to a threshold
+// this file would have to invent (e.g. a `confidence` cutoff nothing else in
+// the app treats as a review signal).
+//
 // PRESENTATIONAL. The category and the wallet arrive resolved, from the list
 // that already holds both collections; a row that looked them up itself would
 // mean one query per row (Global Constraints: components consume hooks, and
 // this component consumes none at all).
-import { ArrowLeftRight } from "lucide-react-native";
+import { ArrowLeftRight, Tag } from "lucide-react-native";
 import { Pressable, Text, View } from "react-native";
 
 import { AmountText } from "@/components/ui/amount_text";
 import { registerIcon } from "@/components/ui/button";
-import { Chip } from "@/components/ui/chip";
 import { ListRow } from "@/components/ui/list_row";
+import { formatTime } from "@/lib/datetime";
 import type { Category, Transaction, Wallet } from "@/types/domain";
 
 /**
@@ -45,11 +70,29 @@ export const TRANSFER_LABEL = "Transfer — not counted as spending";
 const TransferGlyph = registerIcon(ArrowLeftRight);
 
 /**
+ * The medallion's default glyph for an ordinary (non-transfer) row.
+ *
+ * A GENERIC mark, not one resolved from `category.icon`. `Category.icon`
+ * (types/domain.ts) is a lucide icon name held as a plain string, and nothing
+ * in this codebase yet maps an arbitrary icon-name string back to its lucide
+ * component — category_picker.tsx renders every category as plain text for
+ * exactly that reason. Building that resolver (with a safe fallback for a
+ * name the running lucide version does not export) is a real, untested
+ * subsystem this restyle task does not own; `Tag` fills the medallion so the
+ * row is never missing its leading glyph while that resolver stays a
+ * follow-up.
+ */
+const CategoryGlyph = registerIcon(Tag);
+
+/**
  * Shown when a row has no merchant and no counterparty and its category has not
  * loaded. Never blank: a money row the user cannot identify at all is worse
  * than one identified only by its category.
  */
 const UNNAMED_CATEGORY = "Uncategorized";
+
+/** The detail line's shared styling — task-4-brief.md's exact subtitle pair. */
+const DETAIL_TEXT_CLASS = "text-secondary font-medium text-fg-2 dark:text-fg-2-dark";
 
 export type TransactionRowProps = {
   transaction: Transaction;
@@ -84,6 +127,21 @@ export function TransactionRow({
   const rowTestID = testID ?? `transaction-row-${transaction.id}`;
   const categoryName = category?.name ?? UNNAMED_CATEGORY;
 
+  const medallion = (
+    <View className="h-7 w-7 items-center justify-center rounded-full bg-chip dark:bg-chip-dark">
+      {isTransfer ? (
+        // The testID sits on a wrapping View, not on the Svg —
+        // react-native-svg's prop forwarding is not something a row should
+        // depend on (same shape as components/wallets/wallet_type_icon.tsx).
+        <View testID={`transaction-glyph-${transaction.id}`}>
+          <TransferGlyph size={14} className="text-fg-2 dark:text-fg-2-dark" />
+        </View>
+      ) : (
+        <CategoryGlyph size={14} className="text-fg-2 dark:text-fg-2-dark" />
+      )}
+    </View>
+  );
+
   const content = (
     <>
       <ListRow
@@ -91,17 +149,7 @@ export function TransactionRow({
         // resort rather than a placeholder like "Transaction", because it is
         // the only one of the two that tells the user anything.
         title={transaction.merchant ?? transaction.counterparty ?? categoryName}
-        subtitle={wallet?.name}
-        left={
-          isTransfer ? (
-            // The testID sits on a wrapping View, not on the Svg —
-            // react-native-svg's prop forwarding is not something a row should
-            // depend on (same shape as components/wallets/wallet_type_icon.tsx).
-            <View testID={`transaction-glyph-${transaction.id}`}>
-              <TransferGlyph size={16} className="text-fg-2 dark:text-fg-2-dark" />
-            </View>
-          ) : undefined
-        }
+        left={medallion}
         right={
           <AmountText
             testID={`transaction-amount-${transaction.id}`}
@@ -116,11 +164,23 @@ export function TransactionRow({
         }
         // The press handler is on the WRAPPER below, not here. Nesting a
         // Pressable inside another one gives the row two touch targets with
-        // different bounds, and the chip line — which is where a user's thumb
-        // lands when they are reading the category — would not be one of them.
+        // different bounds, and the detail line — where a user's thumb lands
+        // reading the category — would not be one of them.
       />
-      <View className="flex-row flex-wrap items-center gap-2 px-4 pb-3">
-        <Chip testID={`transaction-category-${transaction.id}`} label={categoryName} />
+      <View className="gap-1 px-4 pb-3">
+        <View className="flex-row flex-wrap items-center gap-x-1">
+          <Text testID={`transaction-category-${transaction.id}`} className={DETAIL_TEXT_CLASS}>
+            {categoryName}
+          </Text>
+          {wallet ? (
+            <>
+              <Text className={DETAIL_TEXT_CLASS}>·</Text>
+              <Text className={DETAIL_TEXT_CLASS}>{wallet.name}</Text>
+            </>
+          ) : null}
+          <Text className={DETAIL_TEXT_CLASS}>·</Text>
+          <Text className={DETAIL_TEXT_CLASS}>{formatTime(transaction.occurredAt)}</Text>
+        </View>
         {isTransfer ? (
           <Text
             testID={`transaction-transfer-${transaction.id}`}

@@ -1,28 +1,39 @@
-// components/transactions/__tests__/filter_bar.test.tsx — m1c plan Task 6, rule 4.
+// components/transactions/__tests__/filter_bar.test.tsx — m1c plan Task 6,
+// rule 4; rewritten for task-4-brief.md's chip-row restyle (mobile UI revamp
+// Part 2, Task 4).
 //
-// "Filters compose (AND) and are reflected in the list header as removable
-// chips." Two of the assertions below are the ones worth having:
+// NOT IN TASK 4'S LISTED FILE SET, REWRITTEN ANYWAY. task-4-brief.md Step 3
+// replaced filter_bar.tsx's controls wholesale (direction chips, two
+// date-range presets, and a whole second row of removable "active filter"
+// chips are gone, replaced by one row: All, a Review shortcut, wallet chips,
+// category chips) but only listed `app/__tests__/transactions_screen.test.tsx`
+// as a test file to update. This file's old assertions pinned exactly the
+// controls Step 3 retires — `filter-direction-in`, `filter-range-7d`,
+// `filter-chip-walletId`, `filter-clear-all`, and the `DATE_RANGE_PRESETS` /
+// `presetFrom` exports among them — and Task 4's own required verification
+// command runs this whole directory. Leaving it as-is would mean either the
+// restyle doesn't ship or this file fails outright; see task-4-report.md for
+// the full account. `DATE_RANGE_PRESETS` and `presetFrom` had no importer
+// outside this pair of files (checked before deleting them), so nothing else
+// in the app depends on what this rewrite removes.
+//
+// THE TWO RULES THAT STILL MATTER, UNCHANGED BY THE RESTYLE:
 //
 //   FILTERS COMPOSE. Picking a wallet and then a category must narrow to the
-//   intersection. A bar that drops the first choice when the second is made
-//   WIDENS the list instead of narrowing it — the user asked two questions and
-//   got the answer to one, with nothing on screen saying which.
+//   intersection, never replace one choice with the other.
 //
-//   CLEARING ONE CHIP CLEARS ONE FILTER. A chip whose X resets the whole bar
-//   silently discards choices the user made deliberately and never asked to
-//   undo.
+//   A SELECTED CONTROL TOGGLES OFF. There is no separate removal affordance in
+//   the new design, so pressing an already-selected wallet or category chip is
+//   the only way to clear that filter.
 //
-// PRESENTATIONAL: the wallets, the categories, the current filter and the clock
-// all arrive as props. `TxFilter` is interface-contract §3 and is LAW — note
-// that it has NO search field, which is why `search` is a separate prop here
-// and why the filtering it drives happens client-side in LedgerList.
+// PRESENTATIONAL: the wallets, the categories, the current filter and the
+// review count all arrive as props. `TxFilter` is interface-contract §3 and is
+// LAW — it has no search field, which is why `search` is a separate prop here.
 import { fireEvent, render, screen } from "@testing-library/react-native";
 
 import type { Category, TxFilter, Wallet } from "@/types/domain";
 
-import { DATE_RANGE_PRESETS, FilterBar, presetFrom } from "../filter_bar";
-
-const NOW = new Date(2026, 7, 13, 21, 0).getTime();
+import { FilterBar } from "../filter_bar";
 
 const WALLETS: Wallet[] = [
   {
@@ -72,9 +83,25 @@ const CATEGORIES: Category[] = [
   },
 ];
 
-function renderBar(value: TxFilter = {}, search = "") {
+/**
+ * Space-separated `className` tokens, exact, never a raw substring.
+ *
+ * `toContain` on the unsplit string would let a check meant for `bg-brand`
+ * pass against `bg-brand-dark` — the same trap task-4-brief.md calls out for
+ * `text-brand`/`text-brand-ink` and `bg-danger`/`bg-danger-dark`.
+ */
+function classesOf(testID: string): string[] {
+  return String(screen.getByTestId(testID).props.className ?? "").split(/\s+/);
+}
+
+function renderBar(
+  value: TxFilter = {},
+  search = "",
+  extra: { reviewCount?: number; onOpenReview?: () => void } = {},
+) {
   const onChange = jest.fn();
   const onSearchChange = jest.fn();
+  const onOpenReview = extra.onOpenReview ?? jest.fn();
   render(
     <FilterBar
       value={value}
@@ -83,10 +110,11 @@ function renderBar(value: TxFilter = {}, search = "") {
       onSearchChange={onSearchChange}
       wallets={WALLETS}
       categories={CATEGORIES}
-      now={NOW}
+      reviewCount={extra.reviewCount}
+      onOpenReview={onOpenReview}
     />,
   );
-  return { onChange, onSearchChange };
+  return { onChange, onSearchChange, onOpenReview };
 }
 
 // ---------------------------------------------------------------------------
@@ -100,32 +128,9 @@ describe("filters compose (AND)", () => {
     // and fails only here.
     const { onChange } = renderBar({ walletId: "w1" });
 
-    fireEvent.press(screen.getByTestId("filter-category-cat_food_dining"));
+    fireEvent.press(screen.getByTestId("filter-chip-category-cat_food_dining"));
 
     expect(onChange).toHaveBeenCalledWith({ walletId: "w1", categoryId: "cat_food_dining" });
-  });
-
-  test("choosing a direction keeps both of the others", () => {
-    const { onChange } = renderBar({ walletId: "w1", categoryId: "cat_food_dining" });
-
-    fireEvent.press(screen.getByTestId("filter-direction-out"));
-
-    expect(onChange).toHaveBeenCalledWith({
-      walletId: "w1",
-      categoryId: "cat_food_dining",
-      direction: "out",
-    });
-  });
-
-  test("a date range keeps everything else and sets `from`", () => {
-    const { onChange } = renderBar({ walletId: "w1" });
-
-    fireEvent.press(screen.getByTestId("filter-range-7d"));
-
-    expect(onChange).toHaveBeenCalledWith({
-      walletId: "w1",
-      from: presetFrom(DATE_RANGE_PRESETS[0], NOW),
-    });
   });
 
   test("picking a different wallet REPLACES the wallet, it does not add a second", () => {
@@ -134,105 +139,84 @@ describe("filters compose (AND)", () => {
     // chip the query does not honour.
     const { onChange } = renderBar({ walletId: "w1" });
 
-    fireEvent.press(screen.getByTestId("filter-wallet-w2"));
+    fireEvent.press(screen.getByTestId("filter-chip-wallet-w2"));
 
     expect(onChange).toHaveBeenCalledWith({ walletId: "w2" });
   });
-});
 
-// ---------------------------------------------------------------------------
-// Removable chips
-// ---------------------------------------------------------------------------
-
-describe("the active-filter chips", () => {
-  test("one chip per active filter, naming the choice in words", () => {
-    renderBar({ walletId: "w1", categoryId: "cat_food_dining", direction: "out" });
-
-    // Regexes: a chip label also carries its own remove affordance, and
-    // `toHaveTextContent` matches a plain string exactly.
-    expect(screen.getByTestId("filter-chip-walletId")).toHaveTextContent(/^GCash/);
-    expect(screen.getByTestId("filter-chip-categoryId")).toHaveTextContent(/^Food & Dining/);
-    expect(screen.getByTestId("filter-chip-direction")).toHaveTextContent(/^Money out/);
-  });
-
-  test("no active filters renders no chips at all", () => {
-    renderBar({});
-
-    expect(screen.queryByTestId("filter-chip-walletId")).toBeNull();
-    expect(screen.queryByTestId("filter-active")).toBeNull();
-  });
-
-  test("clearing one chip removes THAT filter only", () => {
-    // A chip whose X resets the bar discards choices the user never asked to
-    // undo — and the list widens with no visible cause.
-    const { onChange } = renderBar({
-      walletId: "w1",
-      categoryId: "cat_food_dining",
-      direction: "out",
-    });
-
-    fireEvent.press(screen.getByTestId("filter-chip-categoryId"));
-
-    expect(onChange).toHaveBeenCalledWith({ walletId: "w1", direction: "out" });
-  });
-
-  test("clearing the wallet chip leaves the category and the direction alone", () => {
-    const { onChange } = renderBar({
-      walletId: "w1",
-      categoryId: "cat_food_dining",
-      direction: "out",
-    });
-
-    fireEvent.press(screen.getByTestId("filter-chip-walletId"));
-
-    expect(onChange).toHaveBeenCalledWith({ categoryId: "cat_food_dining", direction: "out" });
-  });
-
-  test("clearing the date-range chip drops BOTH ends of the window", () => {
-    // `from` without `to` is a half-cleared range: the list would stay clamped
-    // with no chip on screen explaining why.
-    const { onChange } = renderBar({ walletId: "w1", from: 1_000, to: 2_000 });
-
-    fireEvent.press(screen.getByTestId("filter-chip-range"));
-
-    expect(onChange).toHaveBeenCalledWith({ walletId: "w1" });
-  });
-
-  test("tapping an already-selected control toggles it OFF", () => {
+  test("tapping an already-selected wallet chip toggles it OFF", () => {
     const { onChange } = renderBar({ walletId: "w1", categoryId: "cat_food_dining" });
 
-    fireEvent.press(screen.getByTestId("filter-wallet-w1"));
+    fireEvent.press(screen.getByTestId("filter-chip-wallet-w1"));
 
     expect(onChange).toHaveBeenCalledWith({ categoryId: "cat_food_dining" });
   });
 
-  test("clear-all really does clear everything", () => {
-    const { onChange, onSearchChange } = renderBar(
-      { walletId: "w1", categoryId: "cat_food_dining", direction: "in", from: 1_000 },
-      "jollibee",
-    );
+  test("tapping an already-selected category chip toggles it OFF, keeping the wallet", () => {
+    const { onChange } = renderBar({ walletId: "w1", categoryId: "cat_food_dining" });
 
-    fireEvent.press(screen.getByTestId("filter-clear-all"));
+    fireEvent.press(screen.getByTestId("filter-chip-category-cat_food_dining"));
 
-    expect(onChange).toHaveBeenCalledWith({});
-    // Search is not part of TxFilter, so "clear all" has to clear it separately
-    // or the list stays narrowed with an empty filter bar above it.
-    expect(onSearchChange).toHaveBeenCalledWith("");
-  });
-
-  test("clear-all is offered only when something is active", () => {
-    renderBar({});
-    expect(screen.queryByTestId("filter-clear-all")).toBeNull();
-  });
-
-  test("a search term alone counts as active", () => {
-    renderBar({}, "jollibee");
-    expect(screen.getByTestId("filter-clear-all")).toBeTruthy();
+    expect(onChange).toHaveBeenCalledWith({ walletId: "w1" });
   });
 });
 
 // ---------------------------------------------------------------------------
-// Search — a separate prop, because TxFilter has no field for it
+// The All chip
+// ---------------------------------------------------------------------------
+
+describe("the All chip", () => {
+  test("reads as selected when nothing is filtered", () => {
+    renderBar({});
+    expect(classesOf("filter-chip-all")).toContain("bg-brand");
+  });
+
+  test("reads as unselected the moment any filter is active", () => {
+    renderBar({ walletId: "w1" });
+    expect(classesOf("filter-chip-all")).not.toContain("bg-brand");
+  });
+
+  test("pressing it clears every filter", () => {
+    const { onChange } = renderBar({ walletId: "w1", categoryId: "cat_food_dining" });
+
+    fireEvent.press(screen.getByTestId("filter-chip-all"));
+
+    expect(onChange).toHaveBeenCalledWith({});
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The Review chip — a route, not a filter
+// ---------------------------------------------------------------------------
+
+describe("the Review chip", () => {
+  test("is absent while the queue is empty", () => {
+    renderBar({}, "", { reviewCount: 0 });
+    expect(screen.queryByTestId("filter-chip-review")).toBeNull();
+  });
+
+  test("is absent while the count is still loading", () => {
+    renderBar({}, "", { reviewCount: undefined });
+    expect(screen.queryByTestId("filter-chip-review")).toBeNull();
+  });
+
+  test("names the open count", () => {
+    renderBar({}, "", { reviewCount: 5 });
+    expect(screen.getByTestId("filter-chip-review")).toHaveTextContent("Review 5");
+  });
+
+  test("opens the queue and never touches the filter itself", () => {
+    const { onChange, onOpenReview } = renderBar({ walletId: "w1" }, "", { reviewCount: 2 });
+
+    fireEvent.press(screen.getByTestId("filter-chip-review"));
+
+    expect(onOpenReview).toHaveBeenCalledTimes(1);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The search field
 // ---------------------------------------------------------------------------
 
 describe("the search field", () => {
@@ -262,33 +246,24 @@ describe("the search field", () => {
 });
 
 // ---------------------------------------------------------------------------
-// The controls themselves
+// The wallet and category chips
 // ---------------------------------------------------------------------------
 
-describe("the controls", () => {
+describe("the wallet and category chips", () => {
   test("offers one chip per wallet and one per category", () => {
     renderBar();
 
-    expect(screen.getByTestId("filter-wallet-w1")).toBeTruthy();
-    expect(screen.getByTestId("filter-wallet-w2")).toBeTruthy();
-    expect(screen.getByTestId("filter-category-cat_food_dining")).toBeTruthy();
-    expect(screen.getByTestId("filter-category-cat_transport")).toBeTruthy();
+    expect(screen.getByTestId("filter-chip-wallet-w1")).toBeTruthy();
+    expect(screen.getByTestId("filter-chip-wallet-w2")).toBeTruthy();
+    expect(screen.getByTestId("filter-chip-category-cat_food_dining")).toBeTruthy();
+    expect(screen.getByTestId("filter-chip-category-cat_transport")).toBeTruthy();
   });
 
-  test("offers both directions in plain words, not `in` and `out`", () => {
-    renderBar();
-
-    expect(screen.getByTestId("filter-direction-in")).toHaveTextContent("Money in");
-    expect(screen.getByTestId("filter-direction-out")).toHaveTextContent("Money out");
-  });
-
-  test("a selected control reads as selected, not as an unpicked option", () => {
+  test("a selected wallet chip reads as filled, an unselected one as outlined", () => {
     renderBar({ walletId: "w1" });
 
-    const selected = String(screen.getByTestId("filter-wallet-w1").props.className ?? "");
-    const unselected = String(screen.getByTestId("filter-wallet-w2").props.className ?? "");
-    expect(selected).not.toBe(unselected);
-    expect(selected).toContain("bg-brand");
+    expect(classesOf("filter-chip-wallet-w1")).toContain("bg-brand");
+    expect(classesOf("filter-chip-wallet-w2")).not.toContain("bg-brand");
   });
 
   test("an archived wallet is not offered as a filter", () => {
@@ -303,33 +278,9 @@ describe("the controls", () => {
         onSearchChange={jest.fn()}
         wallets={[...WALLETS, { ...WALLETS[0], id: "w3", name: "Old", isArchived: true }]}
         categories={CATEGORIES}
-        now={NOW}
       />,
     );
 
-    expect(screen.queryByTestId("filter-wallet-w3")).toBeNull();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// presetFrom
-// ---------------------------------------------------------------------------
-
-describe("presetFrom", () => {
-  test("starts at midnight LOCAL, so 'last 7 days' includes all of today", () => {
-    const from = presetFrom(DATE_RANGE_PRESETS[0], NOW);
-    const start = new Date(from);
-
-    expect(start.getHours()).toBe(0);
-    expect(start.getMinutes()).toBe(0);
-    // 7 days INCLUSIVE of today: 13th back to the 7th, not to the 6th.
-    expect(start.getDate()).toBe(7);
-    expect(start.getMonth()).toBe(7);
-  });
-
-  test("30 days reaches back further than 7", () => {
-    expect(presetFrom(DATE_RANGE_PRESETS[1], NOW)).toBeLessThan(
-      presetFrom(DATE_RANGE_PRESETS[0], NOW),
-    );
+    expect(screen.queryByTestId("filter-chip-wallet-w3")).toBeNull();
   });
 });
