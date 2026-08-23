@@ -68,7 +68,7 @@ import { LedgerList } from "@/components/transactions/ledger_list";
 import { formatCentavos } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Chip } from "@/components/ui/chip";
+import { Chip, CHIP_HIT_SLOP } from "@/components/ui/chip";
 import { EmptyState } from "@/components/ui/empty_state";
 import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { ProviderBadge } from "@/components/ui/provider_badge";
@@ -160,6 +160,33 @@ const FILL_CONTRAST_FLOOR = 4.5;
  * as a raw `style` rather than a className.
  */
 const FILL_INK_WHITE = palette["on-brand"];
+
+// ---------------------------------------------------------------------------
+// The matchers card's "Edit" hitSlop (whole-branch review design F1).
+// ---------------------------------------------------------------------------
+//
+// "Edit" carries NO padding class at all — just `text-secondary` (12px/16px
+// line-height, tailwind.config.ts) inside a bare `Pressable` — so its painted
+// height is the line-height alone, 16px. That is SHORTER than either of
+// `components/ui/chip.tsx`'s own painted pills (22-24px) `CHIP_HIT_SLOP` was
+// computed against, so reusing that constant here verbatim would still miss
+// 44: 16 + 12 + 12 = 40. The deficit is 44 - 16 = 28, split evenly: 14 top,
+// 14 bottom closes it exactly (16 + 14 + 14 = 44).
+//
+// UNCAPPED HORIZONTALLY, UNLIKE CHIP_HIT_SLOP — and that is a deliberate
+// difference, not an oversight. `CHIP_HIT_SLOP`'s left/right is capped at
+// half the app's chip-row `gap-2` because chips sit ADJACENT to other
+// Pressables in that row. "Edit" has no such neighbour: it is the only
+// interactive element in its `flex-row items-center justify-between` header
+// row (`app/wallet/[id].tsx`'s own "Notification matchers" title is a plain,
+// non-interactive `Text`), the nearest Pressable below it (the "+ Add" chip
+// row) sits at least 32px away (`pt-1` caption + `pt-3` row gap, both well
+// clear of a 14px slop), and the nearest Pressable above it sits behind this
+// card's own `p-4` padding plus the outer `pt-3` wrapper margin. Widening
+// left/right the same 14px has nothing adjacent to collide with, so it does
+// too, rather than leaving the control's short "Edit" label narrower than it
+// needs to be.
+const EDIT_MATCHERS_HIT_SLOP = { top: 14, bottom: 14, left: 14, right: 14 };
 
 type HeaderFill = { kind: "brand" } | { kind: "provider"; color: string };
 
@@ -558,6 +585,7 @@ export default function WalletDetailScreen() {
                       }
                       accessibilityRole="button"
                       accessibilityLabel="Edit notification matchers"
+                      hitSlop={EDIT_MATCHERS_HIT_SLOP}
                     >
                       <Text className="text-secondary font-semibold text-brand dark:text-brand-dark">
                         Edit
@@ -587,6 +615,7 @@ export default function WalletDetailScreen() {
                       accessibilityRole="button"
                       accessibilityLabel="Add a notification matcher"
                       className="flex-row items-center gap-1 rounded-full border border-dashed border-line px-2.5 py-1 dark:border-line-dark"
+                      hitSlop={CHIP_HIT_SLOP}
                     >
                       <Text className="text-micro font-semibold text-fg-2 dark:text-fg-2-dark">
                         + Add

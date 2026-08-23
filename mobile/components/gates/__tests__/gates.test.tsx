@@ -278,6 +278,20 @@ describe("UpgradeSheet", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  // Design F1 sweep: "Not now" has no padding class and no size guarantee on
+  // its Text — the same bare-Pressable shape app/wallet/[id].tsx's "Edit"
+  // shipped with, and no hitSlop to compensate. Pins the slop VALUE, not tap
+  // behaviour — Jest has no real hit-testing.
+  test("'Not now' carries a hitSlop compensating for its unpadded touch target", () => {
+    render(<UpgradeSheet visible onClose={() => {}} capability="backup" />);
+    expect(screen.getByTestId("upgrade-sheet-close").props.hitSlop).toEqual({
+      top: 16,
+      bottom: 16,
+      left: 16,
+      right: 16,
+    });
+  });
+
   test("no free-tier count is published anywhere in the sheet", () => {
     __setTierForTests("free");
     render(<UpgradeSheet visible onClose={() => {}} capability="wallets" />);

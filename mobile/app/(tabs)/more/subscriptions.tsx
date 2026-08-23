@@ -64,6 +64,7 @@ import { usePromoteToBill } from "@/hooks/mutations/use_promote_to_bill";
 import { useRecurringPatterns } from "@/hooks/queries/use_recurring_patterns";
 import { hasRecurringDetection } from "@/lib/entitlements";
 import { monthlyLockedIn } from "@/lib/recurring/recurring_service";
+import { ISOLATED_LINK_HIT_SLOP } from "@/lib/ui/hit_slop";
 
 /** Plan rule 6, verbatim. */
 const EMPTY_TITLE = "Nothing recurring spotted yet";
@@ -86,12 +87,16 @@ function LockedPreview({ count }: { count: number }) {
       <Text className="text-center text-fg-2 dark:text-fg-2-dark">
         Upgrade to Plus to see who it's for, how much, and what's locked in every month.
       </Text>
+      {/* Touch target (design F1 sweep): `mt-2` is margin only — no padding,
+          no size guarantee on the unstyled Text below it, no sibling
+          Pressable within slop distance. */}
       <Pressable
         testID="subscriptions-upgrade"
         onPress={() => setSheetOpen(true)}
         accessibilityRole="button"
         accessibilityLabel="See what PeraPlano Plus includes"
         className="mt-2"
+        hitSlop={ISOLATED_LINK_HIT_SLOP}
       >
         <Text className="font-semibold text-brand dark:text-brand-dark">See what's included</Text>
       </Pressable>

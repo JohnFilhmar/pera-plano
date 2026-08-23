@@ -332,6 +332,44 @@ describe("matcher chips", () => {
     // above, there is no dashed "+ Add" to justify an otherwise-empty card.
     expect(screen.queryByTestId("wallet-detail-matchers")).toBeNull();
   });
+
+  // Design review F1: both controls render well under the 44pt touch-target
+  // minimum with no compensating hitSlop. Jest has no real hit-testing, so
+  // these pin the slop VALUES and the arithmetic behind them, not tap
+  // behaviour — the same limit this suite's contrast tests already work
+  // within for colour.
+  describe("touch targets (design F1)", () => {
+    test('"Edit" carries a hitSlop that closes its 16px painted height to 44pt', async () => {
+      renderDetail(gcash.id);
+      await screen.findByText("GCash");
+
+      // text-secondary is 12px/16px line-height (tailwind.config.ts) and
+      // "Edit" has no padding class at all, so 16px is the whole painted
+      // height; 44 - 16 = 28, split evenly is 14 top + 14 bottom.
+      expect(screen.getByTestId("wallet-detail-matchers-edit").props.hitSlop).toEqual({
+        top: 14,
+        bottom: 14,
+        left: 14,
+        right: 14,
+      });
+    });
+
+    test('"+ Add" carries Chip\'s own outline hitSlop — its painted geometry is identical', async () => {
+      renderDetail(gcash.id);
+      await screen.findByText("GCash");
+
+      // rounded-full border ... px-2.5 py-1 around text-micro is byte-for-byte
+      // Chip's own outline fill (components/ui/chip.tsx), which measures
+      // 24px painted tall: 14px line-height + 1px+1px border + 4px+4px
+      // padding. CHIP_HIT_SLOP's 12/12 closes that to 48, comfortably over 44.
+      expect(screen.getByTestId("wallet-detail-matchers-add").props.hitSlop).toEqual({
+        top: 12,
+        bottom: 12,
+        left: 4,
+        right: 4,
+      });
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

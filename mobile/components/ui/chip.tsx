@@ -65,8 +65,17 @@ export const SOFT_ALPHA = 0.14;
  * `components/home/safe_to_spend_hero.tsx`'s eye toggle still sets a
  * uniform `hitSlop={12}` — safe there because that control has no sibling
  * within 24px, unlike every real chip row this file actually renders into.
+ *
+ * EXPORTED for `app/wallet/[id].tsx`'s "+ Add" matcher control — a
+ * deliberately hand-rolled, dashed-border pill (see that file's own comment
+ * on why it is not literally `Chip`) that reuses this exact geometry: same
+ * `rounded-full ... px-2.5 py-1` around the same `text-micro`, painting the
+ * identical 24px-tall outline pill, inside the same `gap-2` row shape this
+ * value was derived against. Importing the constant instead of copying its
+ * numbers keeps the two from drifting apart the way the app's five-slightly-
+ * different-versions problem tends to happen.
  */
-const CHIP_HIT_SLOP = { top: 12, bottom: 12, left: 4, right: 4 };
+export const CHIP_HIT_SLOP = { top: 12, bottom: 12, left: 4, right: 4 };
 
 const SOFT_TINT: Partial<Record<ChipTone, { light: string; dark: string }>> = {
   brand: { light: palette.brand, dark: palette["brand-dark"] },

@@ -113,7 +113,7 @@ function BootstrapErrorScreen({ onRetry }: { onRetry: () => void }) {
         onPress={onRetry}
         accessibilityRole="button"
         accessibilityLabel="Try again"
-        className="rounded-lg bg-brand px-4 py-3 dark:bg-brand-dark"
+        className="min-h-[44px] justify-center rounded-lg bg-brand px-4 py-3 dark:bg-brand-dark"
       >
         <Text className="font-semibold text-surface dark:text-surface-dark">Try again</Text>
       </Pressable>

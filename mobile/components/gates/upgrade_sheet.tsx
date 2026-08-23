@@ -2,6 +2,8 @@ import { Pressable, Text, View } from "react-native";
 import { Send } from "lucide-react-native";
 import { cssInterop } from "nativewind";
 
+import { ISOLATED_LINK_HIT_SLOP } from "@/lib/ui/hit_slop";
+
 // Lucide icons ship as plain SVG components and ignore `className` until they
 // are registered with cssInterop; `nativeStyleToProp` routes the resolved
 // `color` style back onto the `color` prop lucide actually reads — same
@@ -168,12 +170,17 @@ export function UpgradeSheet({
         ))}
       </View>
 
+      {/* Touch target (design F1 sweep): `mt-4` is margin only — no padding,
+          no size guarantee on the unstyled Text below it, no sibling
+          Pressable within slop distance (the rows above it are plain,
+          non-interactive Views). */}
       <Pressable
         testID="upgrade-sheet-close"
         onPress={onClose}
         accessibilityRole="button"
         accessibilityLabel="Close"
         className="mt-4"
+        hitSlop={ISOLATED_LINK_HIT_SLOP}
       >
         <Text className="text-center text-fg-2 dark:text-fg-2-dark">
           Not now

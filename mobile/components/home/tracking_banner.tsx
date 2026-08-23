@@ -13,6 +13,7 @@ import { Pressable, Text, View } from "react-native";
 
 import type { TrackingHealth } from "@/hooks/queries/use_listener_health";
 import { formatDateTime } from "@/lib/datetime";
+import { ISOLATED_LINK_HIT_SLOP } from "@/lib/ui/hit_slop";
 
 export type TrackingBannerProps = {
   health: TrackingHealth | undefined;
@@ -40,7 +41,17 @@ export function TrackingBanner({ health, onResume, onFix, testID }: TrackingBann
         <Text className="flex-1 pr-3 text-fg-2 dark:text-fg-2-dark">
           Tracking is paused. Nothing is being recorded.
         </Text>
-        <Pressable testID="tracking-resume" accessibilityRole="button" onPress={onResume}>
+        {/* Touch target (design F1 sweep): no padding class, unstyled
+            default-size text, no size guarantee — the identical shape
+            app/wallet/[id].tsx's "Edit" shipped with. No sibling Pressable
+            within slop distance (the row's other child is plain, inert
+            text), so the isolated, uniform slop applies as-is. */}
+        <Pressable
+          testID="tracking-resume"
+          accessibilityRole="button"
+          onPress={onResume}
+          hitSlop={ISOLATED_LINK_HIT_SLOP}
+        >
           <Text className="font-semibold text-brand dark:text-brand-dark">Resume</Text>
         </Pressable>
       </View>
@@ -68,7 +79,12 @@ export function TrackingBanner({ health, onResume, onFix, testID }: TrackingBann
       <Text className="text-surface dark:text-surface-dark">
         {`${since} Your balances and limits may be out of date.`}
       </Text>
-      <Pressable testID="tracking-fix" accessibilityRole="button" onPress={onFix}>
+      <Pressable
+        testID="tracking-fix"
+        accessibilityRole="button"
+        onPress={onFix}
+        hitSlop={ISOLATED_LINK_HIT_SLOP}
+      >
         <Text className="font-semibold text-surface underline dark:text-surface-dark">
           Fix tracking
         </Text>

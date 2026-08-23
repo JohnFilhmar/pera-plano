@@ -602,6 +602,20 @@ test("SectionHeader without an action renders no action", () => {
   expect(screen.queryByTestId("section-header-action")).toBeNull();
 });
 
+// Design F1 sweep: the action label has no padding class — text-sm alone
+// (14px/20px line-height) is the whole painted height, well under 44pt, with
+// no hitSlop to compensate. Jest has no real hit-testing, so this pins the
+// slop VALUE (44 - 20 = 24, split 12/12) rather than tap behaviour.
+test("SectionHeader's action carries a hitSlop that closes its 20px painted height to 44pt", () => {
+  render(<SectionHeader title="This month" action={{ label: "See all", onPress: noop }} />);
+  expect(screen.getByTestId("section-header-action").props.hitSlop).toEqual({
+    top: 12,
+    bottom: 12,
+    left: 12,
+    right: 12,
+  });
+});
+
 test("a multi-word section title renders in full", () => {
   // DEVICE-TESTING REPRODUCTION (2026-08-18, Task 8, defect b). The owner's
   // screenshot showed `components/home/limit_progress_list.tsx`'s

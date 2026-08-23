@@ -20,6 +20,7 @@ import { DateField } from "@/components/ui/date_field";
 import { parseDateIso } from "@/lib/dates";
 import { MONTHS } from "@/lib/datetime";
 import type { AvailableScopes, ReportScope } from "@/lib/reports/reports_service";
+import { ISOLATED_LINK_HIT_SLOP } from "@/lib/ui/hit_slop";
 
 export type RangePickerProps = {
   scope: ReportScope;
@@ -121,11 +122,15 @@ export function RangePicker({
       )}
 
       <PlusGate capability="reports">
+        {/* Touch target (design F1 sweep): no padding class, unstyled
+            default-size text, nothing rendered below it until `customOpen`
+            flips true — no sibling Pressable within slop distance. */}
         <Pressable
           testID="range-picker-custom-toggle"
           onPress={() => setCustomOpen((open) => !open)}
           accessibilityRole="button"
           accessibilityLabel="Custom range"
+          hitSlop={ISOLATED_LINK_HIT_SLOP}
         >
           <Text className="font-semibold text-brand dark:text-brand-dark">Custom range</Text>
         </Pressable>

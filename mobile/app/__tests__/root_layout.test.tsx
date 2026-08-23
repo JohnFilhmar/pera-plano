@@ -215,6 +215,20 @@ test("a throwing bootstrapApp renders the recovery screen instead of leaving the
   expect(screen.queryByTestId("tab-index")).toBeNull();
 });
 
+// Design F1 sweep: this button relied on px-4/py-3 padding plus its Text's
+// (unstyled) height alone to reach 44pt, with no explicit guarantee.
+// `min-h-[44px]` removes that ambiguity directly.
+test("the retry action guarantees a 44pt minimum touch target directly", async () => {
+  mockBootstrapApp.mockRejectedValue(new Error("disk full"));
+
+  renderApp();
+
+  await waitFor(() => expect(screen.getByTestId("bootstrap-error")).toBeTruthy());
+  expect(String(screen.getByTestId("bootstrap-retry").props.className)).toContain(
+    "min-h-[44px]",
+  );
+});
+
 test("the recovery screen's retry action actually re-invokes bootstrapApp and can recover to the tab bar", async () => {
   mockBootstrapApp.mockRejectedValueOnce(new Error("disk full"));
   mockBootstrapApp.mockResolvedValueOnce(undefined);

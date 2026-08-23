@@ -46,6 +46,14 @@ test("never renders any amount, balance, or transaction data -- this screen exis
   expect(tree).not.toContain("₱");
 });
 
+// Design F1 sweep: this button relied on px-6/py-3 padding plus its Text's
+// (unstyled) height alone to reach 44pt, with no explicit guarantee.
+// `min-h-[44px]` removes that ambiguity directly.
+test("guarantees a 44pt minimum touch target directly, rather than trusting padding and text height alone", () => {
+  render(<UnlockPrompt isAuthenticating={false} errorMessage={null} onUnlock={jest.fn()} />);
+  expect(String(screen.getByTestId("unlock-button").props.className)).toContain("min-h-[44px]");
+});
+
 // ---------------------------------------------------------------------------
 // task-6-brief.md: auto-fire the system prompt exactly once, on first mount
 // -- never on re-render, never again after a cancellation or an error. Every

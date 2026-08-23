@@ -95,6 +95,26 @@ function openCustomForm(onSelectCustom = jest.fn()) {
   return onSelectCustom;
 }
 
+// Design F1 sweep: "Custom range" has no padding class and no size guarantee
+// on its Text, and no hitSlop to compensate. Pins the slop VALUE, not tap
+// behaviour — Jest has no real hit-testing.
+test("'Custom range' carries a hitSlop compensating for its unpadded touch target", () => {
+  withTheme(
+    <RangePicker
+      scope={MONTH_SCOPE}
+      availableScopes={PLUS_SCOPES}
+      onSelectMonth={jest.fn()}
+      onSelectCustom={jest.fn()}
+    />,
+  );
+  expect(screen.getByTestId("range-picker-custom-toggle").props.hitSlop).toEqual({
+    top: 16,
+    bottom: 16,
+    left: 16,
+    right: 16,
+  });
+});
+
 /** Opens a date field, mock-picks the given local day, and closes the dialog. */
 function pickDate(testID: string, year: number, month: number, day: number): void {
   mockPickedDate = new Date(year, month - 1, day);

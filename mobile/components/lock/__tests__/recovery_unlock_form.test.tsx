@@ -149,4 +149,67 @@ describe("wipe and start over -- the §11a escape hatch", () => {
     expect(onWipe).not.toHaveBeenCalled();
     expect(screen.queryByTestId("wipe-confirm-2")).toBeNull();
   });
+
+  // Design F1 sweep: three bare-Pressable text links on this screen had no
+  // padding, no size guarantee, and no hitSlop. Each sits directly below
+  // another Pressable in a gap-3/gap-4 column, so — unlike an isolated
+  // control — the slop toward that neighbour is capped at half the gap
+  // rather than left uniform, the vertical-axis version of the mis-tap bug
+  // components/ui/chip.tsx's CHIP_HIT_SLOP comment documents on the
+  // horizontal axis. Pins the slop VALUES, not tap behaviour — Jest has no
+  // real hit-testing.
+  describe("touch targets (design F1)", () => {
+    test("forgot-phrase-link's hitSlop caps its top at half the gap-4 above the Unlock button", () => {
+      renderForm();
+      expect(screen.getByTestId("forgot-phrase-link").props.hitSlop).toEqual({
+        top: 8,
+        bottom: 16,
+        left: 16,
+        right: 16,
+      });
+    });
+
+    test("wipe-confirm-1-cancel's hitSlop caps its top at half the gap-3 above its own continue button", () => {
+      renderForm();
+      fireEvent.press(screen.getByTestId("forgot-phrase-link"));
+      expect(screen.getByTestId("wipe-confirm-1-cancel").props.hitSlop).toEqual({
+        top: 6,
+        bottom: 16,
+        left: 16,
+        right: 16,
+      });
+    });
+
+    test("wipe-confirm-2-cancel's hitSlop caps its top the same way", () => {
+      renderForm();
+      fireEvent.press(screen.getByTestId("forgot-phrase-link"));
+      fireEvent.press(screen.getByTestId("wipe-confirm-1-continue"));
+      expect(screen.getByTestId("wipe-confirm-2-cancel").props.hitSlop).toEqual({
+        top: 6,
+        bottom: 16,
+        left: 16,
+        right: 16,
+      });
+    });
+
+    // The three py-3 buttons on this screen relied on padding + text height
+    // alone to reach 44pt, with no explicit guarantee. `min-h-[44px]` removes
+    // the ambiguity outright rather than depending on an unstyled default.
+    test("the Unlock, continue and wipe buttons all guarantee a 44pt minimum height directly", () => {
+      renderForm();
+      expect(String(screen.getByTestId("recovery-submit-button").props.className)).toContain(
+        "min-h-[44px]",
+      );
+
+      fireEvent.press(screen.getByTestId("forgot-phrase-link"));
+      expect(String(screen.getByTestId("wipe-confirm-1-continue").props.className)).toContain(
+        "min-h-[44px]",
+      );
+
+      fireEvent.press(screen.getByTestId("wipe-confirm-1-continue"));
+      expect(String(screen.getByTestId("wipe-confirm-2-continue").props.className)).toContain(
+        "min-h-[44px]",
+      );
+    });
+  });
 });

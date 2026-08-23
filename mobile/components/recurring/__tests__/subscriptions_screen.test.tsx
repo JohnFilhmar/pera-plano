@@ -145,6 +145,25 @@ test("free tier sees a count-only locked preview, never the merchant or amount",
   expect(screen.queryByText(/549/)).toBeNull();
 });
 
+// Design F1 sweep: "See what's included" is `mt-2` (margin only) around
+// unpadded, unstyled Text — the same bare-Pressable shape
+// app/wallet/[id].tsx's "Edit" shipped with, and no hitSlop to compensate.
+// Pins the slop VALUE, not tap behaviour — Jest has no real hit-testing.
+test("'See what's included' carries a hitSlop compensating for its unpadded touch target", async () => {
+  __setTierForTests("free");
+  await seedNetflix();
+
+  renderScreen(<SubscriptionsScreen />);
+
+  await screen.findByText("1 recurring payment spotted");
+  expect(screen.getByTestId("subscriptions-upgrade").props.hitSlop).toEqual({
+    top: 16,
+    bottom: 16,
+    left: 16,
+    right: 16,
+  });
+});
+
 test("a dismissed pattern does not re-appear after being dismissed once", async () => {
   __setTierForTests("plus");
   const pattern = await seedNetflix();

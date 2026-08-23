@@ -12,6 +12,18 @@ export type SectionHeaderProps = {
   testID?: string;
 };
 
+/**
+ * Touch target (design F1 sweep). The action label carries no padding class
+ * at all — `text-sm` alone (14px/20px line-height, Tailwind's own default
+ * scale) is the whole painted height. 44 - 20 = 24, split evenly: 12 top, 12
+ * bottom closes it exactly. Uncapped horizontally: this is the only
+ * interactive element in its `justify-between` header row (the title beside
+ * it is a plain, non-interactive `Text`), so there is no adjacent Pressable
+ * for a wider slop to collide with — the same reasoning
+ * `app/wallet/[id].tsx`'s "Edit" hitSlop documents for its own isolated case.
+ */
+const SECTION_ACTION_HIT_SLOP = { top: 12, bottom: 12, left: 12, right: 12 };
+
 export function SectionHeader({ title, action, testID }: SectionHeaderProps) {
   return (
     <View
@@ -27,6 +39,7 @@ export function SectionHeader({ title, action, testID }: SectionHeaderProps) {
           onPress={action.onPress}
           accessibilityRole="button"
           accessibilityLabel={action.label}
+          hitSlop={SECTION_ACTION_HIT_SLOP}
         >
           {/* Brand green, never `fg-2`: a section action is a live link, and a
               grey one reads as a disabled "Soon" affordance. */}

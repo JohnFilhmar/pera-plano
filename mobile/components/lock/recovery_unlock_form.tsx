@@ -25,6 +25,24 @@ import { normalizePhrase, validatePhrase } from "@/lib/crypto/recovery_phrase";
 
 type WipeStep = "hidden" | "confirm1" | "confirm2";
 
+/**
+ * Touch target (design F1 sweep). "Forgot your recovery words?" and both
+ * "Cancel" links carry no padding class and no size guarantee — the same
+ * bare-Pressable shape as `app/wallet/[id].tsx`'s "Edit". Unlike that
+ * control, or `ISOLATED_LINK_HIT_SLOP`'s five call sites, each of these three
+ * sits directly BELOW another Pressable in a `gap-*` column ("Unlock" above
+ * "Forgot…", each wipe step's own "…continue" button above its "Cancel") —
+ * a full-strength slop on that shared edge would reach into the button
+ * above it, the vertical version of the mis-tap bug `CHIP_HIT_SLOP`'s own
+ * comment documents fixing on the horizontal axis. TOP is capped at half the
+ * relevant gap so the two controls' touch regions meet at the gap's midpoint
+ * rather than overlap; BOTTOM, LEFT and RIGHT have no neighbour to collide
+ * with, so they take the same generous, unstyled-text-safe value
+ * `ISOLATED_LINK_HIT_SLOP` documents deriving.
+ */
+const FORGOT_LINK_HIT_SLOP = { top: 8, bottom: 16, left: 16, right: 16 }; // gap-4 (16px) above, halved
+const WIPE_CANCEL_HIT_SLOP = { top: 6, bottom: 16, left: 16, right: 16 }; // gap-3 (12px) above, halved
+
 export function RecoveryUnlockForm({
   errorMessage,
   onSubmitPhrase,
@@ -100,7 +118,7 @@ export function RecoveryUnlockForm({
         onPress={handleSubmit}
         accessibilityRole="button"
         accessibilityLabel="Unlock with recovery words"
-        className="rounded-lg bg-brand px-6 py-3 dark:bg-brand-dark"
+        className="min-h-[44px] justify-center rounded-lg bg-brand px-6 py-3 dark:bg-brand-dark"
       >
         <Text className="font-semibold text-surface dark:text-surface-dark">Unlock</Text>
       </Pressable>
@@ -111,6 +129,7 @@ export function RecoveryUnlockForm({
           accessibilityRole="button"
           accessibilityLabel="Forgot your recovery words?"
           onPress={() => setWipeStep("confirm1")}
+          hitSlop={FORGOT_LINK_HIT_SLOP}
         >
           <Text className="text-center text-fg-2 underline dark:text-fg-2-dark">
             Forgot your recovery words?
@@ -129,7 +148,7 @@ export function RecoveryUnlockForm({
             testID="wipe-confirm-1-continue"
             onPress={() => setWipeStep("confirm2")}
             accessibilityRole="button"
-            className="rounded-lg bg-danger px-4 py-3 dark:bg-danger-dark"
+            className="min-h-[44px] justify-center rounded-lg bg-danger px-4 py-3 dark:bg-danger-dark"
           >
             <Text className="text-center font-semibold text-surface dark:text-surface-dark">
               I understand — continue
@@ -139,6 +158,7 @@ export function RecoveryUnlockForm({
             testID="wipe-confirm-1-cancel"
             onPress={() => setWipeStep("hidden")}
             accessibilityRole="button"
+            hitSlop={WIPE_CANCEL_HIT_SLOP}
           >
             <Text className="text-center text-fg-2 dark:text-fg-2-dark">Cancel</Text>
           </Pressable>
@@ -155,7 +175,7 @@ export function RecoveryUnlockForm({
             testID="wipe-confirm-2-continue"
             onPress={() => void onWipe()}
             accessibilityRole="button"
-            className="rounded-lg bg-danger px-4 py-3 dark:bg-danger-dark"
+            className="min-h-[44px] justify-center rounded-lg bg-danger px-4 py-3 dark:bg-danger-dark"
           >
             <Text className="text-center font-semibold text-surface dark:text-surface-dark">
               Wipe and start over
@@ -165,6 +185,7 @@ export function RecoveryUnlockForm({
             testID="wipe-confirm-2-cancel"
             onPress={() => setWipeStep("hidden")}
             accessibilityRole="button"
+            hitSlop={WIPE_CANCEL_HIT_SLOP}
           >
             <Text className="text-center text-fg-2 dark:text-fg-2-dark">Cancel</Text>
           </Pressable>
