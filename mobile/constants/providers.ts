@@ -100,30 +100,46 @@ export function providerLabelForPackage(
  * "GCash" chip; 04 Wallets' list).
  *
  * COLOURED INITIALS, NOT LOGOS, ON PURPOSE. No provider artwork is bundled
- * with the app. A letter on a brand-adjacent colour is recognisable at 14dp,
- * costs nothing to ship, and creates no trademark surface — which matters for
- * an app that names thirteen banks and e-wallets it has no relationship with.
+ * with the app. Coloured initials cost nothing to ship and create no
+ * trademark surface — which matters for an app that names thirteen banks and
+ * e-wallets it has no relationship with.
+ *
+ * `ink` IS MEASURED, NOT ASSUMED. A white letter is not "recognisable at
+ * 14dp" against every one of these colours — six of the thirteen are too
+ * light for it: gotyme 2.56:1, maya 2.62:1, grabpay 2.84:1, unionbank 3.27:1,
+ * seabank 3.48:1, shopeepay 3.66:1 (white `#FFFFFF` measured with
+ * `contrastRatio` from `lib/ui/contrast.ts`), all below the 4.5:1 WCAG AA
+ * floor for text this small — the badge disables `allowFontScaling`
+ * (see provider_badge.tsx), so the 3:1 large-text allowance does not apply.
+ * Those six ink dark (`#10201A`, the same value as `palette.fg`, written as a
+ * literal here because this is provider identity, not palette) instead, which
+ * clears AA against all six. Every pairing is pinned by
+ * constants/__tests__/providers.test.ts — that test is the enforcement, this
+ * comment is not.
  *
  * These colours are for identification only. None of them may be used as a
  * status: they are not in `palette` for exactly that reason.
  */
-export const PROVIDER_BADGE: Record<string, { color: string; letter: string }> = {
-  gcash: { color: "#0038A8", letter: "G" },
-  maya: { color: "#12B76A", letter: "M" },
-  bpi: { color: "#B32017", letter: "B" },
-  bdo: { color: "#0B2B63", letter: "B" },
-  unionbank: { color: "#E36C0A", letter: "U" },
-  metrobank: { color: "#0A3D91", letter: "M" },
-  seabank: { color: "#F4511E", letter: "S" },
-  gotyme: { color: "#00B5AD", letter: "G" },
-  cimb: { color: "#A6192E", letter: "C" },
-  landbank: { color: "#00713C", letter: "L" },
-  shopeepay: { color: "#EE4D2D", letter: "S" },
-  grabpay: { color: "#00B14F", letter: "G" },
-  sms_relay: { color: "#5B6E64", letter: "S" },
+export const PROVIDER_BADGE: Record<string, { color: string; letter: string; ink: string }> = {
+  gcash: { color: "#0038A8", letter: "G", ink: "#FFFFFF" },
+  maya: { color: "#12B76A", letter: "M", ink: "#10201A" },
+  bpi: { color: "#B32017", letter: "B", ink: "#FFFFFF" },
+  bdo: { color: "#0B2B63", letter: "B", ink: "#FFFFFF" },
+  unionbank: { color: "#E36C0A", letter: "U", ink: "#10201A" },
+  metrobank: { color: "#0A3D91", letter: "M", ink: "#FFFFFF" },
+  seabank: { color: "#F4511E", letter: "S", ink: "#10201A" },
+  gotyme: { color: "#00B5AD", letter: "G", ink: "#10201A" },
+  cimb: { color: "#A6192E", letter: "C", ink: "#FFFFFF" },
+  landbank: { color: "#00713C", letter: "L", ink: "#FFFFFF" },
+  shopeepay: { color: "#EE4D2D", letter: "S", ink: "#10201A" },
+  grabpay: { color: "#00B14F", letter: "G", ink: "#10201A" },
+  sms_relay: { color: "#5B6E64", letter: "S", ink: "#FFFFFF" },
 };
 
 const UNKNOWN_PROVIDER_COLOR = "#5B6E64";
+// Same grey as `sms_relay`, so it takes the same measured ink: white on
+// `#5B6E64` clears 5.44:1.
+const UNKNOWN_PROVIDER_INK = "#FFFFFF";
 
 /**
  * Badge for a provider key, falling back the same way `providerLabel` does:
@@ -131,9 +147,13 @@ const UNKNOWN_PROVIDER_COLOR = "#5B6E64";
  * heard of. A grey square with the key's own initial is worse than the real
  * badge and much better than a blank square.
  */
-export function providerBadge(providerKey: string): { color: string; letter: string } {
+export function providerBadge(providerKey: string): { color: string; letter: string; ink: string } {
   const known = PROVIDER_BADGE[providerKey];
   if (known !== undefined) return known;
   const initial = providerKey.trim().charAt(0).toUpperCase();
-  return { color: UNKNOWN_PROVIDER_COLOR, letter: initial === "" ? "?" : initial };
+  return {
+    color: UNKNOWN_PROVIDER_COLOR,
+    letter: initial === "" ? "?" : initial,
+    ink: UNKNOWN_PROVIDER_INK,
+  };
 }

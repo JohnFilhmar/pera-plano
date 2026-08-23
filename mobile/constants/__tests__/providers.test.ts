@@ -8,8 +8,14 @@
 // does not tell them that.
 import type { ProviderRuleset } from "@/lib/ingest/ruleset_types";
 
-import { providerLabel, providerLabelForPackage } from "../providers";
-import { PROVIDER_BADGE, PROVIDER_LABELS, providerBadge } from "../providers";
+import { contrastRatio } from "@/lib/ui/contrast";
+import {
+  PROVIDER_BADGE,
+  PROVIDER_LABELS,
+  providerBadge,
+  providerLabel,
+  providerLabelForPackage,
+} from "../providers";
 
 const GCASH_PACKAGE = "com.globe.gcash.android";
 
@@ -84,9 +90,27 @@ test("every badge colour is a six-digit hex", () => {
 });
 
 test("an unknown provider falls back to its own initial, never to blank", () => {
-  expect(providerBadge("chipmunk-bank")).toEqual({ color: "#5B6E64", letter: "C" });
+  expect(providerBadge("chipmunk-bank")).toEqual({ color: "#5B6E64", letter: "C", ink: "#FFFFFF" });
 });
 
 test("an empty key still yields a letter rather than an empty badge", () => {
   expect(providerBadge("").letter).toBe("?");
+});
+
+// F2: the badge letter renders at a fixed 8-ish px with `allowFontScaling`
+// off, which is small text under WCAG — the 3:1 large-text allowance does
+// not apply. This is the enforcement for every `ink`-on-`color` pairing in
+// `PROVIDER_BADGE`; the values in that file are not self-verifying without
+// it. Shape mirrors components/ui/__tests__/chip_contrast.test.ts.
+const AA = 4.5;
+
+describe("provider badge ink clears WCAG AA", () => {
+  test.each(Object.entries(PROVIDER_BADGE))("%s", (_key, badge) => {
+    expect(contrastRatio(badge.ink, badge.color)).toBeGreaterThanOrEqual(AA);
+  });
+
+  test("the unknown-provider fallback also clears AA", () => {
+    const fallback = providerBadge("chipmunk-bank");
+    expect(contrastRatio(fallback.ink, fallback.color)).toBeGreaterThanOrEqual(AA);
+  });
 });

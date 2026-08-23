@@ -22,6 +22,16 @@ test("soft warn inks with warn-ink, never warn", () => {
   expect(String(screen.getByTestId("c-label").props.className)).toContain("text-warn-ink");
 });
 
+test("soft brand inks with brand-ink, never brand", () => {
+  render(<Chip testID="c" label="Catches: GCash" tone="brand" fill="soft" />);
+  expect(String(screen.getByTestId("c-label").props.className)).toContain("text-brand-ink");
+});
+
+test("soft danger inks with danger-ink, never danger", () => {
+  render(<Chip testID="c" label="overdue 2d" tone="danger" fill="soft" />);
+  expect(String(screen.getByTestId("c-label").props.className)).toContain("text-danger-ink");
+});
+
 test("an outline chip has a border and no fill", () => {
   render(<Chip testID="c" label="SOON" tone="neutral" fill="outline" />);
   const classes = String(screen.getByTestId("c").props.className);
