@@ -275,9 +275,10 @@ export default function SettingsScreen() {
         title={`Forget a subscription after ${formatMultiplier(multiplier)} ${paymentsWord}`}
         subtitle="We can only see a charge arrive, never a cancellation — this is how much silence, scaled to how often it charges, counts as gone."
         // 129 characters beside the three-part −/value/+ stepper — the
-        // narrowest control of the four rows here, so despite being
-        // shorter than quiet-hours' subtitle this one needs more lines,
-        // not fewer. fix-round-1.
+        // widest control of the four rows here (~156px against a bare
+        // Switch's ~52px), so it leaves the least width for the subtitle.
+        // That is why this row needs more lines than quiet-hours' despite
+        // its subtitle being shorter. fix-round-1.
         subtitleLines={6}
         control={
           <View className="flex-row items-center gap-2">
