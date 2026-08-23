@@ -16,7 +16,13 @@
 // a STATUS axis, the exact thing `brand`/`danger` already mean app-wide. Two
 // colour systems answering the same "good or bad" question here would be the
 // one place they could disagree.
-import { Pressable, Text, View } from "react-native";
+//
+// NO "REPORT THIS" CONTROL HERE ANYMORE. Each row used to carry a Pressable
+// that only flipped local state in the caller and never sent anything — see
+// app/(tabs)/more/parser_diagnostics.tsx's header comment for the full
+// rationale (rest-state-promise-audit.md Finding 1). Removed along with the
+// `onReport` prop it existed to call.
+import { Text, View } from "react-native";
 
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty_state";
@@ -38,12 +44,10 @@ function failureRate(stats: ProviderParseStats): number {
 
 export type ProviderSuccessMeterProps = {
   stats: ProviderParseStats[];
-  /** Sends ONLY the aggregate row the user pressed — see this file's header. */
-  onReport: (stats: ProviderParseStats) => void;
   testID?: string;
 };
 
-export function ProviderSuccessMeter({ stats, onReport, testID }: ProviderSuccessMeterProps) {
+export function ProviderSuccessMeter({ stats, testID }: ProviderSuccessMeterProps) {
   if (stats.length === 0) {
     return (
       <EmptyState
@@ -106,15 +110,6 @@ export function ProviderSuccessMeter({ stats, onReport, testID }: ProviderSucces
                 have changed.
               </Text>
             ) : null}
-
-            <Pressable
-              testID={`provider-success-${row.providerKey}-report`}
-              accessibilityRole="button"
-              onPress={() => onReport(row)}
-              className="mt-2 self-start"
-            >
-              <Text className="font-semibold text-brand dark:text-brand-dark">Report this</Text>
-            </Pressable>
           </Card>
         );
       })}

@@ -5,7 +5,7 @@
 // is about what the SCREEN does with real local stats, not about the query
 // hook's own plumbing.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react-native";
+import { render, screen } from "@testing-library/react-native";
 import type { ReactNode } from "react";
 
 import { ThemeProvider } from "@/contexts/theme_context";
@@ -62,17 +62,42 @@ test("real recorded results reach the screen through the same repository the pip
   screen.getByText("2 parsed · 1 failed");
 });
 
-test("pressing report this confirms locally, with only the aggregate as the payload", async () => {
+// NO "REPORT THIS" ANYMORE. This screen used to show a per-row "Report
+// this" button and, once pressed, a "Thanks — reported {provider}'s
+// counts" banner (testID "parser-diagnostics-report-confirmation") — but
+// `handleReport` was a bare `useState` write with no network call behind
+// it, so the confirmation was false for an opted-in user (nothing had
+// actually left the device yet) and permanently false for anyone who had
+// turned off "Share anonymous parser health" in Settings
+// (rest-state-promise-audit.md Finding 1). Removed the control and the
+// confirmation; see the screen's own header comment for the full story.
+//
+// This guard is deliberately narrower than a blanket "no pressable
+// anywhere on this screen" sweep (the technique
+// app/__tests__/shared_budgets_screen.test.tsx uses for its fully static
+// Soon screen). Parser diagnostics is real, populated content, not a Soon
+// placeholder, so it may legitimately grow other interactive elements later
+// (e.g. a retry action if `useParseStats` surfaces a fetch error) — a
+// blanket sweep would fail on those for a reason that has nothing to do
+// with this defect. What it DOES cover: (1) the button's exact visible
+// label never appears anywhere in the tree, (2) no element carries a
+// testID following the removed button's `-report` convention, and (3) the
+// confirmation banner's testID and its "Thanks — reported" copy never
+// appear. What it does NOT cover: any other future control this screen
+// might legitimately grow, or a report-shaped control that both drops this
+// exact copy AND invents an unrelated testID — this guard trades that
+// residual gap for not being a tripwire on unrelated future UI.
+test("renders no control that claims to report or send a provider's counts", async () => {
   const now = systemClock.now();
   await recordParseResult("bpi-sms", true, now);
 
   renderScreen(<ParserDiagnosticsScreen />);
-  await screen.findByTestId("provider-success-bpi-sms-report");
+  await screen.findByText("bpi-sms");
 
-  fireEvent.press(screen.getByTestId("provider-success-bpi-sms-report"));
-
-  await screen.findByTestId("parser-diagnostics-report-confirmation");
-  screen.getByText(/Thanks — reported bpi-sms/);
+  expect(screen.queryByText("Report this")).toBeNull();
+  expect(screen.queryByText(/Thanks — reported/)).toBeNull();
+  expect(screen.queryByTestId("parser-diagnostics-report-confirmation")).toBeNull();
+  expect(JSON.stringify(screen.toJSON())).not.toMatch(/-report"/);
 });
 
 test("a provider past the 30-day window is not shown — the rolling window is real", async () => {

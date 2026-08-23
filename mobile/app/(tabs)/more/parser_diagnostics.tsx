@@ -7,29 +7,27 @@
 //
 // FREE-TIER, UNGATED (rule 5): nothing here sits behind PlusGate or SoonGate.
 //
-// "REPORT THIS" STOPS AT THE AGGREGATE. Rule 3 asks for an action that "only
-// sends the aggregate counts" — `ProviderSuccessMeter`'s `onReport` callback
-// receives exactly one `ProviderParseStats` row, which structurally has
-// nowhere to carry anything else. The actual network call to
-// `POST /v1/telemetry/parse_stats` (interface contract §6) is a client task
-// assigned to m3c, not this one — this screen's job is to prove the payload
-// this button can ever produce is the aggregate and nothing more, and to give
-// the user honest feedback that their tap did something.
-import { useState } from "react";
+// NO "REPORT THIS" CONTROL, ON PURPOSE. An earlier revision shipped a
+// per-row "Report this" button whose handler was local `useState` only — no
+// network call, no queue, no write of any kind — behind a confirmation
+// banner reading "Thanks — reported {provider}'s counts." The real send
+// (`services/telemetry.ts`'s `sendParseStats`) is a decoupled, once-per-24h,
+// opt-in batch wired only from `lib/bootstrap.ts`, unrelated to which row
+// was pressed, and it makes no request at all once the user has turned off
+// "Share anonymous parser health" in Settings — so the confirmation was
+// false in both directions, and permanently false for anyone who opted out
+// (see rest-state-promise-audit.md Finding 1). Removed the control and its
+// confirmation rather than building the real scoped-send/opt-out-aware
+// version. The paragraph below is what remains — it never claimed anything
+// was sent, so it needed no replacement copy.
 import { ScrollView, Text, View } from "react-native";
 
 import { ProviderSuccessMeter } from "@/components/privacy/provider_success_meter";
 import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { useParseStats } from "@/hooks/queries/use_parse_stats";
-import type { ProviderParseStats } from "@/lib/diagnostics/parse_stats_repo";
 
 export default function ParserDiagnosticsScreen() {
   const { data: stats } = useParseStats();
-  const [reportedProviderKey, setReportedProviderKey] = useState<string | null>(null);
-
-  function handleReport(row: ProviderParseStats): void {
-    setReportedProviderKey(row.providerKey);
-  }
 
   if (stats === undefined) {
     return (
@@ -53,18 +51,7 @@ export default function ParserDiagnosticsScreen() {
         </Text>
       </View>
 
-      {reportedProviderKey !== null ? (
-        <View
-          testID="parser-diagnostics-report-confirmation"
-          className="rounded-lg bg-brand-soft px-4 py-3 dark:bg-brand-soft-dark"
-        >
-          <Text className="text-fg dark:text-fg-dark">
-            {`Thanks — reported ${reportedProviderKey}'s counts. This helps catch a broken parser early.`}
-          </Text>
-        </View>
-      ) : null}
-
-      <ProviderSuccessMeter stats={stats} onReport={handleReport} />
+      <ProviderSuccessMeter stats={stats} />
 
       {/* Clears the tab bar on short devices. */}
       <View className="h-8" />
