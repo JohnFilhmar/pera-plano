@@ -33,12 +33,21 @@ recovered on 2026-08-23:
   sites in `app/(tabs)/more/settings.tsx`. Re-dispatched with the breakage
   named, told to finish rather than restart.
 
-**Remaining after those two land:** Task 5 (system states: `ErrorState`,
-`LoadingSkeleton`, the four `*-loading` views, 4 Android notification
-layouts), the Chip accessibility sweep (Ruling P3-1), then **Task 7 (motion)
-strictly last** — its own plan requires it to land on finished screens.
-Then whole-branch review for Parts 2+3, then
-`superpowers:finishing-a-development-branch`.
+**All implementation and review work is now complete.** Parts 1, 2 and 3 are
+done; the whole-branch review for Parts 2+3 ran as three lenses (test
+integrity, design-system consistency, correctness) and every finding it
+produced has been fixed and verified.
+
+Final state: **227/228 suites, 3752/3753 tests, `tsc --noEmit` clean.** The one
+red is `bills_screen`, confirmed 13/13 in isolation — the documented
+parallel-load flake.
+
+What remains is not code: the **owner device checklist** in §5, the deferred
+type-scale decision in §4b, and `superpowers:finishing-a-development-branch`
+when the device passes are done. The branch should not merge before those
+checks, because several of the things this revamp changed — touch targets,
+contrast in daylight, motion under "Remove animations", the twelve onboarding
+steps from a wiped install — are only verifiable on hardware.
 
 ---
 
@@ -329,6 +338,27 @@ correct where it was written and destructive where it lands.
 
 ---
 
+## 4b. Deferred, and why — needs an owner decision
+
+**119 raw Tailwind type-size classes remain across ~55 files.** The revamp's
+type scale (`hero`/`title`/`section`/`body`/`row`/`secondary`/`micro`/`badge`)
+is defined in `tailwind.config.ts`, but `text-xs`/`text-sm`/`text-base`/`text-lg`
+and friends are still used directly in 127 places. Eight were fixed in
+`app/(tabs)/more/privacy.tsx`; the rest were left.
+
+They are **not a regression from this branch** — they predate it — and the
+reason for leaving them is not effort. The mapping is not size-neutral:
+`text-sm`→`text-body` is identical at 14px, but `text-base`→`text-section`
+shrinks 16px to 15px. Converting all 119 would nudge layout across 55 files,
+immediately after a whole-branch review, with no device available to check the
+result. That trade — app-wide layout drift for internal consistency, unverified
+on hardware — is the owner's call, not a cleanup to absorb silently at the tail
+of a feature branch.
+
+**If it is taken on, it is its own task**, done against a device, and worth
+doing properly: a lint rule banning the raw classes is what actually keeps the
+scale enforced. Without one, the next screen reintroduces them.
+
 ## 5. Owner device checklist (A54 — no subagent can do these)
 
 Font weights render correctly — **confirmed by owner**. Still open:
@@ -336,6 +366,13 @@ Font weights render correctly — **confirmed by owner**. Still open:
 - Card shadow and hairline, light vs dark.
 - Red Transactions tab badge.
 - Chip geometry in dense rows.
+- **Three touch targets deliberately left unmeasured.** `date_field.tsx`,
+  `numeric_field.tsx` and `manual_entry_form.tsx` are borderline against the
+  44pt minimum, but their real painted height depends on an unstyled
+  platform-default text size that cannot be verified off-device. They were
+  reported rather than adjusted, because guessing a `hitSlop` on a widely
+  shared primitive risks the overlapping-responder bug that already had to be
+  fixed once on `Chip`. **Measure these three on the A54 and decide.**
 - **Adjacent-chip mis-tap.** Chips carry a `hitSlop` to reach the 44pt touch
   minimum their painted pill (~22px) does not meet. Rows are spaced `gap-2`
   (8px), so horizontal slop is capped at half the gap to stop neighbouring
