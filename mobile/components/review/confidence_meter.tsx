@@ -72,7 +72,12 @@ export function ConfidenceMeter({ confidence, testID = "confidence-meter" }: Con
           className="h-2 rounded-full bg-brand dark:bg-brand-dark"
         />
       </View>
-      <Text className="text-xs text-fg-2 dark:text-fg-2-dark">
+      {/* `text-micro` (task-4b): the app's own type scale for this weight of
+          caption, replacing the unscaled Tailwind default this shipped
+          with — the number and the width above are unchanged, only the
+          sentence's face moved onto the same scale every other caption in
+          the revamped screens uses. */}
+      <Text className="text-micro text-fg-2 dark:text-fg-2-dark">
         {`Read with ${percent}% confidence`}
       </Text>
     </View>

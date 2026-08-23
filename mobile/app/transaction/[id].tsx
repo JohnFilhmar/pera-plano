@@ -28,6 +28,7 @@
 // deliberate exception to "thin screen" is the small amount of orchestration
 // above, which has nowhere else to live.
 import { useLocalSearchParams } from "expo-router";
+import { ArrowLeftRight, Tag } from "lucide-react-native";
 import { useState } from "react";
 import { ScrollView, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -39,16 +40,19 @@ import {
 } from "@/components/transactions/transfer_link_actions";
 import { WhyRecordedPanel } from "@/components/transactions/why_recorded_panel";
 import { AmountText } from "@/components/ui/amount_text";
+import { registerIcon } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Chip } from "@/components/ui/chip";
 import { EmptyState } from "@/components/ui/empty_state";
 import { ListRow } from "@/components/ui/list_row";
+import { ProviderBadge } from "@/components/ui/provider_badge";
 import { SectionHeader } from "@/components/ui/section_header";
-import { providerLabelForPackage } from "@/constants/providers";
+import { providerKeyForPackage, providerLabelForPackage } from "@/constants/providers";
 import { useCreateUserRule } from "@/hooks/mutations/use_create_user_rule";
 import { useLinkTransfer } from "@/hooks/mutations/use_link_transfer";
 import { useUnlinkTransfer } from "@/hooks/mutations/use_unlink_transfer";
 import { useUpdateTransaction } from "@/hooks/mutations/use_update_transaction";
+import { useAllWalletMatchers } from "@/hooks/queries/use_all_wallet_matchers";
 import { useCategories } from "@/hooks/queries/use_categories";
 import { useRawCapture, useRawCaptureExpiry } from "@/hooks/queries/use_raw_capture";
 import { useRuleset } from "@/hooks/queries/use_ruleset";
@@ -58,6 +62,18 @@ import { useWallets } from "@/hooks/queries/use_wallets";
 import { formatDateTime } from "@/lib/datetime";
 import type { Transaction, TxSource } from "@/types/domain";
 
+/**
+ * The header medallion's glyph — a GENERIC mark, not one resolved from
+ * `category.icon`. Same call `components/transactions/transaction_row.tsx`
+ * makes (see its header, "THE MEDALLION'S DEFAULT GLYPH"): `Category.icon` is
+ * a lucide icon name held as a plain string, and nothing in this codebase yet
+ * maps an arbitrary name back to its component. Building that resolver is a
+ * real, untested subsystem this restyle task does not own either.
+ */
+const CategoryGlyph = registerIcon(Tag);
+/** Rule 3, restated on the one screen whose whole job is explaining a row. */
+const TransferGlyph = registerIcon(ArrowLeftRight);
+
 /** How each `source` reads in the "Recorded by" field (contract §3's union). */
 const SOURCE_LABELS: Record<TxSource, string> = {
   notification: "Notification",
@@ -66,12 +82,39 @@ const SOURCE_LABELS: Record<TxSource, string> = {
   import: "Imported",
 };
 
-/** One labelled fact. Every field on this screen is one of these. */
-function Field({ label, value, testID }: { label: string; value: string; testID: string }) {
+/**
+ * One labelled fact. Every field on this screen that is not a `ListRow` (the
+ * three that need a `left`/`right` slot — Category, Wallet, Counts toward) or
+ * the editable Note is one of these.
+ *
+ * `mono` IS THE ONE THING `ListRow` CANNOT DO. Its `title` slot carries a
+ * fixed className with no override, so the Reference row — task-4b-brief.md
+ * Step 2's "Reference (mono, text-micro)" — has to stay a `Field` rather than
+ * become a fourth `ListRow`, with this one extra prop standing in for the
+ * style override `ListRow` does not expose.
+ */
+function Field({
+  label,
+  value,
+  testID,
+  mono = false,
+}: {
+  label: string;
+  value: string;
+  testID: string;
+  mono?: boolean;
+}) {
   return (
     <View className="gap-1 py-2">
       <Text className="text-xs uppercase text-fg-2 dark:text-fg-2-dark">{label}</Text>
-      <Text testID={testID} className="text-base text-fg dark:text-fg-dark">
+      <Text
+        testID={testID}
+        className={
+          mono
+            ? "font-mono text-micro text-fg dark:text-fg-dark"
+            : "text-base text-fg dark:text-fg-dark"
+        }
+      >
         {value}
       </Text>
     </View>
@@ -98,6 +141,13 @@ export default function TransactionDetailScreen() {
   // counterpart is by definition in a DIFFERENT wallet, so no repository filter
   // this screen could pass would narrow it usefully.
   const { data: allTransactions } = useTransactions({});
+  // For the Wallet row's `ProviderBadge` (task-4b). Same recipe
+  // app/(tabs)/wallets.tsx and app/wallet/[id]/edit.tsx already use — every
+  // matcher on the device, joined to this row's wallet by `walletId` — rather
+  // than a new hook, so a cash wallet (no matcher, no provider) and a
+  // provider-linked one resolve exactly the way the rest of the app agrees
+  // they should.
+  const { data: matchers } = useAllWalletMatchers();
 
   const rawId = transaction?.rawNotificationId ?? null;
   const { data: capture } = useRawCapture(rawId);
@@ -135,6 +185,26 @@ export default function TransactionDetailScreen() {
   const providerName = capture
     ? providerLabelForPackage(ruleset?.providers ?? [], capture.packageName)
     : "";
+
+  // `null` for a wallet with no matcher at all — cash, or a provider-linked
+  // wallet whose match the user has not set up yet — which `ProviderBadge`
+  // has no sensible way to render, so the Wallet row falls back to no badge
+  // rather than one badging the wrong thing.
+  const walletProviderKey = (() => {
+    const packageName = matchers?.find((matcher) => matcher.walletId === transaction.walletId)
+      ?.packageName;
+    return packageName ? providerKeyForPackage(ruleset?.providers ?? [], packageName) : null;
+  })();
+
+  // "Counts toward" (task-4b): the same three-way split rule 3 already draws
+  // on the ledger row itself (a transfer leg is neither spend nor income) —
+  // restated here as a fact about THIS transaction rather than re-derived
+  // from scratch, so the two screens can never disagree about one row.
+  const countsToward = isTransfer
+    ? "Not counted — transfer"
+    : transaction.direction === "in"
+      ? "Income"
+      : "Spending";
 
   function commitNote(): void {
     if (!transaction || note === null) return;
@@ -205,7 +275,18 @@ export default function TransactionDetailScreen() {
         <View className="pb-10 pt-4">
           <View className="px-4">
             <Card>
-              <View className="gap-2">
+              <View className="items-center gap-2">
+                {/* The icon medallion (task-4b). 56dp — `h-14 w-14` — twice the
+                    ledger row's own 28dp version (transaction_row.tsx), the
+                    same `bg-chip` disc scaled up for a screen with one row
+                    instead of forty. */}
+                <View className="h-14 w-14 items-center justify-center rounded-full bg-chip dark:bg-chip-dark">
+                  {isTransfer ? (
+                    <TransferGlyph size={26} className="text-fg-2 dark:text-fg-2-dark" />
+                  ) : (
+                    <CategoryGlyph size={26} className="text-fg-2 dark:text-fg-2-dark" />
+                  )}
+                </View>
                 <AmountText
                   testID="transaction-detail-amount"
                   amount={transaction.amount}
@@ -216,18 +297,38 @@ export default function TransactionDetailScreen() {
                   // either on the screen that explains it.
                   muted={isTransfer}
                 />
+                <Text className="text-title font-bold text-fg dark:text-fg-dark">
+                  {transaction.merchant ?? transaction.counterparty ?? (category?.name ?? "Uncategorized")}
+                </Text>
                 <Text
                   testID="transaction-detail-direction"
-                  className="text-sm text-fg-2 dark:text-fg-2-dark"
+                  className="text-secondary text-fg-2 dark:text-fg-2-dark"
                 >
                   {transaction.direction === "out" ? "Money out" : "Money in"}
                 </Text>
                 <Text
                   testID="transaction-detail-datetime"
-                  className="text-sm text-fg-2 dark:text-fg-2-dark"
+                  className="text-secondary text-fg-2 dark:text-fg-2-dark"
                 >
                   {formatDateTime(transaction.occurredAt)}
                 </Text>
+                {/* Explains a MACHINE decision, so it renders for exactly the
+                    one source that is one — `notification` is the only
+                    `TxSource` this screen's own `WhyRecordedPanel` treats as
+                    a real parse (see that component's SOURCE_NOTES branch for
+                    `recurring-rule`/`import`, which get a plain sentence and
+                    no confidence figure either). A manual entry gets no chip
+                    at all rather than one reading "manual" — the badge exists
+                    to explain a machine decision, and a human typing their
+                    own transaction is not one. */}
+                {transaction.source === "notification" ? (
+                  <Chip
+                    testID="transaction-detail-auto-captured"
+                    label={`AUTO-CAPTURED · ${Math.round(transaction.confidence * 100)}% MATCH`}
+                    tone="brand"
+                    fill="soft"
+                  />
+                ) : null}
               </View>
             </Card>
           </View>
@@ -235,10 +336,24 @@ export default function TransactionDetailScreen() {
           <SectionHeader title="Details" />
           <View className="px-4">
             <Card variant="flat">
-              <Field
-                label="Wallet"
-                value={wallet?.name ?? "Unknown wallet"}
+              {/* NO `subtitle` HERE, unlike Category below — pinned:
+                  `transaction_detail.test.tsx` asserts
+                  `toHaveTextContent("GCash")` on this exact testID with a
+                  plain string, and RNTL's matcher requires the element's
+                  WHOLE normalized text to equal that string, not merely
+                  contain it (`toHaveTextContent(/Food & Dining/)` on the
+                  Category row below tolerates a trailing "Category" caption
+                  only because it is a regex). A "Wallet" subtitle here would
+                  turn the aggregate text into "GCashWallet" and fail the
+                  exact match. */}
+              <ListRow
                 testID="transaction-detail-wallet"
+                title={wallet?.name ?? "Unknown wallet"}
+                left={
+                  walletProviderKey ? (
+                    <ProviderBadge providerKey={walletProviderKey} size={28} />
+                  ) : undefined
+                }
               />
               {/* The one field that opens something. Rule 1 makes the category
                   editable; the picker owns the rule checkbox. */}
@@ -249,6 +364,11 @@ export default function TransactionDetailScreen() {
                 onPress={() => setChoosingCategory(true)}
                 right={<Chip label="Change" />}
               />
+              <ListRow
+                testID="transaction-detail-counts-toward"
+                title={countsToward}
+                subtitle="Counts toward"
+              />
               <Field
                 label="Merchant"
                 value={transaction.merchant ?? transaction.counterparty ?? "Not recorded"}
@@ -258,6 +378,7 @@ export default function TransactionDetailScreen() {
                 label="Reference number"
                 value={transaction.referenceNo ?? "Not recorded"}
                 testID="transaction-detail-reference"
+                mono
               />
               <Field
                 label="Recorded by"

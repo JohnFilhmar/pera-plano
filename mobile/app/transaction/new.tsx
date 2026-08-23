@@ -109,6 +109,7 @@ export default function NewTransactionScreen() {
         onAmountChange={setAmount}
         onSubmit={handleSubmit}
         onCreateCashWallet={() => router.push("/wallet/new")}
+        onClose={() => router.back()}
       />
     </FormScreen>
   );

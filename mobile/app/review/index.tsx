@@ -220,7 +220,19 @@ export default function ReviewQueueScreen() {
         >
           <BackGlyph size={24} className="text-fg dark:text-fg-dark" />
         </Pressable>
-        <Text className="text-xl font-semibold text-fg dark:text-fg-dark">
+        {/* `text-title font-bold` (task-4b) — the app's own header scale
+            (EmptyState's title uses the same pair), replacing the unscaled
+            `text-xl font-semibold` this shipped with.
+
+            THE TEXT ITSELF STAYS "Review queue", not the brief's "Needs
+            review" — docs/04-features/08-review-queue.md's own H1 is
+            "# Review Queue", and this constant already matched it before
+            this task touched the file. Nothing pins the string either way
+            (no test in this suite or `review_queue.test.tsx` reads
+            `REVIEW_QUEUE_TITLE`), so this is a copy decision, not a test
+            constraint — and where a restyle's suggested label and the
+            feature's own spec disagree, the spec wins. */}
+        <Text className="text-title font-bold text-fg dark:text-fg-dark">
           {REVIEW_QUEUE_TITLE}
         </Text>
       </View>

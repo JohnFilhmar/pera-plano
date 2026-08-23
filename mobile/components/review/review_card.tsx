@@ -42,10 +42,11 @@
 // inside `proposalFrom` and be swallowed. See `ReviewCardProps.onPrimary`'s
 // doc comment for why that one kind is the only exception to "disabled means
 // no handler".
+import { CircleHelp } from "lucide-react-native";
 import { Text, View } from "react-native";
 
 import { AmountText } from "@/components/ui/amount_text";
-import { Button } from "@/components/ui/button";
+import { Button, registerIcon } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Chip } from "@/components/ui/chip";
 import { providerLabelForPackage } from "@/constants/providers";
@@ -64,7 +65,13 @@ import type {
   Wallet,
 } from "@/types/domain";
 
-import { ConfidenceMeter } from "./confidence_meter";
+import { ConfidenceMeter, confidencePercent } from "./confidence_meter";
+
+/** The card's leading glyph (task-4b) — a generic "this needs a decision"
+ * mark for all four kinds, not a per-kind icon: `kind` already has its own
+ * pair of action labels (`REVIEW_ACTIONS`), and a glyph that changed with it
+ * would be one more thing to keep in sync with no test pinning it. */
+const QuestionGlyph = registerIcon(CircleHelp);
 
 export type ReviewActionPair = { primary: string; secondary: string };
 
@@ -290,6 +297,14 @@ type SideProps = {
   merchant: string | null;
   walletName: string | null;
   categoryName: string | null;
+  /**
+   * The category's confidence, shown as a trailing percentage on its chip
+   * (task-4b: "the top suggestion carries its confidence"). `undefined` for
+   * every call site but the candidate side — the counterpart is a real,
+   * already-committed row (rule: "Both legs are already-committed
+   * Transactions"), not a guess, and has no score to show.
+   */
+  categoryConfidence?: number | null;
   testID: string;
 };
 
@@ -305,8 +320,16 @@ function Side({
   merchant,
   walletName,
   categoryName,
+  categoryConfidence,
   testID,
 }: SideProps) {
+  const categoryLabel =
+    categoryName === null
+      ? null
+      : categoryConfidence === null || categoryConfidence === undefined
+        ? categoryName
+        : `${categoryName} · ${confidencePercent(categoryConfidence)}%`;
+
   return (
     <View testID={testID} className="gap-1 rounded-xl bg-bg p-3 dark:bg-bg-dark">
       <Text className="text-xs uppercase text-fg-2 dark:text-fg-2-dark">{label}</Text>
@@ -323,15 +346,19 @@ function Side({
       <Text className="text-sm text-fg dark:text-fg-dark">
         {merchant ?? "No merchant in the notification"}
       </Text>
+      {/* `fill="outline"` on both, not the default solid — this box is
+          `bg-bg`, and `tone="neutral" fill="solid"` is `bg-bg` too (Chip's
+          own file: "neutral is the only unfilled tone"), which painted these
+          two chips invisible against their own container. */}
       <View className="flex-row flex-wrap items-center gap-2 pt-1">
         {walletName === null ? (
           // `warn`, because an unmatched wallet is the one field the user
           // must supply before anything can be committed.
           <Chip label="No wallet matched" tone="warn" />
         ) : (
-          <Chip label={walletName} />
+          <Chip label={walletName} fill="outline" />
         )}
-        {categoryName === null ? null : <Chip label={categoryName} />}
+        {categoryLabel === null ? null : <Chip label={categoryLabel} fill="outline" />}
       </View>
     </View>
   );
@@ -480,12 +507,20 @@ function UnknownSourceBody({
         </Text>
       </View>
       {lines.length > 0 ? (
+        // "CAPTURED TEXT" (task-4b) — `bg-chip`, not `bg-bg`: this sits
+        // inside a `bg-surface` Card same as `Side`'s boxes, but is labelled
+        // as a QUOTE of the notification rather than a proposed field, so it
+        // gets the app's "quoted material" treatment (matches the captured
+        // text on `why_recorded_panel.tsx`'s source-notification block).
         <View
           testID={`review-snippet-${item.id}`}
-          className="gap-1 rounded-xl bg-bg p-3 dark:bg-bg-dark"
+          className="gap-1 rounded-xl bg-chip p-3 dark:bg-chip-dark"
         >
+          <Text className="text-badge font-bold text-fg-2 dark:text-fg-2-dark">
+            CAPTURED TEXT
+          </Text>
           {lines.map((line) => (
-            <Text key={line} className="text-sm text-fg dark:text-fg-dark">
+            <Text key={line} className="font-mono text-micro text-fg dark:text-fg-dark">
               {line}
             </Text>
           ))}
@@ -576,13 +611,22 @@ export function ReviewCard({
         <View className="gap-3">
           {/* RULE 3, AND IT IS THE FIRST THING ON THE CARD ON PURPOSE. The user
               reads why before they read what — a card whose explanation sits
-              under the actions is a card whose actions get tapped first. */}
-          <Text
-            testID={`review-reason-${item.id}`}
-            className="text-sm text-fg dark:text-fg-dark"
-          >
-            {reviewReason(item)}
-          </Text>
+              under the actions is a card whose actions get tapped first. The
+              glyph disc (task-4b) is purely decorative: `review-reason-{id}`
+              is still the same Text, at the same position, with the same
+              content — nothing about what it says or where it sits changed,
+              only what sits beside it. */}
+          <View className="flex-row items-start gap-2">
+            <View className="h-9 w-9 items-center justify-center rounded-full bg-chip dark:bg-chip-dark">
+              <QuestionGlyph size={18} className="text-fg-2 dark:text-fg-2-dark" />
+            </View>
+            <Text
+              testID={`review-reason-${item.id}`}
+              className="flex-1 pt-2 text-sm text-fg dark:text-fg-dark"
+            >
+              {reviewReason(item)}
+            </Text>
+          </View>
 
           {item.kind === "unknown-provider" ? (
             <UnknownSourceBody item={item} providers={providers} />
@@ -598,6 +642,10 @@ export function ReviewCard({
                 categoryName={
                   categories.find((category) => category.id === categoryId)?.name ?? null
                 }
+                // "the top suggestion carries its confidence" (task-4b) — the
+                // SAME score the meter below reads, on the one side that is a
+                // proposal rather than an already-committed row.
+                categoryConfidence={confidence}
               />
               {counterpartId === null ? null : (
                 <CounterpartSide
@@ -619,30 +667,48 @@ export function ReviewCard({
             </>
           )}
 
-          <View className="flex-row gap-2">
-            <View className="flex-1">
-              <Button
-                testID={`review-primary-${item.id}`}
-                title={actions.primary}
-                variant="primary"
-                disabled={onPrimary === undefined || missingField !== null}
-                onPress={onPrimary ? () => onPrimary(item) : () => undefined}
-              />
-            </View>
-            <View className="flex-1">
-              {/* "Correct" stays enabled even while the primary is blocked —
-                  supplying the amount is exactly the way forward, and
-                  disabling the one path off this card would strand the
-                  user on it. */}
-              <Button
-                testID={`review-secondary-${item.id}`}
-                title={actions.secondary}
-                variant="secondary"
-                disabled={onSecondary === undefined}
-                onPress={onSecondary ? () => onSecondary(item) : () => undefined}
-              />
-            </View>
-          </View>
+          {/* The transfer-ambiguity banner (task-4b) — real money moved and
+              the question is only HOW to record it, which is exactly what
+              rule 3's reason sentence already says (`reviewReason`, the
+              gate's own words). Reused rather than restated: two copies of
+              this sentence on one card would be the drift the file's own
+              header warns about, just committed twice in the same render. */}
+          {item.kind === "ambiguous-transfer" ? (
+            <Chip
+              testID={`review-transfer-banner-${item.id}`}
+              label={reviewReason(item)}
+              tone="warn"
+              fill="soft"
+            />
+          ) : null}
+
+          {/* Primary FULL WIDTH on its own row (task-4b), secondary and
+              reject smaller below it — same testIDs, labels, `disabled` and
+              `onPress` as before; only the layout changed. NOT icon-only:
+              `Button`'s `iconOnly` needs one icon per button, and the
+              secondary's label is a different WORD for each of the four
+              kinds ("Correct" / "Different" / "Not a transfer" / "This is a
+              money notification") — a single pencil (or any one glyph) would
+              be right for at most one of them and wrong, silently, for the
+              other three. */}
+          <Button
+            testID={`review-primary-${item.id}`}
+            title={actions.primary}
+            variant="primary"
+            disabled={onPrimary === undefined || missingField !== null}
+            onPress={onPrimary ? () => onPrimary(item) : () => undefined}
+          />
+          {/* "Correct" stays enabled even while the primary is blocked —
+              supplying the amount is exactly the way forward, and disabling
+              the one path off this card would strand the user on it. */}
+          <Button
+            testID={`review-secondary-${item.id}`}
+            title={actions.secondary}
+            variant="secondary"
+            size="md"
+            disabled={onSecondary === undefined}
+            onPress={onSecondary ? () => onSecondary(item) : () => undefined}
+          />
 
           {missingField === null ? null : (
             <Text
@@ -658,6 +724,7 @@ export function ReviewCard({
               testID={`review-reject-${item.id}`}
               title={REVIEW_REJECT_LABEL}
               variant="ghost"
+              size="md"
               onPress={() => onReject(item)}
             />
           ) : null}

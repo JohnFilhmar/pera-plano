@@ -18,14 +18,18 @@
 // new.tsx holds the PesoInput text so its mount effect can hand the shared
 // keypad a field to open before this form's own NumericField has ever been
 // pressed — see that file's header for the other half of the handoff.
+import { Type, X } from "lucide-react-native";
 import { useMemo, useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { CategoryPicker } from "@/components/transactions/category_picker";
-import { Button } from "@/components/ui/button";
+import { formatCentavos } from "@/components/ui/amount_text";
+import { Button, registerIcon } from "@/components/ui/button";
+import { Chip } from "@/components/ui/chip";
 import { DateField } from "@/components/ui/date_field";
 import { NumericField } from "@/components/ui/numeric_field";
+import { SegmentedControl } from "@/components/ui/segmented_control";
 import { centavosFrom } from "@/lib/money/peso_input";
 import {
   categoryForMerchant,
@@ -34,6 +38,21 @@ import {
 } from "@/lib/transactions/manual_entry";
 
 import type { Category, Centavos, EpochMs, Transaction, TxDirection, Wallet } from "@/types/domain";
+
+const CloseGlyph = registerIcon(X);
+const NoteGlyph = registerIcon(Type);
+
+/** Expense/Income (task-4b's `SegmentedControl`) — see its header on why a
+ * third "Transfer" segment does not belong here: `TxDirection` is `"in" |
+ * "out"`, `ManualEntryDraft` carries no transfer concept, and a segment with
+ * no field to write and no submit path to wire it into would be a live
+ * control that silently does nothing — the exact dead tap this codebase's
+ * other conventions (`Button`'s `iconOnly`, `ReviewCard`'s disabled-without-
+ * a-handler pairs) all refuse to ship. */
+const DIRECTION_SEGMENTS = [
+  { value: "out", label: "Expense" },
+  { value: "in", label: "Income" },
+] as const;
 
 export type ManualEntryDraft = {
   amount: Centavos;
@@ -56,6 +75,16 @@ export type ManualEntryFormProps = {
   onAmountChange: (text: string) => void;
   onSubmit: (draft: ManualEntryDraft) => void;
   onCreateCashWallet: () => void;
+  /**
+   * The header's X (task-4b). OPTIONAL, and absent means no button rather
+   * than a dead one: `components/transactions/__tests__/manual_entry_form.test.tsx`
+   * renders this form bare, with no router above it to close to, and this
+   * form stays presentational (no `useRouter` of its own — Global
+   * Constraints: components consume hooks the route hands them, not ones
+   * they reach for) the same way `onCreateCashWallet` already lets the route
+   * own navigation while this file only ever reports.
+   */
+  onClose?: () => void;
 };
 
 /**
@@ -97,11 +126,13 @@ export function ManualEntryForm({
   onAmountChange,
   onSubmit,
   onCreateCashWallet,
+  onClose,
 }: ManualEntryFormProps) {
   // This form IS the /transaction/new screen — a full-bleed route outside the
   // tab navigator, so nothing above it clears the status bar or Android's
-  // navigation bar (app.json `edgeToEdgeEnabled`). Its Save button is the last
-  // thing in the column and was the one landing under ▢ ◁.
+  // navigation bar (app.json `edgeToEdgeEnabled`). Save now lives in its own
+  // header row (task-4b) rather than at the bottom of the column, which is
+  // what used to land under ▢ ◁.
   const insets = useSafeAreaInsets();
   const [direction, setDirection] = useState<TxDirection>("out");
   const [day, setDay] = useState(() => localDayOf(now));
@@ -144,6 +175,16 @@ export function ManualEntryForm({
   const dateInvalid = occurredAt === null;
 
   const selectedCategory = categories.find((category) => category.id === categoryId);
+  // The summary line beneath the amount (task-4b) — glanceable confirmation
+  // of the two defaults rule 3 already picked, not a second way to change
+  // them: the full wallet list and `DateField` below stay the only controls,
+  // so this never has to duplicate their validation or selection state.
+  const selectedWallet = wallets.find((wallet) => wallet.id === walletId);
+  // Always starts with "₱" for a non-negative amount — `amountCentavos` can
+  // never be negative (the shared keypad has no minus key) — so slicing off
+  // the first character is a safe way to give the peso mark and the digits
+  // two different sizes without reimplementing `formatCentavos`.
+  const pesoFigure = formatCentavos(amountCentavos);
 
   function handleSave(): void {
     if (!canSave) return;
@@ -181,6 +222,57 @@ export function ManualEntryForm({
         paddingTop: FORM_PADDING + insets.top,
       }}
     >
+      {/* Header: X close + Save text action (task-4b), replacing the
+          full-width primary Button that used to be the last thing in this
+          column. `manual-entry-save` keeps its testID, `disabled` and
+          `onPress` — only where it lives and how it reads moved. */}
+      <View className="flex-row items-center justify-between">
+        {onClose ? (
+          <Pressable
+            testID="manual-entry-close"
+            accessibilityRole="button"
+            accessibilityLabel="Close"
+            onPress={onClose}
+            className="h-11 w-11 items-center justify-center rounded-full bg-chip dark:bg-chip-dark"
+          >
+            <CloseGlyph size={20} className="text-fg dark:text-fg-dark" />
+          </Pressable>
+        ) : (
+          // Reserves the X's width so Save does not jump when no `onClose`
+          // is supplied — this file's own component test renders the bare
+          // form with no router above it to close to.
+          <View className="h-11 w-11" />
+        )}
+        <Button
+          testID="manual-entry-save"
+          title="Save"
+          variant="ghost"
+          disabled={!canSave}
+          onPress={handleSave}
+        />
+      </View>
+
+      {/* The amount, large and centred (task-4b). `formatCentavos`, not
+          `AmountText` — `AmountText` sets its own size unconditionally with
+          no override prop, which would silently swallow the `text-hero` this
+          board asks for. Purely a read-out: `NumericField` right below is
+          still the only pressable amount control, so this is hidden from
+          screen readers rather than announced twice. */}
+      <View className="items-center gap-1 pt-2">
+        <Text
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
+          className="text-fg dark:text-fg-dark"
+          style={{ fontVariant: ["tabular-nums"] }}
+        >
+          <Text className="text-title font-extrabold">{pesoFigure.slice(0, 1)}</Text>
+          <Text className="text-hero font-extrabold">{pesoFigure.slice(1)}</Text>
+        </Text>
+        <Text className="text-secondary text-fg-2 dark:text-fg-2-dark">
+          {`${selectedWallet?.name ?? "No wallet yet"} · ${day}`}
+        </Text>
+      </View>
+
       <NumericField
         testID="manual-amount"
         label="How much?"
@@ -189,34 +281,16 @@ export function ManualEntryForm({
         onChangeText={onAmountChange}
       />
 
-      {/* Direction */}
-      <View className="flex-row gap-3">
-        {(["out", "in"] as const).map((option) => (
-          <Pressable
-            key={option}
-            testID={`manual-entry-direction-${option}`}
-            accessibilityRole="button"
-            accessibilityState={{ selected: direction === option }}
-            accessibilityLabel={option === "out" ? "Money out" : "Money in"}
-            onPress={() => setDirection(option)}
-            className={`flex-1 items-center rounded-xl py-3 ${
-              direction === option
-                ? "bg-brand dark:bg-brand-dark"
-                : "bg-surface dark:bg-surface-dark"
-            }`}
-          >
-            <Text
-              className={`font-semibold ${
-                direction === option
-                  ? "text-surface dark:text-surface-dark"
-                  : "text-fg dark:text-fg-dark"
-              }`}
-            >
-              {option === "out" ? "Spent" : "Received"}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
+      {/* Direction — one of the four screens `SegmentedControl` was built
+          for (task-4b). `testID="manual-entry-direction"` renders children at
+          `manual-entry-direction-out`/`-in`, the exact ids the hand-rolled
+          toggle this replaces already used. */}
+      <SegmentedControl
+        testID="manual-entry-direction"
+        segments={DIRECTION_SEGMENTS}
+        value={direction}
+        onChange={setDirection}
+      />
 
       {/* THE PROMPT THAT REPLACES A DANGEROUS DEFAULT. Shown only when no cash
           wallet exists AND the user has not already resolved it by picking one
@@ -290,18 +364,21 @@ export function ManualEntryForm({
         ) : null}
       </View>
 
-      {/* Category */}
-      <Pressable
-        testID="manual-entry-category"
-        accessibilityRole="button"
-        accessibilityLabel={`Category: ${selectedCategory?.name ?? "Uncategorized"}`}
-        onPress={() => setPickingCategory(true)}
-        className="rounded-xl bg-surface px-4 py-3 dark:bg-surface-dark"
-      >
-        <Text className="text-fg dark:text-fg-dark">
-          {selectedCategory?.name ?? "Uncategorized"}
-        </Text>
-      </Pressable>
+      {/* Category — a single Chip standing in for the hand-rolled summary
+          row this replaces (task-4b). NOT a wrapped row of every category as
+          a chip each: `category-option-{id}` and `category-picker-save`
+          below are `CategoryPicker`'s own sheet, which is also where the
+          "always categorize X as Y" rule offer lives (rule 6) — a second,
+          bypassing selector here would need to either duplicate that offer
+          or silently drop it. */}
+      <View className="flex-row">
+        <Chip
+          testID="manual-entry-category"
+          label={selectedCategory?.name ?? "Uncategorized"}
+          fill="outline"
+          onPress={() => setPickingCategory(true)}
+        />
+      </View>
 
       <TextInput
         testID="manual-entry-merchant"
@@ -312,22 +389,18 @@ export function ManualEntryForm({
         className="rounded-xl bg-surface px-4 py-3 text-fg dark:bg-surface-dark dark:text-fg-dark"
       />
 
-      <TextInput
-        testID="manual-entry-note"
-        value={note}
-        onChangeText={setNote}
-        accessibilityLabel="Note"
-        placeholder="Note (optional)"
-        className="rounded-xl bg-surface px-4 py-3 text-fg dark:bg-surface-dark dark:text-fg-dark"
-      />
-
-      <Button
-        testID="manual-entry-save"
-        title="Save"
-        variant="primary"
-        disabled={!canSave}
-        onPress={handleSave}
-      />
+      {/* Note, on `bg-chip` with a leading glyph (task-4b). */}
+      <View className="flex-row items-center gap-2 rounded-xl bg-chip px-4 py-3 dark:bg-chip-dark">
+        <NoteGlyph size={18} className="text-fg-2 dark:text-fg-2-dark" />
+        <TextInput
+          testID="manual-entry-note"
+          value={note}
+          onChangeText={setNote}
+          accessibilityLabel="Note"
+          placeholder="Note (optional)"
+          className="flex-1 text-fg dark:text-fg-dark"
+        />
+      </View>
 
       <CategoryPicker
         visible={pickingCategory}

@@ -43,6 +43,7 @@ import { Pressable, Text, View } from "react-native";
 
 import { Card } from "@/components/ui/card";
 import { registerIcon } from "@/components/ui/button";
+import { Chip } from "@/components/ui/chip";
 import type { EpochMs, RawCapture, TxSource } from "@/types/domain";
 
 const Chevron = registerIcon(ChevronRight);
@@ -204,8 +205,13 @@ export function WhyRecordedPanel({
   const Glyph = expanded ? ChevronOpen : Chevron;
 
   return (
+    // A plain `bg-chip` View rather than `<Card variant="flat">` — task-4b's
+    // board puts THIS ONE panel on `bg-chip` (every other card on this screen
+    // stays `bg-surface`), and `Card` has no prop for overriding its fill, so
+    // matching the board here means hand-rolling the same radius/padding
+    // instead of asking a shared primitive for a variant it does not have.
     <View testID={testID} className="px-4 pt-3">
-      <Card variant="flat">
+      <View className="rounded-2xl bg-chip p-4 dark:bg-chip-dark">
         <Pressable
           testID="why-recorded-toggle"
           onPress={() => setExpanded((open) => !open)}
@@ -214,6 +220,13 @@ export function WhyRecordedPanel({
           accessibilityState={{ expanded }}
           className="min-h-[44px] flex-row items-center gap-2"
         >
+          {/* WHY_RECORDED_TITLE STAYS "Why was this recorded?" — task-4b-brief.md
+              Step 2 labels this row "Source notification", but that string has
+              no test pinning it either way, and the constant's own header
+              comment says it is copied VERBATIM from every spec in the repo
+              (docs/04-features/11-settings-privacy.md Flow C). A restyle task
+              changes paint, not the sentence the rest of the app promised the
+              user; renaming it here would silently orphan that promise. */}
           <Text className="flex-1 text-base font-semibold text-fg dark:text-fg-dark">
             {WHY_RECORDED_TITLE}
           </Text>
@@ -248,9 +261,14 @@ export function WhyRecordedPanel({
                   </Text>
                 </View>
 
+                {/* `font-mono text-micro` (task-4b): the captured text is a
+                    verbatim quote of a notification the app read, not prose
+                    this screen wrote — a monospaced, smaller face marks it as
+                    quoted material the same way the reference number below it
+                    is marked. */}
                 <View testID="why-recorded-text" className="gap-1 rounded-xl bg-bg p-3 dark:bg-bg-dark">
                   {captureLines(capture).map((line) => (
-                    <Text key={line} className="text-sm text-fg dark:text-fg-dark">
+                    <Text key={line} className="font-mono text-micro text-fg dark:text-fg-dark">
                       {line}
                     </Text>
                   ))}
@@ -265,17 +283,27 @@ export function WhyRecordedPanel({
                   </Text>
                 ) : null}
 
-                <Text
-                  testID="why-recorded-expiry"
-                  className="text-xs text-fg-2 dark:text-fg-2-dark"
-                >
-                  {captureExpiryLabel(expiresAt as EpochMs, now)}
-                </Text>
+                {/* The live countdown AS A CHIP (task-4b: "the existing
+                    expiry_countdown.tsx as a Chip tone=neutral fill=outline").
+                    `Chip.label` takes a string, not a child element, so this
+                    calls the SAME `captureExpiryLabel` that
+                    components/privacy/expiry_countdown.tsx itself calls
+                    rather than nesting that component here — the two can
+                    never disagree because there is only one function computing
+                    the sentence, only two components rendering it. */}
+                <View className="flex-row">
+                  <Chip
+                    testID="why-recorded-expiry"
+                    label={captureExpiryLabel(expiresAt as EpochMs, now)}
+                    tone="neutral"
+                    fill="outline"
+                  />
+                </View>
               </>
             ) : null}
           </View>
         ) : null}
-      </Card>
+      </View>
     </View>
   );
 }
