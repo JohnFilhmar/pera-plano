@@ -1,4 +1,4 @@
-// components/ui/loading_skeleton.tsx — task-5-brief.md.
+// components/ui/loading_skeleton.tsx — task-5-brief.md. Mark placement: task-7-brief.md.
 //
 // Placeholder content for a screen that has not resolved yet, replacing the
 // blank `<View className="flex-1 bg-bg dark:bg-bg-dark" />` every `*-loading`
@@ -7,18 +7,20 @@
 // shows; the caller picks how many, because a detail screen's handful of
 // fields is not a list's dozen rows.
 //
-// STATIC, DELIBERATELY (task-5-brief.md Step 3: "Do not animate the skeleton
-// in this task"). A shimmer is motion, and motion — including the existing
-// "Remove animations" reduced-motion handling `components/ui/brand_mark.tsx`
-// already reads via `AccessibilityInfo` — lands in Task 7's device pass. A
-// static skeleton has nothing to gate behind that setting and is still a
-// strict improvement over the blank view it replaces.
+// THE LOOP MARK NOW SITS ABOVE THE ROWS (task-7-brief.md Step 3) — task-5's
+// "static, deliberately" note above is what it says it is, a placeholder for
+// THIS motion landing later, not a standing rule. `BrandMark`'s own
+// `AccessibilityInfo` read is what makes this safe: reduced motion degrades
+// the loop to its static frame automatically, so this file adds no gating of
+// its own.
 //
 // ONE ACCESSIBLE ANNOUNCEMENT, NOT `rows` OF THEM. `accessible` collapses the
 // whole group into a single stop for a screen reader, so it says "Loading"
 // once — without it, TalkBack would read every bar in turn as an empty,
 // unlabelled row.
 import { View } from "react-native";
+
+import { BrandMark } from "./brand_mark";
 
 export type LoadingSkeletonProps = {
   /** How many placeholder bars to draw. */
@@ -37,6 +39,13 @@ const ROW_WIDTH_CLASS = ["w-full", "w-4/5"] as const;
 export function LoadingSkeleton({ rows, testID }: LoadingSkeletonProps) {
   return (
     <View testID={testID} accessible accessibilityLabel="Loading" className="gap-3 p-4">
+      <View className="items-center pb-1">
+        <BrandMark
+          testID={testID === undefined ? undefined : `${testID}-mark`}
+          variant="loading"
+          size={32}
+        />
+      </View>
       {Array.from({ length: rows }, (_, index) => (
         <View
           key={index}

@@ -3,7 +3,8 @@
 // The card renders a verdict it is handed. `computeGoalProgress` decides pace
 // (tested in lib/goals/__tests__/goal_math.test.ts); a card that re-derived it
 // would be a second opinion about whether the user is on track.
-import { render, screen } from "@testing-library/react-native";
+import { act, render, screen, waitFor } from "@testing-library/react-native";
+import { AccessibilityInfo } from "react-native";
 
 import { ThemeProvider } from "@/contexts/theme_context";
 import type { GoalProgress } from "@/lib/goals/goal_math";
@@ -183,4 +184,110 @@ test("an overfunded fraction cannot draw past the ring", async () => {
   // And it is exactly a full ring — a clamp that merely stopped it growing
   // could still have left it short.
   expect(filled).toBeCloseTo(total, 6);
+});
+
+// ---------------------------------------------------------------------------
+// The reached beat (task-7-brief.md Step 4: "plays when a goal's progress
+// first crosses 100%").
+// ---------------------------------------------------------------------------
+describe("the reached beat", () => {
+  /** Same discriminator as brand_mark.test.tsx and brand_mark_motion.test.tsx:
+   * the static branch renders the imported `.svg` directly, so its size
+   * arrives as a `width` PROP under test_support/svg_mock.tsx; every animated
+   * branch carries size in `style` instead. */
+  function isStaticMark(node: { props: Record<string, unknown> }): boolean {
+    return typeof node.props.width === "number";
+  }
+
+  let removeReduceMotionListener: jest.Mock;
+  let emitReduceMotionChange: (enabled: boolean) => void;
+
+  beforeEach(() => {
+    removeReduceMotionListener = jest.fn();
+    emitReduceMotionChange = () => {
+      throw new Error("no reduceMotionChanged listener was registered");
+    };
+    jest.spyOn(AccessibilityInfo, "isReduceMotionEnabled").mockResolvedValue(false);
+    jest
+      .spyOn(AccessibilityInfo, "addEventListener")
+      .mockImplementation(((event: string, listener: (enabled: boolean) => void) => {
+        if (event === "reduceMotionChanged") {
+          emitReduceMotionChange = listener;
+        }
+        return { remove: removeReduceMotionListener };
+      }) as never);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  test("a goal that is ALREADY reached on first mount does not replay the beat", () => {
+    // priorPace.current starts null — "unknown prior state" must not read as
+    // a crossing, or every reached goal would replay its takeoff on every
+    // screen visit.
+    renderCard({
+      name: "Emergency Fund",
+      progress: progressOf({ pace: "reached", fraction: 1, requiredPerPeriod: null }),
+      targetDate: "2026-12-31",
+      testID: "goal",
+    });
+
+    expect(screen.queryByTestId("goal-reached-mark")).toBeNull();
+  });
+
+  test("crossing into reached plays the mark, which reduce motion degrades to static", async () => {
+    const { rerender } = renderCard({
+      name: "Emergency Fund",
+      progress: progressOf({ pace: "on_track" }),
+      targetDate: "2026-12-31",
+      testID: "goal",
+    });
+
+    expect(screen.queryByTestId("goal-reached-mark")).toBeNull();
+
+    rerender(
+      <ThemeProvider>
+        <GoalCard
+          name="Emergency Fund"
+          progress={progressOf({ pace: "reached", fraction: 1, requiredPerPeriod: null })}
+          targetDate="2026-12-31"
+          testID="goal"
+        />
+      </ThemeProvider>,
+    );
+
+    // Guard against a vacuous pass: confirm it actually animates first.
+    await waitFor(() => {
+      expect(isStaticMark(screen.getByTestId("goal-reached-mark"))).toBe(false);
+    });
+
+    act(() => {
+      emitReduceMotionChange(true);
+    });
+
+    expect(isStaticMark(screen.getByTestId("goal-reached-mark"))).toBe(true);
+  });
+
+  test("staying on_track across a re-render never renders the mark", () => {
+    const { rerender } = renderCard({
+      name: "Emergency Fund",
+      progress: progressOf({ pace: "on_track", fraction: 0.5 }),
+      targetDate: "2026-12-31",
+      testID: "goal",
+    });
+
+    rerender(
+      <ThemeProvider>
+        <GoalCard
+          name="Emergency Fund"
+          progress={progressOf({ pace: "on_track", fraction: 0.6 })}
+          targetDate="2026-12-31"
+          testID="goal"
+        />
+      </ThemeProvider>,
+    );
+
+    expect(screen.queryByTestId("goal-reached-mark")).toBeNull();
+  });
 });

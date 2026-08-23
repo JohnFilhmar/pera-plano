@@ -27,10 +27,13 @@
 // is unwanted.
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { X } from "lucide-react-native";
+import { useEffect, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 
 import { LimitForm } from "@/components/limits/limit_form";
 import type { LimitFormValues } from "@/components/limits/limit_form";
+import { BrandMark } from "@/components/ui/brand_mark";
+import { LAUNCH_MS } from "@/components/ui/brand_mark_motion";
 import { registerIcon } from "@/components/ui/button";
 import { FormScreen } from "@/components/ui/form_screen";
 import { useCreateLimit } from "@/hooks/mutations/use_create_limit";
@@ -51,6 +54,24 @@ export default function NewLimitScreen() {
   const { data: statuses } = useLimitStatuses();
   const { data: categories } = useCategories();
   const { data: wallets } = useWallets();
+
+  // task-7-brief.md Step 4: "Limit created — plays on the success of the
+  // create mutation." `playToken` and `showCreatedMark` are separate: the
+  // token drives replay, the boolean drives whether the overlay is in the
+  // tree at all (see `onSave` — this screen calls `router.back()` in the
+  // SAME tick, unchanged, so the mark's own visible window is whatever the
+  // back-transition leaves it, not a delay this file adds. Delaying the
+  // navigation itself would break `limit_routes.test.tsx`'s "saving a fixed
+  // limit..." test, which asserts `router.back()` was called right after the
+  // derived rows finish writing, with no gap to wait out).
+  const [playToken, setPlayToken] = useState(0);
+  const [showCreatedMark, setShowCreatedMark] = useState(false);
+
+  useEffect(() => {
+    if (!showCreatedMark) return;
+    const timer = setTimeout(() => setShowCreatedMark(false), LAUNCH_MS);
+    return () => clearTimeout(timer);
+  }, [showCreatedMark]);
 
   // Limits rule 12's "usable IncomeProfile": a monthly-equivalent figure the
   // app can actually multiply. Anything else — unknown, or an amount it has not
@@ -99,41 +120,61 @@ export default function NewLimitScreen() {
       }
     }
 
+    // Fires the beat at the moment of success. NOT awaited past this point —
+    // see the state declarations above for why `router.back()` below stays on
+    // its original, unchanged schedule.
+    setPlayToken((token) => token + 1);
+    setShowCreatedMark(true);
     router.back();
   };
 
   return (
-    // NO ScrollView HERE (numeric-input-system Task 12). FormScreen IS a
-    // keyboard-aware scroll view; nesting it inside another one left the OUTER
-    // one — which knows nothing about the keypad's height — as the only one
-    // with real scroll range, so the avoidance became a no-op. Same fix as
-    // app/(tabs)/plan/bills/new.tsx and loans/new.tsx.
-    <FormScreen testID="limit-new">
-      {/* Header: X close, "New limit" (task-4b board, item 1). The Save
-          action is not up here — unlike manual entry's ghost-button header,
-          this board pins a full-width primary button at the end of the form
-          instead, so the header names the screen and nothing else. */}
-      <View className="flex-row items-center gap-3 px-4 pt-4">
-        <Pressable
-          testID="limit-new-close"
-          accessibilityRole="button"
-          accessibilityLabel="Close"
-          onPress={() => router.back()}
-          className="h-11 w-11 items-center justify-center rounded-full bg-chip dark:bg-chip-dark"
+    // Outer flex-1 View, added for the success-mark overlay below — the same
+    // shape app/wallet/new.tsx already uses to sit a sibling (there,
+    // UpgradeSheet; here, the mark) alongside FormScreen without nesting a
+    // second scroll view inside it.
+    <View className="flex-1">
+      {/* NO ScrollView HERE (numeric-input-system Task 12). FormScreen IS a
+          keyboard-aware scroll view; nesting it inside another one left the
+          OUTER one — which knows nothing about the keypad's height — as the
+          only one with real scroll range, so the avoidance became a no-op.
+          Same fix as app/(tabs)/plan/bills/new.tsx and loans/new.tsx. */}
+      <FormScreen testID="limit-new">
+        {/* Header: X close, "New limit" (task-4b board, item 1). The Save
+            action is not up here — unlike manual entry's ghost-button header,
+            this board pins a full-width primary button at the end of the form
+            instead, so the header names the screen and nothing else. */}
+        <View className="flex-row items-center gap-3 px-4 pt-4">
+          <Pressable
+            testID="limit-new-close"
+            accessibilityRole="button"
+            accessibilityLabel="Close"
+            onPress={() => router.back()}
+            className="h-11 w-11 items-center justify-center rounded-full bg-chip dark:bg-chip-dark"
+          >
+            <CloseGlyph size={20} className="text-fg dark:text-fg-dark" />
+          </Pressable>
+          <Text className="text-title font-bold text-fg dark:text-fg-dark">New limit</Text>
+        </View>
+        <LimitForm
+          onSubmit={onSave}
+          incomeUsable={incomeUsable}
+          onDeclareIncome={() => router.push("/plan/income")}
+          busy={create.isPending}
+          submitLabel="Create limit"
+          categories={categories ?? []}
+          wallets={wallets ?? []}
+        />
+      </FormScreen>
+      {showCreatedMark ? (
+        <View
+          testID="limit-new-created"
+          pointerEvents="none"
+          className="absolute inset-0 items-center justify-center"
         >
-          <CloseGlyph size={20} className="text-fg dark:text-fg-dark" />
-        </Pressable>
-        <Text className="text-title font-bold text-fg dark:text-fg-dark">New limit</Text>
-      </View>
-      <LimitForm
-        onSubmit={onSave}
-        incomeUsable={incomeUsable}
-        onDeclareIncome={() => router.push("/plan/income")}
-        busy={create.isPending}
-        submitLabel="Create limit"
-        categories={categories ?? []}
-        wallets={wallets ?? []}
-      />
-    </FormScreen>
+          <BrandMark testID="limit-new-created-mark" variant="launch" playToken={playToken} size={64} />
+        </View>
+      ) : null}
+    </View>
   );
 }

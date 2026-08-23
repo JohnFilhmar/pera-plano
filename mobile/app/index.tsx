@@ -16,6 +16,9 @@
 // "/(onboarding)" rather than the tabs. Everyone else goes to the tabs.
 import { Redirect } from "expo-router";
 import { useEffect, useState } from "react";
+import { View } from "react-native";
+
+import { BrandMark } from "@/components/ui/brand_mark";
 import { getSetting } from "@/lib/db/repos/app_settings_repo";
 
 export default function Index() {
@@ -42,7 +45,18 @@ export default function Index() {
   }, []);
 
   if (onboardingComplete === null) {
-    return null;
+    // task-7-brief.md Step 3: the launch takeoff plays once during this
+    // handoff. It is NOT awaited — `getSetting` above resolves and this
+    // component redirects on its own schedule, so the takeoff plays for
+    // whatever sliver of time this gap actually takes and is cut off by the
+    // navigation the instant the setting answers. Blocking the redirect on
+    // the animation finishing would delay first paint of the real screen,
+    // which Step 6's device pass explicitly checks for.
+    return (
+      <View testID="splash-handoff" className="flex-1 items-center justify-center bg-bg dark:bg-bg-dark">
+        <BrandMark testID="splash-mark" variant="launch" size={96} />
+      </View>
+    );
   }
 
   return <Redirect href={onboardingComplete ? "/(tabs)" : "/(onboarding)"} />;

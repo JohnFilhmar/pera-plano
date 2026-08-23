@@ -23,10 +23,13 @@
 // only pins the ABSENCE of percentage text on that path, so swapping the icon
 // costs that test nothing.
 import { PartyPopper } from "lucide-react-native";
+import { useEffect, useRef, useState } from "react";
 import { Text, View } from "react-native";
 
 import { PACE_RING_COLOR, ProgressRing } from "@/components/goals/progress_ring";
 import { formatCentavos } from "@/components/ui/amount_text";
+import { BrandMark } from "@/components/ui/brand_mark";
+import { LAUNCH_MS } from "@/components/ui/brand_mark_motion";
 import { registerIcon } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Chip } from "@/components/ui/chip";
@@ -92,6 +95,38 @@ export function GoalCard({
   const trackColor = palette[resolved === "dark" ? "brand-soft-dark" : "brand-soft"];
   const reached = progress.pace === "reached";
 
+  // task-7-brief.md Step 4: "plays when a goal's progress first crosses
+  // 100%" — an OBSERVED transition, not "is currently reached". `GoalCard`
+  // keeps a stable identity for a goal's lifetime (keyed by goal id in
+  // goals_panel.tsx, and the sole card on goal detail), so a ref survives the
+  // refetches that hand this component a fresh `progress` object every time.
+  // `priorPace.current === null` means "first render, prior state unknown" —
+  // that must NOT count as a crossing, or every goal that was already
+  // reached before this card ever mounted would replay the beat on every
+  // visit.
+  const priorPace = useRef<GoalProgress["pace"] | null>(null);
+  const [playToken, setPlayToken] = useState(0);
+  const [justReached, setJustReached] = useState(false);
+
+  useEffect(() => {
+    const prior = priorPace.current;
+    priorPace.current = progress.pace;
+    if (prior !== null && prior !== "reached" && progress.pace === "reached") {
+      setPlayToken((token) => token + 1);
+      setJustReached(true);
+    }
+  }, [progress.pace]);
+
+  // Auto-clears so a goal that stays reached across every future render does
+  // not carry a second, frozen mark stacked on the party glyph forever —
+  // `LAUNCH_MS` (not a re-guessed duration) is the same number the animation
+  // itself plays for.
+  useEffect(() => {
+    if (!justReached) return;
+    const timer = setTimeout(() => setJustReached(false), LAUNCH_MS);
+    return () => clearTimeout(timer);
+  }, [justReached]);
+
   return (
     <Card testID={testID}>
       <View className="flex-row items-center gap-3">
@@ -99,16 +134,32 @@ export function GoalCard({
             shipped with. The fraction/percentage that used to sit in its
             centre moves to the text column: at 44dp there is no room left to
             draw a legible number inside the stroke. */}
-        <ProgressRing
-          testID={testID === undefined ? undefined : `${testID}-ring`}
-          fraction={progress.fraction}
-          color={ringColor}
-          trackColor={trackColor}
-          size={44}
-          strokeWidth={5}
-        >
-          {reached ? <PartyGlyph size={18} className="text-brand dark:text-brand-dark" /> : null}
-        </ProgressRing>
+        <View className="relative">
+          <ProgressRing
+            testID={testID === undefined ? undefined : `${testID}-ring`}
+            fraction={progress.fraction}
+            color={ringColor}
+            trackColor={trackColor}
+            size={44}
+            strokeWidth={5}
+          >
+            {reached ? <PartyGlyph size={18} className="text-brand dark:text-brand-dark" /> : null}
+          </ProgressRing>
+          {/* The one-shot takeoff, over the ring rather than inside its 44dp
+              stroke — `size=64` (task-7-brief.md's own figure for this beat)
+              would not fit the party glyph's slot. Non-blocking: it never
+              intercepts a tap on the card underneath it. */}
+          {justReached ? (
+            <View pointerEvents="none" className="absolute inset-0 items-center justify-center">
+              <BrandMark
+                testID={testID === undefined ? undefined : `${testID}-reached-mark`}
+                variant="launch"
+                playToken={playToken}
+                size={64}
+              />
+            </View>
+          ) : null}
+        </View>
 
         <View className="flex-1">
           <Text className="font-semibold text-fg dark:text-fg-dark">{name}</Text>

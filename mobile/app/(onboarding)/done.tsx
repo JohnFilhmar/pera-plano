@@ -33,13 +33,14 @@
 // from Home must not land the user on a setup step that would re-run its
 // writes. Replacing drops "done" from the history instead of stacking Home on
 // top of it.
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "expo-router";
-import { Check, Lock } from "lucide-react-native";
+import { Lock } from "lucide-react-native";
 import { Text, View } from "react-native";
 
 import { OnboardingFrame } from "@/components/onboarding/onboarding_frame";
 import { AmountText } from "@/components/ui/amount_text";
+import { BrandMark } from "@/components/ui/brand_mark";
 import { registerIcon } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useIncomeSummary } from "@/hooks/queries/use_income_summary";
@@ -47,7 +48,6 @@ import { useLimitStatuses } from "@/hooks/queries/use_limit_statuses";
 import { useWallets } from "@/hooks/queries/use_wallets";
 import { completeOnboarding } from "@/lib/onboarding/onboarding_state";
 
-const CheckGlyph = registerIcon(Check);
 const LockGlyph = registerIcon(Lock);
 
 const CADENCE_LABEL: Record<string, string> = {
@@ -66,6 +66,19 @@ export default function DoneScreen({
   const { data: income } = useIncomeSummary();
   const { data: limitStatuses } = useLimitStatuses();
   const [finishing, setFinishing] = useState(false);
+
+  // task-7-brief.md Step 4: the launch beat "plays on mount, alongside the
+  // confetti dots the board draws." There is no confetti component to reuse
+  // and this task builds no new one (dispatch note, and Interfaces: "no new
+  // components") — so this screen carries the mark alone. `playToken` still
+  // moves once, on mount, matching the shape every other success beat uses
+  // even though a fresh mount alone would already trigger `BrandMark`'s own
+  // one-shot effect; this keeps the four beats one pattern instead of three
+  // plus a special case.
+  const [playToken, setPlayToken] = useState(0);
+  useEffect(() => {
+    setPlayToken((token) => token + 1);
+  }, []);
 
   const walletCount = wallets?.length ?? 0;
   const incomeKnown = income !== undefined && income.cadence !== null;
@@ -111,7 +124,7 @@ export default function DoneScreen({
           testID="done-medallion"
           className="h-20 w-20 items-center justify-center rounded-full bg-brand-soft dark:bg-brand-soft-dark"
         >
-          <CheckGlyph size={40} className="text-brand dark:text-brand-dark" />
+          <BrandMark testID="done-mark" variant="launch" playToken={playToken} size={40} />
         </View>
       </View>
 

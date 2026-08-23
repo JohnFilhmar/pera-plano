@@ -9,7 +9,7 @@
 // THE TRACKING BANNER IS FIRST FOR A REASON. If capture has stopped, every
 // other number on this screen is stale — so the caveat precedes the claims.
 import { useFocusEffect, useRouter } from "expo-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RefreshControl, ScrollView, View } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
 
@@ -21,6 +21,8 @@ import { SafeToSpendHero } from "@/components/home/safe_to_spend_hero";
 import { TrackingBanner } from "@/components/home/tracking_banner";
 import { UpcomingBillsStrip } from "@/components/home/upcoming_bills_strip";
 import { PlusGate } from "@/components/gates/plus_gate";
+import { BrandMark } from "@/components/ui/brand_mark";
+import { LAUNCH_MS } from "@/components/ui/brand_mark_motion";
 import { EmptyState } from "@/components/ui/empty_state";
 import { getEmptyStateCopy } from "@/components/ui/empty_states";
 import { Fab } from "@/components/ui/fab";
@@ -88,11 +90,37 @@ export default function HomeScreen() {
     [categories],
   );
 
+  // task-7-brief.md Step 4: "First auto-capture — plays when the ledger
+  // commits its first transaction ever." The gate reads THIS ref, not
+  // `transactions` itself, from inside the event handler below — the
+  // handler is registered once (deps: [queryClient]) and a plain closure
+  // over `transactions` would freeze on whatever it was at that first
+  // subscription. Kept current on every render instead of re-subscribing the
+  // listener on every ledger change.
+  const transactionsCountRef = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    transactionsCountRef.current = transactions?.length;
+  }, [transactions]);
+
+  const [firstCapturePlayToken, setFirstCapturePlayToken] = useState(0);
+  const [showFirstCaptureMark, setShowFirstCaptureMark] = useState(false);
+
+  useEffect(() => {
+    if (!showFirstCaptureMark) return;
+    const timer = setTimeout(() => setShowFirstCaptureMark(false), LAUNCH_MS);
+    return () => clearTimeout(timer);
+  }, [showFirstCaptureMark]);
+
   // Rule 6: a notification captured seconds ago must be reflected without a
   // manual pull. The ledger event is the only signal that a number changed
   // while the user was looking at it.
   useEffect(() => {
-    return onAppEvent("ledger:committed", async () => {
+    let cancelled = false;
+    const unsubscribe = onAppEvent("ledger:committed", async () => {
+      // Read BEFORE invalidating — "first ever", not "the ledger currently
+      // has one row", which is already true by the time invalidation lands.
+      const ledgerWasEmpty = transactionsCountRef.current === 0;
+
       await queryClient.invalidateQueries({ queryKey: queryKeys.safeToSpend.all });
       await queryClient.invalidateQueries({ queryKey: queryKeys.limits.all });
       // AND TRANSACTIONS, so the "watching for your first transaction" empty
@@ -100,7 +128,23 @@ export default function HomeScreen() {
       // this the first capture of a session would leave that card showing
       // stale, since nothing else on this screen re-reads the ledger.
       await queryClient.invalidateQueries({ queryKey: queryKeys.transactions.all });
+
+      if (ledgerWasEmpty) {
+        // task-7-brief.md's own hazard note: this handler runs off a
+        // notification-driven ledger commit, so the JS thread may still be
+        // busy parsing it. Deferred one frame past the commit rather than
+        // played inline with the invalidations above.
+        requestAnimationFrame(() => {
+          if (cancelled) return;
+          setFirstCapturePlayToken((token) => token + 1);
+          setShowFirstCaptureMark(true);
+        });
+      }
     });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
   }, [queryClient]);
 
   // ...and on focus, because a day can roll over while the app sits in the
@@ -294,6 +338,23 @@ export default function HomeScreen() {
           accessibilityLabel="Add a transaction"
         />
       </View>
+
+      {/* First auto-capture (task-7-brief.md Step 4) — non-blocking, so it
+          never sits between the user and the Fab or the list beneath it. */}
+      {showFirstCaptureMark ? (
+        <View
+          testID="home-first-capture"
+          pointerEvents="none"
+          className="absolute inset-0 items-center justify-center"
+        >
+          <BrandMark
+            testID="home-first-capture-mark"
+            variant="launch"
+            playToken={firstCapturePlayToken}
+            size={64}
+          />
+        </View>
+      ) : null}
     </View>
   );
 }

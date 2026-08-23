@@ -622,19 +622,27 @@ test("a multi-word section title renders in full", () => {
   expect(title.props.ellipsizeMode).toBeUndefined();
 });
 
-test("EmptyState defaults to the lucide Send paper-airplane brand mark", () => {
-  // docs/11: 'Brand mark = the "Send" paper airplane'. Compared structurally
-  // rather than by testID, so swapping the default icon fails here.
-  render(<EmptyState title="All caught up" body="Nothing to review." />);
-  const withDefault = JSON.stringify(screen.toJSON());
+test("EmptyState defaults to the drifting BrandMark, not a lucide glyph", () => {
+  // UPDATED (task-7-brief.md Step 3, mobile-ui-revamp Part 3). This test used
+  // to pin the lucide `Send` icon as the stand-in "brand mark" docs/11 named
+  // before `components/ui/brand_mark.tsx` existed. Now that the real animated
+  // mark exists, the DEFAULT disc renders it (`variant="idle"`) instead — an
+  // icon prop, when a caller passes one, still renders exactly that icon,
+  // unanimated, and the mark is absent then. See
+  // components/ui/__tests__/motion_placement.test.tsx for the mark's own
+  // testID/animation/reduce-motion contract; this file only pins EmptyState's
+  // choice between the two.
+  render(<EmptyState testID="e" title="All caught up" body="Nothing to review." />);
+  expect(screen.getByTestId("e-mark")).toBeTruthy();
   screen.unmount();
 
-  render(<EmptyState icon={Send} title="All caught up" body="Nothing to review." />);
-  expect(JSON.stringify(screen.toJSON())).toBe(withDefault);
+  render(<EmptyState testID="e" icon={Send} title="All caught up" body="Nothing to review." />);
+  expect(screen.queryByTestId("e-mark")).toBeNull();
+  screen.getByText("All caught up");
   screen.unmount();
 
-  render(<EmptyState icon={Wallet} title="All caught up" body="Nothing to review." />);
-  expect(JSON.stringify(screen.toJSON())).not.toBe(withDefault);
+  render(<EmptyState testID="e" icon={Wallet} title="All caught up" body="Nothing to review." />);
+  expect(screen.queryByTestId("e-mark")).toBeNull();
 });
 
 test("EmptyState renders its optional action and fires it", () => {

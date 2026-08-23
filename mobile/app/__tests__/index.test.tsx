@@ -16,7 +16,7 @@ jest.mock("expo-router", () => ({
   },
 }));
 
-import { render, waitFor } from "@testing-library/react-native";
+import { render, screen, waitFor } from "@testing-library/react-native";
 import { getSetting } from "@/lib/db/repos/app_settings_repo";
 import Index from "../index";
 
@@ -44,11 +44,15 @@ test("a user with onboarding_complete true is sent to the tabs", async () => {
   await waitFor(() => expect(capturedHref).toBe("/(tabs)"));
 });
 
-test("renders nothing while the setting is still being read", () => {
+test("plays the splash takeoff while the setting is still being read, and redirects nowhere yet", () => {
+  // UPDATED (task-7-brief.md Step 3): this used to render nothing at all —
+  // now it plays `BrandMark`'s launch takeoff during the handoff, but the
+  // redirect claim itself (the reason this test exists) is unchanged.
   mockGetSetting.mockReturnValue(new Promise(() => {}));
 
   render(<Index />);
 
+  screen.getByTestId("splash-mark");
   expect(capturedHref).toBeUndefined();
 });
 

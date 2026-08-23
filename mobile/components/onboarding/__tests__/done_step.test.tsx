@@ -87,4 +87,10 @@ describe("DoneScreen", () => {
 
     expect(screen.queryByTestId("onboarding-skip-link")).toBeNull();
   });
+
+  test("the medallion carries the launch mark (task-7-brief.md Step 4)", async () => {
+    await renderScreen();
+
+    expect(screen.getByTestId("done-mark")).toBeTruthy();
+  });
 });
