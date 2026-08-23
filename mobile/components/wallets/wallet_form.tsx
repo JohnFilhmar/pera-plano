@@ -20,18 +20,52 @@ import { Text, TextInput, View } from "react-native";
 
 import { AmountText } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
-import { Chip } from "@/components/ui/chip";
-import { ListRow } from "@/components/ui/list_row";
 import { NumericField } from "@/components/ui/numeric_field";
 import { SectionHeader } from "@/components/ui/section_header";
+import { SegmentedControl } from "@/components/ui/segmented_control";
+import type { Segment } from "@/components/ui/segmented_control";
 import { centavosFrom } from "@/lib/money/peso_input";
-import { WALLET_TYPE_LABELS, WALLET_TYPE_ORDER } from "@/lib/wallets/summary";
+import { WALLET_TYPE_ORDER } from "@/lib/wallets/summary";
 import type { MatcherOwner } from "@/lib/wallets/matchers";
 import type { ProviderRuleset } from "@/lib/ingest/ruleset_types";
 import type { Centavos, NewWalletMatcher, WalletType } from "@/types/domain";
 
 import { MatcherPicker } from "./matcher_picker";
-import { WalletTypeIcon } from "./wallet_type_icon";
+
+/**
+ * Short labels for the wallet-type `SegmentedControl` (task-5b restyle).
+ *
+ * NOT `WALLET_TYPE_LABELS` (lib/wallets/summary.ts). That map's credit entry
+ * is "Credit — amounts owed" — right for a Wallets-tab SECTION HEADING, where
+ * the qualifier only has to be stated once for a whole group, and much too
+ * long for one of five tabs squeezed into a single `SegmentedControl` row.
+ * The qualifier is not lost: `chooseType` still drives every credit-specific
+ * behaviour this form and the detail screen have (rule 23), this is purely
+ * which WORDS label the tab.
+ */
+const TYPE_SEGMENT_LABELS: Record<WalletType, string> = {
+  bank: "Bank",
+  "e-wallet": "E-wallet",
+  savings: "Savings",
+  credit: "Credit",
+  cash: "Cash",
+};
+
+const TYPE_SEGMENTS: ReadonlyArray<Segment<WalletType>> = WALLET_TYPE_ORDER.map((candidate) => ({
+  value: candidate,
+  label: TYPE_SEGMENT_LABELS[candidate],
+}));
+
+/**
+ * A value outside `WalletType`, so `SegmentedControl<WalletType | typeof
+ * TYPE_UNSET>` can represent "nothing chosen yet" without a `null` in its
+ * generic (`SegmentedControl`'s `T extends string`, so `null` cannot be a
+ * member). No segment's `value` is ever this, so nothing highlights while
+ * `type` is `null` — preserving the "NO DEFAULT TYPE" rule above: a
+ * pre-highlighted segment would be the exact bug that rule exists to avoid,
+ * just moved from a list row to a segmented one.
+ */
+const TYPE_UNSET = "__unset__" as const;
 
 export type WalletFormValues = {
   name: string;
@@ -119,8 +153,12 @@ export function WalletForm({
     // here would double-count that edge — the defect Task 9's fix round
     // removed from the manual-entry form.
     <View testID={testID} className="gap-2">
+      {/* task-5b field rhythm: a `text-micro font-semibold text-fg-2` label
+          above every control, the control itself on `bg-chip rounded-xl
+          min-h-[44px]` — filled, not outlined, matching the design's chip-
+          background inputs rather than the old bordered box. */}
       <View className="gap-1 px-4 pt-4">
-        <Text className="text-sm text-fg-2 dark:text-fg-2-dark">Name</Text>
+        <Text className="text-micro font-semibold text-fg-2 dark:text-fg-2-dark">Name</Text>
         <TextInput
           testID="wallet-form-name"
           value={name}
@@ -128,7 +166,7 @@ export function WalletForm({
           autoCorrect={false}
           placeholder="GCash, BPI, Pocket money…"
           accessibilityLabel="Wallet name"
-          className="rounded-lg border border-fg-2 px-3 py-2 text-fg dark:border-fg-2-dark dark:text-fg-dark"
+          className="min-h-[44px] rounded-xl bg-chip px-3 py-2 text-fg dark:bg-chip-dark dark:text-fg-dark"
         />
         {showErrors && nameMissing ? (
           <Text testID="wallet-form-name-error" className="text-sm text-danger dark:text-danger-dark">
@@ -137,17 +175,28 @@ export function WalletForm({
         ) : null}
       </View>
 
-      <SectionHeader title="What kind of money location is this?" />
-      {WALLET_TYPE_ORDER.map((candidate) => (
-        <ListRow
-          key={candidate}
-          testID={`wallet-form-type-${candidate}`}
-          title={WALLET_TYPE_LABELS[candidate]}
-          left={<WalletTypeIcon type={candidate} />}
-          onPress={() => chooseType(candidate)}
-          right={type === candidate ? <Chip label="Selected" tone="brand" /> : undefined}
+      <View className="gap-1 px-4 pt-4">
+        <Text className="text-micro font-semibold text-fg-2 dark:text-fg-2-dark">
+          What kind of money location is this?
+        </Text>
+        {/* `TYPE_UNSET`, not `type`, is what makes "nothing chosen yet"
+            representable — see that constant's own comment above. Passing
+            `type` directly here would be a type error (`SegmentedControl`'s
+            `T extends string`, and `null` is not a `WalletType`), and
+            defaulting the prop to a real type while leaving `type` state
+            `null` would show a segment highlighted that submit still
+            refuses — the exact "looks chosen, was not" bug the ListRow
+            version never had a chance to introduce, because nothing there
+            was pre-selected either. */}
+        <SegmentedControl<WalletType | typeof TYPE_UNSET>
+          testID="wallet-form-type"
+          segments={TYPE_SEGMENTS}
+          value={type ?? TYPE_UNSET}
+          onChange={(next) => {
+            if (next !== TYPE_UNSET) chooseType(next);
+          }}
         />
-      ))}
+      </View>
       {showErrors && typeMissing ? (
         <Text
           testID="wallet-form-type-error"
@@ -159,7 +208,7 @@ export function WalletForm({
 
       {showOpeningBalance ? (
         <View className="gap-1 px-4 pt-4">
-          <Text className="text-sm text-fg-2 dark:text-fg-2-dark">
+          <Text className="text-micro font-semibold text-fg-2 dark:text-fg-2-dark">
             What is in it right now? (optional)
           </Text>
           {/* THE APP'S OWN KEYPAD, NOT THE OS NUMBER PAD (numeric-input-system

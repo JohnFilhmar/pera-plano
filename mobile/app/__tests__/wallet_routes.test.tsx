@@ -533,6 +533,33 @@ describe("the wallet detail actions", () => {
       params: { id: gcash.id },
     });
   });
+
+  // task-5b: the matchers Card's own "Edit" and "+ Add" both land on the same
+  // edit route as the top-level Edit button — the matcher picker lives only
+  // in wallet_form.tsx, reachable exclusively through app/wallet/[id]/edit.tsx.
+  test("the matchers card's Edit action also navigates to the edit route", async () => {
+    const gcash = await createWallet({ name: "GCash", type: "e-wallet" });
+
+    await renderDetail(gcash.id);
+    fireEvent.press(screen.getByTestId("wallet-detail-matchers-edit"));
+
+    expect(mockPush).toHaveBeenCalledWith({
+      pathname: "/wallet/[id]/edit",
+      params: { id: gcash.id },
+    });
+  });
+
+  test("the matchers card's dashed + Add navigates to the edit route too", async () => {
+    const gcash = await createWallet({ name: "GCash", type: "e-wallet" });
+
+    await renderDetail(gcash.id);
+    fireEvent.press(screen.getByTestId("wallet-detail-matchers-add"));
+
+    expect(mockPush).toHaveBeenCalledWith({
+      pathname: "/wallet/[id]/edit",
+      params: { id: gcash.id },
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -31,6 +31,7 @@ import { Text, TextInput, View } from "react-native";
 
 import { Chip } from "@/components/ui/chip";
 import { ListRow } from "@/components/ui/list_row";
+import { ProviderBadge } from "@/components/ui/provider_badge";
 import { providerLabel } from "@/constants/providers";
 import {
   matchersForProvider,
@@ -119,6 +120,12 @@ export function MatcherPicker({
             <ListRow
               testID={`matcher-provider-${provider.providerKey}`}
               title={providerLabel(provider.providerKey)}
+              // task-5b: "the provider picker row shows ProviderBadge beside
+              // each name." Default 14dp — provider_badge.tsx's own header
+              // names this exact use ("the 14dp rounded square the design
+              // draws beside every wallet row and every provider-picker
+              // tile"), so no explicit `size` override here.
+              left={<ProviderBadge providerKey={provider.providerKey} />}
               onPress={() => toggle(provider.providerKey)}
               right={
                 selected ? (

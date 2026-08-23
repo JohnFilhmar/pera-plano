@@ -20,13 +20,14 @@
 import { useState } from "react";
 import { Text, View } from "react-native";
 
-import { AmountText } from "@/components/ui/amount_text";
+import { AmountText, formatCentavos } from "@/components/ui/amount_text";
 import { BottomSheet } from "@/components/ui/bottom_sheet";
 import { Button } from "@/components/ui/button";
+import { ListRow } from "@/components/ui/list_row";
 import { NumericField } from "@/components/ui/numeric_field";
 import { useReconcileCash } from "@/hooks/mutations/use_reconcile_cash";
 import { centavosFrom } from "@/lib/money/peso_input";
-import { cashAdjustment } from "@/lib/wallets/reconcile";
+import { cashAdjustment, RECONCILE_NOTE } from "@/lib/wallets/reconcile";
 import type { Transaction, Wallet } from "@/types/domain";
 
 export type CashReconcileSheetProps = {
@@ -93,20 +94,20 @@ export function CashReconcileSheet({
         {/* The SPEC's question (docs/04-features/02-wallets.md §cash Wallet
             reconciliation rule 2), not the plan's "How much is in your physical
             wallet right now?". Global Constraints: where the plan and a spec
-            disagree, the spec wins. */}
-        <Text className="text-base text-fg dark:text-fg-dark">
+            disagree, the spec wins — and task-5b's design board draws a THIRD
+            wording again ("Count what's in your wallet right now..."); the
+            same rule keeps the spec's question here rather than a fourth
+            rewrite of prose that is not itself under test. */}
+        <Text className="text-body text-fg dark:text-fg-dark">
           How much cash do you have right now?
         </Text>
 
-        <View className="gap-1">
-          <Text className="text-sm text-fg-2 dark:text-fg-2-dark">This wallet currently says</Text>
-          <AmountText
-            testID="reconcile-recorded"
-            amount={wallet.balance}
-            size="lg"
-            showSign={false}
-          />
-        </View>
+        <ListRow
+          title="PeraPlano thinks you have"
+          right={
+            <AmountText testID="reconcile-recorded" amount={wallet.balance} size="md" showSign={false} />
+          }
+        />
 
         {/* THE APP'S OWN KEYPAD (numeric-input-system Task 13), and inside a
             Modal the panel comes from bottom_sheet.tsx's nested KeypadHost —
@@ -116,16 +117,42 @@ export function CashReconcileSheet({
             consequential answer ("my pocket is empty", which writes off the
             whole recorded balance), and an empty field is refused — so a
             placeholder that LOOKS like a zero blurs the one distinction the
-            refusal below depends on. */}
-        <NumericField
-          testID="reconcile-amount"
-          label="Cash you have right now"
-          mode="peso"
-          placeholder="Type the amount"
-          value={text}
-          onChangeText={setText}
-        />
-        <AmountText testID="reconcile-preview" amount={physical} size="lg" showSign={false} />
+            refusal below depends on.
+
+            THE BORDER IS PERMANENT, NOT NumericField's OWN focus-only ring
+            (numeric_field.tsx:147-149 adds `border-brand` only while
+            `focused`). This wraps it in a matching, always-on `border-brand`
+            ring instead of editing that shared field for one caller's
+            emphasis — the design board's "Actual count" box is drawn with a
+            constant coloured border, unlike the plain "PeraPlano thinks you
+            have" row above it. */}
+        <View className="gap-1">
+          <Text className="text-micro font-semibold text-fg-2 dark:text-fg-2-dark">
+            Actual count
+          </Text>
+          <View className="rounded-xl border border-brand dark:border-brand-dark">
+            <NumericField
+              testID="reconcile-amount"
+              label="Cash you have right now"
+              mode="peso"
+              placeholder="Type the amount"
+              value={text}
+              onChangeText={setText}
+            />
+          </View>
+          {/* `formatCentavos` directly, not `AmountText` — `AmountText`'s
+              `lg` size is `font-semibold`, and the design calls for
+              `font-bold` specifically at `text-title` here; nesting it
+              inside a styled Text would also silently lose that weight (the
+              AmountText-nesting trap this project has shipped twice). */}
+          <Text
+            testID="reconcile-preview"
+            style={{ fontVariant: ["tabular-nums"] }}
+            className="text-title font-bold text-fg dark:text-fg-dark"
+          >
+            {formatCentavos(physical)}
+          </Text>
+        </View>
 
         {showError ? (
           <Text testID="reconcile-amount-error" className="text-sm text-danger dark:text-danger-dark">
@@ -133,18 +160,47 @@ export function CashReconcileSheet({
           </Text>
         ) : null}
 
-        {/* Say what the button will DO before it is pressed. A user who is told
-            "we will record ₱300.00 as money spent" can catch their own typo;
-            one who finds out afterwards has to go and delete a transaction. */}
+        {/* "Difference", inked by sign — danger for a shortfall (spend the app
+            never saw), brand for a surplus (money that arrived unseen). Absent
+            entirely when the two already agree: a "Difference ₱0.00" row has
+            no sign to ink it by, and `reconcile-plan` below already says
+            plainly that nothing will be recorded. */}
+        {preview ? (
+          <View testID="reconcile-difference" className="flex-row items-center justify-between">
+            <Text className="text-secondary font-semibold text-fg-2 dark:text-fg-2-dark">
+              Difference
+            </Text>
+            <Text
+              style={{ fontVariant: ["tabular-nums"] }}
+              className={`text-secondary font-bold ${
+                preview.direction === "out"
+                  ? "text-danger dark:text-danger-dark"
+                  : "text-brand dark:text-brand-dark"
+              }`}
+            >
+              {/* U+2212 MINUS SIGN — components/ui/amount_text.tsx's own
+                  convention, matched here rather than a hyphen. */}
+              {`${preview.direction === "out" ? "−" : "+"}${formatCentavos(preview.amount)}`}
+            </Text>
+          </View>
+        ) : null}
+
+        {/* Say what the button will DO before it is pressed, AND say what it
+            will be logged as — `RECONCILE_NOTE`, the actual string this
+            write uses (lib/wallets/reconcile.ts), not the design board's own
+            illustrative "Cash adjustment · untracked spending" (which names
+            no real constant in this codebase). A user who is told "we will
+            record ₱300.00 as money spent" can catch their own typo; one who
+            finds out afterwards has to go and delete a transaction. */}
         {preview === null ? (
-          <Text testID="reconcile-plan" className="text-sm text-fg-2 dark:text-fg-2-dark">
+          <Text testID="reconcile-plan" className="text-secondary text-fg-2 dark:text-fg-2-dark">
             That matches what this wallet already says — nothing will be recorded.
           </Text>
         ) : (
-          <Text testID="reconcile-plan" className="text-sm text-fg-2 dark:text-fg-2-dark">
+          <Text testID="reconcile-plan" className="text-secondary text-fg-2 dark:text-fg-2-dark">
             {preview.direction === "out"
-              ? "We will record the difference as money spent, so your totals stay honest. Nothing already in your ledger changes."
-              : "We will record the difference as money received. Nothing already in your ledger changes."}
+              ? `Logged as "${RECONCILE_NOTE}" — money spent, so your totals stay honest. Nothing already in your ledger changes.`
+              : `Logged as "${RECONCILE_NOTE}" — money received. Nothing already in your ledger changes.`}
           </Text>
         )}
 
@@ -156,12 +212,19 @@ export function CashReconcileSheet({
           </Text>
         ) : null}
 
-        <Button
-          testID="reconcile-confirm"
-          title="Save this amount"
-          onPress={confirm}
-          loading={reconcile.isPending}
-        />
+        <View className="flex-row gap-2">
+          <View className="flex-1">
+            <Button testID="reconcile-cancel" title="Cancel" variant="secondary" onPress={onDismiss} />
+          </View>
+          <View className="flex-1">
+            <Button
+              testID="reconcile-confirm"
+              title="Save count"
+              onPress={confirm}
+              loading={reconcile.isPending}
+            />
+          </View>
+        </View>
       </View>
     </BottomSheet>
   );

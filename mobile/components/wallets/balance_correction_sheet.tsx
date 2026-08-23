@@ -39,11 +39,15 @@
 import { useState } from "react";
 import { Text, View } from "react-native";
 
-import { AmountText } from "@/components/ui/amount_text";
+import { AmountText, formatCentavos } from "@/components/ui/amount_text";
 import { BottomSheet } from "@/components/ui/bottom_sheet";
 import { Button } from "@/components/ui/button";
+import { ListRow } from "@/components/ui/list_row";
 import { NumericField } from "@/components/ui/numeric_field";
-import { useCorrectWalletBalance } from "@/hooks/mutations/use_correct_wallet_balance";
+import {
+  BALANCE_CORRECTION_NOTE,
+  useCorrectWalletBalance,
+} from "@/hooks/mutations/use_correct_wallet_balance";
 import { centavosFrom } from "@/lib/money/peso_input";
 import { cashAdjustment } from "@/lib/wallets/reconcile";
 import type { Transaction, Wallet } from "@/types/domain";
@@ -112,19 +116,28 @@ export function BalanceCorrectionSheet({
   return (
     <BottomSheet visible={visible} onDismiss={onDismiss} title="Starting balance / manual correction">
       <View testID={testID} className="gap-3">
-        <Text className="text-base text-fg dark:text-fg-dark">
+        {/* Unchanged question — not pinned to a spec citation the way the cash
+            sheet's is, but this file's own header already settled its wording
+            once and re-litigating it against the design board's flavour text
+            is exactly what task-5b's own trap warning is about. */}
+        <Text className="text-body text-fg dark:text-fg-dark">
           What does this wallet actually have right now?
         </Text>
 
-        <View className="gap-1">
-          <Text className="text-sm text-fg-2 dark:text-fg-2-dark">This wallet currently says</Text>
-          <AmountText
-            testID="balance-correction-recorded"
-            amount={wallet.balance}
-            size="lg"
-            showSign={false}
-          />
-        </View>
+        {/* Same rhythm as cash_reconcile_sheet.tsx's ListRow, same wording —
+            one voice across both sheets rather than two that happen to mean
+            the same thing. */}
+        <ListRow
+          title="PeraPlano thinks you have"
+          right={
+            <AmountText
+              testID="balance-correction-recorded"
+              amount={wallet.balance}
+              size="md"
+              showSign={false}
+            />
+          }
+        />
 
         {/* THE APP'S OWN KEYPAD (numeric-input-system Task 13), and inside a
             Modal the panel comes from bottom_sheet.tsx's nested KeypadHost —
@@ -134,16 +147,37 @@ export function BalanceCorrectionSheet({
             consequential answer ("this wallet is empty", which writes off the
             whole recorded balance), and an empty field is refused — so a
             placeholder that LOOKS like a zero blurs the one distinction the
-            refusal below depends on. */}
-        <NumericField
-          testID="balance-correction-amount"
-          label="This wallet's actual balance"
-          mode="peso"
-          placeholder="Type the amount"
-          value={text}
-          onChangeText={setText}
-        />
-        <AmountText testID="balance-correction-preview" amount={stated} size="lg" showSign={false} />
+            refusal below depends on.
+
+            THE BORDER IS A PERMANENT WRAPPER, NOT NumericField's OWN
+            focus-only ring — see cash_reconcile_sheet.tsx's identical note;
+            this sheet keeps the same rhythm rather than a second, drifting
+            copy of that reasoning. */}
+        <View className="gap-1">
+          <Text className="text-micro font-semibold text-fg-2 dark:text-fg-2-dark">
+            Actual balance
+          </Text>
+          <View className="rounded-xl border border-brand dark:border-brand-dark">
+            <NumericField
+              testID="balance-correction-amount"
+              label="This wallet's actual balance"
+              mode="peso"
+              placeholder="Type the amount"
+              value={text}
+              onChangeText={setText}
+            />
+          </View>
+          {/* `formatCentavos` directly — see cash_reconcile_sheet.tsx's note
+              on why `AmountText`'s `lg` (font-semibold) cannot reach the
+              `text-title font-bold` this design calls for. */}
+          <Text
+            testID="balance-correction-preview"
+            style={{ fontVariant: ["tabular-nums"] }}
+            className="text-title font-bold text-fg dark:text-fg-dark"
+          >
+            {formatCentavos(stated)}
+          </Text>
+        </View>
 
         {/* Rule 3's required disclosure. Not a workaround — the honest limit
             of what a typed figure can promise on a wallet a provider ALSO
@@ -157,8 +191,14 @@ export function BalanceCorrectionSheet({
             design (rule 3 asks for an honest ledger entry, not a balance
             patch that vanishes later), but it is a real second-order effect
             worth saying plainly rather than leaving the user to discover it
-            in a report. */}
-        <Text testID="balance-correction-warning" className="text-sm text-warn dark:text-warn-dark">
+            in a report.
+
+            STILL UNCONDITIONAL — present before any input, exactly as before
+            this restyle. components/wallets/__tests__/balance_correction_sheet.test.tsx
+            asserts this by name ("shown before any input, not just after
+            confirming"), and content is verbatim: the three phrases it
+            regex-matches are untouched. */}
+        <Text testID="balance-correction-warning" className="text-secondary text-warn dark:text-warn-dark">
           This is a starting point, not a bank-confirmed figure. If a notification later reports
           this wallet&apos;s balance directly, that report will replace this correction. The entry
           itself stays in your ledger and still counts toward your totals, even after that happens.
@@ -173,15 +213,45 @@ export function BalanceCorrectionSheet({
           </Text>
         ) : null}
 
+        {/* "Difference" — same danger/brand convention as
+            cash_reconcile_sheet.tsx's. Absent when the two figures already
+            agree, for the identical reason: no sign to ink it by, and
+            `balance-correction-plan` below already says nothing will be
+            recorded. */}
+        {preview ? (
+          <View testID="balance-correction-difference" className="flex-row items-center justify-between">
+            <Text className="text-secondary font-semibold text-fg-2 dark:text-fg-2-dark">
+              Difference
+            </Text>
+            <Text
+              style={{ fontVariant: ["tabular-nums"] }}
+              className={`text-secondary font-bold ${
+                preview.direction === "out"
+                  ? "text-danger dark:text-danger-dark"
+                  : "text-brand dark:text-brand-dark"
+              }`}
+            >
+              {`${preview.direction === "out" ? "−" : "+"}${formatCentavos(preview.amount)}`}
+            </Text>
+          </View>
+        ) : null}
+
+        {/* The null branch's copy is pinned VERBATIM
+            (components/wallets/__tests__/balance_correction_sheet.test.tsx:
+            "matches what this wallet already says"). The non-null branch
+            names the real write, `BALANCE_CORRECTION_NOTE`
+            (hooks/mutations/use_correct_wallet_balance.ts) — not the design
+            board's own illustrative copy, which names no constant this
+            codebase actually has. */}
         {preview === null ? (
-          <Text testID="balance-correction-plan" className="text-sm text-fg-2 dark:text-fg-2-dark">
+          <Text testID="balance-correction-plan" className="text-secondary text-fg-2 dark:text-fg-2-dark">
             That matches what this wallet already says — nothing will be recorded.
           </Text>
         ) : (
-          <Text testID="balance-correction-plan" className="text-sm text-fg-2 dark:text-fg-2-dark">
+          <Text testID="balance-correction-plan" className="text-secondary text-fg-2 dark:text-fg-2-dark">
             {preview.direction === "out"
-              ? "We will record the difference as money spent, so your totals stay honest. Nothing already in your ledger changes."
-              : "We will record the difference as money received. Nothing already in your ledger changes."}
+              ? `Logged as "${BALANCE_CORRECTION_NOTE}" — money spent, so your totals stay honest. Nothing already in your ledger changes.`
+              : `Logged as "${BALANCE_CORRECTION_NOTE}" — money received. Nothing already in your ledger changes.`}
           </Text>
         )}
 
@@ -193,12 +263,24 @@ export function BalanceCorrectionSheet({
           </Text>
         ) : null}
 
-        <Button
-          testID="balance-correction-confirm"
-          title="Save this amount"
-          onPress={confirm}
-          loading={correct.isPending}
-        />
+        <View className="flex-row gap-2">
+          <View className="flex-1">
+            <Button
+              testID="balance-correction-cancel"
+              title="Cancel"
+              variant="secondary"
+              onPress={onDismiss}
+            />
+          </View>
+          <View className="flex-1">
+            <Button
+              testID="balance-correction-confirm"
+              title="Save correction"
+              onPress={confirm}
+              loading={correct.isPending}
+            />
+          </View>
+        </View>
       </View>
     </BottomSheet>
   );

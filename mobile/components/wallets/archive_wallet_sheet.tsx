@@ -82,11 +82,16 @@ export function ArchiveWalletSheet({
   return (
     <BottomSheet visible={visible} onDismiss={onDismiss} title={`Archive ${wallet.name}`}>
       <View testID={testID} className="gap-3">
-        <Text className="text-fg-2 dark:text-fg-2-dark">
+        {/* Same sheet rhythm as cash_reconcile_sheet.tsx / balance_correction_sheet.tsx
+            (task-5b) — `text-body` for the explanatory prose. Content is
+            untouched: components/wallets/__tests__/archive_wallet_sheet.test.tsx
+            regex-matches "histor", "nothing is deleted", "Review Queue" and
+            "total" against this sheet's own testID, not any one paragraph. */}
+        <Text className="text-body text-fg-2 dark:text-fg-2-dark">
           Archiving retires this wallet. Nothing is deleted: its history stays in your reports, and
           you can bring it back later.
         </Text>
-        <Text className="text-fg-2 dark:text-fg-2-dark">
+        <Text className="text-body text-fg-2 dark:text-fg-2-dark">
           Its balance leaves the total on your Wallets tab, and it stops catching notifications —
           anything that would have landed here goes to your Review Queue instead, so nothing is
           lost.
@@ -94,7 +99,7 @@ export function ArchiveWalletSheet({
 
         {hasTransactions ? (
           <View className="gap-1">
-            <Text className="font-medium text-fg dark:text-fg-dark">
+            <Text className="text-row font-semibold text-fg dark:text-fg-dark">
               {`What happens to its ${transactionCount} transactions?`}
             </Text>
             <ListRow
@@ -140,7 +145,25 @@ export function ArchiveWalletSheet({
           </View>
         ) : null}
 
-        <Button testID="archive-confirm" title="Archive wallet" onPress={confirm} />
+        {/* Cancel + confirm side by side, the same rhythm the other two
+            sheets in this task now use. `outline-destructive` (task-5b):
+            surface fill, danger border and ink — a destructive action the
+            user reads calmly before committing, not one already confirmed
+            (button.tsx's own distinction between `destructive`, the filled
+            variant for something already agreed to, and this one). */}
+        <View className="flex-row gap-2">
+          <View className="flex-1">
+            <Button testID="archive-cancel" title="Cancel" variant="secondary" onPress={onDismiss} />
+          </View>
+          <View className="flex-1">
+            <Button
+              testID="archive-confirm"
+              title="Archive wallet"
+              variant="outline-destructive"
+              onPress={confirm}
+            />
+          </View>
+        </View>
       </View>
     </BottomSheet>
   );

@@ -61,15 +61,16 @@
 // and `wallets_repo` exports no `deleteWallet` to call.
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useState } from "react";
-import { ScrollView, Text, View } from "react-native";
+import { Pressable, ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { LedgerList } from "@/components/transactions/ledger_list";
-import { AmountText } from "@/components/ui/amount_text";
+import { formatCentavos } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Chip } from "@/components/ui/chip";
 import { EmptyState } from "@/components/ui/empty_state";
+import { ProviderBadge } from "@/components/ui/provider_badge";
 import { SectionHeader } from "@/components/ui/section_header";
 import { ArchiveWalletSheet } from "@/components/wallets/archive_wallet_sheet";
 import { BalanceCorrectionSheet } from "@/components/wallets/balance_correction_sheet";
@@ -80,6 +81,7 @@ import {
 import { CashReconcileSheet } from "@/components/wallets/cash_reconcile_sheet";
 import { MatcherChipList } from "@/components/wallets/matcher_chip_list";
 import { WalletTypeIcon } from "@/components/wallets/wallet_type_icon";
+import { providerBadge, providerKeyForPackage } from "@/constants/providers";
 import { useArchiveWallet } from "@/hooks/mutations/use_archive_wallet";
 import { useDismissDrift } from "@/hooks/mutations/use_dismiss_drift";
 import { useBalanceDrift } from "@/hooks/queries/use_balance_drift";
@@ -89,6 +91,80 @@ import { useTransactions } from "@/hooks/queries/use_transactions";
 import { useWallet } from "@/hooks/queries/use_wallet";
 import { useWalletMatchers } from "@/hooks/queries/use_wallet_matchers";
 import { useWallets } from "@/hooks/queries/use_wallets";
+import { systemClock } from "@/lib/clock";
+import { toDateIso } from "@/lib/dates";
+import { periodForScope } from "@/lib/period";
+import { summarizePeriod } from "@/lib/reports/aggregate";
+import { contrastRatio } from "@/lib/ui/contrast";
+
+// ---------------------------------------------------------------------------
+// The balance header's provider fill (mobile-ui-revamp Part 2 Task 5b).
+// ---------------------------------------------------------------------------
+//
+// `PROVIDER_BADGE` colours (constants/providers.ts) were measured for a
+// SINGLE WHITE LETTER at 14dp behind them — that file's own header records
+// six of the thirteen already needed DARK ink at that size (gotyme 2.56,
+// maya 2.62, grabpay 2.84, unionbank 3.27, seabank 3.48, shopeepay 3.66,
+// white #FFFFFF measured with `contrastRatio`). A full card of white BODY
+// TEXT is a stricter requirement than one small glyph, so this screen
+// measures again rather than reusing that badge-ink verdict.
+//
+// MEASURED 2026-08-23 (task-5b), white (#FFFFFF) against every
+// `PROVIDER_BADGE` colour via `contrastRatio`. The SAME six fail again — the
+// underlying pair of colours has not changed, and this task's own floor is
+// 4.5:1 regardless of text size (a card of body copy, not a headline, so the
+// large-text 3:1 allowance does not apply):
+//   gcash       9.85  PASS
+//   maya        2.62  FALLBACK -> bg-brand
+//   bpi         6.70  PASS
+//   bdo        13.64  PASS
+//   unionbank   3.27  FALLBACK -> bg-brand
+//   metrobank  10.05  PASS
+//   seabank     3.48  FALLBACK -> bg-brand
+//   gotyme      2.56  FALLBACK -> bg-brand
+//   cimb        7.50  PASS
+//   landbank    6.13  PASS
+//   shopeepay   3.66  FALLBACK -> bg-brand
+//   grabpay     2.84  FALLBACK -> bg-brand
+//   sms_relay   5.44  PASS
+//
+// NOT A HARDCODED LOOKUP TABLE. `fillForProvider` below recomputes this at
+// render time from the live `PROVIDER_BADGE` entry, so a future rebrand of
+// any provider's colour re-measures itself instead of silently drifting from
+// this comment — the exact failure lib/ui/contrast.ts's own header exists to
+// prevent ("prose cannot fail CI").
+const FILL_CONTRAST_FLOOR = 4.5;
+
+/**
+ * The literal white this card's ink is measured against and painted with.
+ *
+ * A raw hex, not a token — the same class of exception `ProviderBadge`'s own
+ * `ink` field already relies on (constants/providers.ts is Global
+ * Constraints' authorised exception for provider identity colour). A
+ * provider's colour is THEME-INDEPENDENT (one hex, not a light/dark pair), so
+ * the ink paired with it has to be equally theme-independent — `on-brand`/
+ * `on-brand-dark` is the token for ink on the `bg-brand` FALLBACK below (and
+ * is used there instead), and is the WRONG one here: `on-brand-dark` is
+ * near-black, chosen for a bright green fill, not for GCash blue.
+ */
+const FILL_INK_WHITE = "#FFFFFF";
+
+type HeaderFill = { kind: "brand" } | { kind: "provider"; color: string };
+
+/**
+ * Whether `providerKey`'s own colour is safe to fill the whole balance card
+ * with, or whether the card falls back to the app's own brand green.
+ *
+ * No provider (`null` — Cash, any manual wallet) always falls back: there is
+ * no company colour to use. A resolved provider additionally falls back when
+ * white fails the 4.5:1 floor above — see the measured table.
+ */
+function fillForProvider(providerKey: string | null): HeaderFill {
+  if (!providerKey) return { kind: "brand" };
+  const { color } = providerBadge(providerKey);
+  if (contrastRatio(FILL_INK_WHITE, color) < FILL_CONTRAST_FLOOR) return { kind: "brand" };
+  return { kind: "provider", color };
+}
 
 export default function WalletDetailScreen() {
   const router = useRouter();
@@ -135,7 +211,9 @@ export default function WalletDetailScreen() {
   const toleranceCentavos = ruleset?.tunables.balanceDriftToleranceCentavos;
   const isCash = wallet.type === "cash";
   // Review fix (2026-08-18): a credit balance is the amount OWED
-  // (lib/wallets/summary.ts's rule 23, and the "Owed" label just below), and
+  // (lib/wallets/summary.ts's rule 23, and the "Owed" label in the balance
+  // header below — task-5b moved it from a line under the figure to the
+  // header's own small label above it, replacing "Current balance"), and
   // BalanceCorrectionSheet's "what does this wallet actually have?" plus its
   // in/out mapping is written for a HELD balance — on a credit card that
   // question is ambiguous between owed and available credit, and getting the
@@ -146,6 +224,42 @@ export default function WalletDetailScreen() {
   // whether there is a drift to dismiss. Narrowed to the drift itself, because
   // the mutation needs the reporting transaction's id off it.
   const dismissibleDrift = isDriftWorthShowing(drift, toleranceCentavos) ? drift : null;
+
+  // A wallet's provider is DERIVED, never stored (types/domain.ts) — the same
+  // "first matcher, oldest first" resolution app/(tabs)/wallets.tsx already
+  // uses (`listMatchers` orders by `created_at ASC`), scoped here to this one
+  // wallet's own matchers instead of the whole-device set. `null` for a
+  // wallet with no matcher at all (Cash, any manual wallet) and for a matcher
+  // whose package no installed provider claims.
+  const firstMatcherPackage = (matchers ?? [])[0]?.packageName;
+  const providerKey =
+    firstMatcherPackage === undefined
+      ? null
+      : providerKeyForPackage(ruleset?.providers ?? [], firstMatcherPackage);
+  const fill = fillForProvider(providerKey);
+  const fillStyle = fill.kind === "provider" ? { backgroundColor: fill.color } : undefined;
+  const fillClassName = fill.kind === "brand" ? "bg-brand dark:bg-brand-dark" : "";
+  // Tokens for the `bg-brand` fallback (theme-correct — dark mode's brand
+  // green is bright and needs DARK ink); the literal white above for the
+  // provider-colour fill (theme-independent — see FILL_INK_WHITE's own
+  // comment). Never both: exactly one of the two is defined per render.
+  const inkClassName = fill.kind === "brand" ? "text-on-brand dark:text-on-brand-dark" : "";
+  const inkStyle = fill.kind === "provider" ? { color: FILL_INK_WHITE } : undefined;
+
+  // "In this period +₱X / Out −₱Y" (task-5b brief). Reuses
+  // `summarizePeriod`/`periodForScope` — lib/reports/aggregate.ts's own
+  // transfer-exclusion and lib/period.ts's own calendar-month window — rather
+  // than a third copy of either rule; see aggregate.ts's header on why a
+  // second money-in/money-out filter is how a wallet's figure ends up
+  // disagreeing with the Reports tab's. Scoped to THIS wallet's transactions
+  // already (`useTransactions({ walletId })` above), the same list the ledger
+  // below renders.
+  const nowMs = systemClock.now();
+  const periodDates = periodForScope("monthly", toDateIso(new Date(nowMs)));
+  const period = summarizePeriod(transactions ?? [], {
+    from: periodDates.start,
+    to: periodDates.end,
+  });
 
   return (
     // DEVICE-TESTING FIX (2026-08-18, Task 2): the insets used to sit on the
@@ -165,36 +279,113 @@ export default function WalletDetailScreen() {
     >
       <ScrollView className="flex-1">
         <View className="pb-8 pt-4">
+          {/* The name row. The design board puts the wallet's name in a
+              native nav header instead (a back chevron and a pencil beside
+              it) — this screen has never had one (nothing above it clears
+              the status bar; see this file's own header above), and
+              building one is a navigation-layer change well outside this
+              restyle. Kept here, plain, above the colour-filled card below,
+              so it stays readable against the page background regardless of
+              what the card beneath it is filled with. */}
+          <View className="flex-row items-center gap-2 px-4 pb-3">
+            <WalletTypeIcon type={wallet.type} testID="wallet-detail-icon" />
+            <Text className="flex-1 text-lg font-semibold text-fg dark:text-fg-dark">
+              {wallet.name}
+            </Text>
+            {wallet.isArchived ? <Chip label="Archived" tone="soon" /> : null}
+          </View>
+
           <View className="px-4">
-            <Card>
-              <View className="gap-2">
-                <View className="flex-row items-center gap-2">
-                  <WalletTypeIcon type={wallet.type} testID="wallet-detail-icon" />
-                  <Text className="flex-1 text-lg font-semibold text-fg dark:text-fg-dark">
-                    {wallet.name}
-                  </Text>
-                  {wallet.isArchived ? <Chip label="Archived" tone="soon" /> : null}
-                </View>
-                <AmountText
-                  testID="wallet-detail-balance"
-                  amount={wallet.balance}
-                  size="hero"
-                  showSign={false}
-                />
-                {wallet.type === "credit" ? (
-                  // Rule 23: a credit balance is the outstanding amount owed, and
-                  // is excluded from the Wallets-tab total for that reason.
-                  // Saying so here too keeps the detail screen from reading like
-                  // cash.
-                  <Text className="text-sm text-fg-2 dark:text-fg-2-dark">Owed</Text>
-                ) : null}
-                <BalanceMismatchBadge
-                  testID="wallet-detail-drift"
-                  drift={drift}
-                  toleranceCentavos={toleranceCentavos}
-                />
+            {/* Full-bleed, filled with the resolved provider's own colour
+                (or `bg-brand` — see `fillForProvider` above for both the
+                "no provider" and the "contrast fails" cases). NOT the
+                shared `Card` primitive: `Card` hardcodes `bg-surface`, and
+                this fill is a runtime value neither a className nor a
+                `variant` can express. Same outer shape (`rounded-2xl p-4`)
+                so it still reads as a card on the page. */}
+            <View
+              testID="wallet-detail-balance-card"
+              className={`gap-2 rounded-2xl p-4 ${fillClassName}`.trim()}
+              style={fillStyle}
+            >
+              <View className="flex-row items-center justify-between">
+                <Text className={`text-micro font-semibold ${inkClassName}`.trim()} style={inkStyle}>
+                  {/* Rule 23: a credit balance is the outstanding amount
+                      owed, not money held — said here instead of "Current
+                      balance" so the header never reads like cash. */}
+                  {isCredit ? "Owed" : "Current balance"}
+                </Text>
+                {providerKey ? (
+                  // The provider's OWN badge, regardless of whether the card
+                  // above used that provider's colour as its fill or fell
+                  // back to bg-brand on contrast grounds — the badge has its
+                  // own separately-measured ink (constants/providers.ts) and
+                  // reads fine on either background.
+                  <ProviderBadge
+                    testID={`wallet-detail-provider-${providerKey}`}
+                    providerKey={providerKey}
+                    size={28}
+                  />
+                ) : (
+                  // No provider at all: the type icon, never a grey
+                  // "unidentified provider" badge — same rule wallet_card.tsx
+                  // already follows for the identical reason (a badge here
+                  // would claim a company identity this wallet does not
+                  // have). Always the on-brand fill in this branch, since a
+                  // null providerKey always resolves `fillForProvider` to
+                  // "brand".
+                  <WalletTypeIcon
+                    type={wallet.type}
+                    testID="wallet-detail-header-icon"
+                    className="text-on-brand dark:text-on-brand-dark"
+                  />
+                )}
               </View>
-            </Card>
+              {/* `formatCentavos` rendered directly, NOT nested inside
+                  `AmountText` — AmountText sets its own colour unconditionally
+                  with no override prop, so nesting it here would silently
+                  discard this card's white/on-brand ink (the exact bug this
+                  project has shipped twice; see wallet_card.tsx's identical
+                  note). */}
+              <Text
+                testID="wallet-detail-balance"
+                style={{ fontVariant: ["tabular-nums"], ...(inkStyle ?? {}) }}
+                className={`text-hero font-extrabold ${inkClassName}`.trim()}
+              >
+                {formatCentavos(wallet.balance)}
+              </Text>
+              <View testID="wallet-detail-period" className="flex-row gap-4">
+                <Text className={`text-secondary ${inkClassName}`.trim()} style={inkStyle}>
+                  {"In this period "}
+                  <Text testID="wallet-detail-period-in" className="font-bold">
+                    {`+${formatCentavos(period.income)}`}
+                  </Text>
+                </Text>
+                <Text className={`text-secondary ${inkClassName}`.trim()} style={inkStyle}>
+                  {"Out "}
+                  {/* U+2212 MINUS SIGN, matching AmountText's own convention
+                      (components/ui/amount_text.tsx) — digit-width, unlike a
+                      hyphen, so this row does not wobble against every other
+                      signed figure on screen. */}
+                  <Text testID="wallet-detail-period-out" className="font-bold">
+                    {`−${formatCentavos(period.spend)}`}
+                  </Text>
+                </Text>
+              </View>
+            </View>
+          </View>
+
+          {/* The drift badge stays OUTSIDE the colour-filled card and keeps
+              its own tokens (text-fg-2, a warn-tone Chip) — those assume an
+              ordinary page/card surface, and this screen does not own
+              balance_mismatch_badge.tsx to re-theme it for an arbitrary
+              provider fill. */}
+          <View className="px-4 pt-2">
+            <BalanceMismatchBadge
+              testID="wallet-detail-drift"
+              drift={drift}
+              toleranceCentavos={toleranceCentavos}
+            />
           </View>
 
           {/* Rule 4's actions — FOUR now, not three: edit, reconcile
@@ -266,10 +457,15 @@ export default function WalletDetailScreen() {
                 </View>
               ) : null}
               <View className="flex-1">
+                {/* task-5b: "Adjust balance" and "Archive wallet" as
+                    `secondary` buttons — was `ghost`, the one button in this
+                    row that did not already match. Title gains "wallet" to
+                    match the design's own copy; no test pins the old bare
+                    "Archive" text, only this testID. */}
                 <Button
                   testID="wallet-detail-archive"
-                  title="Archive"
-                  variant="ghost"
+                  title="Archive wallet"
+                  variant="secondary"
                   onPress={() => setArchiving(true)}
                 />
               </View>
@@ -316,17 +512,93 @@ export default function WalletDetailScreen() {
 
           {/* Rule 4: cash wallets have empty matchers and the matcher UI is
               hidden for them — money enters by manual entry, transfer legs and
-              reconciliation, never by a notification. */}
-          {!isCash && matchers && matchers.length > 0 ? (
-            <View>
-              <SectionHeader title="Notifications" />
-              <View testID="wallet-detail-matchers" className="px-4">
-                <MatcherChipList matchers={matchers} providers={ruleset?.providers ?? []} />
-              </View>
+              reconciliation, never by a notification. task-5b: this card now
+              shows for EVERY non-cash wallet, not only once it already holds a
+              matcher (the old `matchers.length > 0` gate) — the dashed "+ Add"
+              chip below only makes sense if the card can appear before a
+              wallet has its first one.
+
+              ARCHIVED IS READ-ONLY, THE SAME INVARIANT THE ACTION ROW ABOVE
+              ALREADY KEEPS (this file's own header: "an archived wallet is
+              read-only until it is unarchived"). Unlike that row, this card
+              is not simply hidden: its EXISTING chips stay informationally
+              visible on an archived wallet (unchanged from before this
+              task), because history reading is exactly what archiving is
+              supposed to preserve — only the "Edit" and "+ Add" WRITE
+              affordances disappear, and only an archived wallet with
+              nothing to show and nothing to do renders no card at all. */}
+          {!isCash && (!wallet.isArchived || (matchers && matchers.length > 0)) ? (
+            <View className="px-4 pt-3">
+              <Card>
+                <View className="flex-row items-center justify-between">
+                  <Text className="text-row font-bold text-fg dark:text-fg-dark">
+                    Notification matchers
+                  </Text>
+                  {!wallet.isArchived ? (
+                    <Pressable
+                      testID="wallet-detail-matchers-edit"
+                      onPress={() =>
+                        router.push({ pathname: "/wallet/[id]/edit", params: { id: wallet.id } })
+                      }
+                      accessibilityRole="button"
+                      accessibilityLabel="Edit notification matchers"
+                    >
+                      <Text className="text-secondary font-semibold text-brand dark:text-brand-dark">
+                        Edit
+                      </Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+                <Text className="pt-1 text-secondary text-fg-2 dark:text-fg-2-dark">
+                  Alerts matching these land in this wallet.
+                </Text>
+                <View testID="wallet-detail-matchers" className="flex-row flex-wrap gap-2 pt-3">
+                  {matchers && matchers.length > 0 ? (
+                    <MatcherChipList matchers={matchers} providers={ruleset?.providers ?? []} />
+                  ) : null}
+                  {/* Dashed, unfilled — visually distinct from the solid
+                      `outline` matcher chips beside it, the same way an
+                      "add" affordance reads apart from the things it adds
+                      to everywhere else in this app's forms. Goes to the
+                      same edit screen as "Edit" above: the matcher picker
+                      lives in wallet_form.tsx, reachable only from there. */}
+                  {!wallet.isArchived ? (
+                    <Pressable
+                      testID="wallet-detail-matchers-add"
+                      onPress={() =>
+                        router.push({ pathname: "/wallet/[id]/edit", params: { id: wallet.id } })
+                      }
+                      accessibilityRole="button"
+                      accessibilityLabel="Add a notification matcher"
+                      className="flex-row items-center gap-1 rounded-full border border-dashed border-line px-2.5 py-1 dark:border-line-dark"
+                    >
+                      <Text className="text-micro font-semibold text-fg-2 dark:text-fg-2-dark">
+                        + Add
+                      </Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+              </Card>
             </View>
           ) : null}
 
-          <SectionHeader title="Transactions" />
+          <SectionHeader
+            title="Recent activity"
+            action={
+              (transactions ?? []).length > 0
+                ? {
+                    label: `See all ${(transactions ?? []).length}`,
+                    // The general Transactions tab, not a wallet-filtered
+                    // view — that filter plumbing lives in
+                    // app/(tabs)/transactions.tsx, outside this task's file
+                    // list. Nothing is hidden by this link: the full,
+                    // untruncated wallet ledger is still the list rendered
+                    // immediately below it on this very screen.
+                    onPress: () => router.push("/transactions"),
+                  }
+                : undefined
+            }
+          />
           {/* THE app's ONE ledger list (m1c Task 6). `filtered` stays false: the
               wallet scope is what this screen IS, not a filter the user applied,
               so an empty one is "nothing tracked in this wallet" rather than

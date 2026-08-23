@@ -35,6 +35,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react-nativ
 import type { ReactNode } from "react";
 
 import { KeypadHost } from "@/components/ui/keypad_host";
+import { providerBadge } from "@/constants/providers";
 import { queryKeys } from "@/constants/query_keys";
 import { KeypadProvider } from "@/contexts/keypad_context";
 import { BALANCE_CORRECTION_NOTE } from "@/hooks/mutations/use_correct_wallet_balance";
@@ -56,6 +57,7 @@ let mockParams: { id: string } = { id: "" };
 const mockPush = jest.fn();
 
 const GCASH_PACKAGE = "com.globe.gcash.android";
+const MAYA_PACKAGE = "com.paymaya";
 
 function makeTestClient(): QueryClient {
   const defaults = appQueryClient.getDefaultOptions();
@@ -289,6 +291,212 @@ describe("matcher chips", () => {
     await screen.findByText("Pocket");
 
     expect(screen.queryByTestId("wallet-detail-matchers")).toBeNull();
+  });
+
+  test("the matchers card shows even before the wallet holds a matcher — the dashed Add chip needs it to", async () => {
+    // task-5b: the old gate was `matchers.length > 0`, so a fresh non-cash
+    // wallet's card never existed until AFTER the user had already found some
+    // other way in. Now it is always there for a non-cash, non-archived
+    // wallet, so "+ Add" has somewhere to live before that first matcher.
+    renderDetail(gcash.id);
+    await screen.findByText("GCash");
+
+    expect(screen.getByTestId("wallet-detail-matchers")).toBeTruthy();
+    expect(screen.getByTestId("wallet-detail-matchers-add")).toBeTruthy();
+    expect(screen.getByTestId("wallet-detail-matchers-edit")).toBeTruthy();
+    expect(screen.queryByText(/^Catches:/)).toBeNull();
+  });
+
+  test("an archived wallet keeps its existing chips visible, but loses Edit and + Add", async () => {
+    // "Read-only until unarchived" (this file's own header) — reading its
+    // history includes reading what it used to catch, but writing to it
+    // (reassigning a matcher pair) is exactly the kind of change archiving
+    // is supposed to freeze.
+    await insertMatcher(gcash.id, GCASH_PACKAGE, null);
+    await archiveWallet(gcash.id);
+
+    renderDetail(gcash.id);
+    await screen.findByText("Catches: GCash");
+
+    expect(screen.queryByTestId("wallet-detail-matchers-edit")).toBeNull();
+    expect(screen.queryByTestId("wallet-detail-matchers-add")).toBeNull();
+  });
+
+  test("an archived wallet with no matchers at all renders no matchers card", async () => {
+    await archiveWallet(gcash.id);
+
+    renderDetail(gcash.id);
+    await screen.findByText("GCash");
+
+    // Nothing to read and nothing to do — unlike the active-wallet case just
+    // above, there is no dashed "+ Add" to justify an otherwise-empty card.
+    expect(screen.queryByTestId("wallet-detail-matchers")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The balance header's provider fill (task-5b). `PROVIDER_BADGE` colours
+// (constants/providers.ts) were measured for a single white letter at 14dp;
+// this card is a full surface of white body text, a stricter bar, so the
+// fallback to `bg-brand` is re-verified here against the SAME 4.5:1 floor
+// app/wallet/[id].tsx's own header comment records the measured table for.
+// ---------------------------------------------------------------------------
+
+describe("the balance header's provider fill (task-5b)", () => {
+  test("a high-contrast provider (GCash, 9.85:1) fills the header with its own colour", async () => {
+    await insertMatcher(gcash.id, GCASH_PACKAGE, null);
+
+    renderDetail(gcash.id);
+    await screen.findByText("GCash");
+
+    const card = screen.getByTestId("wallet-detail-balance-card");
+    // The provider's own colour, sourced from the same authority
+    // (constants/providers.ts) the header comment cites — never a duplicated
+    // literal that could drift from it.
+    expect(card.props.style).toEqual({ backgroundColor: providerBadge("gcash").color });
+    expect(String(card.props.className ?? "").split(/\s+/)).not.toContain("bg-brand");
+    expect(screen.getByTestId("wallet-detail-provider-gcash")).toBeTruthy();
+  });
+
+  test("a low-contrast provider (Maya, 2.62:1) falls back to bg-brand, though its OWN badge still shows", async () => {
+    await upsertRuleset({
+      version: 1,
+      providers: [
+        {
+          providerKey: "gcash",
+          packageNames: [GCASH_PACKAGE],
+          version: 1,
+          channel: "push",
+          templates: [],
+        },
+        { providerKey: "maya", packageNames: [MAYA_PACKAGE], version: 1, channel: "push", templates: [] },
+      ],
+      tunables: { balanceDriftToleranceCentavos: DEFAULT_TUNABLES.balanceDriftToleranceCentavos },
+    });
+    const maya = await createWallet({ name: "Maya wallet", type: "e-wallet", openingBalance: 0 });
+    await insertMatcher(maya.id, MAYA_PACKAGE, null);
+
+    renderDetail(maya.id);
+    await screen.findByText("Maya wallet");
+
+    const card = screen.getByTestId("wallet-detail-balance-card");
+    expect(card.props.style).toBeUndefined();
+    const classes = String(card.props.className ?? "").split(/\s+/);
+    expect(classes).toContain("bg-brand");
+    expect(classes).toContain("dark:bg-brand-dark");
+    // The fallback is about the FILL, not about whether a provider was
+    // identified — Maya's own badge (measured separately, for a 14dp letter,
+    // not this card) still renders in the corner.
+    expect(screen.getByTestId("wallet-detail-provider-maya")).toBeTruthy();
+  });
+
+  test("a wallet with no provider at all also falls back to bg-brand, with the type icon instead of a badge", async () => {
+    renderDetail(gcash.id);
+    await screen.findByText("GCash");
+
+    const card = screen.getByTestId("wallet-detail-balance-card");
+    expect(card.props.style).toBeUndefined();
+    expect(String(card.props.className ?? "").split(/\s+/)).toContain("bg-brand");
+    expect(screen.getByTestId("wallet-detail-header-icon")).toBeTruthy();
+    expect(screen.queryByTestId(/^wallet-detail-provider-/)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// "In this period +₱X / Out −₱Y" (task-5b) — reuses lib/reports/aggregate.ts's
+// `summarizePeriod` (transfer-excluded) and lib/period.ts's calendar-month
+// window rather than a third copy of either rule.
+// ---------------------------------------------------------------------------
+
+describe("the period in/out summary (task-5b)", () => {
+  test("shows THIS wallet's money in and out for the current period only", async () => {
+    const other = await createWallet({ name: "BPI", type: "bank", openingBalance: 0 });
+    const now = Date.now();
+    await insertTransaction({
+      walletId: gcash.id,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 25_000,
+      direction: "out",
+      occurredAt: now,
+      merchant: "Jollibee",
+      source: "notification",
+      confidence: 0.9,
+    });
+    await insertTransaction({
+      walletId: gcash.id,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 50_000,
+      direction: "in",
+      occurredAt: now,
+      merchant: "Payout",
+      source: "notification",
+      confidence: 0.9,
+    });
+    // Another wallet's activity must not leak into this wallet's figure.
+    await insertTransaction({
+      walletId: other.id,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 99_900,
+      direction: "out",
+      occurredAt: now,
+      source: "notification",
+      confidence: 0.9,
+    });
+
+    renderDetail(gcash.id);
+    // NOT `findByText("GCash")` — the wallet is NAMED "GCash", and the
+    // ledger row below the header also captions itself with the wallet's
+    // name ("Uncategorized · GCash · ..."), so that query matches twice the
+    // instant a transaction exists in it. The testID this test actually
+    // wants is the more honest wait.
+    await screen.findByTestId("wallet-detail-period-in");
+
+    expect(screen.getByTestId("wallet-detail-period-in")).toHaveTextContent("+₱500.00");
+    expect(screen.getByTestId("wallet-detail-period-out")).toHaveTextContent("−₱250.00");
+  });
+
+  test("a transfer leg is excluded, the same rule the Reports tab uses", async () => {
+    const bpi = await createWallet({ name: "BPI", type: "bank", openingBalance: 0 });
+    const now = Date.now();
+    const leg = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 500_000,
+      direction: "out",
+      occurredAt: now,
+      merchant: "Transfer to BPI",
+      source: "notification",
+      confidence: 0.9,
+    });
+    const inLeg = await insertTransaction({
+      walletId: bpi.id,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 500_000,
+      direction: "in",
+      occurredAt: now,
+      merchant: "Transfer from GCash",
+      source: "notification",
+      confidence: 0.9,
+    });
+    await linkTransfer(leg.id, inLeg.id, 0);
+
+    renderDetail(gcash.id);
+    // Same reason as the test above: a transaction in a wallet named "GCash"
+    // makes `findByText("GCash")` ambiguous once the ledger row renders.
+    await screen.findByTestId("wallet-detail-period-out");
+
+    // The transfer moved ₱5,000.00 out of this wallet, but it is the user's
+    // own money changing wallets, not spending — summarizePeriod excludes it.
+    expect(screen.getByTestId("wallet-detail-period-out")).toHaveTextContent("−₱0.00");
+    expect(screen.getByTestId("wallet-detail-period-in")).toHaveTextContent("+₱0.00");
+  });
+
+  test("has no transactions yet — the figures read zero, not blank or an error", async () => {
+    renderDetail(gcash.id);
+    await screen.findByText("GCash");
+
+    expect(screen.getByTestId("wallet-detail-period-in")).toHaveTextContent("+₱0.00");
+    expect(screen.getByTestId("wallet-detail-period-out")).toHaveTextContent("−₱0.00");
   });
 });
 
