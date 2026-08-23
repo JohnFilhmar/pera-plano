@@ -130,11 +130,12 @@ describe("the More hub", () => {
     expect(screen.getByTestId("plus-badge")).toBeTruthy();
   });
 
-  test("Plus never sees the badge, on any row", () => {
+  test("the Plus-only entry renders the unlocked badge on Plus, not a gate", () => {
     __setTierForTests("plus");
     renderScreen(<MoreScreen />);
 
-    expect(screen.queryByTestId("plus-badge")).toBeNull();
+    expect(screen.getByTestId("plus-badge")).toBeTruthy();
+    expect(screen.queryByTestId("plus-gate")).toBeNull();
   });
 
   test("Settings is a real, ungated screen — pressing it navigates to /more/settings", () => {

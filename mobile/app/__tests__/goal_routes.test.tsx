@@ -264,13 +264,14 @@ test("THE CONTRIBUTION RULE CARRIES THE PLUS BADGE ON FREE", async () => {
   screen.getByText("Move money automatically on payday");
 });
 
-test("the contribution rule is plain on Plus", async () => {
+test("the contribution rule shows the unlocked badge on Plus, not a gate", async () => {
   __setTierForTests("plus");
 
   renderScreen(<NewGoalScreen />);
 
   await screen.findByTestId("goal-rule-amount");
-  expect(screen.queryByTestId("plus-badge")).toBeNull();
+  screen.getByTestId("plus-badge");
+  expect(screen.queryByTestId("plus-gate")).toBeNull();
 });
 
 test("a contribution amount is saved as a fixed rule", async () => {

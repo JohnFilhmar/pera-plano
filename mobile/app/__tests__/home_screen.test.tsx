@@ -385,7 +385,7 @@ test("FREE SEES THE CURVE AS AN INERT PREVIEW BEHIND A PLUS BADGE", async () => 
   screen.getByTestId("plus-badge");
 });
 
-test("PLUS SEES THE CURVE WITH NO BADGE AND NO GATE", async () => {
+test("PLUS SEES THE CURVE WITH THE UNLOCKED BADGE, NOT A GATE", async () => {
   __setTierForTests("plus");
   await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
   await spend(620_000);
@@ -393,7 +393,7 @@ test("PLUS SEES THE CURVE WITH NO BADGE AND NO GATE", async () => {
   renderScreen(<HomeScreen />);
 
   await screen.findByTestId("projection-sparkline", {}, { timeout: 30_000 });
-  expect(screen.queryByTestId("plus-badge")).toBeNull();
+  screen.getByTestId("plus-badge");
   expect(screen.queryByTestId("plus-gate")).toBeNull();
 });
 

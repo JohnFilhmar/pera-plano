@@ -42,12 +42,13 @@ test("free tier renders the button with the Plus badge and does not export on pr
   expect(onExported).not.toHaveBeenCalled();
 });
 
-test("plus tier renders the button with no badge", () => {
+test("plus tier renders the button with the unlocked badge, not a gate", () => {
   __setTierForTests("plus");
 
   render(<ExportButton range={RANGE} today={TODAY} />);
 
-  expect(screen.queryByTestId("plus-badge")).toBeNull();
+  screen.getByTestId("plus-badge");
+  expect(screen.queryByTestId("plus-gate")).toBeNull();
   screen.getByTestId("export-csv-button");
 });
 

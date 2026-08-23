@@ -36,12 +36,16 @@ test("FREE SEES A PREVIEW, NOT AN EMPTY SCREEN", () => {
   screen.getByTestId("schedule-row-12");
 });
 
-test("PLUS SEES THE FULL TABLE WITH NO BADGE", () => {
+test("PLUS SEES THE FULL TABLE WITH THE UNLOCKED BADGE, NOT A GATE", () => {
   __setTierForTests("plus");
 
   render(<ScheduleTable rows={AMORTIZED} totalPaid={0} testID="schedule" />);
 
-  expect(screen.queryByTestId("plus-badge")).toBeNull();
+  // Unlocked: the informational badge shows, but there is no `plus-gate`
+  // Pressable — that testID only exists on the free-tier, press-intercepting
+  // path, so its absence here is the direct check that Plus is not gated.
+  screen.getByTestId("plus-badge");
+  expect(screen.queryByTestId("plus-gate")).toBeNull();
   screen.getByTestId("schedule-row-1");
   // Twelve installments, and the first one's payment is the worked vector.
   screen.getByTestId("schedule-row-12");

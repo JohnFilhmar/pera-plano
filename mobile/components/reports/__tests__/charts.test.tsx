@@ -260,7 +260,11 @@ test("THE RANGE PICKER OFFERS CUSTOM ON PLUS", () => {
     />,
   );
 
-  expect(screen.queryByTestId("plus-badge")).toBeNull();
+  // Unlocked, not gated: the informational badge shows, but nothing
+  // intercepts the press the way the free-tier `plus-gate` Pressable does —
+  // proven for real below, when the custom-range flow actually completes.
+  screen.getByTestId("plus-badge");
+  expect(screen.queryByTestId("plus-gate")).toBeNull();
   screen.getByTestId("range-picker-months");
 
   fireEvent.press(screen.getByTestId("range-picker-custom-toggle"));

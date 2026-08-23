@@ -127,14 +127,19 @@ test("FREE TIER SEES EXACTLY ONE PLUS BADGE ON THE EXPORT BUTTON, NOT TWO", asyn
   expect(exportSection.getAllByTestId("plus-badge")).toHaveLength(1);
 });
 
-test("PLUS TIER SEES THE EXPORT BUTTON WITH NO PLUS BADGE", async () => {
+test("PLUS TIER SEES THE EXPORT BUTTON WITH THE UNLOCKED BADGE, NOT A GATE", async () => {
   __setTierForTests("plus");
   renderScreen(<ReportsScreen />);
 
   await screen.findByTestId("reports-empty", {}, { timeout: 30_000 });
   const exportSection = within(screen.getByTestId("reports-export"));
   exportSection.getByTestId("export-csv-button");
-  expect(exportSection.queryByTestId("plus-badge")).toBeNull();
+  // Scoped to `reports-export` for the same reason as the free-tier count
+  // above: RangePicker carries its own independent `plus-badge`/`plus-gate`
+  // for the custom-range row, and this assertion is about ExportButton's own
+  // gate only.
+  exportSection.getByTestId("plus-badge");
+  expect(exportSection.queryByTestId("plus-gate")).toBeNull();
 });
 
 // ---------------------------------------------------------------------------
