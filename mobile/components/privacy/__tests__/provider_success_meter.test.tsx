@@ -69,6 +69,13 @@ test("renders no per-row control claiming to report or send a provider's counts"
 
   render(<ProviderSuccessMeter stats={stats} />);
 
+  // Anchor the negatives on something positive first. Two `queryBy…toBeNull`
+  // assertions alone also pass against a component that renders NOTHING —
+  // this test stayed green with the body forced to `return null` — so
+  // without this line the guard cannot tell "the report control is gone"
+  // from "the whole meter is gone".
+  screen.getByTestId("provider-success-gcash");
+
   expect(screen.queryByText("Report this")).toBeNull();
   expect(JSON.stringify(screen.toJSON())).not.toMatch(/-report"/);
 });
