@@ -3,7 +3,10 @@
 // centre, Listener health, Parser diagnostics and About-and-tier rows added
 // by M3b Task 5; Reports, Privacy centre, Listener health and Parser
 // diagnostics all wired to their now-built screens by M3b Task 8, which also
-// flipped the last five `SHIPPED_FEATURES` keys).
+// flipped the last five `SHIPPED_FEATURES` keys). Restyled by the mobile UI
+// revamp Part 3 Task 1: a `ProfileCard` up top, then three `SectionHeader`
+// groups of `ListRow`s, replacing the flat stack of Card-wrapped Pressables
+// this file used to render.
 //
 // Converted from the M1 placeholder at app/(tabs)/more.tsx, the same move
 // plan/index.tsx made for its own sub-screens: expo-router treats `more.tsx`
@@ -17,9 +20,9 @@
 // Reports, Privacy centre, Listener health and Parser diagnostics are all
 // `SoonGate` rows that navigate for real now that every key ships;
 // Subscriptions is `PlusGate` (tier paywall) instead; Settings is ungated and
-// navigates for real; About-and-tier is not a gate or a navigating row at all
-// — it is a static line. Four distinct row behaviours through one field is
-// more machinery than seven rows need.
+// navigates for real; About is not a gate or a navigating row at all — it is
+// a static line. Three distinct row behaviours through one field is more
+// machinery than seven rows need.
 //
 // `SoonGate` STAYS WRAPPED on all four rows below even though every feature
 // key it names is now "shipped" — the same call m2c Task 6 made on the Plan
@@ -30,16 +33,80 @@
 // goes; with nothing soon it no longer blocks anything, which is exactly why
 // every row below is asserted to actually navigate, not just "no Soon chip
 // renders" (app/__tests__/more_tab.test.tsx, app/__tests__/more_hub.test.tsx).
+//
+// EACH GATED/NAVIGATING ROW IS A MANUALLY-WRAPPED `Pressable` AROUND A
+// `ListRow` THAT HAS NO `onPress` OF ITS OWN — the same split
+// components/transactions/transaction_row.tsx already uses, and for the same
+// reason: `ListRow`'s own `onPress` branch derives `accessibilityLabel` from
+// `title` + `subtitle` ("${title}, ${subtitle}"), which is NOT the plain
+// "Reports" / "Subscriptions" / … label this hub has always announced, and
+// which app/__tests__/more_tab.test.tsx and more_hub.test.tsx keep pressing
+// by testID. Keeping testID and accessibilityLabel on an outer Pressable —
+// with the gate (`SoonGate`/`PlusGate`) wrapped around that same outer
+// Pressable, exactly where both already sat — leaves both unchanged while the
+// row's insides become a `ListRow`.
+//
+// ABOUT GETS NO CHEVRON. Read generically, "every row becomes title +
+// subtitle + left icon + right ChevronRight" would cover About too, but About
+// has never been a Pressable — no onPress, no accessibilityRole — because it
+// does not navigate anywhere (see "not a gate or a navigating row" above,
+// unchanged by this restyle). A chevron on a row that does nothing when
+// pressed promises a tap that goes nowhere, so this row keeps its icon (for
+// the same left-aligned rhythm as every other row in the "App" group) but
+// drops the chevron and the Pressable both.
+//
+// "SHARED BUDGETS" IS NOT IN THIS FILE. This task's brief lists the Insights
+// group as "Reports, Subscriptions, Shared budgets" — but nothing named
+// `shared budgets` exists anywhere in this codebase (no route, no
+// `FeatureKey`, no screen), and the task instructions that accompanied that
+// brief list Insights as Reports and Subscriptions only. Treated as a stale
+// brief claim rather than a row invented for a destination that does not
+// exist.
 import { useRouter } from "expo-router";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import {
+  Activity,
+  BarChart3,
+  ChevronRight,
+  Info,
+  Repeat,
+  Settings as SettingsIcon,
+  ShieldCheck,
+  Wrench,
+} from "lucide-react-native";
+import { Pressable, ScrollView, View } from "react-native";
 
 import { PlusGate } from "@/components/gates/plus_gate";
 import { SoonGate } from "@/components/gates/soon_gate";
-import { Card } from "@/components/ui/card";
+import { ProfileCard } from "@/components/more/profile_card";
+import { registerIcon, type IconComponent } from "@/components/ui/button";
+import { ListRow } from "@/components/ui/list_row";
+import { SectionHeader } from "@/components/ui/section_header";
 import { getTier } from "@/lib/entitlements";
 
 /** Mirrors app.json's `expo.version`. No installed screen reads it dynamically. */
 const APP_VERSION = "0.1.0";
+
+const ReportsGlyph = registerIcon(BarChart3);
+const SubscriptionsGlyph = registerIcon(Repeat);
+const SettingsGlyph = registerIcon(SettingsIcon);
+const ListenerGlyph = registerIcon(Activity);
+const ParserGlyph = registerIcon(Wrench);
+const PrivacyGlyph = registerIcon(ShieldCheck);
+const AboutGlyph = registerIcon(Info);
+const ChevronGlyph = registerIcon(ChevronRight);
+
+/** The 32dp glyph-in-a-disc every row's `left` slot uses (contract §2 tokens only). */
+function RowIconDisc({ icon: Icon }: { icon: IconComponent }) {
+  return (
+    <View className="h-8 w-8 items-center justify-center rounded-full bg-chip dark:bg-chip-dark">
+      <Icon size={18} className="text-fg-2 dark:text-fg-2-dark" />
+    </View>
+  );
+}
+
+function RowChevron() {
+  return <ChevronGlyph size={18} className="text-fg-2 dark:text-fg-2-dark" />;
+}
 
 export default function MoreScreen() {
   const router = useRouter();
@@ -48,8 +115,12 @@ export default function MoreScreen() {
     <ScrollView
       testID="more-hub"
       className="flex-1 bg-bg dark:bg-bg-dark"
-      contentContainerClassName="gap-3 p-4"
+      contentContainerClassName="gap-1 p-4"
     >
+      <ProfileCard testID="more-profile" />
+
+      <SectionHeader title="Insights" />
+
       {/* `reports` is "shipped" as of m3b Task 8 — SoonGate now renders
           `children` verbatim, with no wrapper and no chip, so this row is
           fully interactive. The gate itself is left in place rather than
@@ -61,12 +132,12 @@ export default function MoreScreen() {
           accessibilityRole="button"
           accessibilityLabel="Reports"
         >
-          <Card>
-            <Text className="text-lg font-semibold text-fg dark:text-fg-dark">Reports</Text>
-            <Text className="mt-1 text-fg-2 dark:text-fg-2-dark">
-              Spending by category, top merchants, and the trend behind them.
-            </Text>
-          </Card>
+          <ListRow
+            title="Reports"
+            subtitle="Spending by category, top merchants, and the trend behind them."
+            left={<RowIconDisc icon={ReportsGlyph} />}
+            right={<RowChevron />}
+          />
         </Pressable>
       </SoonGate>
 
@@ -82,51 +153,16 @@ export default function MoreScreen() {
           accessibilityRole="button"
           accessibilityLabel="Subscriptions"
         >
-          <Card>
-            <Text className="text-lg font-semibold text-fg dark:text-fg-dark">Subscriptions</Text>
-            <Text className="mt-1 text-fg-2 dark:text-fg-2-dark">
-              We flag recurring charges and total what's locked in every month.
-            </Text>
-          </Card>
+          <ListRow
+            title="Subscriptions"
+            subtitle="We flag recurring charges and total what's locked in every month."
+            left={<RowIconDisc icon={SubscriptionsGlyph} />}
+            right={<RowChevron />}
+          />
         </Pressable>
       </PlusGate>
 
-      {/* Settings is a real, shipped screen (app/(tabs)/more/settings.tsx) —
-          no gate, and a real `push` since the route exists. */}
-      <Pressable
-        testID="more-settings"
-        onPress={() => router.push("/more/settings")}
-        accessibilityRole="button"
-        accessibilityLabel="Settings"
-      >
-        <Card>
-          <Text className="text-lg font-semibold text-fg dark:text-fg-dark">Settings</Text>
-          <Text className="mt-1 text-fg-2 dark:text-fg-2-dark">
-            Appearance, alerts, and what leaves this device.
-          </Text>
-        </Card>
-      </Pressable>
-
-      {/* `privacy_center` is "shipped" as of m3b Task 8, and its screen
-          (app/(tabs)/more/privacy.tsx) now exists — same real `push` as
-          Settings and Reports above. */}
-      <SoonGate feature="privacy_center">
-        <Pressable
-          testID="more-privacy-center"
-          onPress={() => router.push("/more/privacy")}
-          accessibilityRole="button"
-          accessibilityLabel="Privacy centre"
-        >
-          <Card>
-            <Text className="text-lg font-semibold text-fg dark:text-fg-dark">
-              Privacy centre
-            </Text>
-            <Text className="mt-1 text-fg-2 dark:text-fg-2-dark">
-              Export everything, wipe everything, and see exactly what's tracked.
-            </Text>
-          </Card>
-        </Pressable>
-      </SoonGate>
+      <SectionHeader title="Tracking" />
 
       {/* `listener_health` is "shipped" as of m3b Task 8, and its screen
           (app/(tabs)/more/listener_health.tsx) now exists. */}
@@ -137,14 +173,12 @@ export default function MoreScreen() {
           accessibilityRole="button"
           accessibilityLabel="Listener health"
         >
-          <Card>
-            <Text className="text-lg font-semibold text-fg dark:text-fg-dark">
-              Listener health
-            </Text>
-            <Text className="mt-1 text-fg-2 dark:text-fg-2-dark">
-              Whether tracking is actually connected right now, and since when.
-            </Text>
-          </Card>
+          <ListRow
+            title="Listener health"
+            subtitle="Whether tracking is actually connected right now, and since when."
+            left={<RowIconDisc icon={ListenerGlyph} />}
+            right={<RowChevron />}
+          />
         </Pressable>
       </SoonGate>
 
@@ -157,27 +191,62 @@ export default function MoreScreen() {
           accessibilityRole="button"
           accessibilityLabel="Parser diagnostics"
         >
-          <Card>
-            <Text className="text-lg font-semibold text-fg dark:text-fg-dark">
-              Parser diagnostics
-            </Text>
-            <Text className="mt-1 text-fg-2 dark:text-fg-2-dark">
-              What's parsing per provider, and what's landing in the unknown bin.
-            </Text>
-          </Card>
+          <ListRow
+            title="Parser diagnostics"
+            subtitle="What's parsing per provider, and what's landing in the unknown bin."
+            left={<RowIconDisc icon={ParserGlyph} />}
+            right={<RowChevron />}
+          />
         </Pressable>
       </SoonGate>
 
-      {/* Static — no gate, no navigation. Not a feature; just what build and
-          tier the user is on. */}
-      <Card testID="more-about">
-        <Text className="text-lg font-semibold text-fg dark:text-fg-dark">About</Text>
-        <Text className="mt-1 text-fg-2 dark:text-fg-2-dark">
-          PeraPlano v{APP_VERSION} · {getTier() === "plus" ? "Plus" : "Free"} tier
-        </Text>
-      </Card>
+      {/* `privacy_center` is "shipped" as of m3b Task 8, and its screen
+          (app/(tabs)/more/privacy.tsx) now exists — same real `push` as
+          Settings and Reports above. */}
+      <SoonGate feature="privacy_center">
+        <Pressable
+          testID="more-privacy-center"
+          onPress={() => router.push("/more/privacy")}
+          accessibilityRole="button"
+          accessibilityLabel="Privacy centre"
+        >
+          <ListRow
+            title="Privacy centre"
+            subtitle="Export everything, wipe everything, and see exactly what's tracked."
+            left={<RowIconDisc icon={PrivacyGlyph} />}
+            right={<RowChevron />}
+          />
+        </Pressable>
+      </SoonGate>
 
-      {/* Spacer so the last card clears the tab bar on short devices. */}
+      <SectionHeader title="App" />
+
+      {/* Settings is a real, shipped screen (app/(tabs)/more/settings.tsx) —
+          no gate, and a real `push` since the route exists. */}
+      <Pressable
+        testID="more-settings"
+        onPress={() => router.push("/more/settings")}
+        accessibilityRole="button"
+        accessibilityLabel="Settings"
+      >
+        <ListRow
+          title="Settings"
+          subtitle="Appearance, alerts, and what leaves this device."
+          left={<RowIconDisc icon={SettingsGlyph} />}
+          right={<RowChevron />}
+        />
+      </Pressable>
+
+      {/* Static — no gate, no navigation, no chevron (see this file's header
+          comment). Not a feature; just what build and tier the user is on. */}
+      <ListRow
+        testID="more-about"
+        title="About"
+        subtitle={`PeraPlano v${APP_VERSION} · ${getTier() === "plus" ? "Plus" : "Free"} tier`}
+        left={<RowIconDisc icon={AboutGlyph} />}
+      />
+
+      {/* Spacer so the last row clears the tab bar on short devices. */}
       <View className="h-4" />
     </ScrollView>
   );
