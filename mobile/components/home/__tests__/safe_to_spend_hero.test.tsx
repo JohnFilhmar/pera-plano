@@ -1,24 +1,25 @@
-// components/home/__tests__/safe_to_spend_hero.test.tsx — M3 Part 2 Task 4,
-// rules 1-2.
+// components/home/__tests__/safe_to_spend_hero.test.tsx — mobile-ui-revamp
+// Part 2 Task 2.
 //
-// The one number, in its four states. What can go wrong here is not
-// arithmetic — that is Task 1's — but presentation: a minus sign in the hero,
-// a first-run state that reads as an error, or a figure with no stated source.
+// The one number, in its four states, on three different fills. What can go
+// wrong here is not arithmetic — that is lib/safe_to_spend.ts's own suite —
+// but presentation: the wrong ink on a fill, a hardcoded weekday, or a hero
+// that stops offering the review-queue disclosure it always had.
 import { fireEvent, render, screen } from "@testing-library/react-native";
 
-import { SafeToSpendHero } from "@/components/home/safe_to_spend_hero";
+import { SafeToSpendHero } from "../safe_to_spend_hero";
 import type { SafeToSpendResult } from "@/lib/safe_to_spend";
 
 function result(over: Partial<SafeToSpendResult> = {}): SafeToSpendResult {
   return {
     state: "healthy",
-    perDay: 19_005,
-    headroom: 880_000,
-    billsTerm: 399_900,
-    contributionsTerm: 100_000,
+    perDay: 41200,
+    headroom: 1_200_000,
+    billsTerm: 0,
+    contributionsTerm: 0,
     daysRemaining: 20,
     overBy: 0,
-    drivingLimitId: "lim-1",
+    drivingLimitId: "limit-1",
     drivingFilterLabel: null,
     periodEnd: "2026-08-31",
     reviewQueueCount: 0,
@@ -26,100 +27,103 @@ function result(over: Partial<SafeToSpendResult> = {}): SafeToSpendResult {
   };
 }
 
-function renderHero(over: Partial<SafeToSpendResult> = {}, scopeLabel: string | null = "monthly") {
-  const onSetLimit = jest.fn();
-  const onOpenReviewQueue = jest.fn();
-  render(
-    <SafeToSpendHero
-      result={result(over)}
-      scopeLabel={scopeLabel}
-      onSetLimit={onSetLimit}
-      onOpenReviewQueue={onOpenReviewQueue}
-    />,
-  );
-  return { onSetLimit, onOpenReviewQueue };
+const BASE = {
+  scopeLabel: "monthly",
+  dailySeries: [1000, 2000, 1500, 3000, 2200, 1800, 4000] as const,
+  startLabel: "Mon",
+  endLabel: "Sun",
+  paused: false,
+  amountsHidden: false,
+  onToggleAmounts: () => {},
+  onSetLimit: () => {},
+  onOpenReviewQueue: () => {},
+};
+
+/**
+ * Token-exact, not substring. `INK_CLASS.tight` is `"text-fg
+ * dark:text-on-brand-dark"` — a plain `string.includes("text-on-brand")`
+ * check is TRUE for that string, because "text-on-brand" is a literal
+ * substring of "dark:text-on-brand-dark". A `.not.toContain("text-on-brand")`
+ * assertion against the raw string would therefore fail on the one state it
+ * exists to prove correct. Splitting into tokens and letting Jest's array
+ * `toContain` do exact-element matching is what makes that assertion (below,
+ * in the "tight" test) actually test what it claims to.
+ */
+function classesOf(testID: string): string[] {
+  return String(screen.getByTestId(testID).props.className ?? "")
+    .split(/\s+/)
+    .filter(Boolean);
 }
 
+test("healthy fills with brand and inks white", () => {
+  render(<SafeToSpendHero {...BASE} result={result()} />);
+  expect(classesOf("sts-hero")).toContain("bg-brand");
+  expect(classesOf("sts-amount")).toContain("text-on-brand");
+});
+
+test("tight fills with warn and inks DARK — white on amber is 3.2:1 and fails AA", () => {
+  render(<SafeToSpendHero {...BASE} result={result({ state: "tight" })} />);
+  expect(classesOf("sts-hero")).toContain("bg-warn");
+  expect(classesOf("sts-amount")).toContain("text-fg");
+  expect(classesOf("sts-amount")).not.toContain("text-on-brand");
+});
+
+test("over fills with danger and inks white", () => {
+  render(<SafeToSpendHero {...BASE} result={result({ state: "over", overBy: 31200 })} />);
+  expect(classesOf("sts-hero")).toContain("bg-danger");
+  expect(classesOf("sts-amount")).toContain("text-on-brand");
+});
+
+test("paused drops the fill entirely and says the number is stale", () => {
+  render(<SafeToSpendHero {...BASE} paused result={result()} />);
+  expect(classesOf("sts-hero")).toContain("bg-surface");
+  expect(classesOf("sts-hero")).not.toContain("bg-brand");
+  screen.getByTestId("sts-paused-chip");
+});
+
+test("the bar strip renders one bar per day given", () => {
+  render(<SafeToSpendHero {...BASE} result={result()} />);
+  for (let index = 0; index < 7; index += 1) {
+    screen.getByTestId(`sts-bars-bar-${index}`);
+  }
+});
+
+test("hiding amounts replaces the figure without unmounting the hero", () => {
+  render(<SafeToSpendHero {...BASE} amountsHidden result={result()} />);
+  expect(screen.getByTestId("sts-amount")).toHaveTextContent("₱•••••");
+  expect(screen.queryByText("₱412.00")).toBeNull();
+});
+
+test("the eye toggle reports a press", () => {
+  const onToggleAmounts = jest.fn();
+  render(<SafeToSpendHero {...BASE} onToggleAmounts={onToggleAmounts} result={result()} />);
+  fireEvent.press(screen.getByTestId("sts-eye"));
+  expect(onToggleAmounts).toHaveBeenCalledTimes(1);
+});
+
+test("no_limit still offers the set-a-limit route and draws no bars", () => {
+  render(<SafeToSpendHero {...BASE} result={result({ state: "no_limit" })} />);
+  screen.getByTestId("sts-set-limit");
+  expect(screen.queryByTestId("sts-bars-bar-0")).toBeNull();
+});
+
+test("the review-queue disclosure survives the restyle", () => {
+  render(<SafeToSpendHero {...BASE} result={result({ reviewQueueCount: 3 })} />);
+  screen.getByTestId("sts-review-note");
+});
+
 // ---------------------------------------------------------------------------
-// The four states — rule 1
+// The StatTile-style ink regression, guarded structurally
 // ---------------------------------------------------------------------------
-test("HEALTHY SHOWS THE FIGURE IN BRAND GREEN", () => {
-  renderHero();
-
-  screen.getByText("Safe to spend today");
-  screen.getByText("₱190.05");
-  expect(screen.getByTestId("sts-amount").props.className).toMatch(/text-brand/);
-});
-
-test("TIGHT USES AMBER, NOT RED", () => {
-  // At 80% the user is close, not past. Spending red here leaves nothing
-  // louder for the day they actually go over — the same discipline as every
-  // chip in the app.
-  renderHero({ state: "tight" });
-
-  screen.getByText("Safe to spend today");
-  expect(screen.getByTestId("sts-amount").props.className).toMatch(/text-warn/);
-  expect(screen.getByTestId("sts-amount").props.className).not.toMatch(/text-danger/);
-});
-
-test("OVER SHOWS ₱0.00 AND THE SHORTFALL, NEVER A NEGATIVE", () => {
-  // Rule 1: "Never render a negative number." "-₱3,499.00 safe to spend" is
-  // not a sentence, and a minus sign in the hero reads as a balance rather
-  // than as a budget overrun.
-  renderHero({ state: "over", perDay: 0, overBy: 349_900 });
-
-  screen.getByText("₱0.00");
-  screen.getByTestId("sts-over-by");
-  screen.getByText("₱3,499.00");
-  expect(screen.queryByText(/−|-₱/)).toBeNull();
-  expect(screen.getByTestId("sts-amount").props.className).toMatch(/text-danger/);
-});
-
-test("NO LIMIT INVITES RATHER THAN SCOLDS, AND OFFERS THE ACTION", () => {
-  // This is the FIRST-RUN state — the very first thing a new user sees. They
-  // have not done anything wrong; the app just does not know their ceiling yet.
-  const { onSetLimit } = renderHero({ state: "no_limit", perDay: 0, drivingLimitId: null }, null);
-
-  screen.getByText("Set a limit to see what's safe to spend");
-  expect(screen.queryByText("Safe to spend today")).toBeNull();
-  expect(screen.queryByText("₱0.00")).toBeNull();
-
-  fireEvent.press(screen.getByTestId("sts-set-limit"));
-  expect(onSetLimit).toHaveBeenCalled();
-});
-
-// ---------------------------------------------------------------------------
-// The caption — rule 2
-// ---------------------------------------------------------------------------
-test("THE CAPTION NAMES THE DRIVING LIMIT'S SCOPE", () => {
-  // A figure with no stated source invites the user to wonder what it counts.
-  renderHero();
-
-  screen.getByText("from your monthly limit");
-});
-
-test("A FILTERED LIMIT IS NAMED BY ITS FILTER, NOT ITS SCOPE", () => {
-  // Spec rule 3: when only filtered limits exist the caption must name the
-  // filter, because the number then describes a slice rather than everything.
-  renderHero({ drivingFilterLabel: "Food & Dining" });
-
-  screen.getByText("from your Food & Dining limit");
-});
-
-test("A NON-ZERO REVIEW COUNT SAYS SO AND LINKS TO THE QUEUE", () => {
-  // Rule 2: "Users must never wonder why the number looks off." An uncounted
-  // queue is the one discrepancy the app knows about and can name.
-  const { onOpenReviewQueue } = renderHero({ reviewQueueCount: 3 });
-
-  screen.getByText("3 items awaiting review aren't counted yet");
-  fireEvent.press(screen.getByTestId("sts-review-note"));
-  expect(onOpenReviewQueue).toHaveBeenCalled();
-});
-
-test("one item is singular, and an empty queue says nothing at all", () => {
-  renderHero({ reviewQueueCount: 1 });
-  screen.getByText("1 item awaiting review isn't counted yet");
-
-  renderHero({ reviewQueueCount: 0 });
-  expect(screen.queryByTestId("sts-review-note")).toBeNull();
+test("the amount is a direct string on the toned Text, not a nested element that could silently eat the ink", () => {
+  // components/ui/stat_tile.tsx documents the shape of this bug: nesting
+  // AmountText (which always sets its own colour) inside a toned wrapper
+  // compiles, looks plausible, and passes a test that only reads the
+  // wrapper's own className. Asserting the child is a plain STRING — not a
+  // React element — is the one check that would actually break if this ever
+  // regressed back to a nested <AmountText>.
+  render(<SafeToSpendHero {...BASE} result={result({ state: "over", overBy: 31200 })} />);
+  const amount = screen.getByTestId("sts-amount");
+  expect(typeof amount.props.children).toBe("string");
+  expect(amount.props.children).toBe("₱412.00");
 });

@@ -144,6 +144,43 @@ test("A LIMIT AND SOME SPEND PRODUCE A REAL NUMBER AND ITS CAPTION", async () =>
 });
 
 // ---------------------------------------------------------------------------
+// The header, tiles and FAB — mobile-ui-revamp Part 2 Task 3
+// ---------------------------------------------------------------------------
+test("Home greets the beta user and names the period", async () => {
+  renderScreen(<HomeScreen />);
+
+  await screen.findByText("Kumusta, Beta User");
+});
+
+test("Home shows the three stat tiles", async () => {
+  renderScreen(<HomeScreen />);
+
+  await screen.findByTestId("home-stat-balance");
+  screen.getByTestId("home-stat-spent");
+  screen.getByTestId("home-stat-saved");
+});
+
+test("Home has a floating add button that opens manual entry", async () => {
+  renderScreen(<HomeScreen />);
+  await screen.findByTestId("home-add");
+
+  fireEvent.press(screen.getByTestId("home-add"));
+  expect(mockPush).toHaveBeenCalledWith("/transaction/new");
+});
+
+test("the weekday labels end on today, not on a hardcoded Sunday", async () => {
+  // The bar strip only draws once the hero leaves its no_limit branch — a
+  // fresh app draws no bars at all, and no labels with them — so this needs a
+  // real limit to reach the labelled strip in the first place.
+  await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
+
+  renderScreen(<HomeScreen />);
+
+  const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  await screen.findByText(weekdays[new Date().getDay()]);
+});
+
+// ---------------------------------------------------------------------------
 // Ship gate — M3 Part 2 Task 7 rule 1
 // ---------------------------------------------------------------------------
 test("SAFE-TO-SPEND AND RECURRING ARE SHIPPED, AND NEITHER SURFACE SITS BEHIND A SOON CHIP", async () => {
@@ -395,16 +432,23 @@ test("A LEDGER COMMIT MOVES THE NUMBER WITHOUT A MANUAL PULL", async () => {
 
   renderScreen(<HomeScreen />);
   await screen.findByText("Safe to spend today");
-  const before = screen.getByTestId("sts-amount");
-  expect(before).toBeTruthy();
+  const beforeAmount = screen.getByTestId("sts-amount").props.children;
+  expect(beforeAmount).toBeTruthy();
 
   const tx = await spend(500_000, systemClock.now() - 60_000);
   await emitAppEvent("ledger:committed", { transactionId: tx.id });
 
-  // The figure must fall: half the limit just went out the door.
+  // The figure must fall: half the limit just went out the door. Scoped to
+  // `sts-amount` itself, not a screen-wide text search — mobile-ui-revamp
+  // Part 2 Task 3 put two more money figures on this screen (the Balance and
+  // Saved stat tiles), and this fixture never creates a goal, so "Saved"
+  // legitimately reads a permanent ₱0.00 regardless of the ledger commit. A
+  // bare `queryByText("₱0.00")` would be asserting something about a tile
+  // this test never touches, rather than about the hero this test is for.
   await waitFor(
     () => {
-      expect(screen.queryByText("₱0.00")).toBeNull();
+      expect(screen.getByTestId("sts-amount").props.children).not.toBe(beforeAmount);
+      expect(screen.getByTestId("sts-amount")).not.toHaveTextContent("₱0.00");
       screen.getByText("Safe to spend today");
     },
     { timeout: 30_000 },
