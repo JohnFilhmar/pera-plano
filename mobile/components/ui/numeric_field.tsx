@@ -59,10 +59,12 @@ export type NumericFieldProps = {
    * prominent thing on the screen and did nothing when pressed, while the
    * live control sat below it, smaller, with no visible caption.
    *
-   * DEFAULTS TO `"md"` — the field this always was — so every one of this
-   * component's other seventeen call sites (bills, goals, limits, loans,
-   * `correct_sheet.tsx`, wallets, onboarding...) renders byte-for-byte what
-   * it always has; only `manual_entry_form.tsx` opts in. SIZING ONLY: the
+   * DEFAULTS TO `"md"` — the field this always was. Every call site that
+   * does not pass `size` (bills, goals, limits, loans, `correct_sheet.tsx`,
+   * wallets, onboarding...) gets that default and renders byte-for-byte
+   * what it always has; only `manual_entry_form.tsx` opts into `"hero"`.
+   * Deliberately not a count here — a call-site total is exactly the kind of
+   * number a fifteenth caller quietly invalidates. SIZING ONLY: the
    * Pressable-not-TextInput mechanism `no_numeric_keyboard.test.ts` guards,
    * and every prop and testID `numeric_field.test.tsx` pins, are identical
    * at both sizes — nothing here touches the keypad's own files.
