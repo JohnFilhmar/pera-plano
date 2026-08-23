@@ -141,6 +141,29 @@ describe("paydaySummaryAlertCopy", () => {
     expect(copy.locked.body).not.toContain("₱");
     expect(copy.unlocked.body).toContain("₱");
   });
+
+  it("names the event, withholding the amount locked and showing it unlocked", () => {
+    const copy = paydaySummaryAlertCopy({ amount: 3500000 });
+
+    expect(copy.locked.title).toBe("Payday landed");
+    expect(copy.unlocked.title).toBe("Payday landed");
+    expect(copy.locked.body).toBe("Your summary is ready — tap to decide where it goes.");
+    expect(copy.unlocked.body).toBe("You received ₱35,000 — tap to decide where it goes.");
+  });
+
+  it("never says 'kinsenas' — this function is not told the cadence, and the app's own generated sentences avoid the word regardless of cadence (income_summary_card.tsx's incomeSentence)", () => {
+    const copy = paydaySummaryAlertCopy({ amount: 3500000 });
+
+    expect(copy.locked.title.toLowerCase()).not.toContain("kinsenas");
+    expect(copy.unlocked.title.toLowerCase()).not.toContain("kinsenas");
+  });
+
+  it("does not end on a question — there are no notification action buttons anywhere in the app to answer one", () => {
+    const copy = paydaySummaryAlertCopy({ amount: 3500000 });
+
+    expect(copy.locked.body.trim().endsWith("?")).toBe(false);
+    expect(copy.unlocked.body.trim().endsWith("?")).toBe(false);
+  });
 });
 
 describe("trackingInterruptedAlertCopy", () => {
@@ -150,6 +173,27 @@ describe("trackingInterruptedAlertCopy", () => {
     expect(copy.locked.body.length).toBeGreaterThan(0);
     expect(looksLikeAnAmount(copy.locked.body)).toBe(false);
     expect(copy.unlocked.body).toContain("4");
+  });
+
+  it("names the failure a stoppage, not a pause — 'paused' already means the user's own switch elsewhere in the app (app/(tabs)/more/listener_health.tsx)", () => {
+    const copy = trackingInterruptedAlertCopy({ pendingCount: 4 });
+
+    expect(copy.locked.title).toBe("Tracking stopped working");
+    expect(copy.unlocked.title).toBe("Tracking stopped working");
+    expect(copy.locked.title.toLowerCase()).not.toContain("paused");
+    expect(copy.unlocked.body.toLowerCase()).not.toContain("paused");
+  });
+
+  it("pins the exact body strings, singular and plural", () => {
+    expect(trackingInterruptedAlertCopy({ pendingCount: 1 }).unlocked.body).toBe(
+      "PeraPlano stopped receiving notifications — 1 transaction missed. Tap to fix tracking.",
+    );
+    expect(trackingInterruptedAlertCopy({ pendingCount: 4 }).unlocked.body).toBe(
+      "PeraPlano stopped receiving notifications — 4 transactions missed. Tap to fix tracking.",
+    );
+    expect(trackingInterruptedAlertCopy({ pendingCount: 4 }).locked.body).toBe(
+      "PeraPlano stopped receiving notifications. Tap to fix tracking.",
+    );
   });
 });
 

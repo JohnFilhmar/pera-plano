@@ -166,15 +166,31 @@ export function loanReminderAlertCopy(params: {
 // that a summary is waiting.
 // ---------------------------------------------------------------------------
 export function paydaySummaryAlertCopy(params: { amount: Centavos }): AlertCopy {
-  const title = "Payday summary";
+  // "Payday landed", not "Kinsenas landed" (task-5-brief's Step 6 table).
+  // "Kinsenas" is the app's own label for this cadence
+  // (components/income/cadence_picker.tsx) — but every generated SENTENCE
+  // about it deliberately avoids the word for plain English instead
+  // (income_summary_card.tsx's incomeSentence: "You're paid twice a
+  // month..."; tested by income_screen.test.tsx's "the kinsenas sentence
+  // never says 'kinsenas'"). A notification title is exactly that kind of
+  // generated sentence, and this function is not even told the cadence —
+  // only the amount.
+  const title = "Payday landed";
   return {
+    // No {goal} exists in this function's params or in
+    // notifyPaydaySummary's call site, and with no notification action
+    // buttons wired anywhere in the app (this dispatch's report), a body
+    // phrased as a question — "Move ₱9,250 to Emergency Fund now?" — is a
+    // dead end the user cannot answer from the notification itself. Both
+    // variants end on the same invitation instead, one the tap resolves by
+    // opening the app.
     locked: {
       title,
-      body: "Your payday summary is ready to view.",
+      body: "Your summary is ready — tap to decide where it goes.",
     },
     unlocked: {
       title,
-      body: `You received ${formatPeso(params.amount)} this payday — your summary is ready.`,
+      body: `You received ${formatPeso(params.amount)} — tap to decide where it goes.`,
     },
   };
 }
@@ -185,16 +201,33 @@ export function paydaySummaryAlertCopy(params: { amount: Centavos }): AlertCopy 
 // finances that a stranger reading the lock screen has no business seeing.
 // ---------------------------------------------------------------------------
 export function trackingInterruptedAlertCopy(params: { pendingCount: number }): AlertCopy {
-  const title = "Tracking paused";
+  // "Tracking stopped working", not "Tracking paused" (task-5-brief's Step 6
+  // table). "Paused" is already reserved, deliberately, for the user's OWN
+  // switch elsewhere in the app (app/(tabs)/more/listener_health.tsx's
+  // captureEnabled note: "Tracking is paused — you turned it off") — reusing
+  // it here for an involuntary failure (a dead listener or revoked access)
+  // collides with that distinction instead of respecting it.
+  const title = "Tracking stopped working";
   const { pendingCount } = params;
+  // The body borrows docs/06 §6.1's own illustrative line ("PeraPlano
+  // stopped receiving notifications. Tap to fix tracking.") rather than the
+  // brief's "Notification access was revoked": this function only ever
+  // receives `pendingCount`, never which of the two live health facts
+  // failed (`!granted` vs `!serviceConnected` —
+  // components/privacy/health_card.tsx), and "revoked" specifically would
+  // misdescribe a disconnected-but-still-granted listener. The brief's
+  // "{n} days" figure is left out for the same reason: nothing on this call
+  // path (here or in tracking_notifier.ts) measures days since the
+  // interruption started, only a transaction count — see this dispatch's
+  // report.
   return {
     locked: {
       title,
-      body: "Some of your transactions need your attention before tracking can continue.",
+      body: "PeraPlano stopped receiving notifications. Tap to fix tracking.",
     },
     unlocked: {
       title,
-      body: `PeraPlano paused tracking for ${pendingCount} transaction${pendingCount === 1 ? "" : "s"} — tap to review.`,
+      body: `PeraPlano stopped receiving notifications — ${pendingCount} transaction${pendingCount === 1 ? "" : "s"} missed. Tap to fix tracking.`,
     },
   };
 }
