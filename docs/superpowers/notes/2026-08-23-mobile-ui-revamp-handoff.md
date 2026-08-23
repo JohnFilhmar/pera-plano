@@ -19,26 +19,19 @@ Part 1 complete (whole-branch reviewed, fix wave applied). Part 2 complete
 Last commit: `f3de1bb` — "fix(more): broaden the shared budgets no-pressable
 guard past role".
 
-**Two tasks died mid-flight to an API session limit. Neither committed.**
-Their work is on disk, uncommitted, and must be triaged before anything else:
+Two tasks were killed mid-flight by an API session limit on 2026-08-22 and
+recovered on 2026-08-23:
 
-- **Plan detail routes (Task 4b)** — files *staged*, one step from commit:
-  `app/(tabs)/plan/{goals/[id],limits/[id],limits/[id]/edit,limits/new}.tsx`,
-  `app/__tests__/limit_routes.test.tsx`, and the `bills/`, `goals/`,
-  `income/`, `limits/`, `loans/` component sets.
-  **Known defect inside it:** `components/limits/limit_form.tsx(68,24)` fails
-  typecheck with **TS1355** (`as const` applied to something that is not a
-  literal). Confirmed twice, not a race. Almost certainly a literal reading of
-  the brief's "declare segments `as const`" applied where it does not fit.
-  Do not commit this until typecheck is clean.
-- **More screens (Task 4)** — *unstaged* and **incomplete**: it stopped
-  mid-edit while inserting a local `SettingCard` helper. Touches
-  `app/(tabs)/more/{privacy,settings}.tsx`, `components/privacy/*`,
-  `components/reports/*`.
-
-Neither was committed deliberately: one is known-broken, the other is
-half-written. A WIP commit of either onto the feature branch would put a
-red typecheck into the history for no gain.
+- **Plan detail routes (Task 4b)** — recovered and committed as **89c3d0d**
+  (23 files, +1022/−477). It had already fixed the TS1355 I flagged before it
+  died; `components/limits/limit_form.tsx:68` now carries a comment explaining
+  why `as const` does not belong there. Typecheck clean, 10 suites / 130 tests
+  green. Committed with a bare `git commit` (never `-a`) so the other task's
+  unstaged work could not leak in.
+- **More screens (Task 4)** — died mid-insert of a local `SettingCard` /
+  `SettingRow` helper, leaving six `TS2552: Cannot find name 'SettingRow'`
+  sites in `app/(tabs)/more/settings.tsx`. Re-dispatched with the breakage
+  named, told to finish rather than restart.
 
 **Remaining after those two land:** Task 5 (system states: `ErrorState`,
 `LoadingSkeleton`, the four `*-loading` views, 4 Android notification
@@ -80,6 +73,14 @@ handler, regardless of `accessibilityRole`.** This is the only reliable
 structural discriminator for "is anything on this screen tappable" —
 `queryByRole("button")` misses a role-less `Pressable` entirely. Lucide SVGs
 carry `focusable: false`, so they do not pollute the sweep.
+
+**Lucide icons need a wrapper for both `testID` and `className`.** A `testID`
+passed to a lucide icon does not reach RNTL's `getByTestId` — put it on a
+wrapping `<View>`. And lucide icons ignore `className` until `cssInterop` has
+been run over them, which is what `registerIcon` is for; icons pulled out of a
+map rather than imported at module scope must go through it. Both are already
+documented in `components/wallets/wallet_type_icon.tsx:36-45` — read that file
+before adding any icon.
 
 **Font weight comes from `fontFamily`, not `fontWeight`.** RN does not
 synthesise weight for `expo-font`-registered families. A Tailwind plugin
@@ -127,6 +128,15 @@ case that already worked. A bare `<Pressable>`, which is exactly what a
 careless reintroduction produces, sailed straight through. The hole was real
 and was found only by injecting the *inconvenient* case. Inject what you are
 actually afraid of, not what is easy to write.
+
+**A broad `testID` regex query silently changes meaning when you add a
+child.** `charts.test.tsx` pinned ranked-bar order with `/^ranked-bar-/`.
+Adding an `Nx` count `Chip` to each row introduced `ranked-bar-<x>-count` —
+and the Chip's own internal `-count-label` — so the query started returning
+nine elements where the assertion expected three. The test did not fail; it
+compared a different thing. When you add a child to a row that any test
+queries by prefix, re-read that test. Prefer a query narrow enough that a new
+sibling cannot join it.
 
 **A jest pattern matching zero files exits zero.** Naming a test file that
 does not exist produces a confident green that tested nothing (Ruling PF-13).
@@ -181,6 +191,18 @@ correct where it was written and destructive where it lands.
   call sites" does not. See `components/ui/numeric_field.tsx`.
 - **Check a type before referencing its fields.** `Wallet` has no
   `providerKey` — that field is on `UserRuleMatcher`.
+- **Disjoint files are not disjoint state.** Two concurrent implementers in
+  one worktree share a single **git index**. Verifying their file sets do not
+  overlap is necessary and not sufficient: one `git add -A` from either sweeps
+  the other's half-written work into its commit. Every parallel dispatch must
+  forbid `git add -A|-u|.` and `git commit -a`, and stage explicit paths only.
+- **A count in a plan is a claim about the codebase, and it decays.** Task 5's
+  plan said "the four `testID="*-loading"` blank views". There were **25**, four
+  of them inside another agent's files. The plan's trailing "and any other
+  `*-loading`" clause would have sent an agent searching straight into a
+  concurrent edit. Enumerate the real set at dispatch time and hand over paths,
+  never a search. This is the same failure as the comment-counts lesson above,
+  one level up.
 
 ---
 
