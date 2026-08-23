@@ -28,6 +28,7 @@ import { AmountText } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty_state";
+import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { SectionHeader } from "@/components/ui/section_header";
 import { useBills } from "@/hooks/queries/use_bills";
 import type { BillStatus } from "@/lib/bills/bills_service";
@@ -49,7 +50,11 @@ export function BillsPanel() {
   const { data: statuses } = useBills();
 
   if (statuses === undefined) {
-    return <View testID="bills-loading" className="flex-1 bg-bg dark:bg-bg-dark" />;
+    return (
+      <View testID="bills-loading" className="flex-1 bg-bg dark:bg-bg-dark">
+        <LoadingSkeleton rows={5} />
+      </View>
+    );
   }
 
   if (statuses.length === 0) {

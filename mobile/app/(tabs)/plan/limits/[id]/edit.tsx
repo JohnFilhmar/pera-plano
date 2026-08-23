@@ -24,6 +24,7 @@ import { LimitForm, limitFormInitialFrom } from "@/components/limits/limit_form"
 import type { LimitFormValues } from "@/components/limits/limit_form";
 import { EmptyState } from "@/components/ui/empty_state";
 import { FormScreen } from "@/components/ui/form_screen";
+import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { useUpdateLimit } from "@/hooks/mutations/use_update_limit";
 import { useCategories } from "@/hooks/queries/use_categories";
 import { useIncomeSummary } from "@/hooks/queries/use_income_summary";
@@ -44,7 +45,11 @@ export default function EditLimitScreen() {
   // fills in — a form whose values appear a frame later invites an edit on top
   // of a value the user never saw.
   if (statuses === undefined) {
-    return <View testID="limit-edit-loading" className="flex-1 bg-bg dark:bg-bg-dark" />;
+    return (
+      <View testID="limit-edit-loading" className="flex-1 bg-bg dark:bg-bg-dark">
+        <LoadingSkeleton rows={3} />
+      </View>
+    );
   }
 
   const status = statuses.find((candidate) => candidate.limit.id === id);

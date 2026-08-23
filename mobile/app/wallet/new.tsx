@@ -22,6 +22,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { UpgradeSheet } from "@/components/gates/upgrade_sheet";
 import { FormScreen } from "@/components/ui/form_screen";
+import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { WalletForm } from "@/components/wallets/wallet_form";
 import type { WalletFormValues } from "@/components/wallets/wallet_form";
 import { useCreateWallet } from "@/hooks/mutations/use_create_wallet";
@@ -55,7 +56,11 @@ export default function NewWalletScreen() {
   // Free user who taps fast enough create a fourth — a gate passing by
   // accident, which is worse than no gate at all.
   if (!wallets) {
-    return <View testID="wallet-new-loading" className="flex-1 bg-bg dark:bg-bg-dark" />;
+    return (
+      <View testID="wallet-new-loading" className="flex-1 bg-bg dark:bg-bg-dark">
+        <LoadingSkeleton rows={3} />
+      </View>
+    );
   }
 
   // ACTIVE wallets only — which is what makes archiving an old wallet free a

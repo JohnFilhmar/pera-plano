@@ -32,6 +32,7 @@ import { Card } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ui/confirm_dialog";
 import { EmptyState } from "@/components/ui/empty_state";
 import { ListRow } from "@/components/ui/list_row";
+import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { SectionHeader } from "@/components/ui/section_header";
 import { queryKeys } from "@/constants/query_keys";
 import { useArchiveLimit } from "@/hooks/mutations/use_archive_limit";
@@ -91,7 +92,11 @@ export default function LimitDetailScreen() {
   });
 
   if (statuses === undefined) {
-    return <View testID="limit-detail-loading" className="flex-1 bg-bg dark:bg-bg-dark" />;
+    return (
+      <View testID="limit-detail-loading" className="flex-1 bg-bg dark:bg-bg-dark">
+        <LoadingSkeleton rows={5} />
+      </View>
+    );
   }
 
   if (status === undefined) {

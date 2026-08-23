@@ -22,6 +22,7 @@ import { View } from "react-native";
 import { BillForm } from "@/components/bills/bill_form";
 import { EmptyState } from "@/components/ui/empty_state";
 import { FormScreen } from "@/components/ui/form_screen";
+import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { useUpdateBill } from "@/hooks/mutations/use_update_bill";
 import { useBills } from "@/hooks/queries/use_bills";
 import { systemClock } from "@/lib/clock";
@@ -34,7 +35,11 @@ export default function EditBillScreen() {
   const update = useUpdateBill();
 
   if (statuses === undefined) {
-    return <View testID="bill-edit-loading" className="flex-1 bg-bg dark:bg-bg-dark" />;
+    return (
+      <View testID="bill-edit-loading" className="flex-1 bg-bg dark:bg-bg-dark">
+        <LoadingSkeleton rows={3} />
+      </View>
+    );
   }
 
   // `useBills` returns one status PER CYCLE, so a bill with two open cycles

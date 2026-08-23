@@ -24,6 +24,7 @@ import { View } from "react-native";
 
 import { LoanForm, loanFormInitialFrom } from "@/components/loans/loan_form";
 import { EmptyState } from "@/components/ui/empty_state";
+import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { useUpdateLoan } from "@/hooks/mutations/use_update_loan";
 import { useLoans } from "@/hooks/queries/use_loans";
 
@@ -34,7 +35,11 @@ export default function EditLoanScreen() {
   const update = useUpdateLoan();
 
   if (statuses === undefined) {
-    return <View testID="loan-edit-loading" className="flex-1 bg-bg dark:bg-bg-dark" />;
+    return (
+      <View testID="loan-edit-loading" className="flex-1 bg-bg dark:bg-bg-dark">
+        <LoadingSkeleton rows={3} />
+      </View>
+    );
   }
 
   const loan = statuses.find((status) => status.loan.id === id)?.loan;

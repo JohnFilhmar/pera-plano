@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ui/confirm_dialog";
 import { EmptyState } from "@/components/ui/empty_state";
+import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { SectionHeader } from "@/components/ui/section_header";
 import { useConfirmPaymentMatch } from "@/hooks/mutations/use_confirm_payment_match";
 import { useLoans } from "@/hooks/queries/use_loans";
@@ -34,7 +35,11 @@ export default function LoanDetailScreen() {
   const archive = useArchiveLoan();
 
   if (statuses === undefined) {
-    return <View testID="loan-detail-loading" className="flex-1 bg-bg dark:bg-bg-dark" />;
+    return (
+      <View testID="loan-detail-loading" className="flex-1 bg-bg dark:bg-bg-dark">
+        <LoadingSkeleton rows={5} />
+      </View>
+    );
   }
 
   const status = statuses.find((candidate) => candidate.loan.id === id);

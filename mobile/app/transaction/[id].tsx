@@ -45,6 +45,7 @@ import { Card } from "@/components/ui/card";
 import { Chip } from "@/components/ui/chip";
 import { EmptyState } from "@/components/ui/empty_state";
 import { ListRow } from "@/components/ui/list_row";
+import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { ProviderBadge } from "@/components/ui/provider_badge";
 import { SectionHeader } from "@/components/ui/section_header";
 import { providerKeyForPackage, providerLabelForPackage } from "@/constants/providers";
@@ -159,7 +160,11 @@ export default function TransactionDetailScreen() {
   const unlinkTransfer = useUnlinkTransfer();
 
   if (isPending) {
-    return <View testID="transaction-detail-loading" className="flex-1 bg-bg dark:bg-bg-dark" />;
+    return (
+      <View testID="transaction-detail-loading" className="flex-1 bg-bg dark:bg-bg-dark">
+        <LoadingSkeleton rows={6} />
+      </View>
+    );
   }
 
   if (!transaction) {

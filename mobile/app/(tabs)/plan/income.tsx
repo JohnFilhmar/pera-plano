@@ -20,6 +20,7 @@ import { IncomeSummaryCard } from "@/components/income/income_summary_card";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { FormScreen } from "@/components/ui/form_screen";
+import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { SectionHeader } from "@/components/ui/section_header";
 import { useClearManualIncome } from "@/hooks/mutations/use_clear_manual_income";
 import { useConfirmIncome } from "@/hooks/mutations/use_confirm_income";
@@ -44,7 +45,11 @@ export default function IncomeScreen() {
   // know your income" before showing the real figure reads as data loss on the
   // one screen whose subject is a number the user told the app.
   if (summary === undefined) {
-    return <View testID="income-loading" className="flex-1 bg-bg dark:bg-bg-dark" />;
+    return (
+      <View testID="income-loading" className="flex-1 bg-bg dark:bg-bg-dark">
+        <LoadingSkeleton rows={3} />
+      </View>
+    );
   }
 
   const known = summary.cadence !== null && summary.averageAmount !== null;

@@ -26,6 +26,7 @@ import { LoanCard } from "@/components/loans/loan_card";
 import { AmountText } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty_state";
+import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { SectionHeader } from "@/components/ui/section_header";
 import { useLoans } from "@/hooks/queries/use_loans";
 import { systemClock } from "@/lib/clock";
@@ -43,7 +44,11 @@ export function UtangPanel() {
   };
 
   if (statuses === undefined) {
-    return <View testID="loans-loading" className="flex-1 bg-bg dark:bg-bg-dark" />;
+    return (
+      <View testID="loans-loading" className="flex-1 bg-bg dark:bg-bg-dark">
+        <LoadingSkeleton rows={5} />
+      </View>
+    );
   }
 
   const iOwe = statuses.filter((status) => status.loan.direction === "i-owe");

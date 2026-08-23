@@ -32,6 +32,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Text, View } from "react-native";
 
 import { ProviderPicker } from "@/components/onboarding/provider_picker";
+import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { getActiveRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { buildProviderChoices } from "@/lib/ingest/provider_catalogue";
 import { SEED_BUNDLE } from "@/lib/ingest/seed_rules";
@@ -137,6 +138,9 @@ export default function ProvidersScreen({ onDone }: { onDone?: () => void } = {}
         <Text className="text-center text-body font-medium text-fg-2 dark:text-fg-2-dark">
           Looking for apps on your phone…
         </Text>
+        <View className="mt-6 w-full">
+          <LoadingSkeleton rows={5} />
+        </View>
       </View>
     );
   }

@@ -70,6 +70,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Chip } from "@/components/ui/chip";
 import { EmptyState } from "@/components/ui/empty_state";
+import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { ProviderBadge } from "@/components/ui/provider_badge";
 import { SectionHeader } from "@/components/ui/section_header";
 import { ArchiveWalletSheet } from "@/components/wallets/archive_wallet_sheet";
@@ -200,7 +201,11 @@ export default function WalletDetailScreen() {
   const dismissDrift = useDismissDrift();
 
   if (isPending) {
-    return <View testID="wallet-detail-loading" className="flex-1 bg-bg dark:bg-bg-dark" />;
+    return (
+      <View testID="wallet-detail-loading" className="flex-1 bg-bg dark:bg-bg-dark">
+        <LoadingSkeleton rows={6} />
+      </View>
+    );
   }
 
   if (!wallet) {

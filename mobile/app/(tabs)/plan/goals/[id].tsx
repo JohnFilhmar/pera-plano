@@ -7,6 +7,7 @@ import { AmountText } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty_state";
+import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { useDeleteGoal } from "@/hooks/mutations/use_delete_goal";
 import { useGoals } from "@/hooks/queries/use_goals";
 import { useWallets } from "@/hooks/queries/use_wallets";
@@ -19,7 +20,11 @@ export default function GoalDetailScreen() {
   const remove = useDeleteGoal();
 
   if (statuses === undefined) {
-    return <View testID="goal-detail-loading" className="flex-1 bg-bg dark:bg-bg-dark" />;
+    return (
+      <View testID="goal-detail-loading" className="flex-1 bg-bg dark:bg-bg-dark">
+        <LoadingSkeleton rows={4} />
+      </View>
+    );
   }
 
   const status = statuses.find((candidate) => candidate.goal.id === id);

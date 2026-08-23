@@ -34,6 +34,7 @@ import { CorrectSheet } from "@/components/review/correct_sheet";
 import { ReviewCard } from "@/components/review/review_card";
 import { registerIcon } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty_state";
+import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { useReviewAction, type ReviewAction } from "@/hooks/mutations/use_review_action";
 import { useCategories } from "@/hooks/queries/use_categories";
 import { useReviewQueue } from "@/hooks/queries/use_review_queue";
@@ -242,7 +243,9 @@ export default function ReviewQueueScreen() {
         // on every cold start would congratulate the user for work they have not
         // done, and the correction a frame later reads as data appearing from
         // nowhere.
-        <View testID="review-queue-loading" className="flex-1" />
+        <View testID="review-queue-loading" className="flex-1">
+          <LoadingSkeleton rows={5} />
+        </View>
       ) : ordered.length === 0 ? (
         <View className="flex-1 justify-center">
           <EmptyState

@@ -23,6 +23,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { EmptyState } from "@/components/ui/empty_state";
 import { FormScreen } from "@/components/ui/form_screen";
+import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { WalletForm } from "@/components/wallets/wallet_form";
 import type { WalletFormValues } from "@/components/wallets/wallet_form";
 import { useSetWalletMatchers } from "@/hooks/mutations/use_set_wallet_matchers";
@@ -54,7 +55,11 @@ export default function EditWalletScreen() {
   const setMatchers = useSetWalletMatchers();
 
   if (isPending) {
-    return <View testID="wallet-edit-loading" className="flex-1 bg-bg dark:bg-bg-dark" />;
+    return (
+      <View testID="wallet-edit-loading" className="flex-1 bg-bg dark:bg-bg-dark">
+        <LoadingSkeleton rows={4} />
+      </View>
+    );
   }
 
   if (!wallet) {

@@ -25,6 +25,7 @@ import { Button } from "@/components/ui/button";
 import { AmountText } from "@/components/ui/amount_text";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty_state";
+import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { SectionHeader } from "@/components/ui/section_header";
 import { ShareBar } from "@/components/ui/share_bar";
 import { WalletCard } from "@/components/wallets/wallet_card";
@@ -89,7 +90,11 @@ export default function WalletsScreen() {
   // flashes on every cold start reads as data loss on a screen whose whole job
   // is to be trusted about money.
   if (!wallets) {
-    return <View testID="wallets-loading" className="flex-1 bg-bg dark:bg-bg-dark" />;
+    return (
+      <View testID="wallets-loading" className="flex-1 bg-bg dark:bg-bg-dark">
+        <LoadingSkeleton rows={6} />
+      </View>
+    );
   }
 
   if (wallets.length === 0) {

@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ui/confirm_dialog";
 import { EmptyState } from "@/components/ui/empty_state";
+import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { SectionHeader } from "@/components/ui/section_header";
 import { useBillCandidates } from "@/hooks/queries/use_bill_candidates";
 import { useBills } from "@/hooks/queries/use_bills";
@@ -51,7 +52,11 @@ export default function BillDetailScreen() {
   const { data: candidates } = useBillCandidates(id, status?.dueDate);
 
   if (statuses === undefined) {
-    return <View testID="bill-detail-loading" className="flex-1 bg-bg dark:bg-bg-dark" />;
+    return (
+      <View testID="bill-detail-loading" className="flex-1 bg-bg dark:bg-bg-dark">
+        <LoadingSkeleton rows={5} />
+      </View>
+    );
   }
 
   if (status === undefined) {

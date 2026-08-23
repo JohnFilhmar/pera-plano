@@ -24,6 +24,7 @@ import { PlusGate } from "@/components/gates/plus_gate";
 import { EmptyState } from "@/components/ui/empty_state";
 import { getEmptyStateCopy } from "@/components/ui/empty_states";
 import { Fab } from "@/components/ui/fab";
+import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { StatTile } from "@/components/ui/stat_tile";
 import { queryKeys } from "@/constants/query_keys";
 import { useSetCaptureEnabled } from "@/hooks/mutations/use_set_capture_enabled";
@@ -147,7 +148,11 @@ export default function HomeScreen() {
     drivingScope === undefined ? "No limit set" : `${SCOPE_LABEL[drivingScope]} period`;
 
   if (result === undefined) {
-    return <View testID="home-loading" className="flex-1 bg-bg dark:bg-bg-dark" />;
+    return (
+      <View testID="home-loading" className="flex-1 bg-bg dark:bg-bg-dark">
+        <LoadingSkeleton rows={6} />
+      </View>
+    );
   }
 
   return (

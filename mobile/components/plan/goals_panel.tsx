@@ -13,6 +13,7 @@ import { Pressable, ScrollView, View } from "react-native";
 import { GoalCard } from "@/components/goals/goal_card";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty_state";
+import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { useGoals } from "@/hooks/queries/use_goals";
 import { canCreateGoal } from "@/lib/entitlements";
 
@@ -28,7 +29,11 @@ export function GoalsPanel() {
   // Render nothing until the list has loaded. An empty state that flashes on
   // every cold start reads as data loss — the rule the Wallets tab set.
   if (statuses === undefined) {
-    return <View testID="goals-loading" className="flex-1 bg-bg dark:bg-bg-dark" />;
+    return (
+      <View testID="goals-loading" className="flex-1 bg-bg dark:bg-bg-dark">
+        <LoadingSkeleton rows={5} />
+      </View>
+    );
   }
 
   if (statuses.length === 0) {

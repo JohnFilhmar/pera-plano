@@ -47,6 +47,7 @@ import { formatCentavos } from "@/components/ui/amount_text";
 import { Button, registerIcon } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty_state";
+import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { useCategories } from "@/hooks/queries/use_categories";
 import { useIncomeSummary } from "@/hooks/queries/use_income_summary";
 import { useLimitStatuses } from "@/hooks/queries/use_limit_statuses";
@@ -134,7 +135,9 @@ export function LimitsPanel() {
           has its own loading rule (see this file's header) and is never
           gated behind the limits list resolving. */}
       {statuses === undefined ? (
-        <View testID="limits-loading" className="flex-1 bg-bg dark:bg-bg-dark" />
+        <View testID="limits-loading" className="flex-1 bg-bg dark:bg-bg-dark">
+          <LoadingSkeleton rows={5} />
+        </View>
       ) : statuses.length === 0 ? (
         <View className="flex-1 justify-center bg-bg dark:bg-bg-dark">
           {/* The spec's UX-states table string, not the plan's. */}

@@ -77,6 +77,7 @@ import { QuickWalletList } from "@/components/onboarding/quick_wallet_list";
 import type { WalletProposal } from "@/components/onboarding/quick_wallet_list";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { ProviderBadge } from "@/components/ui/provider_badge";
 import { providerLabel } from "@/constants/providers";
 import { useCreateWallet } from "@/hooks/mutations/use_create_wallet";
@@ -491,7 +492,9 @@ export default function WalletsScreen({
           onChangeOpeningBalance={changeOpeningBalance}
         />
       ) : (
-        <View testID="wallets-step-loading" />
+        <View testID="wallets-step-loading">
+          <LoadingSkeleton rows={4} />
+        </View>
       )}
 
       {addable.length > 0 ? (
