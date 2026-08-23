@@ -34,6 +34,7 @@
 // called — asserted directly in app/__tests__/privacy_screen.test.tsx via
 // the mocked `wipeAndStartOver`/`exportAllData` never firing.
 import { useState } from "react";
+import { Trash2 } from "lucide-react-native";
 import { Text, TextInput, View } from "react-native";
 
 import { Button } from "@/components/ui/button";
@@ -93,10 +94,22 @@ export function WipeFlow({ onConfirmed, busy = false, testID = "wipe-flow" }: Wi
 
   return (
     <View testID={testID}>
+      {/*
+        mobile-ui-revamp Part 3 Task 4 — the `outline-destructive` variant
+        Part 1 Task 4 built (surface fill, danger border, danger ink) and
+        this exact button is the reason it exists: this trigger sits at REST
+        on the Privacy centre, readable calmly before anyone presses it. The
+        typed-confirmation "Erase everything" button inside the sheet below
+        keeps the SOLID `destructive` fill on purpose — that one is a press
+        happening inside a dialog flow the user already chose to enter, which
+        is the other half of the same distinction (see button.tsx's own
+        comment on the variant).
+      */}
       <Button
         testID="wipe-everything-trigger"
-        title="Wipe everything"
-        variant="destructive"
+        title="Wipe all PeraPlano data"
+        variant="outline-destructive"
+        icon={Trash2}
         onPress={() => setStep("confirm")}
       />
 

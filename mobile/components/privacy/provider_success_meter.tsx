@@ -20,6 +20,7 @@ import { Pressable, Text, View } from "react-native";
 
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty_state";
+import { ProviderBadge } from "@/components/ui/provider_badge";
 import type { ProviderParseStats } from "@/lib/diagnostics/parse_stats_repo";
 
 /**
@@ -62,8 +63,19 @@ export function ProviderSuccessMeter({ stats, onReport, testID }: ProviderSucces
 
         return (
           <Card key={row.providerKey} testID={`provider-success-${row.providerKey}`}>
-            <View className="flex-row items-center justify-between">
-              <Text className="font-semibold text-fg dark:text-fg-dark">{row.providerKey}</Text>
+            <View className="flex-row items-center justify-between gap-2">
+              <View className="flex-1 flex-row items-center gap-2">
+                {/* `row.providerKey` is a real, non-empty DB column — never
+                    the empty string `providerBadge("")` falls back to a grey
+                    "?" for — so this always renders a real colour-and-letter
+                    identity, never that specific broken case. An UNKNOWN but
+                    non-empty key (a test fixture like "old-provider") still
+                    resolves to `providerBadge`'s OWN designed fallback (grey
+                    square, the key's own initial), which is a different,
+                    intended branch, not the forbidden one. */}
+                <ProviderBadge providerKey={row.providerKey} size={20} />
+                <Text className="font-semibold text-fg dark:text-fg-dark">{row.providerKey}</Text>
+              </View>
               {flagged ? (
                 <Text
                   testID={`provider-success-${row.providerKey}-flag`}

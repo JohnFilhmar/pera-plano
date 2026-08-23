@@ -42,12 +42,13 @@
 // `lib/db/repos/app_settings_repo.ts`) that `lib/alerts/alerts_service.ts`
 // reads on every post. Android's own notification settings cannot provide it:
 // this is an app-level hold-and-redeliver rule, not a channel property.
+import type { ReactNode } from "react";
 import { Linking, ScrollView, Switch, Text, View } from "react-native";
 
-import { SettingRow } from "@/components/settings/setting_row";
 import { ThemePicker } from "@/components/settings/theme_picker";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { ListRow } from "@/components/ui/list_row";
 import { SectionHeader } from "@/components/ui/section_header";
 import { useSetSetting } from "@/hooks/mutations/use_set_setting";
 import { useSettings } from "@/hooks/queries/use_settings";
@@ -88,8 +89,36 @@ function stepMinuteOfDay(minute: number, delta: number): number {
 }
 
 /**
+ * mobile-ui-revamp Part 3 Task 4: `components/settings/setting_row.tsx`'s own
+ * hand-rolled row becomes the shared `ListRow` atom, Card-wrapped exactly as
+ * `SettingRow` already was — "each row is its own Card, not a divided list"
+ * is that file's own deliberate rule, and this keeps it rather than silently
+ * merging six rows into one shared card. `setting_row.tsx` itself is outside
+ * this task's file list (`components/settings/*` is not one of the globs the
+ * brief names), so this is a LOCAL replacement built from atoms already in
+ * scope (`Card`, `ListRow`) rather than an edit to that file.
+ */
+function SettingCard({
+  title,
+  subtitle,
+  control,
+  testID,
+}: {
+  title: string;
+  subtitle?: string;
+  control: ReactNode;
+  testID?: string;
+}) {
+  return (
+    <Card testID={testID}>
+      <ListRow title={title} subtitle={subtitle} right={control} />
+    </Card>
+  );
+}
+
+/**
  * A ± stepper over one wall-clock time, rendered as the right-hand control of
- * a `SettingRow`. Same shape as the multiplier stepper below it — this is a
+ * a `SettingCard`. Same shape as the multiplier stepper below it — this is a
  * component only because there are two of them (start and end) and a copy of
  * the same six lines is how the two ends drift apart.
  */
@@ -165,7 +194,7 @@ export default function SettingsScreen() {
       </Card>
 
       <SectionHeader title="Alerts" />
-      <SettingRow
+      <SettingCard
         testID="settings-alerts-row"
         title="Notification settings"
         subtitle="Limit warnings and due-date reminders are separate channels — mute or reshape either one in your phone's settings."
@@ -180,7 +209,7 @@ export default function SettingsScreen() {
           />
         }
       />
-      <SettingRow
+      <SettingCard
         testID="settings-quiet-hours-row"
         title="Quiet hours"
         subtitle="Alerts raised while you're asleep wait until the window ends and arrive together — nothing is dropped. Warnings that tracking has stopped still come through."
@@ -198,7 +227,7 @@ export default function SettingsScreen() {
           that change nothing is worse than showing none. */}
       {quietEnabled ? (
         <>
-          <SettingRow
+          <SettingCard
             testID="settings-quiet-hours-start-row"
             title="Quiet from"
             control={
@@ -214,7 +243,7 @@ export default function SettingsScreen() {
               />
             }
           />
-          <SettingRow
+          <SettingCard
             testID="settings-quiet-hours-end-row"
             title="Quiet until"
             control={
@@ -234,7 +263,7 @@ export default function SettingsScreen() {
       ) : null}
 
       <SectionHeader title="Recurring" />
-      <SettingRow
+      <SettingCard
         testID="settings-recurring-forget-row"
         title={`Forget a subscription after ${formatMultiplier(multiplier)} ${paymentsWord}`}
         subtitle="We can only see a charge arrive, never a cancellation — this is how much silence, scaled to how often it charges, counts as gone."
@@ -265,7 +294,7 @@ export default function SettingsScreen() {
       />
 
       <SectionHeader title="Data & privacy" />
-      <SettingRow
+      <SettingCard
         testID="settings-telemetry-row"
         title="Share anonymous parser health"
         // RULE 3, VERBATIM PROMISE — "states plainly what is sent: counts of

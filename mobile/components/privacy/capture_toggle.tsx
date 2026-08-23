@@ -11,9 +11,10 @@
 // never import lib/db/repos/**, and this screen's every native touch-point
 // lives in the hook layer so a component test never has to mock a bridge it
 // has no reason to know exists.
-import { Switch, Text, View } from "react-native";
+import { Switch } from "react-native";
 
 import { Card } from "@/components/ui/card";
+import { ListRow } from "@/components/ui/list_row";
 
 export type CaptureToggleProps = {
   /** `undefined` while the setting has not loaded yet. */
@@ -37,25 +38,21 @@ const ACTIVE_BODY =
 export function CaptureToggle({ enabled, onChange, busy = false, testID = "capture-toggle" }: CaptureToggleProps) {
   return (
     <Card testID={testID}>
-      <View className="flex-row items-center justify-between gap-3">
-        <View className="flex-1 gap-1">
-          <Text className="text-base font-semibold text-fg dark:text-fg-dark">
-            Tracking
-          </Text>
-          <Text className="text-sm text-fg-2 dark:text-fg-2-dark">
-            {enabled === false ? PAUSED_BODY : ACTIVE_BODY}
-          </Text>
-        </View>
-        <Switch
-          testID="capture-toggle-switch"
-          value={enabled === true}
-          onValueChange={onChange}
-          disabled={enabled === undefined || busy}
-          accessibilityRole="switch"
-          accessibilityLabel="Tracking"
-          accessibilityState={{ disabled: enabled === undefined || busy, checked: enabled === true }}
-        />
-      </View>
+      <ListRow
+        title="Tracking"
+        subtitle={enabled === false ? PAUSED_BODY : ACTIVE_BODY}
+        right={
+          <Switch
+            testID="capture-toggle-switch"
+            value={enabled === true}
+            onValueChange={onChange}
+            disabled={enabled === undefined || busy}
+            accessibilityRole="switch"
+            accessibilityLabel="Tracking"
+            accessibilityState={{ disabled: enabled === undefined || busy, checked: enabled === true }}
+          />
+        }
+      />
     </Card>
   );
 }

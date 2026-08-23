@@ -16,6 +16,7 @@ import { Text, View } from "react-native";
 import { Circle, Svg } from "react-native-svg";
 
 import { AmountText } from "@/components/ui/amount_text";
+import { Card } from "@/components/ui/card";
 import { palette } from "@/constants/colors";
 import { useTheme } from "@/contexts/theme_context";
 import type { CategoryTotal } from "@/lib/reports/aggregate";
@@ -79,8 +80,13 @@ export function categoryColor(categoryId: string, dark: boolean): string {
 
 export function DonutChart({
   categories,
-  size = 200,
-  strokeWidth = 28,
+  // 104dp, not the old 200dp: the board seats the ring BESIDE its legend
+  // (rule below), and 200dp of ring plus a legend column no longer fits a
+  // 360dp-wide phone on one row. 104 is the board's own figure. The only
+  // caller (app/(tabs)/more/reports.tsx) never overrides this, so the new
+  // default is the only size this ring ever actually draws at.
+  size = 104,
+  strokeWidth = 16,
   testID,
 }: DonutChartProps) {
   const { resolved } = useTheme();
@@ -101,53 +107,67 @@ export function DonutChart({
   });
 
   return (
-    <View testID={testID ?? "donut-chart"} className="gap-3">
+    <Card testID={testID ?? "donut-chart"}>
       {categories.length === 0 ? (
         <Text className="text-fg-2 dark:text-fg-2-dark">No spending to break down.</Text>
       ) : (
-        <Svg width={size} height={size}>
-          {arcs.map((arc) => (
-            <Circle
-              key={arc.categoryId}
-              testID={`donut-arc-${arc.categoryId}`}
-              cx={center}
-              cy={center}
-              r={radius}
-              stroke={categoryColor(arc.categoryId, dark)}
-              strokeWidth={strokeWidth}
-              fill="none"
-              strokeDasharray={`${arc.length} ${circumference}`}
-              // Negative offset shifts the visible dash FORWARD along the
-              // path by every prior segment's length, so segments tile
-              // rather than overlap. Rotated -90° first so the first segment
-              // starts at twelve o'clock, the same convention progress_ring
-              // uses, rather than three.
-              strokeDashoffset={-arc.offset}
-              transform={`rotate(-90 ${center} ${center})`}
-            />
-          ))}
-        </Svg>
-      )}
+        // BESIDE, NOT ABOVE — the board seats the ring and its legend in one
+        // row (gap 16), not stacked. `items-center` centres the ring against
+        // however tall the legend column grows.
+        <View className="flex-row items-center gap-4">
+          <Svg width={size} height={size}>
+            {arcs.map((arc) => (
+              <Circle
+                key={arc.categoryId}
+                testID={`donut-arc-${arc.categoryId}`}
+                cx={center}
+                cy={center}
+                r={radius}
+                stroke={categoryColor(arc.categoryId, dark)}
+                strokeWidth={strokeWidth}
+                fill="none"
+                strokeDasharray={`${arc.length} ${circumference}`}
+                // Negative offset shifts the visible dash FORWARD along the
+                // path by every prior segment's length, so segments tile
+                // rather than overlap. Rotated -90° first so the first segment
+                // starts at twelve o'clock, the same convention progress_ring
+                // uses, rather than three.
+                strokeDashoffset={-arc.offset}
+                transform={`rotate(-90 ${center} ${center})`}
+              />
+            ))}
+          </Svg>
 
-      <View testID="donut-legend" className="gap-2">
-        {categories.map((category) => (
-          <View
-            key={category.categoryId}
-            testID={`donut-legend-${category.categoryId}`}
-            className="flex-row items-center gap-2"
-          >
-            <View
-              style={{ backgroundColor: categoryColor(category.categoryId, dark) }}
-              className="h-3 w-3 rounded-full"
-            />
-            <Text className="flex-1 text-fg dark:text-fg-dark">{category.categoryName}</Text>
-            <AmountText amount={category.total} />
-            <Text className="w-12 text-right text-fg-2 dark:text-fg-2-dark">
-              {`${Math.round(category.share * 100)}%`}
-            </Text>
+          {/* One row per category: dot, name, percentage, amount — rule 3's
+              text alternative. AmountText renders directly here rather than
+              nesting inside a styled ancestor Text (stat_tile.tsx's header
+              explains why: a nested Text's own colour/size wins over its
+              parent's, silently). `numberOfLines` on the name is what lets a
+              four-element row survive next to a 104dp ring on a 360dp phone —
+              the name truncates before the two numbers ever do. */}
+          <View testID="donut-legend" className="flex-1 gap-2">
+            {categories.map((category) => (
+              <View
+                key={category.categoryId}
+                testID={`donut-legend-${category.categoryId}`}
+                className="flex-row items-center gap-1.5"
+              >
+                <View
+                  style={{ backgroundColor: categoryColor(category.categoryId, dark) }}
+                  className="h-2 w-2 rounded-full"
+                />
+                <Text numberOfLines={1} className="flex-1 text-secondary font-medium text-fg dark:text-fg-dark">
+                  {category.categoryName}
+                </Text>
+                <Text className="text-secondary font-bold text-fg-2 dark:text-fg-2-dark">
+                  {`${Math.round(category.share * 100)}%`}
+                </Text>
+                <AmountText amount={category.total} />
+              </View>
+            ))}
           </View>
-        ))}
-      </View>
-    </View>
+        </View>
+      )}
+    </Card>
   );
 }

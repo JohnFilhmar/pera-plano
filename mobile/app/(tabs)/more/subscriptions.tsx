@@ -15,12 +15,47 @@
 // (app/(tabs)/more/index.tsx) is itself `PlusGate`-wrapped and intercepts the
 // press before navigation — but this screen checks again on its own rather
 // than trusting that its only caller got it right.
+//
+// mobile-ui-revamp Part 3 Task 4 — three deliberate departures from the
+// brief's literal wording, each forced by something outside this file's
+// reach rather than skipped for convenience:
+//
+//   1. "One ListRow per service" does not replace `PatternCard` here.
+//      `components/recurring/**` is owned by a different task's file list
+//      (this task's own Files section names only `components/reports/*` and
+//      `components/privacy/*`), and
+//      components/recurring/__tests__/subscriptions_screen.test.tsx —
+//      likewise outside this task's ownership — already pins this screen to
+//      `pattern-card-${id}`, `pattern-card-${id}-promote` and
+//      `pattern-card-${id}-dismiss`. Swapping in a bespoke ListRow would
+//      silently drop the promote/acknowledge/dismiss actions those tests
+//      exercise. `LockedInHeader` is the same story for "the total card" —
+//      already a Card with the one figure the brief asks for, already
+//      outside this file's ownership, so it stays exactly as it is.
+//   2. No price-change alert banner. The board draws one, but
+//      `RecurringPattern` (types/domain.ts) carries only the CURRENT
+//      `amount` — no prior value, no history — and neither
+//      `lib/recurring/recurring_service.ts` nor the repo behind it computes
+//      one. A banner needs a change to compare against; inventing that
+//      comparison here would be new arithmetic in a restyle task, the same
+//      trap components/reports/trend_line.tsx's header flags for the
+//      over-limit fill it also could not build. Noted as follow-up, not
+//      silently dropped.
+//   3. The beta badge is NOT a `<PlusGate>` wrap. Wrapping the real content
+//      in `PlusGate` would put it in the tree under `pointerEvents="none"`
+//      on free tier (see that component's own free-tier branch) — exactly
+//      the "real gated data behind a blur" point 1 above says this screen
+//      must never do. Point 3's badge below is the same soft-brand `Chip`
+//      language `PlusGate`'s unlocked branch renders, shown only once
+//      `hasRecurringDetection()` has already gated the branch it sits in.
 import { useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 
+import { PLUS_BETA_LABEL } from "@/components/gates/plus_gate";
+import { UpgradeSheet } from "@/components/gates/upgrade_sheet";
 import { LockedInHeader } from "@/components/recurring/locked_in_header";
 import { PatternCard } from "@/components/recurring/pattern_card";
-import { UpgradeSheet } from "@/components/gates/upgrade_sheet";
+import { Chip } from "@/components/ui/chip";
 import { EmptyState } from "@/components/ui/empty_state";
 import { useAcknowledgePattern } from "@/hooks/mutations/use_acknowledge_pattern";
 import { useDismissPattern } from "@/hooks/mutations/use_dismiss_pattern";
@@ -99,6 +134,14 @@ export default function SubscriptionsScreen() {
       contentContainerClassName="gap-3 p-4"
     >
       <LockedInHeader testID="subscriptions-locked-in" monthlyTotal={monthlyTotal} />
+      {/* Task 2's unlocked-tier promise, restated here rather than via
+          `PlusGate` — see this file's header, point 3. Every current tester
+          reaches this branch (`hasRecurringDetection()` is what gated the
+          count-only preview above), so this is the only badge this screen
+          can ever actually render, same as `PlusGate`'s own unlocked path. */}
+      <View className="self-start">
+        <Chip testID="subscriptions-beta-badge" label={PLUS_BETA_LABEL} tone="brand" fill="soft" />
+      </View>
       {patterns.map((pattern) => (
         <PatternCard
           key={pattern.id}

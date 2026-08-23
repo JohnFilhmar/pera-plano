@@ -164,7 +164,15 @@ test("RANKED BARS ORDER BY TOTAL DESCENDING", () => {
 
   withTheme(<RankedBars merchants={merchants} />);
 
-  const bars = screen.getAllByTestId(/^ranked-bar-/);
+  // `/^ranked-bar-/` also matches the `Nx` count Chip mobile-ui-revamp Part 3
+  // Task 4 added beside each row (`ranked-bar-${merchant}-count`) and that
+  // Chip's own internal label (`...-count-label`, from components/ui/chip.tsx's
+  // `${testID}-label`) — both share the row's prefix. Filtering those two
+  // suffixes out keeps this assertion about row order, not about how many
+  // testIDs a row happens to contain.
+  const bars = screen
+    .getAllByTestId(/^ranked-bar-/)
+    .filter((bar) => !/-count(-label)?$/.test(bar.props.testID));
   expect(bars.map((bar) => bar.props.testID)).toEqual([
     "ranked-bar-Jollibee",
     "ranked-bar-7-Eleven",
@@ -210,12 +218,21 @@ function summaryOf(over: Partial<PeriodSummary> = {}): PeriodSummary {
 }
 
 test("SUMMARY TILES COLOR NET BY SIGN", () => {
+  // `summary-net` is now StatTile's OUTER `flex-1` wrapper (components/ui/
+  // stat_tile.tsx) — the tone class lives one level deeper, on
+  // `summary-net-amount`, which is where StatTile itself paints
+  // `TONE_CLASS[tone]`. Split on whitespace and check for the exact token,
+  // not `toMatch`/`toContain` on the raw string — `text-brand` as a substring
+  // would also match a hypothetical `text-brand-ink`, the same trap this
+  // project's own house rules warn about elsewhere.
   const positive = withTheme(<SummaryTiles summary={summaryOf({ net: 300000 })} />);
-  expect(positive.getByTestId("summary-net").props.className).toMatch(/text-brand/);
+  const positiveClasses = positive.getByTestId("summary-net-amount").props.className.split(/\s+/);
+  expect(positiveClasses).toContain("text-brand");
   positive.unmount();
 
   const negative = withTheme(<SummaryTiles summary={summaryOf({ net: -150000 })} />);
-  expect(negative.getByTestId("summary-net").props.className).toMatch(/text-danger/);
+  const negativeClasses = negative.getByTestId("summary-net-amount").props.className.split(/\s+/);
+  expect(negativeClasses).toContain("text-danger");
   negative.unmount();
 });
 

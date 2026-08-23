@@ -16,13 +16,15 @@
 // which is also what keeps every one of those components free of the
 // `lib/db/repos/**` import the global constraints forbid.
 import { useMemo, useState } from "react";
+import { Smartphone } from "lucide-react-native";
 import { ScrollView, Text, View } from "react-native";
 
 import { CaptureToggle } from "@/components/privacy/capture_toggle";
 import { CapturedList } from "@/components/privacy/captured_list";
 import { ProviderSwitchList } from "@/components/privacy/provider_switch_list";
 import { WipeFlow } from "@/components/privacy/wipe_flow";
-import { Button } from "@/components/ui/button";
+import { Button, registerIcon } from "@/components/ui/button";
+import { SectionHeader } from "@/components/ui/section_header";
 import { providerLabel, providerLabelForPackage } from "@/constants/providers";
 import { useSetCaptureEnabled } from "@/hooks/mutations/use_set_capture_enabled";
 import { useSetProviderPause } from "@/hooks/mutations/use_set_provider_pause";
@@ -47,6 +49,8 @@ const INTRO_BODY =
 /** docs §04-features/11-settings-privacy.md Flow C step 4's 30-day figure, restated for this list. */
 const CAPTURED_LIST_BODY =
   "Every notification PeraPlano captured from your banks and e-wallets, kept for 30 days, then deleted automatically.";
+
+const SmartphoneIcon = registerIcon(Smartphone);
 
 export default function PrivacyScreen() {
   const { wipeAndStartOver } = useLock();
@@ -188,11 +192,27 @@ export default function PrivacyScreen() {
       className="flex-1 bg-bg dark:bg-bg-dark"
       contentContainerClassName="gap-6 p-4"
     >
-      <View className="gap-1">
-        <Text className="text-xl font-semibold text-fg dark:text-fg-dark">Privacy</Text>
-        <Text className="text-sm text-fg-2 dark:text-fg-2-dark">{INTRO_BODY}</Text>
+      {/* task-4 brief step 2: the green reassurance banner. Body copy is the
+          screen's EXISTING `INTRO_BODY` verbatim, per the brief's own
+          instruction ("body from the existing copy") — not the board's own
+          sentence, which names a stronger promise ("no account, no cloud
+          sync, no analytics SDK") that lives in
+          docs/07-privacy-and-compliance.md §1 but has never actually shipped
+          as this screen's copy (m3b Task 8's report already caught this once:
+          "I keep asserting what the design says as though it were what the
+          code does"). Reusing the real, checkable sentence rather than the
+          board's stronger one keeps that history from repeating here. */}
+      <View testID="privacy-reassurance" className="gap-2 rounded-2xl bg-brand-soft p-4 dark:bg-brand-soft-dark">
+        <View className="flex-row items-center gap-2">
+          <SmartphoneIcon size={17} className="text-brand-ink dark:text-brand-ink-dark" />
+          <Text className="text-base font-bold text-brand-ink dark:text-brand-ink-dark">
+            Everything stays on this phone
+          </Text>
+        </View>
+        <Text className="text-sm text-brand-ink dark:text-brand-ink-dark">{INTRO_BODY}</Text>
       </View>
 
+      <SectionHeader title="Listening" />
       <CaptureToggle
         enabled={captureEnabled}
         onChange={(enabled) => setCaptureEnabled.mutate(enabled)}
@@ -216,6 +236,39 @@ export default function PrivacyScreen() {
         <CapturedList items={capturedItems} />
       </View>
 
+      {/*
+        task-4 brief step 2 also draws a "WHAT'S STORED" table (three rows,
+        each a record count and an on-disk size) and a second "Delete source
+        notifications now" action beside Export. Neither exists here, and not
+        for lack of time:
+
+          - No repository anywhere in this app computes a row count OR a
+            byte size for any table (grepped `lib/db/repos/**`,
+            `lib/privacy/data_export.ts` and `lib/privacy/data_wipe.ts` — the
+            two files that already enumerate every table for a different
+            reason, `listDataTableNames`/`listWipeableTables`, neither counts
+            rows or measures bytes). Building it means new repo functions,
+            and `lib/db/repos/**` is outside this task's file list.
+          - "Delete source notifications now" has no function behind it
+            either: `raw_notifications_repo.ts` exposes exactly one delete
+            path, `purgeExpiredRawCaptures(now)`, which only removes rows
+            already past their 30-day `expires_at` — not an on-demand
+            "delete everything captured so far" primitive. A button wired to
+            nothing, or wired to the expiry purge under a label that promises
+            more, is the exact non-interactive-control trap the revamp's own
+            constraints warn against.
+          - Fetching full tables client-side just to print a count was
+            considered and rejected: this file's own `CapturedList` already
+            paid for that mistake once (see captured_list.tsx's header — a
+            7707px screen from rendering every capture unpaginated) — and
+            "Rules & limits" has no single existing query either, since it
+            would need to combine `limits_repo.ts` with `user_rules_repo.ts`,
+            for which no query hook exists at all today.
+
+        Export, Wipe, and the captured-notifications list above (the actual,
+        already-real proof of what is stored) are what ship instead. Noted
+        here as follow-up rather than silently dropped.
+      */}
       <View className="gap-2">
         <Text className="text-base font-semibold text-fg dark:text-fg-dark">Your data</Text>
         <Button

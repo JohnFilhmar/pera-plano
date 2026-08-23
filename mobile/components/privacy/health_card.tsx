@@ -10,9 +10,13 @@
 // `openAccessSettings()` itself, which is what keeps this file requirable
 // under Jest with no mock at all (`modules/notification_listener` calls
 // `requireNativeModule` at import time and throws otherwise).
+import { HeartPulse } from "lucide-react-native";
 import { Pressable, Text, View } from "react-native";
 
+import { registerIcon } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Chip } from "@/components/ui/chip";
+import { ListRow } from "@/components/ui/list_row";
 import type { TrackingHealth } from "@/hooks/queries/use_listener_health";
 import { formatDateTime } from "@/lib/datetime";
 
@@ -21,6 +25,8 @@ export type HealthCardProps = {
   onOpenAccessSettings: () => void;
   testID?: string;
 };
+
+const HeartPulseIcon = registerIcon(HeartPulse);
 
 function lastCaptureLabel(lastCaptureAt: number | null): string {
   // `null` stays "not yet" rather than being coerced to an epoch date — the
@@ -31,49 +37,100 @@ function lastCaptureLabel(lastCaptureAt: number | null): string {
     : `Last capture ${formatDateTime(lastCaptureAt)}`;
 }
 
+/**
+ * The board's "Everything's listening" headline, generalised to its two
+ * unhealthy equivalents from the SAME two booleans this card already reads —
+ * no new data. Ordered by severity: a revoked permission is worse than a
+ * disconnected service (the service cannot run at all without the
+ * permission), matching `!granted`'s existing precedence over
+ * `!serviceConnected` in the revoked-warning branch below.
+ */
+function healthHeadline(granted: boolean, serviceConnected: boolean): string {
+  if (!granted) return "Notification access needed";
+  if (!serviceConnected) return "Listener disconnected";
+  return "Everything's listening";
+}
+
 export function HealthCard({ health, onOpenAccessSettings, testID }: HealthCardProps) {
   if (health === undefined) {
     return <View testID={testID ?? "health-card-loading"} />;
   }
 
   const { granted, serviceConnected, lastCaptureAt } = health;
+  const healthy = granted && serviceConnected;
 
   return (
     <Card testID={testID ?? "health-card"}>
-      <Text className="text-lg font-semibold text-fg dark:text-fg-dark">Listener health</Text>
-
-      {/* The three facts, rule 1 — always shown, regardless of state, so the
-          screen never makes the user guess what it already knows. */}
-      <View className="mt-3 gap-2">
-        <View className="flex-row items-center justify-between">
-          <Text className="text-fg-2 dark:text-fg-2-dark">Notification access</Text>
-          <Text
-            testID="health-card-granted"
+      {/* Mint disc + heart-pulse glyph when healthy, per the task-4 brief —
+          and its unhealthy equivalents, built from the SAME two booleans the
+          three-fact list below already reads rather than new state. The
+          disc's own colour never goes further than `bg-chip` (neutral): the
+          app's tokens have no `danger-soft`/`warn-soft` background — only
+          `brand-soft` is a real opaque token (constants/colors.ts) — and the
+          actual fault severity already has its own loud red banner further
+          down, so this disc stays calm and lets the icon tint alone carry
+          the difference. */}
+      <View className="items-center gap-2 py-1">
+        <View
+          className={`h-[46px] w-[46px] items-center justify-center rounded-full ${
+            healthy ? "bg-brand-soft dark:bg-brand-soft-dark" : "bg-chip dark:bg-chip-dark"
+          }`}
+        >
+          <HeartPulseIcon
+            size={22}
             className={
-              granted
-                ? "font-semibold text-brand dark:text-brand-dark"
-                : "font-semibold text-danger dark:text-danger-dark"
+              !granted
+                ? "text-danger dark:text-danger-dark"
+                : !serviceConnected
+                  ? "text-warn dark:text-warn-dark"
+                  : "text-brand dark:text-brand-dark"
             }
-          >
-            {granted ? "Granted" : "Revoked"}
-          </Text>
+          />
         </View>
-        <View className="flex-row items-center justify-between">
-          <Text className="text-fg-2 dark:text-fg-2-dark">Listener service</Text>
-          <Text
-            testID="health-card-connected"
-            className={
-              serviceConnected
-                ? "font-semibold text-brand dark:text-brand-dark"
-                : "font-semibold text-warn dark:text-warn-dark"
-            }
-          >
-            {serviceConnected ? "Connected" : "Disconnected"}
-          </Text>
-        </View>
-        <Text testID="health-card-last-capture" className="text-fg-2 dark:text-fg-2-dark">
+        <Text className="text-center text-body font-extrabold text-fg dark:text-fg-dark">
+          {healthHeadline(granted, serviceConnected)}
+        </Text>
+        <Text
+          testID="health-card-last-capture"
+          className="text-center text-secondary text-fg-2 dark:text-fg-2-dark"
+        >
           {lastCaptureLabel(lastCaptureAt)}
         </Text>
+      </View>
+
+      {/* The two live permission facts, rule 1 — always shown, regardless of
+          state, so the screen never makes the user guess what it already
+          knows. Each is a `ListRow` with a status `Chip` on the right,
+          established for exactly this screen: `tone="brand" fill="soft"` for
+          granted, `tone="warn" fill="soft"` for a service that needs a
+          check, `tone="neutral" fill="outline"` for not granted. A revoked
+          permission stays in the calm "not-granted" bucket here — its actual
+          severity is the loud dedicated banner below, not this row. */}
+      <View className="mt-2 border-t border-line dark:border-line-dark">
+        <ListRow
+          title="Notification access"
+          right={
+            <Chip
+              testID="health-card-granted"
+              label={granted ? "Granted" : "Revoked"}
+              tone={granted ? "brand" : "neutral"}
+              fill={granted ? "soft" : "outline"}
+            />
+          }
+        />
+        <View className="border-t border-line dark:border-line-dark">
+          <ListRow
+            title="Listener service"
+            right={
+              <Chip
+                testID="health-card-connected"
+                label={serviceConnected ? "Connected" : "Disconnected"}
+                tone={serviceConnected ? "brand" : "warn"}
+                fill="soft"
+              />
+            }
+          />
+        </View>
       </View>
 
       {/* Rule 1's loud case. Some OEMs revoke Notification Access silently —

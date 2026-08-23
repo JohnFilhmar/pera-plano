@@ -17,6 +17,7 @@ import { Switch, Text, View } from "react-native";
 
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty_state";
+import { ListRow } from "@/components/ui/list_row";
 
 export type ProviderSwitchItem = {
   providerKey: string;
@@ -51,32 +52,45 @@ export function ProviderSwitchList({
 
   return (
     <Card testID={testID}>
-      <View className="gap-3">
-        {items.map((item) => (
-          <View key={item.providerKey} className="flex-row items-center justify-between gap-3">
-            <View className="flex-1 gap-0.5">
-              <Text className="text-base text-fg dark:text-fg-dark">{item.displayName}</Text>
-              {item.paused ? (
-                <Text
-                  testID={`provider-switch-paused-${item.providerKey}`}
-                  className="text-xs text-fg-2 dark:text-fg-2-dark"
-                >
-                  Paused
-                </Text>
-              ) : null}
-            </View>
-            <Switch
-              testID={`provider-switch-${item.providerKey}`}
-              value={!item.paused}
-              onValueChange={(value) => onToggle(item, !value)}
-              disabled={busyProviderKey === item.providerKey}
-              accessibilityRole="switch"
-              accessibilityLabel={item.displayName}
-              accessibilityState={{
-                checked: !item.paused,
-                disabled: busyProviderKey === item.providerKey,
-              }}
+      <View>
+        {items.map((item, index) => (
+          // A `ListRow` per provider, matching every other toggle row in the
+          // Privacy centre (task-4 brief step 2) — but the "Paused" indicator
+          // stays a SIBLING `Text` with its own testID rather than going
+          // through `ListRow`'s `subtitle` (a plain string with no testID
+          // slot of its own). `provider-switch-paused-${key}` is asserted
+          // directly in app/__tests__/privacy_screen.test.tsx; folding it
+          // into `subtitle` would still show the word "Paused" on screen but
+          // make that exact row unqueryable by testID.
+          <View
+            key={item.providerKey}
+            className={index === 0 ? "" : "border-t border-line dark:border-line-dark"}
+          >
+            <ListRow
+              title={item.displayName}
+              right={
+                <Switch
+                  testID={`provider-switch-${item.providerKey}`}
+                  value={!item.paused}
+                  onValueChange={(value) => onToggle(item, !value)}
+                  disabled={busyProviderKey === item.providerKey}
+                  accessibilityRole="switch"
+                  accessibilityLabel={item.displayName}
+                  accessibilityState={{
+                    checked: !item.paused,
+                    disabled: busyProviderKey === item.providerKey,
+                  }}
+                />
+              }
             />
+            {item.paused ? (
+              <Text
+                testID={`provider-switch-paused-${item.providerKey}`}
+                className="-mt-2 px-4 pb-2 text-xs text-fg-2 dark:text-fg-2-dark"
+              >
+                Paused
+              </Text>
+            ) : null}
           </View>
         ))}
       </View>
