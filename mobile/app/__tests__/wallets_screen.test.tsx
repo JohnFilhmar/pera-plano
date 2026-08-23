@@ -37,10 +37,12 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react-nativ
 import type { ReactNode } from "react";
 
 import { queryKeys } from "@/constants/query_keys";
+import { ThemeProvider } from "@/contexts/theme_context";
 import { closeDatabase } from "@/lib/db/database";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { insertTransaction } from "@/lib/db/repos/transactions_repo";
+import { setMatchers } from "@/lib/db/repos/wallet_matchers_repo";
 import { archiveWallet, createWallet } from "@/lib/db/repos/wallets_repo";
 import { DEFAULT_TUNABLES } from "@/lib/ingest/ruleset_types";
 import { queryClient as appQueryClient } from "@/lib/query_client";
@@ -73,8 +75,18 @@ function makeTestClient(): QueryClient {
 
 function renderScreen(): QueryClient {
   const client = makeTestClient();
+  // `ThemeProvider` is required now that the screen reads `useTheme()` to
+  // resolve Cash's brand-green ShareBar swatch to a literal hex (it must not
+  // reach for `palette` via a `dark:` className the way an ordinary token
+  // consumer would — see components/ui/share_bar.tsx's own header). Same
+  // nesting order as every other screen test that needs it
+  // (app/__tests__/home_screen.test.tsx, app/__tests__/goal_routes.test.tsx).
   function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    return (
+      <QueryClientProvider client={client}>
+        <ThemeProvider>{children}</ThemeProvider>
+      </QueryClientProvider>
+    );
   }
   render(<WalletsScreen />, { wrapper: Wrapper });
   return client;
@@ -444,5 +456,94 @@ describe("navigation", () => {
       pathname: "/wallet/[id]",
       params: { id: bpi.id },
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// mobile-ui-revamp Part 2 Task 5 — share bar, provider badges, no wallet cap
+// (docs/superpowers/specs/2026-08-22-mobile-ui-revamp-design.md §5.3, D10)
+// ---------------------------------------------------------------------------
+
+describe("the share bar on the total card", () => {
+  test("the total card carries a share bar with one segment per wallet", async () => {
+    const bpi = await createWallet({ name: "BPI", type: "bank", openingBalance: 60_000 });
+    const gcash = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 40_000 });
+
+    renderScreen();
+    await screen.findByTestId("wallets-share");
+
+    expect(screen.getByTestId(`wallets-share-seg-${bpi.id}`)).toBeTruthy();
+    expect(screen.getByTestId(`wallets-share-seg-${gcash.id}`)).toBeTruthy();
+  });
+
+  test("EXCLUDES a credit wallet's balance — the bar has to match the total figure above it", async () => {
+    // `totalActiveBalance` (lib/wallets/summary.ts) already excludes credit
+    // balances from the headline peso figure (rule 23: owed, not held). A
+    // share bar with a credit segment would draw a breakdown whose slices sum
+    // to a DIFFERENT number than the total it sits under, which is the same
+    // overstatement rule 23 exists to prevent, one layer down.
+    const bpi = await createWallet({ name: "BPI", type: "bank", openingBalance: 60_000 });
+    const visa = await createWallet({ name: "Visa", type: "credit", openingBalance: 1_234_500 });
+
+    renderScreen();
+    await screen.findByTestId("wallets-share");
+
+    expect(screen.getByTestId(`wallets-share-seg-${bpi.id}`)).toBeTruthy();
+    expect(screen.queryByTestId(`wallets-share-seg-${visa.id}`)).toBeNull();
+  });
+});
+
+describe("provider badges", () => {
+  test("a wallet row shows its provider badge", async () => {
+    const gcash = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 30_000 });
+    // No ruleset installed in this test — resolves through
+    // `PACKAGE_PROVIDER_KEYS`, constants/providers.ts's static fallback table,
+    // exactly the window `providerKeyForPackage`'s own doc describes.
+    await setMatchers(gcash.id, [{ packageName: "com.globe.gcash.android" }]);
+
+    renderScreen();
+
+    expect(await screen.findByTestId("wallet-badge-gcash")).toBeTruthy();
+  });
+
+  test("a wallet with no matchers renders its type icon, never a provider badge", async () => {
+    const cash = await createWallet({ name: "Pocket", type: "cash", openingBalance: 5_000 });
+
+    renderScreen();
+
+    expect(await screen.findByTestId(`wallet-card-${cash.id}-icon`)).toBeTruthy();
+    expect(screen.queryByTestId(/^wallet-badge-/)).toBeNull();
+  });
+});
+
+describe("the total label", () => {
+  test("counts non-archived wallets, and the count does not change when the toggle reveals archived ones", async () => {
+    // Rule 17's "the toggle changes what is VISIBLE, never what is counted" —
+    // already true of the peso total — applies equally to the new "Total
+    // across {n} wallets" label this task adds.
+    await createWallet({ name: "BPI", type: "bank", openingBalance: 10_000 });
+    await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 5_000 });
+    const closed = await createWallet({ name: "Closed BDO", type: "bank", openingBalance: 0 });
+    await archiveWallet(closed.id);
+
+    renderScreen();
+    await screen.findByText("Total across 2 wallets");
+
+    fireEvent.press(screen.getByTestId("wallets-archived-toggle"));
+    await screen.findByText("Closed BDO");
+
+    expect(screen.getByText("Total across 2 wallets")).toBeTruthy();
+  });
+});
+
+describe("no wallet cap in beta (spec D10)", () => {
+  test("there is no wallet cap upsell during beta", async () => {
+    await createWallet({ name: "BPI", type: "bank", openingBalance: 10_000 });
+
+    renderScreen();
+    await screen.findByText("BPI");
+
+    expect(screen.queryByText(/4th tracked wallet/i)).toBeNull();
+    expect(screen.queryByTestId("plus-gate")).toBeNull();
   });
 });

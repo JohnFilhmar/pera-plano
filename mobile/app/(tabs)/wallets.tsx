@@ -1,5 +1,8 @@
 // app/(tabs)/wallets.tsx — the Wallets tab (m1c plan Task 4;
 // docs/04-features/02-wallets.md; docs/06-information-architecture.md §3.3).
+// Restyled by mobile-ui-revamp Part 2 Task 5
+// (docs/superpowers/specs/2026-08-22-mobile-ui-revamp-design.md §5.3): a
+// `ShareBar` on the total card and a resolved provider per row.
 //
 // The first real screen in the app — everything before it was infrastructure —
 // and the first place the app states a number the user did not type. That
@@ -8,11 +11,12 @@
 // budgeting app by the size of the user's debt. The arithmetic lives in
 // lib/wallets/summary.ts, tested on its own; this file only lays it out.
 //
-// Three reads, each thin (Global Constraints: components consume hooks, hooks
+// Four reads, each thin (Global Constraints: components consume hooks, hooks
 // call repositories, no SQL here):
 //   useWallets({ includeArchived })  the list, keyed BY the toggle
 //   useRuleset()                     the drift tolerance and provider catalogue
 //   useBalanceDrifts(ids)            one reported-vs-computed pair per wallet
+//   useAllWalletMatchers()           every matcher, to derive each row's provider
 import { useRouter } from "expo-router";
 import { useState } from "react";
 import { ScrollView, Text, View } from "react-native";
@@ -22,10 +26,16 @@ import { AmountText } from "@/components/ui/amount_text";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty_state";
 import { SectionHeader } from "@/components/ui/section_header";
+import { ShareBar } from "@/components/ui/share_bar";
 import { WalletCard } from "@/components/wallets/wallet_card";
+import { palette } from "@/constants/colors";
+import { providerBadge, providerKeyForPackage } from "@/constants/providers";
+import { useTheme } from "@/contexts/theme_context";
+import { useAllWalletMatchers } from "@/hooks/queries/use_all_wallet_matchers";
 import { useBalanceDrifts } from "@/hooks/queries/use_balance_drift";
 import { useRuleset } from "@/hooks/queries/use_ruleset";
 import { useWallets } from "@/hooks/queries/use_wallets";
+import { systemClock } from "@/lib/clock";
 import {
   archivedWallets,
   groupWalletsByType,
@@ -45,6 +55,35 @@ export default function WalletsScreen() {
   // `undefined` until it loads, which the badge renders as no verdict at all.
   const toleranceCentavos = ruleset?.tunables.balanceDriftToleranceCentavos;
   const drifts = useBalanceDrifts((wallets ?? []).map((wallet) => wallet.id));
+  const { data: matchers } = useAllWalletMatchers();
+  // A raw hex, not a className: `ShareBar` and `ProviderBadge` both take
+  // colour as a VALUE (constants/providers.ts identity, never a status
+  // token), so the one non-provider swatch this screen supplies — Cash's own
+  // brand-green "identity" — has to resolve to a literal hex here too, the
+  // same way components/reports/donut_chart.tsx already resolves its raw SVG
+  // fill colours from `useTheme()` rather than a `dark:` className.
+  const { resolved } = useTheme();
+  const dark = resolved === "dark";
+  const nowMs = systemClock.now();
+
+  /**
+   * A wallet's provider, derived rather than stored (`Wallet` carries no
+   * provider field — types/domain.ts). Takes the FIRST matcher row for this
+   * wallet, per docs/superpowers/sdd's task-5 correction: a wallet can in
+   * principle hold more than one matcher, but the row only has room for one
+   * badge, and `created_at` ordering (`listMatchers`) makes "first" the
+   * oldest — the pair the wallet was originally set up with.
+   *
+   * `null` for a wallet with no matcher at all (Cash, manual wallets) AND for
+   * a wallet whose one matcher's package resolves to nothing recognisable —
+   * both render `WalletTypeIcon` in `WalletCard` rather than a badge.
+   */
+  function providerKeyForWallet(walletId: string): string | null {
+    const packageName = (matchers ?? []).find((matcher) => matcher.walletId === walletId)
+      ?.packageName;
+    if (packageName === undefined) return null;
+    return providerKeyForPackage(ruleset?.providers ?? [], packageName);
+  }
 
   // Render nothing until the list has actually loaded. An empty state that
   // flashes on every cold start reads as data loss on a screen whose whole job
@@ -81,6 +120,12 @@ export default function WalletsScreen() {
 
   const groups = groupWalletsByType(wallets);
   const archived = archivedWallets(wallets);
+  // The toggle changes what is VISIBLE, never what is counted (rule 17, the
+  // same principle `totalActiveBalance` already applies to the peso figure
+  // above it) — so this counts non-archived wallets out of the CURRENT list
+  // regardless of whether `showArchived` has widened it, rather than reading
+  // `wallets.length` directly.
+  const activeWalletCount = wallets.filter((wallet) => !wallet.isArchived).length;
 
   function openWallet(wallet: Wallet): void {
     router.push({ pathname: "/wallet/[id]", params: { id: wallet.id } });
@@ -93,6 +138,8 @@ export default function WalletsScreen() {
         wallet={wallet}
         drift={drifts[wallet.id]}
         toleranceCentavos={toleranceCentavos}
+        providerKey={providerKeyForWallet(wallet.id)}
+        nowMs={nowMs}
         onPress={() => openWallet(wallet)}
       />
     );
@@ -107,13 +154,52 @@ export default function WalletsScreen() {
           <Card>
             <View testID="wallets-total" className="gap-1">
               <Text className="text-sm text-fg-2 dark:text-fg-2-dark">
-                Total across your wallets
+                {`Total across ${activeWalletCount} wallets`}
               </Text>
               <AmountText
                 testID="wallets-total-amount"
                 amount={totalActiveBalance(wallets)}
                 size="hero"
                 showSign={false}
+              />
+              <ShareBar
+                testID="wallets-share"
+                shares={wallets
+                  // Same two exclusions as the peso figure just above it
+                  // (lib/wallets/summary.ts's `totalActiveBalance`): archived
+                  // wallets are out of every total, and a credit wallet's
+                  // balance is money OWED, not held. A share bar is a visual
+                  // breakdown of THAT figure — including either one here would
+                  // draw a bar whose segments do not sum to the number it sits
+                  // under, which is a subtler version of the exact overstatement
+                  // rule 23 exists to prevent. Zero-balance wallets are dropped
+                  // too: a wallet contributing nothing to the total draws no
+                  // segment either way, and `ShareBar` itself renders nothing at
+                  // all once every remaining share is filtered out (`total <= 0`).
+                  .filter(
+                    (wallet) =>
+                      !wallet.isArchived && wallet.type !== "credit" && wallet.balance > 0,
+                  )
+                  .map((wallet) => {
+                    const providerKey = providerKeyForWallet(wallet.id);
+                    return {
+                      id: wallet.id,
+                      label: wallet.name,
+                      value: wallet.balance,
+                      // A resolved provider's own colour, or — for a wallet
+                      // with no provider at all (Cash, manual) — the app's own
+                      // brand green rather than the grey "unidentified
+                      // provider" fallback: `wallet_detail.tsx`'s no-provider
+                      // fill uses the same `bg-brand` identity (task-5b brief,
+                      // "A wallet with no provider (Cash) fills bg-brand
+                      // instead"), and the design board's own Cash segment is
+                      // literally `var(--gr)`, not the grey used for an
+                      // unrecognised package.
+                      color: providerKey
+                        ? providerBadge(providerKey).color
+                        : palette[dark ? "brand-dark" : "brand"],
+                    };
+                  })}
               />
               <Text className="text-xs text-fg-2 dark:text-fg-2-dark">
                 Credit balances are money you owe, so they are not counted here.

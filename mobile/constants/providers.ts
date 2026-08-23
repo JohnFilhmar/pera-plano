@@ -76,22 +76,62 @@ const PACKAGE_PROVIDER_KEYS: Record<string, string> = {
 };
 
 /**
+ * Android package → provider KEY (not label), for a wallet row that needs to
+ * colour and letter a badge (`providerBadge` below takes a key, never a
+ * label) rather than print text.
+ *
+ * Added for mobile-ui-revamp Part 2 Task 5: `Wallet` itself carries no
+ * provider field (see `types/domain.ts` — a wallet's provider is derived
+ * through its `WalletMatcher` rows, never stored on the wallet), so a screen
+ * that has resolved a matcher's `packageName` needs a key, and until now the
+ * only exported resolver in this file produced a display string.
+ *
+ * SAME THREE-STEP RESOLUTION AS `providerLabelForPackage`, DELIBERATELY
+ * SHARED RATHER THAN DUPLICATED — see that function below, which now calls
+ * this one. Two independent copies of "installed ruleset, then the shipped
+ * table, then give up" is how a badge and a label end up disagreeing about
+ * which provider a package belongs to, which on a matcher chip would mean the
+ * colour square and the text beside it name two different companies.
+ *
+ * Returns `null`, NEVER THE RAW PACKAGE NAME, when nothing matches. A label
+ * has to show something a user can read, so `providerLabelForPackage` falls
+ * back to the package string itself — but a badge has no text slot to put a
+ * package id in, and `providerBadge` already has its own designed fallback
+ * for "unidentified provider" (a grey square, the key's own initial). Passing
+ * a raw package name into `providerBadge` would badge it with the package
+ * string's first character instead, which is a worse, uglier version of the
+ * SAME fallback rather than a distinct state — `null` lets a caller choose
+ * that designed fallback (or a different rendering entirely, e.g. Wallets'
+ * "no provider at all" WalletTypeIcon branch) instead of being handed a
+ * value that looks resolved but is not.
+ */
+export function providerKeyForPackage(
+  providers: readonly ProviderRuleset[],
+  packageName: string,
+): string | null {
+  const provider = providers.find((candidate) => candidate.packageNames.includes(packageName));
+  if (provider) return provider.providerKey;
+
+  return PACKAGE_PROVIDER_KEYS[packageName] ?? null;
+}
+
+/**
  * The name to show for a matcher's android package.
  *
  * Falls back three times, never to an empty string: the installed ruleset
  * first, then the shipped package table above, then the package itself. A blank
  * chip reading "Catches:" would tell the user their wallet catches nothing,
  * which is the opposite of what a stale label means.
+ *
+ * DELEGATES TO `providerKeyForPackage` for the first two steps, so the two
+ * functions cannot resolve the same package to different providers.
  */
 export function providerLabelForPackage(
   providers: readonly ProviderRuleset[],
   packageName: string,
 ): string {
-  const provider = providers.find((candidate) => candidate.packageNames.includes(packageName));
-  if (provider) return providerLabel(provider.providerKey);
-
-  const knownKey = PACKAGE_PROVIDER_KEYS[packageName];
-  return knownKey ? providerLabel(knownKey) : packageName;
+  const key = providerKeyForPackage(providers, packageName);
+  return key ? providerLabel(key) : packageName;
 }
 
 /**

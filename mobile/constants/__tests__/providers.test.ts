@@ -13,6 +13,7 @@ import {
   PROVIDER_BADGE,
   PROVIDER_LABELS,
   providerBadge,
+  providerKeyForPackage,
   providerLabel,
   providerLabelForPackage,
 } from "../providers";
@@ -67,6 +68,55 @@ describe("providerLabelForPackage", () => {
   });
 
   test("a package nothing claims still renders something readable", () => {
+    expect(providerLabelForPackage([], "com.unknown.bank")).toBe("com.unknown.bank");
+  });
+});
+
+// mobile-ui-revamp Part 2 Task 5: `providerBadge` needs a KEY, and
+// `Wallet` carries none — a wallet's provider is derived through its
+// `WalletMatcher.packageName`, so a screen needs a package -> key resolver,
+// not just the package -> label one above.
+describe("providerKeyForPackage", () => {
+  test("resolves through the installed ruleset", () => {
+    expect(providerKeyForPackage([provider()], GCASH_PACKAGE)).toBe("gcash");
+  });
+
+  test("falls back to the shipped package table when the ruleset has not loaded", () => {
+    expect(providerKeyForPackage([], GCASH_PACKAGE)).toBe("gcash");
+    expect(providerKeyForPackage([], "com.paymaya")).toBe("maya");
+  });
+
+  test("the installed ruleset wins over the static fallback", () => {
+    expect(providerKeyForPackage([provider({ providerKey: "maya" })], GCASH_PACKAGE)).toBe("maya");
+  });
+
+  test("a package nothing claims resolves to null, NEVER the raw package name", () => {
+    // The difference from `providerLabelForPackage`'s fallback on purpose: a
+    // label has to print something readable, so it falls back to the package
+    // string. A badge has no text slot for a package id — `providerBadge`
+    // already has its own designed "unidentified provider" fallback (a grey
+    // square, the key's own initial), and handing it a raw package name
+    // instead would badge it with the package string's first letter, a worse
+    // version of that SAME fallback rather than a distinct, honest state.
+    expect(providerKeyForPackage([], "com.unknown.bank")).toBeNull();
+  });
+});
+
+describe("providerLabelForPackage delegates to providerKeyForPackage", () => {
+  // THE FAILURE THIS PINS: a badge and the label beside it resolving the same
+  // package to two different providers, because each carried its own copy of
+  // "ruleset first, then the static table". Asserted by constructing the
+  // label the delegation implies and checking the real function agrees with
+  // it, for every case the two functions could disagree on.
+  test("when the key resolves, the label is providerLabel of THAT key", () => {
+    const providers = [provider({ providerKey: "maya" })];
+    const key = providerKeyForPackage(providers, GCASH_PACKAGE);
+    expect(key).not.toBeNull();
+    expect(providerLabelForPackage(providers, GCASH_PACKAGE)).toBe(providerLabel(key as string));
+  });
+
+  test("when the key is null, the label falls back to the raw package — not to the key's fallback", () => {
+    expect(providerKeyForPackage([], "com.unknown.bank")).toBeNull();
     expect(providerLabelForPackage([], "com.unknown.bank")).toBe("com.unknown.bank");
   });
 });

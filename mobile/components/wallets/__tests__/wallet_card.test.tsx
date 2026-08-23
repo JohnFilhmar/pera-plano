@@ -349,6 +349,180 @@ describe("WalletCard", () => {
 });
 
 // ---------------------------------------------------------------------------
+// WalletCard — provider badge, listening/manual state, last-seen
+// (mobile-ui-revamp Part 2 Task 5)
+// ---------------------------------------------------------------------------
+
+describe("WalletCard — provider identity", () => {
+  test("no providerKey renders the type icon, never a provider badge", () => {
+    // task-5 correction: `Wallet` has no provider field of its own, so a
+    // wallet the caller could not resolve a provider for (no matcher — Cash,
+    // any manual wallet) must NOT fall through to `providerBadge("")`'s grey
+    // square, which would claim a company identity that does not exist.
+    render(<WalletCard wallet={wallet()} drift={null} toleranceCentavos={100} />);
+    expect(screen.getByTestId("wallet-card-w1-icon")).toBeTruthy();
+    expect(screen.queryByTestId(/^wallet-badge-/)).toBeNull();
+  });
+
+  test("a providerKey renders ProviderBadge instead of the type icon", () => {
+    render(
+      <WalletCard wallet={wallet()} drift={null} toleranceCentavos={100} providerKey="gcash" />,
+    );
+    expect(screen.getByTestId("wallet-badge-gcash")).toBeTruthy();
+    expect(screen.queryByTestId("wallet-card-w1-icon")).toBeNull();
+  });
+
+  test("a provider-backed, active, non-credit wallet says it is listening", () => {
+    render(
+      <WalletCard wallet={wallet()} drift={null} toleranceCentavos={100} providerKey="gcash" />,
+    );
+    expect(screen.getByText("Listening")).toBeTruthy();
+  });
+
+  test("a wallet with no provider says it is manual, and how often to reconcile it", () => {
+    render(<WalletCard wallet={wallet()} drift={null} toleranceCentavos={100} />);
+    expect(screen.getByText("Manual · reconcile weekly")).toBeTruthy();
+  });
+
+  test("no fabricated transaction count — the status line names a STATE, not a number", () => {
+    // The design board's own illustrative copy is internally inconsistent
+    // about this figure (one row reads "12 txns this period", the very next
+    // "4 txns" with no period at all) and this codebase has no period-scoped,
+    // per-wallet transaction count to draw a real one from. Pinned so a future
+    // change does not quietly invent a number nothing computed.
+    render(
+      <WalletCard wallet={wallet()} drift={null} toleranceCentavos={100} providerKey="gcash" />,
+    );
+    expect(screen.queryByText(/txns?/i)).toBeNull();
+  });
+
+  test("ARCHIVED wins over the listening/manual line, same precedence as it already had over Owed", () => {
+    render(
+      <WalletCard
+        wallet={wallet({ isArchived: true })}
+        drift={null}
+        toleranceCentavos={100}
+        providerKey="gcash"
+      />,
+    );
+    expect(screen.getByText("Archived")).toBeTruthy();
+    expect(screen.queryByText("Listening")).toBeNull();
+  });
+
+  test("CREDIT wins over the listening/manual line too", () => {
+    render(
+      <WalletCard
+        wallet={wallet({ type: "credit" })}
+        drift={null}
+        toleranceCentavos={100}
+        providerKey="gcash"
+      />,
+    );
+    expect(screen.getByText("Owed")).toBeTruthy();
+    expect(screen.queryByText("Listening")).toBeNull();
+  });
+});
+
+describe("WalletCard — last-seen caption", () => {
+  // `nowMs` is a prop precisely so this can be pinned instead of racing
+  // `Date.now()` — see the prop's own doc in wallet_card.tsx.
+  const NOON_AUG_15 = new Date(2026, 7, 15, 12, 0).getTime();
+
+  test("under a minute reads 'just now'", () => {
+    render(
+      <WalletCard
+        wallet={wallet({ updatedAt: NOON_AUG_15 - 10_000 })}
+        drift={null}
+        toleranceCentavos={100}
+        providerKey="gcash"
+        nowMs={NOON_AUG_15}
+      />,
+    );
+    expect(screen.getByText("just now")).toBeTruthy();
+  });
+
+  test("minutes ago, same calendar day", () => {
+    render(
+      <WalletCard
+        wallet={wallet({ updatedAt: NOON_AUG_15 - 2 * 60_000 })}
+        drift={null}
+        toleranceCentavos={100}
+        providerKey="gcash"
+        nowMs={NOON_AUG_15}
+      />,
+    );
+    expect(screen.getByText("2 min ago")).toBeTruthy();
+  });
+
+  test("earlier the same calendar day reads hours ago, not a day count", () => {
+    render(
+      <WalletCard
+        wallet={wallet({ updatedAt: new Date(2026, 7, 15, 3, 0).getTime() })}
+        drift={null}
+        toleranceCentavos={100}
+        providerKey="gcash"
+        nowMs={NOON_AUG_15}
+      />,
+    );
+    expect(screen.getByText("9 hr ago")).toBeTruthy();
+  });
+
+  test("the previous CALENDAR day reads 'yesterday', even close to midnight", () => {
+    render(
+      <WalletCard
+        wallet={wallet({ updatedAt: new Date(2026, 7, 14, 23, 58).getTime() })}
+        drift={null}
+        toleranceCentavos={100}
+        providerKey="gcash"
+        nowMs={NOON_AUG_15}
+      />,
+    );
+    expect(screen.getByText("yesterday")).toBeTruthy();
+  });
+
+  test("older than yesterday reads a short month/day, no year", () => {
+    render(
+      <WalletCard
+        wallet={wallet({ updatedAt: new Date(2026, 7, 1, 9, 0).getTime() })}
+        drift={null}
+        toleranceCentavos={100}
+        providerKey="gcash"
+        nowMs={NOON_AUG_15}
+      />,
+    );
+    expect(screen.getByText("Aug 1")).toBeTruthy();
+  });
+
+  test("a manual wallet shows 'Reconcile' instead of any last-seen time", () => {
+    render(
+      <WalletCard
+        wallet={wallet({ updatedAt: NOON_AUG_15 - 10_000 })}
+        drift={null}
+        toleranceCentavos={100}
+        nowMs={NOON_AUG_15}
+      />,
+    );
+    expect(screen.getByText("Reconcile")).toBeTruthy();
+    expect(screen.queryByText("just now")).toBeNull();
+  });
+
+  test("an archived wallet shows neither a last-seen time nor 'Reconcile'", () => {
+    // A retired wallet has no upcoming reconcile, and its last commit is
+    // already spoken for by the "Archived" status line.
+    render(
+      <WalletCard
+        wallet={wallet({ isArchived: true, updatedAt: NOON_AUG_15 - 10_000 })}
+        drift={null}
+        toleranceCentavos={100}
+        nowMs={NOON_AUG_15}
+      />,
+    );
+    expect(screen.queryByText("Reconcile")).toBeNull();
+    expect(screen.queryByText("just now")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // MatcherChipList
 // ---------------------------------------------------------------------------
 
