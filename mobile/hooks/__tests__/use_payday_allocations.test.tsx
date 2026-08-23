@@ -1,19 +1,18 @@
-// app/__tests__/plan_hub.test.tsx — m2b Task 9.
+// hooks/__tests__/use_payday_allocations.test.tsx — m2b Task 9, rule 2.
 //
-// Two subjects: what the Plan hub invites the user into now that `goals` and
-// `loans` have shipped, and the payday → allocation hand-off the shell wires up.
-//
-// The hand-off is tested through `usePaydayAllocations` rather than through the
-// root layout. The shell needs fonts, a theme, an unlocked database and a
-// finished bootstrap before it renders anything, so driving it here would test
-// the shell; the hook is where the RULE lives.
-jest.mock("expo-router", () => ({
-  useRouter: () => ({ push: (...args: unknown[]) => mockPush(...args) }),
-}));
-
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react-native";
-import type { ReactNode } from "react";
+// EXTRACTED FROM app/__tests__/plan_hub.test.tsx (mobile-ui-revamp Part 2
+// Task 7). That file bundled two unrelated subjects because m2b Task 9
+// shipped them together: what the Plan hub invited the user into, and the
+// payday → allocation hand-off `usePaydayAllocations` drives. Task 7 deletes
+// the hub — a segmented control replaces it, and `getByText("Loans")` /
+// `expect(mockPush)...` against a card list are now assertions about a screen
+// that no longer exists — but this hook is not part of that screen. It is
+// never rendered through `PlanScreen`; `app/_layout.tsx` calls it directly at
+// the root, and every test below drives it with bare `renderHook`, no router
+// mock and no `<PlanScreen />` in sight. Deleting the file it happened to live
+// in would have deleted this coverage along with it for no reason connected
+// to the hub going away, so it moves here instead — same tests, unchanged.
+import { act, renderHook, waitFor } from "@testing-library/react-native";
 
 import { closeDatabase } from "@/lib/db/database";
 import { seedDefaultCategories } from "@/lib/db/repos/categories_repo";
@@ -22,28 +21,8 @@ import { createWallet } from "@/lib/db/repos/wallets_repo";
 import { __setTierForTests } from "@/lib/entitlements";
 import { emitAppEvent } from "@/lib/events/app_events";
 import { PAYDAY_EVENT } from "@/lib/income/income_service";
-import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
 import { usePaydayAllocations } from "@/hooks/use_payday_allocations";
-
-import PlanScreen from "../(tabs)/plan";
-
-const mockPush = jest.fn();
-
-function makeTestClient(): QueryClient {
-  const defaults = appQueryClient.getDefaultOptions();
-  return new QueryClient({
-    defaultOptions: {
-      ...defaults,
-      queries: { ...defaults.queries, retry: 0, gcTime: Infinity, staleTime: 0 },
-      mutations: { ...defaults.mutations, gcTime: 0 },
-    },
-  });
-}
-
-function renderScreen(ui: ReactNode) {
-  return render(<QueryClientProvider client={makeTestClient()}>{ui}</QueryClientProvider>);
-}
 
 beforeEach(async () => {
   await freshDb();
@@ -55,57 +34,6 @@ beforeEach(async () => {
 afterEach(async () => {
   __setTierForTests(null);
   await closeDatabase();
-});
-
-// ---------------------------------------------------------------------------
-// The hub — rules 1 and 4
-// ---------------------------------------------------------------------------
-test("EVERY PLAN SECTION IS LIVE, AND NOTHING IS SOON", async () => {
-  // m2c Task 6 rule 1: with Limits, Income, Goals, Loans and Bills all shipped
-  // "the Plan tab has no Soon items left". This is the M2 control features
-  // finished, asserted from the outside.
-  renderScreen(<PlanScreen />);
-
-  expect(screen.queryAllByTestId("soon-chip")).toHaveLength(0);
-
-  for (const [section, route] of [
-    ["limits", "/plan/limits"],
-    ["goals", "/plan/goals"],
-    ["loans", "/plan/loans"],
-    ["bills", "/plan/bills"],
-  ] as const) {
-    mockPush.mockClear();
-    fireEvent.press(screen.getByTestId(`plan-section-${section}`));
-    expect(mockPush).toHaveBeenCalledWith(route);
-  }
-});
-
-test("EVERY SECTION HAS A ROUTE, SO NONE CAN BE A DEAD END", async () => {
-  // `SoonGate` is still wrapped around every section — a later plan adding one
-  // must not have to rediscover where the gate goes — but with nothing soon it
-  // no longer blocks anything, and a section whose `href` was forgotten would
-  // now be a card that swallows taps in silence rather than an honest Soon chip.
-  renderScreen(<PlanScreen />);
-
-  for (const section of ["limits", "goals", "loans", "bills"]) {
-    mockPush.mockClear();
-    fireEvent.press(screen.getByTestId(`plan-section-${section}`));
-    expect(mockPush).toHaveBeenCalledTimes(1);
-  }
-});
-
-test("the hub still lists the IA's four sections, not five", async () => {
-  // m2b Task 9 rule 4 names five, adding Income. IA §2's PlanTab subgraph is
-  // explicit — "Plan hub: Limits, Goals, Loans, Bills" — and income is an
-  // onboarding step (IA §5 step 7) reachable from the percent-of-income limit
-  // flow. Same call as m2 Task 8, kept consistent.
-  renderScreen(<PlanScreen />);
-
-  screen.getByText("Limits");
-  screen.getByText("Goals");
-  screen.getByText("Loans");
-  screen.getByText("Bills");
-  expect(screen.queryByText("Income")).toBeNull();
 });
 
 // ---------------------------------------------------------------------------

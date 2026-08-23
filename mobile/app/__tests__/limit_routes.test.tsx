@@ -1,10 +1,19 @@
-// app/__tests__/limit_routes.test.tsx — m2 Task 8's four screens: the Plan hub
-// and the three limits routes.
+// app/__tests__/limit_routes.test.tsx — m2 Task 8's three limits routes.
+//
+// THE PLAN HUB TESTS THAT USED TO LIVE HERE ARE GONE (mobile-ui-revamp Part 2
+// Task 7). `PlanScreen` stopped being a scrollable stack of section cards —
+// it is now a segmented host, and pressing a segment is a state change, never
+// a `router.push` (revamp spec R4). The two tests this file used to carry —
+// "the hub lists the IA's four sections" (which asserted `getByText("Loans")`
+// and the absence of "Income") and "THE HUB REACHES LIMITS" (which asserted
+// pressing `plan-section-limits` called `push`) — describe a screen and a
+// testID that no longer exist. Their replacements live in
+// app/__tests__/plan_segments.test.tsx, which owns the segmented host now.
 //
 // The card is tested in isolation next door (components/limits/__tests__); this
 // file is about what the ROUTES do — the reads they wire together and the
-// writes they commit against a real database. Four claims live here and nowhere
-// else:
+// writes they commit against a real database. Three claims live here and
+// nowhere else:
 //
 //   THE FREE CAP BLOCKS CREATION AND DELETES NOTHING. docs/05-monetization.md
 //   §3.1, and m2 Global Constraint 11. The gated screen must still leave the
@@ -14,10 +23,6 @@
 //   version passes a wallet id only when the limit filters on exactly one, and
 //   never passes the category filter — so a filtered limit lists transactions
 //   the total does not count, and the screen contradicts itself on screen.
-//
-//   THE HUB DOES NOT INVITE ANYONE INTO AN UNSHIPPED SECTION. Limits went
-//   "shipped" in m2-part2 Task 14 and now navigates; Goals, Loans and Bills
-//   belong to m2b/m2c and stay grey and inert until those plans flip them.
 //
 //   A LIMIT IS NAMED THE SAME WAY EVERYWHERE. The list and the detail header
 //   both go through `limitDisplayName`.
@@ -54,7 +59,6 @@ import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
 import type { Category, Wallet } from "@/types/domain";
 
-import PlanScreen from "../(tabs)/plan";
 import LimitsScreen from "../(tabs)/plan/limits";
 import NewLimitScreen from "../(tabs)/plan/limits/new";
 import LimitDetailScreen from "../(tabs)/plan/limits/[id]";
@@ -135,36 +139,6 @@ async function spend(categoryId: string, amount: number): Promise<void> {
     confidence: 1,
   });
 }
-
-// ---------------------------------------------------------------------------
-// The Plan hub
-// ---------------------------------------------------------------------------
-test("the hub lists the IA's four sections", async () => {
-  // docs/06-information-architecture.md §2: "Plan hub: Limits, Goals, Loans,
-  // Bills". The m2 plan's snippet adds a fifth Income row; income is an
-  // onboarding step and has no hub row.
-  renderScreen(<PlanScreen />);
-
-  screen.getByText("Limits");
-  screen.getByText("Goals");
-  screen.getByText("Loans");
-  screen.getByText("Bills");
-  expect(screen.queryByText("Income")).toBeNull();
-});
-
-test("THE HUB REACHES LIMITS", async () => {
-  // m2-part2 Task 14 flipped `limits` (and `income`) to "shipped" in
-  // constants/shipped_features.ts, per the foundation plan's rollout table.
-  //
-  // ONLY THE LIMITS ROW IS ASSERTED HERE, deliberately. Which OTHER sections
-  // are live changes with every rollout flip, and pinning that here as well
-  // would make one assertion have to be edited in two files on every plan —
-  // app/__tests__/plan_hub.test.tsx owns the hub-wide picture.
-  renderScreen(<PlanScreen />);
-
-  fireEvent.press(screen.getByTestId("plan-section-limits"));
-  expect(mockPush).toHaveBeenCalledWith("/plan/limits");
-});
 
 // ---------------------------------------------------------------------------
 // The limits list

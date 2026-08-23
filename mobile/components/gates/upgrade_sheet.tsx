@@ -71,7 +71,10 @@ const CAPABILITY_COPY: Record<
     plus: "Unlimited + payday auto-allocate",
   },
   amortization: {
-    label: "Loans",
+    // "Utang", not "Loans" (mobile-ui-revamp Part 2 Task 7): the Plan tab's
+    // segment carries the same rename, and this sheet's whole premise is
+    // showing every capability in the user's own words.
+    label: "Utang",
     free: "Balance + next due",
     plus: "Unlimited + full amortization schedule",
   },
