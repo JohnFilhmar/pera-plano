@@ -75,7 +75,15 @@ function MechanismCard({ step }: { step: MechanismStep }) {
     <Card testID={`how-it-works-step-${step.id}`}>
       <View className="flex-row items-center gap-3">
         <View className="h-9 w-9 items-center justify-center rounded-full bg-brand-soft dark:bg-brand-soft-dark">
-          <Text className="text-row font-extrabold text-brand dark:text-brand-dark">
+          {/*
+            `brand-ink`, not the bare `brand` this badge originally shipped
+            with — the identical fragile pairing (4.567:1, a hair over WCAG
+            AA's 4.5:1 floor) components/gates/plus_gate.tsx already measured
+            and replaced on the same `bg-brand-soft` background. `brand-ink`
+            measures 6.49:1 here, with real headroom. Dark mode is unchanged:
+            `brand-ink-dark` aliases `brand-dark` by value.
+          */}
+          <Text className="text-row font-extrabold text-brand-ink dark:text-brand-ink-dark">
             {step.number}
           </Text>
         </View>

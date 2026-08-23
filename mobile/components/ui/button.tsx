@@ -101,7 +101,16 @@ const VARIANT_FG: Record<ButtonVariant, string> = {
   // page background" — see constants/colors.ts's ON-BRAND FOREGROUND block
   // for why the two used to collide and the contrast numbers for this pair.
   primary: "text-on-brand dark:text-on-brand-dark",
-  secondary: "text-brand dark:text-brand-dark",
+  // `brand-ink`, not the bare `brand` this variant originally shipped with.
+  // `secondary`'s fill is `bg-brand-soft` (VARIANT_BG above) — an opaque
+  // token, #DCFCE7 — and `brand` on it measures 4.567:1
+  // (constants/colors.ts), a hair over WCAG AA's 4.5:1 floor with no
+  // headroom. `brand-ink` measures 6.49:1 on the same background, the exact
+  // fix components/gates/plus_gate.tsx already proved for this pairing.
+  // `ghost`'s `text-brand` stays as-is: its fill is `bg-transparent`
+  // (VARIANT_BG.ghost), not a soft tint, so this file's own rule (ink tokens
+  // are for text on a hue's own soft tint, nowhere else) does not apply there.
+  secondary: "text-brand-ink dark:text-brand-ink-dark",
   ghost: "text-brand dark:text-brand-dark",
   destructive: "text-on-brand dark:text-on-brand-dark",
   "outline-destructive": "text-danger dark:text-danger-dark",

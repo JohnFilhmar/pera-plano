@@ -45,6 +45,25 @@ test("iconOnly requires an icon at the type level", () => {
   screen.getByTestId("b");
 });
 
+// Design F7's sweep: `secondary`'s fill is `bg-brand-soft` (VARIANT_BG), an
+// opaque token the bare `brand` tone only clears WCAG AA against at a bare
+// 4.567:1 (constants/colors.ts) — the identical fragile pairing
+// components/gates/plus_gate.tsx already measured and moved off of.
+// `ghost`'s label stays the bare `brand` deliberately: its fill is
+// `bg-transparent`, not a soft tint, so the ink-token rule does not apply to
+// it — asserted here as the contrasting case, not merely assumed safe.
+test("secondary's label and icon ink with brand-ink — brand-soft has no headroom for the bare tone", () => {
+  render(<Button testID="b" title="Skip" variant="secondary" onPress={() => {}} />);
+  expect(String(screen.getByText("Skip").props.className)).toContain("text-brand-ink");
+});
+
+test("ghost keeps the bare brand tone — its fill is transparent, not brand-soft", () => {
+  render(<Button testID="b" title="Skip" variant="ghost" onPress={() => {}} />);
+  const classes = String(screen.getByText("Skip").props.className);
+  expect(classes).toContain("text-brand");
+  expect(classes).not.toContain("text-brand-ink");
+});
+
 test("lg is taller than md", () => {
   // Two renders in one test: `screen` tracks only the most recently rendered
   // tree (primitives.test.tsx's destructive-variant loop hits the same

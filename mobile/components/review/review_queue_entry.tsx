@@ -63,10 +63,23 @@ export function ReviewQueueEntry({
         accessibilityLabel={label}
         className="min-h-[44px] flex-row items-center gap-2 rounded-xl bg-brand-soft px-4 py-3 dark:bg-brand-soft-dark"
       >
-        <Text className="flex-1 text-row font-semibold text-brand dark:text-brand-dark">
+        {/*
+          `brand-ink`, never the bare `brand` a first draft of this banner
+          used. Both ink real text on `bg-brand-soft` (an opaque token,
+          #DCFCE7 — not the alpha-composited soft-chip tint), and
+          constants/colors.ts's own recorded arithmetic has `brand` on that
+          background at 4.567:1 — a hair over WCAG AA's 4.5:1 floor with no
+          headroom for a future palette tweak. `brand-ink` measures 6.49:1
+          against the same background, comfortably clear — the identical fix
+          components/gates/plus_gate.tsx already proved for this exact
+          pairing. Dark mode is untouched: `brand-ink-dark` is an alias of
+          `brand-dark` by value (constants/colors.ts), so this changes
+          nothing there.
+        */}
+        <Text className="flex-1 text-row font-semibold text-brand-ink dark:text-brand-ink-dark">
           {label}
         </Text>
-        <ChevronGlyph size={16} className="text-brand dark:text-brand-dark" />
+        <ChevronGlyph size={16} className="text-brand-ink dark:text-brand-ink-dark" />
       </Pressable>
     </View>
   );

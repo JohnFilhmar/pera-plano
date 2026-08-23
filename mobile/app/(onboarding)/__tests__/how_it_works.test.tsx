@@ -78,3 +78,22 @@ test("how_it_works renders the numbered mechanism cards above the mechanism copy
   expect(cardsIndex).toBeGreaterThanOrEqual(0);
   expect(mechanismIndex).toBeGreaterThan(cardsIndex);
 });
+
+// Design F7 regression: the numbered badge's `bg-brand-soft` disc needs
+// `brand-ink`, not the bare `brand` this file originally shipped with — the
+// identical fragile 4.567:1 pairing (constants/colors.ts) already measured
+// and replaced in components/gates/plus_gate.tsx. Anchored on the positive
+// "the digit renders at all" lookup first, per the same rule the ordering
+// test above already follows for its own testID lookups.
+test("the step-number badges ink with brand-ink, not the bare brand tone their bg-brand-soft disc has no headroom against", () => {
+  render(<HowItWorksScreen />);
+
+  const first = screen.getByText("1");
+  expect(String(first.props.className)).toContain("text-brand-ink");
+
+  const second = screen.getByText("2");
+  expect(String(second.props.className)).toContain("text-brand-ink");
+
+  const third = screen.getByText("3");
+  expect(String(third.props.className)).toContain("text-brand-ink");
+});
