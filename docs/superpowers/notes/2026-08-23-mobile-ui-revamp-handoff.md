@@ -92,6 +92,16 @@ map rather than imported at module scope must go through it. Both are already
 documented in `components/wallets/wallet_type_icon.tsx:36-45` — read that file
 before adding any icon.
 
+**`cssInterop` inserts a wrapper that consumes `className` before the icon
+sees it.** This is why asserting an icon's tone is awkward, and why tests here
+kept reaching for a nearby `View` instead: NativeWind generates an
+intermediate component (`CssInterop.TriangleAlert` and friends) that swallows
+the prop, so the real lucide element never carries the class string. The
+stable way to assert an icon's tone is to query the icon **by imported type**
+and read `className` off its `.parent` — not to wrap it in a decorative
+`View` and read that, which couples the test to a node that only looks
+authoritative. Test the render path, not a proxy that happens to sit near it.
+
 **Font weight comes from `fontFamily`, not `fontWeight`.** RN does not
 synthesise weight for `expo-font`-registered families. A Tailwind plugin
 rewrites `font-normal|medium|semibold|bold|extrabold` to emit `fontFamily`,
@@ -200,6 +210,14 @@ alone, because `rows=[]` returns before reaching `PlusGate`.
 These are my own errors, and they share a shape: an instruction that is
 correct where it was written and destructive where it lands.
 
+- **An instruction can be arithmetically right and physically wrong.** I told
+  an agent to reach a 44×44 touch target with `hitSlop` and said nothing about
+  row spacing. It did exactly that — uniform slop of 12 against an 8px
+  `gap-2`, so every chip's responder reached 4px into its neighbour's painted
+  pill. I had explicitly protected those dense rows from being visually
+  inflated and then made them mis-tap instead. When you specify a dimension,
+  specify what it must not collide with; a measurement given without its
+  neighbours is half a spec.
 - **Locally correct, globally destructive.** Hoisting the plan panels'
   `ScrollView` would have left four standalone routes unscrollable. Deleting
   `plan_hub.test.tsx` would have destroyed six unrelated `usePaydayAllocations`
@@ -223,6 +241,17 @@ correct where it was written and destructive where it lands.
   call sites" does not. See `components/ui/numeric_field.tsx`.
 - **Check a type before referencing its fields.** `Wallet` has no
   `providerKey` — that field is on `UserRuleMatcher`.
+- **Most errors on this branch were measuring a proxy instead of the thing.**
+  It is worth stating as one rule because it looked like several different
+  bugs. A test read the wrapper's className instead of the node that renders
+  the glyphs. Another read text content instead of the `numberOfLines` that
+  decides whether the text is visible. A plan counted "four" loading views by
+  eye when there were 25. A brief said "at least 20 files" of pressable chips,
+  derived from grepping files that *render* `<Chip` rather than files that pass
+  `onPress` — there were 9. In each case the proxy correlated with the target
+  closely enough to look right and diverged exactly where it mattered. Before
+  trusting a number or an assertion, ask what it literally measures, and
+  whether that is the thing you care about or merely something near it.
 - **Disjoint files are not disjoint state.** Two concurrent implementers in
   one worktree share a single **git index**. Verifying their file sets do not
   overlap is necessary and not sufficient: one `git add -A` from either sweeps
@@ -245,6 +274,15 @@ Font weights render correctly — **confirmed by owner**. Still open:
 - Card shadow and hairline, light vs dark.
 - Red Transactions tab badge.
 - Chip geometry in dense rows.
+- **Adjacent-chip mis-tap.** Chips carry a `hitSlop` to reach the 44pt touch
+  minimum their painted pill (~22px) does not meet. Rows are spaced `gap-2`
+  (8px), so horizontal slop is capped at half the gap to stop neighbouring
+  responders overlapping. Jest has no real hit-testing — it can pin the
+  numbers and not the behaviour. **Tap along a dense filter row and confirm
+  the chip you aimed at is the one that activates.** A very short label
+  ("3x") stays under 44px wide by design: overlapping responders were judged
+  the worse failure, because a missed tap is noticed and retried while a
+  wrong-chip tap silently applies a value the user never chose.
 - Soft warn/danger chips readable in daylight.
 - The four Plan back-stack checks: tap a Home alert → detail → Android
   system back → the **list** appears, not a blank screen.
