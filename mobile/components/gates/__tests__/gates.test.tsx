@@ -283,7 +283,26 @@ describe("UpgradeSheet", () => {
     render(<UpgradeSheet visible onClose={() => {}} capability="wallets" />);
     // entitlements.ts caps limits, goals and loans at 1; the design's table says
     // 3. Until docs/05 settles it, the app publishes neither number.
-    expect(screen.queryByText("3")).toBeNull();
-    expect(screen.queryByText(/^1,/)).toBeNull();
+    //
+    // NOT `queryByText("3")` / `queryByText(/^1,/)` — both READ correct and
+    // BOTH ARE INCAPABLE OF EVER FAILING, on any row, in any version of this
+    // component. Every row renders `Free: {row.free}` as one Text node, so
+    // the string RNTL actually sees is always "Free: 3" or "Free: 1, ...",
+    // never a bare "3" or "1,...". `queryByText("3")` default-matches the
+    // FULL node text (exact match), which "Free: 3" never equals; `/^1,/` is
+    // anchored to the start of that same string, which is always "Free: ",
+    // never "1,". Proved empirically, not assumed: temporarily reverting
+    // `wallets.free` to the banned "3", and separately `goals.free` to the
+    // banned "1, progress tracking", left both old assertions green either
+    // time (see task-2-report.md). Row count was never the issue — a table
+    // of one row or eight rows fails the same way, because the prefix does.
+    //
+    // An UNANCHORED digit search is not defeated by the prefix: it matches
+    // anywhere in a node's text, so "Free: 3" contains a match (correctly
+    // fails the test) and "Free: A few" contains none (correctly passes).
+    // It also sweeps every row and every column at once, not just the
+    // triggering capability's Free value, which is strictly more coverage
+    // than the two assertions it replaces ever had even in principle.
+    expect(screen.queryByText(/\d/)).toBeNull();
   });
 });
