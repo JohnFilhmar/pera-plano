@@ -22,6 +22,22 @@ Everything in Part 1's Global Constraints still applies. Additionally:
 - **Wallet type grouping stays.** The design's Wallets board shows a flat list, but its sample data has exactly one wallet per type, so a grouped list and a flat list render identically there. `groupWalletsByType` and the archived-group rule are existing documented behaviour; this plan reads the board as "not showing grouping" rather than "removing it". **If the owner wants a genuinely flat list, that is a one-line change in Task 5 and should be raised before it lands.**
 - **Transactions already has a floating add button** (`transactions-add`, a `Button` at `absolute bottom-6 right-6`). Task 4 swaps it for `Fab`; it is not new. Home has none — that one is new.
 
+## Carried forward from Part 1 — read before Task 3
+
+Part 1 shipped and was reviewed end to end (20 commits, 217/217 suites, 3597/3597 tests). Five things it learned that change what Part 2 must do:
+
+1. **`StatTile`'s tone regression has no working guard. Add one in Task 3.**
+   Part 1 shipped a bug where `StatTile`'s `tone` never reached the glyphs: it wrapped `<AmountText>` in a toned `<Text>`, and in React Native a nested `<Text>` wins over its parent for colour and size. All four tones rendered identical grey at 14px. It is fixed — the tile now renders `formatCentavos(amount)` directly — but the final re-reviewer proved the regression test does **not** catch it: reverting the component to the buggy structure leaves both tests passing, because `className` sits on the same element either way and RNTL reads the authored string, not a resolved colour.
+   **Task 3 consumes `StatTile` for the first time. Add a structural assertion there** — that the toned `Text`'s child is a string rather than a nested element — because Home's tri-tile is specified to signal state by tone, and nothing currently stops that silently reverting to three grey numbers.
+
+2. **`SegmentedControl`'s `NoInfer<T>` only protects literal-union call sites.** A `segments` array typed plain `string[]` still infers `T = string` and reopens the hole entirely. **Task 7's `PlanSegment` arrays must be `as const`** or the type safety is worth nothing there.
+
+3. **Re-tapping an already-selected segment is a deliberate, tested no-op with no secondary hook.** Plan keeps real routes underneath, so re-tapping an open panel's segment will not refresh it. Fine as designed — just do not expect it to work as a refresh gesture.
+
+4. **`StatTile`'s bare `testID` scopes to the whole tile; `-amount` and `-label` are the inner handles.** Use the inner ones for content assertions.
+
+5. **`outline-destructive` still has no consumer.** Part 1 built it for Privacy centre's "Wipe everything", but `components/privacy/wipe_flow.tsx` still uses the solid `destructive` fill. Part 3 Task 4 must switch it, or the variant ships unused.
+
 ## How to read the restyle tasks
 
 Tasks 1, 2, 3, 6 and 7 give full code, because they create components, add a query, or change navigation.
