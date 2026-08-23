@@ -106,7 +106,12 @@ export function RecoveryUnlockForm({
       </Pressable>
 
       {wipeStep === "hidden" ? (
-        <Pressable testID="forgot-phrase-link" onPress={() => setWipeStep("confirm1")}>
+        <Pressable
+          testID="forgot-phrase-link"
+          accessibilityRole="button"
+          accessibilityLabel="Forgot your recovery words?"
+          onPress={() => setWipeStep("confirm1")}
+        >
           <Text className="text-center text-fg-2 underline dark:text-fg-2-dark">
             Forgot your recovery words?
           </Text>

@@ -22,8 +22,8 @@
 import { useRouter } from "expo-router";
 import { Pressable, ScrollView, Text, View } from "react-native";
 
-import { LoanCard } from "@/components/loans/loan_card";
-import { AmountText } from "@/components/ui/amount_text";
+import { dueChip, LoanCard } from "@/components/loans/loan_card";
+import { AmountText, formatCentavos } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty_state";
 import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
@@ -96,6 +96,20 @@ export function UtangPanel() {
   );
 }
 
+/**
+ * TalkBack has nothing to read off a bare row (F5) — this states what the
+ * card beside it draws: who, how much is still owed, and the same due-state
+ * word `dueChip` puts on the chip, imported rather than re-derived so the
+ * row and the card it wraps can never disagree about which one this is.
+ */
+function loanRowAccessibilityLabel(status: LoanStatus, now: number): string {
+  const outstanding = `${formatCentavos(status.outstanding)} outstanding`;
+  const chip = dueChip(status, now);
+  return chip === null
+    ? `${status.loan.counterparty}, ${outstanding}`
+    : `${status.loan.counterparty}, ${outstanding}, ${chip.label}`;
+}
+
 function LoanSection({
   testID,
   title,
@@ -130,6 +144,8 @@ function LoanSection({
             <Pressable
               key={status.loan.id}
               testID={`loan-row-${status.loan.id}`}
+              accessibilityRole="button"
+              accessibilityLabel={loanRowAccessibilityLabel(status, now)}
               onPress={() => onOpen(status.loan.id)}
             >
               <LoanCard testID={`loan-card-${status.loan.id}`} status={status} now={now} />

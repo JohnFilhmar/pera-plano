@@ -49,10 +49,12 @@ export type GoalCardProps = {
   /** `'YYYY-MM-DD'`, echoed back in the Behind copy. */
   targetDate: string | null;
   /**
-   * `AUTO` chip when set (task-4b board). Optional and defaults to `undefined`
-   * — `components/plan/goals_panel.tsx` (mobile-ui-revamp Part 2, out of this
-   * task's reach) calls this card without it, and omitting the chip entirely
-   * is the correct behaviour there, not a missing prop.
+   * `AUTO` chip when set (task-4b board). Optional and defaults to
+   * `undefined` for a caller with no contribution rule to show — every real
+   * call site now passes it: both `components/plan/goals_panel.tsx` (Goals
+   * list) and `app/(tabs)/plan/goals/[id].tsx` (goal detail) read the same
+   * `status.goal.contributionRule` field, so the chip reads the same on
+   * both screens instead of only appearing after a tap into detail.
    */
   contributionRule?: ContributionRule | null;
   testID?: string;

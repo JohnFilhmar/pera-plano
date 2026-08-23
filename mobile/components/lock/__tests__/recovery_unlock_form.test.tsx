@@ -80,6 +80,18 @@ test("surfaces an externally-supplied error message (e.g. from a failed rewrap) 
   ).toBeTruthy();
 });
 
+// Accessibility sweep (branch-review-design.md F5's gap, found again here):
+// this Pressable carried neither an accessibilityRole nor a label at all —
+// TalkBack could still reach it (RN marks any onPress handler focusable
+// regardless of role) but never announced it as actionable.
+test("the forgot-phrase link is announced to TalkBack as a button with a spoken label, not a silent wrapper", () => {
+  renderForm();
+
+  const link = screen.getByTestId("forgot-phrase-link");
+  expect(link.props.accessibilityRole).toBe("button");
+  expect(link.props.accessibilityLabel).toBe("Forgot your recovery words?");
+});
+
 describe("wipe and start over -- the §11a escape hatch", () => {
   test("the wipe affordance is not a destructive action by itself -- it only reveals the first confirmation", () => {
     const { onWipe } = renderForm();

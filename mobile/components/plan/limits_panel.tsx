@@ -54,8 +54,28 @@ import { useLimitStatuses } from "@/hooks/queries/use_limit_statuses";
 import { canCreateLimit } from "@/lib/entitlements";
 import { findLimitGaps, resolvedLimitFrom } from "@/lib/limits/limit_consistency";
 import { limitDisplayName } from "@/lib/limits/limit_label";
+import type { LimitStatus } from "@/lib/limits/limit_service";
 
 const ChevronGlyph = registerIcon(ChevronRight);
+
+/**
+ * TalkBack has nothing to read off a bare row (F5) — this states what
+ * `LimitCard` beside it draws: the cap's name, and its spend against the
+ * effective limit, in the same "X of Y spent" shape the card's own cap line
+ * uses. Paused/inactive limits have no effective limit to divide against
+ * (`LimitCard`'s own `measuring` guard), so those two states get a shorter,
+ * still-true label instead of a fraction the data cannot back.
+ */
+function limitRowAccessibilityLabel(name: string, status: LimitStatus): string {
+  if (status.uiState === "inactive") return `${name}, inactive`;
+  if (status.uiState === "paused") return `${name}, paused`;
+
+  const spend = formatCentavos(status.spend);
+  const cap = formatCentavos(status.effectiveLimit ?? 0);
+  return status.uiState === "over"
+    ? `${name}, over limit, ${spend} of ${cap} spent`
+    : `${name}, ${spend} of ${cap} spent`;
+}
 
 export function LimitsPanel() {
   const router = useRouter();
@@ -168,24 +188,29 @@ export function LimitsPanel() {
                 <Text className="text-fg dark:text-fg-dark">{gap.message}</Text>
               </View>
             ))}
-            {statuses.map((status) => (
-              <Pressable
-                key={status.limit.id}
-                testID={`limit-row-${status.limit.id}`}
-                onPress={() =>
-                  router.push({ pathname: "/plan/limits/[id]", params: { id: status.limit.id } })
-                }
-              >
-                <LimitCard
-                  testID={`limit-card-${status.limit.id}`}
-                  name={limitDisplayName(status.limit, categoryNames)}
-                  spend={status.spend}
-                  effectiveLimit={status.effectiveLimit}
-                  daysLeft={status.window.daysLeft}
-                  uiState={status.uiState}
-                />
-              </Pressable>
-            ))}
+            {statuses.map((status) => {
+              const name = limitDisplayName(status.limit, categoryNames);
+              return (
+                <Pressable
+                  key={status.limit.id}
+                  testID={`limit-row-${status.limit.id}`}
+                  accessibilityRole="button"
+                  accessibilityLabel={limitRowAccessibilityLabel(name, status)}
+                  onPress={() =>
+                    router.push({ pathname: "/plan/limits/[id]", params: { id: status.limit.id } })
+                  }
+                >
+                  <LimitCard
+                    testID={`limit-card-${status.limit.id}`}
+                    name={name}
+                    spend={status.spend}
+                    effectiveLimit={status.effectiveLimit}
+                    daysLeft={status.window.daysLeft}
+                    uiState={status.uiState}
+                  />
+                </Pressable>
+              );
+            })}
           </ScrollView>
           <View className="absolute bottom-6 right-6">
             <Button title="Add" onPress={onAdd} testID="limits-add" />

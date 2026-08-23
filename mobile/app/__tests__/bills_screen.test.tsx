@@ -167,6 +167,21 @@ test("pressing a row opens that CYCLE, not just that bill", async () => {
   });
 });
 
+// F5: the row was a bare Pressable — TalkBack could reach it (RN marks any
+// onPress handler focusable regardless of role) but never announced it as
+// actionable, and with no label fell back to reading the bill Card's own text
+// nodes as an unstructured run-on.
+test("the bill row is announced to TalkBack as a button with a spoken label, not a silent wrapper", async () => {
+  const bill = await billDueOn(TODAY);
+
+  renderScreen(<BillsScreen />);
+  const row = await screen.findByTestId(`bill-row-${bill.id}-${TODAY}`);
+
+  expect(row.props.accessibilityRole).toBe("button");
+  // billDueOn's own defaults: "Meralco", a fixed ₱2,350.00, due today.
+  expect(row.props.accessibilityLabel).toBe("Meralco, ₱2,350.00, Due today");
+});
+
 // ---------------------------------------------------------------------------
 // Creating — rule 6
 // ---------------------------------------------------------------------------

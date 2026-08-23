@@ -189,6 +189,27 @@ test("pressing a card opens that limit's detail route", async () => {
   });
 });
 
+// F5: the row was a bare Pressable — TalkBack could reach it (RN marks any
+// onPress handler focusable regardless of role) but never announced it as
+// actionable, unlike `plan-income-row` sitting 64 lines away in the same file.
+test("the limit row is announced to TalkBack as a button with a spoken label, not a silent wrapper", async () => {
+  const limit = await createLimit({
+    scope: "monthly",
+    basis: "fixed",
+    value: 1000000,
+    categoryFilter: [food.id],
+  });
+  await spend(food.id, 250000);
+
+  renderScreen(<LimitsScreen />);
+  const row = await screen.findByTestId(`limit-row-${limit.id}`);
+
+  expect(row.props.accessibilityRole).toBe("button");
+  // Same name and figures this file's own "a limit renders as a card..." test
+  // already pins on screen ("Monthly limit · Kainan", ₱2,500 of ₱10,000).
+  expect(row.props.accessibilityLabel).toBe("Monthly limit · Kainan, ₱2,500.00 of ₱10,000.00 spent");
+});
+
 test("THE FREE CAP BLOCKS CREATION AND DELETES NOTHING", async () => {
   // docs/05-monetization.md §3.1 / m2 Global Constraint 11: a cap blocks a NEW
   // record and never touches existing data.

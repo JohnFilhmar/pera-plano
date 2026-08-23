@@ -209,6 +209,18 @@ test("an invisible sheet renders nothing", () => {
   expect(screen.queryByTestId("allocation-sheet")).toBeNull();
 });
 
+// Accessibility sweep (branch-review-design.md F5's gap, found again here):
+// the toggle carried a role and a checked state but no label, so TalkBack fell
+// back to reading the goal name Text and the Chip's own "Included"/"Skipped"
+// label as one unstructured run-on rather than a single coherent name.
+test("each allocation toggle is announced to TalkBack with the goal's own name, not left silent", () => {
+  renderSheet();
+
+  const toggle = screen.getByTestId(`allocation-toggle-${EMERGENCY.goalId}`);
+  expect(toggle.props.accessibilityRole).toBe("checkbox");
+  expect(toggle.props.accessibilityLabel).toBe("Include Emergency Fund");
+});
+
 // ---------------------------------------------------------------------------
 // The keypad inside the sheet — numeric-input-system Task 11. BottomSheet is
 // built on the platform Modal, its own native window, so a keypad hosted only

@@ -151,6 +151,49 @@ test("a goal renders as a card and opens its detail route", async () => {
   });
 });
 
+// F5: the row was a bare Pressable — TalkBack could reach it (RN marks any
+// onPress handler focusable regardless of role) but never announced it as
+// actionable, and with no label fell back to reading GoalCard's own text
+// nodes as an unstructured run-on.
+test("the goal row is announced to TalkBack as a button with a spoken label, not a silent wrapper", async () => {
+  const funded = await createWallet({
+    name: "GSave Funded",
+    type: "savings",
+    openingBalance: 2500000,
+  });
+  const goal = await createGoal({
+    name: "Emergency Fund",
+    targetAmount: 5000000,
+    linkedWalletId: funded.id,
+  });
+
+  renderScreen(<GoalsScreen />);
+
+  const row = await screen.findByTestId(`goal-row-${goal.id}`);
+  expect(row.props.accessibilityRole).toBe("button");
+  // Matches what GoalCard actually draws for this fixture (goal_card.test.tsx's
+  // own "50%" / "₱25,000.00 of ₱50,000.00" for the identical saved/target pair).
+  expect(row.props.accessibilityLabel).toBe(
+    "Emergency Fund goal, 50% saved, ₱25,000.00 of ₱50,000.00 saved",
+  );
+});
+
+// F4: the AUTO chip rendered on goal detail but never on this list, though the
+// list already holds `status.goal.contributionRule` — the identical field.
+test("a goal with an automatic contribution rule shows the AUTO chip on the list, not only on detail", async () => {
+  const goal = await createGoal({
+    name: "Emergency Fund",
+    targetAmount: 5000000,
+    linkedWalletId: gsave.id,
+    contributionRule: { kind: "fixed", amount: 200000 },
+  });
+
+  renderScreen(<GoalsScreen />);
+
+  await screen.findByTestId(`goal-card-${goal.id}-auto`);
+  screen.getByText("AUTO");
+});
+
 test("A SECOND GOAL ON THE FREE TIER IS GATED, and the first is untouched", async () => {
   // Rule 4, and m2 Global Constraint 11: a cap blocks a NEW record and never
   // deletes data.

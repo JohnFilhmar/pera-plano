@@ -11,11 +11,31 @@ import { useRouter } from "expo-router";
 import { Pressable, ScrollView, View } from "react-native";
 
 import { GoalCard } from "@/components/goals/goal_card";
+import { formatCentavos } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty_state";
 import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { useGoals } from "@/hooks/queries/use_goals";
 import { canCreateGoal } from "@/lib/entitlements";
+import type { GoalStatus } from "@/lib/goals/goals_service";
+
+/**
+ * TalkBack has nothing to read off a bare row (F5) — this states what
+ * `GoalCard` beside it draws: the goal's name and its saved-versus-target
+ * figures, in the same "N% · saved of target" shape the card's own text
+ * nodes use. Reached goals skip the percentage the same way the card does
+ * (its ring has already hit 100 — restating it teaches nothing a plain
+ * "reached" does not).
+ */
+function goalRowAccessibilityLabel(status: GoalStatus): string {
+  const { goal, progress } = status;
+  const saved = formatCentavos(progress.saved);
+  const target = formatCentavos(progress.target);
+  if (progress.pace === "reached") return `${goal.name} goal, reached, ${saved} of ${target} saved`;
+
+  const percent = Math.round(progress.fraction * 100);
+  return `${goal.name} goal, ${percent}% saved, ${saved} of ${target} saved`;
+}
 
 export function GoalsPanel() {
   const router = useRouter();
@@ -57,6 +77,8 @@ export function GoalsPanel() {
           <Pressable
             key={status.goal.id}
             testID={`goal-row-${status.goal.id}`}
+            accessibilityRole="button"
+            accessibilityLabel={goalRowAccessibilityLabel(status)}
             onPress={() =>
               router.push({ pathname: "/plan/goals/[id]", params: { id: status.goal.id } })
             }
@@ -66,6 +88,7 @@ export function GoalsPanel() {
               name={status.goal.name}
               progress={status.progress}
               targetDate={status.goal.targetDate}
+              contributionRule={status.goal.contributionRule}
             />
           </Pressable>
         ))}

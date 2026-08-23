@@ -166,6 +166,22 @@ test("pressing a loan opens its detail route", async () => {
   });
 });
 
+// F5: the row was a bare Pressable — TalkBack could reach it (RN marks any
+// onPress handler focusable regardless of role) but never announced it as
+// actionable, and with no label fell back to reading LoanCard's own text
+// nodes as an unstructured run-on.
+test("the loan row is announced to TalkBack as a button with a spoken label, not a silent wrapper", async () => {
+  const loan = await createLoan({ direction: "i-owe", counterparty: "GLoan", principal: 500000 });
+
+  renderScreen(<LoansScreen />);
+  const row = await screen.findByTestId(`loan-row-${loan.id}`);
+
+  expect(row.props.accessibilityRole).toBe("button");
+  // No nextDueDate on this fixture, so dueChip is null — the label states
+  // just who and how much, matching the loan created here exactly.
+  expect(row.props.accessibilityLabel).toBe("GLoan, ₱5,000.00 outstanding");
+});
+
 // ---------------------------------------------------------------------------
 // The gate — rule 6
 // ---------------------------------------------------------------------------

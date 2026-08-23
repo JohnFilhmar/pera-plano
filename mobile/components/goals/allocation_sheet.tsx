@@ -89,6 +89,7 @@ export function AllocationSheet({
               <Pressable
                 testID={`allocation-toggle-${proposal.goalId}`}
                 accessibilityRole="checkbox"
+                accessibilityLabel={`Include ${proposal.goalName}`}
                 accessibilityState={{ checked: row.checked }}
                 onPress={() => setRow(proposal.goalId, { checked: !row.checked })}
                 className="min-h-[44px] flex-row items-center justify-between"

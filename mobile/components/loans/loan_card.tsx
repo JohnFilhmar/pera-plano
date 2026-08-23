@@ -54,8 +54,17 @@ export type LoanCardProps = {
 
 const DAY_MS = 86_400_000;
 
-/** Rule 2's chip: `due in 3d`, `due today`, `overdue`. */
-function dueChip(status: LoanStatus, now: number): { label: string; tone: ChipTone } | null {
+/**
+ * Rule 2's chip: `due in 3d`, `due today`, `overdue`.
+ *
+ * EXPORTED FOR `components/plan/utang_panel.tsx`'s ROW LABEL, not only for
+ * this card: the loan row's `accessibilityLabel` states the same due-state
+ * word this chip renders, and importing this rather than re-deriving it is
+ * the same "mirrored, not duplicated" call `DUE_FILL` below already makes —
+ * a second formula for the same verdict is how the row and the card it
+ * wraps end up disagreeing.
+ */
+export function dueChip(status: LoanStatus, now: number): { label: string; tone: ChipTone } | null {
   if (status.outstanding <= 0) return { label: "Settled", tone: "brand" };
   if (status.nextDue === null) return null;
   if (status.overdue) return { label: "Overdue", tone: "danger" };
@@ -115,10 +124,21 @@ export function LoanCard({ status, now, testID }: LoanCardProps) {
                 payments" field), and this card has no cadence label to
                 borrow, so it counts installments rather than claiming a unit
                 the data does not carry. Free-form loans have no schedule at
-                all (spec rule 1) and render no line here, same as before. */}
+                all (spec rule 1) and render no line here, same as before.
+
+                THE ~ IS LOAD-BEARING, NOT DECORATION. `perInstallment` is
+                `schedule[0]`'s amount, and for an amortized loan
+                `buildAmortizationSchedule`'s own header (lib/loans/loan_math.ts)
+                says the FINAL row is deliberately not that figure — it
+                absorbs the rounding drift the other rows' interest
+                accumulates, so "each" without the `~` asserted an equality
+                the schedule was built to not have on its last row. Flat
+                schedules have no such row (every installment is the literal
+                same figure), so the `~` costs them nothing — it is still
+                true, just not the tightest true statement for that case. */}
             {schedule.length === 0 || perInstallment === null ? null : (
               <Text className="mt-0.5 text-secondary text-fg-2 dark:text-fg-2-dark">
-                {`${status.paidCount} of ${schedule.length} paid · ${formatCentavos(perInstallment)} each`}
+                {`${status.paidCount} of ${schedule.length} paid · ~${formatCentavos(perInstallment)} each`}
               </Text>
             )}
             {chip === null ? null : (
@@ -165,7 +185,7 @@ export function LoanCard({ status, now, testID }: LoanCardProps) {
               …" rather than "Next: …" so the two captions do not read as
               disagreeing about what "next" means a few lines apart. */}
           {status.nextDue === null ? null : (
-            <Text className="mt-2 text-fg-2 dark:text-fg-2-dark">
+            <Text className="mt-2 text-secondary text-fg-2 dark:text-fg-2-dark">
               {`Due ${formatDate(parseDateIso(status.nextDue.dueDate).getTime())} · ${percentPaid}% paid`}
             </Text>
           )}
@@ -186,10 +206,10 @@ export function LoanCard({ status, now, testID }: LoanCardProps) {
             ),
           }}
         >
-          <Text className="font-semibold text-danger-ink dark:text-danger-ink-dark">
+          <Text className="text-row font-semibold text-danger-ink dark:text-danger-ink-dark">
             Overdue promise
           </Text>
-          <Text className="mt-0.5 text-danger-ink dark:text-danger-ink-dark">
+          <Text className="mt-0.5 text-secondary text-danger-ink dark:text-danger-ink-dark">
             {`Record a payment when you can — ${loan.counterparty} is waiting on this one.`}
           </Text>
         </View>

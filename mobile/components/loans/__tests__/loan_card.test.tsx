@@ -2,7 +2,7 @@
 import { render, screen } from "@testing-library/react-native";
 
 import type { LoanStatus } from "@/lib/loans/loans_service";
-import type { Loan } from "@/types/domain";
+import type { Installment, Loan } from "@/types/domain";
 
 import { LoanCard } from "../loan_card";
 
@@ -119,4 +119,69 @@ test("the next payment amount is shown alongside the balance", () => {
   render(<LoanCard status={statusOf()} now={NOW} testID="loan" />);
 
   screen.getByText("Next: ₱1,000.00");
+});
+
+// ---------------------------------------------------------------------------
+// F3: the "N of M paid" caption must not claim every installment is the same
+// amount — buildAmortizationSchedule's final row deliberately absorbs
+// rounding drift and is NOT the level payment every other row carries.
+// ---------------------------------------------------------------------------
+test("the per-installment caption is qualified with '~', since an amortized loan's final row absorbs rounding drift and is not the same amount as the rest", () => {
+  // Only schedule[0] (what the caption reads) and the count matter here — the
+  // caption never inspects the LAST row's actual amount, which is exactly the
+  // bug: it asserted "each" without ever checking whether the schedule agreed.
+  const schedule: Installment[] = [
+    { dueDate: "2026-10-15", amountDue: 1065713 },
+    { dueDate: "2026-11-15", amountDue: 1065713 },
+    { dueDate: "2026-12-15", amountDue: 1065710 }, // final row: rounding drift absorbed
+  ];
+  render(
+    <LoanCard
+      status={statusOf({ paidCount: 1, loan: { schedule } })}
+      now={NOW}
+      testID="loan"
+    />,
+  );
+
+  screen.getByText("1 of 3 paid · ~₱10,657.13 each");
+});
+
+test("a flat (non-interest) schedule's caption is still true — every installment really is the same figure — so the '~' costs it nothing", () => {
+  const schedule: Installment[] = [
+    { dueDate: "2026-10-15", amountDue: 500000 },
+    { dueDate: "2026-11-15", amountDue: 500000 },
+  ];
+  render(
+    <LoanCard
+      status={statusOf({ paidCount: 0, loan: { schedule } })}
+      now={NOW}
+      testID="loan"
+    />,
+  );
+
+  screen.getByText("0 of 2 paid · ~₱5,000.00 each");
+});
+
+// ---------------------------------------------------------------------------
+// F6: the due-date caption and the overdue-promise banner must carry an
+// explicit type-scale class (this app's eight-step fontSize scale), not fall
+// back to the platform default.
+// ---------------------------------------------------------------------------
+test("the due-date caption and the overdue banner carry an explicit type-scale class, not the platform default", () => {
+  render(
+    <LoanCard
+      status={statusOf({ overdue: true, nextDue: { dueDate: "2026-09-01", amount: 100000 } })}
+      now={NOW}
+      testID="loan"
+    />,
+  );
+
+  const dueCaption = screen.getByText(/^Due .* paid$/);
+  expect(String(dueCaption.props.className)).toContain("text-secondary");
+
+  const bannerTitle = screen.getByText("Overdue promise");
+  expect(String(bannerTitle.props.className)).toContain("text-row");
+
+  const bannerBody = screen.getByText(/is waiting on this one\.$/);
+  expect(String(bannerBody.props.className)).toContain("text-secondary");
 });

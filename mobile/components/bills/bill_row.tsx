@@ -13,8 +13,8 @@
 import { FileText } from "lucide-react-native";
 import { Pressable, Text, View } from "react-native";
 
-import { DueChip } from "@/components/bills/due_chip";
-import { EstimateText } from "@/components/bills/estimate_text";
+import { DueChip, dueChipFor } from "@/components/bills/due_chip";
+import { estimateLabel, EstimateText } from "@/components/bills/estimate_text";
 import { registerIcon } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import type { BillStatus } from "@/lib/bills/bills_service";
@@ -28,6 +28,19 @@ export type BillRowProps = {
   onPress?: () => void;
   testID?: string;
 };
+
+/**
+ * TalkBack has nothing to read off a bare row (F5) — this states what the
+ * card beside it draws: the bill's name, its amount, and the same due-state
+ * word `DueChip` renders, both imported (`estimateLabel`, `dueChipFor`)
+ * rather than re-derived so the row and the chip it wraps can never
+ * disagree about which one this is.
+ */
+function billRowAccessibilityLabel(status: BillStatus): string {
+  const amount = estimateLabel(status.estimate);
+  const due = dueChipFor(status.state, status.daysUntil).label;
+  return `${status.bill.name}, ${amount}, ${due}`;
+}
 
 export function BillRow({ status, onPress, testID }: BillRowProps) {
   const body = (
@@ -63,7 +76,12 @@ export function BillRow({ status, onPress, testID }: BillRowProps) {
   if (onPress === undefined) return <View testID={testID}>{body}</View>;
 
   return (
-    <Pressable testID={testID} onPress={onPress}>
+    <Pressable
+      testID={testID}
+      accessibilityRole="button"
+      accessibilityLabel={billRowAccessibilityLabel(status)}
+      onPress={onPress}
+    >
       {body}
     </Pressable>
   );
