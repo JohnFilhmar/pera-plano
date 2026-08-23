@@ -24,25 +24,49 @@ export type ChipFill = "solid" | "soft" | "outline";
 export const SOFT_ALPHA = 0.14;
 
 /**
- * Brings the Pressable branch's effective touch target to >= 44x44 — the
+ * Brings the Pressable branch's effective touch target toward 44x44 — the
  * "smallest reliably tappable target" `components/ui/list_row.tsx` documents
  * — without touching the painted pill at all: `hitSlop` only widens the
  * responder region, it never changes what is drawn.
  *
- * THE MATH. `containerClass`'s `py-1` (4px top + 4px bottom) plus
- * `text-micro`'s 14px line-height (`tailwind.config.ts`'s `fontSize.micro`)
- * paints a pill 22px tall regardless of label — so 12px on every edge brings
- * that to 46px, clearing 44 with room to spare. The same 12px clears width
- * too, even for the app's narrowest real labels — the three-letter weekday
- * abbreviations `components/bills/due_rule_picker.tsx` renders ("Sun" ...
- * "Sat"): `px-2.5`'s 20px of horizontal padding plus a few narrow glyphs
- * plus 24px of hitSlop clears 44 with plenty to spare.
+ * ASYMMETRIC ON PURPOSE (fix round 1, review of commit 387bcd6). The first
+ * version was a uniform 12px on every edge, and that was wrong: every chip
+ * row in this app wraps its chips in `gap-2` (8px) — verified directly
+ * against `limit_form.tsx`, `due_rule_picker.tsx`, `filter_bar.tsx`,
+ * `income_form.tsx`, `goal_form.tsx`, `income_quick_form.tsx`,
+ * `quick_wallet_list.tsx` and `captured_list.tsx`, not assumed — so 12px of
+ * horizontal slop reached 12 - 8 = 4px INTO the next chip's own painted
+ * pill. Two adjacent Pressables' responder regions overlapped, and a mis-tap
+ * there silently applies the WRONG filter or picker value. React Native's
+ * own `hitSlop` docs warn about exactly this, and it is a strictly worse
+ * failure than a slightly-small target: a user who misses a target notices
+ * and taps again, a user who hits the wrong chip does not.
  *
- * `components/home/safe_to_spend_hero.tsx`'s eye toggle already sets
- * `hitSlop={12}` for the same reason on a different small control — matched
- * here rather than picked afresh.
+ * THE VERTICAL MATH (this axis was never the problem, so it keeps the full
+ * original value). `containerClass`'s `py-1` (4px top + 4px bottom) around
+ * `text-micro`'s 14px line-height (`tailwind.config.ts`'s `fontSize.micro`)
+ * paints a SOLID/SOFT pill 22px tall; the OUTLINE variant adds its `border`
+ * utility's default 1px top + 1px bottom (no width override in
+ * tailwind.config.ts), painting 24px tall. 12px top and bottom clears 44 in
+ * BOTH cases: 22 + 12 + 12 = 46, 24 + 12 + 12 = 48.
+ *
+ * THE HORIZONTAL MATH: capped at HALF the row gap (8px / 2 = 4px), not
+ * matched to the vertical value, so two neighbouring chips' hit regions meet
+ * exactly at the middle of the gap and never overlap into each other's pill
+ * (4 + 4 = 8 = the full gap).
+ *
+ * THE TRADE-OFF THIS DOES NOT SOLVE, STATED RATHER THAN LEFT FOR THE NEXT
+ * READER TO REDISCOVER: a chip with a very short label (a "3x" count badge,
+ * say) still paints narrower than 44px, and 4px of horizontal slop does not
+ * close that gap. Left as-is deliberately — widening it back would
+ * reintroduce the overlap this fix exists to remove, and a small miss a
+ * user notices and retries beats a silent wrong-chip tap every time.
+ *
+ * `components/home/safe_to_spend_hero.tsx`'s eye toggle still sets a
+ * uniform `hitSlop={12}` — safe there because that control has no sibling
+ * within 24px, unlike every real chip row this file actually renders into.
  */
-const CHIP_HIT_SLOP = 12;
+const CHIP_HIT_SLOP = { top: 12, bottom: 12, left: 4, right: 4 };
 
 const SOFT_TINT: Partial<Record<ChipTone, { light: string; dark: string }>> = {
   brand: { light: palette.brand, dark: palette["brand-dark"] },

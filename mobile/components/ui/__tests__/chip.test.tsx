@@ -1,5 +1,5 @@
 import { render, screen } from "@testing-library/react-native";
-import { Pressable, View } from "react-native";
+import { Pressable } from "react-native";
 
 import { Chip } from "../chip";
 
@@ -102,25 +102,52 @@ test("selected drives accessibilityState.selected; a chip that never passes it i
   expect(screen.getByTestId("c").props.accessibilityState.selected).toBeUndefined();
 });
 
-test("a pressable chip carries a hitSlop that reaches 44x44 given the chip's real rendered size", () => {
+/** Normalizes RN's `hitSlop` (a single number, or a partial Insets object)
+ *  into four numbers — does not assume chip.tsx's current choice of shape. */
+function hitSlopInsets(testID: string): { top: number; bottom: number; left: number; right: number } {
+  const hitSlop = screen.getByTestId(testID).props.hitSlop;
+  const side = (key: "top" | "bottom" | "left" | "right") =>
+    typeof hitSlop === "number" ? hitSlop : (hitSlop?.[key] ?? 0);
+  return { top: side("top"), bottom: side("bottom"), left: side("left"), right: side("right") };
+}
+
+test("a pressable chip carries a hitSlop that reaches 44x44 vertically, for both the solid/soft and outline painted heights", () => {
+  // Vertical is the axis `list_row.tsx`'s 44pt floor is actually about, and
+  // the one this Jest render (no real layout pass) can compute exactly,
+  // content-independent: `py-1` (4px + 4px) around `text-micro`'s 14px
+  // line-height (tailwind.config.ts's `fontSize.micro`) paints a SOLID/SOFT
+  // pill 22px tall; OUTLINE adds its `border` utility's 1px top + 1px
+  // bottom, painting 24px tall. Both are checked — chip.tsx's own
+  // `CHIP_HIT_SLOP` comment states both, and a hitSlop tuned for only one of
+  // them would be exactly the kind of gap a single-fill test would miss.
+  render(<Chip testID="solid" label="Bills" onPress={() => {}} />);
+  const solid = hitSlopInsets("solid");
+  expect(22 + solid.top + solid.bottom).toBeGreaterThanOrEqual(44);
+  screen.unmount();
+
+  render(<Chip testID="outline" label="Bills" fill="outline" onPress={() => {}} />);
+  const outline = hitSlopInsets("outline");
+  expect(24 + outline.top + outline.bottom).toBeGreaterThanOrEqual(44);
+});
+
+test("hitSlop's horizontal component is capped at half the app's chip-row gap, so neighbouring chips' touch regions meet rather than overlap", () => {
+  // Fix round 1 (review of commit 387bcd6): a uniform hitSlop reached past a
+  // chip's own painted pill and into the NEXT chip's, because every real
+  // chip row in this app wraps its chips in `gap-2` (8px) — verified
+  // directly against limit_form.tsx, due_rule_picker.tsx, filter_bar.tsx,
+  // income_form.tsx, goal_form.tsx, income_quick_form.tsx,
+  // quick_wallet_list.tsx and captured_list.tsx while writing this fix, not
+  // assumed. Two adjacent Pressables' responder regions overlapping means a
+  // mis-tap can silently apply the WRONG filter or picker value — worse than
+  // a slightly-small target, which a user notices and retries. This test
+  // pins the guard: if `left`/`right` are ever widened back past half the
+  // gap, two neighbours' regions overlap again and this must go red.
+  const ROW_GAP = 8;
   render(<Chip testID="c" label="Bills" onPress={() => {}} />);
-  const hitSlop = screen.getByTestId("c").props.hitSlop;
-
-  // RN's `hitSlop` is either a single number (all four edges) or an Insets
-  // object — normalize rather than assume chip.tsx's current choice of shape.
-  const top = typeof hitSlop === "number" ? hitSlop : (hitSlop?.top ?? 0);
-  const bottom = typeof hitSlop === "number" ? hitSlop : (hitSlop?.bottom ?? 0);
-  const left = typeof hitSlop === "number" ? hitSlop : (hitSlop?.left ?? 0);
-  const right = typeof hitSlop === "number" ? hitSlop : (hitSlop?.right ?? 0);
-
-  // The one dimension this Jest render (no real layout pass) can compute
-  // exactly, content-independent: `py-1` (4px + 4px) around `text-micro`'s
-  // 14px line-height (tailwind.config.ts's `fontSize.micro`) paints a pill
-  // 22px tall regardless of label. chip.tsx's own `CHIP_HIT_SLOP` comment
-  // carries the width side of this (the app's narrowest real labels), which
-  // a Jest render has no font metrics to re-derive here.
-  const PAINTED_HEIGHT = 22;
-  expect(PAINTED_HEIGHT + top + bottom).toBeGreaterThanOrEqual(44);
+  const { left, right } = hitSlopInsets("c");
+  expect(left).toBeLessThanOrEqual(ROW_GAP / 2);
+  expect(right).toBeLessThanOrEqual(ROW_GAP / 2);
+  // Still a real target, not zeroed out chasing the overlap fix.
   expect(left).toBeGreaterThan(0);
   expect(right).toBeGreaterThan(0);
 });
