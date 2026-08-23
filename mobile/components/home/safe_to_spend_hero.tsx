@@ -59,9 +59,9 @@ export type SafeToSpendHeroProps = {
   testID?: string;
 };
 
-type FilledState = Exclude<SafeToSpendState, "no_limit">;
+export type FilledState = Exclude<SafeToSpendState, "no_limit">;
 
-const FILL_CLASS: Record<FilledState, string> = {
+export const FILL_CLASS: Record<FilledState, string> = {
   healthy: "bg-brand dark:bg-brand-dark",
   tight: "bg-warn dark:bg-warn-dark",
   over: "bg-danger dark:bg-danger-dark",
@@ -73,10 +73,40 @@ const INK_CLASS: Record<FilledState, string> = {
   over: "text-on-brand dark:text-on-brand-dark",
 };
 
-const MUTED_INK_CLASS: Record<FilledState, string> = {
-  healthy: "text-on-brand/80 dark:text-on-brand-dark/80",
-  tight: "text-fg/80 dark:text-on-brand-dark/80",
-  over: "text-on-brand/80 dark:text-on-brand-dark/80",
+// NOT dimmed — this equals INK_CLASS byte-for-byte, and that is deliberate,
+// not a leftover from a merge. The previously shipped version applied
+// Tailwind's `/80` opacity to these same tokens, composited straight over
+// FILL_CLASS (nothing sits between this <Text> and the fill). Recomputed
+// with lib/ui/contrast.ts's own algorithm rather than eyeballing:
+//
+//   on-brand/80 on brand  (healthy, light) -> 3.82:1  FAILS AA (4.5:1)
+//   fg/80       on warn   (tight,   light) -> 4.07:1  FAILS AA
+//   on-brand/80 on danger (over,    light) -> 3.53:1  FAILS AA
+//
+// `over`'s FULL-STRENGTH ratio is only 4.83:1 — so little headroom above the
+// 4.5 floor that even a 95% opacity (a 5% reduction) drops it to 4.47:1 and
+// still fails. There is no single opacity below 100% that clears AA for all
+// three states at once, so no opacity value fixes this, only removing it does.
+// `brand-ink`/`danger-ink`/`warn-ink` (constants/colors.ts) do not fit either
+// — they are tuned for ink on that hue's own SOFT TINT over `bg`, never a
+// solid fill (that file's own header says so); measured directly on these
+// solid fills they land at 1.4-2.2:1, worse than the bug they'd "fix".
+// Full-strength `on-brand`/`fg`/`on-brand-dark` — already-existing tokens,
+// already used by INK_CLASS two lines up — is the only option that clears AA
+// on every state in both colour schemes, which is why this map now equals
+// INK_CLASS's values. Kept as its own named map (not merged into INK_CLASS)
+// because it names a distinct ROLE — secondary/caption ink vs. the headline
+// figure's ink — even though the two resolve identically today; a future
+// palette change could reopen headroom for one without touching the other.
+// DO NOT reintroduce a `/NN` opacity modifier here — see the contrast block
+// in components/home/__tests__/safe_to_spend_hero.test.tsx, which pins
+// exactly this. That test reads this map (exported for that reason) rather
+// than a copy of its values, so reverting this constant fails the test
+// directly instead of relying on someone remembering to update a duplicate.
+export const MUTED_INK_CLASS: Record<FilledState, string> = {
+  healthy: "text-on-brand dark:text-on-brand-dark",
+  tight: "text-fg dark:text-on-brand-dark",
+  over: "text-on-brand dark:text-on-brand-dark",
 };
 
 const BAR_CLASS: Record<FilledState, string> = {
@@ -190,7 +220,7 @@ export function SafeToSpendHero({
           className={`text-secondary font-medium ${mutedInkClass}`}
           style={{ fontVariant: ["tabular-nums"] }}
         >
-          {`You're ${formatCentavos(result.overBy)} over for this period`}
+          {`You're ${amountsHidden ? HIDDEN_AMOUNT : formatCentavos(result.overBy)} over for this period`}
         </Text>
       ) : null}
 
