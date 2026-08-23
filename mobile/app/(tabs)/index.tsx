@@ -37,6 +37,7 @@ import { useSafeToSpend } from "@/hooks/queries/use_safe_to_spend";
 import { useSafeToSpendInput } from "@/hooks/queries/use_safe_to_spend_input";
 import { useTransactions } from "@/hooks/queries/use_transactions";
 import { useWallets } from "@/hooks/queries/use_wallets";
+import { systemClock } from "@/lib/clock";
 import { onAppEvent } from "@/lib/events/app_events";
 import { projectToPeriodEnd } from "@/lib/safe_to_spend_projection";
 import { totalActiveBalance } from "@/lib/wallets/summary";
@@ -121,10 +122,16 @@ export default function HomeScreen() {
   );
 
   // The strip is the seven days ENDING today, so the first label is six days
-  // back. `new Date().getDay()` is 0 (Sun) through 6 (Sat); hardcoding "Mon"
-  // and "Sun" — the design board's own literal labels — is only right one day
-  // in seven.
-  const todayIndex = new Date().getDay();
+  // back. `getDay()` is 0 (Sun) through 6 (Sat); hardcoding "Mon" and "Sun" —
+  // the design board's own literal labels — is only right one day in seven.
+  //
+  // READS `systemClock`, NOT A BARE `new Date()` — this is a composition edge
+  // (lib/clock.ts's own rule: "only the composition edges ... reach for
+  // systemClock"), the same seam `useDailySpend`'s own `endingOn` already
+  // goes through for this identical bar strip. Going around it would leave
+  // the wraparound at both ends of the week (Sat -> Sun, Sun -> Mon)
+  // untestable except by waiting for the calendar to land on those two days.
+  const todayIndex = new Date(systemClock.now()).getDay();
   const seriesStartLabel = WEEKDAYS[(todayIndex + 1) % 7];
   const seriesEndLabel = WEEKDAYS[todayIndex];
 
@@ -214,7 +221,22 @@ export default function HomeScreen() {
             testID="home-stat-spent"
             label="Spent so far"
             amount={result.state === "no_limit" ? 0 : (drivingStatus?.spend ?? 0)}
-            tone={result.state === "over" ? "danger" : result.state === "tight" ? "warn" : "neutral"}
+            // PAUSED FIRST. The hero two elements above stops asserting a
+            // spending verdict the moment capture might be stale — grey
+            // instead of green/amber/red — and this tile signals the same
+            // "Spent so far" figure by tone, so it has to stand down for the
+            // identical reason: painting it red or amber immediately beneath
+            // a hero that has deliberately gone neutral would assert the
+            // exact verdict the hero just withheld.
+            tone={
+              paused
+                ? "neutral"
+                : result.state === "over"
+                  ? "danger"
+                  : result.state === "tight"
+                    ? "warn"
+                    : "neutral"
+            }
           />
           <StatTile
             testID="home-stat-saved"

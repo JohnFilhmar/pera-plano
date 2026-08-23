@@ -180,7 +180,16 @@ export function SafeToSpendHero({
       </Text>
 
       {result.state === "over" ? (
-        <Text testID="sts-over-by" className={`text-secondary font-medium ${mutedInkClass}`}>
+        // `fontVariant: tabular-nums` — copied from `AmountText`, which this
+        // Text no longer nests. Lost in the first pass at this fix (review
+        // caught it): this figure re-renders on every ledger commit while the
+        // user is over, the identical jitter `sts-amount` two lines above is
+        // protected from, for the identical reason amount_text.tsx gives.
+        <Text
+          testID="sts-over-by"
+          className={`text-secondary font-medium ${mutedInkClass}`}
+          style={{ fontVariant: ["tabular-nums"] }}
+        >
           {`You're ${formatCentavos(result.overBy)} over for this period`}
         </Text>
       ) : null}

@@ -180,6 +180,52 @@ test("the weekday labels end on today, not on a hardcoded Sunday", async () => {
   await screen.findByText(weekdays[new Date().getDay()]);
 });
 
+// Both wraparound edges, PINNED, not left to whatever day the suite happens
+// to run on. `(todayIndex + 1) % 7` is the one piece of real arithmetic Task
+// 3 added — it is provably correct by hand, but a regression in it would only
+// ever surface on the 2 days in 7 that actually exercise the wrap (Saturday
+// rolling to Sunday, Sunday rolling to Monday). That is the exact "right
+// some fraction of the time" shape the hardcoded Mon/Sun this task replaced
+// had — just relocated from the component into the test's own coverage if
+// left to the real calendar. Pinned via `systemClock`, the same clock-mocking
+// pattern `lib/alerts/__tests__/alerts_service.test.ts` uses (`jest.spyOn`
+// rather than a whole-module `jest.mock`, since this file's OTHER tests —
+// `spend()`'s default `occurredAt`, `TODAY` — all lean on `systemClock`
+// resolving to the real current instant; a blanket module mock would pin
+// every one of them, not just these two). Local noon, a local constructor —
+// lib/clock.ts's own convention for a fixed instant, never a UTC string
+// parse. Restored in `finally` so a thrown assertion can't leak the pin into
+// a later test.
+test("the weekday strip wraps Saturday to Sunday — getDay() 6, the top edge", async () => {
+  await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
+  const saturday = new Date(2026, 0, 3, 12, 0).getTime(); // a known Saturday
+  const nowSpy = jest.spyOn(systemClock, "now").mockReturnValue(saturday);
+
+  try {
+    renderScreen(<HomeScreen />);
+    // (6 + 1) % 7 === 0: the oldest bar is Sunday, the newest is today, Saturday.
+    await screen.findByText("Sat");
+    screen.getByText("Sun");
+  } finally {
+    nowSpy.mockRestore();
+  }
+});
+
+test("the weekday strip wraps Sunday to Monday — getDay() 0, the bottom edge", async () => {
+  await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
+  const sunday = new Date(2026, 0, 4, 12, 0).getTime(); // a known Sunday
+  const nowSpy = jest.spyOn(systemClock, "now").mockReturnValue(sunday);
+
+  try {
+    renderScreen(<HomeScreen />);
+    // (0 + 1) % 7 === 1: the oldest bar is Monday, the newest is today, Sunday.
+    await screen.findByText("Sun");
+    screen.getByText("Mon");
+  } finally {
+    nowSpy.mockRestore();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Ship gate — M3 Part 2 Task 7 rule 1
 // ---------------------------------------------------------------------------
