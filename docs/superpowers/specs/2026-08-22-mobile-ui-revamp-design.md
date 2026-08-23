@@ -325,8 +325,15 @@ will enforce, to precisely the audience that was promised permanent Plus.
 
 ### R4 · Plan segments would orphan four live routes
 `app/(tabs)/plan/_layout.tsx` is a bare `<Stack>`. `/plan/limits`, `/plan/goals`, `/plan/loans`
-and `/plan/bills` are real routes that detail screens pop back to, and
-`components/home/alerts_feed.tsx` deep-links to `/plan/limits/[id]` and `/plan/bills/[id]`.
+and `/plan/bills` are real routes that all four detail screens pop back to via `router.back()`,
+and that Home deep-links into.
+
+**Corrected citation.** This section originally named `components/home/alerts_feed.tsx` as the
+deep-link source. That file makes **no** `router` calls at all — its only `.push` is onto a local
+array. The real `router.push` calls are in `app/(tabs)/index.tsx` (AlertsFeed's `onOpen` handler,
+plus `UpcomingBillsStrip` and `LimitProgressList`), and the route shapes are defined in
+`lib/alerts/alert_routes.ts`. The risk this section describes is real and its resolution stands —
+only the file attribution was wrong, and it had propagated into task briefs before being caught.
 
 **Resolution.** The four route files stay as real screens and re-export the same panel components
 the segment host renders. Tapping a segment is a state change, not a navigation.
