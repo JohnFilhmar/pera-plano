@@ -23,40 +23,39 @@
 // components/gates/soon_gate.tsx applies to a gated row, just at a screen's
 // scale instead of a row's. Grey means "designed, not built"; brand green
 // means "built, needs Plus" (components/ui/chip.tsx's tone contract). Those
-// are opposite claims, so nothing here — including the button below — reaches
-// for `bg-brand`/`text-brand` or any of their `-soft`/`-dark`/`-ink` kin.
+// are opposite claims, so nothing here reaches for `bg-brand`/`text-brand` or
+// any of their `-soft`/`-dark`/`-ink` kin.
 //
-// WHY THE NOTIFY BUTTON IS NOT `components/ui/button.tsx`'s `Button`. Every
-// one of Button's five variants paints either brand green or danger red
-// (VARIANT_BG/VARIANT_FG in that file) — there is no neutral option — so
-// reaching for it here would either import brand colour onto the one screen
-// that exists specifically to not promise Plus, or require adding a sixth,
-// neutral-grey Button variant purely for this screen's sake. That is a
-// shared-component change with app-wide reach that a single Soon board does
-// not justify on its own, so `QuietButton` below stays local: the same
-// touch-target and shape conventions Button uses (min-h-[44px], rounded-full,
-// centered label), restricted to the grey tokens already on this screen
-// (`bg-chip` / `text-fg-2`).
+// NO INTERACTIVE CONTROL ON THIS SCREEN — NOT EVEN A "NOTIFY ME" BUTTON, ON
+// PURPOSE. docs/11-mobile-app-design-prompt.md's "TWO GATING STATES" section
+// is the authority for what a Soon full-screen placeholder is, and it is
+// explicit: "Whole card/row/screen-entry rendered desaturated grey,
+// NON-INTERACTIVE, with a small neutral-grey 'Soon' chip. Content still
+// readable so users see the roadmap." Its own example of full-screen
+// placeholder copy is plain text with nothing to press: "This is coming in
+// an update — your tracking already works."
 //
-// THE NOTIFY BUTTON DOES NOT PROMISE A NOTIFICATION. There is no account and
-// no push registration anywhere in this app — silently "signing the user up"
-// for a notification that can never arrive is a broken promise, worse than no
-// button at all. Pressing it instead reveals, in place, the actual state of
-// affairs: nothing in this codebase can page a user, on this screen or
-// anywhere else (verified — there is no changelog/release-notes feature here
-// either, so the disclosure does not lean on one that does not exist). The
-// label stays an honest expression of interest, not a functioning signup.
-import { useState } from "react";
+// A "Notify me when it ships" button was built here first and its PRESS
+// behaviour was honest — it revealed, rather than hid, that there is no
+// mechanism to notify anyone. That was not enough: the pre-press state is
+// what nearly everyone on a screen with nothing else to tap actually sees —
+// a normally-styled, enabled pill, indistinguishable from every real
+// "notify me" control elsewhere (app-store pre-orders, back-in-stock
+// buttons). This app has no account system and no per-user identity
+// anywhere in its only backend channels (anonymous telemetry, ruleset
+// sync) — there is no path by which that label could ever become true for
+// someone who never presses it. Removed the control rather than trying to
+// make its rest state honest too; the spec already shapes this exact screen
+// without one. What is left is the static paragraph below the bullets —
+// information, not an affordance, so it cannot imply registration no matter
+// how it is styled.
 import { CircleDashed, Users } from "lucide-react-native";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { ScrollView, Text, View } from "react-native";
 
 import { registerIcon } from "@/components/ui/button";
 
 const UsersGlyph = registerIcon(Users);
 const BulletGlyph = registerIcon(CircleDashed);
-
-const NOTIFY_NOTE =
-  "PeraPlano can't notify you — there's no account or push notifications yet. Check back here after updating the app.";
 
 function Bullet({ testID, children }: { testID: string; children: string }) {
   return (
@@ -72,32 +71,7 @@ function Bullet({ testID, children }: { testID: string; children: string }) {
   );
 }
 
-/** See this file's header comment for why this is not `components/ui/button.tsx`'s `Button`. */
-function QuietButton({
-  title,
-  onPress,
-  testID,
-}: {
-  title: string;
-  onPress: () => void;
-  testID: string;
-}) {
-  return (
-    <Pressable
-      testID={testID}
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityLabel={title}
-      className="min-h-[44px] w-full flex-row items-center justify-center rounded-full bg-chip px-5 py-2.5 dark:bg-chip-dark"
-    >
-      <Text className="text-body font-semibold text-fg-2 dark:text-fg-2-dark">{title}</Text>
-    </Pressable>
-  );
-}
-
 export default function SharedBudgetsScreen() {
-  const [notified, setNotified] = useState(false);
-
   return (
     <ScrollView
       testID="shared-budgets-screen"
@@ -123,20 +97,17 @@ export default function SharedBudgetsScreen() {
         <Bullet testID="shared-budgets-bullet-limits">Shared limits, private transactions</Bullet>
       </View>
 
-      <QuietButton
-        testID="shared-budgets-notify"
-        title="Notify me when it ships"
-        onPress={() => setNotified(true)}
-      />
-
-      {notified ? (
-        <Text
-          testID="shared-budgets-notify-note"
-          className="text-center text-secondary font-medium text-fg-2 dark:text-fg-2-dark"
-        >
-          {NOTIFY_NOTE}
-        </Text>
-      ) : null}
+      {/* Static, not a button — see this file's header comment for why the
+          earlier interactive version of this line was replaced. Plain
+          information about the app's current limits, not an affordance, so
+          it cannot be read as signing anyone up for anything. */}
+      <Text
+        testID="shared-budgets-disclosure"
+        className="text-center text-secondary font-medium text-fg-2 dark:text-fg-2-dark"
+      >
+        There's no account and no push notifications in PeraPlano yet — shared budgets will
+        simply appear here once it ships in a future update.
+      </Text>
     </ScrollView>
   );
 }
