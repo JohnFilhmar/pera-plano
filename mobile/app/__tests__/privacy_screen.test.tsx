@@ -288,6 +288,16 @@ test("an export failure surfaces an error and releases the busy spinner", async 
   await waitFor(() => expect(screen.getByTestId("privacy-export-error")).toBeTruthy());
   screen.getByText("Export failed. Please try again.");
   expect(screen.getByTestId("export-everything").props.accessibilityState.busy).toBe(false);
+
+  // branch-review-design.md F3's sweep: this error Text carried the same raw
+  // `text-sm` the reassurance banner did. Asserted directly on the testID'd
+  // node — no `cssInterop` wrapper sits between this `Text` and its own
+  // `className` (see this file's type-scale section header).
+  const errorClasses = String(screen.getByTestId("privacy-export-error").props.className ?? "")
+    .split(/\s+/)
+    .filter(Boolean);
+  expect(errorClasses).toContain("text-body");
+  expect(errorClasses).not.toContain("text-sm");
 });
 
 // ---------------------------------------------------------------------------
@@ -456,5 +466,57 @@ test("the wipe warning names a real domain entity for every major table currentl
     // exists.
     expect(tables).toContain(table);
     expect(body).toContain(keyword);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Type scale (branch-review-design.md F3). The reassurance banner shipped
+// with raw `text-base`/`text-sm` instead of tailwind.config.ts's eight named
+// sizes; this file's own four other pre-existing headings/body texts carried
+// the same off-scale classes and are widened into this same fix (F3's own
+// text: "a future type-scale pass should treat this whole screen").
+//
+// Asserted on the `<Text>` node itself, found by its own exact copy —
+// `PrivacyScreen` renders plain `react-native` `Text`/`View`, neither of
+// which is registered with `cssInterop` (unlike this app's icon components
+// in components/ui/button.tsx), so `className` lands directly on that node's
+// own props rather than being consumed by a wrapper — the same
+// `.props.className` read components/ui/__tests__/primitives.test.tsx's own
+// `classListOf` helper already relies on for Card/Button/Chip.
+// ---------------------------------------------------------------------------
+
+function classesOf(text: string): string[] {
+  return String(screen.getByText(text).props.className ?? "")
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+test("the reassurance banner uses the type scale, not raw Tailwind sizes", async () => {
+  await renderPrivacyScreen();
+
+  // Positive assertion first — the banner really rendered — before the
+  // negative "not a raw size" checks below, so this cannot pass against a
+  // banner that failed to render at all.
+  const heading = screen.getByText("Everything stays on this phone");
+  expect(heading).toBeTruthy();
+
+  const headingClasses = classesOf("Everything stays on this phone");
+  expect(headingClasses).toContain("text-section");
+  expect(headingClasses).not.toContain("text-base");
+
+  const bodyClasses = classesOf(
+    "PeraPlano reads your bank and e-wallet notifications, parses them on this device, and never sends the raw text anywhere. Nothing here is sold, shared, or used for ads.",
+  );
+  expect(bodyClasses).toContain("text-body");
+  expect(bodyClasses).not.toContain("text-sm");
+});
+
+test("the screen's other headings were widened into the same type-scale fix", async () => {
+  await renderPrivacyScreen();
+
+  for (const text of ["Providers", "What PeraPlano captured", "Your data"]) {
+    const classes = classesOf(text);
+    expect(classes).toContain("text-section");
+    expect(classes).not.toContain("text-base");
   }
 });

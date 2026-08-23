@@ -158,6 +158,15 @@ export function TransferLinkActions({
                 testID={`transfer-candidate-${candidate.id}`}
                 title={candidate.merchant ?? candidate.counterparty ?? "Transaction"}
                 subtitle={`${walletsById.get(candidate.walletId)?.name ?? "Unknown wallet"} · ${formatDateTime(candidate.occurredAt)}`}
+                // Wallet name has no length ceiling (wallet_form.tsx), and
+                // `formatDateTime` alone already runs ~20+ characters — the
+                // combined string can clip past one line for a realistic
+                // custom wallet name, dropping the date that disambiguates
+                // same-wallet candidates. app-wide sweep for
+                // branch-review-correctness.md F2's defect class; two lines
+                // covers the realistic range without over-fitting to an
+                // unbounded string.
+                subtitleLines={2}
                 right={
                   <AmountText
                     amount={candidate.amount}

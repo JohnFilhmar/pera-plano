@@ -71,6 +71,40 @@ afterEach(() => {
   __setTierForTests(null);
 });
 
+test("SUBTITLES DO NOT CLIP TO ONE LINE (branch-review-correctness.md F2)", () => {
+  // fix-round-1 already paid this exact bug down on
+  // app/(tabs)/more/settings.tsx and components/privacy/capture_toggle.tsx;
+  // this hub's own rows were missed and are fixed here (fix-round-2). RNTL
+  // never simulates a device's line-clamp — `getByText` below matches the
+  // FULL string either way, on this branch's own fix-round-1 rows too — so
+  // only the rendered node's own `numberOfLines` proves the clamp would not
+  // fire on a real phone.
+  renderScreen(<MoreScreen />);
+
+  const clippableSubtitles = [
+    "Spending by category, top merchants, and the trend behind them.",
+    "We flag recurring charges and total what's locked in every month.",
+    "Split a household budget — one pool, separate phones.",
+    "Whether tracking is actually connected right now, and since when.",
+    "What's parsing per provider, and what's landing in the unknown bin.",
+    "Export everything, wipe everything, and see exactly what's tracked.",
+    "Appearance, alerts, and what leaves this device.",
+  ];
+  for (const text of clippableSubtitles) {
+    expect(screen.getByText(text).props.numberOfLines).toBeGreaterThan(1);
+  }
+
+  // About is the one row deliberately left at the default: the shortest
+  // subtitle (28 characters) AND the one row with no right chevron at all
+  // (see the file's own "ABOUT GETS NO CHEVRON" header note), so it has more
+  // room than every row above it. A positive assertion, not just an absence
+  // of a change — proves the row actually rendered before pinning its
+  // numberOfLines.
+  const about = screen.getByText(/^PeraPlano v/);
+  expect(about).toBeTruthy();
+  expect(about.props.numberOfLines).toBe(1);
+});
+
 test("BOTH ROWS RENDER", () => {
   renderScreen(<MoreScreen />);
 

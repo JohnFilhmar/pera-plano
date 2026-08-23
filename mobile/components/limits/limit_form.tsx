@@ -406,7 +406,27 @@ export function LimitForm({
         // Both halves matter: it carries forward, and it never stacks (rules
         // 14-16).
         subtitle="Unused headroom carries into the next period, never stacking"
-        right={<Switch testID="limit-rollover" value={rollover} onValueChange={setRollover} />}
+        // 60 characters beside a bare Switch, no left icon, not Card-wrapped
+        // — branch-review-correctness.md F2's defect class, missed on this
+        // row too. `Math.ceil(60 / 22)`; see app/(tabs)/more/index.tsx's
+        // header for where the 22 chars/line comes from.
+        subtitleLines={3}
+        right={
+          <Switch
+            testID="limit-rollover"
+            value={rollover}
+            onValueChange={setRollover}
+            // branch-review-design.md F4: this Switch had no accessibility
+            // props at all, unlike its two restyled siblings in the same
+            // diff (components/privacy/capture_toggle.tsx's
+            // capture-toggle-switch, components/privacy/
+            // provider_switch_list.tsx's provider-switch-*) — matching
+            // their exact pattern, not inventing a new one.
+            accessibilityRole="switch"
+            accessibilityLabel="Rollover"
+            accessibilityState={{ checked: rollover }}
+          />
+        }
       />
 
       <Button

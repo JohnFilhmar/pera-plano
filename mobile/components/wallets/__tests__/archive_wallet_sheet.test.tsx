@@ -62,6 +62,24 @@ describe("the transaction-handling choice", () => {
     expect(screen.getByTestId("archive-move-transactions")).toBeTruthy();
   });
 
+  test("neither choice's explanation clips to one line", () => {
+    // app-wide sweep for branch-review-correctness.md F2's defect class:
+    // list_row.tsx's subtitle defaults to `numberOfLines={1}` unless a
+    // caller opts in. RNTL never simulates a device's line-clamp —
+    // `getByText` below matches the FULL string either way — so only the
+    // rendered node's own `numberOfLines` proves the clamp would not fire.
+    renderSheet();
+
+    expect(
+      screen.getByText("They stay in your history and reports, attached to this wallet.").props
+        .numberOfLines,
+    ).toBeGreaterThan(1);
+    expect(
+      screen.getByText("Their amounts and details are unchanged; only the wallet moves.").props
+        .numberOfLines,
+    ).toBeGreaterThan(1);
+  });
+
   test("DEFAULTS to keeping them — confirming without choosing moves nothing", () => {
     const onArchive = renderSheet();
 

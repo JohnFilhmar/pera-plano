@@ -106,6 +106,12 @@ export function ArchiveWalletSheet({
               testID="archive-keep-transactions"
               title="Keep them here"
               subtitle="They stay in your history and reports, attached to this wallet."
+              // 63 characters, no left icon, a conditional Chip on the right
+              // — branch-review-correctness.md F2's defect class (list_row.tsx
+              // subtitles defaulting to one line), found by the app-wide
+              // sweep. `Math.ceil(63 / 22)`; see app/(tabs)/more/index.tsx's
+              // header for where 22 chars/line comes from.
+              subtitleLines={3}
               onPress={() => choose("keep")}
               right={choice === "keep" ? <Chip label="Selected" tone="brand" /> : undefined}
             />
@@ -113,6 +119,8 @@ export function ArchiveWalletSheet({
               testID="archive-move-transactions"
               title="Move them to another wallet"
               subtitle="Their amounts and details are unchanged; only the wallet moves."
+              // 63 characters — same sweep finding as the row above.
+              subtitleLines={3}
               onPress={() => choose("move")}
               right={choice === "move" ? <Chip label="Selected" tone="brand" /> : undefined}
             />

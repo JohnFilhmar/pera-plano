@@ -226,12 +226,18 @@ export default function SettingsScreen() {
         // 157 characters, this row's longest — fix-round-1.
         subtitleLines={5}
         control={
+          // Sweep for branch-review-design.md F4 (the Rollover Switch's
+          // missing accessibility props) found this Switch bare too — same
+          // fix, matching components/privacy/capture_toggle.tsx's pattern.
           <Switch
             testID="settings-quiet-hours-toggle"
             value={quietEnabled}
             onValueChange={(value) =>
               setQuietEnabled.mutate({ key: "quiet_hours_enabled", value })
             }
+            accessibilityRole="switch"
+            accessibilityLabel="Quiet hours"
+            accessibilityState={{ checked: quietEnabled }}
           />
         }
       />
@@ -327,12 +333,16 @@ export default function SettingsScreen() {
         // promise itself.
         subtitleLines={5}
         control={
+          // Same F4 sweep as the quiet-hours Switch above.
           <Switch
             testID="settings-telemetry-toggle"
             value={settings.telemetry_enabled}
             onValueChange={(value) =>
               setTelemetryEnabled.mutate({ key: "telemetry_enabled", value })
             }
+            accessibilityRole="switch"
+            accessibilityLabel="Share anonymous parser health"
+            accessibilityState={{ checked: settings.telemetry_enabled }}
           />
         }
       />

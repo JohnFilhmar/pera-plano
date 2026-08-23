@@ -205,11 +205,20 @@ export default function PrivacyScreen() {
       <View testID="privacy-reassurance" className="gap-2 rounded-2xl bg-brand-soft p-4 dark:bg-brand-soft-dark">
         <View className="flex-row items-center gap-2">
           <SmartphoneIcon size={17} className="text-brand-ink dark:text-brand-ink-dark" />
-          <Text className="text-base font-bold text-brand-ink dark:text-brand-ink-dark">
+          {/* branch-review-design.md F3: this was raw `text-base` (16px/24px),
+              not one of tailwind.config.ts's eight named sizes. `section`
+              (15px/20px) is the nearest by actual pixel value (1px away,
+              versus 2px for `body` and 4px for `title`) — and it is also this
+              scale's own token for a section-level heading, which is exactly
+              this line's role. */}
+          <Text className="text-section font-bold text-brand-ink dark:text-brand-ink-dark">
             Everything stays on this phone
           </Text>
         </View>
-        <Text className="text-sm text-brand-ink dark:text-brand-ink-dark">{INTRO_BODY}</Text>
+        {/* Was raw `text-sm` (14px/20px) — a pixel-for-pixel duplicate of
+            `body` (14px/20px) under the wrong class name (branch-review-
+            design.md F3). */}
+        <Text className="text-body text-brand-ink dark:text-brand-ink-dark">{INTRO_BODY}</Text>
       </View>
 
       <SectionHeader title="Listening" />
@@ -220,7 +229,12 @@ export default function PrivacyScreen() {
       />
 
       <View className="gap-2">
-        <Text className="text-base font-semibold text-fg dark:text-fg-dark">Providers</Text>
+        {/* Pre-existing raw `text-base`, same off-scale class this file's
+            reassurance banner shipped with (branch-review-design.md F3
+            widened this fix to the whole screen) — mapped to `section`,
+            the nearest scale entry, for the same reason as that banner's
+            heading. */}
+        <Text className="text-section font-semibold text-fg dark:text-fg-dark">Providers</Text>
         <ProviderSwitchList
           items={switchItems}
           onToggle={handleToggleProvider}
@@ -229,10 +243,12 @@ export default function PrivacyScreen() {
       </View>
 
       <View className="gap-2">
-        <Text className="text-base font-semibold text-fg dark:text-fg-dark">
+        {/* Same F3 sweep as "Providers" above — text-base/text-sm mapped to
+            the nearest scale entries. */}
+        <Text className="text-section font-semibold text-fg dark:text-fg-dark">
           What PeraPlano captured
         </Text>
-        <Text className="text-sm text-fg-2 dark:text-fg-2-dark">{CAPTURED_LIST_BODY}</Text>
+        <Text className="text-body text-fg-2 dark:text-fg-2-dark">{CAPTURED_LIST_BODY}</Text>
         <CapturedList items={capturedItems} />
       </View>
 
@@ -270,7 +286,8 @@ export default function PrivacyScreen() {
         here as follow-up rather than silently dropped.
       */}
       <View className="gap-2">
-        <Text className="text-base font-semibold text-fg dark:text-fg-dark">Your data</Text>
+        {/* Same F3 sweep as "Providers"/"What PeraPlano captured" above. */}
+        <Text className="text-section font-semibold text-fg dark:text-fg-dark">Your data</Text>
         <Button
           testID="export-everything"
           title="Export all my data"
@@ -279,13 +296,13 @@ export default function PrivacyScreen() {
           loading={exporting}
         />
         {exportError ? (
-          <Text testID="privacy-export-error" className="text-sm text-danger dark:text-danger-dark">
+          <Text testID="privacy-export-error" className="text-body text-danger dark:text-danger-dark">
             {exportError}
           </Text>
         ) : null}
         <WipeFlow onConfirmed={handleWipeConfirmed} busy={wiping} />
         {wipeError ? (
-          <Text testID="privacy-wipe-error" className="text-sm text-danger dark:text-danger-dark">
+          <Text testID="privacy-wipe-error" className="text-body text-danger dark:text-danger-dark">
             {wipeError}
           </Text>
         ) : null}

@@ -69,6 +69,31 @@
 // exist. All three now exist (constants/shipped_features.ts's
 // `shared_budgets` key, seeded "soon"; app/(tabs)/more/shared_budgets.tsx),
 // so this task adds the row that earlier task was right to skip.
+//
+// SUBTITLELINES (branch-review-correctness.md F2, fix-round-2). Every
+// gated/navigating row's subtitle below defaulted to list_row.tsx's
+// `numberOfLines={1}` and clips on a real device — the identical bug
+// fix-round-1 already paid down on app/(tabs)/more/settings.tsx and
+// components/privacy/capture_toggle.tsx (`subtitleLines={4..6}` there),
+// missed on this screen because it shipped in the same diff and was never
+// swept for. This screen's rows are narrower than either of those: every row
+// below carries BOTH a 32dp `RowIconDisc` (left) AND an 18dp `RowChevron`
+// (right), where settings.tsx's `SettingCard` rows carry only one flanking
+// control and no left icon at all. Absent a device to re-measure this exact
+// shape, each value below is `Math.ceil(subtitle.length / 22)` — 22 chars/
+// line is this codebase's own most conservative real measurement
+// (settings.tsx's recurring-forget row: 129 characters over 6 lines ≈ 21.5),
+// deliberately not its most generous one (settings.tsx's bare-Switch rows
+// reach ~31 chars/line). `numberOfLines` is a ceiling on wrapping, not a
+// fixed height, so over-provisioning here costs nothing visually. Settings'
+// subtitle (48 characters) is short enough that branch-review-correctness.md
+// hedged "possibly" safe at the default — this file extends the fix to it
+// too, since it shares the identical narrow row shape as the six the review
+// named and 48 characters clears no chars/line rate this codebase has ever
+// measured. About is the one row left at the default: its subtitle is the
+// shortest (28 characters) AND the one row with no right chevron at all (see
+// "ABOUT GETS NO CHEVRON" above), so it has more width than any other row
+// here, not less.
 import { useRouter } from "expo-router";
 import {
   Activity,
@@ -144,6 +169,8 @@ export default function MoreScreen() {
           <ListRow
             title="Reports"
             subtitle="Spending by category, top merchants, and the trend behind them."
+            // 63 chars / 22 — fix-round-2 (see header).
+            subtitleLines={3}
             left={<RowIconDisc icon={ReportsGlyph} />}
             right={<RowChevron />}
           />
@@ -165,6 +192,8 @@ export default function MoreScreen() {
           <ListRow
             title="Subscriptions"
             subtitle="We flag recurring charges and total what's locked in every month."
+            // 65 chars / 22 — fix-round-2 (see header).
+            subtitleLines={3}
             left={<RowIconDisc icon={SubscriptionsGlyph} />}
             right={<RowChevron />}
           />
@@ -192,6 +221,8 @@ export default function MoreScreen() {
           <ListRow
             title="Shared budgets"
             subtitle="Split a household budget — one pool, separate phones."
+            // 53 chars / 22 — fix-round-2 (see header).
+            subtitleLines={3}
             left={<RowIconDisc icon={SharedBudgetsGlyph} />}
             right={<RowChevron />}
           />
@@ -212,6 +243,8 @@ export default function MoreScreen() {
           <ListRow
             title="Listener health"
             subtitle="Whether tracking is actually connected right now, and since when."
+            // 65 chars / 22 — fix-round-2 (see header).
+            subtitleLines={3}
             left={<RowIconDisc icon={ListenerGlyph} />}
             right={<RowChevron />}
           />
@@ -230,6 +263,8 @@ export default function MoreScreen() {
           <ListRow
             title="Parser diagnostics"
             subtitle="What's parsing per provider, and what's landing in the unknown bin."
+            // 67 chars / 22 — fix-round-2 (see header).
+            subtitleLines={4}
             left={<RowIconDisc icon={ParserGlyph} />}
             right={<RowChevron />}
           />
@@ -249,6 +284,8 @@ export default function MoreScreen() {
           <ListRow
             title="Privacy centre"
             subtitle="Export everything, wipe everything, and see exactly what's tracked."
+            // 67 chars / 22 — fix-round-2 (see header).
+            subtitleLines={4}
             left={<RowIconDisc icon={PrivacyGlyph} />}
             right={<RowChevron />}
           />
@@ -268,6 +305,9 @@ export default function MoreScreen() {
         <ListRow
           title="Settings"
           subtitle="Appearance, alerts, and what leaves this device."
+          // 48 chars / 22 — fix-round-2, extended beyond the review's own
+          // "possibly" hedge (see header).
+          subtitleLines={3}
           left={<RowIconDisc icon={SettingsGlyph} />}
           right={<RowChevron />}
         />

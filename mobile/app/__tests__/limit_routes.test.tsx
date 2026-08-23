@@ -361,6 +361,38 @@ test("the scope chips choose the period, and rollover defaults OFF", async () =>
   expect((await listLimits()).every((limit) => limit.rollover === false)).toBe(true);
 });
 
+test("the Rollover Switch announces itself to a screen reader, matching its restyled siblings", () => {
+  // branch-review-design.md F4: this Switch had no accessibility props at
+  // all, unlike components/privacy/capture_toggle.tsx's
+  // capture-toggle-switch and components/privacy/provider_switch_list.tsx's
+  // provider-switch-* in the same diff.
+  renderScreen(<NewLimitScreen />);
+
+  const rolloverSwitch = screen.getByTestId("limit-rollover");
+  expect(rolloverSwitch.props.accessibilityRole).toBe("switch");
+  expect(rolloverSwitch.props.accessibilityLabel).toBe("Rollover");
+  // Positive assertion first (the switch exists and starts unchecked, form's
+  // own `rollover` default) — a guard built only of negative/undefined
+  // checks would pass just as well against a Switch that was never rendered
+  // at all.
+  expect(rolloverSwitch.props.accessibilityState).toEqual({ checked: false });
+
+  fireEvent(rolloverSwitch, "valueChange", true);
+  expect(screen.getByTestId("limit-rollover").props.accessibilityState).toEqual({ checked: true });
+});
+
+test("the Rollover row's explanation does not clip to one line", () => {
+  // branch-review-correctness.md F2's defect class: list_row.tsx's subtitle
+  // defaults to `numberOfLines={1}` unless a caller opts in. RNTL cannot see
+  // a device's line-clamp — `getByText` below finds the full string either
+  // way — so the only real assertion is on the rendered node's own
+  // `numberOfLines` prop, never the text content.
+  renderScreen(<NewLimitScreen />);
+
+  const subtitle = screen.getByText("Unused headroom carries into the next period, never stacking");
+  expect(subtitle.props.numberOfLines).toBeGreaterThan(1);
+});
+
 test("an empty or zero amount cannot be saved", async () => {
   // 001_core.sql's CHECK (value > 0). A disabled button beats a constraint
   // violation surfacing as an unexplained crash.

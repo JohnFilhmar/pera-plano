@@ -51,6 +51,7 @@ import { getTransaction, insertTransaction, sumSpend } from "@/lib/db/repos/tran
 import { linkTransfer } from "@/lib/db/repos/transfer_links_repo";
 import { listUserRules } from "@/lib/db/repos/user_rules_repo";
 import { createWallet } from "@/lib/db/repos/wallets_repo";
+import { formatDateTime } from "@/lib/datetime";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
 import type { RawCapture, Transaction, Wallet } from "@/types/domain";
@@ -533,6 +534,23 @@ describe("transfer links", () => {
     expect(screen.queryByTestId(`transfer-candidate-${legs.sameDirection.id}`)).toBeNull();
     // And never itself.
     expect(screen.queryByTestId(`transfer-candidate-${legs.out.id}`)).toBeNull();
+  });
+
+  test("a transfer candidate's wallet-and-date caption does not clip to one line", async () => {
+    // App-wide sweep for branch-review-correctness.md F2's defect class.
+    // Wallet name has no length ceiling, and `formatDateTime` alone already
+    // runs past 20 characters, so the combined caption can clip past one
+    // line for a realistic wallet name — losing the date that disambiguates
+    // same-wallet candidates. RNTL never simulates a device's line-clamp, so
+    // only the rendered node's own `numberOfLines` proves it.
+    const legs = await transferLegs();
+    await renderDetail(legs.out.id);
+
+    fireEvent.press(screen.getByTestId("transfer-link-open"));
+    await waitFor(() => expect(screen.getByTestId("transfer-candidate-picker")).toBeTruthy());
+
+    const caption = screen.getByText(`GCash · ${formatDateTime(legs.in.occurredAt)}`);
+    expect(caption.props.numberOfLines).toBeGreaterThan(1);
   });
 
   test("linking takes the out-leg out of spend, and unlinking puts it back", async () => {

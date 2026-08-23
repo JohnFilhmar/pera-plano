@@ -224,6 +224,22 @@ describe("the Settings screen", () => {
     expect(subtitle.props.numberOfLines).toBeGreaterThan(1);
   });
 
+  test("the telemetry toggle announces itself to a screen reader", async () => {
+    // branch-review-design.md F4's sweep: this Switch had no accessibility
+    // props at all, unlike components/privacy/capture_toggle.tsx's
+    // capture-toggle-switch in the very same diff.
+    renderScreen(<SettingsScreen />);
+
+    const toggle = await screen.findByTestId("settings-telemetry-toggle");
+    // Positive assertion first — the switch is really there and really
+    // checked (telemetry_enabled's real default) — before the prop checks
+    // below, so this cannot pass against a Switch that failed to render.
+    expect(toggle.props.value).toBe(true);
+    expect(toggle.props.accessibilityRole).toBe("switch");
+    expect(toggle.props.accessibilityLabel).toBe("Share anonymous parser health");
+    expect(toggle.props.accessibilityState).toEqual({ checked: true });
+  });
+
   test("the subscription-forget multiplier defaults to 1.5, clamps to the floor at 1, and persists", async () => {
     renderScreen(<SettingsScreen />);
     await screen.findByTestId("settings-recurring-forget-row");
@@ -303,6 +319,17 @@ describe("the Settings screen", () => {
     expect(screen.getByTestId("settings-quiet-hours-toggle").props.value).toBe(true);
     expect(screen.getByTestId("settings-quiet-start-value").props.children).toBe("9:00 PM");
     expect(screen.getByTestId("settings-quiet-end-value").props.children).toBe("8:00 AM");
+  });
+
+  test("the quiet hours toggle announces itself to a screen reader", async () => {
+    // Same F4 sweep finding as the telemetry toggle above.
+    renderScreen(<SettingsScreen />);
+    const toggle = await screen.findByTestId("settings-quiet-hours-toggle");
+
+    expect(toggle.props.value).toBe(true);
+    expect(toggle.props.accessibilityRole).toBe("switch");
+    expect(toggle.props.accessibilityLabel).toBe("Quiet hours");
+    expect(toggle.props.accessibilityState).toEqual({ checked: true });
   });
 
   test("the toggle persists, and hides the two bounds when the window is off", async () => {
