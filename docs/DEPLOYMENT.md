@@ -8,9 +8,11 @@ self-hosted box, driven from the GitHub Actions **Deploy web** workflow
 reserved for it (see `docker-compose.yml`) — so this pipeline covers nothing beyond
 `apps/web`. Extend it, don't replace it, once `apps/api` exists.
 
-This mirrors the pattern already proven on `talyer-e-inventory` on the same box, adapted
-to this repo's env-file-based config injection instead of GitHub-secret substitution
-(see "Why env files, not GitHub secrets" below).
+This mirrors the pattern already proven on `talyer-e-inventory` on the same box.
+**Production** reads its compliance/operational values from the `production` GitHub
+Environment's variables, substituted into Compose the same way talyer does it.
+**Staging** still uses a box-local env file for now (see "Compliance config" below) —
+revisit that once staging is actually picked back up.
 
 ## How deploys are routed
 
@@ -22,6 +24,11 @@ runner can hold multiple labels).
 `production` only deploys from the `master` branch; `staging` only deploys from the
 `staging` branch. The workflow's "Guard branch/environment pairing" step enforces this —
 a mismatched dispatch fails before touching the box.
+
+**This currently blocks every production dispatch**: `master` is 400+ commits behind
+`feat/mvp-implementation` and doesn't have `server/` at all yet. Nothing will deploy to
+production until `feat/mvp-implementation` (or wherever `apps/web` lives) merges to
+`master`. Fine for now while you're only exercising the pipeline itself.
 
 ## Setting up the runner
 
@@ -76,51 +83,50 @@ cd /opt/pera-plano
 
 **5. Confirm** it shows as *Idle* under Settings → Actions → Runners with both labels.
 
-## Compliance env files (must exist before either environment can boot)
+## Compliance config
 
 `server/libs/common/src/config/env.ts` refuses to start in production if any of
 `PIC_LEGAL_NAME`, `PIC_ADDRESS`, `DPO_NAME`, `DPO_EMAIL`, `SUPPORT_EMAIL`,
 `NPC_REGISTRATION` is unset — these are the legal identifiers printed on the published
-privacy notice, and a plausible-but-wrong value is worse than an outage. As of this
-writing those roles are still unresolved (PIC entity, DPO, NPC registration), so **both**
-staging and production containers will crash-loop until real values exist. That's the
-gate working as designed, not a pipeline bug — see the error message the container
-prints for the citation to each field's purpose.
+privacy notice, and a plausible-but-wrong value is worse than an outage. The gate only
+checks presence (and email shape for the two email fields), so it will happily accept a
+placeholder — it cannot tell "TBA" from a real legal name.
 
-The overlays read from absolute paths outside the git checkout, not from inside the repo:
+### Production — GitHub Environment variables
+
+Read from the `production` GitHub Environment (Settings → Environments → production →
+Variables), substituted by Compose from the deploy job's process env
+(`.github/workflows/deploy.yml` → `docker-compose.production.yml`). Never a file, never
+baked into the image. These are legal identifiers meant to be public on the privacy
+notice, not secrets — that's why they're plain Environment variables, not encrypted ones.
+
+**Already set, but every PIC/DPO/NPC field is currently the literal placeholder `TBA`**
+(`DPO_EMAIL` is `tba@peraplano.com`; `SUPPORT_EMAIL` is the one real value,
+`olajohnfilhmar@gmail.com`). A production deploy today will boot successfully and then
+publish "TBA" as the legal Controller name/address/DPO on the live privacy page — that's
+a known, deliberate tradeoff for now (see the PR/commit that wired this up), not a gate
+failure. Update the values in Settings → Environments → production → Variables the
+moment the PIC entity/DPO/NPC registration are real; no redeploy of code is needed, just
+a fresh dispatch.
+
+### Staging — box-local env file (unchanged, deferred)
+
+Staging still reads from an absolute path outside the git checkout:
 
 ```
 /opt/pera-plano/env/staging.env
-/opt/pera-plano/env/production.env
 ```
 
 Absolute and outside the checkout on purpose: `actions/checkout` runs `git clean -ffdx`
 by default, which would delete a file placed anywhere inside the repo working tree on
-the very next deploy.
-
-Create both files on the box (as the `runner` user, or root + chown), following
-`server/.env.example` for the full key list:
+the very next deploy. Create it on the box (as the `runner` user, or root + chown),
+following `server/.env.example` for the full key list, when staging is picked back up:
 
 ```bash
 mkdir -p /opt/pera-plano/env
 $EDITOR /opt/pera-plano/env/staging.env
-$EDITOR /opt/pera-plano/env/production.env
-chmod 600 /opt/pera-plano/env/*.env
+chmod 600 /opt/pera-plano/env/staging.env
 ```
-
-`PIC_*`/`DPO_*`/`NPC_REGISTRATION` will be identical between the two files (same legal
-entity); `PUBLIC_BASE_URL` should differ once staging has its own address (see "What's
-still missing" below).
-
-## Why env files, not GitHub secrets
-
-`talyer-e-inventory`'s deploy job passes secrets/vars from a GitHub Environment straight
-into the Compose `environment:` block. This repo already committed to a different,
-deliberate design instead (see the comment in `docker-compose.yml`'s git history): the
-compliance values are legal identifiers, not application secrets, and are meant to be
-edited directly on the box via `server/.env.local` / the files above — never baked into
-the image, never round-tripped through CI. This pipeline preserves that design rather
-than replacing it.
 
 ## Running a deploy
 
@@ -137,15 +143,15 @@ workspace loses nothing.
 
 ## What's still missing
 
-- **Staging has no domain or nginx vhost yet** — it's reachable directly at
-  `http://<box-ip>:3004` until one exists. Production's vhost
-  (`docs/nginx/peraplano-production.conf`) is the pattern to copy once a staging
-  subdomain is chosen.
-- **No `staging` branch exists yet** in this repo — create one before the first staging
-  dispatch, or the branch guard rejects it.
-- **GitHub Environments** (`staging`, `production`) aren't pre-configured with protection
-  rules. Auto-created on first workflow run; add a required reviewer on `production` in
-  Settings → Environments if you want a manual approval gate in front of the deploy job
-  itself (on top of the `workflow_dispatch` trigger).
-- **The compliance env files above don't exist on the box yet** — both environments will
-  crash-loop until they do.
+- **`master` doesn't have `apps/web` yet** — the branch guard blocks every production
+  dispatch until `feat/mvp-implementation` (or equivalent) merges to `master`.
+- **PIC/DPO/NPC are placeholder values** (`TBA`) in the `production` Environment — see
+  "Compliance config" above. Deploying today publishes those placeholders live.
+- **Staging is deferred**: no domain/nginx vhost (reachable directly at
+  `http://<box-ip>:3004` once used), no `staging` branch yet (the branch guard rejects a
+  staging dispatch until one exists), and its compliance env file doesn't exist on the
+  box yet.
+- **The runner itself isn't registered/running yet** — see "Setting up the runner" above.
+- **GitHub Environment protection rules** aren't configured. Add a required reviewer on
+  `production` in Settings → Environments if you want a manual approval gate in front of
+  the deploy job itself (on top of the `workflow_dispatch` trigger).

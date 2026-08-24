@@ -12,13 +12,23 @@
 # Container/volume isolation from staging comes from the Compose project name (-p),
 # supplied by the deploy workflow — not from anything in this file.
 #
-# env_file is an absolute path outside the git checkout on purpose: actions/checkout
-# runs `git clean -ffdx` by default, which would delete a compliance env file placed
-# anywhere inside the repo working tree on the very next deploy. The file itself is
-# never committed — create it once on the box, see docs/DEPLOYMENT.md.
+# Compliance and operational values are NOT read from a file here — they come from the
+# `production` GitHub Environment's variables (Settings -> Environments -> production ->
+# Variables), substituted by Compose from the deploy job's process env
+# (.github/workflows/deploy.yml). A blank var and a missing one behave identically to the
+# app: both fail the boot gate. These are legal identifiers published on the privacy
+# notice, not secrets, which is why they live as plain Environment variables rather than
+# encrypted secrets.
 services:
   peraplano-web:
-    env_file:
-      - /opt/pera-plano/env/production.env
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://peraplano.filhmar.online}
+      PIC_LEGAL_NAME: ${PIC_LEGAL_NAME:-}
+      PIC_ADDRESS: ${PIC_ADDRESS:-}
+      DPO_NAME: ${DPO_NAME:-}
+      DPO_EMAIL: ${DPO_EMAIL:-}
+      SUPPORT_EMAIL: ${SUPPORT_EMAIL:-}
+      NPC_REGISTRATION: ${NPC_REGISTRATION:-}
     ports:
       - "127.0.0.1:3003:3000"

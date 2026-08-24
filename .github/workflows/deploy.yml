@@ -99,6 +99,21 @@ jobs:
     environment: ${{ inputs.environment }}
     permissions:
       contents: read
+    # Compliance values come from this GitHub Environment's variables (Settings ->
+    # Environments -> <environment> -> Variables), never from a file baked into the
+    # image or committed to the repo -- they publish verbatim on the privacy notice.
+    # `environment:` above scopes `vars.*` to whichever environment was dispatched, so
+    # staging and production each read their own values (staging's are unset today;
+    # its overlay still uses a box-local env file until that environment is set up).
+    env:
+      LOG_LEVEL: ${{ vars.LOG_LEVEL }}
+      PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
+      PIC_LEGAL_NAME: ${{ vars.PIC_LEGAL_NAME }}
+      PIC_ADDRESS: ${{ vars.PIC_ADDRESS }}
+      DPO_NAME: ${{ vars.DPO_NAME }}
+      DPO_EMAIL: ${{ vars.DPO_EMAIL }}
+      SUPPORT_EMAIL: ${{ vars.SUPPORT_EMAIL }}
+      NPC_REGISTRATION: ${{ vars.NPC_REGISTRATION }}
     steps:
       # Fail fast, before checkout or any build work, if the chosen environment doesn't
       # match the branch this run is on. production only ever deploys from master;
