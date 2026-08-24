@@ -4,8 +4,9 @@ on:
   push:
     paths: &paths
       - "server/**"
-      - "docker-compose.yml"
+      - "docker-compose*.yml"
       - ".github/workflows/server-ci.yml"
+      - ".github/workflows/deploy.yml"
       # The drift test exists to fail when this file changes. A path filter that omits
       # it makes the test unreachable from the only edit that should trigger it.
       - "docs/07-privacy-and-compliance.md"

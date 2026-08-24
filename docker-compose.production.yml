@@ -1,0 +1,24 @@
+# Production overlay.
+#
+# Ports bind to 127.0.0.1 only, so nothing reaches the app except through the reverse
+# proxy on the same host. Published as "3000:3000" it would listen on 0.0.0.0 and be
+# reachable directly at http://<server-ip>:3003, bypassing nginx — which means no TLS
+# and a second origin the app was never told about.
+#
+# Consequence: with this in effect the stack is ONLY reachable through the proxy. Do not
+# deploy this before nginx is actually proxying (docs/nginx/peraplano-production.conf),
+# or the app will appear to be down.
+#
+# Container/volume isolation from staging comes from the Compose project name (-p),
+# supplied by the deploy workflow — not from anything in this file.
+#
+# env_file is an absolute path outside the git checkout on purpose: actions/checkout
+# runs `git clean -ffdx` by default, which would delete a compliance env file placed
+# anywhere inside the repo working tree on the very next deploy. The file itself is
+# never committed — create it once on the box, see docs/DEPLOYMENT.md.
+services:
+  peraplano-web:
+    env_file:
+      - /opt/pera-plano/env/production.env
+    ports:
+      - "127.0.0.1:3003:3000"
