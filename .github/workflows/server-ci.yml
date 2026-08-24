@@ -4,8 +4,9 @@ on:
   push:
     paths: &paths
       - "server/**"
-      - "docker-compose.yml"
+      - "docker-compose*.yml"
       - ".github/workflows/server-ci.yml"
+      - ".github/workflows/deploy.yml"
       # The drift test exists to fail when this file changes. A path filter that omits
       # it makes the test unreachable from the only edit that should trigger it.
       - "docs/07-privacy-and-compliance.md"
@@ -37,6 +38,13 @@ jobs:
 
   secret-scan:
     runs-on: ubuntu-latest
+    # gitleaks-action calls `GET /pulls/:number/commits` to scan just the PR's diff on a
+    # pull_request event. The repo's default workflow token is contents:read only, which
+    # 403s that call ("Resource not accessible by integration") — not a real finding, a
+    # missing scope. contents:read is still needed for the checkout step below.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
         with:

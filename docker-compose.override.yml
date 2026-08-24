@@ -1,0 +1,16 @@
+# Local-development port and env publishing. Compose loads docker-compose.override.yml
+# automatically for a bare `docker compose up` (no -f flags) — that is the documented
+# local one-liner: create server/.env.local from server/.env.example, then
+# `docker compose up --build` and open localhost:3000.
+#
+# The deploy workflow (.github/workflows/deploy.yml) always passes an explicit
+# `-f docker-compose.yml -f docker-compose.<environment>.yml` list, and Compose only
+# auto-loads this override file when no `-f` flags are given at all — so this file
+# never affects the box. Do not add anything here that should also apply to
+# staging/production; that belongs in the base file instead.
+services:
+  peraplano-web:
+    env_file:
+      - ./server/.env.local
+    ports:
+      - "3000:3000"
