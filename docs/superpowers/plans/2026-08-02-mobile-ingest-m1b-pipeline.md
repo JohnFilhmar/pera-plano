@@ -2,6 +2,17 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> ### ⚠️ Amended by the encryption plan (2026-08-07)
+> `2026-08-07-encryption-foundation.md` completes before this plan starts.
+> - `drainPendingCaptures()` keeps its signature and still returns plaintext `RawCapture[]` —
+>   decryption happens below the bridge. This plan needs no crypto awareness.
+> - It now **requires the app to be unlocked**. The pipeline only ever runs behind the app lock,
+>   so this is satisfied by construction, but `getDatabase()` throws `DatabaseLockedError` if
+>   anything here is ever called while locked.
+> - Raw capture text is still persisted to `raw_notifications`, now inside an encrypted database.
+>   The 30-day TTL and the never-syncs rule are unchanged.
+
+
 **Goal:** Turn a raw Android notification capture into a trustworthy ledger entry — parse it, reject its duplicate twin, recognize when it is really an internal transfer, categorize it, and either commit it silently or route it to the Review Queue — implementing `docs/03-ingest-pipeline.md` end to end.
 
 **Architecture:** Nine small, individually testable stage modules under `mobile/lib/ingest/`, composed by a single `pipeline.ts` orchestrator. Every stage is a pure function over its inputs plus injected dependencies (clock, repositories, ruleset), so the whole pipeline is testable without a device, a database file, or a real notification. Parser behavior lives in *data* — a versioned ruleset row — not in code, so provider wording changes ship without an app release.
@@ -192,8 +203,36 @@ parseCapture(capture: RawCapture, rules: ProviderRuleset[]): ParsedEvent | null;
 **Rules:**
 1. `parseAmountToCentavos` accepts `"₱1,234.56"`, `"PHP 1,234.56"`, `"1234.56"`, `"1,234"` (→ `123400`), and `"P1,234.56"`. It returns `null` for anything else. It must never use floating-point arithmetic to reach centavos — parse the integer and fraction parts separately, or the classic `12.10 * 100 === 1209.9999` bug will corrupt the ledger.
 2. `parseCapture` searches the notification text in this order: `bigText`, then `text`, then `title` — expanded text is the most complete (spec §5).
-3. Template scoring per spec §9.1: base `1.00` when every group the template declares is bound, `0.70` for a partial match. Then subtract: weak-cue direction `0.15`, amount ambiguity `0.30` (when `countAmountTokens > 1` and the template did not bind an explicit balance group to absorb the second token), merchant missing `0.05`, SMS channel `0.05`. Clamp to `[0, 1]`. The wallet-fallback penalty (`0.10`) is applied later by the normalizer, which is the stage that resolves wallets.
-4. Direction resolution: an explicit template `direction` wins; otherwise infer from keyword sets (`sent|paid|purchase|debit|withdraw` → `out`; `received|credited|refund|cash-in|deposit` → `in`) and apply the weak-cue penalty. If neither yields a direction, return `null` — a transaction without a direction is unusable.
+3. Template scoring per spec §9.1: base `1.00` when the template's regex **matches**, `0.70` for a partial/fuzzy match. Then subtract: weak-cue direction `0.15`, amount ambiguity `0.30` (when `countAmountTokens > 1` and the template did not bind an explicit balance group to absorb the second token), merchant missing `0.05`, SMS channel `0.05`. Clamp to `[0, 1]`. The wallet-fallback penalty (`0.10`) is applied later by the normalizer, which is the stage that resolves wallets.
+
+   > **CORRECTED 2026-08-10 (after Task 2).** This rule previously read "base `1.00` when every
+   > group the template declares is bound". That is a misstatement of the spec and, taken
+   > literally, makes the ≥95% auto-commit target (§11.4) **unreachable by construction**: Task 2
+   > rule 4 *requires* `merchant` and `ref` to be optional groups, those groups are unbound in most
+   > real notifications, so nearly every match would score base `0.70`, then `−0.05` merchant-missing
+   > → `0.65` — below the `0.90` auto-commit threshold, forever. Every notification would route to
+   > the Review Queue.
+   >
+   > The spec is unambiguous where the plan was not. §5 rule 2: *"The first template that **fully
+   > matches** wins; **partial** matches are recorded with reduced match strength."* "Fully matches"
+   > is a property of the **regex matching**, not of which optional groups happened to bind. A
+   > declared-optional group that is unbound is still an exact match. `0.70` is for a genuine
+   > partial/fuzzy match strategy.
+   >
+   > The `merchant missing` penalty (`0.05`) still applies on its own — that is what represents the
+   > lost information, and double-counting it as a base downgrade too is what broke the arithmetic. Then subtract: weak-cue direction `0.15`, amount ambiguity `0.30` (when `countAmountTokens > 1` and the template did not bind an explicit balance group to absorb the second token), merchant missing `0.05`, SMS channel `0.05`. Clamp to `[0, 1]`. The wallet-fallback penalty (`0.10`) is applied later by the normalizer, which is the stage that resolves wallets.
+4. Direction resolution: an explicit template `direction` wins; **then a bound `(?<direction>…)`
+   capture group, if the template declares one**; otherwise infer from keyword sets
+   (`sent|paid|purchase|debit|withdraw` → `out`; `received|credited|refund|cash-in|deposit` → `in`)
+   and apply the weak-cue penalty. If none yields a direction, return `null` — a transaction
+   without a direction is unusable.
+
+   > **CLARIFIED 2026-08-10 (after Task 2).** Contract §5 and Task 1 both list `direction` among
+   > the named capture groups, but this rule previously resolved direction only from the template
+   > *field* plus keyword inference — leaving a bound `direction` group captured and then silently
+   > ignored. Task 2's seed uses the field on all 32 templates and never the group, so nothing
+   > depends on the old behaviour today; the group is honoured here so the contract's named-group
+   > list is not a lie. A group match is an explicit cue and takes **no** weak-cue penalty.
 5. Templates are tried in array order; the first match wins. A template whose regex throws is skipped and must not crash the parse (spec §4 rule 4).
 6. `occurredAt` is `capture.postedAt`, never the capture time — the notification's own timestamp decides which Limit period the transaction lands in (spec §10).
 
@@ -260,7 +299,7 @@ Implements spec §6 exactly. Target: ≥95% of push/SMS twin pairs suppressed.
 type DedupeVerdict =
   | { kind: "unique" }
   | { kind: "duplicate"; ofTransactionId: string }
-  | { kind: "possible_duplicate"; ofTransactionId: string };
+  | { kind: "possible-duplicate"; ofTransactionId: string };
 checkDuplicate(event: NormalizedEvent, recent: Transaction[], tunables: PipelineTunables): DedupeVerdict;
 ```
 
@@ -268,10 +307,10 @@ checkDuplicate(event: NormalizedEvent, recent: Transaction[], tunables: Pipeline
 1. **Strong key.** Same provider + same reference number + same amount, within `dedupeStrongWindowMs` (48 h) → `duplicate`, regardless of channel.
 2. **Twin window.** No reference number, same provider, same amount, same direction, **different channels** (push vs sms), within `dedupeTwinWindowMs` (180 s) → `duplicate`.
 3. **Legitimate twins are protected.** Two **same-channel** events with the same amount, distinct notification instances, and no shared reference are **not** duplicates — two ₱100.00 load purchases minutes apart are real.
-4. **Undecidable → escalate, never guess.** Same amount, same channel, inside the twin window, references absent → `possible_duplicate`, which the pipeline routes to the Review Queue. Silently merging and silently double-counting are both wrong.
+4. **Undecidable → escalate, never guess.** Same amount, same channel, inside the twin window, references absent → `possible-duplicate`, which the pipeline routes to the Review Queue. Silently merging and silently double-counting are both wrong.
 5. `recent` is supplied by the orchestrator (transactions within the strong window); the gate performs no I/O.
 
-- [ ] **Step 1: Write the failing tests:** matching reference within 48 h is a duplicate across different channels · matching reference at 49 h is unique · push and SMS twins 60 s apart with no reference are duplicates · the same pair 200 s apart is unique · two same-channel ₱100.00 purchases 5 min apart are unique (rule 3 regression) · same amount, same channel, 60 s apart, no references is `possible_duplicate` · a different direction is never a duplicate · a different provider is never a duplicate.
+- [ ] **Step 1: Write the failing tests:** matching reference within 48 h is a duplicate across different channels · matching reference at 49 h is unique · push and SMS twins 60 s apart with no reference are duplicates · the same pair 200 s apart is unique · two same-channel ₱100.00 purchases 5 min apart are unique (rule 3 regression) · same amount, same channel, 60 s apart, no references is `possible-duplicate` · a different direction is never a duplicate · a different provider is never a duplicate.
 - [ ] **Step 2:** Run `npx jest --ci lib/ingest/__tests__/dedupe_gate.test.ts` — expected FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run — expected PASS (8 tests).
@@ -296,18 +335,18 @@ Implements spec §7 exactly. Target: ≥90% of internal transfers auto-linked. A
 type TransferVerdict =
   | { kind: "none" }
   | { kind: "auto_link"; counterpartTransactionId: string }
-  | { kind: "possible_transfer"; counterpartTransactionId: string; reason: "fee_delta" | "extended_window" | "multiple_candidates" };
+  | { kind: "ambiguous-transfer"; counterpartTransactionId: string; reason: "fee_delta" | "extended_window" | "multiple_candidates" };
 detectTransfer(event: NormalizedEvent, candidates: Transaction[], tunables: PipelineTunables): TransferVerdict;
 ```
 
 **Rules (verbatim from spec §7):**
 1. **Candidate pair:** one `out` leg and one `in` leg in **different** wallets, within the detection window.
-2. **Windows:** primary `transferPrimaryWindowMs` (15 min); extended `transferExtendedWindowMs` (24 h). Extended-window pairs are **never** auto-linked — they route as `possible_transfer` with reason `extended_window`.
+2. **Windows:** primary `transferPrimaryWindowMs` (15 min); extended `transferExtendedWindowMs` (24 h). Extended-window pairs are **never** auto-linked — they route as `ambiguous-transfer` with reason `extended_window`.
 3. **Fee tolerance:** exact amount match, or `in.amount < out.amount` and `(out.amount − in.amount) ≤ max(₱25.00, 1% of out.amount)`. A fee delta is plausible but **never** auto-linked — reason `fee_delta`.
 4. **Auto-link requires ALL of:** exact amount match, both legs inside the primary window, both wallets known and distinct, and **exactly one** candidate pairing with no competing candidate for either leg. Anything less routes to the Review Queue.
 5. Two candidates inside the primary window → `multiple_candidates`, never a guess.
 
-- [ ] **Step 1: Write the failing tests:** exact amount, different wallets, 5 min apart, single candidate → `auto_link` · the same pair 20 min apart → `possible_transfer` / `extended_window` · a ₱20.00 fee on a ₱1,000.00 transfer → `possible_transfer` / `fee_delta` · a ₱30.00 delta on ₱1,000.00 exceeds `max(₱25, 1%)` → `none` · a ₱40.00 delta on ₱10,000.00 is within 1% → `possible_transfer` / `fee_delta` · same-wallet legs → `none` · two exact candidates → `possible_transfer` / `multiple_candidates` · same-direction legs → `none` · a candidate whose wallet is unknown → never `auto_link` · the coincidence case from the spec (sending ₱1,000.00 to a friend while receiving a ₱1,000.00 salary advance, both inside the window, two candidates) → `possible_transfer`, not a silent link.
+- [ ] **Step 1: Write the failing tests:** exact amount, different wallets, 5 min apart, single candidate → `auto_link` · the same pair 20 min apart → `ambiguous-transfer` / `extended_window` · a ₱20.00 fee on a ₱1,000.00 transfer → `ambiguous-transfer` / `fee_delta` · a ₱30.00 delta on ₱1,000.00 exceeds `max(₱25, 1%)` → `none` · a ₱40.00 delta on ₱10,000.00 is within 1% → `ambiguous-transfer` / `fee_delta` · same-wallet legs → `none` · two exact candidates → `ambiguous-transfer` / `multiple_candidates` · same-direction legs → `none` · a candidate whose wallet is unknown → never `auto_link` · the coincidence case from the spec (sending ₱1,000.00 to a friend while receiving a ₱1,000.00 salary advance, both inside the window, two candidates) → `ambiguous-transfer`, not a silent link.
 - [ ] **Step 2:** Run `npx jest --ci lib/ingest/__tests__/transfer_detector.test.ts` — expected FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run — expected PASS (10 tests).
@@ -387,11 +426,11 @@ decideRoute(args: {
 
 **Rules (spec §9.2 — the thresholds are exact):**
 1. Score routing: `≥ 0.90` auto-commit · `0.60–0.89` review prefilled · `< 0.60` review needs details.
-2. **Hard routes to the Review Queue regardless of score:** unknown provider · non-PHP currency · unmapped wallet (`walletId === null`) · `possible_duplicate` · `possible_transfer` · fee-tolerant transfer candidate.
+2. **Hard routes to the Review Queue regardless of score:** unknown provider · non-PHP currency · unmapped wallet (`walletId === null`) · `possible-duplicate` · `ambiguous-transfer` · fee-tolerant transfer candidate.
 3. A hard route always carries a human-readable `reason` — the Review Queue card shows it, and "why is this here?" must never be a mystery.
 4. A confirmed `duplicate` never reaches this gate; the orchestrator drops it earlier.
 
-- [ ] **Step 1: Write the failing tests:** 0.95 with everything clean → `auto_commit` · exactly 0.90 → `auto_commit` (boundary) · 0.89 → `review_prefilled` (boundary) · exactly 0.60 → `review_prefilled` · 0.59 → `review_needs_details` · 0.99 with `walletId: null` → review (hard route) · 0.99 with `possible_duplicate` → review · 0.99 with `possible_transfer` → review · 0.99 from an unknown provider → review · 0.99 with non-PHP currency → review · every hard route returns a non-empty `reason`.
+- [ ] **Step 1: Write the failing tests:** 0.95 with everything clean → `auto_commit` · exactly 0.90 → `auto_commit` (boundary) · 0.89 → `review_prefilled` (boundary) · exactly 0.60 → `review_prefilled` · 0.59 → `review_needs_details` · 0.99 with `walletId: null` → review (hard route) · 0.99 with `possible-duplicate` → review · 0.99 with `ambiguous-transfer` → review · 0.99 from an unknown provider → review · 0.99 with non-PHP currency → review · every hard route returns a non-empty `reason`.
 - [ ] **Step 2:** Run `npx jest --ci lib/ingest/__tests__/confidence_gate.test.ts` — expected FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run — expected PASS (11 tests).
@@ -425,7 +464,7 @@ unlinkTransfer(id: string): Promise<void>;
 type PipelineOutcome =
   | { kind: "committed"; transactionId: string }
   | { kind: "queued"; reviewItemId: string }
-  | { kind: "ignored"; reason: "not_financial" | "duplicate" | "unknown_provider" | "paused" };
+  | { kind: "ignored"; reason: "not_financial" | "duplicate" | "unknown-provider" | "paused" };
 processCapture(capture: RawCapture): Promise<PipelineOutcome>;
 startIngest(): Promise<() => void>;   // drains the buffer, subscribes to live captures, returns an unsubscribe
 ```
@@ -434,12 +473,18 @@ startIngest(): Promise<() => void>;   // drains the buffer, subscribes to live c
 1. Stage order is fixed and matches spec §2: route → parse → normalize → dedupe → transfer → categorize → gate → commit-or-queue. No stage may be skipped or reordered.
 2. `processCapture` stores the raw capture FIRST (30-day TTL) so `rawNotificationRef` is available for the "Why was this recorded?" view even when the parse later fails.
 3. Paused (`app_settings.capture_enabled === false`) returns `ignored: "paused"` before any parsing work.
-4. `unknown` routing produces a Review Queue item of kind `unknown_provider` and returns `queued` — **not** `ignored`. `ignored: "unknown_provider"` is reserved for the case where the user has explicitly dismissed that package before.
+4. `unknown` routing produces a Review Queue item of kind `unknown-provider` and returns `queued` — **not** `ignored`. `ignored: "unknown-provider"` is reserved for the case where the user has explicitly dismissed that package before.
 5. A `duplicate` verdict returns `ignored: "duplicate"` and writes nothing to the ledger.
 6. An `auto_link` transfer verdict commits the transaction and then creates the `TransferLink` with `feeAmount` as the leg difference. Per contract §3 and `docs/02-domain-model.md`, the fee is **informational only** — it is never counted in any spend total, Limit, or report.
 7. After a successful commit the orchestrator emits a `ledger:committed` event so the M2 limit engine can recompute. Define the event name here; M2 subscribes.
 8. `startIngest()` calls `drainPendingCaptures()` first, processes each buffered capture in `postedAt` order, then subscribes via `addCaptureListener`. Buffered-first ordering matters: a live capture must never be committed ahead of an older buffered one.
 9. Raw capture storage is the only place notification text is persisted, and it never syncs (contract §3 invariant 3).
+
+10. **Persist the whole drained batch before processing any of it.** `drainPendingCaptures()` is destructive — the moment it returns, the native buffer is empty and the only copy of those captures is a JavaScript array. Processing them one at a time from that array means a crash partway through loses every capture not yet reached, silently, with up to ~499 transactions gone. So: drain, immediately write **all** returned captures to `raw_notifications` in one pass, and only then run the per-capture pipeline. Raw storage is durable and already the first step of `processCapture` (rule 2), so this only moves work earlier; after it, a crash costs nothing because the captures can be reprocessed from `raw_notifications` on the next launch.
+
+11. **Deduplicate replays by capture id at the pipeline entrance, before parsing.** The native `drain` is deliberately *at-least-once*: a crash between the buffer reading a batch and deleting the file hands the identical batch back on relaunch (M1a Task 3 chose this over at-most-once, correctly — replaying beats losing). That means `processCapture` must be idempotent per capture. Before routing, check whether this `RawCapture.id` already exists in `raw_notifications`; if it does, return `ignored: "duplicate"` and do no further work.
+    Do **not** try to solve this in the DedupeGate. That gate compares *parsed events* — amounts, references, channels — and its rules 3 and 4 exist precisely to protect two genuine ₱100.00 load purchases minutes apart from being merged. A replayed capture is not a similar transaction; it is byte-identical input with the same id, and the id check settles it unambiguously and cheaply. Conflating the two would either weaken a rule that protects real spending or push replays into the Review Queue as user-visible noise.
+    Test both halves: the same `RawCapture` processed twice commits exactly one transaction, **and** two genuinely distinct captures with identical amount, channel and timing still reach the DedupeGate rather than being suppressed by the id check.
 
 - [ ] **Step 1: Write the failing tests** for `raw_notifications_repo`: store-then-get round-trips all six text fields · `expires_at` is exactly `now + 30 days` · `purgeExpiredRawCaptures` removes only rows past expiry and returns the count.
 - [ ] **Step 2:** Run, implement `raw_notifications_repo.ts` and `transfer_links_repo.ts`, run green, commit:
@@ -452,8 +497,8 @@ startIngest(): Promise<() => void>;   // drains the buffer, subscribes to live c
   - `a low-confidence parse is queued and commits nothing` → `queued`, ledger empty, review item present
   - `a push and SMS twin commits once` → second call returns `ignored: "duplicate"`, ledger has exactly one row
   - `an internal transfer between two wallets auto-links both legs` → a `TransferLink` exists and both legs are excluded from `sumSpend`
-  - `an ambiguous transfer is queued instead of linked` → review item of kind `possible_transfer`, no link
-  - `an unknown provider with a money signal is queued` → `queued`, review item kind `unknown_provider`
+  - `an ambiguous transfer is queued instead of linked` → review item of kind `ambiguous-transfer`, no link
+  - `an unknown provider with a money signal is queued` → `queued`, review item kind `unknown-provider`
   - `an unknown provider with no money signal is ignored` → `ignored: "not_financial"`, nothing stored
   - `malformed text from a known provider is queued, never thrown` → `queued`, no exception
   - `a capture while paused is ignored before parsing` → `ignored: "paused"`

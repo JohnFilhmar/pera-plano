@@ -1,0 +1,53 @@
+-- 004_limit_alert_state.sql — the per-period state the limit engine needs and
+-- 001_core.sql has no column for.
+--
+-- ADDED BY THE PROJECT OWNER'S EXPLICIT DECISION (2026-08-15), through the
+-- escalation path the m2 plan itself defines: "If a column is entirely MISSING,
+-- STOP and escalate to the foundation-plan owner — do not add DDL here."
+-- Recorded rather than assumed, because the m2 plan's Global Constraint 9 says
+-- auxiliary state belongs in `app_settings`, and this is a deliberate departure
+-- from it.
+--
+-- WHAT THE PLAN WANTED, AND WHY IT COULD NOT HAPPEN. m2 Task 3 says to store
+-- `{ periodStart, base, carryover, fired[], muted, lastSpend }` as JSON in the
+-- `thresholds_fired` column. Three things stop that:
+--
+--   * the column is `thresholds_fired_json TEXT NOT NULL DEFAULT '[]'` — an
+--     ARRAY, with an array default;
+--   * `types/domain.ts` pins `Limit.thresholdsFired: LimitThreshold[]`, and the
+--     interface contract §3 makes domain types law;
+--   * docs/02-domain-model.md §3.5 types the field `list<enum: 50 | 80 | 100>`
+--     and describes it as resetting at each period boundary.
+--
+-- Overloading it with an object would have contradicted all three, silently, in
+-- a column whose name still said "array".
+--
+-- WHY A COLUMN AND NOT `app_settings`. The rejected alternative was one
+-- settings key holding `Record<limitId, state>`. Three costs decided it:
+--   * every limit recompute would rewrite EVERY limit's state — one blob, one
+--     row, one lock;
+--   * the state would need a second write to stay atomic with
+--     `thresholds_fired_json`, where a column makes both a single UPDATE;
+--   * `app_settings` has no foreign key to `limits`, so `deleteLimit` would
+--     orphan the entry forever. A column dies with its row.
+--
+-- WHY `fired[]` IS NOT IN HERE. It has a column already, and a domain field
+-- that readers of a `Limit` can see. Duplicating it would create two sources of
+-- truth for the one part of the state the rest of the app looks at.
+-- `setLimitAlertState` writes both columns in ONE statement, so a period
+-- boundary — which resets `fired` and re-snapshots `base` together — can never
+-- half-apply.
+--
+-- NULL MEANS "NEVER EVALUATED", and it is the correct state for every limit
+-- that exists today. Emptiness in `thresholds_fired_json` cannot carry that
+-- meaning: it is NOT NULL with a '[]' default, so a period whose first
+-- evaluation fired nothing is indistinguishable from a limit the engine has
+-- never seen. Presence is keyed on THIS column alone.
+--
+-- A nullable default is also what makes the statement legal: SQLite rewrites
+-- nothing for ADD COLUMN, so every existing limit keeps every value it had.
+-- Never edit 001, 002 or 003 — add a new numbered migration instead.
+
+-- { periodStart, base, carryover, muted, lastSpend } as JSON.
+-- NULL = the engine has never evaluated this limit.
+ALTER TABLE limits ADD COLUMN limit_alert_state_json TEXT;

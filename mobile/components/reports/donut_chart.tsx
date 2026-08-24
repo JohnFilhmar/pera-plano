@@ -1,0 +1,173 @@
+// components/reports/donut_chart.tsx — M3b Task 3, rules 1-3.
+//
+// THE ARC IS A DASHED CIRCLE, the same trick components/goals/progress_ring.tsx
+// already uses: a stroke whose dash pattern is [segment length, full
+// circumference] draws exactly that segment and nothing else, so there is no
+// path arithmetic and no arc-flag edge case at any share. Each category gets
+// its OWN Circle, rotated past every prior segment via strokeDashoffset,
+// rather than one Path built from N arc commands — N circles give one stable
+// testID per category and no trig to get wrong.
+//
+// RULE 3'S TEXT ALTERNATIVE IS NOT DECORATION. The legend below the ring
+// carries the same figures a screen reader needs and a picture cannot give
+// it — a finance app must not hide numbers inside a donut. Money in the
+// legend goes through AmountText, the only formatter in the app.
+import { Text, View } from "react-native";
+import { Circle, Svg } from "react-native-svg";
+
+import { AmountText } from "@/components/ui/amount_text";
+import { Card } from "@/components/ui/card";
+import { palette } from "@/constants/colors";
+import { useTheme } from "@/contexts/theme_context";
+import type { CategoryTotal } from "@/lib/reports/aggregate";
+
+export type DonutChartProps = {
+  categories: CategoryTotal[];
+  size?: number;
+  strokeWidth?: number;
+  testID?: string;
+};
+
+/**
+ * The dedicated chart ramp (constants/colors.ts, `chart-1`..`chart-8`) —
+ * NOT the semantic tokens (`brand`/`danger`/`warn`/`ph-*`), which mean good,
+ * wrong, careful, and flag accent respectively and must never double as a
+ * category colour (see that file's own comment on the ramp block). Eight
+ * hues is the ceiling on how many categories look visually distinct in one
+ * donut at once; past eight simultaneous slices the hash below cycles back
+ * through the same colors, same as the old six-token ceiling did, just
+ * raised — owner-approved 2026-08-16 after the 15-seeded-category, ~5-usable
+ * -colour collision problem the old six-token version had (two of those six,
+ * `danger` and `ph-red`, read as near-identical reds).
+ */
+const CATEGORY_COLOR_KEYS = [
+  "chart-1",
+  "chart-2",
+  "chart-3",
+  "chart-4",
+  "chart-5",
+  "chart-6",
+  "chart-7",
+  "chart-8",
+] as const;
+
+/**
+ * A small, deterministic string hash (djb2-family). `Math.imul` keeps every
+ * step a true 32-bit integer multiply — without it `hash * 31` drifts into
+ * float once `id` is long enough to exceed 2**53, and the SAME id could then
+ * hash differently depending on the engine's rounding. `>>> 0` turns the
+ * signed 32-bit result unsigned before `%`, since JS's `%` keeps the sign of
+ * a negative dividend and a negative index has no palette slot.
+ */
+function hashToIndex(id: string, modulus: number): number {
+  let hash = 0;
+  for (let index = 0; index < id.length; index += 1) {
+    hash = (Math.imul(hash, 31) + id.charCodeAt(index)) | 0;
+  }
+  return (hash >>> 0) % modulus;
+}
+
+/**
+ * A category id always resolves to the same palette hex, on every render and
+ * every screen (rule 2) — hashed from the id itself, never from array
+ * position or Map/object iteration order, either of which silently
+ * reshuffles the moment a category is added, renamed, or archived.
+ */
+export function categoryColor(categoryId: string, dark: boolean): string {
+  const key = CATEGORY_COLOR_KEYS[hashToIndex(categoryId, CATEGORY_COLOR_KEYS.length)];
+  return palette[dark ? (`${key}-dark` as keyof typeof palette) : key];
+}
+
+export function DonutChart({
+  categories,
+  // 104dp, not the old 200dp: the board seats the ring BESIDE its legend
+  // (rule below), and 200dp of ring plus a legend column no longer fits a
+  // 360dp-wide phone on one row. 104 is the board's own figure. The only
+  // caller (app/(tabs)/more/reports.tsx) never overrides this, so the new
+  // default is the only size this ring ever actually draws at.
+  size = 104,
+  strokeWidth = 16,
+  testID,
+}: DonutChartProps) {
+  const { resolved } = useTheme();
+  const dark = resolved === "dark";
+  const center = size / 2;
+  // Guards the same degenerate case ProjectionSparkline guards for its own
+  // axis: a caller-supplied size/strokeWidth combo that leaves nothing to
+  // draw must not divide into a negative or zero radius.
+  const radius = Math.max(1, (size - strokeWidth) / 2);
+  const circumference = 2 * Math.PI * radius;
+
+  let cumulative = 0;
+  const arcs = categories.map((category) => {
+    const length = category.share * circumference;
+    const arc = { categoryId: category.categoryId, length, offset: cumulative };
+    cumulative += length;
+    return arc;
+  });
+
+  return (
+    <Card testID={testID ?? "donut-chart"}>
+      {categories.length === 0 ? (
+        <Text className="text-fg-2 dark:text-fg-2-dark">No spending to break down.</Text>
+      ) : (
+        // BESIDE, NOT ABOVE — the board seats the ring and its legend in one
+        // row (gap 16), not stacked. `items-center` centres the ring against
+        // however tall the legend column grows.
+        <View className="flex-row items-center gap-4">
+          <Svg width={size} height={size}>
+            {arcs.map((arc) => (
+              <Circle
+                key={arc.categoryId}
+                testID={`donut-arc-${arc.categoryId}`}
+                cx={center}
+                cy={center}
+                r={radius}
+                stroke={categoryColor(arc.categoryId, dark)}
+                strokeWidth={strokeWidth}
+                fill="none"
+                strokeDasharray={`${arc.length} ${circumference}`}
+                // Negative offset shifts the visible dash FORWARD along the
+                // path by every prior segment's length, so segments tile
+                // rather than overlap. Rotated -90° first so the first segment
+                // starts at twelve o'clock, the same convention progress_ring
+                // uses, rather than three.
+                strokeDashoffset={-arc.offset}
+                transform={`rotate(-90 ${center} ${center})`}
+              />
+            ))}
+          </Svg>
+
+          {/* One row per category: dot, name, percentage, amount — rule 3's
+              text alternative. AmountText renders directly here rather than
+              nesting inside a styled ancestor Text (stat_tile.tsx's header
+              explains why: a nested Text's own colour/size wins over its
+              parent's, silently). `numberOfLines` on the name is what lets a
+              four-element row survive next to a 104dp ring on a 360dp phone —
+              the name truncates before the two numbers ever do. */}
+          <View testID="donut-legend" className="flex-1 gap-2">
+            {categories.map((category) => (
+              <View
+                key={category.categoryId}
+                testID={`donut-legend-${category.categoryId}`}
+                className="flex-row items-center gap-1.5"
+              >
+                <View
+                  style={{ backgroundColor: categoryColor(category.categoryId, dark) }}
+                  className="h-2 w-2 rounded-full"
+                />
+                <Text numberOfLines={1} className="flex-1 text-secondary font-medium text-fg dark:text-fg-dark">
+                  {category.categoryName}
+                </Text>
+                <Text className="text-secondary font-bold text-fg-2 dark:text-fg-2-dark">
+                  {`${Math.round(category.share * 100)}%`}
+                </Text>
+                <AmountText amount={category.total} />
+              </View>
+            ))}
+          </View>
+        </View>
+      )}
+    </Card>
+  );
+}

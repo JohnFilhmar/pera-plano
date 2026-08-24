@@ -1,0 +1,15 @@
+node_modules
+**/node_modules
+**/.next
+.git
+.gitignore
+*.md
+Dockerfile
+.dockerignore
+docker-compose*.yml
+coverage
+# Never bake secrets into a layer — they survive in image history even if a later layer
+# deletes them. Runtime values arrive via compose env_file.
+.env
+.env.*
+!.env.example

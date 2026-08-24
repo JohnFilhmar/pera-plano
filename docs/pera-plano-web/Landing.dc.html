@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <title>PeraPlano — Your money, tracked automatically</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="assets/brand/peraplano-favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous">
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet">
+  <style>
+    :root{color-scheme:light;--brand:#15803D;--brand-2:#22C55E;--on-brand:#FFFFFF;--mint:#DCFCE7;--bg:#F7FAF7;--surface:#FFFFFF;--text:#10201A;--muted:#5B6E64;--danger:#DC2626;--warn:#D97706;--line:rgba(16,32,26,.12);--ph-blue:#0038A8;--ph-red:#CE1126;--ph-yellow:#FCD116;--shadow:0 24px 60px -24px rgba(16,32,26,.28)}
+    :root[data-theme="dark"]{color-scheme:dark;--brand:#22C55E;--brand-2:#4ADE80;--on-brand:#06130C;--mint:#14261C;--bg:#0B1210;--surface:#111A16;--text:#E8F0EC;--muted:#9BB0A6;--danger:#F87171;--warn:#FBBF24;--line:rgba(232,240,236,.14);--shadow:0 24px 60px -24px rgba(0,0,0,.6)}
+    body{margin:0;background:var(--bg);color:var(--text);font-family:'Manrope',system-ui,sans-serif;-webkit-font-smoothing:antialiased;text-wrap:pretty}
+    a{color:var(--brand);text-decoration:none}
+    a:hover{color:var(--brand-2);text-decoration:underline}
+    @keyframes pp-float{0%,100%{transform:translateY(2.5px) rotate(-1.6deg)}50%{transform:translateY(-3.5px) rotate(2deg)}}
+    @keyframes pp-flow{to{stroke-dashoffset:-2.22}}
+  </style>
+  <script>(function(){try{var t=localStorage.getItem('pp-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.setAttribute('data-theme',t)}catch(e){}})();</script>
+</helmet>
+<div data-screen-label="Landing" style="min-height:100vh;display:flex;flex-direction:column">
+  <header style="position:sticky;top:0;z-index:50;background:color-mix(in oklab, var(--bg) 86%, transparent);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)">
+    <div style="max-width:1120px;margin:0 auto;padding:12px 24px;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+      <a href="Landing.dc.html" style="display:flex;align-items:center;gap:9px;color:var(--text)" style-hover="text-decoration:none">
+        <svg width="26" height="26" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.6 21.4 C 6 21 8.6 18.4 10.2 14.2" fill="none" stroke="var(--brand-2)" stroke-width="1.4" stroke-linecap="round" stroke-dasharray="0.12 2.1" opacity="0.55"></path><path d="M22 2 L2 9 L11 13 Z" fill="var(--brand-2)"></path><path d="M22 2 L11 13 L15 22 Z" fill="var(--brand)"></path></svg>
+        <strong style="font-size:17px;font-weight:800;letter-spacing:-0.01em">PeraPlano</strong>
+      </a>
+      <nav style="display:flex;gap:18px;font-size:13.5px;font-weight:600">
+        <a href="Landing.dc.html" aria-current="page" style="color:var(--text);font-weight:800">Home</a>
+        <a href="About.dc.html" style="color:var(--muted)">About</a>
+        <a href="Pricing.dc.html" style="color:var(--muted)">Pricing</a>
+      </nav>
+      <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
+        <button onClick="{{ toggleTheme }}" aria-label="Toggle dark mode" style="width:36px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--muted);cursor:pointer;padding:0" style-hover="color:var(--brand)">
+          <sc-if value="{{ isDark }}" hint-placeholder-val="{{ false }}">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="m4.93 4.93 1.41 1.41"></path><path d="m17.66 17.66 1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="m6.34 17.66-1.41 1.41"></path><path d="m19.07 4.93-1.41 1.41"></path></svg>
+          </sc-if>
+          <sc-if value="{{ isLight }}" hint-placeholder-val="{{ true }}">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg>
+          </sc-if>
+        </button>
+        <a href="#get" style="background:var(--brand);color:var(--on-brand);padding:9px 16px;border-radius:999px;font-size:13px;font-weight:700" style-hover="filter:brightness(1.1);text-decoration:none;color:var(--on-brand)">Get the app</a>
+      </div>
+    </div>
+  </header>
+
+  <section style="max-width:1120px;margin:0 auto;padding:64px 24px 72px;display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:56px;align-items:center;width:100%;box-sizing:border-box">
+    <div>
+      <svg width="76" height="76" viewBox="0 0 24 24" role="img" aria-label="PeraPlano paper-airplane logo" style="overflow:visible;margin-left:-4px"><path d="M2.6 21.4 C 6 21 8.6 18.4 10.2 14.2" fill="none" stroke="var(--brand-2)" stroke-width="1.4" stroke-linecap="round" stroke-dasharray="0.12 2.1" opacity="0.55" style="animation:pp-flow 1.1s linear infinite;animation-play-state:{{ logoPlay }}"></path><g style="animation:pp-float 4.2s ease-in-out infinite;transform-box:fill-box;transform-origin:center;animation-play-state:{{ logoPlay }}"><path d="M22 2 L2 9 L11 13 Z" fill="var(--brand-2)"></path><path d="M22 2 L11 13 L15 22 Z" fill="var(--brand)"></path></g></svg>
+      <h1 style="margin:18px 0 10px;font-size:clamp(2.1rem,4.6vw,3.1rem);line-height:1.06;letter-spacing:-0.03em;font-weight:800">PeraPlano</h1>
+      <p style="margin:0 0 14px;font-size:clamp(1.25rem,2.4vw,1.6rem);line-height:1.25;font-weight:700;letter-spacing:-0.015em;max-width:520px">You never log a transaction; <span style="color:var(--brand)">you only set the rules.</span></p>
+      <p style="margin:0 0 26px;font-size:16px;line-height:1.65;color:var(--muted);max-width:490px">PeraPlano listens to your bank and e-wallet notifications — GCash, Maya, BPI, BDO, and more — and turns every alert into tracked pesos: budgets, goals, utang, and one honest number for today.</p>
+      <div id="get" style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">
+        <a href="#" aria-label="Get it on Google Play (placeholder link)" style="display:inline-flex;align-items:center;gap:11px;background:#000;color:#fff;border:1px solid rgba(255,255,255,.28);border-radius:12px;padding:9px 18px 9px 14px" style-hover="text-decoration:none;transform:translateY(-1px);color:#fff">
+          <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3.3 L19.2 12 L5 20.7 Z" fill="#FFFFFF"></path><path d="M5 3.3 L12.6 12 L5 20.7 Z" fill="#A7F3D0"></path></svg>
+          <span style="display:flex;flex-direction:column;line-height:1.15"><span style="font-size:9px;letter-spacing:.14em;font-weight:600;opacity:.85">GET IT ON</span><span style="font-size:16px;font-weight:800">Google Play</span></span>
+        </a>
+        <sc-if value="{{ iosNote }}" hint-placeholder-val="{{ true }}">
+          <span style="font-size:12.5px;color:var(--muted)">Android today · iOS coming later</span>
+        </sc-if>
+      </div>
+      <sc-if value="{{ flagAccents }}" hint-placeholder-val="{{ true }}">
+        <div style="display:inline-flex;align-items:center;gap:7px;margin-top:22px;padding:5px 11px;border:1px solid var(--line);border-radius:999px;font-size:11.5px;font-weight:700;color:var(--muted)">
+          <span style="display:inline-flex;gap:3px" aria-hidden="true"><span style="width:6px;height:6px;border-radius:99px;background:var(--ph-blue)"></span><span style="width:6px;height:6px;border-radius:99px;background:var(--ph-red)"></span><span style="width:6px;height:6px;border-radius:99px;background:var(--ph-yellow)"></span></span>
+          Proudly made in the Philippines
+        </div>
+      </sc-if>
+    </div>
+    <div style="display:flex;justify-content:center">
+      <div style="width:296px;background:#0B1210;border:1px solid rgba(255,255,255,.12);border-radius:42px;padding:10px;box-shadow:var(--shadow)">
+        <div style="background:var(--bg);border-radius:33px;overflow:hidden;padding:14px 16px 22px;display:flex;flex-direction:column;gap:13px">
+          <div style="display:flex;justify-content:space-between;align-items:center;font-size:11.5px;font-weight:700;color:var(--muted);font-variant-numeric:tabular-nums"><span>9:41</span><span style="display:inline-flex;align-items:center;gap:5px"><svg width="15" height="11" viewBox="0 0 15 11" aria-hidden="true"><rect x="0" y="7" width="2.6" height="4" rx="0.8" fill="currentColor" opacity=".5"></rect><rect x="4" y="4.5" width="2.6" height="6.5" rx="0.8" fill="currentColor" opacity=".7"></rect><rect x="8" y="2" width="2.6" height="9" rx="0.8" fill="currentColor"></rect></svg><svg width="20" height="11" viewBox="0 0 20 11" aria-hidden="true"><rect x="0.5" y="0.5" width="16" height="10" rx="2.5" fill="none" stroke="currentColor"></rect><rect x="2.5" y="2.5" width="9" height="6" rx="1" fill="currentColor"></rect><rect x="18" y="3.5" width="1.6" height="4" rx="0.8" fill="currentColor"></rect></svg></span></div>
+          <div>
+            <div style="font-size:12px;color:var(--muted);font-weight:600">Good evening, Mika</div>
+            <div style="font-size:10.5px;color:var(--muted);opacity:.75;font-weight:600">Saturday, Aug 2</div>
+          </div>
+          <div style="background:var(--mint);border-radius:20px;padding:16px 16px 15px">
+            <div style="font-size:9.5px;letter-spacing:.16em;font-weight:800;color:var(--brand)">SAFE TO SPEND TODAY</div>
+            <div style="font-size:34px;font-weight:800;letter-spacing:-0.02em;margin:5px 0 3px;font-variant-numeric:tabular-nums">₱487<span style="font-size:19px;opacity:.65">.00</span></div>
+            <div style="font-size:10.5px;color:var(--muted);font-weight:600;margin-bottom:10px">13 days to payday · Aug 15</div>
+            <div style="height:6px;border-radius:99px;background:color-mix(in oklab, var(--brand) 18%, transparent)"><div style="width:58%;height:100%;border-radius:99px;background:var(--brand)"></div></div>
+          </div>
+          <div style="display:flex;gap:7px">
+            <div style="flex:1;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:8px 10px"><div style="font-size:9px;font-weight:700;color:var(--muted);letter-spacing:.06em">GCASH</div><div style="font-size:12px;font-weight:800;font-variant-numeric:tabular-nums">₱2,340.15</div></div>
+            <div style="flex:1;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:8px 10px"><div style="font-size:9px;font-weight:700;color:var(--muted);letter-spacing:.06em">BPI</div><div style="font-size:12px;font-weight:800;font-variant-numeric:tabular-nums">₱18,652.00</div></div>
+            <div style="flex:1;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:8px 10px"><div style="font-size:9px;font-weight:700;color:var(--muted);letter-spacing:.06em">CASH</div><div style="font-size:12px;font-weight:800;font-variant-numeric:tabular-nums">₱500.00</div></div>
+          </div>
+          <div>
+            <div style="font-size:9.5px;letter-spacing:.16em;font-weight:800;color:var(--muted);margin-bottom:8px">AUTO-TRACKED</div>
+            <div style="display:flex;flex-direction:column;gap:9px">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:9px 11px">
+                <div><div style="font-size:12px;font-weight:700">Jollibee</div><div style="font-size:10px;color:var(--muted);font-weight:600">GCash · just now</div></div>
+                <div style="display:flex;align-items:center;gap:6px"><span style="font-size:8.5px;font-weight:800;letter-spacing:.05em;padding:3px 7px;border-radius:99px;background:var(--mint);color:var(--brand)">AUTO</span><span style="font-size:12px;font-weight:800;font-variant-numeric:tabular-nums">−₱185.00</span></div>
+              </div>
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:9px 11px">
+                <div><div style="font-size:12px;font-weight:700">Meralco</div><div style="font-size:10px;color:var(--muted);font-weight:600">BPI · bill matched</div></div>
+                <div style="display:flex;align-items:center;gap:6px"><span style="font-size:8.5px;font-weight:800;letter-spacing:.05em;padding:3px 7px;border-radius:99px;background:color-mix(in oklab, var(--warn) 16%, transparent);color:var(--warn)">BILL</span><span style="font-size:12px;font-weight:800;font-variant-numeric:tabular-nums">−₱2,103.44</span></div>
+              </div>
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:9px 11px">
+                <div><div style="font-size:12px;font-weight:700">GCash → BPI</div><div style="font-size:10px;color:var(--muted);font-weight:600">transfer detected</div></div>
+                <div style="display:flex;align-items:center;gap:6px"><span style="font-size:8.5px;font-weight:800;letter-spacing:.05em;padding:3px 7px;border-radius:99px;border:1px solid var(--line);color:var(--muted)">NOT SPENDING</span><span style="font-size:12px;font-weight:800;color:var(--muted);font-variant-numeric:tabular-nums">₱5,000.00</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section style="max-width:1120px;margin:0 auto;padding:40px 24px 72px;width:100%;box-sizing:border-box">
+    <div style="font-size:12px;letter-spacing:.16em;font-weight:800;color:var(--brand)">HOW IT WORKS</div>
+    <h2 style="margin:10px 0 34px;font-size:clamp(1.55rem,3vw,2.15rem);letter-spacing:-0.02em;font-weight:800">Three steps, then it runs itself</h2>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px">
+      <div style="background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:24px">
+        <div style="width:38px;height:38px;border-radius:12px;background:var(--mint);color:var(--brand);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:16px;margin-bottom:16px">1</div>
+        <h3 style="margin:0 0 8px;font-size:16.5px;font-weight:800">Grant notification access</h3>
+        <p style="margin:0;font-size:14px;line-height:1.6;color:var(--muted)">One Android permission. PeraPlano reads the transaction alerts your apps already send — so you don't have to.</p>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:24px">
+        <div style="width:38px;height:38px;border-radius:12px;background:var(--mint);color:var(--brand);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:16px;margin-bottom:16px">2</div>
+        <h3 style="margin:0 0 8px;font-size:16.5px;font-weight:800">Set your limits, goals, and loans</h3>
+        <p style="margin:0;font-size:14px;line-height:1.6;color:var(--muted)">Your rules, your terms: spending limits in fixed ₱ or % of income, savings goals, bills, and utang in both directions.</p>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:24px">
+        <div style="width:38px;height:38px;border-radius:12px;background:var(--mint);color:var(--brand);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:16px;margin-bottom:16px">3</div>
+        <h3 style="margin:0 0 8px;font-size:16.5px;font-weight:800">PeraPlano tracks every peso, 24/7</h3>
+        <p style="margin:0;font-size:14px;line-height:1.6;color:var(--muted)">Every GCash ping and bank alert becomes a tracked transaction — automatically. You never type a thing.</p>
+      </div>
+    </div>
+  </section>
+
+  <section style="max-width:1120px;margin:0 auto;padding:0 24px 80px;width:100%;box-sizing:border-box">
+    <div style="font-size:12px;letter-spacing:.16em;font-weight:800;color:var(--brand)">FEATURES</div>
+    <h2 style="margin:10px 0 34px;font-size:clamp(1.55rem,3vw,2.15rem);letter-spacing:-0.02em;font-weight:800">Everything your money does, tracked</h2>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(245px,1fr));gap:14px">
+      <div style="background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:20px">
+        <div style="width:36px;height:36px;border-radius:11px;background:var(--mint);color:var(--brand);display:flex;align-items:center;justify-content:center;margin-bottom:14px"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"></path></svg></div>
+        <h3 style="margin:0 0 6px;font-size:15px;font-weight:800">Automatic tracking</h3>
+        <p style="margin:0;font-size:13.5px;line-height:1.55;color:var(--muted)">No manual entry, ever. Transactions appear the moment the notification does.</p>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:20px">
+        <div style="width:36px;height:36px;border-radius:11px;background:var(--mint);color:var(--brand);display:flex;align-items:center;justify-content:center;margin-bottom:14px"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"></rect><path d="M2 10h20"></path></svg></div>
+        <h3 style="margin:0 0 6px;font-size:15px;font-weight:800">Wallets</h3>
+        <p style="margin:0;font-size:13.5px;line-height:1.55;color:var(--muted)">Bank, e-wallet, and cash — every balance in one place.</p>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:20px">
+        <div style="width:36px;height:36px;border-radius:11px;background:var(--mint);color:var(--brand);display:flex;align-items:center;justify-content:center;margin-bottom:14px"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 14 4-4"></path><path d="M3.34 19a10 10 0 1 1 17.32 0"></path></svg></div>
+        <h3 style="margin:0 0 6px;font-size:15px;font-weight:800">Spending limits</h3>
+        <p style="margin:0;font-size:13.5px;line-height:1.55;color:var(--muted)">Fixed ₱ or % of your income — per category, per period.</p>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:20px">
+        <div style="width:36px;height:36px;border-radius:11px;background:var(--mint);color:var(--brand);display:flex;align-items:center;justify-content:center;margin-bottom:14px"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="6"></circle><circle cx="12" cy="12" r="2"></circle></svg></div>
+        <h3 style="margin:0 0 6px;font-size:15px;font-weight:800">Savings goals</h3>
+        <p style="margin:0;font-size:13.5px;line-height:1.55;color:var(--muted)">Set a target, watch it fill — one peso at a time.</p>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:20px">
+        <div style="width:36px;height:36px;border-radius:11px;background:var(--mint);color:var(--brand);display:flex;align-items:center;justify-content:center;margin-bottom:14px"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3 4 7l4 4"></path><path d="M4 7h16"></path><path d="m16 21 4-4-4-4"></path><path d="M20 17H4"></path></svg></div>
+        <h3 style="margin:0 0 6px;font-size:15px;font-weight:800">Loan &amp; utang tracking</h3>
+        <p style="margin:0;font-size:13.5px;line-height:1.55;color:var(--muted)">Both directions — what you owe, and what's owed to you.</p>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:20px">
+        <div style="width:36px;height:36px;border-radius:11px;background:var(--mint);color:var(--brand);display:flex;align-items:center;justify-content:center;margin-bottom:14px"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"></path><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"></path></svg></div>
+        <h3 style="margin:0 0 6px;font-size:15px;font-weight:800">Bill reminders</h3>
+        <p style="margin:0;font-size:13.5px;line-height:1.55;color:var(--muted)">Meralco, rent, subscriptions — nudged before they're due.</p>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:20px">
+        <div style="width:36px;height:36px;border-radius:11px;background:var(--mint);color:var(--brand);display:flex;align-items:center;justify-content:center;margin-bottom:14px"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"></rect><circle cx="12" cy="12" r="2"></circle><path d="M6 12h.01"></path><path d="M18 12h.01"></path></svg></div>
+        <h3 style="margin:0 0 6px;font-size:15px;font-weight:800">Safe-to-Spend</h3>
+        <p style="margin:0;font-size:13.5px;line-height:1.55;color:var(--muted)">One honest number that already accounts for bills, goals, and limits.</p>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:20px">
+        <div style="width:36px;height:36px;border-radius:11px;background:var(--mint);color:var(--brand);display:flex;align-items:center;justify-content:center;margin-bottom:14px"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m17 2 4 4-4 4"></path><path d="M3 11v-1a4 4 0 0 1 4-4h14"></path><path d="m7 22-4-4 4-4"></path><path d="M21 13v1a4 4 0 0 1-4 4H3"></path></svg></div>
+        <h3 style="margin:0 0 6px;font-size:15px;font-weight:800">Smart transfer detection</h3>
+        <p style="margin:0;font-size:13.5px;line-height:1.55;color:var(--muted)">Moving your own money never counts as spending.</p>
+      </div>
+    </div>
+  </section>
+
+  <section style="background:var(--mint)">
+    <div style="max-width:880px;margin:0 auto;padding:72px 24px;text-align:center">
+      <div style="width:52px;height:52px;border-radius:16px;background:var(--surface);color:var(--brand);display:inline-flex;align-items:center;justify-content:center;margin-bottom:18px;border:1px solid var(--line)"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"></path><path d="m9 12 2 2 4-4"></path></svg></div>
+      <h2 style="margin:0 0 14px;font-size:clamp(1.55rem,3vw,2.15rem);letter-spacing:-0.02em;font-weight:800">Local-first. Private by default.</h2>
+      <p style="margin:0 auto 22px;font-size:clamp(1.05rem,2vw,1.25rem);line-height:1.55;font-weight:600;max-width:640px">Raw notifications are parsed on your phone and never leave it. No ads. Your data is never sold.</p>
+      <div style="display:flex;justify-content:center;gap:10px;flex-wrap:wrap">
+        <span style="background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:7px 14px;font-size:12.5px;font-weight:700;color:var(--brand)">On-device parsing</span>
+        <span style="background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:7px 14px;font-size:12.5px;font-weight:700;color:var(--brand)">No ads</span>
+        <span style="background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:7px 14px;font-size:12.5px;font-weight:700;color:var(--brand)">Never sold</span>
+      </div>
+    </div>
+  </section>
+
+  <section style="max-width:760px;margin:0 auto;padding:76px 24px 84px;width:100%;box-sizing:border-box">
+    <div style="font-size:12px;letter-spacing:.16em;font-weight:800;color:var(--brand)">FAQ</div>
+    <h2 style="margin:10px 0 22px;font-size:clamp(1.55rem,3vw,2.15rem);letter-spacing:-0.02em;font-weight:800">Questions, answered</h2>
+    <div style="border-bottom:1px solid var(--line)">
+      <sc-for list="{{ faqs }}" as="f" hint-placeholder-count="6">
+        <div style="border-top:1px solid var(--line)">
+          <button onClick="{{ f.toggle }}" style="display:flex;width:100%;justify-content:space-between;align-items:center;gap:16px;padding:17px 2px;cursor:pointer;background:none;border:none;font-family:inherit;font-size:15.5px;font-weight:700;color:var(--text);text-align:left" style-hover="color:var(--brand)">
+            {{ f.q }}
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="flex:none;color:var(--muted);transition:transform .2s;transform:{{ f.rot }}"><path d="m6 9 6 6 6-6"></path></svg>
+          </button>
+          <sc-if value="{{ f.isOpen }}" hint-placeholder-val="{{ false }}">
+            <p style="margin:0 0 18px;font-size:14px;line-height:1.65;color:var(--muted);max-width:640px">{{ f.a }}</p>
+          </sc-if>
+        </div>
+      </sc-for>
+    </div>
+  </section>
+
+  <footer style="border-top:1px solid var(--line);margin-top:auto">
+    <div style="max-width:1120px;margin:0 auto;padding:48px 24px 30px">
+      <div style="display:flex;flex-wrap:wrap;gap:44px;justify-content:space-between;margin-bottom:38px">
+        <div style="max-width:300px">
+          <div style="display:flex;align-items:center;gap:9px;margin-bottom:12px">
+            <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 L2 9 L11 13 Z" fill="var(--brand-2)"></path><path d="M22 2 L11 13 L15 22 Z" fill="var(--brand)"></path></svg>
+            <strong style="font-size:16px;font-weight:800">PeraPlano</strong>
+          </div>
+          <p style="margin:0 0 16px;font-size:13px;line-height:1.6;color:var(--muted)">Automatic money tracking for the Philippines. You never log a transaction; you only set the rules.</p>
+          <div style="display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:700">
+            <span aria-hidden="true">🇵🇭</span> Proudly made in the Philippines
+            <sc-if value="{{ flagAccents }}" hint-placeholder-val="{{ true }}">
+              <span style="display:inline-flex;gap:3px;margin-left:2px" aria-hidden="true"><span style="width:5px;height:5px;border-radius:99px;background:var(--ph-blue)"></span><span style="width:5px;height:5px;border-radius:99px;background:var(--ph-red)"></span><span style="width:5px;height:5px;border-radius:99px;background:var(--ph-yellow)"></span></span>
+            </sc-if>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:11px;letter-spacing:.14em;font-weight:800;color:var(--muted);margin-bottom:14px">PAGES</div>
+          <div style="display:flex;flex-direction:column;gap:10px;font-size:13.5px;font-weight:600">
+            <a href="Landing.dc.html" style="color:var(--text)">Home</a>
+            <a href="About.dc.html" style="color:var(--text)">About us</a>
+            <a href="Pricing.dc.html" style="color:var(--text)">Pricing</a>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:11px;letter-spacing:.14em;font-weight:800;color:var(--muted);margin-bottom:14px">GET PERAPLANO</div>
+          <a href="#" aria-label="Get it on Google Play (placeholder link)" style="display:inline-flex;align-items:center;gap:10px;background:#000;color:#fff;border:1px solid rgba(255,255,255,.28);border-radius:11px;padding:8px 15px 8px 12px" style-hover="text-decoration:none;color:#fff">
+            <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3.3 L19.2 12 L5 20.7 Z" fill="#FFFFFF"></path><path d="M5 3.3 L12.6 12 L5 20.7 Z" fill="#A7F3D0"></path></svg>
+            <span style="display:flex;flex-direction:column;line-height:1.15"><span style="font-size:8px;letter-spacing:.14em;font-weight:600;opacity:.85">GET IT ON</span><span style="font-size:13.5px;font-weight:800">Google Play</span></span>
+          </a>
+          <sc-if value="{{ iosNote }}" hint-placeholder-val="{{ true }}">
+            <div style="font-size:11.5px;color:var(--muted);margin-top:10px">iOS coming later</div>
+          </sc-if>
+        </div>
+      </div>
+      <div style="border-top:1px solid var(--line);padding-top:20px;font-size:12px;color:var(--muted);display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap">
+        <span>© 2026 PeraPlano</span>
+        <span>Local-first · No ads · Your data is never sold</span>
+      </div>
+    </div>
+  </footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;logoMotion&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Brand&quot;},&quot;flagAccents&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Brand&quot;},&quot;iosNote&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Content&quot;}}">
+class Component extends DCLogic {
+  state = {
+    theme: (typeof document !== 'undefined' && document.documentElement.getAttribute('data-theme')) || 'light',
+    open: 0
+  };
+  setTheme(t) {
+    document.documentElement.setAttribute('data-theme', t);
+    try { localStorage.setItem('pp-theme', t); } catch (e) {}
+    this.setState({ theme: t });
+  }
+  renderVals() {
+    const FAQS = [
+      { q: 'Will it drain my battery?', a: "No. PeraPlano doesn't poll your bank in the background — it only wakes when a notification arrives, parses it in milliseconds, and goes back to sleep." },
+      { q: 'Which banks and apps are supported?', a: "GCash, Maya, BPI, BDO, and more — plus most apps that post a transaction notification. If yours isn't recognized yet, you can add a custom rule for it." },
+      { q: 'Is it safe? Can it touch my money?', a: "It can't. PeraPlano never connects to your accounts — it only reads the notifications your apps already show you, right on your phone. It has no passwords or credentials and cannot move money. You can revoke notification access anytime." },
+      { q: 'What about cash?', a: "Cash is the one thing your phone can't hear. Keep a cash wallet and log those in two taps — everything else stays automatic." },
+      { q: 'Is there an iPhone version?', a: 'Not yet — iOS handles notifications differently, so PeraPlano is Android-only today. iOS is coming later.' },
+      { q: 'Is it free?', a: 'Yes — free forever, including automatic tracking. PeraPlano Plus adds depth (unlimited wallets, goals, reports), not the basics.' }
+    ];
+    const open = this.state.open;
+    return {
+      isDark: this.state.theme === 'dark',
+      isLight: this.state.theme !== 'dark',
+      toggleTheme: () => this.setTheme(this.state.theme === 'dark' ? 'light' : 'dark'),
+      flagAccents: this.props.flagAccents ?? true,
+      iosNote: this.props.iosNote ?? true,
+      logoPlay: (this.props.logoMotion ?? true) ? 'running' : 'paused',
+      faqs: FAQS.map((f, i) => ({
+        q: f.q, a: f.a,
+        isOpen: open === i,
+        rot: open === i ? 'rotate(180deg)' : 'rotate(0deg)',
+        toggle: () => this.setState(s => ({ open: s.open === i ? -1 : i }))
+      }))
+    };
+  }
+}
+</script>
+</body>
+</html>

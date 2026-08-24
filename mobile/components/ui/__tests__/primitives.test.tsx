@@ -1,0 +1,795 @@
+// components/ui/__tests__/primitives.test.tsx — m1c plan Task 2.
+//
+// Every screen in M1c, M2 and M3 is assembled from these eight primitives, so a
+// defect here is a defect on forty screens at once. Five of these tests are
+// load-bearing well past this file:
+//
+//   - `Button loading` keeps the label MOUNTED. A spinner that replaces the
+//     label collapses the button to spinner-width, and the layout jumps under a
+//     finger that is already travelling — on a confirm dialog that means
+//     tapping whatever slid into the gap.
+//   - `Button loading` refuses the press. A double-tapped submit is a
+//     double-committed transaction.
+//   - a destructive `ConfirmDialog` paints `danger` on CONFIRM, never on
+//     cancel. Swapped, the safe action looks dangerous and the wipe looks safe.
+//   - `Chip` tone `soon` is the same grey `SoonGate` already ships. Grey means
+//     "not built yet"; brand green means "built, needs Plus" (docs/11
+//     "TWO GATING STATES"). Two different promises to the user.
+//   - nothing renders a hex literal. A literal renders identically in both
+//     themes, which is the one thing the token system exists to prevent — and
+//     it fails silently, in dark mode, on a device no test runs on.
+import type { ReactElement } from "react";
+import { useState } from "react";
+import { fireEvent, render, screen, within } from "@testing-library/react-native";
+import { Modal, StyleSheet, Text } from "react-native";
+import { SafeAreaProvider } from "react-native-safe-area-context";
+import { Send, Wallet } from "lucide-react-native";
+
+import { SoonGate } from "@/components/gates/soon_gate";
+import { SHIPPED_FEATURES } from "@/constants/shipped_features";
+import type { FeatureKey, ShipState } from "@/constants/shipped_features";
+import { KeypadProvider } from "@/contexts/keypad_context";
+import { openKeypad } from "@/test_support/keypad";
+import { BottomSheet } from "../bottom_sheet";
+import { KeypadHost } from "../keypad_host";
+import { NumericField } from "../numeric_field";
+import { Button } from "../button";
+import { Card } from "../card";
+import { Chip } from "../chip";
+import { ConfirmDialog } from "../confirm_dialog";
+import { EmptyState } from "../empty_state";
+import { Fab } from "../fab";
+import { ListRow } from "../list_row";
+import { MiniBars } from "../mini_bars";
+import { SectionHeader } from "../section_header";
+import { SegmentedControl } from "../segmented_control";
+import { StatTile } from "../stat_tile";
+
+const noop = () => {};
+
+/**
+ * Class *lists*, not the raw string. `bg-fg-2` is a substring of
+ * `bg-fg-2-dark` and `text-fg` is a substring of `text-fg-2`, so a
+ * `toContain` on the joined string quietly passes on the wrong token.
+ */
+function classListOf(testID: string): string[] {
+  return String(screen.getByTestId(testID).props.className ?? "")
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+// ---------------------------------------------------------------------------
+// Every primitive renders its required content
+// ---------------------------------------------------------------------------
+
+const PRIMITIVES: [name: string, element: ReactElement, expected: string][] = [
+  [
+    "Card",
+    <Card testID="card">
+      <Text>Total balance</Text>
+    </Card>,
+    "Total balance",
+  ],
+  ["Chip", <Chip testID="chip" label="Groceries" tone="neutral" />, "Groceries"],
+  ["Button", <Button testID="button" title="Save" onPress={noop} />, "Save"],
+  [
+    "ListRow",
+    <ListRow testID="list-row" title="GCash" subtitle="Catches: GCash" />,
+    "GCash",
+  ],
+  [
+    "BottomSheet",
+    <BottomSheet visible onDismiss={noop} title="Pick a wallet">
+      <Text>Sheet body</Text>
+    </BottomSheet>,
+    "Pick a wallet",
+  ],
+  [
+    "EmptyState",
+    <EmptyState
+      title="No wallets yet"
+      body="Add the bank or e-wallet you use most."
+    />,
+    "No wallets yet",
+  ],
+  [
+    "ConfirmDialog",
+    <ConfirmDialog
+      visible
+      title="Delete this wallet?"
+      body="Its transactions stay in the ledger."
+      confirmLabel="Delete wallet"
+      onConfirm={noop}
+      onCancel={noop}
+    />,
+    "Delete this wallet?",
+  ],
+  ["SectionHeader", <SectionHeader title="This month" />, "This month"],
+];
+
+test.each(PRIMITIVES)("%s renders its required content", (_name, element, expected) => {
+  render(element);
+  expect(screen.getByText(expected)).toBeTruthy();
+});
+
+test("all eight primitives are real components, not stubs", () => {
+  // Guards the parametrized list above from silently shrinking.
+  expect(PRIMITIVES).toHaveLength(8);
+});
+
+// ---------------------------------------------------------------------------
+// Button
+// ---------------------------------------------------------------------------
+
+test("Button loading shows the spinner AND refuses the press", () => {
+  const onPress = jest.fn();
+  render(<Button testID="btn" title="Save" onPress={onPress} loading />);
+
+  expect(screen.getByTestId("button-spinner")).toBeTruthy();
+  fireEvent.press(screen.getByTestId("btn"));
+  // The double-submit case: a spinner is decoration, not a lock.
+  expect(onPress).not.toHaveBeenCalled();
+  expect(screen.getByTestId("btn").props.accessibilityState).toMatchObject({
+    disabled: true,
+    busy: true,
+  });
+});
+
+test("Button loading keeps its width — the label is hidden, never unmounted", () => {
+  render(<Button testID="btn" title="Save" onPress={noop} loading />);
+
+  // Still in the tree, so it still occupies its own width and the button
+  // cannot collapse to spinner-width under the user's finger.
+  const label = screen.getByText("Save");
+  expect(label).toBeTruthy();
+  expect(String(label.props.className ?? "").split(/\s+/)).toContain("opacity-0");
+});
+
+test("Button not loading renders the label at full opacity and no spinner", () => {
+  render(<Button testID="btn" title="Save" onPress={noop} />);
+
+  expect(screen.queryByTestId("button-spinner")).toBeNull();
+  expect(String(screen.getByText("Save").props.className ?? "").split(/\s+/)).not.toContain(
+    "opacity-0",
+  );
+});
+
+test("Button disabled does not fire onPress", () => {
+  const onPress = jest.fn();
+  render(<Button testID="btn" title="Save" onPress={onPress} disabled />);
+
+  fireEvent.press(screen.getByTestId("btn"));
+  expect(onPress).not.toHaveBeenCalled();
+});
+
+test("Button enabled fires onPress exactly once", () => {
+  const onPress = jest.fn();
+  render(<Button testID="btn" title="Save" onPress={onPress} />);
+
+  fireEvent.press(screen.getByTestId("btn"));
+  expect(onPress).toHaveBeenCalledTimes(1);
+});
+
+test("a multi-word button label renders in full", () => {
+  // DEVICE-TESTING REPRODUCTION (2026-08-18, Task 8, defect b). The owner's
+  // screenshot showed the Home empty-state button reading "Add" where the
+  // catalogue string is "Add manually" (components/ui/empty_states.tsx). The
+  // leading hypothesis was a missing flex guard on this Text inside
+  // button.tsx's `flex-row` — but that is a NATIVE Yoga/TextView measurement
+  // behaviour, and @testing-library/react-native's renderer (react-test-
+  // renderer) never runs a real layout pass: it builds the host-node tree
+  // directly from props/children with no measurement step at all. So this
+  // assertion — a real getByText match against the FULL two-word string,
+  // which would throw if the component had actually sliced the string down
+  // to "Add" in JS — is the strongest reproduction attempt available in this
+  // environment, and it is expected to PASS today: nothing in button.tsx
+  // manipulates the `title` string. See the Task 8 report for why that
+  // outcome is read as "could not reproduce here", not "no bug".
+  //
+  // The two prop checks below ARE a real regression guard, unlike the
+  // getByText match above: `numberOfLines`/`ellipsizeMode` are the one
+  // JS-visible cause of exactly this symptom, and the first thing a future
+  // contributor reaches for when a label overflows (review finding,
+  // 2026-08-18 — the getByText-only version passes unchanged if either prop
+  // is added later).
+  render(<Button title="Add manually" onPress={noop} />);
+  const label = screen.getByText("Add manually");
+  expect(label).toBeTruthy();
+  expect(label.props.numberOfLines).toBeUndefined();
+  expect(label.props.ellipsizeMode).toBeUndefined();
+});
+
+test("Button destructive is the only variant that paints danger", () => {
+  render(<Button testID="danger-btn" title="Delete wallet" onPress={noop} variant="destructive" />);
+  expect(classListOf("danger-btn")).toContain("bg-danger");
+  expect(classListOf("danger-btn")).toContain("dark:bg-danger-dark");
+  screen.unmount();
+
+  for (const variant of ["primary", "secondary", "ghost"] as const) {
+    render(<Button testID={`btn-${variant}`} title="Save" onPress={noop} variant={variant} />);
+    expect(classListOf(`btn-${variant}`).join(" ")).not.toMatch(/danger/);
+    screen.unmount();
+  }
+});
+
+test("the primary button uses the on-brand foreground, not a surface token", () => {
+  // `surface` is a BACKGROUND token (#FFFFFF / #111A16). A filled primary
+  // button needs the colour that sits ON a brand fill, which is a different
+  // idea with its own token — see constants/colors.ts's ON-BRAND FOREGROUND
+  // block for the contrast numbers this pins.
+  render(<Button title="Save" onPress={noop} />);
+  const label = String(screen.getByText("Save").props.className ?? "").split(/\s+/);
+  expect(label).toContain("text-on-brand");
+  expect(label).toContain("dark:text-on-brand-dark");
+  expect(label).not.toContain("text-surface");
+  expect(label).not.toContain("dark:text-surface-dark");
+});
+
+test("the destructive button also uses the on-brand foreground, not a surface token", () => {
+  render(<Button title="Delete wallet" onPress={noop} variant="destructive" />);
+  const label = String(screen.getByText("Delete wallet").props.className ?? "").split(/\s+/);
+  expect(label).toContain("text-on-brand");
+  expect(label).toContain("dark:text-on-brand-dark");
+  expect(label).not.toContain("text-surface");
+  expect(label).not.toContain("dark:text-surface-dark");
+});
+
+// ---------------------------------------------------------------------------
+// ConfirmDialog — this component guards the data wipe
+// ---------------------------------------------------------------------------
+
+function renderConfirm(destructive: boolean, handlers: {
+  onConfirm: jest.Mock;
+  onCancel: jest.Mock;
+}) {
+  render(
+    <ConfirmDialog
+      visible
+      destructive={destructive}
+      title="Delete everything?"
+      body="This erases every transaction on this device."
+      confirmLabel="Delete everything"
+      onConfirm={handlers.onConfirm}
+      onCancel={handlers.onCancel}
+    />,
+  );
+}
+
+test("ConfirmDialog fires onConfirm from the confirm action", () => {
+  const onConfirm = jest.fn();
+  const onCancel = jest.fn();
+  renderConfirm(false, { onConfirm, onCancel });
+
+  fireEvent.press(screen.getByTestId("confirm-dialog-confirm"));
+  expect(onConfirm).toHaveBeenCalledTimes(1);
+  expect(onCancel).not.toHaveBeenCalled();
+});
+
+test("ConfirmDialog fires onCancel from the cancel action", () => {
+  const onConfirm = jest.fn();
+  const onCancel = jest.fn();
+  renderConfirm(false, { onConfirm, onCancel });
+
+  fireEvent.press(screen.getByTestId("confirm-dialog-cancel"));
+  expect(onCancel).toHaveBeenCalledTimes(1);
+  expect(onConfirm).not.toHaveBeenCalled();
+});
+
+test("ConfirmDialog fires onCancel from the backdrop", () => {
+  // A backdrop that swallows the press traps the user in a modal with no
+  // system-back affordance on iOS-style layouts and no obvious way out.
+  const onConfirm = jest.fn();
+  const onCancel = jest.fn();
+  renderConfirm(false, { onConfirm, onCancel });
+
+  fireEvent.press(screen.getByTestId("confirm-dialog-backdrop"));
+  expect(onCancel).toHaveBeenCalledTimes(1);
+  expect(onConfirm).not.toHaveBeenCalled();
+});
+
+test("a destructive ConfirmDialog paints danger on CONFIRM, not on cancel", () => {
+  renderConfirm(true, { onConfirm: jest.fn(), onCancel: jest.fn() });
+
+  expect(classListOf("confirm-dialog-confirm")).toContain("bg-danger");
+  expect(classListOf("confirm-dialog-confirm")).toContain("dark:bg-danger-dark");
+  // Swapped, the safe way out looks dangerous and the irreversible one looks
+  // safe — the user learns to tap the red thing to escape.
+  expect(classListOf("confirm-dialog-cancel").join(" ")).not.toMatch(/danger/);
+});
+
+test("a non-destructive ConfirmDialog paints danger on neither action", () => {
+  renderConfirm(false, { onConfirm: jest.fn(), onCancel: jest.fn() });
+
+  expect(classListOf("confirm-dialog-confirm").join(" ")).not.toMatch(/danger/);
+  expect(classListOf("confirm-dialog-cancel").join(" ")).not.toMatch(/danger/);
+});
+
+test("ConfirmDialog renders the caller's confirmLabel verbatim and never a bare OK", () => {
+  renderConfirm(true, { onConfirm: jest.fn(), onCancel: jest.fn() });
+
+  // "OK" tells the user nothing about what they just agreed to.
+  expect(screen.getByText("Delete everything")).toBeTruthy();
+  expect(screen.queryByText("OK")).toBeNull();
+  expect(screen.queryByText("Ok")).toBeNull();
+});
+
+test("ConfirmDialog hidden renders nothing", () => {
+  render(
+    <ConfirmDialog
+      visible={false}
+      title="Delete everything?"
+      body="This erases every transaction on this device."
+      confirmLabel="Delete everything"
+      onConfirm={noop}
+      onCancel={noop}
+    />,
+  );
+  expect(screen.toJSON()).toBeNull();
+});
+
+test("confirmLabel is required at the type level — it can never fall back to OK", () => {
+  const invalid = (
+    // @ts-expect-error confirmLabel is REQUIRED; omitting it must not compile.
+    // This assertion is enforced by `tsc --noEmit`, not by the runtime: making
+    // confirmLabel optional turns the @ts-expect-error into an error itself.
+    <ConfirmDialog
+      visible
+      destructive
+      title="Delete everything?"
+      body="This erases every transaction on this device."
+      onConfirm={noop}
+      onCancel={noop}
+    />
+  );
+  expect(invalid).toBeTruthy();
+});
+
+// ---------------------------------------------------------------------------
+// BottomSheet
+// ---------------------------------------------------------------------------
+
+test("BottomSheet hidden renders nothing at all", () => {
+  render(
+    <BottomSheet visible={false} onDismiss={noop} title="Pick a wallet">
+      <Text>Sheet body</Text>
+    </BottomSheet>,
+  );
+  // Not "rendered offscreen": an offscreen sheet still captures touches over
+  // the whole screen and the app appears frozen.
+  expect(screen.toJSON()).toBeNull();
+  expect(screen.queryByText("Sheet body")).toBeNull();
+});
+
+test("BottomSheet dismisses on backdrop press", () => {
+  const onDismiss = jest.fn();
+  render(
+    <BottomSheet visible onDismiss={onDismiss} title="Pick a wallet">
+      <Text>Sheet body</Text>
+    </BottomSheet>,
+  );
+
+  fireEvent.press(screen.getByTestId("bottom-sheet-backdrop"));
+  expect(onDismiss).toHaveBeenCalledTimes(1);
+});
+
+test("BottomSheet dismisses on Android back", () => {
+  // Android's system back is the primary dismiss gesture on this platform
+  // (docs/11: "Android conventions ... system back").
+  const onDismiss = jest.fn();
+  render(
+    <BottomSheet visible onDismiss={onDismiss} title="Pick a wallet">
+      <Text>Sheet body</Text>
+    </BottomSheet>,
+  );
+
+  const modal = screen.UNSAFE_getByType(Modal);
+  expect(typeof modal.props.onRequestClose).toBe("function");
+  modal.props.onRequestClose();
+  expect(onDismiss).toHaveBeenCalledTimes(1);
+});
+
+// ---------------------------------------------------------------------------
+// BottomSheet vs. the keypad panel (numeric-input-system Task 14)
+//
+// THE PANEL IS PAINTED INSIDE THIS SHEET'S OWN Modal, absolutely positioned at
+// `bottom: 0` — so with nothing reserved it sits ON TOP of whatever the
+// sheet's last row is, which on all four amount-bearing sheets
+// (allocation_sheet, balance_correction_sheet, cash_reconcile_sheet,
+// correct_sheet) is Confirm/Save. The sheet does not scroll, so the user
+// cannot get out from under it either. It has to give the band up itself.
+// ---------------------------------------------------------------------------
+
+/** The panel height the mocked layout event reports. Taller than any inset. */
+const PANEL_HEIGHT = 320;
+/** Deliberately non-zero and unequal to anything else here: zeros cannot tell
+ *  "counted the navigation bar once" from "counted it twice". */
+const NAV_BAR = 48;
+
+function SheetWithAmount() {
+  const [value, setValue] = useState("");
+  return (
+    <BottomSheet visible onDismiss={noop} title="Move money">
+      <NumericField testID="sheet-amount" label="How much?" value={value} onChangeText={setValue} />
+      <Text>Confirm</Text>
+    </BottomSheet>
+  );
+}
+
+function sheetPadding(): number {
+  const flat = StyleSheet.flatten(screen.getByTestId("bottom-sheet").props.style) ?? {};
+  return (flat as { paddingBottom?: number }).paddingBottom ?? 0;
+}
+
+/** Mounts the sheet under a provider, a root host, and a real navigation bar. */
+function renderSheetWithKeypad(): void {
+  render(
+    <SafeAreaProvider
+      initialMetrics={{
+        frame: { x: 0, y: 0, width: 320, height: 640 },
+        insets: { top: 0, bottom: NAV_BAR, left: 0, right: 0 },
+      }}
+    >
+      {/* HOST BEFORE THE SUBJECT: tokens are handed out in effect-completion
+          order, so a root host mounted AFTER this subtree would outrank the
+          one BottomSheet mounts inside its own Modal and the panel would be
+          drawn behind the sheet — the bug the second host exists to fix. */}
+      <KeypadProvider>
+        <KeypadHost />
+        <SheetWithAmount />
+      </KeypadProvider>
+    </SafeAreaProvider>,
+  );
+}
+
+test("BottomSheet reserves the keypad panel's band so its last row is not buried", () => {
+  renderSheetWithKeypad();
+  const closed = sheetPadding();
+
+  openKeypad("sheet-amount");
+  // THIS SHEET'S OWN HOST, not the root one. Both are mounted and only the
+  // topmost token draws, so a bare `getByTestId("keypad-host")` would pass
+  // just as happily with the wrong one active.
+  const host = within(screen.UNSAFE_getByType(Modal)).getByTestId("keypad-host");
+  fireEvent(host, "layout", {
+    nativeEvent: { layout: { height: PANEL_HEIGHT, width: 320, x: 0, y: 0 } },
+  });
+
+  const open = sheetPadding();
+
+  // The sheet's bottom edge is flush with the window and the panel is pinned
+  // to the same edge, so clearing it takes the panel's WHOLE height.
+  expect(open).toBeGreaterThanOrEqual(PANEL_HEIGHT);
+  // And exactly once: keypad_host.tsx pads its own panel by `insets.bottom`,
+  // so the measured height already contains the navigation bar the sheet was
+  // separately clearing. A naive `closed + PANEL_HEIGHT` would land on
+  // exactly this number and leave a 48dp dead band.
+  expect(open).toBeLessThan(closed + PANEL_HEIGHT);
+  // What is left above the panel is the sheet's own designed floor, intact.
+  expect(open - PANEL_HEIGHT).toBe(closed - NAV_BAR);
+});
+
+test("BottomSheet reserves nothing at all while the panel is closed", () => {
+  // The no-op half, and it is what keeps every other sheet suite in this repo
+  // untouched. Measured against a sheet with NO provider above it — the
+  // literal pre-Task-14 sheet — rather than against a constant copied out of
+  // the component, which would still agree if both drifted.
+  render(
+    <SafeAreaProvider
+      initialMetrics={{
+        frame: { x: 0, y: 0, width: 320, height: 640 },
+        insets: { top: 0, bottom: NAV_BAR, left: 0, right: 0 },
+      }}
+    >
+      <BottomSheet visible onDismiss={noop} title="Pick a wallet">
+        <Text>Sheet body</Text>
+      </BottomSheet>
+    </SafeAreaProvider>,
+  );
+  const withoutKeypad = sheetPadding();
+  screen.unmount();
+
+  renderSheetWithKeypad();
+
+  expect(sheetPadding()).toBe(withoutKeypad);
+});
+
+// ---------------------------------------------------------------------------
+// Chip — the two gating states must never converge
+// ---------------------------------------------------------------------------
+
+test("Chip tone soon renders the grey fg-2 token, not brand green", () => {
+  render(<Chip testID="chip" label="Soon" tone="soon" />);
+
+  const classes = classListOf("chip");
+  expect(classes).toContain("bg-fg-2");
+  expect(classes).toContain("dark:bg-fg-2-dark");
+  // Brand green means "built, needs Plus"; grey means "not built yet".
+  expect(classes).not.toContain("bg-brand");
+  expect(classes).not.toContain("bg-brand-soft");
+});
+
+test("Chip tone soon is the exact chip SoonGate ships — one grey, not two", () => {
+  render(<Chip testID="chip" label="Soon" tone="soon" />);
+  const chipClasses = classListOf("chip");
+  screen.unmount();
+
+  // Every FeatureKey is "shipped" as of m3b Task 8 (constants/shipped_features.ts)
+  // — SoonGate only renders its chip for an unshipped feature, and there is no
+  // such key left in the real app. SHIPPED_FEATURES is exported readonly (app
+  // code must never mutate the single per-build rollout switch at runtime),
+  // so this test casts away readonly at this one contained call site — the
+  // same seam components/gates/__tests__/gates.test.tsx already pokes — to
+  // force `reports` back to "soon" for just this assertion, then restores it.
+  (SHIPPED_FEATURES as Record<FeatureKey, ShipState>).reports = "soon";
+  try {
+    render(
+      <SoonGate feature="reports">
+        <Text>Monthly limit</Text>
+      </SoonGate>,
+    );
+    expect(classListOf("soon-chip")).toEqual(chipClasses);
+  } finally {
+    (SHIPPED_FEATURES as Record<FeatureKey, ShipState>).reports = "shipped";
+  }
+});
+
+test("Chip tone warn takes dark ink — white on amber is unreadable outdoors", () => {
+  // Amber is the one fill bright enough that `text-surface` white drops to
+  // 3.2:1, under WCAG AA for this size. Every other filled tone clears 4.5:1
+  // with white, so only this one deviates.
+  render(<Chip testID="chip" label="Due today" tone="warn" />);
+  const ink = String(screen.getByText("Due today").props.className ?? "").split(/\s+/);
+  expect(ink).toContain("text-fg");
+  expect(ink).not.toContain("text-surface");
+});
+
+test("Chip tone brand is visibly not the soon grey", () => {
+  render(<Chip testID="chip" label="Plus" tone="brand" />);
+  expect(classListOf("chip")).not.toContain("bg-fg-2");
+});
+
+test("Chip fires onPress when given one, and carries no button role without one", () => {
+  const onPress = jest.fn();
+  render(<Chip testID="chip" label="Groceries" tone="neutral" onPress={onPress} />);
+  fireEvent.press(screen.getByTestId("chip"));
+  expect(onPress).toHaveBeenCalledTimes(1);
+  screen.unmount();
+
+  render(<Chip testID="chip" label="Groceries" tone="neutral" />);
+  expect(screen.getByTestId("chip").props.accessibilityRole).toBeUndefined();
+});
+
+// ---------------------------------------------------------------------------
+// ListRow / SectionHeader / EmptyState / Card
+// ---------------------------------------------------------------------------
+
+test("ListRow destructive paints danger on the title", () => {
+  render(<ListRow testID="row" title="Delete all data" destructive />);
+  const title = screen.getByText("Delete all data");
+  expect(String(title.props.className ?? "").split(/\s+/)).toContain("text-danger");
+});
+
+test("ListRow fires onPress and renders its slots", () => {
+  const onPress = jest.fn();
+  render(
+    <ListRow
+      testID="row"
+      title="GCash"
+      subtitle="Catches: GCash"
+      left={<Text>L</Text>}
+      right={<Text>R</Text>}
+      onPress={onPress}
+    />,
+  );
+
+  expect(screen.getByText("L")).toBeTruthy();
+  expect(screen.getByText("R")).toBeTruthy();
+  expect(screen.getByText("Catches: GCash")).toBeTruthy();
+  fireEvent.press(screen.getByTestId("row"));
+  expect(onPress).toHaveBeenCalledTimes(1);
+});
+
+test("SectionHeader renders its optional action and fires it", () => {
+  const onPress = jest.fn();
+  render(<SectionHeader title="This month" action={{ label: "See all", onPress }} />);
+
+  fireEvent.press(screen.getByText("See all"));
+  expect(onPress).toHaveBeenCalledTimes(1);
+});
+
+test("SectionHeader without an action renders no action", () => {
+  render(<SectionHeader title="This month" />);
+  expect(screen.queryByTestId("section-header-action")).toBeNull();
+});
+
+// Design F1 sweep: the action label has no padding class — text-sm alone
+// (14px/20px line-height) is the whole painted height, well under 44pt, with
+// no hitSlop to compensate. Jest has no real hit-testing, so this pins the
+// slop VALUE (44 - 20 = 24, split 12/12) rather than tap behaviour.
+test("SectionHeader's action carries a hitSlop that closes its 20px painted height to 44pt", () => {
+  render(<SectionHeader title="This month" action={{ label: "See all", onPress: noop }} />);
+  expect(screen.getByTestId("section-header-action").props.hitSlop).toEqual({
+    top: 12,
+    bottom: 12,
+    left: 12,
+    right: 12,
+  });
+});
+
+test("a multi-word section title renders in full", () => {
+  // DEVICE-TESTING REPRODUCTION (2026-08-18, Task 8, defect b). The owner's
+  // screenshot showed `components/home/limit_progress_list.tsx`'s
+  // `<SectionHeader title="Your limits" />` reading "Your" only. Same caveat
+  // as the button test above: this environment never runs a real Yoga/
+  // TextView layout pass, so a getByText match against the full string is
+  // the strongest available reproduction attempt, and it is expected to
+  // PASS — section_header.tsx does not touch the `title` string in JS. See
+  // the Task 8 report.
+  //
+  // Same regression-guard reasoning as the button test above: pin the ABSENCE
+  // of numberOfLines/ellipsizeMode, the one JS-visible cause of this exact
+  // symptom (review finding, 2026-08-18).
+  render(<SectionHeader title="Your limits" />);
+  const title = screen.getByText("Your limits");
+  expect(title).toBeTruthy();
+  expect(title.props.numberOfLines).toBeUndefined();
+  expect(title.props.ellipsizeMode).toBeUndefined();
+});
+
+test("EmptyState defaults to the drifting BrandMark, not a lucide glyph", () => {
+  // UPDATED (task-7-brief.md Step 3, mobile-ui-revamp Part 3). This test used
+  // to pin the lucide `Send` icon as the stand-in "brand mark" docs/11 named
+  // before `components/ui/brand_mark.tsx` existed. Now that the real animated
+  // mark exists, the DEFAULT disc renders it (`variant="idle"`) instead — an
+  // icon prop, when a caller passes one, still renders exactly that icon,
+  // unanimated, and the mark is absent then. See
+  // components/ui/__tests__/motion_placement.test.tsx for the mark's own
+  // testID/animation/reduce-motion contract; this file only pins EmptyState's
+  // choice between the two.
+  render(<EmptyState testID="e" title="All caught up" body="Nothing to review." />);
+  expect(screen.getByTestId("e-mark")).toBeTruthy();
+  screen.unmount();
+
+  render(<EmptyState testID="e" icon={Send} title="All caught up" body="Nothing to review." />);
+  expect(screen.queryByTestId("e-mark")).toBeNull();
+  screen.getByText("All caught up");
+  screen.unmount();
+
+  render(<EmptyState testID="e" icon={Wallet} title="All caught up" body="Nothing to review." />);
+  expect(screen.queryByTestId("e-mark")).toBeNull();
+});
+
+test("EmptyState renders its optional action and fires it", () => {
+  const onPress = jest.fn();
+  render(
+    <EmptyState
+      title="No wallets yet"
+      body="Add the bank or e-wallet you use most."
+      action={{ label: "Add a wallet", onPress }}
+    />,
+  );
+
+  fireEvent.press(screen.getByText("Add a wallet"));
+  expect(onPress).toHaveBeenCalledTimes(1);
+});
+
+test("Card default carries a shadow and flat does not", () => {
+  render(
+    <Card testID="default-card">
+      <Text>x</Text>
+    </Card>,
+  );
+  expect(classListOf("default-card").join(" ")).toMatch(/shadow/);
+  screen.unmount();
+
+  render(
+    <Card testID="flat-card" variant="flat">
+      <Text>x</Text>
+    </Card>,
+  );
+  expect(classListOf("flat-card").join(" ")).not.toMatch(/shadow/);
+});
+
+// ---------------------------------------------------------------------------
+// No hex literals anywhere — swept across every colour-bearing variant
+//
+// DELIBERATE EXCLUSIONS: `ProviderBadge` and `ShareBar` are not in this
+// sweep, and must not be added to it. Both legitimately RECEIVE or READ
+// identity colours as literal-hex VALUES rather than originate them —
+// `ProviderBadge` reads `constants/providers.ts`'s `PROVIDER_BADGE` map
+// (`color`/`ink`), and `ShareBar` paints whatever hex string its caller
+// passes in a `Share.color` prop, sourced from the same map. Both are the
+// Global Constraints' authorised exception: a provider colour identifies a
+// company, never a state, so it is deliberately kept OUT of `palette` and
+// painted with an inline `style` instead of a token `className`. A rendered
+// tree for either will always contain a real `#RRGGBB` and always should —
+// that is not the defect this sweep exists to catch. If this sweep is ever
+// extended to either component, it will fail immediately and correctly;
+// that failure means "this component still does its job," not "regression."
+// ---------------------------------------------------------------------------
+
+const COLOUR_BEARING: [name: string, element: ReactElement][] = [
+  ["Card default", <Card><Text>x</Text></Card>],
+  ["Card flat", <Card variant="flat"><Text>x</Text></Card>],
+  ["Chip neutral", <Chip label="Groceries" tone="neutral" />],
+  ["Chip brand", <Chip label="Linked" tone="brand" />],
+  ["Chip warn", <Chip label="Due in 3d" tone="warn" />],
+  ["Chip danger", <Chip label="Overdue" tone="danger" />],
+  ["Chip soon", <Chip label="Soon" tone="soon" />],
+  ["Button primary", <Button title="Save" onPress={noop} variant="primary" />],
+  ["Button secondary", <Button title="Save" onPress={noop} variant="secondary" />],
+  ["Button ghost", <Button title="Save" onPress={noop} variant="ghost" />],
+  ["Button destructive", <Button title="Delete" onPress={noop} variant="destructive" />],
+  [
+    "Button outline-destructive",
+    <Button title="Wipe everything" onPress={noop} variant="outline-destructive" />,
+  ],
+  ["Button loading", <Button title="Save" onPress={noop} loading />],
+  ["Button disabled", <Button title="Save" onPress={noop} disabled />],
+  ["ListRow", <ListRow title="GCash" subtitle="Catches: GCash" />],
+  ["ListRow destructive", <ListRow title="Delete all data" destructive />],
+  [
+    "SegmentedControl",
+    <SegmentedControl
+      segments={[
+        { value: "limits", label: "Limits" },
+        { value: "goals", label: "Goals" },
+      ]}
+      value="limits"
+      onChange={noop}
+    />,
+  ],
+  ["StatTile", <StatTile label="Spent so far" amount={1031200} tone="danger" />],
+  ["Fab", <Fab onPress={noop} accessibilityLabel="Add transaction" />],
+  [
+    "MiniBars",
+    <MiniBars
+      values={[10, 20, 40]}
+      barClassName="bg-on-brand/40"
+      labelClassName="text-on-brand/70"
+      startLabel="Mon"
+      endLabel="Sun"
+    />,
+  ],
+  [
+    "BottomSheet",
+    <BottomSheet visible onDismiss={noop} title="Pick a wallet">
+      <Text>Sheet body</Text>
+    </BottomSheet>,
+  ],
+  [
+    "EmptyState",
+    <EmptyState title="No wallets yet" body="Add one." action={{ label: "Add", onPress: noop }} />,
+  ],
+  [
+    "ConfirmDialog",
+    <ConfirmDialog
+      visible
+      title="Delete this wallet?"
+      body="Its transactions stay."
+      confirmLabel="Delete wallet"
+      onConfirm={noop}
+      onCancel={noop}
+    />,
+  ],
+  [
+    "ConfirmDialog destructive",
+    <ConfirmDialog
+      visible
+      destructive
+      title="Delete everything?"
+      body="This cannot be undone."
+      confirmLabel="Delete everything"
+      onConfirm={noop}
+      onCancel={noop}
+    />,
+  ],
+  ["SectionHeader", <SectionHeader title="This month" action={{ label: "See all", onPress: noop }} />],
+];
+
+test.each(COLOUR_BEARING)("%s emits no hex literal", (_name, element) => {
+  render(element);
+  // Sweeps the whole rendered tree — every className and every resolved style
+  // on every host node, not just the root.
+  expect(JSON.stringify(screen.toJSON())).not.toMatch(/#[0-9a-fA-F]{3,8}/);
+});

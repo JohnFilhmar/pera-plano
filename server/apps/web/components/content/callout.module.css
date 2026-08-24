@@ -1,0 +1,29 @@
+.callout {
+  border: 1px solid var(--line);
+  border-left-width: 4px;
+  border-radius: 0.5rem;
+  padding: 1rem 1.25rem;
+  margin: 1.25rem 0;
+  background: var(--surface);
+}
+
+.heading {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+/* Tone maps to the token set from app/globals.css — info borrows the brand green and
+   its mint surface, the same pairing used throughout the site for "this is fine, just
+   informational" content. */
+.info {
+  border-left-color: var(--brand);
+  background: var(--mint);
+}
+
+.warn {
+  border-left-color: var(--warn);
+}
+
+.danger {
+  border-left-color: var(--danger);
+}

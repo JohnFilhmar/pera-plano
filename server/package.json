@@ -1,0 +1,31 @@
+{
+  "name": "peraplano-server",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "libs/*"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "npm run dev -w @peraplano/web",
+    "build": "npm run build -w @peraplano/web",
+    "start": "node apps/web/.next/standalone/apps/web/server.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:smoke": "vitest run --config vitest.smoke.config.ts",
+    "typecheck": "tsc -p apps/web/tsconfig.json --noEmit && tsc -p libs/common/tsconfig.json --noEmit && tsc -p tsconfig.harness.json --noEmit",
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@next/eslint-plugin-next": "^16.3.1",
+    "@vitejs/plugin-react": "^6.1.0",
+    "eslint": "^9.39.5",
+    "typescript-eslint": "^8.67.0",
+    "vitest": "^4.1.11"
+  }
+}

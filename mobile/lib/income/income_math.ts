@@ -1,0 +1,148 @@
+// lib/income/income_math.ts — the user's typical pay, and what it comes to in a
+// month (m2-part2 Task 11; docs/04-features/04-income.md rules 9 and 16).
+//
+// EVERY FIGURE HERE ENDS UP INSIDE A LIMIT. Rule 16's monthly-equivalent M is
+// what `baseFor` multiplies a percent-of-income limit by (limits rule 10), so an
+// error of a few percent here silently moves the point at which the app warns
+// the user — and it moves it without anything on screen changing.
+//
+// TWO DEVIATIONS FROM THE m2-part2 PLAN'S SIGNATURES, both forced by the spec:
+//
+// 1. `averageAmountFor` TAKES THE CADENCE AND `now`. The plan's signature is
+//    `averageAmountFor(events)`, but rule 9's window is cadence-dependent — the
+//    last 6 events for kinsenas, 8 for weekly, 4 for monthly — and its
+//    irregular row is a different formula entirely, over a trailing 90 days
+//    that only `now` can define. The plan's own rule 1 admits as much ("take it
+//    over the most recent window it specifies") while its signature cannot
+//    express it.
+//
+// 2. IT RETURNS `Centavos | null`. The plan says an empty list returns 0. Zero
+//    is a real amount that flows into `monthlyEquivalent` and then into a
+//    limit's base, and limits rule 12 says income is "never silently treated as
+//    ₱0.00". Rule 9 has a "Minimum history" column precisely so that "we do not
+//    know yet" is sayable, and `IncomeProfile.averageAmount` is already
+//    `Centavos | null`.
+import type { Centavos, IncomeCadence } from "@/types/domain";
+
+import type { CandidateEvent } from "./candidates";
+
+/** Rule 9's window sizes, in events. Irregular is time-based instead. */
+const MEDIAN_WINDOW: Record<Exclude<IncomeCadence, "irregular">, number> = {
+  kinsenas: 6,
+  weekly: 8,
+  monthly: 4,
+};
+
+/** Rule 9's "Minimum history" column. */
+const MINIMUM_EVENTS: Record<IncomeCadence, number> = {
+  kinsenas: 2,
+  weekly: 2,
+  monthly: 2,
+  irregular: 3,
+};
+
+/** Rule 9's irregular row sums this window and divides by three. */
+const IRREGULAR_WINDOW_DAYS = 90;
+const IRREGULAR_MONTHS = 3;
+const DAY_MS = 86_400_000;
+
+/**
+ * Nearest centavo, HALF AWAY FROM ZERO.
+ *
+ * `Math.round` breaks ties toward +∞, so it rounds −0.5 to −0 rather than to
+ * −1 — asymmetric in a way that would bias any figure that can go negative.
+ * Nothing here is negative today; the helper exists so that stays true by
+ * construction rather than by luck.
+ */
+function roundCentavos(value: number): Centavos {
+  return value < 0 ? -Math.round(-value) : Math.round(value);
+}
+
+/**
+ * Median of integer centavos. An even count averages the two middle values and
+ * ROUNDS — truncating would drift the figure downward a little on every
+ * recomputation, and rule 10 recomputes on every matched pay event.
+ */
+function median(amounts: number[]): Centavos {
+  const sorted = [...amounts].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1
+    ? sorted[middle]
+    : roundCentavos((sorted[middle - 1] + sorted[middle]) / 2);
+}
+
+/**
+ * The user's typical pay, or `null` when there is not yet enough history to say
+ * (rule 9's "Minimum history").
+ *
+ * `events` are the MATCHED pay events for `cadence` — what
+ * `detectCadence(...).matchedEventIds` selected — except for `irregular`, where
+ * rule 9 counts every primary-stream candidate in the window.
+ *
+ * A MEDIAN FOR THE THREE REGULAR CADENCES, AND A SUM FOR IRREGULAR. That is not
+ * an inconsistency: a salaried month has a typical payday and outliers to
+ * resist (13th-month pay), whereas a gig worker's months genuinely differ and
+ * the median of scattered gigs describes no month at all. Rule 9 says so
+ * outright, and notes that irregular's answer IS already the monthly
+ * equivalent.
+ */
+export function averageAmountFor(
+  events: CandidateEvent[],
+  cadence: IncomeCadence,
+  now: number,
+): Centavos | null {
+  if (cadence === "irregular") {
+    const from = now - IRREGULAR_WINDOW_DAYS * DAY_MS;
+    const withinWindow = events.filter(
+      (event) => event.occurredAt >= from && event.occurredAt <= now,
+    );
+    if (withinWindow.length < MINIMUM_EVENTS.irregular) return null;
+    const total = withinWindow.reduce((sum, event) => sum + event.amount, 0);
+    return roundCentavos(total / IRREGULAR_MONTHS);
+  }
+
+  if (events.length < MINIMUM_EVENTS[cadence]) return null;
+
+  // Most recent first, then the window — copied rather than sorted in place,
+  // because the caller still holds this array.
+  const recent = [...events]
+    .sort((a, b) => b.occurredAt - a.occurredAt)
+    .slice(0, MEDIAN_WINDOW[cadence]);
+
+  return median(recent.map((event) => event.amount));
+}
+
+/**
+ * Monthly-equivalent income **M** (rule 16) — the figure percent-of-income
+ * Limits are measured against.
+ *
+ * `null` travels straight through, so the "we do not know yet" state reaches
+ * `baseFor` intact and becomes **Paused — income unknown** rather than a base
+ * of ₱0.00.
+ *
+ * WEEKLY IS × 52 ÷ 12, NOT × 4. Four weeks a month under-reports by nearly 8%
+ * — ₱20,000 where the real figure is ₱21,666.67 — which quietly tightens every
+ * percent-of-income limit the user set. The multiply and the divide happen in
+ * ONE expression and round once at the end (plan rule 4): rounding `× 52`
+ * before dividing, or `÷ 12` before multiplying, both compound.
+ *
+ * IRREGULAR PASSES THROUGH. Rule 9 already divided its 90-day sum by three, so
+ * it is a monthly figure — converting it again would triple a gig worker's
+ * income.
+ */
+export function monthlyEquivalent(
+  cadence: IncomeCadence,
+  averageAmount: Centavos | null,
+): Centavos | null {
+  if (averageAmount === null) return null;
+
+  switch (cadence) {
+    case "kinsenas":
+      return averageAmount * 2;
+    case "weekly":
+      return roundCentavos((averageAmount * 52) / 12);
+    case "monthly":
+    case "irregular":
+      return averageAmount;
+  }
+}

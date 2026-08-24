@@ -113,12 +113,18 @@ formatCentavos(amount: Centavos): string;    // 123456 → "₱1,234.56"
 
 **Files:**
 - Create: `mobile/hooks/queries/use_wallets.ts`, `use_wallet.ts`, `use_transactions.ts`, `use_transaction.ts`, `use_categories.ts`, `use_review_queue.ts`, `use_review_count.ts`
-- Create: `mobile/hooks/mutations/use_create_wallet.ts`, `use_update_wallet.ts`, `use_archive_wallet.ts`, `use_create_transaction.ts`, `use_update_transaction.ts`, `use_resolve_review_item.ts`, `use_link_transfer.ts`, `use_unlink_transfer.ts`, `use_reconcile_cash.ts`
+- Create: `mobile/hooks/mutations/use_create_wallet.ts`, `use_update_wallet.ts`, `use_archive_wallet.ts`, `use_create_transaction.ts`, `use_update_transaction.ts`, `use_resolve_review_item.ts`, `use_link_transfer.ts`, `use_unlink_transfer.ts` (`use_reconcile_cash.ts` STRUCK 2026-08-11 — deferred to Task 5, which designs what reconciliation writes)
 - Test: `mobile/hooks/__tests__/hooks.test.tsx`
 
 **Rules:**
 1. Each hook is thin: a `queryKey` from `constants/query_keys.ts` plus a repository call. No business logic in hooks.
-2. Every mutation invalidates the narrowest sufficient key set. A new transaction invalidates `transactions.all`, the affected `wallets.detail`, and `reviewQueue.count` — not the whole cache.
+2. Every mutation invalidates the narrowest sufficient key set. A new transaction invalidates `transactions.all`, `wallets.list()`, the affected `wallets.detail`, and `reviewQueue.count` — not the whole cache.
+
+   > **`wallets.list()` added 2026-08-11 (during Task 3).** The original set omitted it, which is
+   > wrong in a way that would have looked like a caching mystery rather than a bug: the list rows
+   > carry the very balance the transaction just moved, so the Wallets tab would keep showing the
+   > pre-transaction figure for up to the client's 5-minute `staleTime`. The user watches money
+   > leave their account and the app says it did not.
 3. Mutations inherit `retry: 0` from the client (foundation Task 16). Never override it: a retried write double-posts money.
 4. `use_review_count` powers the tab badge and is the only hook that polls; give it a 30 s `refetchInterval`.
 
@@ -168,8 +174,14 @@ formatCentavos(amount: Centavos): string;    // 123456 → "₱1,234.56"
 **Files:**
 - Create: `mobile/app/wallet/new.tsx`, `mobile/app/wallet/[id]/edit.tsx`
 - Create: `mobile/components/wallets/wallet_form.tsx`, `matcher_picker.tsx`, `cash_reconcile_sheet.tsx`
-- Create: `mobile/lib/db/repos/wallet_matchers_repo.ts`
-- Test: `mobile/lib/db/repos/__tests__/wallet_matchers_repo.test.ts`
+- **EXTEND** (not create): `mobile/lib/db/repos/wallet_matchers_repo.ts`
+- **EXTEND** (not create): `mobile/lib/db/repos/__tests__/wallet_matchers_repo.test.ts`
+
+  > **CORRECTED 2026-08-11 (after Task 3).** Both files already exist — M1b Task 10 shipped them
+  > so the ingest Normalizer could resolve a capture to a wallet. Only `listMatchers` is there;
+  > `setMatchers` and `findWalletForPackage` are still owed. Recreating the file would clobber
+  > the pipeline's read path, and the failure would show up as captures silently landing in the
+  > Review Queue with no wallet rather than as a broken build.
 - Test: `mobile/components/wallets/__tests__/wallet_form.test.tsx`
 - Test: `mobile/components/wallets/__tests__/cash_reconcile_sheet.test.tsx`
 
@@ -178,7 +190,7 @@ formatCentavos(amount: Centavos): string;    // 123456 → "₱1,234.56"
 // wallet_matchers_repo.ts
 listMatchers(walletId?: string): Promise<WalletMatcher[]>;
 setMatchers(walletId: string, matchers: NewWalletMatcher[]): Promise<void>;   // replaces the wallet's set
-findWalletForProvider(providerKey: string, walletHint?: string): Promise<string | null>;
+findWalletForPackage(packageName: string, hint?: string): Promise<string | null>;  // shipped wallet_matchers has package_name + hint, NO provider_key column
 ```
 
 **Rules:**
@@ -189,7 +201,7 @@ findWalletForProvider(providerKey: string, walletHint?: string): Promise<string 
 5. **Cash reconciliation:** the sheet asks "How much is in your physical wallet right now?" and writes the difference as an adjustment transaction categorized to Fees & Charges with `source: "manual"` and a note. It never edits past transactions.
 6. Only `type: "cash"` wallets offer reconciliation.
 
-- [ ] **Step 1: Write the failing tests** for `wallet_matchers_repo`: set-then-list round-trips · `setMatchers` replaces rather than appends · `findWalletForProvider` resolves with and without a hint · reassigning a pair moves it to the new wallet. Run, implement, green, commit.
+- [ ] **Step 1: Write the failing tests** for `wallet_matchers_repo`: set-then-list round-trips · `setMatchers` replaces rather than appends · `findWalletForPackage` resolves with and without a hint · reassigning a pair moves it to the new wallet. Run, implement, green, commit.
 - [ ] **Step 2: Write the failing tests** for the form and sheet: the form requires a name and a type · the matcher picker binds provider plus hint · assigning an already-bound pair warns · creating a fourth wallet on the free tier opens the upgrade sheet (mock `getTier` to `"free"`) · creating a fourth wallet on `plus` succeeds · archiving offers the transaction-handling choice and defaults to keeping them · reconciliation writes a single adjustment transaction of the exact difference · reconciling with no difference writes nothing · reconciliation is offered only for cash wallets.
 - [ ] **Step 3:** Run `npx jest --ci components/wallets` — expected FAIL.
 - [ ] **Step 4:** Implement the form, picker, sheet, and both routes.
@@ -299,10 +311,10 @@ findWalletForProvider(providerKey: string, walletHint?: string): Promise<string 
 2. Cards are oldest-first (FIFO) so nothing rots at the bottom.
 3. Each card states **why it is here** in one plain sentence, taken from the gate's `reason`. No card is ever unexplained.
 4. Card layout by kind:
-   - `low_confidence` — parsed fields prefilled, a confidence meter, **Confirm** (primary) and **Correct**.
-   - `unknown_provider` — the raw text, "Is this a money notification?" with **Yes, it is** / **No, ignore this app**.
-   - `possible_transfer` — both legs side by side with **Link as transfer** / **Keep separate**.
-   - `possible_duplicate` — both candidates with **Merge** / **Keep both**.
+   - `low-confidence` — parsed fields prefilled, a confidence meter, **Confirm** (primary) and **Correct**.
+   - `unknown-provider` — the raw text, "Is this a money notification?" with **Yes, it is** / **No, ignore this app**.
+   - `ambiguous-transfer` — both legs side by side with **Link as transfer** / **Keep separate**.
+   - `possible-duplicate` — both candidates with **Merge** / **Keep both**.
 5. Every action is one tap from the list; **Correct** is the only one that opens a form.
 6. Empty state: "All caught up" with the paper-airplane mark — this is a reward state, so it should feel good rather than blank.
 

@@ -210,6 +210,39 @@ Gate principle carried forward to every v2 item: when a Free user hits a cap —
 
 ---
 
+### 2.12 Google account linking & beta cohort — Band: Mid
+
+**What it is.** Let a user link a Google account, giving PeraPlano an identity that exists off
+the phone for the first time in the product's history.
+
+**Why deferred.** Not refused: §4's standing non-goals refuse advertising, data monetization,
+`READ_SMS`, moving money, and social feeds, and account linking is none of those. It is deferred
+because it needs the server, which is second in the build order (mobile → server → web).
+
+It also has to carry a promise already made: everyone who installs during the testing period
+keeps Plus permanently. Nothing in the app records who those people are — the 2026-08-22 UI
+revamp deliberately chose not to persist `first_install_at`, `build_channel`, or a cohort id, and
+ships "Beta User" as a cosmetic label only
+(`docs/superpowers/specs/2026-08-22-mobile-ui-revamp-design.md` §6.2–§6.3). That choice cannot be
+undone after the fact: an install date cannot be reconstructed from the app once this ships. The
+only surviving evidence of who installed during beta will be Google Play Console's install
+records, and **nobody has verified that Play Console exposes per-account first-install dates in
+an exportable form** — there is no second chance to collect this once the beta window closes.
+
+**Prerequisites.**
+1. The server exists.
+2. A decision on what a linked account is allowed to sync, cleared against the privacy bar in
+   [07-privacy-and-compliance.md](07-privacy-and-compliance.md) §1, which already locks a
+   no-account, local-first architecture for the Free tier — account linking is new surface area
+   against that promise, not a change to it.
+3. Verification that Google Play Console exposes exportable per-account first-install dates,
+   completed before the beta ends. It is the sole surviving source once it does.
+
+**Tier placement when shipped.** Account linking itself is Free. What it unlocks — cloud backup,
+multi-device sync — is already Plus in the locked tier matrix and does not move.
+
+---
+
 ## 3. Horizon summary
 
 | Item | Band | Tier when shipped | Blocking prerequisite (the big one) |
@@ -220,6 +253,7 @@ Gate principle carried forward to every v2 item: when a Free user hits a cap —
 | Household sharing | Mid | Plus | Cloud identity + conflict resolution |
 | Net worth | Mid | Plus | Balance accuracy proven |
 | Web dashboard | Mid | Plus | Stable sync + web security posture |
+| Google account linking & beta cohort | Mid | Free (unlocks stay Plus) | Server exists |
 | Receipt OCR | Far | Plus | On-device processing decision + PH corpus |
 | BSP Open Finance / bank APIs | Far | Plus | Ecosystem access + privacy re-architecture |
 | Investments | Far | Plus | Net worth shipped + valuation source |

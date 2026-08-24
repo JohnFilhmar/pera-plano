@@ -1,0 +1,249 @@
+// components/bills/bill_form.tsx — m2c Task 5.
+//
+// The spec's create flow, in its order: name, amount and its TYPE, due rule,
+// reminders, category. Two things it deliberately does not have:
+//
+//   NO TIER GATE (rule 6). "Bills have no dedicated cap row: bill creation,
+//   reminders, and auto-match are unlimited in both tiers — bills are core
+//   control, and a capped bill list would make Free-tier Safe-to-Spend
+//   dishonest." An untracked bill is a missed payment.
+//
+//   NO WALLET FIELD. A bill is not paid from one place; the mark-paid flow
+//   picks a wallet per payment, at payment time.
+//
+// FIXED VS ESTIMATED IS THE FIRST REAL DECISION, so it is asked as one — with
+// the consequence spelled out rather than a bare toggle. A user who picks Fixed
+// for Meralco will fight the app every month; one who picks Estimated for rent
+// will see a `~` on a figure that never moves.
+//
+// RESTYLED (mobile-ui-revamp Part 3 Task 4b): the amount-mode toggle is now
+// `SegmentedControl` — a two-way exclusive choice, per the brief's field-
+// rhythm rule. `bill-mode-fixed`/`bill-mode-estimated` are the exact ids the
+// hand-rolled pills already used: `BillAmountMode`'s own literal values ARE
+// those suffixes, so `SegmentedControl`'s `${testID}-${value}` generation
+// reproduces them without a rename. THE REMINDER OFFSETS STAY HAND-ROLLED,
+// deliberately not `Chip` — `bill_form.test.tsx` reads
+// `.props.accessibilityState.selected` off `bill-offset-*` directly, and
+// `Chip` sets no `accessibilityState` at all.
+import { useState } from "react";
+import { Pressable, Text, TextInput, View } from "react-native";
+
+import { DueRulePicker } from "@/components/bills/due_rule_picker";
+import { formatCentavos } from "@/components/ui/amount_text";
+import { Button } from "@/components/ui/button";
+import { NumericField } from "@/components/ui/numeric_field";
+import { SegmentedControl } from "@/components/ui/segmented_control";
+import { DEFAULT_REMINDER_OFFSETS } from "@/constants/bills";
+import { centavosFrom, pesoInputFrom } from "@/lib/money/peso_input";
+import type { BillAmountMode, DueRule } from "@/types/domain";
+
+/** Step 2's field rhythm: the label that sits above every control below. */
+function FieldLabel({ children }: { children: string }) {
+  return (
+    <Text className="text-micro font-semibold text-fg-2 dark:text-fg-2-dark">{children}</Text>
+  );
+}
+
+export type BillFormValues = {
+  name: string;
+  amount: number;
+  amountMode: BillAmountMode;
+  dueRule: DueRule;
+  reminderOffsets: number[];
+};
+
+export type BillFormProps = {
+  today: string;
+  onSubmit: (values: BillFormValues) => void;
+  busy?: boolean;
+  testID?: string;
+  /**
+   * Seeds the form for an EDIT (owner's device report: a bill "should also be
+   * modifable"). Omitted on the create route, where every field starts blank.
+   *
+   * `Partial`, and the shape WalletForm already uses — a caller that knows only
+   * some of the values does not have to invent the rest.
+   */
+  initial?: Partial<BillFormValues>;
+  /**
+   * "Save bill" on create, "Save changes" on edit. A prop rather than a
+   * `mode: "create" | "edit"` flag, because the label is the only thing that
+   * actually differs and a mode would invite behaviour to be hung off it later.
+   */
+  submitLabel?: string;
+};
+
+const MODES: readonly { value: BillAmountMode; label: string; hint: string }[] = [
+  {
+    value: "fixed",
+    label: "Always the same",
+    hint: "Rent, tuition, a subscription — one exact amount.",
+  },
+  {
+    value: "estimated",
+    label: "Varies each time",
+    hint: "Meralco, Maynilad — the app learns the amount from what you pay.",
+  },
+];
+
+// NOT `as const` — that assertion only applies to a literal expression, and
+// `.map()`'s result is not one (TS1355). Unneeded regardless: `MODES`'s own
+// element type already carries the closed `BillAmountMode` union, not
+// `string`, so the destructured `value` — and everything derived from it —
+// stays that narrow union through plain inference, which is what
+// `SegmentedControl`'s `T` needs.
+const MODE_SEGMENTS = MODES.map(({ value, label }) => ({ value, label }));
+
+/**
+ * Spec rule 10's supported offsets: 7, 5, 3, 1 days before, and on the due
+ * date. Negative-is-before, matching types/domain.ts.
+ */
+const OFFSETS: readonly { value: number; label: string }[] = [
+  { value: -7, label: "7 days before" },
+  { value: -5, label: "5 days before" },
+  { value: -3, label: "3 days before" },
+  { value: -1, label: "1 day before" },
+  { value: 0, label: "On the due date" },
+];
+
+export function BillForm({
+  today,
+  onSubmit,
+  busy = false,
+  testID,
+  initial,
+  submitLabel = "Save bill",
+}: BillFormProps) {
+  const [name, setName] = useState(initial?.name ?? "");
+  // pesoInputFrom, NEVER String(). `initial.amount` is Centavos and this field
+  // holds PESO TEXT, so `String(initial.amount)` would seed ₱5,000.88 as
+  // "500088" — a silent 100×, and the exact bug wallet_form.tsx's own seeding
+  // note records having been found twice already in this workstream.
+  const [amountText, setAmountText] = useState(
+    initial?.amount !== undefined ? pesoInputFrom(initial.amount) : "",
+  );
+  const [amountMode, setAmountMode] = useState<BillAmountMode>(initial?.amountMode ?? "estimated");
+  const [dueRule, setDueRule] = useState<DueRule>(
+    initial?.dueRule ?? {
+      kind: "day-of-month",
+      day: new Date(`${today}T00:00:00`).getDate(),
+    },
+  );
+  const [offsets, setOffsets] = useState<number[]>(
+    initial?.reminderOffsets ? [...initial.reminderOffsets] : [...DEFAULT_REMINDER_OFFSETS],
+  );
+
+  const amount = centavosFrom(amountText);
+  const canSave = name.trim().length > 0 && amount > 0;
+
+  const toggleOffset = (offset: number) => {
+    setOffsets((current) =>
+      current.includes(offset)
+        ? current.filter((value) => value !== offset)
+        : [...current, offset].sort((a, b) => a - b),
+    );
+  };
+
+  return (
+    // bg-bg/px-4/pt-4 move in from the route (numeric-input-system Task 11)
+    // now that FormScreen wraps this form there instead of a plain
+    // ScrollView. pt-4 is a bare utility, not insets.top: this screen lives
+    // inside (tabs)/_layout.tsx's <Tabs>, which already pads every tab
+    // screen's top edge for the status bar in one place — pt-4 only restores
+    // the 16px breathing room the removed wrapper's p-4 gave on top of that
+    // inset. No bottom padding here: FormScreen's contentContainerStyle owns
+    // that edge, so a symmetric p-4 would double-count it (Task 9's fix).
+    <View testID={testID} className="gap-5 bg-bg px-4 pt-4 dark:bg-bg-dark">
+      <View className="gap-1">
+        <FieldLabel>What is it?</FieldLabel>
+        <TextInput
+          testID="bill-name"
+          value={name}
+          onChangeText={setName}
+          placeholder="Meralco"
+          className="min-h-[44px] rounded-xl bg-chip px-3 py-3 text-fg dark:bg-chip-dark dark:text-fg-dark"
+        />
+      </View>
+
+      <View className="gap-2">
+        <FieldLabel>Does the amount change?</FieldLabel>
+        <SegmentedControl
+          testID="bill-mode"
+          segments={MODE_SEGMENTS}
+          value={amountMode}
+          onChange={setAmountMode}
+        />
+        {/* The selected mode's own consequence, spelled out — the pill has no
+            room for it, and the whole point of asking this as a real
+            decision (this file's header) is that the user reads it. */}
+        <Text className="text-fg-2 dark:text-fg-2-dark">
+          {MODES.find((mode) => mode.value === amountMode)?.hint}
+        </Text>
+      </View>
+
+      <View className="gap-1">
+        <FieldLabel>{amountMode === "fixed" ? "How much is it?" : "Roughly how much?"}</FieldLabel>
+        <NumericField
+          testID="bill-amount"
+          label={amountMode === "fixed" ? "How much is it?" : "Roughly how much?"}
+          mode="peso"
+          placeholder="Amount, e.g. 5000"
+          value={amountText}
+          onChangeText={setAmountText}
+        />
+        <Text testID="bill-amount-preview" className="text-fg-2 dark:text-fg-2-dark">
+          {formatCentavos(amount)}
+        </Text>
+        {amountMode === "estimated" ? (
+          <Text className="text-xs text-fg-2 dark:text-fg-2-dark">
+            A starting figure. It updates itself from what you actually pay.
+          </Text>
+        ) : null}
+      </View>
+
+      <DueRulePicker testID="bill-due-rule" value={dueRule} onChange={setDueRule} today={today} />
+
+      <View className="gap-2">
+        <FieldLabel>Remind me</FieldLabel>
+        {/* HAND-ROLLED, DELIBERATELY NOT `Chip` — see this file's header.
+            `bill_form.test.tsx` reads `accessibilityState.selected` off these
+            testIDs directly, which `Chip` never sets. */}
+        <View className="flex-row flex-wrap gap-2">
+          {OFFSETS.map((offset) => (
+            <Pressable
+              key={offset.value}
+              testID={`bill-offset-${offset.value}`}
+              accessibilityRole="button"
+              accessibilityState={{ selected: offsets.includes(offset.value) }}
+              onPress={() => toggleOffset(offset.value)}
+              className={`min-h-[44px] justify-center rounded-lg px-3 py-2 ${
+                offsets.includes(offset.value)
+                  ? "bg-brand-soft dark:bg-brand-soft-dark"
+                  : "bg-chip dark:bg-chip-dark"
+              }`}
+            >
+              <Text className="text-sm text-fg dark:text-fg-dark">{offset.label}</Text>
+            </Pressable>
+          ))}
+        </View>
+        {offsets.length === 0 ? (
+          // Rule 12 keeps the in-app card either way, so no reminders is a
+          // real choice rather than a mistake to block.
+          <Text className="text-xs text-fg-2 dark:text-fg-2-dark">
+            No notifications. The bill still shows as due in the app.
+          </Text>
+        ) : null}
+      </View>
+
+      <Button
+        title={submitLabel}
+        testID="bill-save"
+        size="lg"
+        disabled={!canSave || busy}
+        onPress={() =>
+          onSubmit({ name: name.trim(), amount, amountMode, dueRule, reminderOffsets: offsets })
+        }
+      />
+    </View>
+  );
+}

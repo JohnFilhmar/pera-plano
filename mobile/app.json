@@ -1,0 +1,58 @@
+{
+  "expo": {
+    "name": "PeraPlano",
+    "slug": "pera-plano",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "peraplano",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "android": {
+      "package": "com.filldev.peraplano",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#F7FAF7"
+      },
+      "edgeToEdgeEnabled": true,
+      "permissions": [
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT"
+      ],
+      "blockedPermissions": [
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.SYSTEM_ALERT_WINDOW"
+      ]
+    },
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 200,
+          "backgroundColor": "#F7FAF7",
+          "dark": {
+            "image": "./assets/splash-icon.png",
+            "backgroundColor": "#0B1210"
+          }
+        }
+      ],
+      "expo-font",
+      "expo-secure-store",
+      "expo-local-authentication",
+      "./modules/notification_listener/app.plugin.js"
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "3bbb3e99-a491-42b2-9b7c-dddb251a630d"
+      }
+    }
+  }
+}

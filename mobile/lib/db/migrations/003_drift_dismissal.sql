@@ -1,0 +1,44 @@
+-- 003_drift_dismissal.sql — WHICH drift the user has already seen.
+--
+-- docs/04-features/02-wallets.md §"Flow: balance handling" rule 3: the drift explainer
+-- "offers: record the gap as an adjustment Transaction ..., or dismiss (accept the snap
+-- silently)". Reconciliation — the first offer — shipped with m1c Task 5. Dismissal did not,
+-- because there was nowhere to record it: a dismissed drift came back on the next open of the
+-- wallet, forever. The badge's own header and a test in app/__tests__/wallet_detail.test.tsx
+-- carried that gap in prose, waiting for this decision.
+--
+-- A NULLABLE TRANSACTION ID, NOT A BOOLEAN, by the project owner's explicit decision
+-- (2026-08-15). This is the whole design, so it is worth stating plainly here:
+--
+--   `getBalanceDrift` (lib/db/repos/wallets_repo.ts) already keys on exactly ONE row — the
+--   newest transaction for this wallet carrying a non-null `balance_after`. That row IS the
+--   identity of the drift on screen, so "which drift did the user dismiss" already has a
+--   natural answer. Store that row's id here and the semantics fall out:
+--
+--     the same reporting transaction is still newest → the user has seen this one → no badge
+--     a NEWER reporting transaction arrives          → its id differs → the badge returns,
+--                                                      with no clearing step to remember
+--
+--   A boolean cannot express the second line. It would silence the drift the user
+--   acknowledged AND every genuine one after it, so a real reconciliation problem — the bank
+--   and the ledger disagreeing about money that exists — becomes permanently invisible with
+--   no way for the user to notice. That is strictly worse than the re-rendering badge it
+--   would have fixed.
+--
+-- NULL MEANS "NOTHING ACKNOWLEDGED". That is the correct state for every wallet that exists
+-- today, and it is also the reason this statement is legal at all: SQLite accepts ADD COLUMN
+-- with a REFERENCES clause ONLY when the new column's default is NULL, because every existing
+-- row has to satisfy the new foreign key without the table being rewritten. A non-NULL
+-- DEFAULT, or a NOT NULL, is rejected outright.
+--
+-- ADD COLUMN, not a table rebuild, for 002's reason: SQLite appends the column and rewrites
+-- nothing, so every wallet keeps every value it had and the ledger that explains those
+-- balances is untouched. Never edit 001 or 002.
+
+-- The reporting transaction whose balance drift the user has already looked at and accepted.
+-- NULL = nothing acknowledged. The foreign key keeps this pointing at a row that exists;
+-- `deleteTransaction` (lib/db/repos/transactions_repo.ts) clears any dismissal naming the row
+-- it is about to remove, which both satisfies the key and is the right answer anyway — a
+-- dismissal of a transaction that no longer exists acknowledges nothing.
+ALTER TABLE wallets ADD COLUMN drift_dismissed_transaction_id TEXT
+  REFERENCES transactions(id);

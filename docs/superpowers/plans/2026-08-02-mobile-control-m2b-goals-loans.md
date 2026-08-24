@@ -2,6 +2,18 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> ### ⚠️ Amended by the encryption plan (2026-08-07)
+> `2026-08-07-encryption-foundation.md` Task 9b makes **amount-free alert copy on the lock screen
+> mandatory**. Every notification this plan posts must supply BOTH variants:
+> - **locked** — no amount, no balance, no counterparty, no parsed merchant. A bill or wallet name
+>   the user chose is fine. "You've reached 80% of your monthly limit."
+> - **unlocked** — the full figure. "You've spent ₱8,400 of your ₱10,000 monthly limit."
+>
+> Select with `selectAlertCopy(copy, await isKeyguardLocked())` **at post time**, never at schedule
+> time — a reminder queued days earlier cannot know the phone's state when it fires. A task that
+> supplies one string instead of two is incomplete.
+
+
 **Goal:** Build the two features that turn a ledger into a plan — savings Goals with payday auto-allocation, and Loan tracking in both directions covering formal amortized debt and informal Filipino lending (utang, 5-6) with payments matched from the ledger.
 
 **Architecture:** Goals and Loans each split into a repository, a pure math module, a service that composes them with the ledger, and screens under the Plan tab. Every calculation — pace, amortization, next due date — is a pure function taking `now`, so schedules are reproducible and testable to the centavo. Goals subscribe to the `payday:detected` event from the income service rather than polling for a payday.

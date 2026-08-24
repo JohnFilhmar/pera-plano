@@ -1,0 +1,201 @@
+// components/onboarding/onboarding_frame.tsx — the consistent shell every
+// M3c step mounts into (m3c-onboarding-client plan Task 1, rule 2): progress
+// dots, a back affordance, a primary action, and the skip link, so a step
+// screen only has to supply its own content.
+//
+// ONE MISSING PROP HIDES ITS AFFORDANCE, RATHER THAN DISABLING IT. `onBack`
+// and `onSkip` are both optional: "welcome" has nowhere to go back to (the
+// device lock and recovery phrase ahead of it are unskippable and do not
+// belong in this flow's own back-stack -- see onboarding_state.ts's header),
+// and "done" has nothing left to skip. A visible-but-disabled button would
+// imply a choice that is not really there; omitting the prop omits the
+// control instead.
+//
+// SKIP AND PRIMARY ARE BOTH PLAIN CALLBACKS THE CALLER OWNS. This frame does
+// not call `nextStep` itself -- it is pure chrome (rule 2's own wording), and
+// coupling it to the step-order lib would make every future step screen's
+// "back" and "primary" wiring inconsistent with how its "skip" is wired. Each
+// step screen (later tasks) wires `onSkip` to `nextStep(step)` the same way
+// this file's own test does, which is what actually makes rule 1's "skipping
+// never dead-ends" true at runtime.
+import type { ReactNode } from "react";
+import { ChevronLeft } from "lucide-react-native";
+import { Pressable, ScrollView, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Button, registerIcon } from "@/components/ui/button";
+import { SkipLink } from "@/components/onboarding/skip_link";
+import { StepProgress } from "@/components/onboarding/step_progress";
+import { useKeypadOptional } from "@/contexts/keypad_context";
+import type { OnboardingStep } from "@/lib/onboarding/onboarding_state";
+
+const BackGlyph = registerIcon(ChevronLeft);
+
+export type OnboardingFrameProps = {
+  step: OnboardingStep;
+  title: string;
+  children: ReactNode;
+  onPrimary: () => void;
+  primaryLabel?: string;
+  primaryDisabled?: boolean;
+  primaryBusy?: boolean;
+  onBack?: () => void;
+  onSkip?: () => void;
+  skipLabel?: string;
+};
+
+export function OnboardingFrame({
+  step,
+  title,
+  children,
+  onPrimary,
+  primaryLabel = "Continue",
+  primaryDisabled = false,
+  primaryBusy = false,
+  onBack,
+  onSkip,
+  skipLabel,
+}: OnboardingFrameProps) {
+  // THE DEFECT THIS FIXES: the primary button sat UNDER Android's navigation
+  // bar. app.json sets `edgeToEdgeEnabled`, so this frame's flex column runs
+  // edge to edge and its footer's flat `pb-6` (24dp) was all that stood between
+  // "Continue" and the ▢ ◁ strip — measured at 126px on a physical A54. The
+  // owner's words: onboarding is "tricky on reaching that buried button".
+  //
+  // THE INSETS GO ON THIS OUTER VIEW, WHICH HAS NO PADDING CLASSES OF ITS OWN.
+  // A `style` prop wins over the style NativeWind compiles from `className`, so
+  // putting these on the header or footer would REPLACE their `pt-4`/`pb-6`
+  // rather than clear the system bar in addition to it. Here the two compose:
+  // the system bar's height, then the design padding, then the control.
+  //
+  // BOTH EDGES, because this frame is also reached before any navigator exists
+  // (app/lock.tsx renders the first-run flow directly), so nothing above it has
+  // handled the status bar either.
+  const insets = useSafeAreaInsets();
+
+  // THE SECOND BURIED-BUTTON DEFECT, AND IT IS NOT THE SAME ONE
+  // (numeric-input-system Task 12; the owner's `save-income-button-burried`).
+  // The insets above clear Android's navigation bar. This clears OUR OWN
+  // keypad panel, which is a different obstruction with a different fix.
+  //
+  // WHY THE ROUTES' FIX DOES NOT WORK HERE. Every migrated route wraps its
+  // form in components/ui/form_screen.tsx, whose whole job is to be the ONE
+  // scroll view and to pad its content by the panel's height. Doing that on an
+  // onboarding step would nest a scroll view inside the one below, which is
+  // exactly the defect Task 10 found: the outer scroller — the one that knows
+  // nothing about the keypad — keeps the only real scroll range, and the
+  // inner one's avoidance becomes a no-op. And it would not help anyway:
+  // this frame's primary action and skip link live in a fixed footer OUTSIDE
+  // the scroll area, so NO amount of scrolling can lift them clear of a panel
+  // pinned to the bottom of the window.
+  //
+  // SO THE FRAME GIVES THE BAND UP ITSELF, at the footer, with one number.
+  // Growing the footer's bottom margin lifts the buttons AND — because the
+  // ScrollView above it is `flex-1` in the same column — shrinks the scroll
+  // viewport by the same amount in the same pass. That is both halves at
+  // once: the actions clear the panel, and the content area now ends above it
+  // with the extra scroll range to reach anything that moved out of sight. No
+  // second padding anywhere; the scroll content keeps its own `py-4`.
+  //
+  // MINUS insets.bottom, BECAUSE THAT STRIP IS ALREADY SPOKEN FOR. The outer
+  // View above already holds the footer `insets.bottom` clear of the window,
+  // and keypad_host.tsx pads its own panel by `insets.bottom + 16`, so the
+  // measured height reported here already contains that same strip. Adding
+  // the whole of it again would count the navigation bar twice — a 126px
+  // dead band on the A54 this frame's insets were measured against.
+  //
+  // useKeypadOptional, NOT useKeypad, AND THE DISTINCTION MATTERS. That read
+  // is documented "FOR HOSTS ONLY" because a FIELD that silently no-ops
+  // without a provider is a number the user typed and the app never saw. This
+  // is chrome, not a field: it reads a MEASUREMENT, and "no provider" means
+  // there is no panel, which makes 0 the correct answer rather than a
+  // swallowed one. The eight step screens are also mounted bare by a dozen
+  // suites that have no reason to know the keypad exists, and turning
+  // KeypadProvider into a hard dependency of every onboarding render would be
+  // a crash in place of a lift nobody asked for.
+  //
+  // A NUMBER, NOT A CLASS, AND marginBottom RATHER THAN paddingBottom. The
+  // footer's `pb-6` is the gap between the button and whatever is under it and
+  // has to survive; a `style` paddingBottom would win over the compiled class
+  // and replace it (see the note above about the header/footer). Margin is a
+  // property no class here sets, so the two compose.
+  const keypadHeight = useKeypadOptional()?.keypadHeight ?? 0;
+  const footerLift = Math.max(keypadHeight - insets.bottom, 0);
+
+  return (
+    <View
+      testID="onboarding-frame"
+      className="flex-1 bg-bg dark:bg-bg-dark"
+      style={{ paddingTop: insets.top, paddingBottom: insets.bottom }}
+    >
+      {/*
+        THE HEADER'S RIGHT SLOT IS "Skip", NOT A SPACER, per the design (back
+        chevron and a Skip text action share the header row). `SkipLink`
+        moved here from the footer wholesale -- same component, same
+        `onboarding-skip-link` testID, same `onSkip` wiring -- because no
+        test in this revamp asserts WHERE that testID sits, only whether it
+        exists and what pressing it does (setup_flow_e2e.test.tsx's own
+        `pressSkip()` helper is a bare `getByTestId` + `fireEvent.press`).
+        Moving it earns back the footer for a single full-width primary
+        button and avoids showing the same "leave this step" affordance
+        twice on one screen.
+
+        This does trade away the OLD header's left/right symmetry: a
+        variable-width "Skip for now" on the right no longer balances a
+        fixed 44dp chevron slot on the left the way the old empty spacer
+        did, so the dot row drifts a few dp off true-centre on a skippable
+        step. Accepted deliberately -- nothing here pins pixel-perfect
+        centring, and a shifted-but-legible progress row beats a duplicated
+        skip control. */}
+      <View className="flex-row items-center gap-2 px-2 pb-2 pt-4">
+        {onBack ? (
+          <Pressable
+            testID="onboarding-back-button"
+            onPress={onBack}
+            accessibilityRole="button"
+            accessibilityLabel="Back"
+            className="min-h-[44px] min-w-[44px] items-center justify-center"
+          >
+            <BackGlyph size={24} className="text-fg dark:text-fg-dark" />
+          </Pressable>
+        ) : (
+          // Reserves the back button's own width so the progress row stays
+          // centered on steps with no back affordance -- a shifting layout
+          // across steps would read as broken, not as "this one is first".
+          <View className="min-h-[44px] min-w-[44px]" />
+        )}
+        <View className="flex-1">
+          <StepProgress current={step} />
+        </View>
+        {onSkip ? (
+          <SkipLink onPress={onSkip} label={skipLabel} />
+        ) : (
+          <View className="min-h-[44px] min-w-[44px]" />
+        )}
+      </View>
+
+      <ScrollView
+        testID="onboarding-content"
+        className="flex-1"
+        contentContainerClassName="gap-4 px-6 py-4"
+      >
+        <Text className="text-title font-bold text-fg dark:text-fg-dark">{title}</Text>
+        {children}
+      </ScrollView>
+
+      <View
+        testID="onboarding-footer"
+        className="gap-2 px-6 pb-6 pt-2"
+        style={{ marginBottom: footerLift }}
+      >
+        <Button
+          testID="onboarding-primary-button"
+          title={primaryLabel}
+          size="lg"
+          onPress={onPrimary}
+          disabled={primaryDisabled}
+          loading={primaryBusy}
+        />
+      </View>
+    </View>
+  );
+}

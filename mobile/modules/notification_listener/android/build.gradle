@@ -1,0 +1,99 @@
+apply plugin: 'com.android.library'
+
+group = 'expo.modules.notificationlistener'
+version = '0.1.0'
+
+def expoModulesCorePlugin = new File(
+  project(":expo-modules-core").projectDir.absolutePath,
+  "ExpoModulesCorePlugin.gradle"
+)
+apply from: expoModulesCorePlugin
+applyKotlinExpoModulesCorePlugin()
+useCoreDependencies()
+useDefaultAndroidSdkVersions()
+
+android {
+  namespace "expo.modules.notificationlistener"
+
+  defaultConfig {
+    versionCode 1
+    versionName "0.1.0"
+
+    // Required for src/androidTest (KeyStoreBridgeInstrumentedTest) to run
+    // at all. This module has no separate "app under test" -- its
+    // instrumented tests are self-contained, so this alone is sufficient;
+    // no testApplicationId/testBuildType wiring needed.
+    testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+  }
+
+  lint {
+    abortOnError false
+  }
+
+  // Robolectric was added for KeyStoreBridge (Task 2 of the encryption
+  // plan) on the assumption that it would provide a working Android
+  // Keystore for JVM tests. Verified empirically that it does NOT, on any
+  // version (see task-2-report.md): there is no shadow for
+  // KeyStore/KeyGenParameterSpec/KeyPairGenerator in ANY Robolectric
+  // release checked (4.14.1, 4.16.1, 4.17-beta-2), and
+  // KeyStore.getInstance("AndroidKeyStore") throws NoSuchAlgorithmException
+  // under it -- the real Keystore requires a live keystore2 system daemon
+  // over Binder, which Robolectric has no software substitute for.
+  //
+  // Because of that, no JVM test can exercise the real Keystore at all:
+  // KeyStoreBridgeTest swaps KeyStoreBridge's KeyVault seam (see KeyVault.kt)
+  // for a plain-JCE fake. It DOES now run under Robolectric — corrected
+  // 2026-08-14, when provider-selection Task 1 added sealPrefsValue, whose
+  // base64 comes from android.util.Base64 (java.util.Base64 needs API 26 and
+  // minSdk here is 24). That changes nothing about Keystore testability: the
+  // fake vault is still what makes the suite possible, and the real
+  // configuration is still only checkable in androidTest.
+  //
+  // Robolectric became load-bearing (not just
+  // forward-looking) as of Task 3 of the encryption plan: CaptureEnvelope
+  // and CaptureBuffer call android.util.Base64/Log, which throw "not
+  // mocked" under plain JUnit, so CaptureEnvelopeTest and CaptureBufferTest
+  // both run under @RunWith(RobolectricTestRunner::class) while still
+  // swapping KeyStoreBridge's KeyVault seam for the fake, exactly like
+  // KeyStoreBridgeTest -- isIncludeAndroidResources lets Robolectric pick up
+  // this module's own AndroidManifest.xml/resources so its shadow framework
+  // has something to bind against.
+  //
+  // TOOLCHAIN NOTE for whoever next bumps the JDK: both of those two test
+  // classes carry `@Config(sdk = [34])`, pinned below this module's real
+  // compileSdk (36 above) because Robolectric 4.16.1's SDK-36 shadow jar
+  // requires Java 21 and this project's toolchain was Java 17 at the time
+  // Task 3 landed (`Failed to create a Robolectric sandbox: Android SDK 36
+  // requires Java 21 (have Java 17)`). If/when the dev and CI JDK moves to
+  // 21+, that pin in CaptureBufferTest.kt and CaptureEnvelopeTest.kt can be
+  // dropped (or raised) -- it is a toolchain fact, not a statement about
+  // this app's real minSdk/targetSdk (24/36) or about the crypto/format
+  // logic those tests exercise.
+  testOptions {
+    unitTests {
+      includeAndroidResources = true
+    }
+  }
+}
+
+dependencies {
+  // NotificationManagerCompat.getEnabledListenerPackages()
+  implementation "androidx.core:core-ktx:1.13.1"
+
+  // JVM unit tests for the pure Kotlin core (buffer, filter, payloads).
+  // The real org.json is required because android.jar's stubs throw.
+  testImplementation "junit:junit:4.13.2"
+  testImplementation "org.json:json:20240303"
+
+  // See the class doc on `testOptions` above for why this is here but
+  // KeyStoreBridgeTest doesn't use it. SDK/AGP/Kotlin versions are
+  // intentionally NOT pinned here; they come from the root project via
+  // useDefaultAndroidSdkVersions().
+  testImplementation "org.robolectric:robolectric:4.16.1"
+
+  // Instrumented tests (src/androidTest) for the properties that can only
+  // be verified against the real Android Keystore on a real device/emulator
+  // -- see KeyStoreBridgeInstrumentedTest.kt and KeyVault.kt's class doc.
+  androidTestImplementation "androidx.test.ext:junit:1.2.1"
+  androidTestImplementation "androidx.test:runner:1.6.2"
+}

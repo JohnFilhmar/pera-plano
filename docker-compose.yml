@@ -1,0 +1,41 @@
+# PeraPlano — server-side only. mobile/ is not containerised and no service here
+# references it.
+#
+# Port allocation on this box, so the next person allocating one does not collide:
+#   3000 / 5000  jms-e-talyer production
+#   3001         fill-main (filhmar.online)
+#   3002 / 5002  genesys production
+#   3003         THIS SERVICE — peraplano.filhmar.online
+#   5003         kognita production
+#   5004         kognita staging
+#   5005         RESERVED for a future PeraPlano backend. Do not take it.
+#
+# This file lives at the repo root rather than inside server/ because a second service
+# (an API, a worker) would be a sibling of server/, and a compose file that has to move
+# the first time the system grows is a compose file everyone learns to distrust.
+# Pinned so the compose project name does not depend on what the checkout directory
+# happens to be called — container, network and volume names are stable across clones.
+name: peraplano
+
+services:
+  peraplano-web:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+      target: web
+    # Runtime configuration — the legal identifiers printed on the published privacy
+    # notice — is injected here and never baked into the image. See server/.env.example.
+    # If this file is missing or a value is blank, the container exits 1 at boot with
+    # every missing field named. That is the intended behaviour, not a deployment bug.
+    env_file:
+      - ./server/.env.local
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+    # Loopback only. The box already runs a host nginx serving the other apps; it
+    # reverse-proxies peraplano.filhmar.online to 127.0.0.1:3003. Binding to 127.0.0.1
+    # keeps the container off the public interface, so nginx is the only entry.
+    ports:
+      - "127.0.0.1:3003:3000"
+    restart: unless-stopped

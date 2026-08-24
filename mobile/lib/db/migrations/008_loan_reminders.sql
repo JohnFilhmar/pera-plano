@@ -1,0 +1,42 @@
+-- 008_loan_reminders.sql — per-loan reminder offsets, and the ability to turn
+-- them off entirely.
+--
+-- OWNER-APPROVED CLOSE OF A RECORDED GAP (2026-08-16). docs/04-features/
+-- 06-loans.md rule 15: "Offsets are adjustable per loan, and reminders can be
+-- turned off entirely (many 5-6 borrowers do not want a due-date reminder for
+-- a collector who simply shows up)." `loans` had no column for either, and
+-- lib/loans/loan_reminders.ts hardcoded the spec's default three offsets for
+-- every loan — a gap recorded deliberately there rather than invented ad hoc.
+-- This is that gap closed.
+--
+-- ONE COLUMN, NOT TWO. `bills.reminder_offsets_json` (001_core.sql) already
+-- answers the same shape of question for Bills — "which offsets, if any" — and
+-- an empty array already means "no reminders" there (bill_reminders.ts's
+-- `scheduleBillReminders` iterates `status.bill.reminderOffsets` and simply
+-- schedules nothing when it is empty; the bill form's own empty-selection
+-- state reads "No notifications. The bill still shows as due in the app.").
+-- A second boolean column ("reminders_enabled") would let the two columns
+-- disagree — enabled with no offsets, or disabled with offsets still on file
+-- — a state this schema has no business being able to represent. Loans reuse
+-- the same convention rather than inventing a second one: `reminderOffsets:
+-- []` IS "off", for exactly the same reason it is for a Bill.
+--
+-- THE DEFAULT IS THE SPEC'S THREE, NOT AN EMPTY ARRAY — the one deliberate
+-- divergence from how 001_core.sql declared `bills.reminder_offsets_json
+-- ... DEFAULT '[]'`. That default is bills': `createBill` unconditionally
+-- computes an explicit array before every insert (`input.reminderOffsets ??
+-- DEFAULT_REMINDER_OFFSETS`), so the column-level default never actually
+-- surfaces in practice; it exists only so the NOT NULL constraint has
+-- somewhere to fall back to. Here it is load-bearing: every loan that already
+-- exists on a device predates this column and, by construction, "specifies
+-- none" — and rule 15's defaults are the out-of-box behaviour for exactly that
+-- case ("3 days before nextDueDate, on the due date, and 3 days after"). An
+-- empty-array default would silently turn every reminder off for every loan
+-- already tracked the moment this migration runs, which is not a default —
+-- it is a mass opt-out nobody asked for. `createLoan` mirrors the same
+-- fallback in code (`input.reminderOffsets ?? DEFAULT_LOAN_REMINDER_OFFSETS`,
+-- constants/loans.ts) so a freshly created loan that specifies none agrees
+-- with a pre-existing one that specifies none.
+--
+-- Never edit 001-007 — add a new numbered migration instead.
+ALTER TABLE loans ADD COLUMN reminder_offsets_json TEXT NOT NULL DEFAULT '[-3,0,3]';

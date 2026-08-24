@@ -1,0 +1,322 @@
+{
+  "_note": "Illustrative patterns only. Real notification formats must be captured from devices and maintained as a versioned corpus before launch — see docs/03-ingest-pipeline.md §11.",
+  "_packageNamesNote": "Android package names below are INDICATIVE and unverified — none has been checked against a real device or Play Store listing for this project (docs/03-ingest-pipeline.md §3 rule 1). Routing is remote-updatable ruleset data (§11.1) precisely so a wrong package name is corrected without an app release.",
+  "version": 1,
+  "providers": [
+    {
+      "providerKey": "gcash",
+      "packageNames": ["com.globe.gcash.android"],
+      "version": 1,
+      "channel": "push",
+      "templates": [
+        {
+          "id": "gcash_send_v1",
+          "match": "\\bsent (?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d) to (?<counterparty>[^.,\\n]{1,48}?)(?=\\.|,|$)(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?(?:[\\s\\S]*?\\bbalance\\b(?:\\s+is|:)?\\s*(?<balance>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d))?",
+          "direction": "out",
+          "confidence": 1
+        },
+        {
+          "id": "gcash_receive_v1",
+          "match": "\\breceived (?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d) from (?<counterparty>[^.,\\n]{1,48}?)(?=\\.|,|$)(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?(?:[\\s\\S]*?\\bbalance\\b(?:\\s+is|:)?\\s*(?<balance>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d))?",
+          "direction": "in",
+          "confidence": 1
+        },
+        {
+          "id": "gcash_cash_in_v1",
+          "match": "\\b[Cc]ash[ -]?[Ii]n of (?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d)(?: from (?<counterparty>[^.,\\n]{1,48}?))? (?:was|is) successful(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?(?:[\\s\\S]*?\\bbalance\\b(?:\\s+is|:)?\\s*(?<balance>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d))?",
+          "direction": "in",
+          "confidence": 1
+        },
+        {
+          "id": "gcash_pay_qr_v1",
+          "match": "\\b[Yy]ou paid (?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d)(?: to (?<merchant>[^.,\\n]{1,48}?))? via QR\\b(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?",
+          "direction": "out",
+          "confidence": 1
+        },
+        {
+          "id": "gcash_buy_load_v1",
+          "match": "\\bloaded (?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d)(?: to (?<counterparty>[0-9+][0-9X*\\- ]{5,19}))?(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?",
+          "direction": "out",
+          "confidence": 1
+        }
+      ]
+    },
+    {
+      "providerKey": "maya",
+      "packageNames": ["com.paymaya"],
+      "version": 1,
+      "channel": "push",
+      "templates": [
+        {
+          "id": "maya_send_v1",
+          "match": "\\b[Yy]ou sent (?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d) to (?<counterparty>[^.,\\n]{1,48}?)(?=\\.|,|$)(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?(?:[\\s\\S]*?\\bbalance\\b(?:\\s+is|:)?\\s*(?<balance>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d))?",
+          "direction": "out",
+          "confidence": 1
+        },
+        {
+          "id": "maya_receive_v1",
+          "match": "\\b[Yy]ou received (?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d) from (?<counterparty>[^.,\\n]{1,48}?)(?=\\.|,|$)(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?(?:[\\s\\S]*?\\bbalance\\b(?:\\s+is|:)?\\s*(?<balance>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d))?",
+          "direction": "in",
+          "confidence": 1
+        },
+        {
+          "id": "maya_pay_v1",
+          "match": "\\b[Pp]ayment of (?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d)(?: to (?<merchant>[^.,\\n]{1,48}?))? (?:was|is) successful(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?",
+          "direction": "out",
+          "confidence": 1
+        }
+      ]
+    },
+    {
+      "providerKey": "bpi",
+      "packageNames": ["com.bpi.ng.app"],
+      "version": 1,
+      "channel": "push",
+      "templates": [
+        {
+          "id": "bpi_debit_v1",
+          "match": "\\bdebited (?:with )?(?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d)(?:[^.\\n]*? (?:at|to|via|for) (?<merchant>[^.,\\n]{1,48}?)(?=\\.|,|$))?(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?(?:[\\s\\S]*?\\bbalance\\b(?:\\s+is|:)?\\s*(?<balance>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d))?",
+          "direction": "out",
+          "confidence": 1
+        },
+        {
+          "id": "bpi_credit_v1",
+          "match": "\\bcredited (?:with )?(?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d)(?:[^.\\n]*? from (?<counterparty>[^.,\\n]{1,48}?)(?=\\.|,|$))?(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?(?:[\\s\\S]*?\\bbalance\\b(?:\\s+is|:)?\\s*(?<balance>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d))?",
+          "direction": "in",
+          "confidence": 1
+        }
+      ]
+    },
+    {
+      "providerKey": "bdo",
+      "packageNames": ["com.bdo.digitalbanking"],
+      "version": 1,
+      "channel": "push",
+      "templates": [
+        {
+          "id": "bdo_debit_v1",
+          "match": "\\bA (?:purchase|withdrawal|debit) of (?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d)(?: (?:at|to|from) (?<merchant>[^.,\\n]{1,48}?))? was (?:made|posted)(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?(?:[\\s\\S]*?\\bbalance\\b(?:\\s+is|:)?\\s*(?<balance>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d))?",
+          "direction": "out",
+          "confidence": 1
+        },
+        {
+          "id": "bdo_credit_v1",
+          "match": "\\bA (?:credit|deposit|transfer) of (?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d)(?: from (?<counterparty>[^.,\\n]{1,48}?))? was (?:posted|received|credited)(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?(?:[\\s\\S]*?\\bbalance\\b(?:\\s+is|:)?\\s*(?<balance>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d))?",
+          "direction": "in",
+          "confidence": 1
+        }
+      ]
+    },
+    {
+      "providerKey": "unionbank",
+      "packageNames": ["com.unionbank.ecommerce.mobile.android"],
+      "version": 1,
+      "channel": "push",
+      "templates": [
+        {
+          "id": "unionbank_debit_v1",
+          "match": "\\b[Yy]our account was debited (?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d)(?: for (?<merchant>[^.,\\n]{1,48}?)(?=\\.|,|$))?(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?(?:[\\s\\S]*?\\bbalance\\b(?:\\s+is|:)?\\s*(?<balance>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d))?",
+          "direction": "out",
+          "confidence": 1
+        },
+        {
+          "id": "unionbank_credit_v1",
+          "match": "\\b[Yy]our account was credited (?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d)(?: from (?<counterparty>[^.,\\n]{1,48}?)(?=\\.|,|$))?(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?(?:[\\s\\S]*?\\bbalance\\b(?:\\s+is|:)?\\s*(?<balance>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d))?",
+          "direction": "in",
+          "confidence": 1
+        }
+      ]
+    },
+    {
+      "providerKey": "metrobank",
+      "packageNames": ["com.metrobank.mobilebanking"],
+      "version": 1,
+      "channel": "push",
+      "templates": [
+        {
+          "id": "metrobank_debit_v1",
+          "match": "\\bhas been debited (?:with )?(?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d)(?:[^.\\n]*? (?:at|to|via) (?<merchant>[^.,\\n]{1,48}?)(?=\\.|,|$))?(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?(?:[\\s\\S]*?\\bbalance\\b(?:\\s+is|:)?\\s*(?<balance>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d))?",
+          "direction": "out",
+          "confidence": 1
+        },
+        {
+          "id": "metrobank_credit_v1",
+          "match": "\\bhas been credited (?:with )?(?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d)(?: from (?<counterparty>[^.,\\n]{1,48}?)(?=\\.|,|$))?(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?(?:[\\s\\S]*?\\bbalance\\b(?:\\s+is|:)?\\s*(?<balance>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d))?",
+          "direction": "in",
+          "confidence": 1
+        }
+      ]
+    },
+    {
+      "providerKey": "seabank",
+      "packageNames": ["com.seabank.ph"],
+      "version": 1,
+      "channel": "push",
+      "templates": [
+        {
+          "id": "seabank_transfer_out_v1",
+          "match": "\\b[Tt]ransfer of (?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d) to (?<counterparty>[^.,\\n]{1,48}?) (?:was|is) successful(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?(?:[\\s\\S]*?\\bbalance\\b(?:\\s+is|:)?\\s*(?<balance>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d))?",
+          "direction": "out",
+          "confidence": 1
+        },
+        {
+          "id": "seabank_transfer_in_v1",
+          "match": "\\b[Yy]ou (?:have )?received (?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d)(?: from (?<counterparty>[^.,\\n]{1,48}?)(?=\\.|,|$))?(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?(?:[\\s\\S]*?\\bbalance\\b(?:\\s+is|:)?\\s*(?<balance>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d))?",
+          "direction": "in",
+          "confidence": 1
+        },
+        {
+          "id": "seabank_interest_v1",
+          "match": "\\b[Ii]nterest of (?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d) (?:has been |was |is )?credited(?:[\\s\\S]*?\\bbalance\\b(?:\\s+is|:)?\\s*(?<balance>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d))?",
+          "direction": "in",
+          "confidence": 1
+        }
+      ]
+    },
+    {
+      "providerKey": "gotyme",
+      "packageNames": ["com.gotyme.bank"],
+      "version": 1,
+      "channel": "push",
+      "templates": [
+        {
+          "id": "gotyme_send_v1",
+          "match": "\\b[Yy]ou(?:'ve| have)? sent (?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d) to (?<counterparty>[^.,\\n]{1,48}?)(?=\\.|,|$)(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?(?:[\\s\\S]*?\\bbalance\\b(?:\\s+is|:)?\\s*(?<balance>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d))?",
+          "direction": "out",
+          "confidence": 1
+        },
+        {
+          "id": "gotyme_receive_v1",
+          "match": "\\b[Yy]ou(?:'ve| have)? received (?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d) from (?<counterparty>[^.,\\n]{1,48}?)(?=\\.|,|$)(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?(?:[\\s\\S]*?\\bbalance\\b(?:\\s+is|:)?\\s*(?<balance>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d))?",
+          "direction": "in",
+          "confidence": 1
+        }
+      ]
+    },
+    {
+      "providerKey": "cimb",
+      "packageNames": ["com.cimbbank.ph"],
+      "version": 1,
+      "channel": "push",
+      "templates": [
+        {
+          "id": "cimb_debit_v1",
+          "match": "\\b(?:[Tt]ransfer|[Pp]ayment) of (?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d) to (?<counterparty>[^.,\\n]{1,48}?) (?:was|is) (?:successful|completed)(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?(?:[\\s\\S]*?\\bbalance\\b(?:\\s+is|:)?\\s*(?<balance>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d))?",
+          "direction": "out",
+          "confidence": 1
+        },
+        {
+          "id": "cimb_credit_v1",
+          "match": "\\b[Yy]our account was credited with (?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d)(?: from (?<counterparty>[^.,\\n]{1,48}?)(?=\\.|,|$))?(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?(?:[\\s\\S]*?\\bbalance\\b(?:\\s+is|:)?\\s*(?<balance>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d))?",
+          "direction": "in",
+          "confidence": 1
+        }
+      ]
+    },
+    {
+      "providerKey": "landbank",
+      "packageNames": ["com.lbp.mobilebanking"],
+      "version": 1,
+      "channel": "push",
+      "templates": [
+        {
+          "id": "landbank_debit_v1",
+          "match": "\\b(?:[Dd]ebit|[Ww]ithdrawal) of (?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d)(?: (?:at|to|via) (?<merchant>[^.,\\n]{1,48}?))? (?:was |is )?(?:posted|processed)(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?(?:[\\s\\S]*?\\bbalance\\b(?:\\s+is|:)?\\s*(?<balance>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d))?",
+          "direction": "out",
+          "confidence": 1
+        },
+        {
+          "id": "landbank_credit_v1",
+          "match": "\\b(?:[Cc]redit|[Dd]eposit) of (?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d)(?: from (?<counterparty>[^.,\\n]{1,48}?))? (?:was |is )?(?:posted|processed|credited)(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?(?:[\\s\\S]*?\\bbalance\\b(?:\\s+is|:)?\\s*(?<balance>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d))?",
+          "direction": "in",
+          "confidence": 1
+        }
+      ]
+    },
+    {
+      "providerKey": "shopeepay",
+      "packageNames": ["com.shopee.ph"],
+      "version": 1,
+      "channel": "push",
+      "templates": [
+        {
+          "id": "shopeepay_pay_v1",
+          "match": "\\b(?:[Pp]aid|[Pp]ayment of) (?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d)(?: (?:to|at|for) (?<merchant>[^.,\\n]{1,48}?))?(?: using| with)? ShopeePay(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?",
+          "direction": "out",
+          "confidence": 1
+        },
+        {
+          "id": "shopeepay_top_up_v1",
+          "match": "\\b[Tt]op[ -]?[Uu]p of (?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d)(?: to your ShopeePay(?: wallet)?)? (?:was|is) successful(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?(?:[\\s\\S]*?\\bbalance\\b(?:\\s+is|:)?\\s*(?<balance>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d))?",
+          "direction": "in",
+          "confidence": 1
+        },
+        {
+          "id": "shopeepay_refund_v1",
+          "match": "\\b[Rr]efund of (?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d)(?: (?:from|for) (?<merchant>[^.,\\n]{1,48}?))? (?:has been|was|is) credited(?:[\\s\\S]*?\\bbalance\\b(?:\\s+is|:)?\\s*(?<balance>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d))?",
+          "direction": "in",
+          "confidence": 1
+        }
+      ]
+    },
+    {
+      "providerKey": "grabpay",
+      "packageNames": ["com.grabtaxi.passenger"],
+      "version": 1,
+      "channel": "push",
+      "templates": [
+        {
+          "id": "grabpay_pay_v1",
+          "match": "\\b(?:[Pp]aid|[Pp]ayment of) (?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d)(?: (?:to|at|for) (?<merchant>[^.,\\n]{1,48}?))?(?: using| with) GrabPay(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?",
+          "direction": "out",
+          "confidence": 1
+        },
+        {
+          "id": "grabpay_top_up_v1",
+          "match": "\\b[Tt]op[ -]?[Uu]p of (?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d) to your GrabPay(?: wallet)? (?:was|is) successful(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?(?:[\\s\\S]*?\\bbalance\\b(?:\\s+is|:)?\\s*(?<balance>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d))?",
+          "direction": "in",
+          "confidence": 1
+        }
+      ]
+    },
+    {
+      "providerKey": "sms_relay",
+      "packageNames": [
+        "com.google.android.apps.messaging",
+        "com.samsung.android.messaging",
+        "com.android.mms"
+      ],
+      "version": 1,
+      "channel": "sms",
+      "senderIds": [
+        "BPI",
+        "BDO",
+        "MB",
+        "METROBANK",
+        "LBP",
+        "LANDBANK",
+        "UBP",
+        "UNIONBANK",
+        "CIMB",
+        "SEABANK",
+        "GOTYME",
+        "GCASH",
+        "MAYA"
+      ],
+      "templates": [
+        {
+          "id": "sms_bank_debit_v1",
+          "match": "\\b(?:debited|debit of|purchase of|withdrawal of|withdrawn)\\s?(?:with |for )?(?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d)(?:[^.\\n]*? (?:at|to|via|from) (?<merchant>[^.,\\n]{1,48}?)(?=\\.|,|$))?(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?(?:[\\s\\S]*?\\bbalance\\b(?:\\s+is|:)?\\s*(?<balance>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d))?",
+          "direction": "out",
+          "confidence": 0.7
+        },
+        {
+          "id": "sms_bank_credit_v1",
+          "match": "\\b(?:credited|credit of|deposit of|received)\\s?(?:with |of )?(?<amount>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d)(?:[^.\\n]*? from (?<counterparty>[^.,\\n]{1,48}?)(?=\\.|,|$))?(?:[\\s\\S]*?\\bRef(?:erence)?\\b\\.?\\s?(?:No\\.?|#)?\\s?(?<ref>[A-Za-z0-9]{6,}))?(?:[\\s\\S]*?\\bbalance\\b(?:\\s+is|:)?\\s*(?<balance>(?:₱|PHP|Php)\\s?[\\d,]+(?:\\.\\d{2})?)(?!\\.?\\d))?",
+          "direction": "in",
+          "confidence": 0.7
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,144 @@
+.page {
+  max-width: 68rem;
+  margin: 0 auto;
+  padding: 3rem 1.5rem 4rem;
+}
+
+/* The hero is the only place on the site that breaks the reading measure, because it is
+   the only place that is not being read as a document. */
+.hero {
+  max-width: var(--measure);
+  margin: 0 auto 3.5rem;
+  text-align: center;
+}
+
+.hero h1 {
+  margin: 0.75rem 0;
+  font-size: clamp(1.9rem, 5vw, 2.9rem);
+  line-height: 1.15;
+  text-wrap: balance;
+}
+
+.eyebrow {
+  margin: 1rem 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.lede {
+  margin: 1rem auto 0;
+  font-size: 1.1rem;
+}
+
+.heroSub {
+  margin: 0.75rem 0 0;
+  color: var(--muted);
+}
+
+/* Not styled as a button. It is a sentence explaining why the button a visitor expects is
+   absent, and dressing it up would suggest something is clickable. */
+.badgeNote {
+  margin: 1.5rem 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.section {
+  max-width: var(--measure);
+  margin: 0 auto 3rem;
+}
+
+.section p {
+  margin: 0.75rem 0;
+}
+
+.section ul {
+  margin: 0.75rem 0;
+  padding-left: 1.25rem;
+}
+
+.section li {
+  margin: 0.5rem 0;
+}
+
+.steps {
+  margin: 1.5rem 0;
+  padding-left: 1.25rem;
+}
+
+.step {
+  margin: 1rem 0;
+}
+
+.step h3 {
+  margin: 0 0 0.25rem;
+}
+
+.step p {
+  margin: 0;
+}
+
+/* Bordered and captioned so that the invented notification can never be mistaken, at a
+   glance or in a screenshot, for something a bank actually sent. */
+.example {
+  margin: 2rem 0 0;
+  padding: 1.1rem 1.25rem;
+  border: 1px dashed var(--line);
+  border-radius: 0.75rem;
+  background: var(--surface);
+}
+
+.exampleHead {
+  display: block;
+}
+
+.disclaimer {
+  display: block;
+  margin-top: 0.35rem;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.exampleQuote {
+  margin: 1rem 0 0;
+  padding-left: 0.9rem;
+  border-left: 3px solid var(--brand);
+  font-style: italic;
+}
+
+.exampleResult {
+  margin: 0.75rem 0 0;
+}
+
+.personas {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+  margin: 1.5rem 0;
+}
+
+.persona {
+  padding: 1.1rem 1.25rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  background: var(--surface);
+}
+
+.persona h3 {
+  margin: 0 0 0.5rem;
+}
+
+.persona p {
+  margin: 0.5rem 0;
+}
+
+.personaPain {
+  color: var(--muted);
+}
+
+.glossary li,
+.facts li {
+  margin: 0.6rem 0;
+}

@@ -1,0 +1,258 @@
+// lib/db/repos/raw_notifications_repo.ts — the only SQL surface for captured
+// notification text, and the only place in the app where that text is ever
+// written to disk (plan Task 10 rule 9; contract §3 invariant 3).
+//
+// Everything about this table is shaped by the promise the onboarding screen
+// makes: raw text stays on the phone and is gone in 30 days. So:
+//
+//   - Nothing here syncs. There is no export path, no server column, and the
+//     table is not part of any backup payload.
+//   - Every row carries `expires_at` from the moment it is written, and
+//     `purgeExpiredRawCaptures` (run at bootstrap) is what keeps the promise.
+//   - The row id IS the `RawCapture.id` the native buffer assigned. That is not
+//     a shortcut: pipeline rule 11 makes the at-least-once native drain safe by
+//     asking "have I already seen this capture?", and this table is where the
+//     answer lives.
+//
+// Same house shape as wallets_repo.ts: thin functions over getDatabase(),
+// domain types from types/domain.ts, no entitlement checks.
+import { getDatabase } from "@/lib/db/database";
+import type { EpochMs, RawCapture } from "@/types/domain";
+
+/**
+ * The retention window, spec §1 principle 2 / §9.3 rule 1 / docs §12: thirty
+ * days from first capture, then the text is destroyed and the Transaction it
+ * produced keeps only its parsed fields.
+ *
+ * Exported so the retention copy in the Settings screen (m3b) and this table
+ * cannot drift — a screen that promises 30 days over a table that keeps 45 is
+ * a privacy claim the app does not honour.
+ */
+export const RAW_CAPTURE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+type RawNotificationRow = {
+  id: string;
+  package_name: string;
+  title: string | null;
+  text: string | null;
+  sub_text: string | null;
+  big_text: string | null;
+  posted_at: number;
+  captured_at: number;
+};
+
+function rowToRawCapture(row: RawNotificationRow): RawCapture {
+  return {
+    id: row.id,
+    packageName: row.package_name,
+    title: row.title,
+    text: row.text,
+    subText: row.sub_text,
+    bigText: row.big_text,
+    postedAt: row.posted_at,
+    capturedAt: row.captured_at,
+  };
+}
+
+/**
+ * A `RawCapture` plus the ONE extra fact the Privacy centre's captured list
+ * needs to render its countdown: when this row expires.
+ *
+ * A SEPARATE TYPE, not a widened `RawCapture` — same reasoning as
+ * `getRawCaptureExpiry`'s own doc: `RawCapture` is interface-contract §4, the
+ * shape the Kotlin listener hands across the bridge, and it has no
+ * `expiresAt` because the native side never assigns one. This type exists
+ * only on this side of that boundary, for callers that already need the
+ * expiry alongside the text (m3b Task 6) and would otherwise pay a second
+ * per-row query for it.
+ */
+export type StoredRawCapture = RawCapture & { expiresAt: EpochMs };
+
+function rowToStoredRawCapture(row: RawNotificationRow & { expires_at: number }): StoredRawCapture {
+  return { ...rowToRawCapture(row), expiresAt: row.expires_at };
+}
+
+/**
+ * Every capture that has not yet expired, newest-captured first — the exact
+ * rows behind "What PeraPlano captured" (m3b Task 6 rule 3; docs
+ * §04-features/11-settings-privacy.md Flow C).
+ *
+ * FILTERED BY THE CALLER'S `now`, NOT BY WHETHER A PURGE HAS RUN YET.
+ * `purgeExpiredRawCaptures` only runs at bootstrap (lib/bootstrap.ts), so a
+ * long session can hold rows whose `expires_at` passed hours ago and have not
+ * been swept yet. This list is the proof behind the 30-day promise — showing
+ * one of those rows would show text the user was told is already gone, which
+ * is the one thing this screen must never do. `now` is a parameter rather
+ * than read from the clock here for the same reason every other function in
+ * this repository that touches retention takes it as one: a caller that
+ * cannot pin the instant cannot test the promise at all.
+ *
+ * NEWEST-CAPTURED-FIRST, matching `listObservedPackages`'s own ordering
+ * convention: recency is what a user scanning "what did you record" actually
+ * wants to see first.
+ */
+export async function listRawCaptures(now: EpochMs): Promise<StoredRawCapture[]> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<RawNotificationRow & { expires_at: number }>(
+    "SELECT * FROM raw_notifications WHERE expires_at > ? ORDER BY captured_at DESC",
+    [now],
+  );
+  return rows.map(rowToStoredRawCapture);
+}
+
+/**
+ * Persists one capture and returns its id — which is the capture's own id, so
+ * a caller can use it as `transactions.raw_notification_id` without a second
+ * read.
+ *
+ * `now` is passed in rather than read from the clock because the pipeline
+ * stamps a whole drained batch with one `now` (rule 10), and because a test
+ * that cannot pin the expiry cannot check the retention promise at all.
+ *
+ * IDEMPOTENT, AND THE FIRST WRITE WINS. `INSERT OR IGNORE` rather than a bare
+ * INSERT, and rather than an upsert:
+ *
+ *   - A bare INSERT throws on the primary key when the at-least-once native
+ *     drain hands back a batch it already delivered (rule 11). Inside the
+ *     rule-10 bulk persist that would abort the pass partway, losing every
+ *     capture behind the collision — the precise failure rule 10 exists to
+ *     prevent.
+ *   - An upsert would refresh `expires_at` on every replay, quietly extending
+ *     the retention window past the 30 days the user was promised, and would
+ *     overwrite the text a committed Transaction was actually derived from.
+ *
+ * Storing is therefore safe to repeat and never changes an existing row.
+ * Callers that need to know whether this capture is NEW ask `hasRawCapture`
+ * first — the two are separate on purpose, because "did I store it" and "had I
+ * seen it before" are different questions and only the second decides a replay.
+ */
+export async function storeRawCapture(capture: RawCapture, now: number): Promise<string> {
+  const db = await getDatabase();
+  await db.runAsync(
+    `INSERT OR IGNORE INTO raw_notifications
+       (id, package_name, title, text, sub_text, big_text, posted_at, captured_at, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      capture.id,
+      capture.packageName,
+      capture.title,
+      capture.text,
+      capture.subText,
+      capture.bigText,
+      capture.postedAt,
+      capture.capturedAt,
+      now + RAW_CAPTURE_TTL_MS,
+    ],
+  );
+  return capture.id;
+}
+
+/**
+ * The stored capture, or `null` when it was never stored or has been purged.
+ *
+ * `null` is a normal answer, not an error: the "Why was this recorded?" screen
+ * reaches a Transaction older than 30 days exactly this way and shows
+ * "original notification text expired" (spec §9.3 rule 1).
+ */
+export async function getRawCapture(id: string): Promise<RawCapture | null> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<RawNotificationRow>(
+    "SELECT * FROM raw_notifications WHERE id = ?",
+    [id],
+  );
+  return row ? rowToRawCapture(row) : null;
+}
+
+/**
+ * When this capture will be destroyed, or `null` when it is already gone.
+ *
+ * A SEPARATE ACCESSOR RATHER THAN A FIELD ON `RawCapture`. That type is
+ * interface-contract §4 — the shape the Kotlin listener hands across the native
+ * bridge — and it has no `expiresAt`, because the native side does not assign
+ * one: `storeRawCapture` computes it here, from the STORE time. Adding it to
+ * the type to save the "Why was this recorded?" panel one read would change a
+ * native contract for the benefit of one screen.
+ *
+ * READ IT, NEVER DERIVE IT. `capturedAt + RAW_CAPTURE_TTL_MS` is the obvious
+ * shortcut and it is wrong whenever the two clocks differ, which is exactly
+ * what a replayed batch or a drain deferred until the next unlock produces: a
+ * capture taken on the 1st and stored on the 8th is deleted on the 38th, not
+ * the 31st. `purgeExpiredRawCaptures` deletes on THIS column, so any countdown
+ * computed from anything else is the app promising a deletion date the database
+ * will not honour — on the one screen whose entire job is being trustworthy
+ * about deletion.
+ *
+ * `null` covers "never stored" and "already purged" alike, and both are normal
+ * answers: the panel renders its expired notice for either.
+ */
+export async function getRawCaptureExpiry(id: string): Promise<EpochMs | null> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ expires_at: number }>(
+    "SELECT expires_at FROM raw_notifications WHERE id = ?",
+    [id],
+  );
+  return row ? row.expires_at : null;
+}
+
+/**
+ * Whether this capture has been stored before — pipeline rule 11's replay
+ * check, asked once per capture before any parsing work.
+ *
+ * A COUNT, not a `getRawCapture(...) !== null`: the answer is one bit and the
+ * row carries the user's notification text, which there is no reason to read
+ * into memory to discover we already have it.
+ */
+export async function hasRawCapture(id: string): Promise<boolean> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ count: number }>(
+    "SELECT COUNT(*) AS count FROM raw_notifications WHERE id = ?",
+    [id],
+  );
+  return (row?.count ?? 0) > 0;
+}
+
+/**
+ * Deletes every capture at or past its expiry and returns how many went.
+ * Called at bootstrap (plan Task 11 rule 1).
+ *
+ * THE TWO UPDATES ARE NOT OPTIONAL. Both `transactions.raw_notification_id` and
+ * `review_queue_items.raw_notification_id` are foreign keys onto this table,
+ * `PRAGMA foreign_keys = ON` is set in `database.ts`, and neither declares an
+ * ON DELETE action. A bare DELETE therefore throws the first time a purge meets
+ * a Transaction that still points at its capture — which is to say, on day 31
+ * of every install that has ever committed anything. Clearing the references
+ * first is also exactly what spec §9.3 rule 1 describes: the Transaction keeps
+ * all parsed fields and simply loses the pointer to text that no longer exists.
+ *
+ * `updated_at` IS DELIBERATELY NOT TOUCHED. Losing an expired pointer is a
+ * retention event, not a user edit; bumping it would move every purged row to
+ * the top of "recently changed" and would misreport the row as modified to any
+ * future sync.
+ *
+ * Inclusive at the boundary (`<= now`), matching `review_queue_repo.purgeExpired`
+ * so the two hygiene passes agree about what "expired" means.
+ */
+export async function purgeExpiredRawCaptures(now: number): Promise<number> {
+  const db = await getDatabase();
+  let removed = 0;
+
+  await db.withTransactionAsync(async () => {
+    const expiring = "SELECT id FROM raw_notifications WHERE expires_at <= ?";
+
+    await db.runAsync(
+      `UPDATE transactions SET raw_notification_id = NULL
+       WHERE raw_notification_id IN (${expiring})`,
+      [now],
+    );
+    await db.runAsync(
+      `UPDATE review_queue_items SET raw_notification_id = NULL
+       WHERE raw_notification_id IN (${expiring})`,
+      [now],
+    );
+
+    const result = await db.runAsync("DELETE FROM raw_notifications WHERE expires_at <= ?", [now]);
+    removed = result.changes;
+  });
+
+  return removed;
+}

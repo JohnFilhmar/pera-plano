@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <title>Pricing — PeraPlano</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="assets/brand/peraplano-favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous">
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet">
+  <style>
+    :root{color-scheme:light;--brand:#15803D;--brand-2:#22C55E;--on-brand:#FFFFFF;--mint:#DCFCE7;--bg:#F7FAF7;--surface:#FFFFFF;--text:#10201A;--muted:#5B6E64;--danger:#DC2626;--warn:#D97706;--line:rgba(16,32,26,.12);--ph-blue:#0038A8;--ph-red:#CE1126;--ph-yellow:#FCD116;--shadow:0 24px 60px -24px rgba(16,32,26,.28)}
+    :root[data-theme="dark"]{color-scheme:dark;--brand:#22C55E;--brand-2:#4ADE80;--on-brand:#06130C;--mint:#14261C;--bg:#0B1210;--surface:#111A16;--text:#E8F0EC;--muted:#9BB0A6;--danger:#F87171;--warn:#FBBF24;--line:rgba(232,240,236,.14);--shadow:0 24px 60px -24px rgba(0,0,0,.6)}
+    body{margin:0;background:var(--bg);color:var(--text);font-family:'Manrope',system-ui,sans-serif;-webkit-font-smoothing:antialiased;text-wrap:pretty}
+    a{color:var(--brand);text-decoration:none}
+    a:hover{color:var(--brand-2);text-decoration:underline}
+  </style>
+  <script>(function(){try{var t=localStorage.getItem('pp-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.setAttribute('data-theme',t)}catch(e){}})();</script>
+</helmet>
+<div data-screen-label="Pricing" style="min-height:100vh;display:flex;flex-direction:column">
+  <header style="position:sticky;top:0;z-index:50;background:color-mix(in oklab, var(--bg) 86%, transparent);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)">
+    <div style="max-width:1120px;margin:0 auto;padding:12px 24px;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+      <a href="Landing.dc.html" style="display:flex;align-items:center;gap:9px;color:var(--text)" style-hover="text-decoration:none">
+        <svg width="26" height="26" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.6 21.4 C 6 21 8.6 18.4 10.2 14.2" fill="none" stroke="var(--brand-2)" stroke-width="1.4" stroke-linecap="round" stroke-dasharray="0.12 2.1" opacity="0.55"></path><path d="M22 2 L2 9 L11 13 Z" fill="var(--brand-2)"></path><path d="M22 2 L11 13 L15 22 Z" fill="var(--brand)"></path></svg>
+        <strong style="font-size:17px;font-weight:800;letter-spacing:-0.01em">PeraPlano</strong>
+      </a>
+      <nav style="display:flex;gap:18px;font-size:13.5px;font-weight:600">
+        <a href="Landing.dc.html" style="color:var(--muted)">Home</a>
+        <a href="About.dc.html" style="color:var(--muted)">About</a>
+        <a href="Pricing.dc.html" aria-current="page" style="color:var(--text);font-weight:800">Pricing</a>
+      </nav>
+      <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
+        <button onClick="{{ toggleTheme }}" aria-label="Toggle dark mode" style="width:36px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--muted);cursor:pointer;padding:0" style-hover="color:var(--brand)">
+          <sc-if value="{{ isDark }}" hint-placeholder-val="{{ false }}">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="m4.93 4.93 1.41 1.41"></path><path d="m17.66 17.66 1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="m6.34 17.66-1.41 1.41"></path><path d="m19.07 4.93-1.41 1.41"></path></svg>
+          </sc-if>
+          <sc-if value="{{ isLight }}" hint-placeholder-val="{{ true }}">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg>
+          </sc-if>
+        </button>
+        <a href="Landing.dc.html#get" style="background:var(--brand);color:var(--on-brand);padding:9px 16px;border-radius:999px;font-size:13px;font-weight:700" style-hover="filter:brightness(1.1);text-decoration:none;color:var(--on-brand)">Get the app</a>
+      </div>
+    </div>
+  </header>
+
+  <section style="max-width:820px;margin:0 auto;padding:68px 24px 44px;width:100%;box-sizing:border-box;text-align:center">
+    <div style="font-size:12px;letter-spacing:.16em;font-weight:800;color:var(--brand)">PRICING</div>
+    <h1 style="margin:14px 0 16px;font-size:clamp(2rem,4.4vw,2.9rem);line-height:1.1;letter-spacing:-0.03em;font-weight:800">Free forever tier — Plus adds depth, not the basics.</h1>
+    <p style="margin:0 auto;font-size:16.5px;line-height:1.65;color:var(--muted);max-width:560px">Automatic tracking is never behind a paywall. Upgrade only when you want more wallets, longer history, and deeper reports.</p>
+    <sc-if value="{{ examplePriceChips }}" hint-placeholder-val="{{ true }}">
+      <div style="display:inline-flex;align-items:center;gap:8px;margin-top:22px;padding:7px 14px;border-radius:999px;background:color-mix(in oklab, var(--warn) 14%, transparent);color:var(--warn);font-size:12px;font-weight:800;letter-spacing:.02em">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><path d="M12 9v4"></path><path d="M12 17h.01"></path><circle cx="12" cy="12" r="10"></circle></svg>
+        Prices below are EXAMPLE placeholders — the tier matrix is final, the numbers are not.
+      </div>
+    </sc-if>
+  </section>
+
+  <section style="max-width:900px;margin:0 auto;padding:0 24px 20px;width:100%;box-sizing:border-box">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;align-items:start">
+      <div style="background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:28px">
+        <div style="font-size:13px;font-weight:800;letter-spacing:.06em;color:var(--muted)">FREE</div>
+        <div style="display:flex;align-items:baseline;gap:8px;margin:12px 0 4px">
+          <span style="font-size:44px;font-weight:800;letter-spacing:-0.03em;font-variant-numeric:tabular-nums">₱0</span>
+          <span style="font-size:14px;font-weight:700;color:var(--muted)">forever</span>
+        </div>
+        <p style="margin:8px 0 22px;font-size:14px;line-height:1.6;color:var(--muted)">Everything you need to stop logging transactions by hand.</p>
+        <a href="Landing.dc.html#get" style="display:block;text-align:center;border:1px solid var(--line);background:var(--surface);color:var(--text);padding:12px;border-radius:12px;font-size:14px;font-weight:700" style-hover="color:var(--brand);text-decoration:none;border-color:var(--brand)">Get the app</a>
+        <div style="display:flex;flex-direction:column;gap:11px;margin-top:22px;font-size:13.5px;line-height:1.5">
+          <sc-for list="{{ freeList }}" as="item" hint-placeholder-count="5">
+            <div style="display:flex;gap:10px;align-items:flex-start">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--brand)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="flex:none;margin-top:2px"><path d="M20 6 9 17l-5-5"></path></svg>
+              <span>{{ item }}</span>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+
+      <div style="background:var(--surface);border:{{ plusBorder }};border-radius:20px;padding:28px;box-shadow:{{ plusShadow }};position:relative">
+        <sc-if value="{{ highlightPlus }}" hint-placeholder-val="{{ true }}">
+          <div style="position:absolute;top:-11px;left:28px;background:var(--brand);color:var(--on-brand);font-size:10.5px;font-weight:800;letter-spacing:.1em;padding:5px 11px;border-radius:999px">RECOMMENDED</div>
+        </sc-if>
+        <div style="font-size:13px;font-weight:800;letter-spacing:.06em;color:var(--brand)">PERAPLANO PLUS</div>
+        <div style="display:flex;align-items:baseline;gap:8px;margin:12px 0 4px;flex-wrap:wrap">
+          <span style="font-size:44px;font-weight:800;letter-spacing:-0.03em">₱XX</span>
+          <span style="font-size:14px;font-weight:700;color:var(--muted)">/month</span>
+          <sc-if value="{{ examplePriceChips }}" hint-placeholder-val="{{ true }}">
+            <span style="font-size:9.5px;font-weight:800;letter-spacing:.08em;padding:3px 8px;border-radius:99px;background:color-mix(in oklab, var(--warn) 14%, transparent);color:var(--warn)">EXAMPLE</span>
+          </sc-if>
+        </div>
+        <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:8px">
+          <span style="font-size:14px;font-weight:700;color:var(--muted)">or ₱XXX/year</span>
+          <span style="font-size:11px;font-weight:800;letter-spacing:.04em;padding:3px 9px;border-radius:99px;background:var(--mint);color:var(--brand)">SAVE 2 MONTHS</span>
+        </div>
+        <p style="margin:8px 0 22px;font-size:14px;line-height:1.6;color:var(--muted)">Depth for people running a whole household on one number.</p>
+        <a href="Landing.dc.html#get" style="display:block;text-align:center;background:var(--brand);color:var(--on-brand);padding:12px;border-radius:12px;font-size:14px;font-weight:700" style-hover="filter:brightness(1.1);text-decoration:none;color:var(--on-brand)">Start with Plus</a>
+        <div style="display:flex;flex-direction:column;gap:11px;margin-top:22px;font-size:13.5px;line-height:1.5">
+          <sc-for list="{{ plusList }}" as="item" hint-placeholder-count="6">
+            <div style="display:flex;gap:10px;align-items:flex-start">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--brand)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="flex:none;margin-top:2px"><path d="M20 6 9 17l-5-5"></path></svg>
+              <span>{{ item }}</span>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section style="max-width:900px;margin:0 auto;padding:56px 24px 24px;width:100%;box-sizing:border-box">
+    <h2 style="margin:0 0 20px;font-size:clamp(1.35rem,2.6vw,1.8rem);letter-spacing:-0.02em;font-weight:800">Compare every capability</h2>
+    <div style="background:var(--surface);border:1px solid var(--line);border-radius:18px;overflow:hidden">
+      <div style="display:grid;grid-template-columns:minmax(150px,1.5fr) minmax(90px,1fr) minmax(120px,1.3fr);gap:0;padding:14px 18px;border-bottom:1px solid var(--line);background:var(--mint);font-size:11px;letter-spacing:.12em;font-weight:800;color:var(--brand)">
+        <div>CAPABILITY</div><div>FREE</div><div>PLUS</div>
+      </div>
+      <sc-for list="{{ matrix }}" as="row" hint-placeholder-count="11">
+        <div style="display:grid;grid-template-columns:minmax(150px,1.5fr) minmax(90px,1fr) minmax(120px,1.3fr);gap:0;padding:14px 18px;border-bottom:1px solid var(--line);font-size:13.5px;line-height:1.45;align-items:center">
+          <div style="font-weight:700;padding-right:12px">{{ row.cap }}</div>
+          <div style="color:{{ row.freeColor }};font-weight:600;padding-right:12px">{{ row.free }}</div>
+          <div style="font-weight:700;color:var(--brand)">{{ row.plus }}</div>
+        </div>
+      </sc-for>
+    </div>
+    <p style="margin:14px 2px 0;font-size:12.5px;color:var(--muted)">Auto-tracking from notifications is unlimited on both tiers — always.</p>
+  </section>
+
+  <section style="max-width:760px;margin:0 auto;padding:56px 24px 84px;width:100%;box-sizing:border-box">
+    <div style="font-size:12px;letter-spacing:.16em;font-weight:800;color:var(--brand)">BILLING FAQ</div>
+    <h2 style="margin:10px 0 20px;font-size:clamp(1.35rem,2.6vw,1.8rem);letter-spacing:-0.02em;font-weight:800">How paying works</h2>
+    <div style="border-bottom:1px solid var(--line)">
+      <sc-for list="{{ faqs }}" as="f" hint-placeholder-count="6">
+        <div style="border-top:1px solid var(--line)">
+          <button onClick="{{ f.toggle }}" style="display:flex;width:100%;justify-content:space-between;align-items:center;gap:16px;padding:17px 2px;cursor:pointer;background:none;border:none;font-family:inherit;font-size:15.5px;font-weight:700;color:var(--text);text-align:left" style-hover="color:var(--brand)">
+            {{ f.q }}
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="flex:none;color:var(--muted);transition:transform .2s;transform:{{ f.rot }}"><path d="m6 9 6 6 6-6"></path></svg>
+          </button>
+          <sc-if value="{{ f.isOpen }}" hint-placeholder-val="{{ false }}">
+            <p style="margin:0 0 18px;font-size:14px;line-height:1.65;color:var(--muted);max-width:640px">{{ f.a }}</p>
+          </sc-if>
+        </div>
+      </sc-for>
+    </div>
+  </section>
+
+  <footer style="border-top:1px solid var(--line);margin-top:auto">
+    <div style="max-width:1120px;margin:0 auto;padding:40px 24px 30px">
+      <div style="display:flex;flex-wrap:wrap;gap:44px;justify-content:space-between;align-items:flex-start;margin-bottom:30px">
+        <div style="display:flex;align-items:center;gap:9px">
+          <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 L2 9 L11 13 Z" fill="var(--brand-2)"></path><path d="M22 2 L11 13 L15 22 Z" fill="var(--brand)"></path></svg>
+          <strong style="font-size:16px;font-weight:800">PeraPlano</strong>
+        </div>
+        <div style="display:flex;gap:18px;font-size:13.5px;font-weight:600">
+          <a href="Landing.dc.html" style="color:var(--text)">Home</a>
+          <a href="About.dc.html" style="color:var(--text)">About us</a>
+          <a href="Pricing.dc.html" style="color:var(--text)">Pricing</a>
+        </div>
+      </div>
+      <div style="border-top:1px solid var(--line);padding-top:20px;font-size:12px;color:var(--muted);display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap">
+        <span>© 2026 PeraPlano</span>
+        <span style="display:inline-flex;align-items:center;gap:8px"><span aria-hidden="true">🇵🇭</span> Proudly made in the Philippines
+          <sc-if value="{{ flagAccents }}" hint-placeholder-val="{{ true }}">
+            <span style="display:inline-flex;gap:3px" aria-hidden="true"><span style="width:5px;height:5px;border-radius:99px;background:var(--ph-blue)"></span><span style="width:5px;height:5px;border-radius:99px;background:var(--ph-red)"></span><span style="width:5px;height:5px;border-radius:99px;background:var(--ph-yellow)"></span></span>
+          </sc-if>
+        </span>
+      </div>
+    </div>
+  </footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;highlightPlus&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Layout&quot;},&quot;examplePriceChips&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Content&quot;},&quot;flagAccents&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Brand&quot;}}">
+class Component extends DCLogic {
+  state = {
+    theme: (typeof document !== 'undefined' && document.documentElement.getAttribute('data-theme')) || 'light',
+    open: 0
+  };
+  setTheme(t) {
+    document.documentElement.setAttribute('data-theme', t);
+    try { localStorage.setItem('pp-theme', t); } catch (e) {}
+    this.setState({ theme: t });
+  }
+  renderVals() {
+    const MATRIX = [
+      ['Auto-tracking (notification ingest)', 'Unlimited', 'Unlimited'],
+      ['Wallets', '3', 'Unlimited'],
+      ['Spending limits', '1 active', 'Unlimited + per-category'],
+      ['Savings goals', '1', 'Unlimited + payday auto-allocate'],
+      ['Loans', '1, basic tracking', 'Unlimited + full amortization schedule'],
+      ['History', '90 days', 'Unlimited'],
+      ['Reports', 'Basic monthly', 'Full + trends + custom range'],
+      ['Export', '—', 'CSV'],
+      ['Cloud backup / multi-device sync', '—', 'Included'],
+      ['Subscription detection', '—', 'Included'],
+      ['Safe-to-Spend', 'Today only', 'Projected to end of period']
+    ];
+    const FAQS = [
+      { q: 'Is the free tier really free forever?', a: 'Yes. Automatic tracking, your wallets, and today\u2019s Safe-to-Spend stay free with no time limit and no ads. Plus adds depth on top \u2014 it never takes the basics away.' },
+      { q: 'How do I pay?', a: 'Through Google Play billing, using whatever payment method you already have on file \u2014 GCash, Maya, card, or carrier billing where supported.' },
+      { q: 'Can I cancel anytime?', a: 'Anytime, from Google Play. You keep Plus until the end of the period you already paid for, then drop back to Free \u2014 nothing is deleted.' },
+      { q: 'What happens to my data if I downgrade?', a: 'Nothing is erased. Extra wallets, goals, and loans become read-only until you\u2019re back under the Free limits, and history beyond 90 days is hidden rather than deleted.' },
+      { q: 'Is there a free trial of Plus?', a: 'Planned \u2014 the length is still being decided along with the final price. Everything on this page marked EXAMPLE is a placeholder.' },
+      { q: 'Do you offer a student or annual discount?', a: 'The annual plan saves you two months versus paying monthly. Student pricing is on the list, not yet confirmed.' }
+    ];
+    const open = this.state.open;
+    const highlightPlus = this.props.highlightPlus ?? true;
+    return {
+      isDark: this.state.theme === 'dark',
+      isLight: this.state.theme !== 'dark',
+      toggleTheme: () => this.setTheme(this.state.theme === 'dark' ? 'light' : 'dark'),
+      examplePriceChips: this.props.examplePriceChips ?? true,
+      flagAccents: this.props.flagAccents ?? true,
+      highlightPlus,
+      plusBorder: highlightPlus ? '2px solid var(--brand)' : '1px solid var(--line)',
+      plusShadow: highlightPlus ? 'var(--shadow)' : 'none',
+      freeList: ['Unlimited automatic tracking', '3 wallets', '1 spending limit · 1 goal · 1 loan', '90 days of history', 'Safe-to-Spend for today'],
+      plusList: ['Unlimited wallets, limits, goals, loans', 'Unlimited history + full reports', 'CSV export', 'Cloud backup & multi-device sync', 'Subscription detection', 'Safe-to-Spend projected to payday'],
+      matrix: MATRIX.map(r => ({
+        cap: r[0], free: r[1], plus: r[2],
+        freeColor: r[1] === '\u2014' ? 'var(--muted)' : 'var(--text)'
+      })),
+      faqs: FAQS.map((f, i) => ({
+        q: f.q, a: f.a,
+        isOpen: open === i,
+        rot: open === i ? 'rotate(180deg)' : 'rotate(0deg)',
+        toggle: () => this.setState(s => ({ open: s.open === i ? -1 : i }))
+      }))
+    };
+  }
+}
+</script>
+</body>
+</html>

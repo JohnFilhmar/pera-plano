@@ -2,6 +2,17 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> ### ⚠️ Partially superseded — read before resuming (2026-08-07)
+> `2026-08-07-encryption-foundation.md` runs **between Task 3 and Task 4 of this plan**.
+> - **Task 3's outstanding fix round is SUBSUMED** by that plan's Task 3. Do not redo the
+>   NDJSON migration or the degraded-path logging here — it happens there, together with the
+>   per-record encryption envelope that makes the line-delimited format mandatory anyway.
+> - **Task 4 (`CapturePrefs`) is where this plan resumes**, after the encryption plan completes.
+> - Task 5's listener writes **sealed** capture lines via `CaptureEnvelope.seal(...)`, not raw JSON.
+> - Task 6's module gains the key operations listed in the encryption plan's Task 4.
+> - Robolectric arrives in the encryption plan's Task 2, one task earlier than this plan assumed.
+
+
 **Goal:** Build `mobile/modules/notification_listener/` — a local Expo Module (Expo Modules API, Kotlin) plus its config plugin — that captures Android status-bar notifications, buffers them to disk while JS is dead, and exposes exactly the JS API pinned in interface contract §4.
 
 **Architecture:** An Android-only local Expo Module autolinked from `mobile/modules/`. A `NotificationListenerService` subclass extracts the notification's text extras and either hands the capture to JS live (when a JS listener is attached) or appends it to a bounded, disk-backed JSON ring buffer that JS drains on next start. A global capture-enabled flag and a provider allowlist live in `SharedPreferences` so the service honors them without JS being alive; a Kotlin `Module` class exposes access-grant checks, the settings deep link, the two policy setters, the atomic drain, listener health, and a live capture event. A config plugin injects the service, its `BIND_NOTIFICATION_LISTENER_SERVICE` guard, its intent filter, a `BOOT_COMPLETED` receiver, and the `RECEIVE_BOOT_COMPLETED` permission into the generated manifest — nothing under `mobile/android/` is ever committed (CNG).
@@ -246,8 +257,14 @@ This is the FIRST of three M1 plans and must be implemented before the others:
 - Produces (used by Tasks 3, 5, 6):
   - `data class CaptureRecord(id: String, packageName: String, title: String?, text: String?, subText: String?, bigText: String?, postedAt: Long, capturedAt: Long)`
   - `fun CaptureRecord.toJson(): org.json.JSONObject` — disk buffer encoding.
-  - `fun CaptureRecord.toMap(): Map<String, Any?>` — value returned across the JS bridge from `drainPendingCaptures`.
-  - `fun CaptureRecord.toBundle(): android.os.Bundle` — payload for `sendEvent("onCapture", …)`.
+  - `fun CaptureRecord.toMap(): Map<String, Any?>` — the value returned across the JS bridge from `drainPendingCaptures`, **and** the payload for `sendEvent("onCapture", …)` in Task 6.
+  > **Corrected 2026-08-07.** An earlier draft also specified `fun CaptureRecord.toBundle(): android.os.Bundle`
+  > "for `sendEvent`". That was wrong and it was removed after Task 2's review. Expo's Sweet API
+  > `sendEvent` marshals a `Map`, not a `Bundle`, and a grep of this whole plan found `Bundle`
+  > mentioned nowhere outside Task 2's own text — Task 5's `liveSink` passes a raw `CaptureRecord`
+  > and Task 6 works in maps throughout. `toBundle()` had no caller, could not be unit-tested on
+  > this module's plain-JVM classpath, and would have read as load-bearing to Task 6. Task 6 uses
+  > `sendEvent("onCapture", record.toMap())`, reusing the already-tested encoding. Do not re-add it.
   - `CaptureRecord.Companion.fromJson(json: JSONObject): CaptureRecord`
   - Key names are the JS `RawCapture` field names verbatim (contract §4): `id`, `packageName`, `title`, `text`, `subText`, `bigText`, `postedAt`, `capturedAt`.
 
@@ -334,16 +351,15 @@ This is the FIRST of three M1 plans and must be implemented before the others:
   ```kotlin
   package expo.modules.notificationlistener
 
-  import android.os.Bundle
   import org.json.JSONObject
 
   /**
    * One captured status-bar notification.
    *
    * The field names ARE the JS `RawCapture` field names from interface contract
-   * §4 — the same keys are used for the disk buffer (toJson), the bridge return
-   * value (toMap), and the live event payload (toBundle), so a capture has one
-   * shape everywhere and JS never has to translate.
+   * §4 — the same keys are used for the disk buffer (toJson) and the bridge
+   * value (toMap, also the sendEvent payload), so a capture has one shape
+   * everywhere and JS never has to translate.
    */
   data class CaptureRecord(
     val id: String,
@@ -378,18 +394,6 @@ This is the FIRST of three M1 plans and must be implemented before the others:
       KEY_CAPTURED_AT to capturedAt,
     )
 
-    fun toBundle(): Bundle = Bundle().apply {
-      putString(KEY_ID, id)
-      putString(KEY_PACKAGE_NAME, packageName)
-      putString(KEY_TITLE, title)
-      putString(KEY_TEXT, text)
-      putString(KEY_SUB_TEXT, subText)
-      putString(KEY_BIG_TEXT, bigText)
-      // Doubles, not longs: JS numbers are doubles and epoch-ms is well inside
-      // the exactly-representable range.
-      putDouble(KEY_POSTED_AT, postedAt.toDouble())
-      putDouble(KEY_CAPTURED_AT, capturedAt.toDouble())
-    }
 
     companion object {
       const val KEY_ID = "id"
@@ -674,6 +678,7 @@ This is the FIRST of three M1 plans and must be implemented before the others:
 **Files:**
 - Create: `mobile/modules/notification_listener/android/src/main/java/expo/modules/notificationlistener/CapturePrefs.kt`
 - Test: `mobile/modules/notification_listener/android/src/test/java/expo/modules/notificationlistener/CapturePrefsTest.kt`
+- **Modify: `mobile/modules/notification_listener/android/build.gradle`** — this is the first task that touches a real `android.*` framework class (`SharedPreferences`), so it is where **Robolectric first becomes necessary**. Tasks 1–3 deliberately avoid it: Task 2's `CaptureRecord` is pure Kotlin + `org.json`, and Task 3's `CaptureBuffer` takes a `File` rather than a `Context` in every tested path precisely so it stays a plain JVM test. Add the Robolectric test dependency and the `testOptions { unitTests.isIncludeAndroidResources = true }` block here, and annotate `CapturePrefsTest` with `@RunWith(RobolectricTestRunner::class)`. Do not pin an SDK/AGP version while doing so — the module inherits those from the root project via `useDefaultAndroidSdkVersions()`, and overriding them will fight the app's toolchain after the next `expo prebuild`.
 
 **Interfaces:**
 ```kotlin
