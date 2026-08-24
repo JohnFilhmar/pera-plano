@@ -5,7 +5,8 @@
 #   3000 / 5000  jms-e-talyer production
 #   3001         fill-main (filhmar.online)
 #   3002 / 5002  genesys production
-#   3003         THIS SERVICE — peraplano.filhmar.online
+#   3003         peraplano-web PRODUCTION — peraplano.filhmar.online
+#   3004         peraplano-web STAGING — direct port, no reverse proxy yet
 #   5003         kognita production
 #   5004         kognita staging
 #   5005         RESERVED for a future PeraPlano backend. Do not take it.
@@ -15,6 +16,13 @@
 # the first time the system grows is a compose file everyone learns to distrust.
 # Pinned so the compose project name does not depend on what the checkout directory
 # happens to be called — container, network and volume names are stable across clones.
+#
+# This base file publishes no ports and injects no runtime config, so the same file is
+# reused unmodified by all three overlays below without a host-port or env collision
+# between them:
+#   docker-compose.override.yml    local `docker compose up` (auto-loaded, no -f flags)
+#   docker-compose.staging.yml     staging deploy (.github/workflows/deploy.yml)
+#   docker-compose.production.yml  production deploy (.github/workflows/deploy.yml)
 name: peraplano
 
 services:
@@ -23,19 +31,8 @@ services:
       context: ./server
       dockerfile: Dockerfile
       target: web
-    # Runtime configuration — the legal identifiers printed on the published privacy
-    # notice — is injected here and never baked into the image. See server/.env.example.
-    # If this file is missing or a value is blank, the container exits 1 at boot with
-    # every missing field named. That is the intended behaviour, not a deployment bug.
-    env_file:
-      - ./server/.env.local
     environment:
       NODE_ENV: production
       PORT: "3000"
       HOSTNAME: 0.0.0.0
-    # Loopback only. The box already runs a host nginx serving the other apps; it
-    # reverse-proxies peraplano.filhmar.online to 127.0.0.1:3003. Binding to 127.0.0.1
-    # keeps the container off the public interface, so nginx is the only entry.
-    ports:
-      - "127.0.0.1:3003:3000"
     restart: unless-stopped

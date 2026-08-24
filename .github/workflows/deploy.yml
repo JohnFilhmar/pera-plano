@@ -1,0 +1,197 @@
+name: Deploy web
+
+# Manual-only deploy of server/apps/web to the self-hosted box. Staging and production
+# live on the same box; they are kept apart by Compose project name (-p) and by host
+# port (see docker-compose.staging.yml / docker-compose.production.yml). Scope is
+# apps/web only — there is no backend API service in this repo yet (port 5005 is
+# reserved for it), so this workflow has nothing to deploy for it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to deploy
+        type: choice
+        options:
+          - staging
+          - production
+        required: true
+      run_security_checks:
+        description: "Run dependency audit and image scan before deploying. Uncheck to skip."
+        type: boolean
+        default: true
+
+concurrency:
+  group: deploy-web-${{ inputs.environment }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  security:
+    name: security
+    if: ${{ inputs.run_security_checks }}
+    # Deliberately NOT the self-hosted runner. This job only audits dependencies and
+    # builds a throwaway image to scan; it needs nothing from the box. Running an image
+    # build on the same box that is serving production would compete with the live app
+    # for CPU and disk at exactly the moment a deploy is in flight.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Dependency audit
+        working-directory: server
+        run: npm audit --audit-level=high
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build web image for scan
+        uses: docker/build-push-action@v7
+        with:
+          context: ./server
+          target: web
+          push: false
+          load: true
+          tags: peraplano-web:deploy-scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Reporting-only: base-image CVEs are frequently unfixable upstream, and failing
+      # every deploy on them would block hotfixes. This step has no exit-code, so it
+      # never fails the job by itself — the job's actual pass/fail signal comes from the
+      # audit step above and from the image build succeeding at all.
+      - name: Trivy scan web image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: peraplano-web:deploy-scan
+          format: sarif
+          output: trivy-web.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+
+      - name: Upload Trivy results
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-web.sarif
+          category: deploy-trivy-web
+
+  deploy:
+    name: deploy
+    needs: [security]
+    # Runs whether security passed OR was skipped by the checkbox, but not when security
+    # ran and failed. `!cancelled()` is required here because a skipped dependency would
+    # otherwise make GitHub skip this job too — but unlike `always()`, it still lets a
+    # cancelled workflow run stop a deploy that is queued behind the single runner.
+    if: ${{ !cancelled() && (needs.security.result == 'success' || needs.security.result == 'skipped') }}
+    # The environment name doubles as the runner label: register the box's runner with
+    # both `staging` and `production` labels since one box serves both environments here.
+    runs-on: [self-hosted, linux, "${{ inputs.environment }}"]
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+    # Compliance values come from this GitHub Environment's variables (Settings ->
+    # Environments -> <environment> -> Variables), never from a file baked into the
+    # image or committed to the repo -- they publish verbatim on the privacy notice.
+    # `environment:` above scopes `vars.*` to whichever environment was dispatched, so
+    # staging and production each read their own values (staging's are unset today;
+    # its overlay still uses a box-local env file until that environment is set up).
+    env:
+      LOG_LEVEL: ${{ vars.LOG_LEVEL }}
+      PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
+      PIC_LEGAL_NAME: ${{ vars.PIC_LEGAL_NAME }}
+      PIC_ADDRESS: ${{ vars.PIC_ADDRESS }}
+      DPO_NAME: ${{ vars.DPO_NAME }}
+      DPO_EMAIL: ${{ vars.DPO_EMAIL }}
+      SUPPORT_EMAIL: ${{ vars.SUPPORT_EMAIL }}
+      NPC_REGISTRATION: ${{ vars.NPC_REGISTRATION }}
+    steps:
+      # Fail fast, before checkout or any build work, if the chosen environment doesn't
+      # match the branch this run is on. production only ever deploys from master;
+      # staging only ever deploys from staging. This is what stops "deploy production"
+      # from a feature branch shipping the wrong code.
+      - name: Guard branch/environment pairing
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if [ "$ENVIRONMENT" = "production" ] && [ "$BRANCH" != "master" ]; then
+            echo "::error::production must be deployed from master, not '$BRANCH'."
+            exit 1
+          fi
+
+          if [ "$ENVIRONMENT" = "staging" ] && [ "$BRANCH" != "staging" ]; then
+            echo "::error::staging must be deployed from staging, not '$BRANCH'."
+            exit 1
+          fi
+
+          echo "Deploying '$BRANCH' to '$ENVIRONMENT'. OK."
+
+      - uses: actions/checkout@v7
+
+      - name: Deploy stack
+        run: |
+          set -euo pipefail
+          docker compose \
+            -p "peraplano-${{ inputs.environment }}" \
+            -f docker-compose.yml \
+            -f "docker-compose.${{ inputs.environment }}.yml" \
+            up -d --build --remove-orphans
+
+      - name: Wait for web health check
+        run: |
+          set -euo pipefail
+          # Ask Compose which host port it actually published rather than hardcoding it
+          # here. Duplicating the port would silently break this check the first time
+          # someone edits an overlay file.
+          published=$(docker compose \
+            -p "peraplano-${{ inputs.environment }}" \
+            -f docker-compose.yml \
+            -f "docker-compose.${{ inputs.environment }}.yml" \
+            port peraplano-web 3000)
+          port="${published##*:}"
+
+          if [ -z "$port" ]; then
+            echo "::error::could not determine the published web port from Compose."
+            exit 1
+          fi
+
+          url="http://localhost:${port}/api/health"
+          echo "Polling $url ..."
+
+          for i in $(seq 1 30); do
+            if curl -fs "$url" > /dev/null; then
+              echo "Web is healthy after ${i} attempt(s)."
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "::error::web did not answer $url within the timeout."
+          exit 1
+
+      - name: Diagnose failure
+        if: failure()
+        run: |
+          docker compose \
+            -p "peraplano-${{ inputs.environment }}" \
+            -f docker-compose.yml \
+            -f "docker-compose.${{ inputs.environment }}.yml" \
+            ps
+
+          docker compose \
+            -p "peraplano-${{ inputs.environment }}" \
+            -f docker-compose.yml \
+            -f "docker-compose.${{ inputs.environment }}.yml" \
+            logs --tail=200

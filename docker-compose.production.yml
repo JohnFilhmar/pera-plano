@@ -1,0 +1,34 @@
+# Production overlay.
+#
+# Ports bind to 127.0.0.1 only, so nothing reaches the app except through the reverse
+# proxy on the same host. Published as "3000:3000" it would listen on 0.0.0.0 and be
+# reachable directly at http://<server-ip>:3003, bypassing nginx — which means no TLS
+# and a second origin the app was never told about.
+#
+# Consequence: with this in effect the stack is ONLY reachable through the proxy. Do not
+# deploy this before nginx is actually proxying (docs/nginx/peraplano-production.conf),
+# or the app will appear to be down.
+#
+# Container/volume isolation from staging comes from the Compose project name (-p),
+# supplied by the deploy workflow — not from anything in this file.
+#
+# Compliance and operational values are NOT read from a file here — they come from the
+# `production` GitHub Environment's variables (Settings -> Environments -> production ->
+# Variables), substituted by Compose from the deploy job's process env
+# (.github/workflows/deploy.yml). A blank var and a missing one behave identically to the
+# app: both fail the boot gate. These are legal identifiers published on the privacy
+# notice, not secrets, which is why they live as plain Environment variables rather than
+# encrypted secrets.
+services:
+  peraplano-web:
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://peraplano.filhmar.online}
+      PIC_LEGAL_NAME: ${PIC_LEGAL_NAME:-}
+      PIC_ADDRESS: ${PIC_ADDRESS:-}
+      DPO_NAME: ${DPO_NAME:-}
+      DPO_EMAIL: ${DPO_EMAIL:-}
+      SUPPORT_EMAIL: ${SUPPORT_EMAIL:-}
+      NPC_REGISTRATION: ${NPC_REGISTRATION:-}
+    ports:
+      - "127.0.0.1:3003:3000"

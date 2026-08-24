@@ -1,0 +1,17 @@
+# Staging overlay. Direct host port, no reverse proxy in front of it yet — reachable at
+# http://<box-ip>:3004 until a staging subdomain + nginx vhost exist (see
+# docs/nginx/peraplano-production.conf for the pattern the production vhost follows).
+#
+# Container/volume isolation from production comes from the Compose project name (-p),
+# supplied by the deploy workflow — not from anything in this file.
+#
+# env_file is an absolute path outside the git checkout on purpose: actions/checkout
+# runs `git clean -ffdx` by default, which would delete a compliance env file placed
+# anywhere inside the repo working tree on the very next deploy. The file itself is
+# never committed — create it once on the box, see docs/DEPLOYMENT.md.
+services:
+  peraplano-web:
+    env_file:
+      - /opt/pera-plano/env/staging.env
+    ports:
+      - "3004:3000"
