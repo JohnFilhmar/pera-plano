@@ -21,9 +21,21 @@
 // conventions — so the sentence this screen shows and the limit the app later
 // enforces cannot disagree.
 //
-// PERCENT ONLY WHEN INCOME IS DECLARED (rule 5), hidden rather than shown
-// disabled — a greyed-out option a user cannot explain invites a support
-// question; an absent one with a one-line reason does not.
+// THE PERCENT BASIS IS ALWAYS ON THE SCREEN (owner, 2026-08-26: the step "is
+// missing the % input"). It used to be hidden outright whenever no income was
+// known — rule 5 read as "offer it only once income exists" — and since the
+// income step is skippable, and detection may not have worked a figure out
+// yet, the practical result was a first-Limit step that offered no percentage
+// at all to most users. The rule it was protecting is real (a percent limit
+// cannot RESOLVE without income: `baseFor` returns null), but hiding the
+// control is the wrong way to say so: the user cannot see what they are
+// missing, or how to get it.
+//
+// So this step now behaves exactly like Plan's own Limit editor
+// (components/limits/limit_form.tsx), which has always shown both bases:
+// picking "% of income" with no income known blocks the SAVE and explains it,
+// with the same two exits — declare income now (this step routes back to
+// onboarding's income step) or switch back to a fixed peso amount.
 //
 // THE PERCENT-STORAGE TRAP (task-3-brief's own warning). `Limit.value` for
 // `percent-of-income` is percent × 100 as an integer (types/domain.ts); this
@@ -40,12 +52,11 @@
 import { useState } from "react";
 import { Text, View } from "react-native";
 
-import { formatCentavos } from "@/components/ui/amount_text";
+import { LimitPreview } from "@/components/limits/limit_preview";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { NumericField } from "@/components/ui/numeric_field";
 import { SegmentedControl } from "@/components/ui/segmented_control";
-import { dailyRateOf } from "@/lib/limits/limit_derivation";
-import { baseFor } from "@/lib/limits/limit_engine";
 import { percentToValue } from "@/lib/limits/limit_input";
 import { centavosFrom } from "@/lib/money/peso_input";
 import type { Centavos, LimitBasis, LimitScope } from "@/types/domain";
@@ -72,6 +83,20 @@ function toBasisSegment(basis: LimitBasis): BasisSegment {
   return basis === "percent-of-income" ? "percent" : "fixed";
 }
 
+/**
+ * BOTH SEGMENTS, UNCONDITIONALLY. This list used to be rebuilt each render with
+ * "% of income" dropped whenever no income was known, which is how the option
+ * disappeared for every user who skipped the income step (or let detection
+ * work it out later) — the report this change answers. Plan's own Limit editor
+ * has always shown both and explained the block instead
+ * (components/limits/limit_form.tsx's `percentBlocked` card); onboarding now
+ * does the same, and can send the user back to the income step to unblock it.
+ */
+const BASIS_SEGMENTS = [
+  { value: "fixed", label: "Fixed ₱" },
+  { value: "percent", label: "% of income" },
+] as const satisfies ReadonlyArray<{ value: BasisSegment; label: string }>;
+
 export type FirstLimitFormValues = {
   basis: LimitBasis;
   /** Centavos for `fixed`; percent × 100 as an integer for `percent-of-income`. */
@@ -97,63 +122,47 @@ const SCOPE_CHIP: Record<LimitScope, string> = {
   annual: "Annual",
 };
 
-/** How the preview sentence names the period. */
-const SCOPE_EVERY: Record<LimitScope, string> = {
-  daily: "every day",
-  weekly: "every week",
-  monthly: "every month",
-  annual: "every year",
-};
-
 export type FirstLimitFormProps = {
-  /** Monthly-equivalent income, or `null` when none was declared (rule 5). */
+  /** Monthly-equivalent income, or `null` when none is known yet. */
   monthlyIncome: Centavos | null;
   busy?: boolean;
   onSubmit: (values: FirstLimitFormValues) => void;
+  /**
+   * Sends the user back to the onboarding income step from the percent-blocked
+   * card. Optional only so the presentational tests can mount this form bare;
+   * the route always supplies it.
+   */
+  onDeclareIncome?: () => void;
 };
 
-export function FirstLimitForm({ monthlyIncome, busy = false, onSubmit }: FirstLimitFormProps) {
+export function FirstLimitForm({
+  monthlyIncome,
+  busy = false,
+  onSubmit,
+  onDeclareIncome,
+}: FirstLimitFormProps) {
   const [basis, setBasis] = useState<LimitBasis>("fixed");
   const [scope, setScope] = useState<LimitScope>("monthly");
   const [pesoText, setPesoText] = useState("");
   const [percentText, setPercentText] = useState("");
 
   const percentAvailable = monthlyIncome !== null;
+  // The percent OPTION is always offered; what income decides is whether a
+  // percent limit can be RESOLVED yet — see this file's header.
+  const percentBlocked = basis === "percent-of-income" && !percentAvailable;
 
   const value = basis === "fixed" ? centavosFrom(pesoText) : percentToValue(percentText);
 
-  // WHAT ONE PERIOD IS WORTH IN PESOS, via the ENGINE'S OWN resolver rather
-  // than arithmetic repeated here.
-  //
-  // This used to be `monthlyIncome × percent ÷ 10,000` with a hand-written
-  // helper, which was right only because the scope was pinned to monthly. Now
-  // that the user picks the cadence, a percent limit resolves differently per
-  // scope (`baseFor`: monthly = M×v%, annual = 12M×v%, weekly = (12M÷52)×v%,
-  // daily = (12M÷365)×v%) — and the one place that already knows those four
-  // formulas is the engine that will enforce the limit afterwards. Asking it
-  // means the sentence this screen shows and the limit the app later measures
-  // cannot say different things.
-  const periodValue = baseFor({ basis, value, scope }, monthlyIncome) ?? 0;
+  // THE PREVIEW SENTENCE ITSELF NOW LIVES IN components/limits/limit_preview.tsx,
+  // rendered below. The arithmetic that used to sit here (`baseFor` for one
+  // period, `dailyRateOf` for the per-day restatement) moved there unchanged so
+  // Plan's Limit editor can show the SAME sentence for a percent-of-income
+  // limit rather than a second, hand-written copy of it.
 
-  // Rule 4's per-day figure, for any cadence. `dailyRateOf` carries the same
-  // 12/52/365 conventions as `baseFor` above, so the two halves of the sentence
-  // agree; the old fixed `÷ 30` only worked while monthly was the only option.
-  const dailyValue = Math.round(dailyRateOf(scope, periodValue));
-
-  const canSave = value > 0 && !busy;
-
-  function chooseBasis(next: LimitBasis): void {
-    if (next === "percent-of-income" && !percentAvailable) return;
-    setBasis(next);
-  }
-
-  // The basis SegmentedControl's own segment list — built fresh each render
-  // so "percent" only ever appears once income makes it a real choice (rule
-  // 5), the same condition the old hand-rolled Pressable used to gate on.
-  const basisSegments = [
-    { value: "fixed" as const, label: "Fixed ₱" },
-    ...(percentAvailable ? [{ value: "percent" as const, label: "% of income" }] : []),
-  ];
+  // `value > 0` is 001_core.sql's own CHECK, and a percent with no income has
+  // no base to measure against (`baseFor` returns null) — Plan's own editor
+  // blocks the identical pair, so the two screens refuse the same saves.
+  const canSave = !percentBlocked && value > 0 && !busy;
 
   return (
     <View className="gap-6">
@@ -179,14 +188,14 @@ export function FirstLimitForm({ monthlyIncome, busy = false, onSubmit }: FirstL
         onChange={setScope}
       />
 
-      {/* Rule 5: the percent segment is ABSENT, not disabled, when no income
-          was declared — there is nothing here for the user to unlock, only a
-          reason to state (the note just below). */}
+      {/* BOTH SEGMENTS, ALWAYS — see this file's header. Whether income is
+          known changes what happens AFTER "% of income" is picked, never
+          whether the choice is on the screen. */}
       <SegmentedControl
         testID="first-limit-basis"
-        segments={basisSegments}
+        segments={BASIS_SEGMENTS}
         value={toBasisSegment(basis)}
-        onChange={(segment) => chooseBasis(toLimitBasis(segment))}
+        onChange={(segment) => setBasis(toLimitBasis(segment))}
       />
 
       {!percentAvailable ? (
@@ -194,8 +203,8 @@ export function FirstLimitForm({ monthlyIncome, busy = false, onSubmit }: FirstL
           testID="first-limit-no-income-note"
           className="text-secondary font-medium text-fg-2 dark:text-fg-2-dark"
         >
-          You haven&apos;t told PeraPlano your income yet, so this Limit is a fixed peso amount.
-          Once you do, you can switch it to a percentage any time.
+          PeraPlano doesn&apos;t know your income yet. Pick &ldquo;% of income&rdquo; and you can
+          set it right here, or keep a fixed peso amount and switch later.
         </Text>
       ) : null}
 
@@ -228,17 +237,38 @@ export function FirstLimitForm({ monthlyIncome, busy = false, onSubmit }: FirstL
       )}
 
       {/* Rule 4 — the sentence that makes the abstraction land, live on every
-          keystroke. */}
-      <Text testID="first-limit-preview" className="text-section font-bold text-fg dark:text-fg-dark">
-        {scope === "daily"
-          ? // "…every day is about ₱X a day" says the same thing twice. On the
-            // daily cadence the figure IS the daily figure, so the sentence
-            // stops there rather than restating itself.
-            `${formatCentavos(periodValue)} every day.`
-          : `${formatCentavos(periodValue)} ${SCOPE_EVERY[scope]} is about ${formatCentavos(
-              dailyValue,
-            )} a day.`}
-      </Text>
+          keystroke. A percent limit with no income has no sentence to show:
+          `baseFor` returns null there, and "₱0.00 every month" would be a
+          figure the app cannot stand behind, so the way out is shown instead —
+          the same two exits Plan's editor offers (declare income, or switch
+          back to a fixed amount). */}
+      {percentBlocked ? (
+        <Card variant="flat">
+          <Text testID="first-limit-percent-blocked" className="text-fg dark:text-fg-dark">
+            A percentage needs to know what you earn. Tell PeraPlano your income and this Limit
+            follows your pay — or use a fixed peso amount instead. Either one is editable later in
+            Plan.
+          </Text>
+          {onDeclareIncome ? (
+            <View className="mt-3">
+              <Button
+                title="Set my income"
+                variant="secondary"
+                testID="first-limit-declare-income"
+                onPress={onDeclareIncome}
+              />
+            </View>
+          ) : null}
+        </Card>
+      ) : (
+        <LimitPreview
+          testID="first-limit-preview"
+          basis={basis}
+          value={value}
+          scope={scope}
+          monthlyIncome={monthlyIncome}
+        />
+      )}
 
       <Button
         title="Set this Limit"

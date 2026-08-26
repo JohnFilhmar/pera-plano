@@ -18,6 +18,7 @@
 // way when the Plan tab could not render under Jest.
 import {
   getLoan,
+  listAdjustments,
   listLoans,
   listPayments,
   LoanNotFoundError,
@@ -25,15 +26,21 @@ import {
   recordPayment,
 } from "@/lib/db/repos/loans_repo";
 import { UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
-import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions_repo";
+import {
+  getTransaction,
+  insertTransaction,
+  listTransactions,
+} from "@/lib/db/repos/transactions_repo";
 import { withUnitOfWork } from "@/lib/db/unit_of_work";
 import { startOfLocalDay } from "@/lib/dates";
 import type {
   Centavos,
+  EpochMs,
   Loan,
   LoanDirection,
   LoanPayment,
   Transaction,
+  TxDirection,
 } from "@/types/domain";
 
 import { nextDue } from "./loan_math";
@@ -620,4 +627,104 @@ export async function recordManualPayment(input: {
     });
     return recordPayment({ loanId: input.loanId, transactionId: transaction.id });
   });
+}
+
+// ---------------------------------------------------------------------------
+// History — spec rules 7 and 13
+// ---------------------------------------------------------------------------
+
+/**
+ * One line in a loan's history. Rule 7: "Every `paymentHistory[]` entry
+ * references either a ledger Transaction (matched or manually created) or a
+ * balance adjustment (Rule 13). There are no free-floating payment records."
+ *
+ * A DISCRIMINATED UNION, NOT ONE WIDENED ROW WITH NULLABLE EXTRAS, because
+ * rule 13 requires the screen to mark an adjustment "clearly ... as an
+ * adjustment, not a payment" — and a shape where the two are told apart only by
+ * which optional fields happen to be filled in is a shape where a renderer can
+ * silently forget to check. `kind` makes the distinction the first thing the
+ * type system asks about, so the marking cannot be dropped by accident.
+ */
+export type LoanHistoryEntry =
+  | {
+      kind: "payment";
+      /** The `loan_payments` row id, not the transaction's. */
+      id: string;
+      occurredAt: EpochMs;
+      /** Always positive — the ledger stores magnitude and sign separately. */
+      amount: Centavos;
+      /** `out` on an I-owe loan, `in` on an owed-to-me one (rules 7 and 17). */
+      direction: TxDirection;
+      transactionId: string;
+      walletId: string;
+    }
+  | {
+      kind: "adjustment";
+      id: string;
+      occurredAt: EpochMs;
+      /** SIGNED: positive increases what is owed, negative reduces it. */
+      amount: Centavos;
+      /** Required by rule 13, and the only record of WHY the balance moved. */
+      note: string;
+    };
+
+/**
+ * A loan's payments and balance adjustments as one list, NEWEST FIRST.
+ *
+ * THE ORDER IS DELIBERATELY THE REVERSE OF THE REPOSITORY'S. `listPayments`
+ * and `listAdjustments` both return oldest first, and for storage that is the
+ * right answer — a repayment record read end to end has to run forwards. A
+ * SCREEN is a different question: the user opens a loan to check the thing that
+ * just happened, and on a 5-6 loan collected weekly for a year that entry is
+ * forty rows down. Reversed here rather than inside the component so the
+ * ordering and the reason for it stay next to the merge that produced it.
+ *
+ * A PAYMENT WHOSE TRANSACTION IS GONE IS DROPPED, not rendered as a blank or a
+ * zero. `deletePayment`'s own header is explicit that un-matching never touches
+ * the transaction, so `deleteTransaction` is the only way a row can vanish from
+ * under a still-live link — and the honest thing to show for it is nothing,
+ * rather than a payment line with no amount that the balance beside it does not
+ * count either (`outstandingBalance` joins through the same transaction and
+ * skips it for the same reason).
+ */
+export async function listLoanHistory(loanId: string): Promise<LoanHistoryEntry[]> {
+  const [payments, adjustments] = await Promise.all([
+    listPayments(loanId),
+    listAdjustments(loanId),
+  ]);
+
+  const entries: LoanHistoryEntry[] = [];
+
+  for (const payment of payments) {
+    const transaction = await getTransaction(payment.transactionId);
+    if (transaction === null) continue;
+    entries.push({
+      kind: "payment",
+      id: payment.id,
+      occurredAt: transaction.occurredAt,
+      amount: transaction.amount,
+      direction: transaction.direction,
+      transactionId: transaction.id,
+      walletId: transaction.walletId,
+    });
+  }
+
+  for (const adjustment of adjustments) {
+    entries.push({
+      kind: "adjustment",
+      id: adjustment.id,
+      occurredAt: adjustment.occurredAt,
+      amount: adjustment.amount,
+      note: adjustment.note,
+    });
+  }
+
+  // Ties are broken on `id` so the order is TOTAL rather than merely sorted.
+  // Two entries genuinely can share an instant — a back-dated manual payment
+  // and an adjustment on the same day both land on the start of that local day
+  // — and an unstable comparator lets them swap places between renders, which
+  // reads on screen as a list flickering for no reason the user can see.
+  return entries.sort(
+    (left, right) => right.occurredAt - left.occurredAt || left.id.localeCompare(right.id),
+  );
 }

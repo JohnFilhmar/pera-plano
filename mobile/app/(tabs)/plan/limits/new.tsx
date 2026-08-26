@@ -159,6 +159,7 @@ export default function NewLimitScreen() {
         <LimitForm
           onSubmit={onSave}
           incomeUsable={incomeUsable}
+          monthlyIncome={income?.monthlyEquivalent ?? null}
           onDeclareIncome={() => router.push("/plan/income")}
           busy={create.isPending}
           submitLabel="Create limit"
