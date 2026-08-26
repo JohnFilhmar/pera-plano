@@ -36,6 +36,14 @@ jest.mock("expo-router", () => ({
     push: (...args: unknown[]) => mockPush(...args),
     back: () => mockBack(),
   }),
+  // A mocked push never unmounts or blurs anything, so focus here is only ever
+  // the mount one — a plain effect is the whole of what this file can model.
+  // The re-focus behaviour access.tsx depends on is covered against the real
+  // navigator in app/(onboarding)/__tests__/setup_flow_e2e.test.tsx.
+  useFocusEffect: (callback: () => void | (() => void)) => {
+    const { useEffect } = jest.requireActual("react");
+    useEffect(callback, [callback]);
+  },
 }));
 
 // The listener module is NATIVE and cannot be required under Jest

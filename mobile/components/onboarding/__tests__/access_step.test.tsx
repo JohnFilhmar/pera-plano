@@ -47,11 +47,22 @@ jest.mock("@/modules/notification_listener", () => ({
 
 const mockPush = jest.fn();
 const mockBack = jest.fn();
+// `useFocusEffect` stands in as a plain mount effect, the same shape
+// app/__tests__/home_screen.test.tsx already uses. That is honest for
+// everything THIS file asserts -- a bare `render()` is one focus and no more
+// -- but it is also why the skip-then-back regression lives in
+// app/(onboarding)/__tests__/setup_flow_e2e.test.tsx instead: RE-focusing a
+// screen needs a real navigator, and a mount-effect stand-in can never fire
+// twice.
 jest.mock("expo-router", () => ({
   useRouter: () => ({
     push: (...args: unknown[]) => mockPush(...args),
     back: () => mockBack(),
   }),
+  useFocusEffect: (callback: () => void | (() => void)) => {
+    const { useEffect } = jest.requireActual("react");
+    useEffect(callback, [callback]);
+  },
 }));
 
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
