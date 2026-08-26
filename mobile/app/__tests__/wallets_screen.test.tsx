@@ -442,6 +442,66 @@ describe("empty state", () => {
   });
 });
 
+// The empty state's action was, until this suite grew the block below, the
+// ONLY route to app/wallet/new.tsx from this tab -- so it disappeared the
+// instant the first wallet existed, which for anyone who completed onboarding
+// was before they ever saw the screen. These four tests exist to keep the
+// floating button independent of the data, which is the single property that
+// made the old empty-state-only affordance a dead end.
+describe("the add-wallet button", () => {
+  test("renders while the wallet list is still loading", () => {
+    renderScreen();
+
+    // Asserted synchronously, BEFORE any `findBy*` settles the query: the
+    // point is that the button does not wait on the read.
+    expect(screen.getByTestId("wallets-loading")).toBeTruthy();
+    expect(screen.getByTestId("wallets-add")).toBeTruthy();
+  });
+
+  test("renders on the empty state, alongside its own action", async () => {
+    renderScreen();
+    await screen.findByText("Add your first Wallet");
+
+    expect(screen.getByTestId("wallets-add")).toBeTruthy();
+    expect(screen.getByTestId("empty-state-action")).toBeTruthy();
+  });
+
+  test("still renders once wallets exist -- the defect this covers", async () => {
+    await createWallet({ name: "BPI", type: "bank", openingBalance: 10_000 });
+
+    renderScreen();
+    await screen.findByText("BPI");
+
+    expect(screen.getByTestId("wallets-add")).toBeTruthy();
+  });
+
+  test("opens the new-wallet screen", async () => {
+    await createWallet({ name: "BPI", type: "bank", openingBalance: 10_000 });
+
+    renderScreen();
+    await screen.findByText("BPI");
+    fireEvent.press(screen.getByTestId("wallets-add"));
+
+    expect(mockPush).toHaveBeenCalledTimes(1);
+    expect(mockPush).toHaveBeenCalledWith("/wallet/new");
+  });
+
+  // The cap belongs to app/wallet/new.tsx (spec Free vs Plus: "Entitlements is
+  // checked at this call-site"), which answers it with an upgrade sheet on
+  // submit. A button that vanished at three wallets would state the limit by
+  // making the tab look broken.
+  test("is not hidden by the free-tier wallet cap", async () => {
+    for (const name of ["BPI", "GCash", "Maya", "Cash"]) {
+      await createWallet({ name, type: "e-wallet", openingBalance: 1_000 });
+    }
+
+    renderScreen();
+    await screen.findByText("Maya");
+
+    expect(screen.getByTestId("wallets-add")).toBeTruthy();
+  });
+});
+
 describe("navigation", () => {
   test("tapping a card opens that wallet's detail route", async () => {
     const bpi = await createWallet({ name: "BPI", type: "bank", openingBalance: 10_000 });
