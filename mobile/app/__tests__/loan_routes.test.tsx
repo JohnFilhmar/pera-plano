@@ -42,7 +42,12 @@ import { ThemeProvider } from "@/contexts/theme_context";
 import { closeDatabase } from "@/lib/db/database";
 import { getSetting, setSetting } from "@/lib/db/repos/app_settings_repo";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
-import { createLoan, listLoans, outstandingBalance } from "@/lib/db/repos/loans_repo";
+import {
+  createLoan,
+  listLoans,
+  outstandingBalance,
+  recordPayment,
+} from "@/lib/db/repos/loans_repo";
 import { insertTransaction } from "@/lib/db/repos/transactions_repo";
 import { createWallet } from "@/lib/db/repos/wallets_repo";
 import { __setTierForTests } from "@/lib/entitlements";
@@ -342,10 +347,38 @@ test("CONFIRMING A MATCH CANCELS THE LOAN'S STALE QUEUED REMINDERS (m3c Task 8 a
   await waitFor(async () => expect(await getSetting("loan_reminder_ids")).toEqual({}));
 });
 
-test("no candidates means no match button at all", async () => {
-  // An empty suggestion affordance is worse than none — it invites a tap that
-  // shows nothing.
+test("NO SUGGESTIONS STILL LEAVES A WAY TO RECORD A PAYMENT", async () => {
+  // This used to assert the opposite — no candidates, no button — on the
+  // reasoning that an empty affordance invites a tap showing nothing. That
+  // reasoning holds only if "nothing scored above the floor" meant "no payment
+  // arrived", and for owed-to-me lending it does not: a partial amount, from a
+  // person, on a loan with no schedule fires no strong signal at all. The
+  // button became the only thing standing between the user and money they
+  // watched land, so it stays and opens the unfiltered list directly.
   const loan = await createLoan({ direction: "i-owe", counterparty: "GLoan", principal: 500000 });
+  mockParams = { id: loan.id };
+
+  renderScreen(<LoanDetailScreen />);
+
+  await screen.findByTestId("loan-detail");
+  expect(screen.getByTestId("loan-open-matches")).toBeTruthy();
+});
+
+test("a settled loan offers no match button", async () => {
+  // The one case where the affordance really is empty: nothing is owed, so
+  // nothing can pay it — `findPaymentCandidates` returns [] for a settled loan
+  // however wide the search.
+  const loan = await createLoan({ direction: "i-owe", counterparty: "GLoan", principal: 500000 });
+  const paid = await insertTransaction({
+    walletId: cash.id,
+    categoryId: UNCATEGORIZED_ID,
+    amount: 500000,
+    direction: "out",
+    occurredAt: YESTERDAY,
+    source: "manual",
+    confidence: 1,
+  });
+  await recordPayment({ loanId: loan.id, transactionId: paid.id });
   mockParams = { id: loan.id };
 
   renderScreen(<LoanDetailScreen />);

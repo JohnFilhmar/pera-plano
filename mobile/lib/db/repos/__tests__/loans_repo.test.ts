@@ -11,7 +11,7 @@
 //   be stored. Payments reference a ledger transaction; the money that never
 //   touched a tracked wallet is a BALANCE ADJUSTMENT (rule 13), which is what
 //   migration 005 exists for.
-import { closeDatabase } from "@/lib/db/database";
+import { closeDatabase, getDatabase } from "@/lib/db/database";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { insertTransaction } from "@/lib/db/repos/transactions_repo";
 import { createWallet } from "@/lib/db/repos/wallets_repo";
@@ -31,6 +31,7 @@ import {
   LoanNotFoundError,
   outstandingBalance,
   PaymentAlreadyMatchedError,
+  PaymentDirectionMismatchError,
   recordAdjustment,
   recordPayment,
   updateLoan,
@@ -523,4 +524,89 @@ test("archiving is idempotent and does not restamp the date", async () => {
 
 test("archiving an unknown id is silent", async () => {
   await expect(archiveLoan("no-such-loan")).resolves.toBeUndefined();
+});
+
+// ---------------------------------------------------------------------------
+// Payment direction — loans rule 17
+// ---------------------------------------------------------------------------
+
+/** A ledger transaction pointing the other way — money ARRIVING. */
+async function inflow(amount: number, at = NOW): Promise<string> {
+  const row = await insertTransaction({
+    walletId: cash.id,
+    categoryId: UNCATEGORIZED_ID,
+    amount,
+    direction: "in",
+    occurredAt: at,
+    source: "manual",
+    confidence: 1,
+  });
+  return row.id;
+}
+
+test("AN OUTFLOW CANNOT PAY A LOAN OWED TO YOU", async () => {
+  // The defect this guard exists for: `loan_payments` records no sign, so an
+  // unguarded link let money the user SPENT reduce a balance a borrower was
+  // supposed to repay — the two directions sharing one set of functions.
+  const loan = await createLoan({
+    direction: "owed-to-me",
+    counterparty: "Kuya Ben",
+    principal: 300000,
+  });
+  const spent = await payment(100000);
+
+  await expect(recordPayment({ loanId: loan.id, transactionId: spent })).rejects.toBeInstanceOf(
+    PaymentDirectionMismatchError,
+  );
+  expect(await outstandingBalance(loan.id)).toBe(300000);
+});
+
+test("AN INFLOW CANNOT PAY A LOAN YOU OWE", async () => {
+  // The symmetric case, and the more damaging one: the inbound transaction is
+  // very likely the user's salary, so accepting it would both erase a debt
+  // nobody paid and pull a payday out of income detection.
+  const loan = await createLoan({
+    direction: "i-owe",
+    counterparty: "GLoan",
+    principal: 500000,
+  });
+  const received = await inflow(100000);
+
+  await expect(recordPayment({ loanId: loan.id, transactionId: received })).rejects.toBeInstanceOf(
+    PaymentDirectionMismatchError,
+  );
+  expect(await outstandingBalance(loan.id)).toBe(500000);
+});
+
+test("an inflow DOES repay a loan owed to you", async () => {
+  const loan = await createLoan({
+    direction: "owed-to-me",
+    counterparty: "Kuya Ben",
+    principal: 300000,
+  });
+
+  await recordPayment({ loanId: loan.id, transactionId: await inflow(120000) });
+
+  expect(await outstandingBalance(loan.id)).toBe(180000);
+});
+
+test("A MISMATCHED PAYMENT ALREADY IN THE DATABASE STOPS COUNTING", async () => {
+  // Rows written before the guard existed. The balance queries filter on the
+  // paying direction too, so a device that already recorded one recovers on
+  // upgrade rather than carrying a wrong balance forever.
+  const loan = await createLoan({
+    direction: "owed-to-me",
+    counterparty: "Kuya Ben",
+    principal: 300000,
+  });
+  const spent = await payment(100000);
+  const db = await getDatabase();
+  await db.runAsync(
+    `INSERT INTO loan_payments (id, loan_id, transaction_id, created_at, updated_at)
+     VALUES ('legacy', ?, ?, ?, ?)`,
+    [loan.id, spent, NOW, NOW],
+  );
+
+  expect(await outstandingBalance(loan.id)).toBe(300000);
+  expect((await listLoans({ includeSettled: false })).map((row) => row.id)).toEqual([loan.id]);
 });

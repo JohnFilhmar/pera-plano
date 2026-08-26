@@ -30,7 +30,25 @@
 import { DEFAULT_LOAN_REMINDER_OFFSETS } from "@/constants/loans";
 import { getDatabase } from "@/lib/db/database";
 import { newId } from "@/lib/ids";
-import type { Centavos, Installment, Loan, LoanDirection, LoanPayment } from "@/types/domain";
+import type {
+  Centavos,
+  Installment,
+  Loan,
+  LoanDirection,
+  LoanPayment,
+  TxDirection,
+} from "@/types/domain";
+
+/**
+ * The ledger direction that PAYS a loan, as SQL over the joined `loans` row.
+ *
+ * The same rule `loans_service.payingDirection` states in TypeScript, written
+ * once here because the balance queries below have to apply it inside SQLite —
+ * summing every linked transaction regardless of sign is exactly how an
+ * owed-to-me balance ends up reduced by money the user spent. Kept as one
+ * constant rather than repeated in each query so the two can never drift.
+ */
+const PAYING_DIRECTION_SQL = "CASE loans.direction WHEN 'i-owe' THEN 'out' ELSE 'in' END";
 
 export type NewLoan = {
   direction: LoanDirection;
@@ -115,6 +133,31 @@ export class PaymentAlreadyMatchedError extends Error {
   constructor(public readonly transactionId: string) {
     super(`transaction already matched to a loan: ${transactionId}`);
     this.name = "PaymentAlreadyMatchedError";
+  }
+}
+
+/**
+ * A transaction cannot pay a loan it points the wrong way (loans rule 17).
+ *
+ * Money LEAVING pays a debt; money ARRIVING repays one owed to you. Nothing in
+ * `loan_payments` records a sign — the amount is read off the linked ledger
+ * transaction — so without this check `outstandingBalance` reduces an
+ * owed-to-me balance by an outflow exactly as readily as by the repayment that
+ * actually arrived. The two directions of a loan are not the same obligation,
+ * and a repo that treats them as one is the "same functions for what I owe"
+ * defect this error exists to make impossible.
+ */
+export class PaymentDirectionMismatchError extends Error {
+  constructor(
+    public readonly loanDirection: LoanDirection,
+    public readonly transactionDirection: TxDirection,
+  ) {
+    super(
+      loanDirection === "i-owe"
+        ? "a loan you owe is paid by money going out, not money coming in"
+        : "a loan owed to you is repaid by money coming in, not money going out",
+    );
+    this.name = "PaymentDirectionMismatchError";
   }
 }
 
@@ -222,6 +265,7 @@ export async function listLoans(opts?: {
           SELECT SUM(transactions.amount) FROM loan_payments
             JOIN transactions ON transactions.id = loan_payments.transaction_id
            WHERE loan_payments.loan_id = loans.id
+             AND transactions.direction = ${PAYING_DIRECTION_SQL}
         ), 0)
       + COALESCE((
           SELECT SUM(amount) FROM loan_adjustments WHERE loan_adjustments.loan_id = loans.id
@@ -343,9 +387,10 @@ export async function recordPayment(input: {
 }): Promise<LoanPayment> {
   const db = await getDatabase();
 
-  const loan = await db.getFirstAsync<{ id: string }>("SELECT id FROM loans WHERE id = ?", [
-    input.loanId,
-  ]);
+  const loan = await db.getFirstAsync<{ id: string; direction: string }>(
+    "SELECT id, direction FROM loans WHERE id = ?",
+    [input.loanId],
+  );
   if (!loan) throw new LoanNotFoundError(input.loanId);
 
   // Checked before the insert so the caller gets a typed error naming the
@@ -355,6 +400,22 @@ export async function recordPayment(input: {
     [input.transactionId],
   );
   if (claimed) throw new PaymentAlreadyMatchedError(input.transactionId);
+
+  // THE DIRECTION IS AN INVARIANT, NOT A RANKING SIGNAL. `findPaymentCandidates`
+  // already filters by it, but this is the only write path into
+  // `loan_payments` and a repository that trusts its callers to have filtered
+  // is a repository with no invariant at all.
+  const transaction = await db.getFirstAsync<{ direction: string }>(
+    "SELECT direction FROM transactions WHERE id = ?",
+    [input.transactionId],
+  );
+  const expected: TxDirection = loan.direction === "i-owe" ? "out" : "in";
+  if (transaction && transaction.direction !== expected) {
+    throw new PaymentDirectionMismatchError(
+      loan.direction as LoanDirection,
+      transaction.direction as TxDirection,
+    );
+  }
 
   const now = Date.now();
   const id = newId();
@@ -389,9 +450,15 @@ export async function listPayments(loanId: string): Promise<LoanPayment[]> {
     created_at: number;
     updated_at: number;
   }>(
+    // Filtered on the paying direction for the same reason
+    // `outstandingBalance` is: a legacy mismatched row no longer moves the
+    // balance, and a history that still counted it would put a payment count
+    // on screen that the balance beside it contradicts.
     `SELECT loan_payments.* FROM loan_payments
        JOIN transactions ON transactions.id = loan_payments.transaction_id
+       JOIN loans ON loans.id = loan_payments.loan_id
       WHERE loan_payments.loan_id = ?
+        AND transactions.direction = ${PAYING_DIRECTION_SQL}
       ORDER BY transactions.occurred_at, loan_payments.created_at`,
     [loanId],
   );
@@ -517,10 +584,17 @@ export async function outstandingBalance(loanId: string): Promise<Centavos> {
   );
   if (!loan) throw new LoanNotFoundError(loanId);
 
+  // ONLY PAYMENTS POINTING THE RIGHT WAY COUNT. `recordPayment` refuses to
+  // link a mismatched transaction, so on a healthy database this clause
+  // changes nothing — it is here for the rows written before that guard
+  // existed, which would otherwise keep reducing an owed-to-me balance by
+  // money that left the user's wallet.
   const paid = await db.getFirstAsync<{ total: number }>(
     `SELECT COALESCE(SUM(transactions.amount), 0) AS total FROM loan_payments
        JOIN transactions ON transactions.id = loan_payments.transaction_id
-      WHERE loan_payments.loan_id = ?`,
+       JOIN loans ON loans.id = loan_payments.loan_id
+      WHERE loan_payments.loan_id = ?
+        AND transactions.direction = ${PAYING_DIRECTION_SQL}`,
     [loanId],
   );
   const adjusted = await db.getFirstAsync<{ total: number }>(
