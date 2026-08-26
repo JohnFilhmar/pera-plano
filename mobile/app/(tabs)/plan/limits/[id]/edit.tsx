@@ -81,6 +81,7 @@ export default function EditLimitScreen() {
         initial={limitFormInitialFrom(status.limit)}
         onSubmit={onSave}
         incomeUsable={(income?.monthlyEquivalent ?? null) !== null}
+        monthlyIncome={income?.monthlyEquivalent ?? null}
         onDeclareIncome={() => router.push("/plan/income")}
         busy={update.isPending}
         submitLabel="Save changes"

@@ -116,6 +116,12 @@ export default function FirstLimitScreen({
         monthlyIncome={income?.monthlyEquivalent ?? null}
         busy={createLimit.isPending}
         onSubmit={submit}
+        // BACK TO THE INCOME STEP, not Plan's /plan/income route. The tabs are
+        // not mounted during onboarding, and the percent-blocked card is the
+        // only thing on this screen that needs a figure the previous step
+        // collects — `router.back()` lands there because income.tsx is what
+        // pushed this screen, and the flow resumes forward from there.
+        onDeclareIncome={goBack}
       />
     </OnboardingFrame>
   );

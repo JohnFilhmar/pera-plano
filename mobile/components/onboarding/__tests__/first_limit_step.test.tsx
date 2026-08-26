@@ -142,14 +142,53 @@ describe("FirstLimitForm", () => {
     expect(screen.getByText("50%")).toBeTruthy();
   });
 
-  test("percent-of-income is hidden entirely when no income was declared, with a note explaining why", () => {
+  // THE OPTION IS ON THE SCREEN EVEN WITH NO INCOME (owner, 2026-08-26: the
+  // step "is missing the % input"). It used to be removed outright, which —
+  // since the income step is skippable — meant most users never saw a
+  // percentage basis at all. What income gates now is the SAVE, exactly as
+  // Plan's own Limit editor has always gated it.
+  test("percent-of-income is offered even with no income, and explains what it needs", () => {
     renderForm(<FirstLimitForm monthlyIncome={null} onSubmit={jest.fn()} />);
 
-    expect(screen.queryByTestId("first-limit-basis-percent")).toBeNull();
+    expect(screen.getByTestId("first-limit-basis-percent")).toBeTruthy();
     expect(screen.getByTestId("first-limit-no-income-note")).toBeTruthy();
+
+    fireEvent.press(screen.getByTestId("first-limit-basis-percent"));
+
+    // The blocked card replaces the preview sentence — a percent limit with no
+    // income resolves to null, and "₱0.00 every month" would be a figure the
+    // app cannot stand behind.
+    expect(screen.getByTestId("first-limit-percent-blocked")).toBeTruthy();
+    expect(screen.queryByTestId("first-limit-preview")).toBeNull();
   });
 
-  test("percent-of-income is offered once income is known, and the preview reflects it", () => {
+  test("a percent limit cannot be saved while income is unknown", () => {
+    const onSubmit = jest.fn();
+    renderForm(<FirstLimitForm monthlyIncome={null} onSubmit={onSubmit} />);
+
+    fireEvent.press(screen.getByTestId("first-limit-basis-percent"));
+    typeAmount("first-limit-percent", "20");
+    fireEvent.press(screen.getByTestId("first-limit-save"));
+
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  test("the blocked card offers the way out, and switching back to fixed is the other", () => {
+    const onDeclareIncome = jest.fn();
+    renderForm(
+      <FirstLimitForm monthlyIncome={null} onSubmit={jest.fn()} onDeclareIncome={onDeclareIncome} />,
+    );
+
+    fireEvent.press(screen.getByTestId("first-limit-basis-percent"));
+    fireEvent.press(screen.getByTestId("first-limit-declare-income"));
+    expect(onDeclareIncome).toHaveBeenCalledTimes(1);
+
+    fireEvent.press(screen.getByTestId("first-limit-basis-fixed"));
+    expect(screen.queryByTestId("first-limit-percent-blocked")).toBeNull();
+    expect(screen.getByTestId("first-limit-preview")).toBeTruthy();
+  });
+
+  test("percent-of-income resolves once income is known, and the preview reflects it", () => {
     // ₱30,000.00 monthly income.
     renderForm(<FirstLimitForm monthlyIncome={3_000_000} onSubmit={jest.fn()} />);
 
@@ -296,13 +335,23 @@ describe("FirstLimitScreen", () => {
     expect(entered!.value).toBe(200_000);
   });
 
-  test("percent-of-income is unavailable until an income has actually been declared", async () => {
+  test("percent-of-income is offered on the routed step even before income exists", async () => {
     await renderScreen();
-    expect(screen.queryByTestId("first-limit-no-income-note")).toBeTruthy();
-    expect(screen.queryByTestId("first-limit-basis-percent")).toBeNull();
+
+    expect(screen.getByTestId("first-limit-no-income-note")).toBeTruthy();
+    expect(screen.getByTestId("first-limit-basis-percent")).toBeTruthy();
+
+    fireEvent.press(screen.getByTestId("first-limit-basis-percent"));
+
+    // And the route wires the card's escape hatch back to the income step it
+    // was pushed from, rather than to Plan's /plan/income — the tabs are not
+    // mounted during onboarding.
+    expect(screen.getByTestId("first-limit-percent-blocked")).toBeTruthy();
+    fireEvent.press(screen.getByTestId("first-limit-declare-income"));
+    expect(mockBack).toHaveBeenCalledTimes(1);
   });
 
-  test("once income is declared, percent-of-income becomes available on this same step", async () => {
+  test("once income is declared, a percent limit can actually be saved on this same step", async () => {
     await setManualIncome(
       { cadence: "monthly", averageAmount: 3_000_000, sourceWalletIds: [] },
       Date.now(),
@@ -310,7 +359,22 @@ describe("FirstLimitScreen", () => {
 
     await renderScreen();
 
-    await waitFor(() => expect(screen.getByTestId("first-limit-basis-percent")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.queryByTestId("first-limit-no-income-note")).toBeNull(),
+    );
+
+    fireEvent.press(screen.getByTestId("first-limit-basis-percent"));
+    expect(screen.queryByTestId("first-limit-percent-blocked")).toBeNull();
+
+    typeAmount("first-limit-percent", "20");
+    fireEvent.press(screen.getByTestId("first-limit-save"));
+
+    await waitFor(async () => expect(await listLimits()).toHaveLength(4));
+
+    const entered = (await listLimits()).find((candidate) => candidate.derivedFrom === null);
+    expect(entered!.basis).toBe("percent-of-income");
+    // The trap task-3-brief warns about, end to end: 20% stores 2000, not 20.
+    expect(entered!.value).toBe(2000);
   });
 
   test("skipping creates no Limit at all and still advances", async () => {
