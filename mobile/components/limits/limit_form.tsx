@@ -33,6 +33,16 @@
 // `formatCentavos` string ("₱8,000.00") separately — the two are genuinely
 // different strings for the same amount, not one control drawn twice.
 //
+// THE PERCENT FIELD SHOWS WHAT THE PERCENTAGE COMES TO (2026-08-26), the same
+// live sentence the onboarding first-Limit step has always had. "20%" on its
+// own is not a limit a person can judge; "₱6,000.00 every month is about
+// ₱197.26 a day" is. Both screens render components/limits/limit_preview.tsx
+// rather than each computing it, so the figure quoted here and the figure the
+// engine later enforces come from the same `baseFor`/`dailyRateOf` pair. The
+// fixed branch keeps its own centavos-exact `limit-amount-preview` line (see
+// below) — that one restates what was keyed, this one resolves what was keyed
+// against income, and they are different questions.
+//
 // "Warn me at" IS INFORMATIONAL, NOT A PICKER. The design board describes all
 // three ListRows as "each opening its existing picker", but
 // `types/domain.ts`'s `LimitThreshold = 50 | 80 | 100` is a fixed union —
@@ -44,6 +54,7 @@
 import { useState } from "react";
 import { Switch, Text, View } from "react-native";
 
+import { LimitPreview } from "@/components/limits/limit_preview";
 import { BottomSheet } from "@/components/ui/bottom_sheet";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -54,7 +65,14 @@ import { NumericField } from "@/components/ui/numeric_field";
 import { SegmentedControl } from "@/components/ui/segmented_control";
 import { percentToValue, valueToPercent } from "@/lib/limits/limit_input";
 import { centavosFrom, pesoInputFrom } from "@/lib/money/peso_input";
-import type { Category, Limit, LimitBasis, LimitScope, Wallet } from "@/types/domain";
+import type {
+  Category,
+  Centavos,
+  Limit,
+  LimitBasis,
+  LimitScope,
+  Wallet,
+} from "@/types/domain";
 
 const SCOPES: readonly LimitScope[] = ["daily", "weekly", "monthly", "annual"];
 
@@ -108,6 +126,13 @@ export type LimitFormProps = {
   onSubmit: (values: LimitFormValues) => void;
   /** True when the app knows a monthly-equivalent income it can multiply. */
   incomeUsable: boolean;
+  /**
+   * The income figure itself, for the percent preview below. Separate from
+   * `incomeUsable` rather than replacing it: the routes have carried that
+   * boolean since m2 Task 8 and `null` is not the only way a percent basis can
+   * be unusable. `null` simply means no sentence is drawn.
+   */
+  monthlyIncome?: Centavos | null;
   /** Opens the income flow from the percent-of-income guard. */
   onDeclareIncome: () => void;
   busy?: boolean;
@@ -152,6 +177,7 @@ function seedFor(basis: LimitBasis, value: number | undefined): { peso: string; 
 export function LimitForm({
   onSubmit,
   incomeUsable,
+  monthlyIncome = null,
   onDeclareIncome,
   busy = false,
   initial,
@@ -298,6 +324,19 @@ export function LimitForm({
                 />
               ))}
             </View>
+            {/* Only when there is an income to resolve against — the blocked
+                card just below is what the other case gets, and drawing
+                "₱0.00 every month" beside it would contradict it. */}
+            {percentBlocked || monthlyIncome === null ? null : (
+              <LimitPreview
+                testID="limit-percent-preview"
+                basis={basis}
+                value={value}
+                scope={scope}
+                monthlyIncome={monthlyIncome}
+                className="mt-2 text-center text-fg-2 dark:text-fg-2-dark"
+              />
+            )}
           </>
         )}
 
