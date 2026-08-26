@@ -150,6 +150,19 @@ export const queryKeys = {
      */
     candidates: (id: string, includeBelowFloor: boolean = false) =>
       ["loans", "detail", id, "candidates", includeBelowFloor] as const,
+    /**
+     * This loan's payments and balance adjustments as one list
+     * (`listLoanHistory`, spec rules 7 and 13).
+     *
+     * UNDER `detail(id)` for the same reason `candidates` is: every write that
+     * can change it — a confirmed match, a manually recorded payment, an
+     * adjustment — already invalidates `loans.all`, and prefix matching carries
+     * that straight through. A sibling root would need each of those three
+     * mutations to remember a second key, and the failure would be a history
+     * section that still shows the balance's old story right underneath the new
+     * balance.
+     */
+    history: (id: string) => ["loans", "detail", id, "history"] as const,
   },
   bills: {
     all: ["bills"] as const,

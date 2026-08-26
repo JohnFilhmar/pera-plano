@@ -44,11 +44,13 @@ import { getSetting, setSetting } from "@/lib/db/repos/app_settings_repo";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import {
   createLoan,
+  listAdjustments,
   listLoans,
+  listPayments,
   outstandingBalance,
   recordPayment,
 } from "@/lib/db/repos/loans_repo";
-import { insertTransaction } from "@/lib/db/repos/transactions_repo";
+import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions_repo";
 import { createWallet } from "@/lib/db/repos/wallets_repo";
 import { __setTierForTests } from "@/lib/entitlements";
 import { queryClient as appQueryClient } from "@/lib/query_client";
@@ -394,4 +396,150 @@ test("a loan that no longer exists says so", async () => {
 
   await screen.findByTestId("loan-detail-missing");
   screen.getByText("This loan is gone");
+});
+
+// ---------------------------------------------------------------------------
+// Recording a payment by hand — the spec's "Flow: manual payment recording"
+// ---------------------------------------------------------------------------
+//
+// THESE TWO TESTS EXIST BECAUSE THE FLOW HAD NO CALLER. `recordManualPayment`
+// and `useRecordPayment` were both written, both tested, and imported by
+// nothing — so the app shipped with no way at all to record a collector taking
+// cash or a cousin handing money back, which are the two situations the loans
+// feature was written for. The DIRECTION assertion is the load-bearing half:
+// the two directions of a loan are not one obligation, and a repayment written
+// as an outflow corrupts the loan balance and the user's income detection at
+// once (rules 8 and 17), with nothing on screen to announce either.
+test("RECORDING A PAYMENT ON AN I-OWE LOAN WRITES MONEY OUT AND MOVES THE BALANCE", async () => {
+  const loan = await createLoan({
+    direction: "i-owe",
+    counterparty: "Aling Nena",
+    principal: 600000,
+  });
+  mockParams = { id: loan.id };
+
+  renderScreen(<LoanDetailScreen />);
+  await screen.findByTestId("loan-record-payment");
+
+  fireEvent.press(screen.getByTestId("loan-record-payment"));
+  await screen.findByTestId("record-payment-sheet");
+  typeAmount("loan-payment-amount", "500");
+  fireEvent.press(screen.getByTestId(`loan-payment-wallet-${cash.id}`));
+  fireEvent.press(screen.getByTestId("loan-payment-confirm"));
+
+  await waitFor(async () => expect(await outstandingBalance(loan.id)).toBe(600000 - 50000));
+
+  const written = await listTransactions({ walletId: cash.id });
+  expect(written).toHaveLength(1);
+  // `out`: money LEAVING pays a debt (rule 17, and `PaymentDirectionMismatchError`).
+  expect(written[0].direction).toBe("out");
+  expect(written[0].amount).toBe(50000);
+  expect(written[0].source).toBe("manual");
+  // Rule 18's default, which applies to I-owe loans only.
+  expect(written[0].categoryId).toBe("cat_utang_loan_payments");
+  // Rule 7: both writes or neither — the transaction is linked, not free-floating.
+  expect((await listPayments(loan.id)).map((payment) => payment.transactionId)).toEqual([
+    written[0].id,
+  ]);
+});
+
+test("RECORDING A PAYMENT ON AN OWED-TO-ME LOAN WRITES MONEY IN AND MOVES THE BALANCE", async () => {
+  const loan = await createLoan({
+    direction: "owed-to-me",
+    counterparty: "Kuya Ben",
+    principal: 300000,
+  });
+  mockParams = { id: loan.id };
+
+  renderScreen(<LoanDetailScreen />);
+  await screen.findByTestId("loan-record-payment");
+  // The copy flips with the loan, because the user did not pay anything here —
+  // somebody paid THEM, and "Record a payment" over a form that will write money
+  // INTO their wallet describes the wrong side of the transaction.
+  screen.getByText("Record what they paid");
+
+  fireEvent.press(screen.getByTestId("loan-record-payment"));
+  await screen.findByTestId("record-payment-sheet");
+  typeAmount("loan-payment-amount", "1000");
+  fireEvent.press(screen.getByTestId(`loan-payment-wallet-${cash.id}`));
+  fireEvent.press(screen.getByTestId("loan-payment-confirm"));
+
+  await waitFor(async () => expect(await outstandingBalance(loan.id)).toBe(300000 - 100000));
+
+  const written = await listTransactions({ walletId: cash.id });
+  expect(written).toHaveLength(1);
+  // `in`: money ARRIVING repays a loan owed to you. The user never chose this —
+  // there is no direction control on the sheet at all.
+  expect(written[0].direction).toBe("in");
+  expect(written[0].amount).toBe(100000);
+  // NOT the Utang category. Rule 18 is about I-owe loans; filing an arriving
+  // repayment under the category that names the user's OWN debts is what makes
+  // it read, in the ledger and in Reports, as if they had paid something.
+  expect(written[0].categoryId).toBe(UNCATEGORIZED_ID);
+});
+
+// ---------------------------------------------------------------------------
+// Balance adjustments — rule 13
+// ---------------------------------------------------------------------------
+test("AN ADJUSTMENT WITH A BLANK NOTE IS REFUSED IN WORDS, NOT BY THROWING", async () => {
+  // `recordAdjustment` throws `AdjustmentNoteRequiredError` on a blank note and
+  // should keep doing so — every caller must meet that rule. But an error class
+  // is not a message: reaching the user, it is an unhandled rejection over a
+  // half-filled form. The sheet checks first so the throw is unreachable from
+  // here, and this test pins that the refusal is a sentence, that it says WHY,
+  // and that nothing was written.
+  const loan = await createLoan({ direction: "i-owe", counterparty: "GLoan", principal: 500000 });
+  mockParams = { id: loan.id };
+
+  renderScreen(<LoanDetailScreen />);
+  await screen.findByTestId("loan-record-adjustment");
+
+  fireEvent.press(screen.getByTestId("loan-record-adjustment"));
+  await screen.findByTestId("balance-adjustment-sheet");
+  typeAmount("loan-adjustment-amount", "150");
+  fireEvent.press(screen.getByTestId("loan-adjustment-confirm"));
+
+  await screen.findByTestId("loan-adjustment-note-error");
+  screen.getByText(/only record of why the balance changed/);
+  // Nothing written, and the sheet is still standing rather than torn down by a
+  // thrown error the user never asked to see.
+  expect(await listAdjustments(loan.id)).toEqual([]);
+  expect(await outstandingBalance(loan.id)).toBe(500000);
+  expect(screen.getByTestId("balance-adjustment-sheet")).toBeTruthy();
+});
+
+test("AN ADJUSTMENT MOVES THE BALANCE AND SHOWS IN HISTORY MARKED AS AN ADJUSTMENT", async () => {
+  // Rule 12: "The app never applies penalties or late fees on its own; if the
+  // lender charges one, the user records it as a balance adjustment." Rule 13
+  // then requires it to appear "clearly marked as an adjustment, not a payment"
+  // — so the marking and the note are asserted, not only the arithmetic.
+  const loan = await createLoan({ direction: "i-owe", counterparty: "GLoan", principal: 500000 });
+  mockParams = { id: loan.id };
+
+  renderScreen(<LoanDetailScreen />);
+  await screen.findByTestId("loan-record-adjustment");
+
+  fireEvent.press(screen.getByTestId("loan-record-adjustment"));
+  await screen.findByTestId("balance-adjustment-sheet");
+  typeAmount("loan-adjustment-amount", "150");
+  fireEvent.changeText(screen.getByTestId("loan-adjustment-note"), "Late fee from GLoan");
+  fireEvent.press(screen.getByTestId("loan-adjustment-confirm"));
+
+  // "Adds to what I owe" is the sheet's default, so the balance goes UP — the
+  // one thing a payment can never do, and the reason the sign is asked in words
+  // rather than typed.
+  await waitFor(async () => expect(await outstandingBalance(loan.id)).toBe(500000 + 15000));
+
+  const [adjustment] = await listAdjustments(loan.id);
+  expect(adjustment.amount).toBe(15000);
+  expect(adjustment.note).toBe("Late fee from GLoan");
+  // NO LEDGER ROW, which is the whole difference from a payment: the money never
+  // touched a wallet the app tracks, so writing one would leave that wallet's
+  // balance wrong by exactly the amount.
+  expect(await listTransactions({ walletId: cash.id })).toEqual([]);
+
+  await screen.findByTestId(`loan-history-adjustment-${adjustment.id}`);
+  screen.getByText("Adjustment");
+  screen.getByText("Late fee from GLoan");
+  screen.getByText(/Adjustment, not a payment/);
 });
