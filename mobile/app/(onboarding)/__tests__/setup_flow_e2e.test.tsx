@@ -49,7 +49,11 @@ import { listWallets } from "@/lib/db/repos/wallets_repo";
 import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
-import { isAccessGranted, listObservedPackages } from "@/modules/notification_listener";
+import {
+  isAccessGranted,
+  listObservedPackages,
+  openAccessSettings,
+} from "@/modules/notification_listener";
 import type { ObservedPackage } from "@/modules/notification_listener";
 
 import OnboardingLayout from "../_layout";
@@ -64,6 +68,7 @@ import DoneScreen from "../done";
 
 const mockIsAccessGranted = isAccessGranted as jest.Mock;
 const mockListObservedPackages = listObservedPackages as jest.Mock;
+const mockOpenAccessSettings = openAccessSettings as jest.Mock;
 
 const GCASH = "com.globe.gcash.android";
 
@@ -133,6 +138,27 @@ function pressPrimary() {
 
 function pressSkip() {
   fireEvent.press(screen.getByTestId("onboarding-skip-link"));
+}
+
+function pressBack() {
+  fireEvent.press(screen.getByTestId("onboarding-back-button"));
+}
+
+/** welcome -> how_it_works -> access, the two taps every test below starts with. */
+async function walkToAccess() {
+  pressPrimary();
+  await waitFor(() => expect(screen.getByTestId("how-it-works-mechanism")).toBeTruthy());
+  pressPrimary();
+  await waitFor(() => expect(screen.getByTestId("access-explainer")).toBeTruthy());
+}
+
+/** The access step's own "tap through to Settings and come back" round trip. */
+async function returnFromAccessSettings() {
+  await act(async () => {
+    emitAppState("active");
+    await Promise.resolve();
+    await Promise.resolve();
+  });
 }
 
 beforeEach(async () => {
@@ -261,6 +287,58 @@ test("a user who taps through every step reaches the end, and onboarding actuall
   await waitFor(() => expect(screen.getByTestId("home-stub")).toBeTruthy());
   expect(screen.queryByTestId("done-step-intro")).toBeNull();
   expect(screen.queryByTestId("onboarding-frame")).toBeNull();
+});
+
+// ---------------------------------------------------------------------------
+// Going BACK into a step that has already been left once. The owner's report:
+// "pressing 'skip for now' during permissions gets the user stuck on toggling
+// notification ... accidentally presses back, and stuck toggling the
+// permissions on and off unless the user goes back one more step and proceeds".
+//
+// `router.push` leaves the pushing screen mounted underneath the pushed one, so
+// a back gesture re-enters a LIVE component rather than a fresh one, and
+// access.tsx's `advancedRef` double-tap latch was still tripped from the first
+// visit -- every forward affordance on the second visit called `advance()` and
+// returned silently. Only these two tests can catch that class of defect: they
+// drive the REAL router, and the latch is invisible to any suite that renders
+// the screen once.
+// ---------------------------------------------------------------------------
+
+test("skipping the access step and then going back to it leaves it able to move on again", async () => {
+  renderFlow();
+  await walkToAccess();
+
+  pressSkip();
+  await waitFor(() => expect(screen.getByTestId("battery-explainer")).toBeTruthy());
+
+  pressBack();
+  await waitFor(() => expect(screen.getByTestId("access-explainer")).toBeTruthy());
+
+  // THE REGRESSION: this second skip used to do nothing at all.
+  pressSkip();
+  await waitFor(() => expect(screen.getByTestId("battery-explainer")).toBeTruthy());
+});
+
+test("going back to the access step after granting continues without asking for the permission again", async () => {
+  renderFlow();
+  await walkToAccess();
+
+  pressPrimary();
+  await returnFromAccessSettings();
+  await waitFor(() => expect(screen.getByTestId("battery-explainer")).toBeTruthy());
+
+  pressBack();
+  await waitFor(() => expect(screen.getByTestId("access-explainer")).toBeTruthy());
+
+  // The permission is already on, so re-entering the step must not send the
+  // user back into Settings to toggle a switch that is already in the right
+  // position -- the primary action is a plain Continue.
+  await waitFor(() => expect(screen.getByText("Continue")).toBeTruthy());
+  mockOpenAccessSettings.mockClear();
+
+  pressPrimary();
+  await waitFor(() => expect(screen.getByTestId("battery-explainer")).toBeTruthy());
+  expect(mockOpenAccessSettings).not.toHaveBeenCalled();
 });
 
 test("a user who skips everything skippable still reaches the end, and onboarding actually completes", async () => {
