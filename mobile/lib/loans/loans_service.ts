@@ -37,6 +37,7 @@ import type {
   Centavos,
   EpochMs,
   Loan,
+  LoanDirection,
   LoanPayment,
   Transaction,
   TxDirection,
@@ -292,6 +293,47 @@ export async function listLoanStatuses(now: number): Promise<LoanStatus[]> {
 }
 
 /**
+ * The three figures a loan is scored AGAINST: what is still owed, what the next
+ * installment asks for, and when it is asked for.
+ *
+ * EXTRACTED SO THE TWO DIRECTIONS OF THE SAME QUESTION CANNOT DRIFT.
+ * `findPaymentCandidates` asks "which transactions might pay THIS loan?" and
+ * `findLoanMatchesForTransaction` asks "which loans might THIS transaction
+ * pay?" — one screen, one post-commit hook, and the user sees both answers
+ * about the same pair of rows. Two copies of this derivation would eventually
+ * disagree about whether a free-form utang has an expected amount, and the
+ * visible symptom would be a Review Queue card suggesting a loan whose own
+ * detail screen does not offer the transaction back.
+ *
+ * `null` means SETTLED — outstanding at or below zero — which is not a weak
+ * basis but the absence of one: spec rule 20 keeps a settled loan and its
+ * history visible, and nothing may be suggested against it.
+ */
+type MatchBasis = {
+  outstanding: Centavos;
+  /** `null` for a free-form loan with no schedule and no user-set next due. */
+  expectedAmount: Centavos | null;
+  /** `null` when the loan has no date to compare a timestamp against. */
+  dueDate: string | null;
+};
+
+async function matchBasisFor(loan: Loan): Promise<MatchBasis | null> {
+  const outstanding = await outstandingBalance(loan.id);
+  if (outstanding <= 0) return null;
+
+  const due = nextDue(loan, loan.principal - outstanding) ?? {
+    dueDate: loan.nextDueDate ?? "",
+    amount: loan.nextDueAmount ?? 0,
+  };
+
+  return {
+    outstanding,
+    expectedAmount: due.amount > 0 ? due.amount : null,
+    dueDate: due.dueDate === "" ? null : due.dueDate,
+  };
+}
+
+/**
  * Scores one transaction against one loan, 0..1, using spec rule 8's signals.
  *
  * Signals (a) and (b) — explicit provider loan events and an existing UserRule
@@ -303,9 +345,7 @@ export async function listLoanStatuses(now: number): Promise<LoanStatus[]> {
 function scoreCandidate(
   loan: Loan,
   transaction: Transaction,
-  expectedAmount: Centavos | null,
-  dueDate: string | null,
-  outstanding: Centavos,
+  { expectedAmount, dueDate, outstanding }: MatchBasis,
 ): { score: number; reasons: string[] } {
   let score = 0;
   const reasons: string[] = [];
@@ -399,14 +439,9 @@ export async function findPaymentCandidates(
   const loan = await getLoan(loanId);
   if (loan === null) return [];
 
-  const outstanding = await outstandingBalance(loanId);
+  const basis = await matchBasisFor(loan);
   // A settled loan wants no payments suggested against it.
-  if (outstanding <= 0) return [];
-
-  const due = nextDue(loan, loan.principal - outstanding) ?? {
-    dueDate: loan.nextDueDate ?? "",
-    amount: loan.nextDueAmount ?? 0,
-  };
+  if (basis === null) return [];
 
   const transactions = await listTransactions({
     from: now - CANDIDATE_WINDOW_DAYS * DAY_MS,
@@ -429,17 +464,109 @@ export async function findPaymentCandidates(
       occurredAt: transaction.occurredAt,
       merchant: transaction.merchant ?? null,
       counterparty: transaction.counterparty ?? null,
-      ...scoreCandidate(
-        loan,
-        transaction,
-        due.amount > 0 ? due.amount : null,
-        due.dueDate === "" ? null : due.dueDate,
-        outstanding,
-      ),
+      ...scoreCandidate(loan, transaction, basis),
     }))
     .filter((candidate) => includeBelowFloor || candidate.score >= CANDIDATE_FLOOR)
     .sort((a, b) => b.score - a.score || b.occurredAt - a.occurredAt)
     .slice(0, limit);
+}
+
+/**
+ * THE OTHER DIRECTION OF THE SAME QUESTION: which open loans might THIS one
+ * transaction pay, best first.
+ *
+ * `findPaymentCandidates` above answers "given a loan, which transactions?" and
+ * is driven by a screen — the user has already decided which loan they are
+ * looking at. This one answers "given a transaction, which loans?" and is
+ * driven by the LEDGER, which is the half spec rule 8 actually describes:
+ * "After a Transaction commits to the ledger, the matcher scores it against
+ * open loans." Without it, a repayment that lands on a Tuesday is invisible
+ * until the user happens to open Plan -> Loans and look.
+ *
+ * ONE SCORER, NOT TWO. Both call `scoreCandidate` over the same `MatchBasis`,
+ * so a transaction the queue offers is a transaction the loan's own detail
+ * screen offers back, with the same score and the same reasons. A second
+ * formula here is exactly how the two surfaces would end up contradicting each
+ * other about the user's money — and neither would look wrong on its own.
+ *
+ * THE DIRECTION FILTER IS AN INVARIANT, NOT A SIGNAL (plan rule 3, and
+ * `recordPayment`'s own guard). A loan with `direction: 'i-owe'` is paid only
+ * by an `out` transaction and `'owed-to-me'` only by an `in` one. A mismatch is
+ * excluded here rather than scored low, because there is no score at which
+ * counting a salary as a payment on a debt is correct — `recordPayment` would
+ * throw `PaymentDirectionMismatchError` on confirm, and the user would be left
+ * holding a card that cannot be accepted or explained.
+ *
+ * NOTHING HERE AUTO-MATCHES, AT ANY SCORE. Spec rule 9: only an explicit
+ * provider loan event with an unambiguous single-loan mapping may, and those
+ * are not modelled yet. Returning every plausible loan rather than the top one
+ * is the rest of that rule — "if two or more open loans are plausible for one
+ * Transaction, it is always a suggestion listing the candidates".
+ */
+export type LoanMatchCandidate = {
+  loanId: string;
+  counterparty: string;
+  direction: LoanDirection;
+  /** What is still owed on this loan, for the card to show beside the amount. */
+  outstanding: Centavos;
+  /** 0..1, the same scale and the same weights `PaymentCandidate.score` carries. */
+  score: number;
+  /** Why this loan was offered, in the user's words — see `PaymentCandidate.reasons`. */
+  reasons: string[];
+};
+
+export async function findLoanMatchesForTransaction(
+  transaction: Transaction,
+): Promise<LoanMatchCandidate[]> {
+  // ALREADY CLAIMED MEANS NOTHING TO SUGGEST (invariant I12: one transaction
+  // pays at most one loan). The same guard `findPaymentCandidates` applies from
+  // the other side — a suggestion the user cannot accept is worse than no
+  // suggestion, because they will try.
+  //
+  // SCANNED OVER **EVERY** LOAN, INCLUDING THE SETTLED AND ARCHIVED ONES, and
+  // that is not defensive padding: the payment that claimed a transaction is
+  // usually the payment that SETTLED its loan, so the loan holding the claim is
+  // precisely the one an open-loans-only scan cannot see. Narrowing this to the
+  // scoring list below would let a transaction already recorded against a
+  // cleared utang be offered again to the next loan with the same counterparty.
+  const claimants = await listLoans({ includeArchived: true });
+  for (const loan of claimants) {
+    const payments = await listPayments(loan.id);
+    if (payments.some((payment) => payment.transactionId === transaction.id)) return [];
+  }
+
+  const matches: LoanMatchCandidate[] = [];
+
+  // Open loans only for the scoring pass — spec rule 20 keeps a settled loan
+  // visible with its history, and nothing may be suggested against it.
+  for (const loan of await listLoans({ includeSettled: false })) {
+    if (payingDirection(loan) !== transaction.direction) continue;
+
+    // `listLoans({ includeSettled: false })` already filters on the same
+    // arithmetic, and this still re-checks: that SQL predicate and
+    // `outstandingBalance` are two expressions of one rule, and the basis is
+    // needed here anyway.
+    const basis = await matchBasisFor(loan);
+    if (basis === null) continue;
+
+    const { score, reasons } = scoreCandidate(loan, transaction, basis);
+    if (score < CANDIDATE_FLOOR) continue;
+
+    matches.push({
+      loanId: loan.id,
+      counterparty: loan.counterparty,
+      direction: loan.direction,
+      outstanding: basis.outstanding,
+      score,
+      reasons,
+    });
+  }
+
+  // Best first, ties broken by the older loan — a borrower repaying two utangs
+  // is far likelier to be settling the one that has been open longest, and
+  // `listLoans` already returns them in `created_at` order for a stable sort to
+  // preserve.
+  return matches.sort((a, b) => b.score - a.score);
 }
 
 /**

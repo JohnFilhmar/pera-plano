@@ -30,7 +30,9 @@ import type { ReactNode } from "react";
 import { KeypadHost } from "@/components/ui/keypad_host";
 import { KeypadProvider } from "@/contexts/keypad_context";
 import { closeDatabase } from "@/lib/db/database";
-import { seedDefaultCategories } from "@/lib/db/repos/categories_repo";
+import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
+import { createLoan, listPayments, outstandingBalance } from "@/lib/db/repos/loans_repo";
+import { raiseLoanMatchSuggestion } from "@/lib/loans/loan_match_queue";
 import { countOpen, enqueue, resolve } from "@/lib/db/repos/review_queue_repo";
 import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions_repo";
 import { listUserRules } from "@/lib/db/repos/user_rules_repo";
@@ -38,7 +40,7 @@ import { createWallet } from "@/lib/db/repos/wallets_repo";
 import { GATE_REASONS } from "@/lib/ingest/confidence_gate";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
-import type { NewReviewItem, ReviewQueueItem } from "@/types/domain";
+import type { NewReviewItem, ReviewQueueItem, Transaction } from "@/types/domain";
 
 import ReviewQueueScreen, {
   REVIEW_EMPTY_BODY,
@@ -428,5 +430,117 @@ describe("triaging from the queue", () => {
 
     await screen.findByTestId(`review-primary-${queued.id}`);
     expect(screen.queryByTestId(`review-reject-${queued.id}`)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The fifth kind — loan-match (docs/04-features/06-loans.md rules 8-10)
+// ---------------------------------------------------------------------------
+//
+// THE ONE CARD ABOUT A ROW THAT IS ALREADY IN THE LEDGER. Every other kind asks
+// "should this become a Transaction?"; this one asks "does this Transaction,
+// which is already committed and already counted, also pay down a loan?" The
+// two failure modes worth an end-to-end test are both about the app deciding
+// something it may not decide:
+//
+//   ONE CANDIDATE is a confirmation, and the primary carries the loan's NAME so
+//   the user is never agreeing to an unnamed balance change.
+//
+//   TWO CANDIDATES is a CHOICE, and rule 9 forbids the app from making it: "it
+//   is always a suggestion listing the candidates — never an auto-match." The
+//   screen withholds `onPrimary` entirely so the big green button cannot pick
+//   the top-scoring loan on the user's behalf.
+describe("loan-match cards", () => {
+  /** A committed repayment, already in the ledger — the state this card is about. */
+  async function committedRepayment(amount: number): Promise<Transaction> {
+    return insertTransaction({
+      walletId,
+      categoryId: UNCATEGORIZED_ID,
+      amount,
+      direction: "in",
+      occurredAt: NOW - HOUR,
+      merchant: "BEN SANTOS",
+      source: "manual",
+      confidence: 1,
+    });
+  }
+
+  async function utang() {
+    return createLoan({
+      direction: "owed-to-me",
+      counterparty: "Ben Santos",
+      principal: 200000,
+    });
+  }
+
+  test("one candidate: the primary names the loan and records the payment", async () => {
+    const loan = await utang();
+    const transaction = await committedRepayment(200000);
+    const itemId = (await raiseLoanMatchSuggestion(transaction)) as string;
+
+    await renderScreen();
+    const primary = await screen.findByTestId(`review-primary-${itemId}`);
+    // NAMED, not "Record this payment". A user confirming a balance change is
+    // owed the name of the balance it changes.
+    expect(screen.getByText("Record on Ben Santos")).toBeTruthy();
+
+    fireEvent.press(primary);
+
+    await waitFor(async () => expect(await countOpen()).toBe(0));
+    expect(await listPayments(loan.id)).toHaveLength(1);
+    expect(await outstandingBalance(loan.id)).toBe(0);
+  });
+
+  test("TWO CANDIDATES: THE CARD LISTS BOTH AND THE PRIMARY CANNOT PICK ONE", async () => {
+    const first = await utang();
+    const second = await utang();
+    const transaction = await committedRepayment(200000);
+    const itemId = (await raiseLoanMatchSuggestion(transaction)) as string;
+
+    await renderScreen();
+
+    // Rule 9. The primary renders (the pair is definitional to the kind) and is
+    // DISABLED, because the screen supplies no handler for a question with two
+    // right-shaped answers.
+    const primary = await screen.findByTestId(`review-primary-${itemId}`);
+    expect(primary.props.accessibilityState?.disabled).toBe(true);
+
+    // Both loans get their own button. Tapping one is the user choosing.
+    expect(screen.getByTestId(`review-loan-choice-${itemId}-${first.id}`)).toBeTruthy();
+    fireEvent.press(screen.getByTestId(`review-loan-choice-${itemId}-${second.id}`));
+
+    await waitFor(async () => expect(await countOpen()).toBe(0));
+    expect(await listPayments(second.id)).toHaveLength(1);
+    // And the loan the user did NOT pick is untouched — the whole point of
+    // refusing to guess.
+    expect(await listPayments(first.id)).toHaveLength(0);
+  });
+
+  test("'Not a loan payment' closes the card and leaves the ledger alone", async () => {
+    // Spec rule 10: rejecting never creates a negative UserRule automatically,
+    // and the transaction stays exactly where it is.
+    const loan = await utang();
+    const transaction = await committedRepayment(200000);
+    const itemId = (await raiseLoanMatchSuggestion(transaction)) as string;
+
+    await renderScreen();
+    fireEvent.press(await screen.findByTestId(`review-secondary-${itemId}`));
+
+    await waitFor(async () => expect(await countOpen()).toBe(0));
+    expect(await listPayments(loan.id)).toHaveLength(0);
+    expect(await outstandingBalance(loan.id)).toBe(200000);
+    expect(await listUserRules()).toEqual([]);
+    // The row it was about is still in the ledger, untouched.
+    expect((await listTransactions({})).map((row) => row.id)).toEqual([transaction.id]);
+  });
+
+  test("a loan-match card offers no separate reject — its secondary IS the rejection", async () => {
+    await utang();
+    const itemId = (await raiseLoanMatchSuggestion(await committedRepayment(200000))) as string;
+
+    await renderScreen();
+
+    await screen.findByTestId(`review-primary-${itemId}`);
+    expect(screen.queryByTestId(`review-reject-${itemId}`)).toBeNull();
   });
 });

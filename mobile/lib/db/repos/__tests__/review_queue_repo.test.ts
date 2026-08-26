@@ -16,7 +16,7 @@ afterEach(async () => {
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 
-// All four kinds, spelled the way the SHIPPED types/domain.ts and the
+// All FIVE kinds, spelled the way the SHIPPED types/domain.ts and the
 // review_queue_items CHECK constraint spell them (hyphenated). The Task 13
 // plan text sketched underscored names ("low_confidence", ...) plus a
 // "possible_transfer" kind that doesn't exist anywhere in the shipped schema
@@ -24,11 +24,19 @@ const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 // reconciling it against what Tasks 7-8 actually shipped. Coordinator ruling:
 // implement and test against the shipped vocabulary; see task-13-report.md
 // "Escalation" for the full history.
+//
+// `loan-match` is the fifth, added by 011_loan_match_review_kind.sql — the
+// post-commit loan matcher's card (docs/04-features/06-loans.md rules 8-10).
+// It belongs in this list rather than only in its own suite because the
+// round-trip test below reads the RAW `kind` column back: that is the one
+// assertion in the codebase that fails if the CHECK constraint was never
+// widened, which is exactly the failure a rebuilt table can regress to.
 const ALL_KINDS: ReviewKind[] = [
   "low-confidence",
   "unknown-provider",
   "ambiguous-transfer",
   "possible-duplicate",
+  "loan-match",
 ];
 
 // ---------------------------------------------------------------------------

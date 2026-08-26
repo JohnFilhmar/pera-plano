@@ -31,7 +31,7 @@ import { Pressable, ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { CorrectSheet } from "@/components/review/correct_sheet";
-import { ReviewCard } from "@/components/review/review_card";
+import { loanCandidates, ReviewCard } from "@/components/review/review_card";
 import { registerIcon } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty_state";
 import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
@@ -105,7 +105,7 @@ export function sortOldestFirst(items: readonly ReviewQueueItem[]): ReviewQueueI
  *                                    way the missing amount and wallet can be
  *                                    supplied.
  */
-function primaryActionFor(item: ReviewQueueItem): ReviewAction | "correct" {
+function primaryActionFor(item: ReviewQueueItem): ReviewAction | "correct" | null {
   switch (item.kind) {
     case "low-confidence":
       return { kind: "confirm", itemId: item.id };
@@ -115,6 +115,22 @@ function primaryActionFor(item: ReviewQueueItem): ReviewAction | "correct" {
       return { kind: "confirm-transfer", itemId: item.id };
     case "unknown-provider":
       return "correct";
+    case "loan-match": {
+      // `null` WHEN THERE IS A CHOICE TO MAKE — loans rule 9: "If two or more
+      // open loans are plausible for one Transaction, it is always a suggestion
+      // listing the candidates — never an auto-match." Returning the
+      // top-scoring loan here would make the primary button an auto-match
+      // wearing a confirmation: one tap, no statement of which loan, and a
+      // balance the user has no reason to go back and check.
+      //
+      // `null` reaches `ReviewCard` as an ABSENT `onPrimary`, which that file's
+      // own rule renders as disabled-but-visible — so the pair still shows what
+      // the outcomes are, and `LoanMatchBody` renders the per-loan buttons that
+      // actually pick one.
+      const candidates = loanCandidates(item);
+      if (candidates.length !== 1) return null;
+      return { kind: "confirm-loan-match", itemId: item.id, loanId: candidates[0].loanId };
+    }
   }
 }
 
@@ -142,6 +158,16 @@ function secondaryActionFor(item: ReviewQueueItem): ReviewAction | "correct" {
       return { kind: "confirm", itemId: item.id };
     case "unknown-provider":
       return { kind: "dismiss", itemId: item.id };
+    case "loan-match":
+      // "Not a loan payment" — and NOTHING ELSE (loans rule 10: "Rejecting a
+      // suggestion never creates a negative UserRule automatically"). The
+      // transaction stays exactly where it is, committed and counted; only the
+      // question goes away. That rule's follow-up — a one-time "stop suggesting
+      // this merchant for this loan?" after repeated rejections — needs a
+      // rejection count per merchant-loan pair that nothing stores yet, and
+      // writing an `ignore` rule here instead would silence a real repayment
+      // the user only meant to skip once.
+      return { kind: "dismiss", itemId: item.id };
   }
 }
 
@@ -168,6 +194,11 @@ function secondaryActionFor(item: ReviewQueueItem): ReviewAction | "correct" {
  *                          not), never WHETHER. Dismissing would lose a real
  *                          transaction, so this kind deliberately gets none —
  *                          not an oversight, the one case reject must refuse.
+ *   `loan-match`         → its SECONDARY is the rejection ("Not a loan
+ *                          payment", `REVIEW_ACTIONS`), exactly as
+ *                          `unknown-provider`'s is. A third button repeating
+ *                          it would ask the user to work out which of two
+ *                          identical outcomes they meant.
  */
 function rejectActionFor(item: ReviewQueueItem): ReviewAction | null {
   return item.kind === "low-confidence" ? { kind: "dismiss", itemId: item.id } : null;
@@ -265,6 +296,12 @@ export default function ReviewQueueScreen() {
               // see its header on why that is the opposite of the pair's
               // "absent means disabled" rule.
               const rejectAction = rejectActionFor(entry);
+              // Same treatment, one kind further: `null` here means this card
+              // has no single answer its primary could stand for (a
+              // `loan-match` listing two or more loans), so the handler is
+              // WITHHELD rather than supplied-and-inert — which is what makes
+              // the button render disabled instead of picking a loan silently.
+              const primaryAction = primaryActionFor(entry);
               return (
                 <ReviewCard
                   key={entry.id}
@@ -277,10 +314,15 @@ export default function ReviewQueueScreen() {
                   // live-but-inert — see review_card.tsx's header on why a
                   // dead tap on a money decision is the one affordance worth
                   // withholding.
-                  onPrimary={(item) => dispatch(primaryActionFor(item), item)}
+                  onPrimary={
+                    primaryAction === null ? undefined : (item) => dispatch(primaryAction, item)
+                  }
                   onSecondary={(item) => dispatch(secondaryActionFor(item), item)}
                   onReject={
                     rejectAction === null ? undefined : (item) => dispatch(rejectAction, item)
+                  }
+                  onChooseLoan={(item, loanId) =>
+                    triage.mutate({ kind: "confirm-loan-match", itemId: item.id, loanId })
                   }
                 />
               );

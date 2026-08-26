@@ -19,6 +19,7 @@ jest.mock("@/modules/notification_listener", () => ({
 import { closeDatabase } from "@/lib/db/database";
 import { addCaptureListener, drainPendingCaptures } from "@/modules/notification_listener";
 import * as parseStatsRepo from "@/lib/diagnostics/parse_stats_repo";
+import { createLoan, outstandingBalance } from "@/lib/db/repos/loans_repo";
 import { createUserRule } from "@/lib/db/repos/user_rules_repo";
 import { createWallet, getBalanceDrift, getWallet } from "@/lib/db/repos/wallets_repo";
 import { onAppEvent } from "@/lib/events/app_events";
@@ -259,6 +260,54 @@ test("a successful commit announces itself on ledger:committed", async () => {
   // Rule 7 — M2's limit engine recomputes off this, so it fires once, after the
   // row exists, and carries the id of the row that was actually written.
   expect(announced).toEqual([row.id]);
+});
+
+test("A COMMITTED CAPTURE IS SCORED AGAINST OPEN LOANS", async () => {
+  // docs/04-features/06-loans.md §"Flow: automatic payment matching from the
+  // ledger" step 1: "After a Transaction commits to the ledger, the matcher
+  // scores it against open loans." This is the WIRING — the matcher's own rules
+  // are covered in lib/loans/__tests__/loan_match_queue.test.ts; what only an
+  // integration test can catch is that a real capture, through all nine stages,
+  // actually reaches it.
+  //
+  // `gcashSend` is ₱500.00 out to "Juan Dela Cruz", so the loan below agrees
+  // with it on the counterparty (rule 8c) and on the amount against its
+  // outstanding balance (rule 8d) — the two signals a free-form utang has.
+  const wallet = await createWallet({ name: "GCash", type: "e-wallet" });
+  await addMatcher(wallet.id, GCASH);
+  const loan = await createLoan({
+    direction: "i-owe",
+    counterparty: "Juan Dela Cruz",
+    principal: 50000,
+  });
+
+  await processCapture(gcashSend("cap-loan-match"));
+
+  const [row] = await ledger();
+  const items = (await listOpen()).filter((item) => item.kind === "loan-match");
+  expect(items).toHaveLength(1);
+  expect(items[0].payload.transactionId).toBe(row.id);
+  // A SUGGESTION, NOT A MATCH (spec rule 9): only an explicit provider loan
+  // event may auto-match, and none is modelled. The balance must not have moved.
+  expect(await outstandingBalance(loan.id)).toBe(50000);
+});
+
+test("a matcher failure never costs the commit", async () => {
+  // The money moved; the row is already durable by the time the matcher runs.
+  // `runStages` sits under two silent catches (`processStored`, `runGuarded`),
+  // so an escaping error here would look exactly like the capture failing to
+  // process — and the capture would be treated as a replay forever after.
+  const wallet = await createWallet({ name: "GCash", type: "e-wallet" });
+  await addMatcher(wallet.id, GCASH);
+  await createLoan({ direction: "i-owe", counterparty: "Juan Dela Cruz", principal: 50000 });
+  await db.execAsync("DROP TABLE review_queue_items;");
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+
+  const outcome = await processCapture(gcashSend("cap-loan-broken"));
+  warn.mockRestore();
+
+  const [row] = await ledger();
+  expect(outcome).toEqual({ kind: "committed", transactionId: row.id });
 });
 
 test("a queued capture announces nothing — the ledger did not change", async () => {

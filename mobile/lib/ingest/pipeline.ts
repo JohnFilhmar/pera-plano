@@ -32,6 +32,7 @@ import { listMatchers } from "@/lib/db/repos/wallet_matchers_repo";
 import { listUserRules } from "@/lib/db/repos/user_rules_repo";
 import { listWallets } from "@/lib/db/repos/wallets_repo";
 import { normalizeEvent } from "@/lib/ingest/normalizer";
+import { raiseLoanMatchAfterCommit } from "@/lib/loans/loan_match_queue";
 import { parseCapture } from "@/lib/ingest/parser";
 import { enqueue } from "@/lib/db/repos/review_queue_repo";
 import { routeCapture } from "@/lib/ingest/source_router";
@@ -433,6 +434,23 @@ async function commit(
   if (verdicts.transfer.kind === "auto_link") {
     await linkAutoDetected(row, verdicts.transfer.counterpartTransactionId, recentRows, confidence);
   }
+
+  // LOANS SPEC RULE 8, STEP 1: "After a Transaction commits to the ledger, the
+  // matcher scores it against open loans." Here and not inside
+  // `insertTransaction`, because the repository is also the write path for
+  // things that are already loan payments (`recordManualPayment`) and for both
+  // legs of a goal transfer, neither of which is a commit anybody should be
+  // asked about — and because those callers run inside a unit of work, where
+  // enqueueing a review item would join a transaction that may still roll back.
+  //
+  // AWAITED, BUT INCAPABLE OF THROWING (see `raiseLoanMatchAfterCommit`). The
+  // await is so the card exists by the time this function reports "committed" —
+  // `__awaitIngestIdle` is what the drained-batch tests wait on, and a
+  // fire-and-forget promise here would make the queue's contents a race. The
+  // swallow is so a matcher fault can never be mistaken for a failed commit:
+  // `processStored` and `runGuarded` both catch silently, and the money moved
+  // regardless of what this module thinks about it.
+  await raiseLoanMatchAfterCommit(row);
 
   // Rule 7. After the row exists, carrying the id that was actually written —
   // M2's limit engine recomputes off this.

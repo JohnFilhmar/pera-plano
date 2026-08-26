@@ -9,6 +9,7 @@ import recurringDetailSql from "./migrations/007_recurring_detail.sql";
 import loanRemindersSql from "./migrations/008_loan_reminders.sql";
 import parseStatsSql from "./migrations/009_parse_stats.sql";
 import softDeleteAndDerivedLimitsSql from "./migrations/010_soft_delete_and_derived_limits.sql";
+import loanMatchReviewKindSql from "./migrations/011_loan_match_review_kind.sql";
 
 export type Migration = { version: number; name: string; sql: string };
 
@@ -25,7 +26,10 @@ export type Migration = { version: number; name: string; sql: string };
  * 010_soft_delete_and_derived_limits gives loans and limits the `archived_at`
  * bills already had (owner: "no hard delete") and marks the limits onboarding
  * derives at the other cadences so the Free cap can ignore them
- * (owner-approved 2026-08-20).
+ * (owner-approved 2026-08-20); 011_loan_match_review_kind widens the
+ * `review_queue_items.kind` CHECK with `'loan-match'` so the post-commit loan
+ * matcher has a card to raise (docs/04-features/06-loans.md §"Flow: automatic
+ * payment matching from the ledger" step 3).
  * NEVER edit a shipped migration — add a new numbered one instead.
  *
  * Jest cache gotcha: babel-plugin-inline-import inlines each `*.sql` file's contents into
@@ -50,6 +54,7 @@ export const MIGRATIONS: Migration[] = [
     name: "soft_delete_and_derived_limits",
     sql: softDeleteAndDerivedLimitsSql,
   },
+  { version: 11, name: "loan_match_review_kind", sql: loanMatchReviewKindSql },
 ];
 
 /**
