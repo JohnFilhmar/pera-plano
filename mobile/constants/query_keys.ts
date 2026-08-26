@@ -137,6 +137,19 @@ export const queryKeys = {
     all: ["loans"] as const,
     list: () => ["loans", "list"] as const,
     detail: (id: string) => ["loans", "detail", id] as const,
+    /**
+     * The transactions that might pay this loan, keyed on WHETHER THE SCORE
+     * FLOOR APPLIES — the suggested few and the browse-everything fallback are
+     * two different answers to two different questions, and a shared key would
+     * let whichever resolved first answer for both (the same reasoning
+     * `wallets.list`'s archived flag carries).
+     *
+     * Nested under `detail(id)` so confirming a match, which invalidates
+     * `loans.all`, drops both lists: a confirmed candidate must stop being
+     * offered.
+     */
+    candidates: (id: string, includeBelowFloor: boolean = false) =>
+      ["loans", "detail", id, "candidates", includeBelowFloor] as const,
   },
   bills: {
     all: ["bills"] as const,

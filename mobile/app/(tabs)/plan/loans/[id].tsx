@@ -31,6 +31,11 @@ export default function LoanDetailScreen() {
   const { data: candidates } = usePaymentCandidates(id);
   const confirm = useConfirmPaymentMatch();
   const [sheetOpen, setSheetOpen] = useState(false);
+  // The unfiltered list is fetched ONLY once the user asks for it — it drops
+  // the score floor and reads up to 50 transactions, which is not work to do
+  // on every visit to a loan that has a perfectly good suggestion waiting.
+  const [browsingAll, setBrowsingAll] = useState(false);
+  const { data: allCandidates } = usePaymentCandidates(browsingAll ? id : undefined, true);
   const [confirmingArchive, setConfirmingArchive] = useState(false);
   const archive = useArchiveLoan();
 
@@ -88,14 +93,32 @@ export default function LoanDetailScreen() {
         </View>
       </Card>
 
-      {/* Rule 5: the sheet appears when candidates exist. It is an offer, not a
-          banner — nothing is recorded until the user taps one. */}
-      {candidates !== undefined && candidates.length > 0 ? (
+      {/* Rule 5's sheet: an offer, not a banner — nothing is recorded until
+          the user taps a candidate inside it.
+
+          THE BUTTON IS ALWAYS HERE, even with nothing suggested. Scoring is
+          weakest exactly where owed-to-me lending lives — a partial amount,
+          from a person, on a loan with no schedule — so "no suggestions" is
+          not the same as "no payment arrived", and a screen that offers no
+          action in that case leaves the user with no way to record money they
+          watched land. */}
+      {status.outstanding > 0 ? (
         <Button
-          title={`${candidates.length} possible payment${candidates.length === 1 ? "" : "s"}`}
+          title={
+            candidates !== undefined && candidates.length > 0
+              ? `${candidates.length} possible payment${candidates.length === 1 ? "" : "s"}`
+              : "Match a payment"
+          }
           variant="secondary"
           testID="loan-open-matches"
-          onPress={() => setSheetOpen(true)}
+          onPress={() => {
+            // With nothing scored above the floor there is no suggestion list
+            // to show, so opening straight into the full one saves a tap that
+            // could only ever land on an empty sheet.
+            const hasSuggestions = candidates !== undefined && candidates.length > 0;
+            setBrowsingAll(!hasSuggestions);
+            setSheetOpen(true);
+          }}
         />
       ) : null}
 
@@ -143,13 +166,20 @@ export default function LoanDetailScreen() {
 
       <PaymentMatchSheet
         visible={sheetOpen}
-        candidates={candidates ?? []}
+        candidates={(browsingAll ? allCandidates : candidates) ?? []}
         counterparty={status.loan.counterparty}
+        direction={status.loan.direction}
+        showingAll={browsingAll}
+        onShowAll={() => setBrowsingAll(true)}
         busy={confirm.isPending}
-        onDismiss={() => setSheetOpen(false)}
+        onDismiss={() => {
+          setSheetOpen(false);
+          setBrowsingAll(false);
+        }}
         onConfirm={async (transactionId) => {
           await confirm.mutateAsync({ loanId: status.loan.id, transactionId });
           setSheetOpen(false);
+          setBrowsingAll(false);
         }}
       />
     </ScrollView>

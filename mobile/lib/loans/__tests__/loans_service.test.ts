@@ -17,6 +17,7 @@ import {
   confirmPaymentMatch,
   findPaymentCandidates,
   listLoanStatuses,
+  recordManualPayment,
 } from "../loans_service";
 
 const NOW = new Date(2026, 8, 18, 12, 0).getTime(); // Sep 18 2026
@@ -335,4 +336,171 @@ test("NOTHING IS RECORDED BY MERELY FINDING CANDIDATES", async () => {
 
   expect(await outstandingBalance(loan.id)).toBe(5000000);
   expect((await listLoanStatuses(NOW))[0].paidCount).toBe(0);
+});
+
+// ---------------------------------------------------------------------------
+// Owed-to-me repayments — rules 8(c), 11, 17
+// ---------------------------------------------------------------------------
+
+/** A free-form loan to a person, the shape owed-to-me lending actually takes. */
+async function lentToBen() {
+  return createLoan({
+    direction: "owed-to-me",
+    counterparty: "Kuya Ben",
+    principal: 300000,
+    nextDueDate: "2026-09-15",
+    nextDueAmount: 100000,
+  });
+}
+
+test("A PARTIAL REPAYMENT IS OFFERED, not only an exact one", async () => {
+  // Spec rule 11 makes partial payments first-class, but rule 8(d) only scores
+  // an amount within ±2% of what is due. Informal lending is repaid in bits —
+  // under 8(d) alone every real partial scores zero on the amount.
+  const loan = await lentToBen();
+  const partial = await spend({
+    amount: 40000, // ₱400 against ₱1,000 due
+    at: new Date(2026, 8, 15).getTime(),
+    merchant: null,
+    direction: "in",
+    walletId: other.id,
+  });
+
+  const candidates = await findPaymentCandidates(loan.id, NOW);
+
+  expect(candidates.map((candidate) => candidate.transactionId)).toEqual([partial]);
+  expect(candidates[0].reasons).toContain("Could be a partial payment");
+});
+
+test("A SMALLER PURCHASE IS NOT A PARTIAL PAYMENT", async () => {
+  // The other side of the same rule: below a tenth of what is due, "partial"
+  // describes a bus fare as well as it describes a repayment.
+  const loan = await lentToBen();
+  await spend({
+    amount: 2000, // ₱20 against ₱1,000 due
+    at: new Date(2026, 8, 15).getTime(),
+    merchant: null,
+    direction: "in",
+    walletId: other.id,
+  });
+
+  expect(await findPaymentCandidates(loan.id, NOW)).toEqual([]);
+});
+
+test("A PERSON'S NAME MATCHES THE WAY A PROVIDER WRITES IT", async () => {
+  // Rule 8(c) read as a literal substring only ever fires for institutions:
+  // "GLoan" sits inside "GLOAN PAYMENT", but the user writes "Kuya Ben" and
+  // GCash sends "BEN SANTOS". That is why owed-to-me repayments were never
+  // suggested while payments to a lender were.
+  const loan = await lentToBen();
+  const repayment = await spend({
+    amount: 40000,
+    // Inside the 60-day candidate window but well clear of the due date, so
+    // the name and the partial amount are the only signals carrying it.
+    at: new Date(2026, 7, 1).getTime(),
+    merchant: "BEN SANTOS",
+    direction: "in",
+    walletId: other.id,
+  });
+
+  const candidates = await findPaymentCandidates(loan.id, NOW);
+
+  expect(candidates.map((candidate) => candidate.transactionId)).toEqual([repayment]);
+});
+
+test("a shared first name alone is NOT enough to be offered", async () => {
+  // A partial name is weaker evidence than a full one and stays under the
+  // floor by itself — it still needs a second signal.
+  const loan = await lentToBen();
+  await spend({
+    amount: 999999, // nothing like the amount due, and an overpayment
+    at: new Date(2026, 7, 1).getTime(),
+    merchant: "BEN SANTOS",
+    direction: "in",
+    walletId: other.id,
+  });
+
+  expect(await findPaymentCandidates(loan.id, NOW)).toEqual([]);
+});
+
+test("THE REASONS ARE WORDED FROM THE LOAN'S DIRECTION", async () => {
+  // "Paid to Kuya Ben" on a loan Ben is repaying states the opposite of what
+  // happened, and the reasons are the whole basis for accepting the match.
+  const loan = await lentToBen();
+  await spend({
+    amount: 100000,
+    at: new Date(2026, 8, 15).getTime(),
+    merchant: "KUYA BEN",
+    direction: "in",
+  });
+
+  const [candidate] = await findPaymentCandidates(loan.id, NOW);
+
+  expect(candidate.reasons).toContain("Received from Kuya Ben");
+  expect(candidate.reasons.join(" ")).not.toContain("Paid to");
+});
+
+test("THE UNFILTERED LIST OFFERS WHAT SCORING MISSED", async () => {
+  // The way out when every signal is weak: a repayment the user watched land
+  // must be linkable, or their only option is to create a SECOND transaction
+  // for money that already moved.
+  const loan = await lentToBen();
+  const quiet = await spend({
+    amount: 2000,
+    at: new Date(2026, 8, 15).getTime(),
+    merchant: null,
+    direction: "in",
+    walletId: other.id,
+  });
+
+  expect(await findPaymentCandidates(loan.id, NOW)).toEqual([]);
+  const all = await findPaymentCandidates(loan.id, NOW, 50, true);
+  expect(all.map((candidate) => candidate.transactionId)).toContain(quiet);
+});
+
+test("the unfiltered list STILL respects direction and existing matches", async () => {
+  // Dropping the score floor drops a ranking, not an invariant.
+  const loan = await lentToBen();
+  await spend({ amount: 100000, at: new Date(2026, 8, 15).getTime(), merchant: "KUYA BEN" });
+  const claimed = await spend({
+    amount: 50000,
+    at: new Date(2026, 8, 14).getTime(),
+    merchant: "KUYA BEN",
+    direction: "in",
+  });
+  await confirmPaymentMatch(loan.id, claimed);
+
+  expect(await findPaymentCandidates(loan.id, NOW, 50, true)).toEqual([]);
+});
+
+test("A REPAYMENT IS NOT FILED UNDER THE USER'S OWN DEBT CATEGORY", async () => {
+  // Rule 18 names I-owe loans only. Money arriving from a borrower is not a
+  // loan payment the user made, and filing it under the category that names
+  // their debts is what makes it read as one in the ledger and in Reports.
+  const loan = await lentToBen();
+
+  await recordManualPayment({
+    loanId: loan.id,
+    amount: 50000,
+    occurredAt: NOW,
+    walletId: cash.id,
+  });
+
+  const [recorded] = await listTransactions({ direction: "in" });
+  expect(recorded.direction).toBe("in");
+  expect(recorded.categoryId).toBe(UNCATEGORIZED_ID);
+});
+
+test("a payment on a loan you owe still gets the Utang category", async () => {
+  const loan = await gloan();
+
+  await recordManualPayment({
+    loanId: loan.id,
+    amount: 444244,
+    occurredAt: NOW,
+    walletId: cash.id,
+  });
+
+  const [recorded] = await listTransactions({ direction: "out" });
+  expect(recorded.categoryId).toBe("cat_utang_loan_payments");
 });

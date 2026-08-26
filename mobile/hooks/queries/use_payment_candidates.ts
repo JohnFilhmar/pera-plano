@@ -14,10 +14,21 @@ import { findPaymentCandidates } from "@/lib/loans/loans_service";
  * must stop being offered, and invariant I12 means it can never be accepted
  * twice anyway.
  */
-export function usePaymentCandidates(loanId: string | undefined) {
+/** How many unclaimed transactions the "Show every transaction" fallback lists. */
+const BROWSE_LIMIT = 50;
+
+export function usePaymentCandidates(loanId: string | undefined, includeBelowFloor = false) {
   return useQuery({
-    queryKey: queryKeys.loans.detail(loanId ?? ""),
+    queryKey: queryKeys.loans.candidates(loanId ?? "", includeBelowFloor),
     enabled: loanId !== undefined && loanId !== "",
-    queryFn: () => findPaymentCandidates(loanId as string, systemClock.now()),
+    queryFn: () =>
+      findPaymentCandidates(
+        loanId as string,
+        systemClock.now(),
+        // The browse-everything list is a search, not a suggestion: capping it
+        // at five would hide the very transaction the user opened it to find.
+        includeBelowFloor ? BROWSE_LIMIT : undefined,
+        includeBelowFloor,
+      ),
   });
 }

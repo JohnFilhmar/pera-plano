@@ -24,6 +24,7 @@ import {
   outstandingBalance,
   recordPayment,
 } from "@/lib/db/repos/loans_repo";
+import { UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions_repo";
 import { withUnitOfWork } from "@/lib/db/unit_of_work";
 import { startOfLocalDay } from "@/lib/dates";
@@ -44,6 +45,15 @@ export type PaymentCandidate = {
   amount: Centavos;
   occurredAt: number;
   merchant: string | null;
+  /**
+   * The other party the parser read off the notification — the SENDER on an
+   * inbound transfer, which is the only name an owed-to-me repayment carries.
+   * A provider's receive template captures a `counterparty` and no `merchant`
+   * (see assets/parser_rules/seed.json), so a sheet keyed on `merchant` alone
+   * labels every repayment "Unknown" — unusable in the browse-everything list,
+   * where the name is what the user is scanning for.
+   */
+  counterparty: string | null;
   /** 0..1. Above `CANDIDATE_FLOOR` to be offered at all. */
   score: number;
   /**
@@ -90,8 +100,135 @@ const AMOUNT_TOLERANCE = 0.02;
 /** Rule 8(e)'s window. */
 const TIMING_WINDOW_DAYS = 7;
 
+/**
+ * A NAME FRAGMENT IS WORTH LESS THAN THE WHOLE NAME, but it is not worth
+ * nothing.
+ *
+ * Rule 8(c) says "`counterparty` matching the Transaction `merchant` or parsed
+ * recipient", and a literal substring test reads that as an institution's
+ * name: "GLoan" appears verbatim inside "GLOAN PAYMENT". A PERSON does not
+ * survive the trip — the user writes "Kuya Ben" and GCash sends "BEN SANTOS",
+ * so the one signal carrying 0.4 of the score never fires for owed-to-me
+ * loans, which are lending to people almost by definition. That is why
+ * repayments from a borrower were never suggested while payments to a lender
+ * were: not a direction bug, a name-shape bug that only bites one direction.
+ *
+ * Below the full weight because a shared first name is genuinely weaker
+ * evidence than a full match: on its own it stays under `CANDIDATE_FLOOR` and
+ * still needs a second signal to be offered at all.
+ */
+const PARTIAL_NAME_WEIGHT = 0.25;
+
+/**
+ * What a PARTIAL payment is worth (spec rule 11: "a partial payment reduces
+ * the outstanding `nextDueAmount` remainder without advancing the date").
+ *
+ * Rule 8(d) only scores an amount within ±2% of what is due, which is a
+ * scheduled installment landing in full. Informal lending does not work that
+ * way — a borrower sends ₱500 against ₱2,000 whenever they have it — so under
+ * 8(d) alone every real partial repayment scores zero on the one signal the
+ * user can most easily verify. Worth less than an exact match, deliberately:
+ * any smaller outflow is arithmetically a "partial" of something.
+ */
+const PARTIAL_AMOUNT_WEIGHT = 0.15;
+
+/**
+ * The smallest share of what is due that still reads as a payment rather than
+ * as an unrelated purchase that happens to be smaller. A tenth: below that,
+ * "partial payment" describes a bus fare as well as it describes a repayment.
+ */
+const MIN_PARTIAL_SHARE = 0.1;
+
+/**
+ * Words that identify a RELATIONSHIP rather than a person, so they can never
+ * appear in a provider's transfer text. The user labels a loan "Kuya Ben" or
+ * "Tita Mercy" because that is who the person is to them; the bank only knows
+ * "BEN SANTOS". Left in, "KUYA" is a token that matches nothing and drags no
+ * weight — dropped, "BEN" is the token that does the work.
+ */
+const RELATIONSHIP_WORDS = new Set([
+  "KUYA",
+  "ATE",
+  "TITO",
+  "TITA",
+  "LOLO",
+  "LOLA",
+  "NANAY",
+  "TATAY",
+  "MAMA",
+  "PAPA",
+  "INAY",
+  "ITAY",
+  "SIR",
+  "MAAM",
+  "MAM",
+  "MR",
+  "MRS",
+  "MS",
+]);
+
+/** The shortest token worth comparing — below this, initials collide with everything. */
+const MIN_TOKEN_LENGTH = 3;
+
 function normalizeName(name: string | null): string {
   return (name ?? "").trim().toUpperCase();
+}
+
+/**
+ * The comparable words in a name: uppercase, punctuation and provider masking
+ * removed, relationship words and initials dropped.
+ */
+function nameTokens(name: string): string[] {
+  return name
+    .replace(/[^A-Z0-9]+/gu, " ")
+    .split(" ")
+    .filter((token) => token.length >= MIN_TOKEN_LENGTH && !RELATIONSHIP_WORDS.has(token));
+}
+
+/** One token matches another when either is the other's prefix — "SANTOS" answers "SANTOS JR". */
+function tokenMatches(left: string, right: string): boolean {
+  return left.startsWith(right) || right.startsWith(left);
+}
+
+/**
+ * How strongly a transaction's name fields identify this loan's counterparty:
+ * `full` for the whole name, `partial` for some of it, `none` otherwise.
+ *
+ * Checked against the merchant AND the parsed counterparty, because a provider
+ * writes the other party into whichever of the two its template captured — an
+ * outbound GCash transfer names a recipient, an inbound one names a sender,
+ * and rule 8(c) means both.
+ */
+function nameStrength(
+  loanCounterparty: string,
+  transaction: Transaction,
+): "full" | "partial" | "none" {
+  const loanName = normalizeName(loanCounterparty);
+  if (loanName === "") return "none";
+
+  const fields = [normalizeName(transaction.merchant), normalizeName(transaction.counterparty)]
+    .filter((field) => field !== "");
+  if (fields.length === 0) return "none";
+
+  // Containment EITHER WAY. "GLOAN PAYMENT" contains the loan's "GLoan", and a
+  // loan written "Ben Santos Jr" contains a transaction's "BEN SANTOS".
+  if (fields.some((field) => field.includes(loanName) || loanName.includes(field))) return "full";
+
+  const loanTokens = nameTokens(loanName);
+  if (loanTokens.length === 0) return "none";
+
+  const fieldTokens = fields.flatMap((field) => nameTokens(field));
+  const matched = loanTokens.filter((token) =>
+    fieldTokens.some((other) => tokenMatches(token, other)),
+  );
+
+  if (matched.length === 0) return "none";
+  // Every word of a MULTI-WORD name accounted for is the same evidence as the
+  // whole string matching — only the word order or a middle name differed. A
+  // single word is not: "Kuya Ben" reduces to the one token "BEN", and half
+  // the country has a Ben. That stays `partial`, which on its own sits under
+  // `CANDIDATE_FLOOR` and needs a second signal before it is offered.
+  return matched.length === loanTokens.length && loanTokens.length >= 2 ? "full" : "partial";
 }
 
 /**
@@ -156,25 +293,51 @@ function scoreCandidate(
   transaction: Transaction,
   expectedAmount: Centavos | null,
   dueDate: string | null,
+  outstanding: Centavos,
 ): { score: number; reasons: string[] } {
   let score = 0;
   const reasons: string[] = [];
 
-  const counterparty = normalizeName(loan.counterparty);
-  if (counterparty !== "") {
-    const merchant = normalizeName(transaction.merchant);
-    const recipient = normalizeName(transaction.counterparty);
-    if (merchant.includes(counterparty) || recipient.includes(counterparty)) {
+  // Worded from the LOAN'S DIRECTION. "Paid to Kuya Ben" on a loan Ben is
+  // repaying states the opposite of what happened, and the reasons list is the
+  // whole basis on which the user decides whether to accept the match.
+  const nameReason =
+    loan.direction === "i-owe"
+      ? `Paid to ${loan.counterparty}`
+      : `Received from ${loan.counterparty}`;
+
+  switch (nameStrength(loan.counterparty, transaction)) {
+    case "full":
       score += SIGNAL_WEIGHT.counterparty;
-      reasons.push(`Paid to ${loan.counterparty}`);
-    }
+      reasons.push(nameReason);
+      break;
+    case "partial":
+      score += PARTIAL_NAME_WEIGHT;
+      reasons.push(`${nameReason} — name partly matches`);
+      break;
+    default:
+      break;
   }
 
-  if (expectedAmount !== null && expectedAmount > 0) {
-    const drift = Math.abs(transaction.amount - expectedAmount) / expectedAmount;
+  // The figure a payment is measured against: what is due if there is a
+  // schedule or a user-set next due, otherwise the whole outstanding balance —
+  // a free-form utang has no installment, and without this fallback the amount
+  // signal simply never fires for the loans most likely to be repaid in bits.
+  const ceiling = expectedAmount !== null && expectedAmount > 0 ? expectedAmount : outstanding;
+
+  if (ceiling > 0) {
+    const drift = Math.abs(transaction.amount - ceiling) / ceiling;
     if (drift <= AMOUNT_TOLERANCE) {
       score += SIGNAL_WEIGHT.amount;
-      reasons.push("Matches the amount due");
+      reasons.push(expectedAmount === null ? "Settles the balance" : "Matches the amount due");
+    } else if (
+      transaction.amount < ceiling &&
+      transaction.amount >= Math.round(ceiling * MIN_PARTIAL_SHARE)
+    ) {
+      // Spec rule 11's partial: less than what is owed, but enough of it to be
+      // a payment rather than an unrelated smaller purchase.
+      score += PARTIAL_AMOUNT_WEIGHT;
+      reasons.push("Could be a partial payment");
     }
   }
 
@@ -206,6 +369,20 @@ export async function findPaymentCandidates(
   loanId: string,
   now: number,
   limit = 5,
+  /**
+   * Drops `CANDIDATE_FLOOR` and returns every unclaimed transaction that could
+   * pay this loan, scored but unfiltered — what the match sheet's "Show every
+   * transaction" fallback lists.
+   *
+   * THE FLOOR IS RIGHT FOR A SUGGESTION AND WRONG FOR A SEARCH. Scoring exists
+   * so the app does not volunteer noise, but a user who is looking at a
+   * repayment they know arrived needs to be able to point at it — and the
+   * signals are exactly weakest for the case they most often have: a partial
+   * amount from a person, on a free-form utang with no due date. Without this,
+   * the only way to record it is to create a SECOND transaction for money that
+   * already moved.
+   */
+  includeBelowFloor = false,
 ): Promise<PaymentCandidate[]> {
   const loan = await getLoan(loanId);
   if (loan === null) return [];
@@ -239,14 +416,16 @@ export async function findPaymentCandidates(
       amount: transaction.amount,
       occurredAt: transaction.occurredAt,
       merchant: transaction.merchant ?? null,
+      counterparty: transaction.counterparty ?? null,
       ...scoreCandidate(
         loan,
         transaction,
         due.amount > 0 ? due.amount : null,
         due.dueDate === "" ? null : due.dueDate,
+        outstanding,
       ),
     }))
-    .filter((candidate) => candidate.score >= CANDIDATE_FLOOR)
+    .filter((candidate) => includeBelowFloor || candidate.score >= CANDIDATE_FLOOR)
     .sort((a, b) => b.score - a.score || b.occurredAt - a.occurredAt)
     .slice(0, limit);
 }
@@ -294,7 +473,12 @@ export async function recordManualPayment(input: {
   return withUnitOfWork(async () => {
     const transaction = await insertTransaction({
       walletId: input.walletId,
-      categoryId: UTANG_CATEGORY_ID,
+      // RULE 18 IS ABOUT I-OWE ONLY: "Payments on I-owe loans default to the
+      // Utang & Loan Payments category". Money ARRIVING from a borrower is not
+      // a loan payment the user made, and filing it under the category that
+      // names their own debts is what makes an owed-to-me repayment read, in
+      // the ledger and in Reports, as if they had paid something.
+      categoryId: loan.direction === "i-owe" ? UTANG_CATEGORY_ID : UNCATEGORIZED_ID,
       amount: input.amount,
       direction: payingDirection(loan),
       occurredAt: input.occurredAt,
