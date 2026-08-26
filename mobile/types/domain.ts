@@ -509,11 +509,28 @@ export type UserRule = {
 };
 
 // ---------- Review Queue ----------
+/**
+ * Every card the Review Queue can show. Each member is also a value the
+ * `review_queue_items.kind` CHECK constraint accepts — 001_core.sql for the
+ * first four, 011_loan_match_review_kind.sql for `loan-match` — so adding a
+ * member here without a migration produces an item that cannot be INSERTed.
+ *
+ * `loan-match` IS THE ODD ONE OUT AND THAT IS THE POINT. The other four all
+ * mean "this row is NOT in your ledger and will not be until you say so". A
+ * `loan-match` item is raised AFTER a transaction is committed and correct
+ * (docs/04-features/06-loans.md §"Flow: automatic payment matching from the
+ * ledger" step 1: "After a Transaction commits to the ledger, the matcher
+ * scores it against open loans"); the only open question is whether that
+ * already-committed row also pays down a loan. Anything that treats the kinds
+ * uniformly — a triage action that commits a payload, say — has to exclude
+ * this one, or it writes the same money twice.
+ */
 export type ReviewKind =
   | "low-confidence"
   | "unknown-provider"
   | "ambiguous-transfer"
-  | "possible-duplicate";
+  | "possible-duplicate"
+  | "loan-match";
 
 /**
  * Parsed-candidate payload (amount, direction, merchant, wallet/category guesses…).

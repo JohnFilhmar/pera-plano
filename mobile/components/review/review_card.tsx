@@ -96,6 +96,20 @@ export const REVIEW_ACTIONS: Record<ReviewKind, ReviewActionPair> = {
   "possible-duplicate": { primary: "Same transaction", secondary: "Different" },
   "ambiguous-transfer": { primary: "It's a transfer", secondary: "Not a transfer" },
   "unknown-provider": { primary: "This is a money notification", secondary: "Not money" },
+  /**
+   * The fifth kind's pair, and it is the only one whose PRIMARY names a
+   * counterparty rather than a verdict — because it is the only kind whose
+   * answer is a CHOICE among the user's own loans, not a yes/no about one
+   * record. `loanMatchPrimaryLabel` builds the real string from the sole
+   * candidate; this entry is the wording when there is nothing to name (a
+   * payload that lost its candidates, or a card rendered without one).
+   *
+   * The secondary is a rejection, and per loans rule 10 that is ALL it is:
+   * "Rejecting a suggestion never creates a negative UserRule automatically."
+   * "Not a loan payment" says what the user decided about THIS transaction and
+   * promises nothing about the next one — which is exactly what the app does.
+   */
+  "loan-match": { primary: "Record this payment", secondary: "Not a loan payment" },
 };
 
 /**
@@ -137,6 +151,14 @@ export const REASON_FALLBACKS: Record<ReviewKind, string> = {
   "unknown-provider": GATE_REASONS.unknownProvider,
   "possible-duplicate": GATE_REASONS.possibleDuplicate,
   "ambiguous-transfer": GATE_REASONS.ambiguousTransfer,
+  /**
+   * NOT a `GATE_REASONS` entry, because the confidence gate never saw this
+   * item — `loan_match_queue.ts` raises it AFTER the row was committed, with no
+   * gate involved at all. Its `loanMatchReason` is what every real payload
+   * carries; this is the singular wording, kept as the fallback for the one
+   * that reads better when the candidate count is unknown.
+   */
+  "loan-match": "This looks like a payment on one of your loans. Record it?",
 };
 
 /**
@@ -272,10 +294,91 @@ function counterpartIdOf(item: ReviewQueueItem): string | null {
   return null;
 }
 
+/**
+ * One loan a `loan-match` payload offers, as this card understands it.
+ *
+ * READ DEFENSIVELY OFF `payload`, NOT IMPORTED FROM `loan_match_queue.ts`.
+ * That module is where the shape is written and documented, but it reaches the
+ * loans and review-queue repositories, and pulling it into a component would
+ * drag the database layer into every render tree that mounts a card — the same
+ * separation `lib/loans/loans_service.ts`'s own header records paying for when
+ * reminders had to be moved out of it before the Plan tab could render under
+ * Jest. Reading the JSON here matches what this file already does for all four
+ * other kinds, and for the same stated reason: an item enqueued by an older
+ * build must render a partial card rather than crash the whole queue.
+ */
+export type LoanCandidateView = {
+  loanId: string;
+  counterparty: string;
+  /** `null` when the payload carried no balance — the row still renders, without one. */
+  outstanding: Centavos | null;
+  reasons: string[];
+};
+
+/** The loans this card offers, in payload order (best first — the matcher sorted them). */
+export function loanCandidates(item: ReviewQueueItem): LoanCandidateView[] {
+  if (item.kind !== "loan-match") return [];
+  const raw = item.payload.candidates;
+  if (!Array.isArray(raw)) return [];
+
+  const views: LoanCandidateView[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const candidate = entry as Record<string, unknown>;
+    const loanId = typeof candidate.loanId === "string" ? candidate.loanId : null;
+    if (loanId === null || loanId === "") continue;
+    views.push({
+      loanId,
+      // A loan always has a counterparty (`loans.counterparty` is NOT NULL), so
+      // this only ever fires for a hand-built row — but an unnamed button on a
+      // money decision is the one thing worse than no button.
+      counterparty:
+        typeof candidate.counterparty === "string" && candidate.counterparty.trim() !== ""
+          ? candidate.counterparty
+          : "This loan",
+      outstanding:
+        typeof candidate.outstanding === "number" && Number.isFinite(candidate.outstanding)
+          ? candidate.outstanding
+          : null,
+      reasons: Array.isArray(candidate.reasons)
+        ? candidate.reasons.filter((reason): reason is string => typeof reason === "string")
+        : [],
+    });
+  }
+  return views;
+}
+
+/**
+ * The primary button's words.
+ *
+ * A `loan-match` card with exactly ONE candidate names it — "Record on Kuya
+ * Ben" — because that is the whole decision, and a generic "Record this
+ * payment" would make the user scroll back up to remember which loan they were
+ * agreeing to. With two or more, the primary is not the affordance at all (the
+ * per-candidate buttons are, and the screen supplies no `onPrimary`), so the
+ * static label stands.
+ */
+export function primaryLabelFor(item: ReviewQueueItem): string {
+  const candidates = loanCandidates(item);
+  if (item.kind === "loan-match" && candidates.length === 1) {
+    return `Record on ${candidates[0].counterparty}`;
+  }
+  return REVIEW_ACTIONS[item.kind].primary;
+}
+
 /** What each side of a pair is called, so the user knows which is which. */
 const SIDE_LABELS: Record<ReviewKind, { candidate: string; counterpart: string }> = {
   "low-confidence": { candidate: "What PeraPlano read", counterpart: "" },
   "unknown-provider": { candidate: "What PeraPlano read", counterpart: "" },
+  /**
+   * "ALREADY IN YOUR LEDGER", not "What PeraPlano read". Every other card shows
+   * a PROPOSAL — a row that does not exist yet and will not until the user
+   * agrees. A loan-match card shows a row that is already committed and already
+   * counted; the only question is whether it also pays down a loan. A label
+   * implying the transaction is still pending would invite the user to reject
+   * it in the belief that rejecting keeps it out of their ledger.
+   */
+  "loan-match": { candidate: "Already in your ledger", counterpart: "" },
   "possible-duplicate": {
     candidate: "This notification",
     counterpart: "Already in your ledger",
@@ -530,6 +633,87 @@ function UnknownSourceBody({
   );
 }
 
+/**
+ * The loans this transaction might be paying — the "listing the candidates"
+ * half of loans rule 9.
+ *
+ * WITH ONE CANDIDATE this renders its reasons and NO button: the card's own
+ * primary already says "Record on <name>" (`primaryLabelFor`), and a second
+ * control doing the identical thing on the same card is how a user learns not
+ * to read either.
+ *
+ * WITH TWO OR MORE it renders a button per loan, and the screen supplies no
+ * `onPrimary` at all — which this file's own rule renders as DISABLED, so the
+ * biggest button on the card cannot pick a loan on the user's behalf. That is
+ * rule 9 verbatim: "If two or more open loans are plausible for one
+ * Transaction, it is always a suggestion listing the candidates — never an
+ * auto-match." Choosing the top-scoring one silently would be an auto-match
+ * wearing a confirmation, and the loan it guessed wrong on is a balance the
+ * user has no reason to re-check.
+ *
+ * THE REASONS ARE NOT DECORATION. `scoreCandidate` produces them for the same
+ * purpose the match sheet needs them (loans Task 8 rule 5: each candidate shown
+ * "with its amount, date, and WHY IT MATCHED"), and here they are the only way
+ * to tell two utangs apart when both are plausible. A bare score asks the user
+ * to trust a number they cannot check, on a decision that moves a balance.
+ */
+function LoanMatchBody({
+  item,
+  candidates,
+  onChooseLoan,
+}: {
+  item: ReviewQueueItem;
+  candidates: readonly LoanCandidateView[];
+  onChooseLoan?: (item: ReviewQueueItem, loanId: string) => void;
+}) {
+  const choosing = candidates.length > 1;
+
+  return (
+    <View testID={`review-loans-${item.id}`} className="gap-2">
+      {choosing ? (
+        <Text className="text-xs uppercase text-fg-2 dark:text-fg-2-dark">
+          Which loan is this?
+        </Text>
+      ) : null}
+      {candidates.map((candidate) => (
+        <View
+          key={candidate.loanId}
+          testID={`review-loan-${item.id}-${candidate.loanId}`}
+          className="gap-1 rounded-xl bg-bg p-3 dark:bg-bg-dark"
+        >
+          <View className="flex-row items-center justify-between gap-2">
+            <Text className="flex-1 text-base font-semibold text-fg dark:text-fg-dark">
+              {candidate.counterparty}
+            </Text>
+            {candidate.outstanding === null ? null : (
+              <AmountText amount={candidate.outstanding} size="sm" />
+            )}
+          </View>
+          {candidate.reasons.length === 0 ? null : (
+            <View className="flex-row flex-wrap items-center gap-2 pt-1">
+              {candidate.reasons.map((reason) => (
+                <Chip key={reason} label={reason} fill="outline" />
+              ))}
+            </View>
+          )}
+          {choosing ? (
+            <Button
+              testID={`review-loan-choice-${item.id}-${candidate.loanId}`}
+              title={`Record on ${candidate.counterparty}`}
+              variant="secondary"
+              size="md"
+              disabled={onChooseLoan === undefined}
+              onPress={
+                onChooseLoan ? () => onChooseLoan(item, candidate.loanId) : () => undefined
+              }
+            />
+          ) : null}
+        </View>
+      ))}
+    </View>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // The card
 // ---------------------------------------------------------------------------
@@ -567,6 +751,15 @@ export type ReviewCardProps = {
    * card simply has no third button, full stop.
    */
   onReject?: (item: ReviewQueueItem) => void;
+  /**
+   * `loan-match` only, and only when the payload lists TWO OR MORE loans — the
+   * one card whose answer is a choice rather than a verdict (loans rule 9).
+   * Absent means the per-loan buttons render disabled, the same "absent means
+   * disabled" rule the pair above keeps and for the same reason: a money
+   * decision that silently does nothing when tapped is the affordance this file
+   * refuses to ship.
+   */
+  onChooseLoan?: (item: ReviewQueueItem, loanId: string) => void;
   testID?: string;
 };
 
@@ -578,9 +771,11 @@ export function ReviewCard({
   onPrimary,
   onSecondary,
   onReject,
+  onChooseLoan,
   testID,
 }: ReviewCardProps) {
   const actions = REVIEW_ACTIONS[item.kind];
+  const loans = loanCandidates(item);
   const confidence = readConfidence(item.payload);
   const counterpartId = counterpartIdOf(item);
   const amount = readAmount(item.payload);
@@ -655,9 +850,21 @@ export function ReviewCard({
                   candidateAmount={amount}
                 />
               )}
+              {loans.length === 0 ? null : (
+                <LoanMatchBody item={item} candidates={loans} onChooseLoan={onChooseLoan} />
+              )}
               {/* No score, no meter. `unknown-provider` never reaches here, and
                   a payload that lost its `confidence` would otherwise render a
-                  0% bar — the app reporting a measurement it never took. */}
+                  0% bar — the app reporting a measurement it never took.
+
+                  A `loan-match` payload carries none either, ON PURPOSE. The
+                  meter reads the INGEST confidence — how well the notification
+                  parsed — and a loan-match card's transaction parsed perfectly
+                  well; it is already committed. Painting the match score in the
+                  same bar would say "PeraPlano is 45% sure it read this
+                  notification" when what it means is "45% sure this pays that
+                  loan", and the per-candidate reasons above are the honest form
+                  of the second statement. */}
               {confidence === null ? null : (
                 <ConfidenceMeter
                   confidence={confidence}
@@ -693,7 +900,7 @@ export function ReviewCard({
               other three. */}
           <Button
             testID={`review-primary-${item.id}`}
-            title={actions.primary}
+            title={primaryLabelFor(item)}
             variant="primary"
             disabled={onPrimary === undefined || missingField !== null}
             onPress={onPrimary ? () => onPrimary(item) : () => undefined}
