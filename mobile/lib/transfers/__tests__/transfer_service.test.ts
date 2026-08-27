@@ -1,9 +1,13 @@
 import { closeDatabase } from "@/lib/db/database";
 import { freshDb } from "@/test_support/db";
 import { createWallet, getWallet } from "@/lib/db/repos/wallets_repo";
-import { listTransactions } from "@/lib/db/repos/transactions_repo";
+import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions_repo";
 import { getTransferLink } from "@/lib/db/repos/transfer_links_repo";
-import { recordTransfer, TransferValidationError } from "@/lib/transfers/transfer_service";
+import {
+  attachCounterpartLeg,
+  recordTransfer,
+  TransferValidationError,
+} from "@/lib/transfers/transfer_service";
 import type { SQLiteDatabase } from "@/lib/db/database";
 
 const NOW = 1_786_000_000_000;
@@ -158,4 +162,132 @@ test("rejects an archived wallet", async () => {
   ).rejects.toMatchObject({ reason: "archived_wallet" });
 
   expect(await listTransactions({})).toHaveLength(0);
+});
+
+test("attaches a minted counterpart to a committed leg", async () => {
+  const captured = await insertTransaction({
+    walletId: gcash,
+    categoryId: "cat_uncategorized",
+    amount: 100_000,
+    direction: "in",
+    occurredAt: NOW - HOUR,
+    source: "notification",
+    confidence: 0.95,
+  });
+
+  const result = await attachCounterpartLeg(
+    { captured: { existingLegId: captured.id }, counterpartWalletId: bpi, feeAmount: 0 },
+    NOW,
+  );
+
+  expect(result.inLegId).toBe(captured.id);
+
+  const rows = await listTransactions({});
+  expect(rows).toHaveLength(2);
+
+  const minted = rows.find((row) => row.id === result.outLegId);
+  expect(minted?.walletId).toBe(bpi);
+  expect(minted?.direction).toBe("out");
+  expect(minted?.amount).toBe(100_000);
+  expect(minted?.source).toBe("manual");
+  expect(minted?.rawNotificationId).toBeNull();
+  expect(minted?.occurredAt).toBe(captured.occurredAt);
+  expect(minted?.transferLinkId).toBe(result.transferLinkId);
+});
+
+test("commits an uncommitted proposal and links it in one write", async () => {
+  const result = await attachCounterpartLeg(
+    {
+      captured: {
+        proposal: {
+          walletId: bpi,
+          categoryId: "cat_uncategorized",
+          amount: 100_000,
+          direction: "out",
+          occurredAt: NOW - HOUR,
+          source: "notification",
+          confidence: 0.9,
+        },
+      },
+      counterpartWalletId: gcash,
+      feeAmount: 0,
+    },
+    NOW,
+  );
+
+  const rows = await listTransactions({});
+  expect(rows).toHaveLength(2);
+  expect(rows.every((row) => row.transferLinkId === result.transferLinkId)).toBe(true);
+});
+
+test("puts the fee on the source wallet, whichever leg was captured", async () => {
+  // The CAPTURED leg is the incoming one, so the source is the minted side.
+  const captured = await insertTransaction({
+    walletId: gcash,
+    categoryId: "cat_uncategorized",
+    amount: 98_500,
+    direction: "in",
+    occurredAt: NOW - HOUR,
+    source: "notification",
+    confidence: 0.95,
+  });
+
+  const result = await attachCounterpartLeg(
+    { captured: { existingLegId: captured.id }, counterpartWalletId: bpi, feeAmount: 1_500 },
+    NOW,
+  );
+
+  const rows = await listTransactions({});
+  const fee = rows.find((row) => row.id === result.feeTransactionId);
+  expect(fee?.walletId).toBe(bpi);
+  expect(fee?.amount).toBe(1_500);
+  expect(fee?.categoryId).toBe("cat_fees_charges");
+  expect(fee?.transferLinkId).toBeNull();
+
+  // The legs stay EQUAL — the captured amount is the provider's own figure and
+  // is never rewritten.
+  expect(rows.find((row) => row.id === result.outLegId)?.amount).toBe(98_500);
+  expect(rows.find((row) => row.id === result.inLegId)?.amount).toBe(98_500);
+});
+
+test("refuses to attach a leg to its own wallet", async () => {
+  const captured = await insertTransaction({
+    walletId: gcash,
+    categoryId: "cat_uncategorized",
+    amount: 100_000,
+    direction: "in",
+    occurredAt: NOW - HOUR,
+    source: "notification",
+    confidence: 0.95,
+  });
+
+  await expect(
+    attachCounterpartLeg(
+      { captured: { existingLegId: captured.id }, counterpartWalletId: gcash, feeAmount: 0 },
+      NOW,
+    ),
+  ).rejects.toMatchObject({ reason: "same_wallet" });
+
+  expect(await listTransactions({})).toHaveLength(1);
+});
+
+test("rejects an unknown counterpart wallet without writing anything", async () => {
+  const captured = await insertTransaction({
+    walletId: gcash,
+    categoryId: "cat_uncategorized",
+    amount: 100_000,
+    direction: "in",
+    occurredAt: NOW - HOUR,
+    source: "notification",
+    confidence: 0.95,
+  });
+
+  await expect(
+    attachCounterpartLeg(
+      { captured: { existingLegId: captured.id }, counterpartWalletId: "no_such_wallet", feeAmount: 0 },
+      NOW,
+    ),
+  ).rejects.toMatchObject({ reason: "unknown_wallet" });
+
+  expect(await listTransactions({})).toHaveLength(1);
 });

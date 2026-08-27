@@ -20,12 +20,12 @@
 // transfer has. A hand-typed transfer therefore never has to be run past the
 // detector's fee-tolerance arithmetic.
 import { UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
-import { insertTransaction } from "@/lib/db/repos/transactions_repo";
+import { getTransaction, insertTransaction } from "@/lib/db/repos/transactions_repo";
 import { linkTransfer } from "@/lib/db/repos/transfer_links_repo";
 import { getWallet } from "@/lib/db/repos/wallets_repo";
 import { withUnitOfWork } from "@/lib/db/unit_of_work";
 
-import type { Centavos, EpochMs } from "@/types/domain";
+import type { Centavos, EpochMs, NewTransaction, Transaction } from "@/types/domain";
 
 /** The seeded Fees & Charges category (categories_repo.ts). */
 export const FEES_CATEGORY_ID = "cat_fees_charges";
@@ -153,6 +153,108 @@ export async function recordTransfer(
 
     // 0, and that is the field's own definition (types/domain.ts:163):
     // outLeg.amount − inLeg.amount, and the legs are equal.
+    const link = await linkTransfer(outLeg.id, inLeg.id, 0, {
+      detectedBy: "manual",
+      confidence: 1,
+    });
+
+    return {
+      outLegId: outLeg.id,
+      inLegId: inLeg.id,
+      feeTransactionId: fee?.id ?? null,
+      transferLinkId: link.id,
+    };
+  });
+}
+
+export type AttachArgs = {
+  /**
+   * The leg that WAS captured. Either already in the ledger (the user is
+   * confirming from a committed row) or still a proposal, because pipeline.ts
+   * queues rather than commits on every non-auto-commit route — so the leg the
+   * Review Queue card is about usually has no id yet.
+   */
+  captured: { existingLegId: string } | { proposal: NewTransaction };
+  counterpartWalletId: string;
+  feeAmount: Centavos;
+};
+
+/** The captured leg, committed first if it was still only a proposal. */
+async function resolveCapturedLeg(captured: AttachArgs["captured"]): Promise<Transaction> {
+  if (!("existingLegId" in captured)) {
+    return insertTransaction(captured.proposal);
+  }
+
+  const row = await getTransaction(captured.existingLegId);
+  if (row === null) throw new TransferValidationError("unknown_leg");
+  return row;
+}
+
+/**
+ * Mints the missing half of a transfer only one side of which was ever seen,
+ * and links the pair — all inside one transaction.
+ *
+ * COMMITTING THE PROPOSAL SEPARATELY IS NOT AN OPTION. Between the commit and
+ * the link there would be a window in which an internal movement counts as real
+ * spend or real income; `confirmAsTransfer` handles the same case the same way
+ * and for the same reason.
+ *
+ * The minted leg's signature — `source: "manual"`, a `transferLinkId`, and no
+ * `rawNotificationId` — is what dedupe_gate.ts later recognises when the
+ * provider's own notification for it finally arrives.
+ */
+export async function attachCounterpartLeg(
+  args: AttachArgs,
+  now: EpochMs,
+): Promise<TransferResult> {
+  if (args.feeAmount < 0) throw new TransferValidationError("fee_negative");
+
+  const counterpartWallet = await getWallet(args.counterpartWalletId);
+  if (counterpartWallet === null) throw new TransferValidationError("unknown_wallet");
+  if (counterpartWallet.isArchived) throw new TransferValidationError("archived_wallet");
+
+  return withUnitOfWork(async () => {
+    const captured: Transaction = await resolveCapturedLeg(args.captured);
+
+    if (captured.walletId === args.counterpartWalletId) {
+      throw new TransferValidationError("same_wallet");
+    }
+    if (captured.occurredAt > now) throw new TransferValidationError("future_dated");
+    if (args.feeAmount >= captured.amount) {
+      throw new TransferValidationError("fee_exceeds_amount");
+    }
+
+    const minted = await insertTransaction({
+      walletId: args.counterpartWalletId,
+      categoryId: UNCATEGORIZED_ID,
+      // EQUAL to the captured leg. The provider's figure is the one fact here
+      // that was measured rather than stated, so it is never rewritten.
+      amount: captured.amount,
+      direction: captured.direction === "out" ? "in" : "out",
+      occurredAt: captured.occurredAt,
+      source: "manual",
+      confidence: 1,
+    });
+
+    // Which side is the source comes from the two rows, never from argument
+    // order: the captured leg may be either half of the pair.
+    const [outLeg, inLeg] =
+      captured.direction === "out" ? [captured, minted] : [minted, captured];
+
+    const fee =
+      args.feeAmount > 0
+        ? await insertTransaction({
+            walletId: outLeg.walletId,
+            categoryId: FEES_CATEGORY_ID,
+            amount: args.feeAmount,
+            direction: "out",
+            occurredAt: captured.occurredAt,
+            source: "manual",
+            confidence: 1,
+            note: "Transfer fee",
+          })
+        : null;
+
     const link = await linkTransfer(outLeg.id, inLeg.id, 0, {
       detectedBy: "manual",
       confidence: 1,
