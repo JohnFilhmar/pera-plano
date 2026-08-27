@@ -879,6 +879,69 @@ describe("the one-sided transfer card", () => {
     );
   });
 
+  // `signal` is the ONE thing separating a proposal the app has evidence for
+  // from a guess off the notification's own words (spec §1.2). A card that
+  // reads identically either way tells the user a rule-backed prefill is worth
+  // no more than an unbacked one, on the screen where they decide whether to
+  // accept it.
+  test("a rule-sourced proposal says the app has seen the pairing, naming the wallet", async () => {
+    const queued = oneSidedItem({ counterpartWalletId: bpi.id, signal: "rule" });
+
+    render(
+      <ReviewCard
+        item={queued}
+        wallets={[gcash, bpi]}
+        onPrimary={jest.fn()}
+        onSecondary={jest.fn()}
+        onChooseTransferWallet={jest.fn()}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    const prompt = await screen.findByTestId("one-sided-transfer-prompt");
+    expect(prompt).toHaveTextContent(new RegExp(`usually.*${bpi.name}`, "i"));
+  });
+
+  test("a text-sourced proposal just asks the question", async () => {
+    const queued = oneSidedItem({ counterpartWalletId: bpi.id, signal: "text" });
+
+    render(
+      <ReviewCard
+        item={queued}
+        wallets={[gcash, bpi]}
+        onPrimary={jest.fn()}
+        onSecondary={jest.fn()}
+        onChooseTransferWallet={jest.fn()}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    // A text signal is the notification's own wording and nothing more — it has
+    // no history behind it, so claiming one would be the app inventing evidence
+    // for its own guess.
+    const prompt = await screen.findByTestId("one-sided-transfer-prompt");
+    expect(prompt).toHaveTextContent(/where did this money go/i);
+    expect(prompt).not.toHaveTextContent(/usually/i);
+  });
+
+  test("a rule signal with no prefilled wallet still just asks the question", async () => {
+    const queued = oneSidedItem({ counterpartWalletId: null, signal: "rule" });
+
+    render(
+      <ReviewCard
+        item={queued}
+        wallets={[gcash, bpi]}
+        onPrimary={jest.fn()}
+        onSecondary={jest.fn()}
+        onChooseTransferWallet={jest.fn()}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    const prompt = await screen.findByTestId("one-sided-transfer-prompt");
+    expect(prompt).not.toHaveTextContent(/usually/i);
+  });
+
   test("the primary is withheld until a wallet is chosen", async () => {
     const queued = oneSidedItem();
 

@@ -39,6 +39,33 @@ function directionOf(item: ReviewQueueItem): TxDirection {
   return item.payload.direction === "in" ? "in" : "out";
 }
 
+/**
+ * The prefilled counterpart's wallet, when a `mark-transfer` RULE is what
+ * proposed it — spec §1.2's whole reason for `signal` being on the payload:
+ * "a rule-sourced proposal can say *you usually move this to Savings*, a
+ * text-sourced one cannot".
+ *
+ * BOTH CONDITIONS, AND NOTHING WEAKER. `signal: "text"` means the only evidence
+ * is the notification's own wording, so there is no pairing to have seen
+ * before; a `"rule"` signal whose `counterpartWalletId` is null (or names a
+ * wallet since archived and no longer in `wallets`) has nothing to name. In
+ * either case the card falls back to the plain question rather than claiming a
+ * history it cannot show — the app inventing evidence for its own guess is
+ * worse on this screen than the app simply asking.
+ *
+ * Reads the PAYLOAD's wallet, never the user's current selection: the sentence
+ * is a statement about what the app has seen, and one that re-wrote itself as
+ * the user tapped down the list would be a different claim every tap.
+ */
+function ruleProposedWallet(item: ReviewQueueItem, wallets: readonly Wallet[]): Wallet | null {
+  if (item.payload.signal !== "rule") return null;
+
+  const proposed = item.payload.counterpartWalletId;
+  if (typeof proposed !== "string") return null;
+
+  return wallets.find((wallet) => wallet.id === proposed) ?? null;
+}
+
 export function OneSidedTransferBody({
   item,
   wallets,
@@ -55,12 +82,29 @@ export function OneSidedTransferBody({
   const candidates = wallets.filter(
     (wallet) => !wallet.isArchived && wallet.id !== capturedWalletId,
   );
+  const incoming = directionOf(item) === "in";
+  const remembered = ruleProposedWallet(item, wallets);
   const prompt =
-    directionOf(item) === "in" ? "Where did this money come from?" : "Where did this money go?";
+    remembered === null
+      ? incoming
+        ? "Where did this money come from?"
+        : "Where did this money go?"
+      : incoming
+        ? `This usually comes from ${remembered.name} — change it if this one didn't.`
+        : `You usually move this to ${remembered.name} — change it if this one went elsewhere.`;
 
   return (
     <View testID="one-sided-transfer-body" className="gap-2">
-      <Text className="text-xs uppercase text-fg-2 dark:text-fg-2-dark">{prompt}</Text>
+      {/* UPPERCASE ONLY WHEN IT IS THE QUESTION. The remembered-pairing wording
+          is a sentence about what the app has seen, not a field label, and a
+          shouted sentence reads as an alert on a card that is asking a calm
+          question. */}
+      <Text
+        testID="one-sided-transfer-prompt"
+        className={`text-xs text-fg-2 dark:text-fg-2-dark ${remembered === null ? "uppercase" : ""}`}
+      >
+        {prompt}
+      </Text>
       <View className="gap-2">
         {candidates.map((wallet) => (
           <Pressable
