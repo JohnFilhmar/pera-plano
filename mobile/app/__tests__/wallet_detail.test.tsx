@@ -154,13 +154,20 @@ beforeEach(async () => {
     },
   });
   gcash = await createWallet({ name: "GCash", openingBalance: 100_000 });
-  // A REAL MATCHER, NOT DECORATION. A wallet nothing routes to is a MANUAL
-  // wallet — what `type: "cash"` used to mean — and this fixture stands for a
-  // provider-tracked one throughout: it is offered the balance-correction sheet
-  // and refused the cash reconcile sheet precisely because a provider reports
-  // on it. Without this row it would be manual and those two would swap.
-  await setMatchers(gcash.id, [{ packageName: GCASH_PACKAGE, hint: null }]);
 });
+
+/**
+ * Makes a wallet PROVIDER-TRACKED, which is what `type: "bank"` /
+ * `"e-wallet"` used to assert about a fixture.
+ *
+ * NOT IN `beforeEach`, deliberately: the matcher-chip tests below assert the
+ * EXACT chips a wallet shows, so a matcher every fixture silently carried would
+ * break them. Only the tests that turn on "a provider reports on this one" —
+ * which balance sheet is offered — ask for it.
+ */
+async function makeTracked(walletId: string): Promise<void> {
+  await setMatchers(walletId, [{ packageName: GCASH_PACKAGE, hint: null }]);
+}
 
 afterEach(async () => {
   await closeDatabase();
@@ -437,7 +444,7 @@ describe("the balance header's provider fill (task-5b)", () => {
     expect(screen.getByTestId("wallet-detail-provider-maya")).toBeTruthy();
   });
 
-  test("a wallet with no provider at all also falls back to bg-brand, with the type icon instead of a badge", async () => {
+  test("a wallet with no provider at all also falls back to bg-brand, with the wallet glyph instead of a badge", async () => {
     renderDetail(gcash.id);
     await screen.findByText("GCash");
 
@@ -641,6 +648,7 @@ describe("the wallet's transactions", () => {
 
 describe("the actions m1c Task 5 added", () => {
   test("edit and archive are offered; reconcile is not, because a provider reports on this one", async () => {
+    await makeTracked(gcash.id);
     await insertTransaction({
       walletId: gcash.id,
       categoryId: UNCATEGORIZED_ID,
@@ -680,20 +688,24 @@ describe("the actions m1c Task 5 added", () => {
 // through the ordinary commit path — never a direct write to `wallets.balance`.
 // ---------------------------------------------------------------------------
 
-describe("correcting a non-cash wallet's balance (Task 4)", () => {
-  test("a non-cash wallet offers a balance adjustment", async () => {
+describe("correcting a provider-tracked wallet's balance (Task 4)", () => {
+  test("a provider-tracked wallet offers a balance adjustment", async () => {
+    await makeTracked(gcash.id);
+
     renderDetail(gcash.id);
     await screen.findByText("GCash");
 
     expect(screen.getByTestId("wallet-detail-adjust-balance")).toBeTruthy();
-    // Rule 3: this is not reconciliation, and cash's action is not offered
-    // beside it.
+    // Rule 3: this is not reconciliation, and the manual wallet's action is
+    // not offered beside it.
     expect(screen.queryByTestId("wallet-detail-reconcile")).toBeNull();
   });
 
   test("the adjustment writes a ledger entry rather than setting the balance directly", async () => {
     // gcash opens at ₱1,000.00 (beforeEach). The user says it actually holds
     // ₱1,500.00 — ₱500.00 the app never saw arrive.
+    await makeTracked(gcash.id);
+
     renderDetail(gcash.id);
     await screen.findByText("GCash");
 
@@ -747,14 +759,17 @@ describe("correcting a non-cash wallet's balance (Task 4)", () => {
   // Excluded rather than answered wrong.
   // -------------------------------------------------------------------------
 
-  test("a credit wallet offers no balance adjustment, and says why", async () => {
+  test("an owed wallet offers no balance adjustment, and says why", async () => {
     const visa = await createWallet({ name: "Visa", openingBalance: 500_000 });
+    await makeTracked(visa.id);
+    await setWalletOwed(visa.id, true, { pinned: true });
 
     renderDetail(visa.id);
     await screen.findByText("Visa");
 
-    // Neither action — this is not cash, and it is not safely correctable
-    // by this sheet either.
+    // Neither action — a provider reports on it, so there is nothing to count
+    // by hand, and its balance is money owed, which this sheet cannot correct
+    // safely either.
     expect(screen.queryByTestId("wallet-detail-adjust-balance")).toBeNull();
     expect(screen.queryByTestId("wallet-detail-reconcile")).toBeNull();
 

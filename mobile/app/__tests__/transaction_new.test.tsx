@@ -339,6 +339,11 @@ describe("the cash wallet", () => {
 describe("a transfer draft", () => {
   test("goes to recordTransfer, writing both legs linked, not a single insertTransaction row", async () => {
     const bank = await createWallet({ name: "BPI", openingBalance: 200_000 });
+    // TRACKED. With no matchers it would be a second MANUAL wallet, and
+    // `lastUsedCashWallet` deliberately refuses to guess between two of those
+    // with no history — so the form would ask instead of defaulting, and the
+    // transfer under test would never be submitted at all.
+    await setMatchers(bank.id, [{ packageName: "com.bpi.ng.app", hint: null }]);
     await renderNew();
 
     fireEvent.press(screen.getByTestId("manual-entry-segment-transfer"));
@@ -380,6 +385,11 @@ describe("a transfer draft", () => {
 
   test("a rejected write says so on screen and keeps the sheet open", async () => {
     const bank = await createWallet({ name: "BPI", openingBalance: 200_000 });
+    // TRACKED. With no matchers it would be a second MANUAL wallet, and
+    // `lastUsedCashWallet` deliberately refuses to guess between two of those
+    // with no history — so the form would ask instead of defaulting, and the
+    // transfer under test would never be submitted at all.
+    await setMatchers(bank.id, [{ packageName: "com.bpi.ng.app", hint: null }]);
     await renderNew();
 
     fireEvent.press(screen.getByTestId("manual-entry-segment-transfer"));

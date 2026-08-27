@@ -283,7 +283,10 @@ describe("opening balances at creation (task-4-brief rule 1)", () => {
     fireEvent.press(screen.getByTestId("onboarding-primary-button"));
 
     await waitFor(async () => expect(await listWallets()).toHaveLength(2));
-    const gcashWallet = (await listWallets()).find((wallet) => wallet.name === "GCash")!;
+    // The proposal, not the cash row the step always adds. Selected by
+    // exclusion rather than by name: the name comes from `providerLabel`, and
+    // this test is about the BALANCE, not about what the label resolves to.
+    const gcashWallet = (await listWallets()).find((wallet) => wallet.name !== "Cash")!;
     expect(gcashWallet.balance).toBe(0);
     // And Continue actually continued — a blank balance is a real, complete
     // answer, not a validation error silently holding the flow in place.
@@ -300,7 +303,7 @@ describe("opening balances at creation (task-4-brief rule 1)", () => {
     fireEvent.press(screen.getByTestId("onboarding-primary-button"));
 
     await waitFor(async () => expect(await listWallets()).toHaveLength(2));
-    const gcashWallet = (await listWallets()).find((wallet) => wallet.name === "GCash")!;
+    const gcashWallet = (await listWallets()).find((wallet) => wallet.name !== "Cash")!;
     expect(gcashWallet.balance).toBe(300_000);
   });
 });

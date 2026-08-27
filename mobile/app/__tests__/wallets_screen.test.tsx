@@ -4,10 +4,12 @@
 // user did not type. Three of the tests below defend claims the app must never
 // get wrong:
 //
-//   THE TOTAL EXCLUDES CREDIT. docs/04-features/02-wallets.md rule 23: a credit
-//   balance is money owed. The credit fixture holds ₱12,345.00 precisely so
-//   that counting it changes the headline figure by an amount no rounding
-//   error could explain.
+//   THE TOTAL EXCLUDES WHAT IS OWED. docs/04-features/02-wallets.md rule 23: an
+//   owed balance is money the user does not have. The owed fixture holds
+//   ₱12,345.00 precisely so that counting it changes the headline figure by an
+//   amount no rounding error could explain. The rule used to key on the wallet
+//   TYPE the user picked at onboarding; it now keys on `owedBalance`, which the
+//   app infers and the user can correct.
 //
 //   THE ARCHIVED TOGGLE IS PART OF THE CACHE KEY. `useWallets` and
 //   `queryKeys.wallets.list(includeArchived)` were widened together in this
@@ -533,14 +535,15 @@ describe("the share bar on the total card", () => {
     expect(screen.getByTestId(`wallets-share-seg-${gcash.id}`)).toBeTruthy();
   });
 
-  test("EXCLUDES a credit wallet's balance — the bar has to match the total figure above it", async () => {
-    // `totalActiveBalance` (lib/wallets/summary.ts) already excludes credit
+  test("EXCLUDES an owed wallet's balance — the bar has to match the total figure above it", async () => {
+    // `totalActiveBalance` (lib/wallets/summary.ts) already excludes owed
     // balances from the headline peso figure (rule 23: owed, not held). A
-    // share bar with a credit segment would draw a breakdown whose slices sum
+    // share bar with an owed segment would draw a breakdown whose slices sum
     // to a DIFFERENT number than the total it sits under, which is the same
     // overstatement rule 23 exists to prevent, one layer down.
     const bpi = await createWallet({ name: "BPI", openingBalance: 60_000 });
     const visa = await createWallet({ name: "Visa", openingBalance: 1_234_500 });
+    await setWalletOwed(visa.id, true, { pinned: true });
 
     renderScreen();
     await screen.findByTestId("wallets-share");
@@ -597,10 +600,11 @@ describe("the total label", () => {
   // `totalActiveBalance` — the peso figure one line below — already excluded
   // it (rule 23: a credit balance is owed, not held). The label and the total
   // it sits above must describe the same set of wallets.
-  test("EXCLUDES a non-archived credit wallet from the count too — it must agree with the total it labels", async () => {
+  test("EXCLUDES a non-archived OWED wallet from the count too — it must agree with the total it labels", async () => {
     await createWallet({ name: "BPI", openingBalance: 10_000 });
     await createWallet({ name: "GCash", openingBalance: 5_000 });
-    await createWallet({ name: "Visa", openingBalance: 1_234_500 });
+    const visa = await createWallet({ name: "Visa", openingBalance: 1_234_500 });
+    await setWalletOwed(visa.id, true, { pinned: true });
 
     renderScreen();
     await screen.findByTestId("wallets-total-amount");

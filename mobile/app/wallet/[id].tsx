@@ -555,13 +555,14 @@ export default function WalletDetailScreen() {
             }}
           />
 
-          {/* Rule 4: cash wallets have empty matchers and the matcher UI is
-              hidden for them — money enters by manual entry, transfer legs and
-              reconciliation, never by a notification. task-5b: this card now
-              shows for EVERY non-cash wallet, not only once it already holds a
-              matcher (the old `matchers.length > 0` gate) — the dashed "+ Add"
-              chip below only makes sense if the card can appear before a
-              wallet has its first one.
+          {/* SHOWN FOR EVERY LIVE WALLET, WITH NO "is this cash?" GATE AT ALL.
+              Rule 4 used to hide this card for a wallet TYPED as cash. Under
+              the traits that replaced the type, "cash" means a wallet with no
+              matchers — so keeping the gate would hide the matcher card from
+              exactly the wallets that have none, and the dashed "+ Add" chip
+              could never be reached to add a first one. A wallet stays manual
+              because the user never picks a source here, not because the app
+              refused to show them the control.
 
               ARCHIVED IS READ-ONLY, THE SAME INVARIANT THE ACTION ROW ABOVE
               ALREADY KEEPS (this file's own header: "an archived wallet is
@@ -572,7 +573,7 @@ export default function WalletDetailScreen() {
               supposed to preserve — only the "Edit" and "+ Add" WRITE
               affordances disappear, and only an archived wallet with
               nothing to show and nothing to do renders no card at all. */}
-          {!isCash && (!wallet.isArchived || (matchers && matchers.length > 0)) ? (
+          {!wallet.isArchived || (matchers && matchers.length > 0) ? (
             <View className="px-4 pt-3">
               <Card>
                 <View className="flex-row items-center justify-between">
