@@ -235,6 +235,7 @@ describe("amount first", () => {
     // correct in the wallet, the direction, the date and the category.
     expect(onSubmit).toHaveBeenCalledTimes(1);
     expect(onSubmit).toHaveBeenCalledWith({
+      kind: "entry",
       amount: 123_400,
       direction: "out",
       walletId: "cash-pocket",
@@ -553,6 +554,73 @@ describe("the secondary fields", () => {
     // defaults from — a name that matches everything and means nothing.
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({ merchant: null, note: null }),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The Transfer segment (money-transfers Task 4) — a wallet-to-wallet movement
+// entered once instead of typed twice. Same amount-first landing as
+// Expense/Income; what changes is which fields follow it.
+// ---------------------------------------------------------------------------
+
+/** Types into the hero amount field — mirrors `save()`'s fixed-testID shape. */
+function enterAmount(text: string): void {
+  typeAmount("manual-amount", text);
+}
+
+/** Types into the optional Fee field, transfer mode only. */
+function enterFee(text: string): void {
+  typeAmount("manual-entry-fee", text);
+}
+
+describe("the Transfer segment", () => {
+  test("swaps Category for a To wallet and a Fee", () => {
+    renderForm(<Harness wallets={[POCKET, BPI]} />);
+
+    fireEvent.press(screen.getByTestId("manual-entry-segment-transfer"));
+
+    expect(screen.queryByTestId("manual-entry-to-wallet")).not.toBeNull();
+    expect(screen.queryByTestId("manual-entry-fee")).not.toBeNull();
+    expect(screen.queryByTestId("manual-entry-category")).toBeNull();
+    expect(screen.queryByTestId("manual-entry-merchant")).toBeNull();
+  });
+
+  test("the To picker excludes the From wallet and archived wallets", () => {
+    const archived = { ...BPI, id: "bank-archived", name: "Old BPI", isArchived: true };
+    renderForm(<Harness wallets={[POCKET, BPI, archived]} />);
+
+    fireEvent.press(screen.getByTestId("manual-entry-segment-transfer"));
+
+    expect(screen.queryByTestId("manual-entry-to-wallet-cash-pocket")).toBeNull();
+    expect(screen.queryByTestId("manual-entry-to-wallet-bank-bpi")).not.toBeNull();
+    expect(screen.queryByTestId("manual-entry-to-wallet-bank-archived")).toBeNull();
+  });
+
+  test("is disabled with fewer than two unarchived wallets", () => {
+    renderForm(<Harness wallets={[POCKET]} />);
+
+    const segment = screen.getByTestId("manual-entry-segment-transfer");
+    expect(segment.props.accessibilityState?.disabled).toBe(true);
+  });
+
+  test("submitting a transfer emits a transfer draft", () => {
+    renderForm(<Harness wallets={[POCKET, BPI]} />);
+
+    fireEvent.press(screen.getByTestId("manual-entry-segment-transfer"));
+    enterAmount("1000.00");
+    fireEvent.press(screen.getByTestId("manual-entry-to-wallet-bank-bpi"));
+    enterFee("15.00");
+    save();
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "transfer",
+        amount: 100_000,
+        feeAmount: 1_500,
+        fromWalletId: "cash-pocket",
+        toWalletId: "bank-bpi",
+      }),
     );
   });
 });

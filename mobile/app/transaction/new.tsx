@@ -76,6 +76,13 @@ export default function NewTransactionScreen() {
   }
 
   function handleSubmit(draft: ManualEntryDraft): void {
+    // Task 5 wires this into lib/transfers/transfer_service.ts's
+    // recordTransfer. Until then there is nothing to submit it TO — and
+    // nothing on this screen can reach this branch anyway, since
+    // manual_entry_form.tsx's Transfer segment disables itself below two
+    // unarchived wallets — so this is an unreached guard, not a silent drop.
+    if (draft.kind === "transfer") return;
+
     createTransaction.mutate(
       {
         walletId: draft.walletId,

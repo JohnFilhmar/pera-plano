@@ -41,27 +41,36 @@ import type { Category, Centavos, EpochMs, Transaction, TxDirection, Wallet } fr
 const CloseGlyph = registerIcon(X);
 const NoteGlyph = registerIcon(Type);
 
-/** Expense/Income (task-4b's `SegmentedControl`) — see its header on why a
- * third "Transfer" segment does not belong here: `TxDirection` is `"in" |
- * "out"`, `ManualEntryDraft` carries no transfer concept, and a segment with
- * no field to write and no submit path to wire it into would be a live
- * control that silently does nothing — the exact dead tap this codebase's
- * other conventions (`Button`'s `iconOnly`, `ReviewCard`'s disabled-without-
- * a-handler pairs) all refuse to ship. */
+/** Expense/Income (task-4b's `SegmentedControl`). `TxDirection` stays exactly
+ * `"in" | "out"` — the ledger's column type must never hold a value it can't
+ * write — so Transfer is NOT a third member of this array. It is `kind` on
+ * `ManualEntryDraft` instead (money-transfers Task 4), driving a separate
+ * `manual-entry-segment-transfer` control rendered beside this one below. */
 const DIRECTION_SEGMENTS = [
   { value: "out", label: "Expense" },
   { value: "in", label: "Income" },
 ] as const;
 
-export type ManualEntryDraft = {
-  amount: Centavos;
-  direction: TxDirection;
-  walletId: string;
-  categoryId: string;
-  occurredAt: EpochMs;
-  merchant: string | null;
-  note: string | null;
-};
+export type ManualEntryDraft =
+  | {
+      kind: "entry";
+      amount: Centavos;
+      direction: TxDirection;
+      walletId: string;
+      categoryId: string;
+      occurredAt: EpochMs;
+      merchant: string | null;
+      note: string | null;
+    }
+  | {
+      kind: "transfer";
+      amount: Centavos;
+      feeAmount: Centavos;
+      fromWalletId: string;
+      toWalletId: string;
+      occurredAt: EpochMs;
+      note: string | null;
+    };
 
 export type ManualEntryFormProps = {
   testID?: string;
@@ -140,6 +149,15 @@ export function ManualEntryForm({
   const [pickingCategory, setPickingCategory] = useState(false);
   const [showErrors, setShowErrors] = useState(false);
 
+  // The third segment. A separate state, not a third `direction` value — see
+  // DIRECTION_SEGMENTS' header. Switching kind never resets amount, date or
+  // note; only the fields that don't apply on the other side (Category/
+  // Merchant here, To/Fee there) disappear.
+  const [kind, setKind] = useState<"entry" | "transfer">("entry");
+  const isTransfer = kind === "transfer";
+  const [chosenToWalletId, setChosenToWalletId] = useState<string | null>(null);
+  const [feeAmount, setFeeAmount] = useState("");
+
   // Spec: archived wallets are hidden from every picker, and cash is listed
   // first — this screen exists for cash; everything else is the exception.
   const selectable = useMemo(() => {
@@ -167,11 +185,24 @@ export function ManualEntryForm({
   const categoryId = chosenCategoryId ?? categoryForMerchant(transactions, merchant);
 
   const amountCentavos = centavosFrom(amount);
+  const feeAmountCentavos = centavosFrom(feeAmount);
   const occurredAt = occurredAtFor(day, now);
 
   const canSave = amountCentavos > 0;
   const walletMissing = walletId === null;
   const dateInvalid = occurredAt === null;
+
+  // Fewer than two unarchived wallets means the segment has nothing to offer —
+  // disabled WITH THE REASON SHOWN rather than offered-then-refused on submit,
+  // the same no-dead-taps rule this file's header cites for `Button`'s
+  // `iconOnly` and `ReviewCard`'s disabled-without-a-handler pairs.
+  const transferAvailable = wallets.filter((wallet) => !wallet.isArchived).length >= 2;
+
+  // Reuses `selectable`'s archived-wallet filter rather than a second one; the
+  // only thing the To picker adds is excluding whichever wallet is From.
+  const toCandidates = selectable.filter((wallet) => wallet.id !== walletId);
+  const toWalletId = chosenToWalletId;
+  const toWalletMissing = isTransfer && toWalletId === null;
 
   const selectedCategory = categories.find((category) => category.id === categoryId);
   // The summary line beneath the amount (task-4b) — glanceable confirmation
@@ -183,12 +214,26 @@ export function ManualEntryForm({
   function handleSave(): void {
     if (!canSave) return;
 
-    if (walletMissing || dateInvalid) {
+    if (walletMissing || dateInvalid || toWalletMissing) {
       setShowErrors(true);
       return;
     }
 
+    if (isTransfer) {
+      onSubmit({
+        kind: "transfer",
+        amount: amountCentavos,
+        feeAmount: feeAmountCentavos,
+        fromWalletId: walletId,
+        toWalletId: toWalletId as string,
+        occurredAt,
+        note: trimmedOrNull(note),
+      });
+      return;
+    }
+
     onSubmit({
+      kind: "entry",
       amount: amountCentavos,
       direction,
       walletId,
@@ -280,13 +325,59 @@ export function ManualEntryForm({
       {/* Direction — one of the four screens `SegmentedControl` was built
           for (task-4b). `testID="manual-entry-direction"` renders children at
           `manual-entry-direction-out`/`-in`, the exact ids the hand-rolled
-          toggle this replaces already used. */}
-      <SegmentedControl
-        testID="manual-entry-direction"
-        segments={DIRECTION_SEGMENTS}
-        value={direction}
-        onChange={setDirection}
-      />
+          toggle this replaces already used.
+
+          Transfer rides alongside it rather than inside `segments`: it is
+          NOT a `TxDirection`, `SegmentedControl` has no per-item `disabled`
+          (and none of its other five call sites need one), and this pill's
+          pinned testID is `manual-entry-segment-transfer` — a third child of
+          `testID="manual-entry-direction"` would be
+          `manual-entry-direction-transfer` instead. A second, one-off
+          control here is cheaper than reshaping a shared component for its
+          only disableable segment. */}
+      <View className="flex-row gap-2">
+        <SegmentedControl
+          testID="manual-entry-direction"
+          segments={DIRECTION_SEGMENTS}
+          value={direction}
+          onChange={(value) => {
+            setDirection(value);
+            setKind("entry");
+          }}
+        />
+        <Pressable
+          testID="manual-entry-segment-transfer"
+          disabled={!transferAvailable}
+          accessibilityRole="radio"
+          accessibilityLabel={
+            transferAvailable ? "Transfer" : "Transfer — add a second wallet first"
+          }
+          accessibilityState={{ selected: isTransfer, disabled: !transferAvailable }}
+          onPress={() => {
+            if (transferAvailable) setKind("transfer");
+          }}
+          className={`min-h-[44px] flex-1 items-center justify-center rounded-full px-3 ${
+            isTransfer ? "bg-brand dark:bg-brand-dark" : "bg-chip dark:bg-chip-dark"
+          } ${!transferAvailable ? "opacity-40" : ""}`}
+        >
+          <Text
+            numberOfLines={1}
+            className={`text-row font-semibold ${
+              isTransfer ? "text-on-brand dark:text-on-brand-dark" : "text-fg-2 dark:text-fg-2-dark"
+            }`}
+          >
+            Transfer
+          </Text>
+        </Pressable>
+      </View>
+      {!transferAvailable ? (
+        <Text
+          testID="manual-entry-transfer-unavailable"
+          className="text-fg-2 dark:text-fg-2-dark"
+        >
+          Add a second wallet to transfer between wallets.
+        </Text>
+      ) : null}
 
       {/* THE PROMPT THAT REPLACES A DANGEROUS DEFAULT. Shown only when no cash
           wallet exists AND the user has not already resolved it by picking one
@@ -311,8 +402,12 @@ export function ManualEntryForm({
         </View>
       ) : null}
 
-      {/* Wallet */}
+      {/* Wallet — relabelled "From" in transfer mode (money-transfers Task 4).
+          No visible label in entry mode, unchanged from before this task. */}
       <View className="gap-2">
+        {isTransfer ? (
+          <Text className="text-fg-2 dark:text-fg-2-dark">From</Text>
+        ) : null}
         {selectable.map((wallet) => (
           <Pressable
             key={wallet.id}
@@ -338,6 +433,48 @@ export function ManualEntryForm({
         ) : null}
       </View>
 
+      {/* To + Fee — transfer mode only. The SAME inline Pressable-per-wallet
+          shape the From list above already uses; there is no `WalletPicker`
+          component in this codebase, and this task does not invent one.
+          Fee is optional: blank reads as 0 through the same `centavosFrom`
+          the amount field already uses. */}
+      {isTransfer ? (
+        <View testID="manual-entry-to-wallet" className="gap-2">
+          <Text className="text-fg-2 dark:text-fg-2-dark">To</Text>
+          {toCandidates.map((wallet) => (
+            <Pressable
+              key={wallet.id}
+              testID={`manual-entry-to-wallet-${wallet.id}`}
+              accessibilityRole="button"
+              accessibilityState={{ selected: toWalletId === wallet.id }}
+              accessibilityLabel={wallet.name}
+              onPress={() => setChosenToWalletId(wallet.id)}
+              className={`rounded-xl px-4 py-3 ${
+                toWalletId === wallet.id
+                  ? "bg-brand-soft dark:bg-brand-soft-dark"
+                  : "bg-surface dark:bg-surface-dark"
+              }`}
+            >
+              <Text className="text-fg dark:text-fg-dark">{wallet.name}</Text>
+            </Pressable>
+          ))}
+
+          {showErrors && toWalletMissing ? (
+            <Text testID="manual-entry-to-wallet-error" className="text-danger dark:text-danger-dark">
+              Choose which wallet this went into.
+            </Text>
+          ) : null}
+
+          <NumericField
+            testID="manual-entry-fee"
+            label="Fee (optional)"
+            placeholder="₱0"
+            value={feeAmount}
+            onChangeText={setFeeAmount}
+          />
+        </View>
+      ) : null}
+
       {/* Date */}
       <View className="gap-2">
         <DateField
@@ -360,30 +497,37 @@ export function ManualEntryForm({
         ) : null}
       </View>
 
-      {/* Category — a single Chip standing in for the hand-rolled summary
-          row this replaces (task-4b). NOT a wrapped row of every category as
-          a chip each: `category-option-{id}` and `category-picker-save`
-          below are `CategoryPicker`'s own sheet, which is also where the
-          "always categorize X as Y" rule offer lives (rule 6) — a second,
-          bypassing selector here would need to either duplicate that offer
-          or silently drop it. */}
-      <View className="flex-row">
-        <Chip
-          testID="manual-entry-category"
-          label={selectedCategory?.name ?? "Uncategorized"}
-          fill="outline"
-          onPress={() => setPickingCategory(true)}
-        />
-      </View>
+      {/* Category and Merchant — entry mode only. A transfer moves money
+          between the user's own wallets; it has no category (it is not
+          spend) and no merchant (there is no counterparty to name). */}
+      {!isTransfer ? (
+        <>
+          {/* Category — a single Chip standing in for the hand-rolled summary
+              row this replaces (task-4b). NOT a wrapped row of every category as
+              a chip each: `category-option-{id}` and `category-picker-save`
+              below are `CategoryPicker`'s own sheet, which is also where the
+              "always categorize X as Y" rule offer lives (rule 6) — a second,
+              bypassing selector here would need to either duplicate that offer
+              or silently drop it. */}
+          <View className="flex-row">
+            <Chip
+              testID="manual-entry-category"
+              label={selectedCategory?.name ?? "Uncategorized"}
+              fill="outline"
+              onPress={() => setPickingCategory(true)}
+            />
+          </View>
 
-      <TextInput
-        testID="manual-entry-merchant"
-        value={merchant}
-        onChangeText={setMerchant}
-        accessibilityLabel="Merchant"
-        placeholder="Where? (optional)"
-        className="rounded-xl bg-surface px-4 py-3 text-fg dark:bg-surface-dark dark:text-fg-dark"
-      />
+          <TextInput
+            testID="manual-entry-merchant"
+            value={merchant}
+            onChangeText={setMerchant}
+            accessibilityLabel="Merchant"
+            placeholder="Where? (optional)"
+            className="rounded-xl bg-surface px-4 py-3 text-fg dark:bg-surface-dark dark:text-fg-dark"
+          />
+        </>
+      ) : null}
 
       {/* Note, on `bg-chip` with a leading glyph (task-4b). */}
       <View className="flex-row items-center gap-2 rounded-xl bg-chip px-4 py-3 dark:bg-chip-dark">
