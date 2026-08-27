@@ -211,17 +211,15 @@ describe("the wallet form requires a name, and nothing else", () => {
     expect(screen.getByTestId("wallet-form-name").props.value).toBe("GCash");
   });
 
-  test("hides the matcher picker for cash wallets", () => {
+  test("shows the matcher picker unconditionally", () => {
+    // REPLACES "hides the matcher picker for cash wallets". That rule hid the
+    // picker once the user chose the cash TYPE — a type that no longer exists.
+    // The picker IS the question now: a wallet with no matchers is the manual
+    // wallet cash used to name, so hiding the control would remove the only way
+    // to answer it.
     renderForm(<WalletForm submitLabel="Add wallet" onSubmit={jest.fn()} providers={PROVIDERS} />);
 
-    fireEvent.press(screen.getByTestId("wallet-form-type-e-wallet"));
     expect(screen.getByTestId("matcher-picker")).toBeTruthy();
-
-
-    // Spec rule 4: cash wallets have empty matchers and the matcher UI is
-    // hidden for them. Money enters cash by manual entry, transfer legs and
-    // reconciliation — never by a notification, because cash cannot send one.
-    expect(screen.queryByTestId("matcher-picker")).toBeNull();
   });
 
   test("matchers passed in as initial values are submitted unchanged", () => {

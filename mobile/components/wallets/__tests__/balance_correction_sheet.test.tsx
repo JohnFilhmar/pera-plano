@@ -96,6 +96,11 @@ beforeEach(async () => {
   await seedDefaultCategories();
   // ₱1,000.00 opening, minus a ₱200.00 spend the app DID see → recorded ₱800.00.
   gcash = await createWallet({ name: "GCash", openingBalance: 100_000 });
+  // A REAL MATCHER. This sheet is for wallets a PROVIDER reports on — a wallet
+  // nothing routes to gets the cash reconcile sheet instead — so the fixture
+  // has to actually be one, or every test below renders nothing at all.
+  await setWalletMatchers(gcash.id, [{ packageName: "com.globe.gcash.android", hint: null }]);
+  gcash = (await getWallet(gcash.id)) as Wallet;
   await insertTransaction({
     walletId: gcash.id,
     categoryId: UNCATEGORIZED_ID,

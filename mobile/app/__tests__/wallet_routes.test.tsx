@@ -188,7 +188,6 @@ describe("creating a wallet", () => {
     await renderNew();
 
     fireEvent.changeText(screen.getByTestId("wallet-form-name"), "BPI");
-    fireEvent.press(screen.getByTestId("wallet-form-type-bank"));
     // "2500", not the old "250000" (numeric-input-system Task 13): the wallet
     // this test writes still opens at ₱2,500.00 — 250000 centavos. Only the
     // keystrokes moved, because a digit is a peso now rather than a centavo.
@@ -210,7 +209,6 @@ describe("creating a wallet", () => {
     await renderNew();
 
     fireEvent.changeText(screen.getByTestId("wallet-form-name"), "GCash");
-    fireEvent.press(screen.getByTestId("wallet-form-type-e-wallet"));
     // The picker mounts only once `useRuleset` resolves — it has no providers
     // to offer until then, and rendering an empty one would invite a save that
     // binds nothing.
@@ -231,7 +229,6 @@ describe("creating a wallet", () => {
     await renderNew();
 
     fireEvent.changeText(screen.getByTestId("wallet-form-name"), "gcash");
-    fireEvent.press(screen.getByTestId("wallet-form-type-e-wallet"));
     fireEvent.press(screen.getByTestId("wallet-form-submit"));
 
     await waitFor(() => {
@@ -256,7 +253,6 @@ describe("the free-tier wallet cap", () => {
     await renderNew();
 
     fireEvent.changeText(screen.getByTestId("wallet-form-name"), "Maya");
-    fireEvent.press(screen.getByTestId("wallet-form-type-e-wallet"));
     fireEvent.press(screen.getByTestId("wallet-form-submit"));
 
     await waitFor(() => {
@@ -271,7 +267,6 @@ describe("the free-tier wallet cap", () => {
     await renderNew();
 
     fireEvent.changeText(screen.getByTestId("wallet-form-name"), "Maya");
-    fireEvent.press(screen.getByTestId("wallet-form-type-e-wallet"));
     fireEvent.press(screen.getByTestId("wallet-form-submit"));
 
     await waitFor(async () => {
@@ -287,7 +282,6 @@ describe("the free-tier wallet cap", () => {
     await renderNew();
 
     fireEvent.changeText(screen.getByTestId("wallet-form-name"), "Maya");
-    fireEvent.press(screen.getByTestId("wallet-form-type-e-wallet"));
     fireEvent.press(screen.getByTestId("wallet-form-submit"));
 
     // Spec §Free vs Plus: "The cap counts active (non-archived) Wallets only,
@@ -307,7 +301,6 @@ describe("the free-tier wallet cap", () => {
 
     fireEvent.press(screen.getByTestId("wallet-form-submit"));
     fireEvent.changeText(screen.getByTestId("wallet-form-name"), "Maya");
-    fireEvent.press(screen.getByTestId("wallet-form-type-e-wallet"));
     fireEvent.press(screen.getByTestId("wallet-form-submit"));
 
     await waitFor(() => {

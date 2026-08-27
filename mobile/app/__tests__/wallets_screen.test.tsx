@@ -43,6 +43,7 @@ import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categori
 import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { insertTransaction } from "@/lib/db/repos/transactions_repo";
 import { setMatchers } from "@/lib/db/repos/wallet_matchers_repo";
+import { setWalletOwed } from "@/lib/db/repos/wallet_traits_repo";
 import { archiveWallet, createWallet } from "@/lib/db/repos/wallets_repo";
 import { DEFAULT_TUNABLES } from "@/lib/ingest/ruleset_types";
 import { queryClient as appQueryClient } from "@/lib/query_client";
@@ -152,45 +153,42 @@ afterEach(async () => {
 // Rule 1 — grouping and the total
 // ---------------------------------------------------------------------------
 
-describe("grouping", () => {
-  test("groups by type in the order bank, e-wallet, savings, credit, cash", async () => {
-    // SEEDED IN A DIFFERENT ORDER THAN THEY MUST RENDER. `listWallets` returns
-    // oldest-first, so an implementation that renders insertion order — or
-    // sorts alphabetically (Bank, Cash, Credit, E-wallet, Savings) — produces a
-    // different sequence than the one asserted.
+describe("the two lists", () => {
+  test("held wallets render plainly; owed wallets get their own section", async () => {
+    // THE FIVE TYPE HEADINGS ARE GONE. This screen used to render a section per
+    // wallet type — Bank, E-wallet, Savings, Credit, Cash — off a taxonomy the
+    // user was made to pick during onboarding. Only one of those divisions ever
+    // changed a number, and it is the one kept: what you have, and what you owe.
     await createWallet({ name: "Pocket", openingBalance: 5_000 });
-    await createWallet({ name: "Visa", openingBalance: 1_234_500 });
+    const visa = await createWallet({ name: "Visa", openingBalance: 1_234_500 });
+    await setWalletOwed(visa.id, true, { pinned: true });
     await createWallet({ name: "BPI", openingBalance: 10_000 });
-    await createWallet({ name: "GSave", openingBalance: 20_000 });
-    await createWallet({ name: "GCash", openingBalance: 30_000 });
 
     renderScreen();
-    await screen.findByTestId("wallet-group-bank");
+    await screen.findByTestId("wallets-owed-section");
 
-    expect(screen.getAllByTestId(/^wallet-group-/).map((g) => g.props.testID)).toEqual([
-      "wallet-group-bank",
-      "wallet-group-e-wallet",
-      "wallet-group-savings",
-      "wallet-group-credit",
-      "wallet-group-cash",
-    ]);
+    expect(screen.queryAllByTestId(/^wallet-group-/)).toEqual([]);
+    expect(screen.getByText("Money you owe")).toBeTruthy();
+    for (const name of ["Pocket", "BPI", "Visa"]) {
+      expect(screen.getByText(name)).toBeTruthy();
+    }
   });
 
-  test("shows no heading for a type the user has no wallet of", async () => {
+  test("no owed wallet, no owed section", async () => {
     await createWallet({ name: "BPI", openingBalance: 10_000 });
 
     renderScreen();
-    await screen.findByTestId("wallet-group-bank");
+    await screen.findByTestId("wallets-total-amount");
 
-    expect(screen.queryByTestId("wallet-group-cash")).toBeNull();
-    expect(screen.queryByTestId("wallet-group-credit")).toBeNull();
+    expect(screen.queryByTestId("wallets-owed-section")).toBeNull();
   });
 });
 
 describe("the total row", () => {
-  test("EXCLUDES credit wallets — a ₱12,345.00 card does not inflate the headline", async () => {
+  test("EXCLUDES owed wallets — a ₱12,345.00 card does not inflate the headline", async () => {
     await createWallet({ name: "BPI", openingBalance: 10_000 });
-    await createWallet({ name: "Visa", openingBalance: 1_234_500 });
+    const visa = await createWallet({ name: "Visa", openingBalance: 1_234_500 });
+    await setWalletOwed(visa.id, true, { pinned: true });
 
     renderScreen();
     await screen.findByTestId("wallets-total-amount");
@@ -201,11 +199,12 @@ describe("the total row", () => {
     expect(screen.getByTestId("wallets-total-amount")).not.toHaveTextContent("₱12,445.00");
   });
 
-  test("still shows the credit wallet's own balance, labelled as owed", async () => {
+  test("still shows the owed wallet's own balance, labelled as owed", async () => {
     const visa = await createWallet({
       name: "Visa",
       openingBalance: 1_234_500,
     });
+    await setWalletOwed(visa.id, true, { pinned: true });
 
     renderScreen();
     await screen.findByTestId(`wallet-card-${visa.id}`);

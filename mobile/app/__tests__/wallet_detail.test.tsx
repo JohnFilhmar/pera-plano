@@ -44,6 +44,8 @@ import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categori
 import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions_repo";
 import { linkTransfer } from "@/lib/db/repos/transfer_links_repo";
+import { setMatchers } from "@/lib/db/repos/wallet_matchers_repo";
+import { setWalletOwed } from "@/lib/db/repos/wallet_traits_repo";
 import { archiveWallet, createWallet, getWallet } from "@/lib/db/repos/wallets_repo";
 import { DEFAULT_TUNABLES } from "@/lib/ingest/ruleset_types";
 import { queryClient as appQueryClient } from "@/lib/query_client";
@@ -152,6 +154,12 @@ beforeEach(async () => {
     },
   });
   gcash = await createWallet({ name: "GCash", openingBalance: 100_000 });
+  // A REAL MATCHER, NOT DECORATION. A wallet nothing routes to is a MANUAL
+  // wallet — what `type: "cash"` used to mean — and this fixture stands for a
+  // provider-tracked one throughout: it is offered the balance-correction sheet
+  // and refused the cash reconcile sheet precisely because a provider reports
+  // on it. Without this row it would be manual and those two would swap.
+  await setMatchers(gcash.id, [{ packageName: GCASH_PACKAGE, hint: null }]);
 });
 
 afterEach(async () => {
@@ -194,8 +202,9 @@ describe("the balance header", () => {
     expect(screen.getByTestId("wallet-detail-balance")).toHaveTextContent("₱1,000.00");
   });
 
-  test("a credit wallet's balance is labelled as owed, not as money held", async () => {
+  test("an owed wallet's balance is labelled as owed, not as money held", async () => {
     const visa = await createWallet({ name: "Visa", openingBalance: 1_234_500 });
+    await setWalletOwed(visa.id, true, { pinned: true });
 
     renderDetail(visa.id);
 
@@ -631,7 +640,7 @@ describe("the wallet's transactions", () => {
 });
 
 describe("the actions m1c Task 5 added", () => {
-  test("edit and archive are offered; reconcile is not, because this is not cash", async () => {
+  test("edit and archive are offered; reconcile is not, because a provider reports on this one", async () => {
     await insertTransaction({
       walletId: gcash.id,
       categoryId: UNCATEGORIZED_ID,
@@ -648,9 +657,9 @@ describe("the actions m1c Task 5 added", () => {
 
     expect(screen.getByTestId("wallet-detail-edit")).toBeTruthy();
     expect(screen.getByTestId("wallet-detail-archive")).toBeTruthy();
-    // Task 5 rule 6: cash only. An e-wallet re-anchors itself from the
-    // provider's reported balance-after, and a typed adjustment would fight
-    // the next snap.
+    // Task 5 rule 6, restated against the trait: reconciliation is for wallets
+    // NOTHING routes to. This one re-anchors itself from the provider's own
+    // reported balance-after, and a typed count would fight the next snap.
     expect(screen.queryByTestId("wallet-detail-reconcile")).toBeNull();
   });
 
@@ -715,7 +724,8 @@ describe("correcting a non-cash wallet's balance (Task 4)", () => {
     expect(written.balanceAfter).toBeNull();
   });
 
-  test("cash wallets still use the reconcile sheet (regression on rule 3)", async () => {
+  test("a wallet nothing routes to still uses the reconcile sheet (regression on rule 3)", async () => {
+    // No matchers — the case `type: "cash"` used to name.
     const pocket = await createWallet({ name: "Pocket", openingBalance: 5_000 });
 
     renderDetail(pocket.id);

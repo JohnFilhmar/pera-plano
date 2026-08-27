@@ -53,6 +53,7 @@ import { ThemeProvider } from "@/contexts/theme_context";
 import { closeDatabase } from "@/lib/db/database";
 import { seedDefaultCategories } from "@/lib/db/repos/categories_repo";
 import { createGoal, listGoals } from "@/lib/db/repos/goals_repo";
+import { setWalletOwed } from "@/lib/db/repos/wallet_traits_repo";
 import { createWallet } from "@/lib/db/repos/wallets_repo";
 import { __setTierForTests } from "@/lib/entitlements";
 import { queryClient as appQueryClient } from "@/lib/query_client";
@@ -263,10 +264,13 @@ test("a complete form creates the goal", async () => {
   expect(mockBack).toHaveBeenCalled();
 });
 
-test("ONLY UNCLAIMED SAVINGS WALLETS ARE OFFERED", async () => {
-  // Invariant I10, both halves, enforced before the user can trip it: a
-  // spending wallet is not a savings wallet, and a savings wallet another goal
-  // already backs would each claim the same pesos.
+test("UNCLAIMED WALLETS ARE OFFERED — INCLUDING SPENDING ONES", async () => {
+  // THE SAVINGS-ONLY HALF OF INVARIANT I10 IS GONE. It required the user to
+  // have declared a wallet "savings" during onboarding, which the app no longer
+  // asks; inferring it and then refusing a goal on that guess would block a
+  // user with no explanation they could act on. What survives is the half that
+  // protects the arithmetic: two goals on one wallet would each claim the same
+  // pesos, so a claimed wallet is still withheld.
   const spending = await createWallet({ name: "GCash" });
   const taken = await createWallet({ name: "SeaBank" });
   await createGoal({ name: "Taken", targetAmount: 100000, linkedWalletId: taken.id });
@@ -274,13 +278,25 @@ test("ONLY UNCLAIMED SAVINGS WALLETS ARE OFFERED", async () => {
   renderScreen(<NewGoalScreen />);
 
   await screen.findByTestId(`goal-wallet-${gsave.id}`);
-  expect(screen.queryByTestId(`goal-wallet-${spending.id}`)).toBeNull();
+  expect(screen.getByTestId(`goal-wallet-${spending.id}`)).toBeTruthy();
   expect(screen.queryByTestId(`goal-wallet-${taken.id}`)).toBeNull();
 });
 
-test("WITH NO SAVINGS WALLET THE FORM OFFERS TO MAKE ONE", async () => {
-  // Rule 3, and the reason for it: a first-time user has no savings wallet, and
-  // a picker showing nothing is a dead end at the exact moment they decided to
+test("AN OWED WALLET IS NOT OFFERED", async () => {
+  // A goal is money set aside. "Saving toward a laptop" inside a balance that
+  // represents a debt is not something the progress maths can express.
+  const card = await createWallet({ name: "Visa" });
+  await setWalletOwed(card.id, true, { pinned: true });
+
+  renderScreen(<NewGoalScreen />);
+
+  await screen.findByTestId(`goal-wallet-${gsave.id}`);
+  expect(screen.queryByTestId(`goal-wallet-${card.id}`)).toBeNull();
+});
+
+test("WITH NO WALLET AT ALL THE FORM OFFERS TO MAKE ONE", async () => {
+  // Rule 3, and the reason for it: a first-time user has no wallets, and a
+  // picker showing nothing is a dead end at the exact moment they decided to
   // start saving.
   await freshDb();
   await seedDefaultCategories();
