@@ -108,6 +108,12 @@ type NativeNotificationListenerModule = {
   // absent-value gap for the wrapper to close.
   listObservedPackages(): Promise<ObservedPackage[]>;
 
+  // ---- Real app names (app-label plan) ---------------------------------
+  // Partial by design: a package that is not installed, not visible, or has
+  // no usable label is ABSENT from the map rather than present-and-blank.
+  // See `AppLabels.kt` for why absence, not a placeholder, is the answer.
+  getAppLabels(packageNames: string[]): Promise<Record<string, string>>;
+
   /**
    * Inherited from the `EventEmitter` every Expo `NativeModule` extends —
    * the JS end of the Kotlin `Events(EVENT_ON_CAPTURE)` declaration. Not
@@ -522,4 +528,41 @@ export function getListenerHealth(): Promise<ListenerHealth> {
  */
 export function listObservedPackages(): Promise<ObservedPackage[]> {
   return NativeNotificationListener.listObservedPackages();
+}
+
+/**
+ * The name Android itself shows for each of `packageNames` — what the app is
+ * CALLED on this phone, as opposed to what the parser seed once decided to
+ * call it.
+ *
+ * WHY THIS EXISTS. The seed's brand names are hand-written and go stale: a
+ * bank rebrands, the package id does not, and the picker goes on offering
+ * "seabank" for an app whose icon on this very phone reads Maribank. Since
+ * the picker exists to have the user confirm "yes, that is my banking app",
+ * naming it something the user has never seen is a direct failure of the
+ * screen's only job. Resolving the name at display time fixes every past and
+ * future rename without an app release.
+ *
+ * PARTIAL BY DESIGN — the map contains an entry only for packages that are
+ * installed, visible, and carry a usable label. A missing key is the normal
+ * answer for a catalogue app the user does not have, and callers are expected
+ * to fall through to their own next-best name (see `applyAppLabels` in
+ * `lib/ingest/provider_catalogue.ts` for that chain). The native side never
+ * substitutes a placeholder, precisely so absence stays distinguishable.
+ *
+ * TAKES THE PACKAGES TO RESOLVE, AND DOES NOT ENUMERATE. Nothing in this
+ * module can produce a list of the user's installed apps; this asks about
+ * packages the caller already had. The empty-input short circuit keeps a
+ * picker with no choices from crossing the bridge at all.
+ *
+ * REJECTS ONLY ON A BRIDGE FAILURE. There is no per-package error: the native
+ * side swallows an unresolvable package into absence, because one dead lookup
+ * must not cost the caller the other twenty names.
+ */
+export function getAppLabels(packageNames: string[]): Promise<Record<string, string>> {
+  if (packageNames.length === 0) return Promise.resolve({});
+  // Normalized the same way `getListenerHealth` closes its absent-value gap:
+  // every value this module hands out is the shape its type promises, so no
+  // caller has to guard a property read on the result.
+  return NativeNotificationListener.getAppLabels(packageNames).then((labels) => labels ?? {});
 }

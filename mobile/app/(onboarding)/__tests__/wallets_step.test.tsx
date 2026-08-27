@@ -30,6 +30,7 @@ jest.mock("expo-router", () => ({
 
 jest.mock("@/modules/notification_listener", () => ({
   listObservedPackages: jest.fn(),
+  getAppLabels: jest.fn(),
 }));
 
 // A distinguishing override for exactly one key, so "uses the shared provider
@@ -51,7 +52,7 @@ import type { ReactNode } from "react";
 
 import { KeypadHost } from "@/components/ui/keypad_host";
 import { KeypadProvider } from "@/contexts/keypad_context";
-import { listObservedPackages } from "@/modules/notification_listener";
+import { getAppLabels, listObservedPackages } from "@/modules/notification_listener";
 import { closeDatabase } from "@/lib/db/database";
 import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { listMatchers } from "@/lib/db/repos/wallet_matchers_repo";
@@ -64,6 +65,7 @@ import type { ObservedPackage } from "@/modules/notification_listener";
 import WalletsScreen from "@/app/(onboarding)/wallets";
 
 const mockListObservedPackages = listObservedPackages as jest.Mock;
+const mockGetAppLabels = getAppLabels as jest.Mock;
 
 const GMESSAGES = "com.google.android.apps.messaging";
 const SMESSAGES = "com.samsung.android.messaging";
@@ -126,7 +128,11 @@ async function seedMultiPackageCatalogue(): Promise<void> {
   });
 }
 
-async function renderReady(observedPackages: string[] = []): Promise<void> {
+async function renderReady(
+  observedPackages: string[] = [],
+  appLabels: Record<string, string> = {},
+): Promise<void> {
+  mockGetAppLabels.mockResolvedValue(appLabels);
   mockListObservedPackages.mockResolvedValue(
     observedPackages.map((packageName) => ({
       packageName,
@@ -305,5 +311,60 @@ describe("opening balances at creation (task-4-brief rule 1)", () => {
     await waitFor(async () => expect(await listWallets()).toHaveLength(2));
     const gcashWallet = (await listWallets()).find((wallet) => wallet.name !== "Cash")!;
     expect(gcashWallet.balance).toBe(300_000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// REAL APP NAMES (app-label plan).
+//
+// The wallet step re-derives its candidates the same way the provider picker
+// does, so the two screens have to agree about what an app is CALLED.
+// Proposing "SeaBank" one screen after the user tapped a tile reading
+// "Maribank" makes them doubt they picked the right app — and a wallet named
+// after a bank that rebranded is not something they can spot later.
+// ---------------------------------------------------------------------------
+
+describe("proposed wallet names follow the device, not the seed", () => {
+  test("a proposal is named from the app's real label", async () => {
+    await renderReady([GCASH], { [GCASH]: "GCash Bank Pilipinas" });
+
+    expect(screen.getByTestId(`wallet-proposal-name-${GCASH}`).props.value).toBe(
+      "GCash Bank Pilipinas",
+    );
+  });
+
+  test("a quick-add chip is named from the app's real label too", async () => {
+    // The chip and the proposal it becomes must not disagree: the user taps
+    // "+ X" and gets a wallet called X.
+    await renderReady([], { [GMESSAGES]: "Google Messages" });
+
+    expect(screen.getByLabelText("Add Google Messages")).toBeTruthy();
+  });
+
+  test("no label falls back to the shared provider label, not to a package id", async () => {
+    await renderReady([GCASH], {});
+
+    expect(screen.getByTestId(`wallet-proposal-name-${GCASH}`).props.value).toBe(
+      "GCash (via shared constants/providers.ts)",
+    );
+  });
+
+  test("a renamed app still matches on its PACKAGE, never on its label", async () => {
+    await renderReady([GCASH], { [GCASH]: "GCash Bank Pilipinas" });
+
+    fireEvent.press(screen.getByTestId("onboarding-primary-button"));
+
+    await waitFor(async () => {
+      const wallets = await listWallets();
+      expect(wallets.some((wallet) => wallet.name === "GCash Bank Pilipinas")).toBe(true);
+    });
+
+    const wallets = await listWallets();
+    const renamed = wallets.find((wallet) => wallet.name === "GCash Bank Pilipinas");
+    const matchers = await listMatchers(renamed!.id);
+
+    // The label is display only. Routing keys on the package id, which is
+    // exactly what does NOT change when a bank rebrands.
+    expect(matchers.map((matcher) => matcher.packageName)).toContain(GCASH);
   });
 });
