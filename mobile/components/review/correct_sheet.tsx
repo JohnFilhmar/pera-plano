@@ -61,11 +61,17 @@ import { CategoryPicker } from "@/components/transactions/category_picker";
 import { BottomSheet } from "@/components/ui/bottom_sheet";
 import { Button, registerIcon } from "@/components/ui/button";
 import { NumericField } from "@/components/ui/numeric_field";
+import {
+  captureCandidates,
+  type AmountCandidate,
+  type CaptureCandidates,
+} from "@/lib/ingest/candidates";
 import { centavosFrom, pesoInputFrom } from "@/lib/money/peso_input";
 import type { CorrectionPatch } from "@/lib/review/resolve_actions";
 import type {
   Category,
   Centavos,
+  RawCapture,
   ReviewItemPayload,
   ReviewQueueItem,
   TxDirection,
@@ -166,11 +172,85 @@ function saveDisabledReason(
   return null;
 }
 
+export const TAP_AMOUNT_TITLE = "TAP THE AMOUNT";
+
+/**
+ * The line under the captured text when more than one number survived ranking.
+ *
+ * IT ASKS RATHER THAN APOLOGISES. The sheet is open precisely because the app
+ * could not tell a payment from a fee, and saying so plainly is what makes the
+ * next tap feel like an answer instead of a repair.
+ */
+export const TAP_AMOUNT_HINT = "More than one amount here — tap the one that moved.";
+
+/**
+ * What the sheet read out of the capture, or `null` when there was nothing to
+ * read. Only `unknown-provider` gets one: every other kind reaches this sheet
+ * with a parse already in its payload, and a second, weaker opinion over the
+ * top of a real one is how a good parse gets overwritten by a heuristic.
+ */
+function candidatesFor(
+  item: ReviewQueueItem,
+  capture: RawCapture | null | undefined,
+): CaptureCandidates | null {
+  if (item.kind !== "unknown-provider" || capture === null || capture === undefined) return null;
+  const read = captureCandidates(capture);
+  return read.amounts.length === 0 && read.direction === null && read.merchant === null
+    ? null
+    : read;
+}
+
+/** One run of a captured line: plain prose, or an amount the user can tap. */
+type LineSegment = { text: string; candidate: AmountCandidate | null };
+
+/**
+ * A captured line cut into the tokens that can be tapped and the prose between
+ * them.
+ *
+ * THE PROSE IS THE POINT. A row of bare chips — `₱1,250.00` `₱50.00` — asks the
+ * user to pick between two numbers with nothing to pick on; the same two
+ * numbers left in "sent ₱1,250.00 … fee ₱50.00" answer the question by
+ * themselves. So the text is never summarised away, and the tokens stay where
+ * the notification put them.
+ */
+function lineSegments(
+  line: string,
+  lineIndex: number,
+  amounts: readonly AmountCandidate[],
+): LineSegment[] {
+  const onThisLine = amounts
+    .filter((candidate) => candidate.lineIndex === lineIndex)
+    .sort((a, b) => a.start - b.start);
+
+  const segments: LineSegment[] = [];
+  let cursor = 0;
+  for (const candidate of onThisLine) {
+    if (candidate.start > cursor) {
+      segments.push({ text: line.slice(cursor, candidate.start), candidate: null });
+    }
+    segments.push({ text: line.slice(candidate.start, candidate.end), candidate });
+    cursor = candidate.end;
+  }
+  if (cursor < line.length) segments.push({ text: line.slice(cursor), candidate: null });
+  return segments;
+}
+
 export type CorrectSheetProps = {
   visible: boolean;
   item: ReviewQueueItem;
   wallets: readonly Wallet[];
   categories: readonly Category[];
+  /**
+   * The notification behind an `unknown-provider` item (2026-08-28). Supplied
+   * by the screen, which already reads it for the card, so this component
+   * stays presentational and testable without a query client.
+   *
+   * WHY THE SHEET NEEDS IT AT ALL: this kind's payload is
+   * `{ amount: null, direction: null }` by construction (`pipeline.ts` never
+   * ran a parser), so without the raw text every field here opens blank and
+   * the user retypes what is on their screen.
+   */
+  capture?: RawCapture | null;
   onDismiss: () => void;
   onSubmit: (patch: CorrectionPatch) => void;
 };
@@ -180,6 +260,7 @@ export function CorrectSheet({
   item,
   wallets,
   categories,
+  capture,
   onDismiss,
   onSubmit,
 }: CorrectSheetProps) {
@@ -191,12 +272,24 @@ export function CorrectSheet({
     merchant: readString(item.payload, "merchant"),
   };
 
-  const [amountText, setAmountText] = useState(amountTextFrom(proposed.amount));
-  const [direction, setDirection] = useState<TxDirection>(proposed.direction ?? "out");
+  const candidates = candidatesFor(item, capture);
+  // THE PARSER'S PROPOSAL ALWAYS WINS over anything read here. These seeds
+  // exist for the one kind that HAS no parse; where a payload holds a value,
+  // that value is the more trustworthy of the two and the fallback never runs.
+  const seededAmount = proposed.amount ?? candidates?.best?.centavos ?? null;
+  const seededDirection = proposed.direction ?? candidates?.direction ?? null;
+  const seededMerchant = proposed.merchant ?? candidates?.merchant ?? "";
+  // Whether ANY field on this form was filled in by the app rather than by the
+  // person looking at it. Drives the rule checkbox — see `ruleDefault`.
+  const seeded =
+    proposed.amount === null && (seededAmount !== null || seededMerchant !== "");
+
+  const [amountText, setAmountText] = useState(amountTextFrom(seededAmount));
+  const [direction, setDirection] = useState<TxDirection>(seededDirection ?? "out");
   const [walletId, setWalletId] = useState<string | null>(defaultWalletId(item.payload, wallets));
   const [categoryId, setCategoryId] = useState<string | null>(proposed.categoryId);
-  const [merchant, setMerchant] = useState(proposed.merchant ?? "");
-  const [createRule, setCreateRule] = useState(true);
+  const [merchant, setMerchant] = useState(seededMerchant);
+  const [createRule, setCreateRule] = useState(!seeded);
   const [pickingCategory, setPickingCategory] = useState(false);
 
   // Reopening starts from the item's CURRENT proposal and a fresh checkbox. A
@@ -208,15 +301,26 @@ export function CorrectSheet({
   // from `resolved_at` — so depending on the object would re-run this effect on
   // a background refetch and silently wipe the amount the user was half-way
   // through typing.
+  //
+  // KEYED ON THE CAPTURE TOO (2026-08-28). The raw text arrives from a query,
+  // so a sheet opened before that read resolves would sit blank forever with
+  // the seeds one render too late. In practice the card fetched the same row
+  // under the same key before the sheet could open, so this fires once with
+  // the capture already in hand; the dependency is what makes the cold case
+  // correct rather than lucky.
   const itemId = item.id;
+  const captureId = capture?.id ?? null;
   useEffect(() => {
     if (!visible) return;
-    setAmountText(amountTextFrom(readAmount(item.payload)));
-    setDirection(readDirection(item.payload) ?? "out");
+    const read = candidatesFor(item, capture);
+    const amount = readAmount(item.payload) ?? read?.best?.centavos ?? null;
+    const merchantSeed = readString(item.payload, "merchant") ?? read?.merchant ?? "";
+    setAmountText(amountTextFrom(amount));
+    setDirection(readDirection(item.payload) ?? read?.direction ?? "out");
     setWalletId(defaultWalletId(item.payload, wallets));
     setCategoryId(readString(item.payload, "categoryId"));
-    setMerchant(readString(item.payload, "merchant") ?? "");
-    setCreateRule(true);
+    setMerchant(merchantSeed);
+    setCreateRule(readAmount(item.payload) !== null || (amount === null && merchantSeed === ""));
     setPickingCategory(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `wallets` is
     // read (via `defaultWalletId`) but deliberately excluded: the sheet
@@ -225,7 +329,7 @@ export function CorrectSheet({
     // open, the preselect just wouldn't re-run for it — no worse than not
     // preselecting, never wrong, so not worth re-running this whole reset
     // (and re-arming the checkbox) over a background list update.
-  }, [visible, itemId]);
+  }, [visible, itemId, captureId]);
 
   const amount = centavosFrom(amountText);
   const trimmedMerchant = merchant.trim();
@@ -278,6 +382,57 @@ export function CorrectSheet({
       <View testID="correct-sheet" className="gap-4">
         <ScrollView className="max-h-96">
           <View className="gap-4">
+            {/* THE NOTIFICATION ITSELF, ABOVE THE FORM. The user tapped "This
+                is a money notification" about a specific piece of text; making
+                them retype what it said — with the text no longer on screen —
+                is what made this sheet feel like data entry rather than a
+                confirmation. Tapping a number fills the field below it. */}
+            {candidates === null || candidates.lines.length === 0 ? null : (
+              <View
+                testID="correct-capture"
+                className="gap-1 rounded-xl bg-chip p-3 dark:bg-chip-dark"
+              >
+                <Text className="text-badge font-bold text-fg-2 dark:text-fg-2-dark">
+                  {TAP_AMOUNT_TITLE}
+                </Text>
+                {candidates.lines.map((line, lineIndex) => (
+                  <Text key={line} className="font-mono text-micro text-fg dark:text-fg-dark">
+                    {lineSegments(line, lineIndex, candidates.amounts).map((segment, index) =>
+                      segment.candidate === null ? (
+                        <Text key={`${lineIndex}-${index}`}>{segment.text}</Text>
+                      ) : (
+                        <Text
+                          key={`${lineIndex}-${index}`}
+                          testID={`correct-token-${segment.candidate.centavos}`}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Use ${segment.text}`}
+                          accessibilityState={{ selected: amount === segment.candidate.centavos }}
+                          onPress={() =>
+                            setAmountText(pesoInputFrom(segment.candidate?.centavos ?? 0))
+                          }
+                          className={
+                            amount === segment.candidate.centavos
+                              ? "font-bold text-brand dark:text-brand-dark"
+                              : "font-bold underline text-fg dark:text-fg-dark"
+                          }
+                        >
+                          {segment.text}
+                        </Text>
+                      ),
+                    )}
+                  </Text>
+                ))}
+                {candidates.best === null && candidates.amounts.length > 1 ? (
+                  <Text
+                    testID="correct-capture-hint"
+                    className="pt-1 text-xs text-fg-2 dark:text-fg-2-dark"
+                  >
+                    {TAP_AMOUNT_HINT}
+                  </Text>
+                ) : null}
+              </View>
+            )}
+
             <View className="gap-2">
               <Text className="text-xs uppercase text-fg-2 dark:text-fg-2-dark">Amount</Text>
               <NumericField
