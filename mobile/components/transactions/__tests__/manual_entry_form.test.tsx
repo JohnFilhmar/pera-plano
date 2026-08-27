@@ -623,4 +623,32 @@ describe("the Transfer segment", () => {
       }),
     );
   });
+
+  test("changing From to the wallet already picked as To clears the To selection, and never submits an equal pair", () => {
+    renderForm(<Harness wallets={[POCKET, BPI]} />);
+
+    fireEvent.press(screen.getByTestId("manual-entry-segment-transfer"));
+    enterAmount("1000.00");
+    fireEvent.press(screen.getByTestId("manual-entry-to-wallet-bank-bpi"));
+
+    // The From list still renders every wallet unfiltered — picking the
+    // wallet already chosen as To must not leave both fields pointing at
+    // the same wallet.
+    fireEvent.press(screen.getByTestId("manual-entry-wallet-bank-bpi"));
+
+    // BPI is now From, so it drops out of the To candidates entirely, and
+    // the survivor (cash-pocket) must NOT read as selected — the stale
+    // "bpi" choice may not silently carry over to it.
+    expect(screen.queryByTestId("manual-entry-to-wallet-bank-bpi")).toBeNull();
+    expect(
+      screen.getByTestId("manual-entry-to-wallet-cash-pocket").props.accessibilityState.selected,
+    ).toBe(false);
+
+    save();
+
+    // No selection left to submit — refused with a reason, not sent as
+    // `{ fromWalletId: "bank-bpi", toWalletId: "bank-bpi" }`.
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.getByTestId("manual-entry-to-wallet-error")).toBeTruthy();
+  });
 });

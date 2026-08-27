@@ -201,7 +201,15 @@ export function ManualEntryForm({
   // Reuses `selectable`'s archived-wallet filter rather than a second one; the
   // only thing the To picker adds is excluding whichever wallet is From.
   const toCandidates = selectable.filter((wallet) => wallet.id !== walletId);
-  const toWalletId = chosenToWalletId;
+  // DERIVED, not just stored: a picked To that now equals From (the From list
+  // is never filtered against it, so re-picking From to the same wallet is
+  // one tap) is treated as no selection at all, in the same render — not
+  // corrected a tick later by an effect. A stale `chosenToWalletId` that
+  // happened to equal `walletId` would otherwise stay "selected" against a
+  // wallet the To list no longer even offers, and `toWalletMissing` below
+  // would wrongly read false, letting handleSave emit an equal pair the
+  // service's own `same_wallet` check exists only to catch three layers down.
+  const toWalletId = chosenToWalletId === walletId ? null : chosenToWalletId;
   const toWalletMissing = isTransfer && toWalletId === null;
 
   const selectedCategory = categories.find((category) => category.id === categoryId);
