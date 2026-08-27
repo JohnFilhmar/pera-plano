@@ -81,6 +81,10 @@ function makeRecent(overrides: Partial<RecentEvent> = {}): RecentEvent {
     transactionId: "tx_recent",
     providerKey: PROVIDER,
     channel: "sms",
+    // The same wallet `makeEvent` resolves to, so a fixture that says nothing
+    // about wallets is a SAME-wallet pair and the rules under test are the only
+    // thing deciding the verdict.
+    walletId: "wallet_main",
     amount: HUNDRED_PESOS,
     direction: "out",
     referenceNo: null,
@@ -626,6 +630,69 @@ test("an amount outside tolerance falls through to the normal path", () => {
   // this is not a near-miss that should still supersede, it is a `unique`.
   const event = makeEvent({ amount: HUNDRED_PESOS * 45, direction: "out", occurredAt: OCCURRED_AT + 60 * SECOND });
   const minted = makeMintedLeg({ amount: HUNDRED_PESOS, direction: "out", occurredAt: OCCURRED_AT });
+
+  expect(checkDuplicate(event, [minted], DEFAULT_TUNABLES)).toEqual({ kind: "unique" });
+});
+
+test("a minted leg on a different wallet is not superseded", () => {
+  // THE ONE THIS GATE COULD LOSE REAL MONEY ON. `recordTransfer` stamps BOTH
+  // legs of a hand-typed transfer as minted, so a Cash-to-GCash ₱100.00
+  // transfer at 10:00 leaves a minted CASH out leg — and a real ₱100.00 GCash
+  // spend a minute later matches it on direction, amount and the twin window.
+  // Without the wallet check that spend supersedes the cash leg: the spend is
+  // never recorded, a transfer leg is overwritten with another account's
+  // reference, and that account's `balanceAfter` is snapped onto the wrong
+  // wallet.
+  const event = makeEvent({
+    walletId: "wallet_gcash",
+    amount: HUNDRED_PESOS,
+    direction: "out",
+    occurredAt: OCCURRED_AT + 60 * SECOND,
+  });
+  const minted = makeMintedLeg({
+    walletId: "wallet_cash",
+    amount: HUNDRED_PESOS,
+    direction: "out",
+    occurredAt: OCCURRED_AT,
+  });
+
+  expect(checkDuplicate(event, [minted], DEFAULT_TUNABLES)).toEqual({ kind: "unique" });
+});
+
+test("an event whose wallet could not be resolved supersedes nothing", () => {
+  // `NormalizedEvent.walletId` is nullable, and null is not "any wallet". An
+  // unresolved event is hard-routed to the Review Queue anyway (normalizer.ts),
+  // so letting it match here would overwrite a real row on the strength of a
+  // wallet the app never established.
+  const event = makeEvent({
+    walletId: null,
+    amount: HUNDRED_PESOS,
+    direction: "out",
+    occurredAt: OCCURRED_AT + 60 * SECOND,
+  });
+  const minted = makeMintedLeg({
+    walletId: "wallet_cash",
+    amount: HUNDRED_PESOS,
+    direction: "out",
+    occurredAt: OCCURRED_AT,
+  });
+
+  expect(checkDuplicate(event, [minted], DEFAULT_TUNABLES)).toEqual({ kind: "unique" });
+});
+
+test("a minted leg whose own wallet is unknown supersedes nothing", () => {
+  const event = makeEvent({
+    walletId: "wallet_cash",
+    amount: HUNDRED_PESOS,
+    direction: "out",
+    occurredAt: OCCURRED_AT + 60 * SECOND,
+  });
+  const minted = makeMintedLeg({
+    walletId: null,
+    amount: HUNDRED_PESOS,
+    direction: "out",
+    occurredAt: OCCURRED_AT,
+  });
 
   expect(checkDuplicate(event, [minted], DEFAULT_TUNABLES)).toEqual({ kind: "unique" });
 });

@@ -97,6 +97,19 @@ export type RecentEvent = {
   transactionId: string;
   providerKey: string | null;
   channel: "push" | "sms" | null;
+  /**
+   * The account this row is on — the row's OWN `walletId`, straight off the
+   * `Transaction`, never a resolution redone here.
+   *
+   * READ BY THE SUPERSEDE BRANCH ONLY (`matchesMintedLeg`), because that branch
+   * is the only one that skips `describesSameMovement`, and `describesSameMovement`
+   * is where account identity is otherwise established: two rows from the same
+   * provider are two tellings from the same account. A minted leg has no
+   * provider at all, so without this field the branch is deciding "same
+   * movement?" on direction, amount and timing — facts a Cash→GCash transfer
+   * and an unrelated GCash spend of the same amount minutes later both satisfy.
+   */
+  walletId: string | null;
   amount: Centavos;
   direction: TxDirection;
   referenceNo: string | null;
@@ -303,10 +316,30 @@ function matchesUndecidablePair(
 }
 
 /**
+ * Spec §6.2's match — same wallet, same direction, amount-equal, inside the twin
+ * window.
+ *
  * Deliberately does NOT consult `describesSameMovement` — that function's
  * provider rule is what this branch exists to except. Everything else it checks
  * is restated here explicitly rather than inherited, so the exception is one
- * function wide and cannot quietly widen.
+ * function wide and cannot quietly widen. THE WALLET IS PART OF "EVERYTHING
+ * ELSE", and it has to be stated here because `describesSameMovement` is the
+ * only other place account identity is ever established (two rows agreeing on
+ * `providerKey` are two tellings from the same account) and this branch does
+ * not run it.
+ *
+ * WHAT A WALLET-BLIND VERSION COSTS. `recordTransfer` stamps BOTH legs of every
+ * hand-typed transfer as minted — `source: "manual"`, a `transferLinkId`, no
+ * raw notification — so a Cash→GCash ₱500.00 transfer at 10:00 leaves a minted
+ * CASH out leg. A real ₱500.00 GCash payment at 10:01 then agrees with it on
+ * direction, amount and the window, and supersedes it: the payment is never
+ * recorded (spend understated), the cash leg is overwritten with GCash's
+ * reference, and GCash's `balanceAfter` becomes an anchor on the cash wallet.
+ *
+ * NULL IS NOT A WILDCARD, on either side. `NormalizedEvent.walletId` is nullable
+ * — an unresolved capture is hard-routed to the Review Queue — and a wallet the
+ * app never established is no evidence that this is the account the placeholder
+ * was minted on.
  *
  * AMOUNT EQUALITY, NOT A TOLERANCE. A minted leg was created EQUAL to the leg
  * the user confirmed at mint time, so an unequal provider figure is evidence of
@@ -319,6 +352,8 @@ function matchesMintedLeg(
   tunables: PipelineTunables,
 ): boolean {
   if (!row.mintedTransferLeg) return false;
+  if (event.walletId === null || row.walletId === null) return false;
+  if (event.walletId !== row.walletId) return false;
   if (event.direction !== row.direction) return false;
   if (event.amount !== row.amount) return false;
 

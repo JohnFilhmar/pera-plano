@@ -138,6 +138,10 @@ async function recentEventsFor(
       transactionId: row.id,
       providerKey,
       channel,
+      // The row's OWN wallet, not a re-resolution: the supersede branch matches
+      // this against `event.walletId`, and a minted placeholder can only be
+      // replaced by a notification from the account it was minted on.
+      walletId: row.walletId,
       amount: row.amount,
       direction: row.direction,
       referenceNo: row.referenceNo,
