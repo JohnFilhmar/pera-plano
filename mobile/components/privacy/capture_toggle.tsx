@@ -11,10 +11,9 @@
 // never import lib/db/repos/**, and this screen's every native touch-point
 // lives in the hook layer so a component test never has to mock a bridge it
 // has no reason to know exists.
-import { Switch } from "react-native";
-
 import { Card } from "@/components/ui/card";
 import { ListRow } from "@/components/ui/list_row";
+import { Switch } from "@/components/ui/switch";
 
 export type CaptureToggleProps = {
   /** `undefined` while the setting has not loaded yet. */

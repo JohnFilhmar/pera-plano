@@ -43,7 +43,7 @@
 // reads on every post. Android's own notification settings cannot provide it:
 // this is an app-level hold-and-redeliver rule, not a channel property.
 import type { ReactNode } from "react";
-import { Linking, ScrollView, Switch, Text, View } from "react-native";
+import { Linking, ScrollView, Text, View } from "react-native";
 
 import { ThemePicker } from "@/components/settings/theme_picker";
 import { Button } from "@/components/ui/button";
@@ -51,6 +51,7 @@ import { Card } from "@/components/ui/card";
 import { ListRow } from "@/components/ui/list_row";
 import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { SectionHeader } from "@/components/ui/section_header";
+import { Switch } from "@/components/ui/switch";
 import { useSetSetting } from "@/hooks/mutations/use_set_setting";
 import { useSettings } from "@/hooks/queries/use_settings";
 import { MINUTES_PER_DAY } from "@/lib/alerts/notification_policy";

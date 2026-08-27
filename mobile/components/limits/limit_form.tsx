@@ -52,7 +52,7 @@
 // task" — this row states the fixed rule and takes no `onPress`, rather than
 // wiring up a sheet that would save a value nothing reads.
 import { useState } from "react";
-import { Switch, Text, View } from "react-native";
+import { Text, View } from "react-native";
 
 import { LimitPreview } from "@/components/limits/limit_preview";
 import { BottomSheet } from "@/components/ui/bottom_sheet";
@@ -63,6 +63,7 @@ import { formatCentavos } from "@/components/ui/amount_text";
 import { ListRow } from "@/components/ui/list_row";
 import { NumericField } from "@/components/ui/numeric_field";
 import { SegmentedControl } from "@/components/ui/segmented_control";
+import { Switch } from "@/components/ui/switch";
 import { percentToValue, valueToPercent } from "@/lib/limits/limit_input";
 import { centavosFrom, pesoInputFrom } from "@/lib/money/peso_input";
 import type {

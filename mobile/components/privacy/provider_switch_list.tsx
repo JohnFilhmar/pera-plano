@@ -13,11 +13,12 @@
 // file never imports a repository or the native module — see
 // capture_toggle.tsx's header for why that split holds across this whole
 // screen.
-import { Switch, Text, View } from "react-native";
+import { Text, View } from "react-native";
 
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty_state";
 import { ListRow } from "@/components/ui/list_row";
+import { Switch } from "@/components/ui/switch";
 
 export type ProviderSwitchItem = {
   providerKey: string;
