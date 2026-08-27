@@ -119,9 +119,11 @@ export const REVIEW_ACTIONS: Record<ReviewKind, ReviewActionPair> = {
    * same money?" — and differ only in whether a candidate counterpart already
    * exists to name (`ambiguous-transfer`) or has to be chosen from scratch
    * (`one-sided-transfer`, `payload.counterpartWalletId` still `null` or a
-   * rule's guess). The card body that lets the user make that choice is
-   * Task 12's; this entry only supplies the pair's wording so the type
-   * compiles in the meantime.
+   * rule's guess). The choice itself is made in `OneSidedTransferBody`, which
+   * this file renders further down (see `isOneSidedTransfer`) — so unlike every
+   * other kind, this primary does not act on the payload as it stands: it is
+   * withheld until a wallet is selected, and reports that selection rather
+   * than a plain "yes".
    */
   "one-sided-transfer": { primary: "It's a transfer", secondary: "Not a transfer" },
 };
