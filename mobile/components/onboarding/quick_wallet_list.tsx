@@ -8,11 +8,16 @@
 // only renders the list and reports edits. It never imports a repository.
 //
 // EVERY ROW STARTS EDITABLE, NOT JUST VISIBLE. Docs step 7: "The user can
-// rename, change type, ... or remove any proposal" — so a row's name is a
-// TextInput from the first frame, not a label that becomes one after a tap,
-// and its type is a set of chips rather than a fixed badge. "Creating five
-// wallets in five taps" (task-3-brief rule 2) is the one tap on the primary
-// button once every row already looks right — never five separate edit flows.
+// rename, ... or remove any proposal" — so a row's name is a TextInput from the
+// first frame, not a label that becomes one after a tap. "Creating five wallets
+// in five taps" (task-3-brief rule 2) is the one tap on the primary button once
+// every row already looks right — never five separate edit flows.
+//
+// THE TYPE CHIPS ARE GONE. That same step used to ask for one of bank /
+// e-wallet / savings / credit / cash per row, before the user had entered a
+// single transaction. The app works out the one thing that mattered instead
+// (lib/wallets/classification.ts), so a row is now a name and, optionally, what
+// is already in it.
 //
 // A ROW CAN BE EXCLUDED WITHOUT BEING REMOVED FROM THE LIST. Docs step 7 says
 // "remove any proposal"; this keeps the row on screen, unchecked, rather than
@@ -20,14 +25,13 @@
 // undone instead of a re-add from scratch.
 //
 // RESTYLE (mobile-ui-revamp Part 3 Task 6). Every row now carries a
-// `ProviderBadge` (or, for the one proposal with no provider — cash —
-// `WalletTypeIcon`) so the row reads as "which app/wallet is this" at a
+// `ProviderBadge` (or, for the one proposal with no provider — cash — a
+// plain banknote glyph) so the row reads as "which app/wallet is this" at a
 // glance instead of a bare checkbox. `proposal.name` was already routed
 // through `providerLabel()` at the call site (app/(onboarding)/wallets.tsx's
 // `defaultNameFor`, since commit 9d36c05) — the badge is what was actually
-// missing, not the label. The wallet-type row becomes a row of `Chip`s
-// (soft brand fill when selected) rather than hand-rolled pills, and the
-// balance preview moves beside the name so "the balance" reads on the right
+// missing, not the label. The balance preview sits beside the name so "the
+// balance" reads on the right
 // of the row the way the design draws it, while the editable field itself
 // (the actual keypad trigger) stays where it was, below.
 import { Pressable, Text, TextInput, View } from "react-native";
@@ -35,7 +39,6 @@ import { Banknote, Check } from "lucide-react-native";
 
 import { AmountText } from "@/components/ui/amount_text";
 import { registerIcon } from "@/components/ui/button";
-import { Chip } from "@/components/ui/chip";
 import { NumericField } from "@/components/ui/numeric_field";
 import { ProviderBadge } from "@/components/ui/provider_badge";
 import { centavosFrom } from "@/lib/money/peso_input";
@@ -64,7 +67,7 @@ export type WalletProposal = {
    * field existed (components/onboarding/__tests__/quick_wallet_list.test.tsx's
    * own `makeProposal()`, out of this task's file list) keeps compiling
    * unmodified. A proposal with no `providerKey` at all renders the same
-   * `WalletTypeIcon` fallback cash gets — the answer this file already had
+   * banknote fallback cash gets — the answer this file already had
    * for "no provider to badge" before this field existed.
    */
   providerKey?: string | null;

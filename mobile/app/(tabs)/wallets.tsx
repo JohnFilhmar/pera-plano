@@ -78,7 +78,7 @@ export default function WalletsScreen() {
    *
    * `null` for a wallet with no matcher at all (Cash, manual wallets) AND for
    * a wallet whose one matcher's package resolves to nothing recognisable —
-   * both render `WalletTypeIcon` in `WalletCard` rather than a badge.
+   * both render `WalletIcon` in `WalletCard` rather than a badge.
    */
   function providerKeyForWallet(walletId: string): string | null {
     const packageName = (matchers ?? []).find((matcher) => matcher.walletId === walletId)

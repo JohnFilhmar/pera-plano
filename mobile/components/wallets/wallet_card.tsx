@@ -44,8 +44,8 @@ export type WalletCardProps = {
    * The provider this wallet's matchers resolve to, or `null`/`undefined` for
    * a wallet with no matcher at all (Cash, or any manual wallet) — see the
    * file header. `null` and `undefined` are treated identically: both render
-   * `WalletTypeIcon` rather than a badge, because a grey fallback badge on a
-   * cash wallet implies a provider that does not exist.
+   * `WalletIcon` rather than a badge, because a grey fallback badge on a
+   * manual wallet implies a provider that does not exist.
    */
   providerKey?: string | null;
   /**
