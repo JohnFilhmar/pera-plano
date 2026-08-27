@@ -45,6 +45,7 @@ import {
 import { linkTransfer } from "@/lib/db/repos/transfer_links_repo";
 import { createUserRule } from "@/lib/db/repos/user_rules_repo";
 import { withUnitOfWork } from "@/lib/db/unit_of_work";
+import { attachCounterpartLeg } from "@/lib/transfers/transfer_service";
 import type {
   Centavos,
   EpochMs,
@@ -53,6 +54,7 @@ import type {
   ReviewItemPayload,
   ReviewQueueItem,
   TxDirection,
+  UserRuleMatcher,
 } from "@/types/domain";
 
 /**
@@ -215,12 +217,25 @@ function proposalFrom(
  * rule 13 is explicit that a plain confirmation creates no rule — it would
  * restate what the pipeline got right and clutter the list the user has to be
  * able to read.
+ *
+ * `transfer` is the ONE branch not gated by a "did the patch change this"
+ * check, because it answers a different question than the other two. The
+ * category/wallet branches ask "did the user correct what the parser proposed"
+ * — a `mark-transfer` teaching has no parser proposal to compare against, only
+ * the user's own "yes, pair this" (`confirmOneSidedTransfer`, below), so its
+ * caller always passes `patch: {}` and lets this branch fire unconditionally.
+ * The matcher reuses exactly the two facts the other branches already read off
+ * the item — `providerKeyFor` (the wallet-correction branch's provider lookup)
+ * and the item's own `merchant` field (the category branch's merchant, read
+ * the same defensive way as everything else in this file) — so a second
+ * matcher-building path never has to exist.
  */
 async function teachFrom(
   item: ReviewQueueItem,
   patch: CorrectionPatch,
   committed: NewTransaction,
   now: EpochMs,
+  transfer?: { counterpartWalletId: string },
 ): Promise<void> {
   if (patch.createRule === false) return;
 
@@ -257,6 +272,23 @@ async function teachFrom(
         now,
       );
     }
+  }
+
+  if (transfer !== undefined) {
+    const providerKey = await providerKeyFor(item);
+    const merchantHint = readString(item.payload, "merchant");
+    const matcher: UserRuleMatcher = {
+      ...(providerKey !== null ? { providerKey } : {}),
+      ...(merchantHint !== null ? { merchantPattern: merchantHint } : {}),
+    };
+    await createUserRule(
+      {
+        matcher,
+        action: { kind: "mark-transfer", counterpartWalletId: transfer.counterpartWalletId },
+        createdFrom: item.id,
+      },
+      now,
+    );
   }
 }
 
@@ -409,12 +441,19 @@ export async function linkAsTransfer(
  * linked is what they judged.
  *
  * NO CLOCK ARGUMENT, unlike its neighbours: this action writes no UserRule, so
- * it has nothing to stamp. Spec rule 12's table does list a pairing rule for
- * "It's a transfer", and it is deliberately not written here — `UserRuleMatcher`
- * (types/domain.ts) has no field that can express a wallet PAIR, and nothing in
- * `lib/ingest/` reads the `mark-transfer` action, so the rule would be a row in
- * the user's settings that can never fire. See this file's header on why an
- * unfireable rule is worse than no rule.
+ * it has nothing to stamp. Spec rule 12's table lists a pairing rule for "It's
+ * a transfer", and it is STILL not written HERE — not because the mechanism
+ * can't express it any more (it can now: `mark-transfer`'s action carries
+ * `counterpartWalletId`, and `transfer_detector.ts`'s `ruleWalletFor` reads it
+ * — see `confirmOneSidedTransfer` below, which is the action that actually
+ * writes it) — but because this card is never the situation the rule is FOR.
+ * Every counterpart `confirmAsTransfer` links is an ALREADY-COMMITTED
+ * transaction: both legs posted their own notification, which is exactly why
+ * the pair reached `ambiguous-transfer` (a fee delta, a wide window, a rival
+ * candidate) instead of `one-sided-transfer` in the first place. A
+ * `mark-transfer` rule exists to prefill the NEXT notification for a side that
+ * never posts one; there is no such gap here, and writing one would fire on
+ * ordinary two-notification transfers this card was never asked about.
  */
 export async function confirmAsTransfer(itemId: string): Promise<string | null> {
   return withUnitOfWork(async () => {
@@ -483,5 +522,59 @@ export async function mergeDuplicate(
       await deleteTransaction(dropTransactionId);
     }
     await resolve(itemId, "confirmed");
+  });
+}
+
+/**
+ * "Yes, this was a transfer — the other half was here." Closes a
+ * `one-sided-transfer` card: the account that never posts a notification (a
+ * bank-funded cash-in, an ATM withdrawal into cash) gets its leg minted
+ * opposite the one that DID get captured.
+ *
+ * ONE WRITE. Every route into `one-sided-transfer` queues rather than commits
+ * (same reason `confirmAsTransfer` above gives for `ambiguous-transfer`: this
+ * verdict is never `auto_commit`), so the captured leg still has no row of its
+ * own when this runs. `attachCounterpartLeg` (lib/transfers/transfer_service.ts)
+ * commits that leg, mints the counterpart on `counterpartWalletId`, adds the
+ * optional fee row on whichever leg is the SOURCE, and links the pair — all
+ * inside this same unit of work, alongside the taught rule and the resolved
+ * item. A partial success here is not a cosmetic gap: it either leaves an
+ * internal movement counted as real money (a committed, unlinked leg), or puts
+ * a card the user already answered back in front of them (a resolved item with
+ * no rows behind it).
+ *
+ * TAKES A CLOCK, unlike `confirmAsTransfer`: this action writes a UserRule and
+ * therefore has something to stamp, where `confirmAsTransfer` writes none (see
+ * its own comment above for why that card can't teach the same way).
+ *
+ * THE RULE IS WRITTEN ON CONFIRM ONLY. "Not a transfer" writes nothing — that
+ * is a statement about the one notification in front of the user, not a
+ * prediction about the next one, so it is handled as a plain `dismiss`
+ * (`resolve(id, "dismissed")`) with no call into this file at all.
+ */
+export async function confirmOneSidedTransfer(
+  itemId: string,
+  counterpartWalletId: string,
+  feeAmount: Centavos,
+  now: EpochMs,
+): Promise<string | null> {
+  return withUnitOfWork(async () => {
+    const item = await openItem(itemId);
+    if (item === null) return null;
+
+    const proposal = proposalFrom(item, {}, await occurredAtFor(item));
+    const result = await attachCounterpartLeg(
+      { captured: { proposal }, counterpartWalletId, feeAmount },
+      now,
+    );
+
+    // The CAPTURED leg's id, not the minted one — `attachCounterpartLeg`
+    // orients `outLegId`/`inLegId` off the two rows' own directions, and the
+    // proposal's direction says which one is the row this card was about.
+    const committedId = proposal.direction === "out" ? result.outLegId : result.inLegId;
+
+    await teachFrom(item, {}, proposal, now, { counterpartWalletId });
+    await resolve(itemId, "confirmed");
+    return committedId;
   });
 }

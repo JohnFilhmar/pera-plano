@@ -25,12 +25,14 @@ import { confirmLoanMatch } from "@/lib/loans/loan_match_queue";
 import {
   confirmAsTransfer,
   confirmItem,
+  confirmOneSidedTransfer,
   correctItem,
   ignoreProvider,
   linkAsTransfer,
   mergeDuplicate,
   type CorrectionPatch,
 } from "@/lib/review/resolve_actions";
+import type { Centavos } from "@/types/domain";
 
 import { invalidateKeys } from "./invalidate_keys";
 
@@ -60,6 +62,18 @@ export type ReviewAction =
   | { kind: "correct"; itemId: string; patch: CorrectionPatch }
   | { kind: "dismiss"; itemId: string }
   | { kind: "confirm-transfer"; itemId: string }
+  /**
+   * The user named the wallet the other half of a transfer moved to or from.
+   * CARRIES the wallet and the fee, because both come from controls on the
+   * card — nothing here may be re-derived, or the app would be choosing where
+   * the user's money went.
+   */
+  | {
+      kind: "confirm-one-sided-transfer";
+      itemId: string;
+      counterpartWalletId: string;
+      feeAmount: Centavos;
+    }
   | { kind: "ignore-provider"; itemId: string; packageName: string }
   | { kind: "link-transfer"; itemId: string; outTransactionId: string; inTransactionId: string }
   | { kind: "merge"; itemId: string; keepTransactionId: string; dropTransactionId: string };
@@ -86,6 +100,14 @@ async function run(action: ReviewAction): Promise<void> {
       return;
     case "confirm-transfer":
       await confirmAsTransfer(action.itemId);
+      return;
+    case "confirm-one-sided-transfer":
+      await confirmOneSidedTransfer(
+        action.itemId,
+        action.counterpartWalletId,
+        action.feeAmount,
+        Date.now(),
+      );
       return;
     case "ignore-provider":
       await ignoreProvider(action.itemId, action.packageName);

@@ -88,6 +88,21 @@ export async function listOpen(): Promise<ReviewQueueItem[]> {
   return rows.map(rowToReviewQueueItem);
 }
 
+/**
+ * A single item BY ID, resolved or not — the one lookup `listOpen`'s predicate
+ * deliberately can't serve. Task 11's `confirmOneSidedTransfer` needs to prove
+ * an item it just resolved actually carries a `resolvedAt`, and a resolved row
+ * is invisible to `listOpen` by design.
+ */
+export async function getReviewItem(id: string): Promise<ReviewQueueItem | null> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<ReviewQueueItemRow>(
+    "SELECT * FROM review_queue_items WHERE id = ?",
+    [id],
+  );
+  return row ? rowToReviewQueueItem(row) : null;
+}
+
 /** Count of open items — same predicate as `listOpen`, drives the tab badge without materializing every row. */
 export async function countOpen(): Promise<number> {
   const db = await getDatabase();
