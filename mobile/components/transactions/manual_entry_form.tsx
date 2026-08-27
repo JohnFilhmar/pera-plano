@@ -82,6 +82,18 @@ export type ManualEntryFormProps = {
   amount: string;
   onAmountChange: (text: string) => void;
   onSubmit: (draft: ManualEntryDraft) => void;
+  /**
+   * A write this form already accepted that the ROUTE then failed to commit —
+   * a rejected `recordTransfer`, say. `null` when there is nothing to report.
+   *
+   * NOT part of `showErrors`. Every other error here is a field this form can
+   * see is wrong and can therefore clear the moment the user fixes it; this one
+   * is owned by whoever performed the write, because only they know when it
+   * stops being true. Shown UNCONDITIONALLY when set, for the same reason:
+   * gating it behind a submit attempt would hide a message that only ever
+   * exists because a submit already happened.
+   */
+  submitError?: string | null;
   onCreateCashWallet: () => void;
   /**
    * The header's X (task-4b). OPTIONAL, and absent means no button rather
@@ -133,6 +145,7 @@ export function ManualEntryForm({
   amount,
   onAmountChange,
   onSubmit,
+  submitError = null,
   onCreateCashWallet,
   onClose,
 }: ManualEntryFormProps) {
@@ -309,6 +322,17 @@ export function ManualEntryForm({
           onPress={handleSave}
         />
       </View>
+
+      {/* DIRECTLY UNDER SAVE, above the amount, because it is the answer to the
+          tap the user just made and the screen did not close on. Same
+          `text-danger` treatment as `manual-entry-fee-error` and the other
+          inline errors below — a failed write is not a different KIND of
+          problem to the user, only a later one. */}
+      {submitError === null ? null : (
+        <Text testID="manual-entry-submit-error" className="text-danger dark:text-danger-dark">
+          {submitError}
+        </Text>
+      )}
 
       {/* The amount, large and centred (task-4b, REVISED per review round 2).
           `NumericField` itself is now the hero figure (`size="hero"`) rather

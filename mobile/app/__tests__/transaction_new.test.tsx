@@ -51,7 +51,7 @@ import { closeDatabase } from "@/lib/db/database";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { countOpen } from "@/lib/db/repos/review_queue_repo";
 import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions_repo";
-import { createWallet, getWallet } from "@/lib/db/repos/wallets_repo";
+import { archiveWallet, createWallet, getWallet } from "@/lib/db/repos/wallets_repo";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
 import { typeAmount } from "@/test_support/keypad";
@@ -370,6 +370,33 @@ describe("a transfer draft", () => {
 
     // Same dismiss as the entry path — committed before the screen closes.
     expect(mockBack).toHaveBeenCalledTimes(1);
+  });
+
+  test("a rejected write says so on screen and keeps the sheet open", async () => {
+    const bank = await createWallet({ name: "BPI", type: "bank", openingBalance: 200_000 });
+    await renderNew();
+
+    fireEvent.press(screen.getByTestId("manual-entry-segment-transfer"));
+    typeAmount("manual-amount", "1000");
+    fireEvent.press(screen.getByTestId(`manual-entry-to-wallet-${bank.id}`));
+
+    // ARCHIVED AFTER THE LIST WAS RENDERED, which is the shape every real
+    // failure on this path takes: the form is drawing a cached wallet list and
+    // the service validates against the database as it is at write time. No
+    // mock — `recordTransfer` rejects here for its own reason
+    // (`archived_wallet`), exactly as it would on a SQLite fault.
+    await archiveWallet(bank.id);
+    save();
+
+    // The transfer path is the one that writes three rows. A rejection with no
+    // surface leaves the user looking at a sheet that neither closed nor
+    // complained, with no way to tell whether their money was recorded.
+    const failure = await screen.findByTestId("manual-entry-submit-error");
+    expect(failure).toBeTruthy();
+    expect(await ledger()).toHaveLength(0);
+    expect(mockBack).not.toHaveBeenCalled();
+    // Save has to stay live, or the only thing left to do is lose the draft.
+    expect(screen.getByTestId("manual-entry-save").props.accessibilityState.disabled).toBe(false);
   });
 });
 

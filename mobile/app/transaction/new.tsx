@@ -31,9 +31,39 @@ import { useCategories } from "@/hooks/queries/use_categories";
 import { useCreateTransaction } from "@/hooks/mutations/use_create_transaction";
 import { useTransactions } from "@/hooks/queries/use_transactions";
 import { useWallets } from "@/hooks/queries/use_wallets";
-import { recordTransfer } from "@/lib/transfers/transfer_service";
+import { recordTransfer, TransferValidationError } from "@/lib/transfers/transfer_service";
 
 import type { ManualEntryDraft } from "@/components/transactions/manual_entry_form";
+
+/**
+ * What to put on screen when `recordTransfer` rejects.
+ *
+ * IT ALWAYS SAYS NOTHING WAS RECORDED, and that claim is one the service
+ * guarantees rather than one this screen hopes for: `validate` throws before a
+ * single row is written, and the three inserts and the link run inside one
+ * `withUnitOfWork`. The user's real question after a failed Save is "did some
+ * of my money move?", and any wording that leaves that open is worse than the
+ * failure.
+ *
+ * The two named reasons are the ones a user can actually reach by racing the
+ * form — a wallet archived on another screen while this sheet was open, and a
+ * draft whose wallets collapsed to one — because those are the two they can do
+ * something about. Everything else (a SQLite fault, a `TransferValidationError`
+ * the form's own checks should have caught first) gets the generic sentence:
+ * naming a reason the user cannot act on is noise dressed as help.
+ */
+function transferErrorMessage(error: unknown): string {
+  if (error instanceof TransferValidationError) {
+    if (error.reason === "archived_wallet") {
+      return "One of those wallets was archived. Nothing was recorded — pick another wallet and try again.";
+    }
+    if (error.reason === "unknown_wallet") {
+      return "One of those wallets is no longer there. Nothing was recorded — pick another wallet and try again.";
+    }
+  }
+
+  return "That transfer wasn't saved. Nothing was recorded — try again.";
+}
 
 export default function NewTransactionScreen() {
   const router = useRouter();
@@ -46,6 +76,10 @@ export default function NewTransactionScreen() {
   const createTransaction = useCreateTransaction();
 
   const [amount, setAmount] = useState("");
+  // The transfer path's only failure surface. `useCreateTransaction` has React
+  // Query's own error state behind it; `recordTransfer` is a bare promise this
+  // screen calls itself, so the screen has to hold what went wrong.
+  const [transferError, setTransferError] = useState<string | null>(null);
   const { open } = useKeypad();
 
   // The amount is deliberately the first and only thing on screen (m1c rule
@@ -88,6 +122,9 @@ export default function NewTransactionScreen() {
     // the money debited from fromWalletId with no counterpart anywhere —
     // an internal movement silently counted as real spend.
     if (draft.kind === "transfer") {
+      // Cleared on every attempt, so a message from the previous try cannot
+      // sit under a Save that has just succeeded.
+      setTransferError(null);
       recordTransfer(
         {
           fromWalletId: draft.fromWalletId,
@@ -110,7 +147,16 @@ export default function NewTransactionScreen() {
           queryKeys.wallets.detail(draft.toWalletId),
           queryKeys.wallets.lists(),
         ]),
-      ).then(() => router.back());
+      )
+        .then(() => router.back())
+        // THE SCREEN STAYS OPEN, AND SAYS WHY. Without this the rejection is an
+        // unhandled promise: no `back()`, no message, Save still live — a sheet
+        // that neither closed nor complained, leaving the user with no way to
+        // tell whether three rows landed or none did. This is the path that
+        // writes THREE rows, so "did my money move?" is the one question the
+        // screen must never leave unanswered. Save is enabled off the typed
+        // amount alone, so it is already live for the retry.
+        .catch((error: unknown) => setTransferError(transferErrorMessage(error)));
       // Closed only AFTER the write commits — same reasoning as the entry
       // path's onSuccess below: a `back()` fired before the two legs land
       // would leave a failed transfer with nobody on screen to be told.
@@ -149,6 +195,7 @@ export default function NewTransactionScreen() {
         amount={amount}
         onAmountChange={setAmount}
         onSubmit={handleSubmit}
+        submitError={transferError}
         onCreateCashWallet={() => router.push("/wallet/new")}
         onClose={() => router.back()}
       />
