@@ -94,7 +94,14 @@ wallet but never writes it again.
 query per row. Removing a wallet's last matcher makes it manual, which is
 correct: nothing can route to it any more.
 
-### 3.3 Migration 013, and the runner change it needs
+### 3.3 The migrations, and the runner change they need
+
+Two migrations, not one. **013 is additive** — it adds the trait columns, the
+evidence table and the new review kind, and leaves `type` in place. **014 is the
+rebuild** that removes `type`, and it runs only after every reader has stopped
+consulting it. Splitting them this way means the tree compiles and every test
+passes at each step; a single migration would leave the app broken between the
+schema change and the last screen edit.
 
 `type` carries an inline `CHECK (type IN (...))` from `001_core.sql`, and SQLite
 has no `ALTER TABLE ... DROP CONSTRAINT`, so removing it means rebuilding
@@ -108,26 +115,29 @@ and the runner wraps every migration in `withTransactionAsync`
 inside a transaction, so `DROP TABLE wallets` would raise a foreign-key failure
 on any device that already holds a wallet with a matcher or a transaction.
 
-**Runner change.** A migration may declare that it runs outside the wrapping
-transaction. Migration 013 is the first to use it and follows SQLite's
-documented procedure for this class of schema change:
+**Runner change.** A migration may declare that it needs foreign keys off. The
+pragma is toggled *outside* the wrapping transaction — the only part that has
+to be — while the migration itself keeps running inside it, so a failure still
+rolls back. Migration 014 is the first to use it:
 
-1. `PRAGMA foreign_keys = OFF`
-2. `BEGIN` — the migration owns its own transaction
+1. `PRAGMA foreign_keys = OFF` — outside the transaction, where it takes effect
+2. `BEGIN` (the runner's existing `withTransactionAsync`)
 3. create `wallets_new` without `type`, with the two trait columns
-4. copy every row, deriving the backfill
+4. copy every row
 5. `DROP TABLE wallets`, then `ALTER TABLE wallets_new RENAME TO wallets`
-6. `COMMIT`
-7. `PRAGMA foreign_key_check` — **abort and report if it returns a single row**
-8. `PRAGMA foreign_keys = ON`
+6. `PRAGMA foreign_key_check` — **still inside the transaction**, so a single
+   returned row throws and rolls the whole rebuild back
+7. `COMMIT`
+8. `PRAGMA foreign_keys = ON`, in a `finally` so it is restored even on failure
 
-Step 7 is not optional and not advisory. A rebuild that silently orphans a
-transaction's `wallet_id` is worse than a migration that refuses to finish.
+Step 6 is not optional and not advisory. A rebuild that silently orphans a
+transaction's `wallet_id` is worse than a migration that refuses to finish, and
+running the check inside the transaction is what turns "detected" into
+"prevented".
 
-The runner opt-out is the one genuinely dangerous part of this change: every
-future migration rides on that code path. It defaults to the current
-transactional behaviour, and only a migration that explicitly asks gets the
-other one.
+The runner change is the one genuinely dangerous part of this work: every future
+migration rides on that code path. It defaults to today's behaviour, and only a
+migration that explicitly asks gets the other one.
 
 ```sql
 -- new wallets table: no `type`, plus the two trait columns
