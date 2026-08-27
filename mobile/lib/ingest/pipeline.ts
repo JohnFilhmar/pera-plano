@@ -350,6 +350,16 @@ async function runStages(
       counterparty: event.counterparty ?? null,
       confidence: event.confidence,
     });
+
+    // THE SAME EVENT `commit` EMITS, for the same reason: a row the ledger is
+    // already showing just changed. The BALANCE is unchanged by construction
+    // (the amounts are equal — that is what made this a supersede), but
+    // `occurredAt`, `referenceNo`, `source` and `balanceAfter` all moved, so
+    // without this the ledger and detail screens keep rendering the placeholder
+    // — "you added this manually", no reference, the minted timestamp — until
+    // some unrelated write happens to invalidate them.
+    emitAppEvent("ledger:committed", { transactionId: verdicts.dedupe.ofTransactionId });
+
     return { kind: "superseded", transactionId: verdicts.dedupe.ofTransactionId };
   }
 
