@@ -211,6 +211,17 @@ export function ManualEntryForm({
   // service's own `same_wallet` check exists only to catch three layers down.
   const toWalletId = chosenToWalletId === walletId ? null : chosenToWalletId;
   const toWalletMissing = isTransfer && toWalletId === null;
+  // `>=`, matching transfer_service.ts's own `fee_exceeds_amount` rule: an
+  // EQUAL fee would leave a zero-amount leg, which the schema's
+  // `CHECK (amount > 0)` rejects after the out-leg already exists. Closed
+  // here, in the same showErrors mechanism as walletMissing/dateInvalid/
+  // toWalletMissing, so `fee_exceeds_amount` stays a backstop the service
+  // enforces rather than a path a user can actually reach — a bare
+  // NumericField with no upper bound tied to `amount` would otherwise let
+  // an ordinary typed number trigger a validation error with no error
+  // surface on this screen to show it. Blank fee reads as 0 through the same
+  // `centavosFrom` the amount field uses, so it never trips this.
+  const feeExceedsAmount = isTransfer && feeAmountCentavos >= amountCentavos;
 
   const selectedCategory = categories.find((category) => category.id === categoryId);
   // The summary line beneath the amount (task-4b) — glanceable confirmation
@@ -222,7 +233,7 @@ export function ManualEntryForm({
   function handleSave(): void {
     if (!canSave) return;
 
-    if (walletMissing || dateInvalid || toWalletMissing) {
+    if (walletMissing || dateInvalid || toWalletMissing || feeExceedsAmount) {
       setShowErrors(true);
       return;
     }
@@ -480,6 +491,11 @@ export function ManualEntryForm({
             value={feeAmount}
             onChangeText={setFeeAmount}
           />
+          {showErrors && feeExceedsAmount ? (
+            <Text testID="manual-entry-fee-error" className="text-danger dark:text-danger-dark">
+              The fee can't be more than the amount you're sending.
+            </Text>
+          ) : null}
         </View>
       ) : null}
 

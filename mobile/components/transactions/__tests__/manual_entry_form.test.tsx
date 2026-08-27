@@ -651,4 +651,22 @@ describe("the Transfer segment", () => {
     expect(onSubmit).not.toHaveBeenCalled();
     expect(screen.getByTestId("manual-entry-to-wallet-error")).toBeTruthy();
   });
+
+  test("a fee larger than the amount is refused with a reason, not submitted", () => {
+    renderForm(<Harness wallets={[POCKET, BPI]} />);
+
+    fireEvent.press(screen.getByTestId("manual-entry-segment-transfer"));
+    enterAmount("1000.00");
+    fireEvent.press(screen.getByTestId("manual-entry-to-wallet-bank-bpi"));
+    // The fee field has no upper bound tied to `amount` — an ordinary typed
+    // number is the only client-reachable way to hit
+    // transfer_service.ts's `fee_exceeds_amount`, and this screen has no
+    // error surface for a rejection thrown after Save. Closed here instead,
+    // the same way a missing To wallet already is.
+    enterFee("1500.00");
+    save();
+
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.getByTestId("manual-entry-fee-error")).toBeTruthy();
+  });
 });
