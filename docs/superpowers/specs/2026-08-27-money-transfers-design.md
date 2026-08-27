@@ -413,6 +413,35 @@ All four conditions together. A manual leg without a link is an ordinary hand-ty
 keep the duplicate-review behaviour it has today; a linked leg that already carries a
 `rawNotificationId` is a provider row and cannot be superseded twice.
 
+**This cannot be expressed with the gate's existing matchers, and that is deliberate on their part.**
+`RecentEvent.providerKey === null` means "not from a notification", and `describesSameMovement`
+refuses such a row outright — the gate's header states why: someone who typed a ₱100.00 entry and
+then received a ₱100.00 notification may well have recorded two different things, and the
+notification is the only one the gate could destroy.
+
+A minted leg is the one row that argument does not cover. It was not typed by the user as a record
+of a movement; it was written by the app **as a placeholder for a notification that had not arrived
+yet**, on the user's explicit confirmation that the movement happened. So the recognition is a
+separate, narrow branch rather than a loosening of `describesSameMovement`:
+
+- `RecentEvent` gains `mintedTransferLeg: boolean`, supplied by the orchestrator from the row's
+  `source` / `transferLinkId` / `rawNotificationId` triple exactly as it already supplies
+  `providerKey` and `channel` from a join.
+- `checkDuplicate` gains a `matchesMintedLeg` check that runs **before** the strong-key and
+  twin-window checks and does not consult `describesSameMovement`, returning a new verdict.
+
+Every ordinary hand-typed row carries `mintedTransferLeg: false` and is untouched by this.
+
+### 6.2.1 The new verdict
+
+```ts
+| { kind: "supersedes"; ofTransactionId: string }
+```
+
+A fourth member of `DedupeVerdict`. Not `duplicate` — that outcome discards the incoming event, and
+here the incoming event is the authoritative one. Not `possible-duplicate` — that asks the user a
+question they already answered when they confirmed the transfer.
+
 ### 6.3 The supersede write
 
 `TransactionPatch` (`transactions_repo.ts:208`) deliberately excludes `source`, `rawNotificationId`
@@ -441,10 +470,12 @@ re-litigated by the arrival of a receipt.
 
 ### 6.4 Where the branch lives
 
-`lib/ingest/dedupe_gate.ts`, as an outcome alongside its existing ones, so a single stage owns the
-question "have I seen this movement already?". `pipeline.ts` calls `supersedeMintedLeg` instead of
-`insertTransaction` on that outcome, and does not run the transfer detector for the event — the leg
-is already linked.
+`lib/ingest/dedupe_gate.ts`, as the `"supersedes"` outcome of §6.2.1, so a single stage owns the
+question "have I seen this movement already?". `pipeline.ts` handles it immediately after
+`runVerdicts` — beside the existing `duplicate` early return, and before the confidence gate — by
+calling `supersedeMintedLeg` instead of `insertTransaction`. The transfer detector's verdict is
+discarded on that path: the leg is already linked, and re-detecting would look for a second
+counterpart for a pair that is already complete.
 
 ### 6.5 When the amounts genuinely differ
 
