@@ -277,18 +277,29 @@ async function teachFrom(
   if (transfer !== undefined) {
     const providerKey = await providerKeyFor(item);
     const merchantHint = readString(item.payload, "merchant");
-    const matcher: UserRuleMatcher = {
-      ...(providerKey !== null ? { providerKey } : {}),
-      ...(merchantHint !== null ? { merchantPattern: merchantHint } : {}),
-    };
-    await createUserRule(
-      {
-        matcher,
-        action: { kind: "mark-transfer", counterpartWalletId: transfer.counterpartWalletId },
-        createdFrom: item.id,
-      },
-      now,
-    );
+    // NO RULE THAT IDENTIFIES NOTHING. `rule_matcher.ts`'s `matcherApplies`
+    // treats an entirely empty matcher as a catch-all that matches every event
+    // — harmless for a bad `set-category` guess on one field, but a catch-all
+    // `mark-transfer` rule is a different kind of wrong: `ruleWalletFor` would
+    // hand back this wallet for every future one-sided event from ANY
+    // provider, so one confirmation the user glanced at becomes a standing
+    // global rule that mints ledger rows on an unrelated wallet. Mirrors the
+    // wallet-correction branch above, which skips for the identical reason
+    // when `providerKey` alone is unknown.
+    if (providerKey !== null || merchantHint !== null) {
+      const matcher: UserRuleMatcher = {
+        ...(providerKey !== null ? { providerKey } : {}),
+        ...(merchantHint !== null ? { merchantPattern: merchantHint } : {}),
+      };
+      await createUserRule(
+        {
+          matcher,
+          action: { kind: "mark-transfer", counterpartWalletId: transfer.counterpartWalletId },
+          createdFrom: item.id,
+        },
+        now,
+      );
+    }
   }
 }
 

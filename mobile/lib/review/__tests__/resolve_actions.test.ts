@@ -614,6 +614,30 @@ describe("confirmOneSidedTransfer mints the counterpart and remembers the pair",
     expect(await confirmOneSidedTransfer(item.id, bpiId, 0, NOW)).toBeNull();
     expect(await listTransactions({})).toHaveLength(2);
   });
+
+  test("writes no rule when the item names neither a provider nor a merchant", async () => {
+    // No `rawNotificationId` and no `packageName`/`merchant` in the payload —
+    // `providerKeyFor` and the merchant read both come back `null`, so the
+    // matcher `teachFrom` would build has nothing in it. `Date.now()` stands in
+    // for `NOW` here only because this item has no stored capture to pin
+    // `occurredAtFor` to `POSTED_AT` (same reason the other three tests in this
+    // block add one) — `enqueue` already ran, so it is safely in the past.
+    const item = await enqueue({
+      kind: "one-sided-transfer",
+      payload: { amount: 100_000, direction: "in", walletId: gcashId, confidence: 0.9 },
+    });
+
+    const committedId = await confirmOneSidedTransfer(item.id, bpiId, 0, Date.now());
+
+    expect(committedId).not.toBeNull();
+    const rows = await listTransactions({});
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.transferLinkId !== null)).toBe(true);
+    expect((await getReviewItem(item.id))?.resolvedAt).not.toBeNull();
+    // A matcher that identifies nothing matches EVERY future one-sided event on
+    // every provider — a catch-all `mark-transfer` rule, not a taught one.
+    expect(await listUserRules()).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------
