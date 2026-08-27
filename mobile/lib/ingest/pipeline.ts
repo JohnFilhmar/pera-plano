@@ -133,6 +133,12 @@ async function recentEventsFor(
       direction: row.direction,
       referenceNo: row.referenceNo,
       occurredAt: row.occurredAt,
+      // Placeholder pending plan Task 15, which teaches the orchestrator to
+      // detect a minted leg (`source: "manual"` with a `transferLinkId` and no
+      // `rawNotificationId`) and set this from `row`. Hard-coded `false` here
+      // keeps every row on today's unchanged duplicate-review path — never
+      // `supersedes` — until that wiring exists.
+      mintedTransferLeg: false,
     });
   }
 

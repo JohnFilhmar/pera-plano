@@ -85,6 +85,9 @@ function makeRecent(overrides: Partial<RecentEvent> = {}): RecentEvent {
     direction: "out",
     referenceNo: null,
     occurredAt: OCCURRED_AT - 60 * SECOND,
+    // Every fixture in this file is an ordinary notification-backed row unless
+    // a test opts into `makeMintedLeg`, which is the one place this flips.
+    mintedTransferLeg: false,
     ...overrides,
   };
 }
@@ -561,4 +564,79 @@ test("the windows are measured between the events, never against a wall clock", 
     kind: "duplicate",
     ofTransactionId: "tx_ancient",
   });
+});
+
+// ---------------------------------------------------------------------------
+// The minted-leg exception (plan Task 14). A minted leg is not a hand-typed
+// row asserting an independent movement — it is the app's OWN placeholder for
+// this very notification, written the moment the user confirmed the transfer.
+// So the provider notification that later arrives does not merely match it;
+// it REPLACES it, and the verdict says so with a kind neither `duplicate` nor
+// `possible-duplicate` can express.
+// ---------------------------------------------------------------------------
+
+/**
+ * The minted placeholder: `source: "manual"` in spirit (no notification
+ * behind it yet), but flagged `mintedTransferLeg: true` so the gate can tell
+ * it apart from an ordinary hand-typed row it must never touch.
+ */
+function makeMintedLeg(overrides: Partial<RecentEvent> = {}): RecentEvent {
+  return makeRecent({
+    transactionId: "tx_minted",
+    providerKey: null,
+    channel: null,
+    referenceNo: null,
+    mintedTransferLeg: true,
+    ...overrides,
+  });
+}
+
+test("a provider notification supersedes the minted leg it describes", () => {
+  const event = makeEvent({ amount: HUNDRED_PESOS, direction: "out", occurredAt: OCCURRED_AT + 60 * SECOND });
+  const minted = makeMintedLeg({ amount: HUNDRED_PESOS, direction: "out", occurredAt: OCCURRED_AT });
+
+  expect(checkDuplicate(event, [minted], DEFAULT_TUNABLES)).toEqual({
+    kind: "supersedes",
+    ofTransactionId: "tx_minted",
+  });
+});
+
+test("an ordinary hand-typed row is still never a twin", () => {
+  const event = makeEvent({ amount: HUNDRED_PESOS, direction: "out", occurredAt: OCCURRED_AT + 60 * SECOND });
+  const notMinted = makeMintedLeg({
+    amount: HUNDRED_PESOS,
+    direction: "out",
+    occurredAt: OCCURRED_AT,
+    mintedTransferLeg: false,
+  });
+
+  expect(checkDuplicate(event, [notMinted], DEFAULT_TUNABLES)).toEqual({ kind: "unique" });
+});
+
+test("a different direction is a different movement", () => {
+  const event = makeEvent({ amount: HUNDRED_PESOS, direction: "in", occurredAt: OCCURRED_AT + 60 * SECOND });
+  const minted = makeMintedLeg({ amount: HUNDRED_PESOS, direction: "out", occurredAt: OCCURRED_AT });
+
+  expect(checkDuplicate(event, [minted], DEFAULT_TUNABLES)).toEqual({ kind: "unique" });
+});
+
+test("an amount outside tolerance falls through to the normal path", () => {
+  // A minted leg was created EQUAL to the leg the user confirmed. An unequal
+  // provider figure is evidence of a DIFFERENT movement, not of drift — so
+  // this is not a near-miss that should still supersede, it is a `unique`.
+  const event = makeEvent({ amount: HUNDRED_PESOS * 45, direction: "out", occurredAt: OCCURRED_AT + 60 * SECOND });
+  const minted = makeMintedLeg({ amount: HUNDRED_PESOS, direction: "out", occurredAt: OCCURRED_AT });
+
+  expect(checkDuplicate(event, [minted], DEFAULT_TUNABLES)).toEqual({ kind: "unique" });
+});
+
+test("a minted leg outside the twin window is not superseded", () => {
+  const event = makeEvent({
+    amount: HUNDRED_PESOS,
+    direction: "out",
+    occurredAt: OCCURRED_AT + 5 * 24 * HOUR,
+  });
+  const minted = makeMintedLeg({ amount: HUNDRED_PESOS, direction: "out", occurredAt: OCCURRED_AT });
+
+  expect(checkDuplicate(event, [minted], DEFAULT_TUNABLES)).toEqual({ kind: "unique" });
 });
