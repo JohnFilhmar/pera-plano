@@ -269,10 +269,19 @@ Changed:
 - `components/wallets/cash_reconcile_sheet.tsx` — shown when `manualOnly`.
 - `components/transactions/manual_entry_form.tsx`,
   `components/loans/record_payment_sheet.tsx` — manual-first ordering.
-- `lib/db/repos/goals_repo.ts` — the savings gate and `WalletNotSavingsError`
-  are deleted.
-- `app/(tabs)/plan/goals/new.tsx` — the picker offers every active non-owed
-  wallet, ordered by balance.
+- `lib/db/repos/goals_repo.ts` — the savings gate goes.
+  `WalletNotSavingsError` becomes `LinkedWalletNotFoundError`, which checks only
+  that the wallet exists: `linked_wallet_id` is a foreign key, so without that
+  check a caller gets a raw SQLite constraint failure instead of an error a
+  screen can branch on.
+- `app/(tabs)/plan/goals/new.tsx` — the picker offers every active wallet
+  except owed ones. Owed stays out because a goal is money set aside, and
+  "saving toward a laptop" inside a balance that represents a debt is not
+  something the progress maths can express.
+- `lib/reports/csv_export.ts` — the `wallet_type` column KEEPS ITS NAME and
+  starts carrying `owed` / `manual` / `tracked` (`walletKind`). Renaming it
+  would break every spreadsheet already reading an export; emptying it would
+  silently drop a column people sort by.
 - `lib/db/mappers.ts` — maps the new columns.
 - `lib/db/repos/wallets_repo.ts` — reads and writes the trait columns, and
   returns `matcherCount` from a `LEFT JOIN` count so `manualOnly` is derivable
@@ -311,9 +320,12 @@ Changed:
 
 ## 9. Assumptions
 
-- Materiality threshold is ₱1,000 or 5% of total, whichever is lower. Owner
-  flagged as an assumption, not a decision — cheap to change, it lives in one
-  constant.
+- Materiality threshold is ₱1,000 or 5% of total, whichever is lower, with an
+  absolute ₱100 minimum underneath both. The minimum was added during
+  implementation, when a test showed the share rule alone asking a user with a
+  single ₱1 wallet about their one peso — 100% of their money, and a question
+  that cannot pay for the tap it costs. Owner flagged the threshold as an
+  assumption, not a decision; all three values live in one place.
 - Existing `credit` wallets are treated as user-answered and pinned; every other
   existing type is treated as unanswered.
 - Seed trait priors start conservative: no shipped provider is marked

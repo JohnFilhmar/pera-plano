@@ -91,6 +91,7 @@ import { listTransactions } from "@/lib/db/repos/transactions_repo";
 import { listWallets } from "@/lib/db/repos/wallets_repo";
 import { endOfLocalDay, parseDateIso, toDateIso } from "@/lib/dates";
 import { formatTime } from "@/lib/datetime";
+import { walletKind } from "@/lib/wallets/summary";
 import type { DateRange } from "@/lib/reports/aggregate";
 import type {
   Category,
@@ -118,7 +119,17 @@ export type TransactionExportRow = {
   amount: Centavos;
   currency: string;
   wallet: string;
-  /** `""` when the wallet id has no matching row. */
+  /**
+   * What kind of wallet this is: `owed`, `manual` or `tracked` (see
+   * `walletKind`). `""` when the wallet id has no matching row.
+   *
+   * THE COLUMN NAME IS UNCHANGED ON PURPOSE. It used to carry the wallet type
+   * the user picked during onboarding — bank / e-wallet / savings / credit /
+   * cash — a field the app no longer stores. Renaming the column would break
+   * every spreadsheet and script already reading an export; leaving it empty
+   * would silently drop a column people use to sort. So it keeps its name and
+   * states the distinction that survived.
+   */
   walletType: string;
   category: string;
   /** The parent category's name, or `""` for a top-level category. */
@@ -241,7 +252,7 @@ function toExportRow(
     amount: transaction.amount,
     currency: "PHP",
     wallet: wallet?.name ?? transaction.walletId,
-    walletType: wallet?.type ?? "",
+    walletType: wallet ? walletKind(wallet) : "",
     category: category?.name ?? transaction.categoryId,
     categoryParent: categoryParentName(category, categoriesById),
     merchant: orEmpty(transaction.merchant),

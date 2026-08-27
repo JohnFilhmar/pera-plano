@@ -38,6 +38,7 @@ import { toDateIso } from "@/lib/dates";
 import { centavosFrom } from "@/lib/money/peso_input";
 import { occurredAtFor } from "@/lib/transactions/manual_entry";
 import type { EpochMs, Loan, Wallet } from "@/types/domain";
+import { isManualOnly } from "@/lib/wallets/summary";
 
 export type RecordPaymentSheetProps = {
   loan: Loan;
@@ -73,8 +74,8 @@ export function RecordPaymentSheet({
   // notification, matching would already have offered the transaction and the
   // user would never have opened this.
   const selectable = [
-    ...wallets.filter((wallet) => !wallet.isArchived && wallet.type === "cash"),
-    ...wallets.filter((wallet) => !wallet.isArchived && wallet.type !== "cash"),
+    ...wallets.filter((wallet) => !wallet.isArchived && isManualOnly(wallet)),
+    ...wallets.filter((wallet) => !wallet.isArchived && !isManualOnly(wallet)),
   ];
 
   // THE LOAN'S LINKED WALLET IS A DEFAULT, NOT AN ANSWER. `linkedWalletId` is

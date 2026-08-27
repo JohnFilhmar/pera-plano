@@ -81,7 +81,8 @@ import {
 } from "@/components/wallets/balance_mismatch_badge";
 import { CashReconcileSheet } from "@/components/wallets/cash_reconcile_sheet";
 import { MatcherChipList } from "@/components/wallets/matcher_chip_list";
-import { WalletTypeIcon } from "@/components/wallets/wallet_type_icon";
+import { WalletIcon } from "@/components/wallets/wallet_icon";
+import { isManualOnly } from "@/lib/wallets/summary";
 import { palette } from "@/constants/colors";
 import { providerBadge, providerKeyForPackage } from "@/constants/providers";
 import { useArchiveWallet } from "@/hooks/mutations/use_archive_wallet";
@@ -252,7 +253,8 @@ export default function WalletDetailScreen() {
 
   // Read from the ruleset, never inlined — see components/wallets/balance_mismatch_badge.tsx.
   const toleranceCentavos = ruleset?.tunables.balanceDriftToleranceCentavos;
-  const isCash = wallet.type === "cash";
+  // Nothing routes here, so nothing can track it — what `type: "cash"` meant.
+  const isCash = isManualOnly(wallet);
   // Review fix (2026-08-18): a credit balance is the amount OWED
   // (lib/wallets/summary.ts's rule 23, and the "Owed" label in the balance
   // header below — task-5b moved it from a line under the figure to the
@@ -262,7 +264,7 @@ export default function WalletDetailScreen() {
   // question is ambiguous between owed and available credit, and getting the
   // sign wrong would record taking on debt as money received. Excluded here
   // rather than answered wrong; see the on-screen note below for why.
-  const isCredit = wallet.type === "credit";
+  const isCredit = wallet.owedBalance;
   // The badge's own predicate, so the action and the badge cannot disagree about
   // whether there is a drift to dismiss. Narrowed to the drift itself, because
   // the mutation needs the reporting transaction's id off it.
@@ -331,7 +333,7 @@ export default function WalletDetailScreen() {
               so it stays readable against the page background regardless of
               what the card beneath it is filled with. */}
           <View className="flex-row items-center gap-2 px-4 pb-3">
-            <WalletTypeIcon type={wallet.type} testID="wallet-detail-icon" />
+            <WalletIcon wallet={wallet} testID="wallet-detail-icon" />
             <Text className="flex-1 text-lg font-semibold text-fg dark:text-fg-dark">
               {wallet.name}
             </Text>
@@ -370,15 +372,15 @@ export default function WalletDetailScreen() {
                     size={28}
                   />
                 ) : (
-                  // No provider at all: the type icon, never a grey
+                  // No provider at all: the wallet glyph, never a grey
                   // "unidentified provider" badge — same rule wallet_card.tsx
                   // already follows for the identical reason (a badge here
                   // would claim a company identity this wallet does not
                   // have). Always the on-brand fill in this branch, since a
                   // null providerKey always resolves `fillForProvider` to
                   // "brand".
-                  <WalletTypeIcon
-                    type={wallet.type}
+                  <WalletIcon
+                    wallet={wallet}
                     testID="wallet-detail-header-icon"
                     className="text-on-brand dark:text-on-brand-dark"
                   />

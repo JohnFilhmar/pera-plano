@@ -125,7 +125,7 @@ beforeEach(async () => {
   jest.clearAllMocks();
   await freshDb();
   await seedDefaultCategories();
-  pocket = await createWallet({ name: "Pocket", type: "cash", openingBalance: 100_000 });
+  pocket = await createWallet({ name: "Pocket", openingBalance: 100_000 });
 });
 
 afterEach(async () => {
@@ -277,7 +277,7 @@ describe("a manual entry never enters the pipeline", () => {
 
 describe("the cash wallet", () => {
   test("defaults to the cash wallet the ledger touched most recently", async () => {
-    const jar = await createWallet({ name: "Jar", type: "cash", openingBalance: 50_000 });
+    const jar = await createWallet({ name: "Jar", openingBalance: 50_000 });
     await insertTransaction({
       walletId: jar.id,
       categoryId: UNCATEGORIZED_ID,
@@ -301,7 +301,7 @@ describe("the cash wallet", () => {
   test("with no cash wallet it offers to create one and writes nothing", async () => {
     await freshDb();
     await seedDefaultCategories();
-    const bpi = await createWallet({ name: "BPI", type: "bank", openingBalance: 500_000 });
+    const bpi = await createWallet({ name: "BPI", openingBalance: 500_000 });
     await renderNew();
 
     typeAmount("manual-amount", "1234");
@@ -332,7 +332,7 @@ describe("the cash wallet", () => {
 
 describe("a transfer draft", () => {
   test("goes to recordTransfer, writing both legs linked, not a single insertTransaction row", async () => {
-    const bank = await createWallet({ name: "BPI", type: "bank", openingBalance: 200_000 });
+    const bank = await createWallet({ name: "BPI", openingBalance: 200_000 });
     await renderNew();
 
     fireEvent.press(screen.getByTestId("manual-entry-segment-transfer"));
@@ -373,7 +373,7 @@ describe("a transfer draft", () => {
   });
 
   test("a rejected write says so on screen and keeps the sheet open", async () => {
-    const bank = await createWallet({ name: "BPI", type: "bank", openingBalance: 200_000 });
+    const bank = await createWallet({ name: "BPI", openingBalance: 200_000 });
     await renderNew();
 
     fireEvent.press(screen.getByTestId("manual-entry-segment-transfer"));

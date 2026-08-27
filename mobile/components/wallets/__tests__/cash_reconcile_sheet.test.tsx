@@ -33,6 +33,7 @@ import { KeypadProvider } from "@/contexts/keypad_context";
 import { closeDatabase } from "@/lib/db/database";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions_repo";
+import { setMatchers as setWalletMatchers } from "@/lib/db/repos/wallet_matchers_repo";
 import { createWallet, getWallet } from "@/lib/db/repos/wallets_repo";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { RECONCILE_NOTE } from "@/lib/wallets/reconcile";
@@ -102,7 +103,7 @@ beforeEach(async () => {
   await freshDb();
   await seedDefaultCategories();
   // ₱1,000.00 opening, minus a ₱200.00 spend the app DID see → recorded ₱800.00.
-  cash = await createWallet({ name: "Pocket", type: "cash", openingBalance: 100_000 });
+  cash = await createWallet({ name: "Pocket", openingBalance: 100_000 });
   await insertTransaction({
     walletId: cash.id,
     categoryId: UNCATEGORIZED_ID,
@@ -291,11 +292,13 @@ describe("the adjustment it writes", () => {
   });
 });
 
-describe("only cash wallets are offered reconciliation", () => {
-  test.each(["bank", "e-wallet", "credit", "savings"] as const)(
-    "a %s wallet renders no sheet at all",
-    async (type) => {
-      const wallet = await createWallet({ name: `A ${type}`, type });
+describe("only wallets nothing routes to are offered reconciliation", () => {
+  test.each(["com.bpi.ng.app", "com.globe.gcash.android"] as const)(
+    "a wallet tracked through %s renders no sheet at all",
+    async (packageName) => {
+      const created = await createWallet({ name: `Tracked via ${packageName}` });
+      await setWalletMatchers(created.id, [{ packageName, hint: null }]);
+      const wallet = (await getWallet(created.id)) as Wallet;
 
       renderSheet(wallet);
 

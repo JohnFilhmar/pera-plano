@@ -52,15 +52,13 @@ export async function createWallet(input: NewWallet): Promise<Wallet> {
   }
 
   const now = Date.now();
-  // `type: "credit"` is the user answering the held/owed question in the only
-  // vocabulary the app currently offers, so it is honoured AND pinned. When the
-  // type picker goes, this becomes a plain `false` — a new wallet is assumed to
-  // hold money, and nothing has said otherwise.
-  const owedBalance = input.type === "credit";
+  // A NEW WALLET IS ASSUMED TO HOLD MONEY, and nothing has said otherwise:
+  // unpinned, so the classifier may revise it and the review queue may ask.
+  // Nobody is required to answer that question up front any more.
+  const owedBalance = false;
   const wallet: Wallet = {
     id: newId(),
     name: input.name,
-    type: input.type,
     balance: input.openingBalance ?? 0,
     currency: "PHP",
     isArchived: false,
@@ -77,12 +75,11 @@ export async function createWallet(input: NewWallet): Promise<Wallet> {
   };
 
   await db.runAsync(
-    `INSERT INTO wallets (id, name, type, balance, currency, is_archived, owed_balance, owed_pinned, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
+    `INSERT INTO wallets (id, name, balance, currency, is_archived, owed_balance, owed_pinned, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)`,
     [
       wallet.id,
       wallet.name,
-      wallet.type,
       wallet.balance,
       wallet.currency,
       wallet.owedBalance ? 1 : 0,
@@ -155,7 +152,7 @@ export async function listWallets(opts?: { includeArchived?: boolean }): Promise
  */
 export async function updateWallet(
   id: string,
-  patch: Partial<Pick<Wallet, "name" | "type">>,
+  patch: Partial<Pick<Wallet, "name">>,
 ): Promise<Wallet> {
   const db = await getDatabase();
   const existing = await getWallet(id);
@@ -177,13 +174,11 @@ export async function updateWallet(
   const updated: Wallet = {
     ...existing,
     name,
-    type: patch.type ?? existing.type,
     updatedAt: Date.now(),
   };
 
-  await db.runAsync("UPDATE wallets SET name = ?, type = ?, updated_at = ? WHERE id = ?", [
+  await db.runAsync("UPDATE wallets SET name = ?, updated_at = ? WHERE id = ?", [
     updated.name,
-    updated.type,
     updated.updatedAt,
     id,
   ]);

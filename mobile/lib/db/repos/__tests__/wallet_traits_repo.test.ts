@@ -29,12 +29,12 @@ afterEach(async () => {
 
 describe("evidence", () => {
   test("a wallet with no history reads as empty, not as null", async () => {
-    const wallet = await createWallet({ name: "BPI", type: "bank" });
+    const wallet = await createWallet({ name: "BPI" });
     expect(await getTraitEvidence(wallet.id)).toEqual(EMPTY_EVIDENCE);
   });
 
   test("evidence accumulates across captures rather than replacing", async () => {
-    const wallet = await createWallet({ name: "BPI", type: "bank" });
+    const wallet = await createWallet({ name: "BPI" });
     await recordTraitEvidence(wallet.id, { owed: 250, held: 0 });
     const after = await recordTraitEvidence(wallet.id, { owed: 0, held: 150 });
 
@@ -43,7 +43,7 @@ describe("evidence", () => {
   });
 
   test("a delta that scored nothing is not written and not counted", async () => {
-    const wallet = await createWallet({ name: "BPI", type: "bank" });
+    const wallet = await createWallet({ name: "BPI" });
     await recordTraitEvidence(wallet.id, { owed: 0, held: 0 });
 
     expect(await getTraitEvidence(wallet.id)).toEqual(EMPTY_EVIDENCE);
@@ -52,8 +52,8 @@ describe("evidence", () => {
   });
 
   test("two wallets accumulate independently", async () => {
-    const bpi = await createWallet({ name: "BPI", type: "bank" });
-    const gcash = await createWallet({ name: "GCash", type: "e-wallet" });
+    const bpi = await createWallet({ name: "BPI" });
+    const gcash = await createWallet({ name: "GCash" });
 
     await recordTraitEvidence(bpi.id, { owed: 250, held: 0 });
     await recordTraitEvidence(gcash.id, { owed: 0, held: 150 });
@@ -73,7 +73,7 @@ describe("evidence", () => {
 
 describe("verdicts", () => {
   test("a confident verdict flips the wallet without pinning it", async () => {
-    const wallet = await createWallet({ name: "BPI", type: "bank" });
+    const wallet = await createWallet({ name: "BPI" });
 
     expect(await applyOwedVerdict(wallet.id, { owed: true, confident: true })).toBe(true);
 
@@ -85,7 +85,7 @@ describe("verdicts", () => {
   });
 
   test("a verdict never overwrites a wallet the user settled", async () => {
-    const wallet = await createWallet({ name: "BPI", type: "bank" });
+    const wallet = await createWallet({ name: "BPI" });
     await setWalletOwed(wallet.id, false, { pinned: true });
 
     expect(await applyOwedVerdict(wallet.id, { owed: true, confident: true })).toBe(false);
@@ -93,7 +93,7 @@ describe("verdicts", () => {
   });
 
   test("an unconfident verdict changes nothing, in either direction", async () => {
-    const wallet = await createWallet({ name: "BPI", type: "bank" });
+    const wallet = await createWallet({ name: "BPI" });
     await setWalletOwed(wallet.id, true, { pinned: false });
 
     expect(await applyOwedVerdict(wallet.id, { owed: false, confident: false })).toBe(false);
@@ -101,7 +101,7 @@ describe("verdicts", () => {
   });
 
   test("a verdict that agrees with the stored value reports no change", async () => {
-    const wallet = await createWallet({ name: "BPI", type: "bank" });
+    const wallet = await createWallet({ name: "BPI" });
     expect(await applyOwedVerdict(wallet.id, { owed: false, confident: true })).toBe(false);
   });
 
@@ -110,7 +110,7 @@ describe("verdicts", () => {
   });
 
   test("an explicit credit wallet arrives already pinned, so inference cannot move it", async () => {
-    const card = await createWallet({ name: "Card", type: "credit" });
+    const card = await createWallet({ name: "Card" });
     expect(await applyOwedVerdict(card.id, { owed: false, confident: true })).toBe(false);
     expect((await getWallet(card.id))?.owedBalance).toBe(true);
   });
@@ -126,25 +126,25 @@ describe("asking at most once", () => {
   }
 
   test("a wallet never asked about reports false", async () => {
-    const wallet = await createWallet({ name: "BPI", type: "bank" });
+    const wallet = await createWallet({ name: "BPI" });
     expect(await hasEverAskedWalletKind(wallet.id)).toBe(false);
   });
 
   test("an open question counts", async () => {
-    const wallet = await createWallet({ name: "BPI", type: "bank" });
+    const wallet = await createWallet({ name: "BPI" });
     await queueWalletKindItem(wallet.id, null);
     expect(await hasEverAskedWalletKind(wallet.id)).toBe(true);
   });
 
   test("a RESOLVED question still counts — dismissing is an answer", async () => {
-    const wallet = await createWallet({ name: "BPI", type: "bank" });
+    const wallet = await createWallet({ name: "BPI" });
     await queueWalletKindItem(wallet.id, 1_700_000_000_000);
     expect(await hasEverAskedWalletKind(wallet.id)).toBe(true);
   });
 
   test("another wallet's question does not count as this one's", async () => {
-    const bpi = await createWallet({ name: "BPI", type: "bank" });
-    const gcash = await createWallet({ name: "GCash", type: "e-wallet" });
+    const bpi = await createWallet({ name: "BPI" });
+    const gcash = await createWallet({ name: "GCash" });
     await queueWalletKindItem(gcash.id, null);
 
     expect(await hasEverAskedWalletKind(bpi.id)).toBe(false);

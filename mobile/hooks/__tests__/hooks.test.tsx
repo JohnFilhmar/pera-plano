@@ -143,8 +143,8 @@ beforeEach(async () => {
   await freshDb();
   await seedDefaultCategories();
   categoryId = UNCATEGORIZED_ID;
-  walletA = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
-  walletB = await createWallet({ name: "Maya", type: "e-wallet", openingBalance: 50000 });
+  walletA = await createWallet({ name: "GCash", openingBalance: 100000 });
+  walletB = await createWallet({ name: "Maya", openingBalance: 50000 });
   txA = await insertTransaction({
     walletId: walletA.id,
     categoryId,
@@ -284,7 +284,7 @@ describe("useWallets(includeArchived) and queryKeys.wallets.list(includeArchived
   let archived: Wallet;
 
   beforeEach(async () => {
-    archived = await createWallet({ name: "Closed BDO", type: "bank" });
+    archived = await createWallet({ name: "Closed BDO" });
     await archiveWallet(archived.id);
   });
 
@@ -354,7 +354,7 @@ describe("useWallets(includeArchived) and queryKeys.wallets.list(includeArchived
 
     const { result } = renderHook(() => useCreateWallet(), { wrapper: wrapperFor(client) });
     await act(async () => {
-      result.current.mutate({ name: "Cash on hand", type: "cash" });
+      result.current.mutate({ name: "Cash on hand" });
     });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
@@ -609,7 +609,7 @@ describe("useCreateWallet", () => {
 
     const { result } = renderHook(() => useCreateWallet(), { wrapper: wrapperFor(client) });
     await act(async () => {
-      result.current.mutate({ name: "Cash on hand", type: "cash" });
+      result.current.mutate({ name: "Cash on hand" });
     });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
@@ -959,7 +959,7 @@ function mutationCases(): Record<MutationHookName, () => Promise<void>> {
   }
 
   return {
-    useCreateWallet: () => fire(useCreateWallet, { name: "Cash on hand", type: "cash" as const }),
+    useCreateWallet: () => fire(useCreateWallet, { name: "Cash on hand" as const }),
     useUpdateWallet: () => fire(useUpdateWallet, { id: walletA.id, patch: { name: "Renamed" } }),
     useArchiveWallet: () => fire(useArchiveWallet, { id: walletB.id }),
     useDismissDrift: async () => {

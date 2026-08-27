@@ -39,7 +39,6 @@ function makeWallet(overrides: Partial<Wallet> = {}): Wallet {
   return {
     id: "wallet_main",
     name: "Main",
-    type: "e-wallet",
     balance: 0,
     currency: "PHP",
     isArchived: false,
@@ -160,7 +159,7 @@ test("a walletHint picks the right wallet when one provider maps to two", () => 
   const normalized = normalizeEvent(
     makeEvent({ walletHint: "GSave" }),
     makeProvider(),
-    [makeWallet({ id: "wallet_gcash" }), makeWallet({ id: "wallet_gsave", type: "savings" })],
+    [makeWallet({ id: "wallet_gcash" }), makeWallet({ id: "wallet_gsave" })],
     [
       makeMatcher({ id: "matcher_main", walletId: "wallet_gcash", hint: "main" }),
       makeMatcher({ id: "matcher_save", walletId: "wallet_gsave", hint: "gsave" }),
@@ -176,7 +175,7 @@ test("hint matching ignores case and surrounding whitespace", () => {
   const normalized = normalizeEvent(
     makeEvent({ walletHint: "  gSAVE " }),
     makeProvider(),
-    [makeWallet({ id: "wallet_gcash" }), makeWallet({ id: "wallet_gsave", type: "savings" })],
+    [makeWallet({ id: "wallet_gcash" }), makeWallet({ id: "wallet_gsave" })],
     [
       makeMatcher({ id: "matcher_main", walletId: "wallet_gcash", hint: "Main" }),
       makeMatcher({ id: "matcher_save", walletId: "wallet_gsave", hint: "GSave" }),
@@ -191,7 +190,7 @@ test("a hint-qualified matcher outranks the provider-wide row", () => {
   const normalized = normalizeEvent(
     makeEvent({ walletHint: "GSave" }),
     makeProvider(),
-    [makeWallet({ id: "wallet_gcash" }), makeWallet({ id: "wallet_gsave", type: "savings" })],
+    [makeWallet({ id: "wallet_gcash" }), makeWallet({ id: "wallet_gsave" })],
     [
       makeMatcher({ id: "matcher_any", walletId: "wallet_gcash", hint: null }),
       makeMatcher({ id: "matcher_save", walletId: "wallet_gsave", hint: "gsave" }),
@@ -208,7 +207,7 @@ test("an event with no walletHint falls to the provider-wide row", () => {
   const normalized = normalizeEvent(
     makeEvent(),
     makeProvider(),
-    [makeWallet({ id: "wallet_gcash" }), makeWallet({ id: "wallet_gsave", type: "savings" })],
+    [makeWallet({ id: "wallet_gcash" }), makeWallet({ id: "wallet_gsave" })],
     [
       makeMatcher({ id: "matcher_any", walletId: "wallet_gcash", hint: null }),
       makeMatcher({ id: "matcher_save", walletId: "wallet_gsave", hint: "gsave" }),
@@ -578,7 +577,7 @@ test("every parsed field is carried through unchanged", () => {
   const normalized = normalizeEvent(
     event,
     makeProvider(),
-    [makeWallet({ id: "wallet_gsave", type: "savings" })],
+    [makeWallet({ id: "wallet_gsave" })],
     [makeMatcher({ walletId: "wallet_gsave", hint: "gsave" })],
     DEFAULT_TUNABLES,
   );

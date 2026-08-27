@@ -114,7 +114,7 @@ beforeEach(async () => {
   mockParams = {};
   __setTierForTests(null);
   await seedDefaultCategories();
-  cash = await createWallet({ name: "Cash", type: "cash" });
+  cash = await createWallet({ name: "Cash" });
 });
 
 afterEach(async () => {

@@ -73,7 +73,7 @@ function capturePaydays(): { seen: AppEventMap["income:payday"][]; stop: () => v
 beforeEach(async () => {
   await freshDb();
   await seedDefaultCategories();
-  payroll = await createWallet({ name: "BPI Payroll", type: "bank" });
+  payroll = await createWallet({ name: "BPI Payroll" });
 });
 
 afterEach(async () => {
@@ -392,7 +392,7 @@ test("maybeEmitPayday ignores a credit into a wallet that is not an income sourc
   // Rule 11's first clause: "its walletId is in sourceWalletIds[]".
   await seedConfirmedKinsenas();
   await refreshIncomeDetection(NOW);
-  const other = await createWallet({ name: "GCash", type: "e-wallet" });
+  const other = await createWallet({ name: "GCash" });
   await credit(1850000, on(2026, 7, 15), other.id);
   const { seen, stop } = capturePaydays();
 

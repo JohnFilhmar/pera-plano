@@ -151,7 +151,7 @@ beforeEach(async () => {
       balanceDriftToleranceCentavos: DEFAULT_TUNABLES.balanceDriftToleranceCentavos,
     },
   });
-  gcash = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100_000 });
+  gcash = await createWallet({ name: "GCash", openingBalance: 100_000 });
 });
 
 afterEach(async () => {
@@ -195,7 +195,7 @@ describe("the balance header", () => {
   });
 
   test("a credit wallet's balance is labelled as owed, not as money held", async () => {
-    const visa = await createWallet({ name: "Visa", type: "credit", openingBalance: 1_234_500 });
+    const visa = await createWallet({ name: "Visa", openingBalance: 1_234_500 });
 
     renderDetail(visa.id);
 
@@ -263,7 +263,7 @@ describe("matcher chips", () => {
   });
 
   test("shows the sub-account hint that separates GCash main from GSave", async () => {
-    const gsave = await createWallet({ name: "GSave", type: "savings", openingBalance: 0 });
+    const gsave = await createWallet({ name: "GSave", openingBalance: 0 });
     await insertMatcher(gsave.id, GCASH_PACKAGE, "GSave");
 
     renderDetail(gsave.id);
@@ -272,7 +272,7 @@ describe("matcher chips", () => {
   });
 
   test("shows only THIS wallet's matchers", async () => {
-    const gsave = await createWallet({ name: "GSave", type: "savings", openingBalance: 0 });
+    const gsave = await createWallet({ name: "GSave", openingBalance: 0 });
     await insertMatcher(gcash.id, GCASH_PACKAGE, null);
     await insertMatcher(gsave.id, GCASH_PACKAGE, "GSave");
 
@@ -285,7 +285,7 @@ describe("matcher chips", () => {
   test("a CASH wallet shows no matcher section at all (rule 4)", async () => {
     // Cash wallets have empty matchers by rule and the matcher UI is hidden
     // for them; money enters by manual entry, transfer legs and reconciliation.
-    const pocket = await createWallet({ name: "Pocket", type: "cash", openingBalance: 5_000 });
+    const pocket = await createWallet({ name: "Pocket", openingBalance: 5_000 });
 
     renderDetail(pocket.id);
     await screen.findByText("Pocket");
@@ -411,7 +411,7 @@ describe("the balance header's provider fill (task-5b)", () => {
       ],
       tunables: { balanceDriftToleranceCentavos: DEFAULT_TUNABLES.balanceDriftToleranceCentavos },
     });
-    const maya = await createWallet({ name: "Maya wallet", type: "e-wallet", openingBalance: 0 });
+    const maya = await createWallet({ name: "Maya wallet", openingBalance: 0 });
     await insertMatcher(maya.id, MAYA_PACKAGE, null);
 
     renderDetail(maya.id);
@@ -448,7 +448,7 @@ describe("the balance header's provider fill (task-5b)", () => {
 
 describe("the period in/out summary (task-5b)", () => {
   test("shows THIS wallet's money in and out for the current period only", async () => {
-    const other = await createWallet({ name: "BPI", type: "bank", openingBalance: 0 });
+    const other = await createWallet({ name: "BPI", openingBalance: 0 });
     const now = Date.now();
     await insertTransaction({
       walletId: gcash.id,
@@ -494,7 +494,7 @@ describe("the period in/out summary (task-5b)", () => {
   });
 
   test("a transfer leg is excluded, the same rule the Reports tab uses", async () => {
-    const bpi = await createWallet({ name: "BPI", type: "bank", openingBalance: 0 });
+    const bpi = await createWallet({ name: "BPI", openingBalance: 0 });
     const now = Date.now();
     const leg = await insertTransaction({
       walletId: gcash.id,
@@ -540,7 +540,7 @@ describe("the period in/out summary (task-5b)", () => {
 
 describe("the wallet's transactions", () => {
   async function seedLedger(): Promise<void> {
-    const other = await createWallet({ name: "BPI", type: "bank", openingBalance: 500_000 });
+    const other = await createWallet({ name: "BPI", openingBalance: 500_000 });
     await insertTransaction({
       walletId: gcash.id,
       categoryId: UNCATEGORIZED_ID,
@@ -594,7 +594,7 @@ describe("the wallet's transactions", () => {
     // implementations is how a transfer leg ends up muted on one screen and
     // counted as spending on the other, so the day header and the transfer row
     // state are asserted HERE too — on the screen that reuses them.
-    const bpi = await createWallet({ name: "BPI", type: "bank", openingBalance: 0 });
+    const bpi = await createWallet({ name: "BPI", openingBalance: 0 });
     const leg = await insertTransaction({
       walletId: gcash.id,
       categoryId: UNCATEGORIZED_ID,
@@ -716,7 +716,7 @@ describe("correcting a non-cash wallet's balance (Task 4)", () => {
   });
 
   test("cash wallets still use the reconcile sheet (regression on rule 3)", async () => {
-    const pocket = await createWallet({ name: "Pocket", type: "cash", openingBalance: 5_000 });
+    const pocket = await createWallet({ name: "Pocket", openingBalance: 5_000 });
 
     renderDetail(pocket.id);
     await screen.findByText("Pocket");
@@ -738,7 +738,7 @@ describe("correcting a non-cash wallet's balance (Task 4)", () => {
   // -------------------------------------------------------------------------
 
   test("a credit wallet offers no balance adjustment, and says why", async () => {
-    const visa = await createWallet({ name: "Visa", type: "credit", openingBalance: 500_000 });
+    const visa = await createWallet({ name: "Visa", openingBalance: 500_000 });
 
     renderDetail(visa.id);
     await screen.findByText("Visa");
@@ -877,7 +877,7 @@ describe("dismissing a balance drift", () => {
   test("dismissing one wallet's drift leaves another wallet's badge alone", async () => {
     // A flag stored per app rather than per wallet passes every single-wallet
     // test above and silences a bank the user has never opened.
-    const bpi = await createWallet({ name: "BPI", type: "bank", openingBalance: 100_000 });
+    const bpi = await createWallet({ name: "BPI", openingBalance: 100_000 });
     await reportBalance(gcash.id, 15_000, 900_000);
     await reportBalance(bpi.id, 15_000, 900_000);
 
@@ -906,7 +906,7 @@ describe("dismissing a balance drift", () => {
     // `drift === null` is not a drift of zero and not a dismissed one. Treating
     // "never reported" as either would put a control on a cash wallet for a
     // disagreement no provider has ever claimed.
-    const pocket = await createWallet({ name: "Pocket", type: "cash", openingBalance: 5_000 });
+    const pocket = await createWallet({ name: "Pocket", openingBalance: 5_000 });
 
     const view = renderDetail(pocket.id);
     await waitForDriftDecision(view, pocket.id);

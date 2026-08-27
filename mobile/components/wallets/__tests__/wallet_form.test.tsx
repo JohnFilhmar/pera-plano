@@ -58,15 +58,14 @@ function renderForm(ui: ReactElement) {
 // WalletForm
 // ---------------------------------------------------------------------------
 
-describe("the wallet form requires a name and a type", () => {
-  test("submitting with neither reports both, and calls nothing", () => {
+describe("the wallet form requires a name, and nothing else", () => {
+  test("submitting with no name reports it, and calls nothing", () => {
     const onSubmit = jest.fn();
     renderForm(<WalletForm submitLabel="Add wallet" onSubmit={onSubmit} />);
 
     fireEvent.press(screen.getByTestId("wallet-form-submit"));
 
     expect(screen.getByTestId("wallet-form-name-error")).toBeTruthy();
-    expect(screen.getByTestId("wallet-form-type-error")).toBeTruthy();
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
@@ -75,55 +74,61 @@ describe("the wallet form requires a name and a type", () => {
     renderForm(<WalletForm submitLabel="Add wallet" onSubmit={onSubmit} />);
 
     fireEvent.changeText(screen.getByTestId("wallet-form-name"), "    ");
-    fireEvent.press(screen.getByTestId("wallet-form-type-bank"));
     fireEvent.press(screen.getByTestId("wallet-form-submit"));
 
     expect(screen.getByTestId("wallet-form-name-error")).toBeTruthy();
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
-  test("a name with no type is refused", () => {
-    const onSubmit = jest.fn();
-    renderForm(<WalletForm submitLabel="Add wallet" onSubmit={onSubmit} />);
-
-    fireEvent.changeText(screen.getByTestId("wallet-form-name"), "BPI");
-    fireEvent.press(screen.getByTestId("wallet-form-submit"));
-
-    // NO DEFAULT TYPE. A pre-selected "bank" would make every wallet a bank
-    // for anyone who tapped past the field — and type decides matcher UI,
-    // reconciliation, and whether the balance counts as money owed.
-    expect(screen.getByTestId("wallet-form-type-error")).toBeTruthy();
-    expect(onSubmit).not.toHaveBeenCalled();
-  });
-
-  test("name plus type submits, with the name trimmed", () => {
+  test("a name alone submits, with the name trimmed", () => {
+    // THE WHOLE POINT OF THIS CHANGE, in one assertion. A name used to be half
+    // an answer: the form also demanded one of bank / e-wallet / savings /
+    // credit / cash before it would submit. It no longer asks.
     const onSubmit = jest.fn();
     renderForm(<WalletForm submitLabel="Add wallet" onSubmit={onSubmit} />);
 
     fireEvent.changeText(screen.getByTestId("wallet-form-name"), "  BPI  ");
-    fireEvent.press(screen.getByTestId("wallet-form-type-bank"));
     fireEvent.press(screen.getByTestId("wallet-form-submit"));
 
-    expect(onSubmit).toHaveBeenCalledWith(
-      expect.objectContaining({ name: "BPI", type: "bank" }),
-    );
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ name: "BPI" }));
   });
 
-  test.each(["bank", "e-wallet", "cash", "credit", "savings"] as const)(
-    "offers the %s type",
-    (type) => {
-      renderForm(<WalletForm submitLabel="Add wallet" onSubmit={jest.fn()} />);
+  test("the type picker is gone from the form entirely", () => {
+    renderForm(<WalletForm submitLabel="Add wallet" onSubmit={jest.fn()} />);
 
-      expect(screen.getByTestId(`wallet-form-type-${type}`)).toBeTruthy();
-    },
-  );
+    expect(screen.queryByTestId("wallet-form-type")).toBeNull();
+    expect(screen.queryByTestId("wallet-form-type-error")).toBeNull();
+    for (const label of ["Bank", "E-wallet", "Savings", "Credit", "Cash"]) {
+      expect(screen.queryByText(label)).toBeNull();
+    }
+  });
+
+  test("the matcher section is always offered, even before anything is picked", () => {
+    // It used to be hidden for a wallet typed as cash. There is no type to hide
+    // it by any more, and hiding it by "no matchers yet" would remove the very
+    // control needed to add one.
+    renderForm(<WalletForm submitLabel="Add wallet" onSubmit={jest.fn()} providers={PROVIDERS} />);
+
+    expect(screen.getByText("Which notifications land here?")).toBeTruthy();
+  });
+
+  test("picking no notification source is a real answer, not a missing one", () => {
+    // A wallet with no matchers is a MANUAL wallet — what `type: "cash"` used
+    // to mean. Submitting with an empty list must go through untouched.
+    const onSubmit = jest.fn();
+    renderForm(<WalletForm submitLabel="Add wallet" onSubmit={onSubmit} providers={PROVIDERS} />);
+
+    fireEvent.changeText(screen.getByTestId("wallet-form-name"), "Pocket");
+    fireEvent.press(screen.getByTestId("wallet-form-submit"));
+
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ matchers: [] }));
+  });
 
   test("an opening balance is keyed in pesos and submitted as centavos", () => {
     const onSubmit = jest.fn();
     renderForm(<WalletForm submitLabel="Add wallet" onSubmit={onSubmit} showOpeningBalance />);
 
     fireEvent.changeText(screen.getByTestId("wallet-form-name"), "Cash");
-    fireEvent.press(screen.getByTestId("wallet-form-type-cash"));
     // "1500", not the old "150000" (numeric-input-system Task 13). The wallet
     // this test is about still opens at ₱1,500.00 — 150000 centavos. It is the
     // KEYSTROKES that changed, not the amount: a digit is a peso now.
@@ -141,7 +146,6 @@ describe("the wallet form requires a name and a type", () => {
     renderForm(<WalletForm submitLabel="Add wallet" onSubmit={onSubmit} showOpeningBalance />);
 
     fireEvent.changeText(screen.getByTestId("wallet-form-name"), "Cash");
-    fireEvent.press(screen.getByTestId("wallet-form-type-cash"));
     typeAmount("wallet-form-opening-balance", "100000");
 
     // On screen before Save is ever pressed, which is the half the owner saw.
@@ -156,7 +160,6 @@ describe("the wallet form requires a name and a type", () => {
     renderForm(<WalletForm submitLabel="Add wallet" onSubmit={onSubmit} showOpeningBalance />);
 
     fireEvent.changeText(screen.getByTestId("wallet-form-name"), "Cash");
-    fireEvent.press(screen.getByTestId("wallet-form-type-cash"));
     typeAmount("wallet-form-opening-balance", "1500.75");
     fireEvent.press(screen.getByTestId("wallet-form-submit"));
 
@@ -168,7 +171,6 @@ describe("the wallet form requires a name and a type", () => {
     renderForm(<WalletForm submitLabel="Add wallet" onSubmit={onSubmit} showOpeningBalance />);
 
     fireEvent.changeText(screen.getByTestId("wallet-form-name"), "Cash");
-    fireEvent.press(screen.getByTestId("wallet-form-type-cash"));
     typeAmount("wallet-form-opening-balance", "9999");
     clearAmount("wallet-form-opening-balance");
     fireEvent.press(screen.getByTestId("wallet-form-submit"));
@@ -183,7 +185,6 @@ describe("the wallet form requires a name and a type", () => {
     renderForm(<WalletForm submitLabel="Add wallet" onSubmit={onSubmit} showOpeningBalance />);
 
     fireEvent.changeText(screen.getByTestId("wallet-form-name"), "Cash");
-    fireEvent.press(screen.getByTestId("wallet-form-type-cash"));
     fireEvent.press(screen.getByTestId("wallet-form-submit"));
 
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ openingBalance: 0 }));
@@ -193,7 +194,7 @@ describe("the wallet form requires a name and a type", () => {
     // `updateWallet` refuses to patch `balance` on purpose — a form that could
     // set it directly would let a user write a number no transaction accounts
     // for. Adjusting a real balance goes through reconciliation instead.
-    renderForm(<WalletForm submitLabel="Save" onSubmit={jest.fn()} initial={{ type: "cash" }} />);
+    renderForm(<WalletForm submitLabel="Save" onSubmit={jest.fn()} initial={{ name: "Pocket" }} />);
 
     expect(screen.queryByTestId("wallet-form-opening-balance")).toBeNull();
   });
@@ -203,7 +204,7 @@ describe("the wallet form requires a name and a type", () => {
       <WalletForm
         submitLabel="Save"
         onSubmit={jest.fn()}
-        initial={{ name: "GCash", type: "e-wallet" }}
+        initial={{ name: "GCash" }}
       />,
     );
 
@@ -216,7 +217,6 @@ describe("the wallet form requires a name and a type", () => {
     fireEvent.press(screen.getByTestId("wallet-form-type-e-wallet"));
     expect(screen.getByTestId("matcher-picker")).toBeTruthy();
 
-    fireEvent.press(screen.getByTestId("wallet-form-type-cash"));
 
     // Spec rule 4: cash wallets have empty matchers and the matcher UI is
     // hidden for them. Money enters cash by manual entry, transfer legs and
@@ -224,24 +224,26 @@ describe("the wallet form requires a name and a type", () => {
     expect(screen.queryByTestId("matcher-picker")).toBeNull();
   });
 
-  test("switching to cash drops any matchers already chosen", () => {
+  test("matchers passed in as initial values are submitted unchanged", () => {
+    // REPLACES "switching to cash drops any matchers already chosen". That test
+    // guarded a rule that no longer exists: picking the cash type used to clear
+    // the matcher list behind the user's back. Nothing clears it now — the list
+    // IS the answer, and what the user left in it is what gets saved.
     const onSubmit = jest.fn();
     renderForm(
       <WalletForm
         submitLabel="Add wallet"
         onSubmit={onSubmit}
         providers={PROVIDERS}
-        initial={{ type: "e-wallet", matchers: [{ packageName: GCASH_PACKAGE }] }}
+        initial={{ name: "GCash", matchers: [{ packageName: GCASH_PACKAGE }] }}
       />,
     );
 
-    fireEvent.changeText(screen.getByTestId("wallet-form-name"), "Pocket");
-    fireEvent.press(screen.getByTestId("wallet-form-type-cash"));
     fireEvent.press(screen.getByTestId("wallet-form-submit"));
 
-    // Hiding the picker while still SAVING what it held would leave a cash
-    // wallet catching GCash notifications with no UI anywhere that says so.
-    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ matchers: [] }));
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ matchers: [{ packageName: GCASH_PACKAGE }] }),
+    );
   });
 
   test("submitting is blocked while a save is in flight", () => {
@@ -250,7 +252,7 @@ describe("the wallet form requires a name and a type", () => {
       <WalletForm
         submitLabel="Add wallet"
         onSubmit={onSubmit}
-        initial={{ name: "BPI", type: "bank" }}
+        initial={{ name: "BPI" }}
         submitting
       />,
     );

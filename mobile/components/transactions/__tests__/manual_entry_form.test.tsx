@@ -75,7 +75,6 @@ const NOW = new Date(2026, 7, 13, 21, 30).getTime();
 const POCKET: Wallet = {
   id: "cash-pocket",
   name: "Pocket",
-  type: "cash",
   balance: 100_000,
   currency: "PHP",
   isArchived: false,
@@ -88,8 +87,8 @@ const POCKET: Wallet = {
   updatedAt: 1_000,
 };
 const JAR: Wallet = { ...POCKET, id: "cash-jar", name: "Jar" };
-const BPI: Wallet = { ...POCKET, id: "bank-bpi", name: "BPI", type: "bank" };
-const GCASH: Wallet = { ...POCKET, id: "ewallet-gcash", name: "GCash", type: "e-wallet" };
+const BPI: Wallet = { ...POCKET, id: "bank-bpi", name: "BPI" };
+const GCASH: Wallet = { ...POCKET, id: "ewallet-gcash", name: "GCash" };
 
 const CATEGORIES: Category[] = [
   {

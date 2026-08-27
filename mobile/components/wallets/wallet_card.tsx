@@ -32,7 +32,7 @@ import { MONTHS } from "@/lib/datetime";
 import type { Centavos, EpochMs, Wallet } from "@/types/domain";
 
 import { BalanceMismatchBadge } from "./balance_mismatch_badge";
-import { WalletTypeIcon } from "./wallet_type_icon";
+import { WalletIcon } from "./wallet_icon";
 
 export type WalletCardProps = {
   wallet: Wallet;
@@ -70,7 +70,7 @@ export type WalletCardProps = {
  */
 function subtitleFor(wallet: Wallet): string | undefined {
   if (wallet.isArchived) return "Archived";
-  if (wallet.type === "credit") return "Owed";
+  if (wallet.owedBalance) return "Owed";
   return undefined;
 }
 
@@ -194,16 +194,15 @@ export function WalletCard({
       {hasProvider ? (
         <ProviderBadge testID={`wallet-badge-${providerKey}`} providerKey={providerKey as string} size={32} />
       ) : (
-        // No matcher, no provider: the type icon, never a grey provider
+        // No matcher, no provider: the wallet glyph, never a grey provider
         // fallback badge — a coloured initial square here would claim a
-        // company identity this wallet does not have (Cash, or any manual
-        // wallet).
+        // company identity this wallet does not have (any manual wallet).
         <View
           className="items-center justify-center rounded-xl bg-brand-soft dark:bg-brand-soft-dark"
           style={{ width: 32, height: 32 }}
         >
-          <WalletTypeIcon
-            type={wallet.type}
+          <WalletIcon
+            wallet={wallet}
             testID={`${rowTestID}-icon`}
             size={18}
             className="text-brand dark:text-brand-dark"

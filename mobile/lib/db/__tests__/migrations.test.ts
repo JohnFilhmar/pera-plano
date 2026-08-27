@@ -298,7 +298,6 @@ describe("003_drift_dismissal upgrades a real version-2 database in place", () =
     expect(wallet).toMatchObject({
       id: "w_v1",
       name: "GCash",
-      type: "e-wallet",
       balance: 250000,
       currency: "PHP",
       is_archived: 0,

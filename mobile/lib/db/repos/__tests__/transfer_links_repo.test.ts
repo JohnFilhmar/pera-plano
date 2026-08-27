@@ -42,8 +42,8 @@ beforeEach(async () => {
      VALUES (?, 'Uncategorized', NULL, 'circle-help', 1, 0, 0, 0)`,
     [CATEGORY_ID],
   );
-  sending = (await createWallet({ name: "BPI", type: "bank", openingBalance: 500000 })).id;
-  receiving = (await createWallet({ name: "GCash", type: "e-wallet" })).id;
+  sending = (await createWallet({ name: "BPI", openingBalance: 500000 })).id;
+  receiving = (await createWallet({ name: "GCash" })).id;
 });
 
 afterEach(async () => {

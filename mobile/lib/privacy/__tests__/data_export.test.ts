@@ -82,7 +82,7 @@ test("the bundle includes a schema version", async () => {
 
 test("a raw capture's text never appears anywhere in the export payload", async () => {
   await seedDefaultCategories();
-  const wallet = await createWallet({ name: "GCash", type: "e-wallet" });
+  const wallet = await createWallet({ name: "GCash" });
   const secretText = "You have sent PHP 500.00 to JUAN D. Ref. 1234567 UNMISTAKABLE-MARKER";
   await storeRawCapture(
     {
@@ -122,7 +122,7 @@ test("a raw capture's text never appears anywhere in the export payload", async 
 
 test("buildDataExportBundle produces valid, round-trippable JSON for a populated database", async () => {
   await seedDefaultCategories();
-  const wallet = await createWallet({ name: "BPI", type: "bank" });
+  const wallet = await createWallet({ name: "BPI" });
   await insertTransaction({
     walletId: wallet.id,
     categoryId: CATEGORY_ID,

@@ -12,6 +12,7 @@ import softDeleteAndDerivedLimitsSql from "./migrations/010_soft_delete_and_deri
 import loanMatchReviewKindSql from "./migrations/011_loan_match_review_kind.sql";
 import oneSidedTransferReviewKindSql from "./migrations/012_one_sided_transfer_review_kind.sql";
 import walletTraitsSql from "./migrations/013_wallet_traits.sql";
+import dropWalletTypeSql from "./migrations/014_drop_wallet_type.sql";
 
 export type Migration = {
   version: number;
@@ -78,6 +79,11 @@ export class MigrationIntegrityError extends Error {
  * widens the same CHECK with `'one-sided-transfer'` for a transfer leg whose
  * counterpart never arrives as a notification and so has no committed row to
  * link to — see that file's own header for why it isn't `'ambiguous-transfer'`.
+ * 013_wallet_traits and 014_drop_wallet_type replace the onboarding wallet-type
+ * question with an inferred held/owed verdict: 013 adds the columns beside
+ * `type`, everything in between moves off `type`, and 014 rebuilds the table
+ * without it. Two migrations rather than one so the app compiles and the suite
+ * passes at every step of that change.
  * NEVER edit a shipped migration — add a new numbered one instead.
  *
  * Jest cache gotcha: babel-plugin-inline-import inlines each `*.sql` file's contents into
@@ -105,6 +111,15 @@ export const MIGRATIONS: Migration[] = [
   { version: 11, name: "loan_match_review_kind", sql: loanMatchReviewKindSql },
   { version: 12, name: "one_sided_transfer_review_kind", sql: oneSidedTransferReviewKindSql },
   { version: 13, name: "wallet_traits", sql: walletTraitsSql },
+  {
+    version: 14,
+    name: "drop_wallet_type",
+    sql: dropWalletTypeSql,
+    // The first migration to need this: `wallets` is referenced by four other
+    // tables, so its rebuild cannot run with foreign keys enforced. See that
+    // file's header and `Migration.disablesForeignKeys` above.
+    disablesForeignKeys: true,
+  },
 ];
 
 /**

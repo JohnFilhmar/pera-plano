@@ -84,7 +84,6 @@ const WALLETS: Wallet[] = [
   {
     id: "w1",
     name: "GCash",
-    type: "e-wallet",
     balance: 100_000,
     currency: "PHP",
     isArchived: false,
@@ -98,7 +97,6 @@ const WALLETS: Wallet[] = [
   {
     id: "w2",
     name: "BPI",
-    type: "bank",
     balance: 500_000,
     currency: "PHP",
     isArchived: false,

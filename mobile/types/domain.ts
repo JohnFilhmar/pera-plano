@@ -11,12 +11,9 @@ export type EpochMs = number;
 export type IsoDate = string;
 
 // ---------- Wallet ----------
-export type WalletType = "bank" | "e-wallet" | "cash" | "credit" | "savings";
-
 export type Wallet = {
   id: string;
   name: string;
-  type: WalletType;
   balance: Centavos;
   currency: "PHP";
   isArchived: boolean;
@@ -62,7 +59,6 @@ export type Wallet = {
 
 export type NewWallet = {
   name: string;
-  type: WalletType;
   /** Opening balance anchor (docs/02-domain-model.md §3.1); defaults to 0. */
   openingBalance?: Centavos;
 };

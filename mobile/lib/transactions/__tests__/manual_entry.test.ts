@@ -27,14 +27,15 @@ function wallet(overrides: Partial<Wallet> = {}): Wallet {
   return {
     id: "w1",
     name: "Pocket",
-    type: "cash",
     balance: 100_000,
     currency: "PHP",
     isArchived: false,
     driftDismissedTransactionId: null,
     owedBalance: false,
     owedPinned: false,
-    // The default fixture is a cash wallet — nothing routes to it.
+    // The default fixture is a CASH wallet: nothing routes to it, which is
+    // what `type: "cash"` used to say. Tracked wallets in this file pass
+    // `matcherCount: 1` explicitly.
     matcherCount: 0,
     createdAt: 1_000,
     updatedAt: 1_000,
@@ -103,13 +104,15 @@ describe("lastUsedCashWallet", () => {
     expect(chosen?.id).toBe("cash-jar");
   });
 
-  test("NEVER returns a bank, e-wallet, savings or credit wallet", () => {
-    const bpi = wallet({ id: "bank", type: "bank" });
-    const gcash = wallet({ id: "ewallet", type: "e-wallet" });
+  test("NEVER returns a wallet a provider reports on", () => {
+    const bpi = wallet({ id: "bank", matcherCount: 1 });
+    const gcash = wallet({ id: "ewallet", matcherCount: 1 });
     const pocket = wallet({ id: "cash-pocket" });
 
     // The most recent transaction in the ledger is the BANK's, and it must not
-    // win: cash entered into a bank wallet corrupts both balances silently.
+    // win: cash entered into a tracked wallet corrupts both balances silently.
+    // "Cash" here means a wallet nothing routes to — matcherCount 0 — which is
+    // exactly what the wallet type used to assert.
     const chosen = lastUsedCashWallet(
       [bpi, gcash, pocket],
       [
@@ -123,15 +126,15 @@ describe("lastUsedCashWallet", () => {
 
   test("falls back to the only cash wallet when the ledger has no cash rows", () => {
     const pocket = wallet({ id: "cash-pocket" });
-    const bpi = wallet({ id: "bank", type: "bank" });
+    const bpi = wallet({ id: "bank", matcherCount: 1 });
 
     expect(lastUsedCashWallet([bpi, pocket], [tx({ walletId: "bank" })])?.id).toBe("cash-pocket");
     expect(lastUsedCashWallet([bpi, pocket], [])?.id).toBe("cash-pocket");
   });
 
   test("returns null when there is no cash wallet at all", () => {
-    const bpi = wallet({ id: "bank", type: "bank" });
-    const gcash = wallet({ id: "ewallet", type: "e-wallet" });
+    const bpi = wallet({ id: "bank", matcherCount: 1 });
+    const gcash = wallet({ id: "ewallet", matcherCount: 1 });
 
     // The form's create-a-cash-wallet prompt hangs off this null. Returning a
     // bank wallet "so the form has something" is the exact corruption this

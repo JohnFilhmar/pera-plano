@@ -93,27 +93,9 @@ import { listObservedPackages } from "@/modules/notification_listener";
 import type { ProviderChoice } from "@/lib/ingest/provider_catalogue";
 import type { ProviderRuleset } from "@/lib/ingest/ruleset_types";
 import type { ObservedPackage } from "@/modules/notification_listener";
-import type { NewWalletMatcher, WalletType } from "@/types/domain";
+import type { NewWalletMatcher } from "@/types/domain";
 
 const CASH_KEY = "cash";
-
-/** A sensible starting `WalletType` per known provider — editable inline
- * (rule 2), so a wrong guess here costs one tap, not a support ticket. */
-const WALLET_TYPE_BY_PROVIDER_KEY: Record<string, WalletType> = {
-  gcash: "e-wallet",
-  maya: "e-wallet",
-  shopeepay: "e-wallet",
-  grabpay: "e-wallet",
-  seabank: "savings",
-  gotyme: "savings",
-  cimb: "savings",
-  bpi: "bank",
-  bdo: "bank",
-  unionbank: "bank",
-  metrobank: "bank",
-  landbank: "bank",
-  sms_relay: "bank",
-};
 
 function defaultNameFor(choice: ProviderChoice): string {
   return providerLabel(choice.displayName);
@@ -133,10 +115,6 @@ function dedupeByProvider(choices: ProviderChoice[]): ProviderChoice[] {
     deduped.push(choice);
   }
   return deduped;
-}
-
-function defaultTypeFor(choice: ProviderChoice): WalletType {
-  return WALLET_TYPE_BY_PROVIDER_KEY[choice.displayName] ?? "bank";
 }
 
 /**
@@ -166,7 +144,6 @@ function proposalFor(choice: ProviderChoice, included: boolean): WalletProposal 
   return {
     key: choice.packageName,
     name: defaultNameFor(choice),
-    type: defaultTypeFor(choice),
     packageName: choice.packageName,
     // `choice.displayName` IS the ruleset's providerKey here (e.g. "gcash"):
     // every choice this function ever runs on has `suggested: true`
@@ -186,7 +163,6 @@ function proposalFor(choice: ProviderChoice, included: boolean): WalletProposal 
 const CASH_PROPOSAL: WalletProposal = {
   key: CASH_KEY,
   name: "Cash",
-  type: "cash",
   packageName: null,
   providerKey: null,
   included: true,
@@ -312,12 +288,6 @@ export default function WalletsScreen({
     );
   }
 
-  function changeType(key: string, type: WalletType): void {
-    setProposals((current) =>
-      current ? current.map((p) => (p.key === key ? { ...p, type } : p)) : current,
-    );
-  }
-
   function toggleIncluded(key: string): void {
     setProposals((current) =>
       current ? current.map((p) => (p.key === key ? { ...p, included: !p.included } : p)) : current,
@@ -376,7 +346,6 @@ export default function WalletsScreen({
 
         const wallet = await createWallet.mutateAsync({
           name: proposal.name.trim(),
-          type: proposal.type,
           // Task 4 rule 1: a blank field is ₱0.00 via centavosFrom, written
           // the same way app/wallet/new.tsx already writes a manually created
           // wallet's opening balance — an anchor on the brand-new row, not a
@@ -487,7 +456,6 @@ export default function WalletsScreen({
         <QuickWalletList
           proposals={proposals}
           onRename={rename}
-          onChangeType={changeType}
           onToggleIncluded={toggleIncluded}
           onChangeOpeningBalance={changeOpeningBalance}
         />

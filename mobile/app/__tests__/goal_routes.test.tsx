@@ -111,7 +111,7 @@ beforeEach(async () => {
   mockParams = {};
   __setTierForTests(null);
   await seedDefaultCategories();
-  gsave = await createWallet({ name: "GSave", type: "savings" });
+  gsave = await createWallet({ name: "GSave" });
 });
 
 afterEach(async () => {
@@ -158,7 +158,6 @@ test("a goal renders as a card and opens its detail route", async () => {
 test("the goal row is announced to TalkBack as a button with a spoken label, not a silent wrapper", async () => {
   const funded = await createWallet({
     name: "GSave Funded",
-    type: "savings",
     openingBalance: 2500000,
   });
   const goal = await createGoal({
@@ -268,8 +267,8 @@ test("ONLY UNCLAIMED SAVINGS WALLETS ARE OFFERED", async () => {
   // Invariant I10, both halves, enforced before the user can trip it: a
   // spending wallet is not a savings wallet, and a savings wallet another goal
   // already backs would each claim the same pesos.
-  const spending = await createWallet({ name: "GCash", type: "e-wallet" });
-  const taken = await createWallet({ name: "SeaBank", type: "savings" });
+  const spending = await createWallet({ name: "GCash" });
+  const taken = await createWallet({ name: "SeaBank" });
   await createGoal({ name: "Taken", targetAmount: 100000, linkedWalletId: taken.id });
 
   renderScreen(<NewGoalScreen />);

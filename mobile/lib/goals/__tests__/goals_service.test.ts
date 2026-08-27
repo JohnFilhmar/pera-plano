@@ -41,9 +41,9 @@ beforeEach(async () => {
   await freshDb();
   __setTierForTests(null);
   await seedDefaultCategories();
-  payroll = await createWallet({ name: "BPI Payroll", type: "bank" });
-  gsave = await createWallet({ name: "GSave", type: "savings" });
-  seabank = await createWallet({ name: "SeaBank", type: "savings" });
+  payroll = await createWallet({ name: "BPI Payroll" });
+  gsave = await createWallet({ name: "GSave" });
+  seabank = await createWallet({ name: "SeaBank" });
 });
 
 afterEach(async () => {

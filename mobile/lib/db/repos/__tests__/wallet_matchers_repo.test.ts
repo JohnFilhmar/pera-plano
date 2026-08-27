@@ -47,8 +47,8 @@ async function insertMatcher(
 
 beforeEach(async () => {
   db = await freshDb();
-  main = (await createWallet({ name: "GCash", type: "e-wallet" })).id;
-  savings = (await createWallet({ name: "GSave", type: "savings" })).id;
+  main = (await createWallet({ name: "GCash" })).id;
+  savings = (await createWallet({ name: "GSave" })).id;
 });
 
 afterEach(async () => {

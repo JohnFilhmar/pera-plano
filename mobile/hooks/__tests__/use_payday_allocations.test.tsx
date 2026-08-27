@@ -47,7 +47,7 @@ const PAYDAY = {
 };
 
 test("A PAYDAY WITH A CONTRIBUTION RULE PROPOSES AN ALLOCATION", async () => {
-  const savings = await createWallet({ name: "GSave", type: "savings" });
+  const savings = await createWallet({ name: "GSave" });
   await createGoal({
     name: "Emergency Fund",
     targetAmount: 5000000,
@@ -81,7 +81,7 @@ test("THE SAME PAYDAY PROPOSES NOTHING ON THE FREE TIER", async () => {
   // only the prompt stops), so this hook needs no tier check of its own and
   // cannot drift out of step with the one the service applies.
   __setTierForTests("free");
-  const savings = await createWallet({ name: "GSave", type: "savings" });
+  const savings = await createWallet({ name: "GSave" });
   await createGoal({
     name: "Emergency Fund",
     targetAmount: 5000000,
@@ -100,7 +100,7 @@ test("THE SAME PAYDAY PROPOSES NOTHING ON THE FREE TIER", async () => {
 });
 
 test("a payday with no contribution rules announces itself and proposes nothing", async () => {
-  const savings = await createWallet({ name: "GSave", type: "savings" });
+  const savings = await createWallet({ name: "GSave" });
   await createGoal({ name: "Emergency Fund", targetAmount: 5000000, linkedWalletId: savings.id });
 
   const { result } = renderHook(() => usePaydayAllocations());
@@ -114,7 +114,7 @@ test("a payday with no contribution rules announces itself and proposes nothing"
 });
 
 test("dismissing the allocations clears everything", async () => {
-  const savings = await createWallet({ name: "GSave", type: "savings" });
+  const savings = await createWallet({ name: "GSave" });
   await createGoal({
     name: "Emergency Fund",
     targetAmount: 5000000,

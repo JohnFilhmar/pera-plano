@@ -200,8 +200,10 @@ describe("creating a wallet", () => {
     });
     const [created] = await listWallets();
     expect(created.name).toBe("BPI");
-    expect(created.type).toBe("bank");
     expect(created.balance).toBe(250_000);
+    // A new wallet is assumed to hold money, and nobody was asked.
+    expect(created.owedBalance).toBe(false);
+    expect(created.owedPinned).toBe(false);
   });
 
   test("binds the matchers chosen in the form", async () => {
@@ -225,7 +227,7 @@ describe("creating a wallet", () => {
   });
 
   test("surfaces a duplicate name rather than swallowing it", async () => {
-    await createWallet({ name: "GCash", type: "e-wallet" });
+    await createWallet({ name: "GCash" });
     await renderNew();
 
     fireEvent.changeText(screen.getByTestId("wallet-form-name"), "gcash");
@@ -242,9 +244,9 @@ describe("creating a wallet", () => {
 describe("the free-tier wallet cap", () => {
   async function seedThree(): Promise<Wallet[]> {
     return [
-      await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 10_000 }),
-      await createWallet({ name: "BPI", type: "bank", openingBalance: 20_000 }),
-      await createWallet({ name: "Pocket", type: "cash", openingBalance: 30_000 }),
+      await createWallet({ name: "GCash", openingBalance: 10_000 }),
+      await createWallet({ name: "BPI", openingBalance: 20_000 }),
+      await createWallet({ name: "Pocket", openingBalance: 30_000 }),
     ];
   }
 
@@ -321,7 +323,7 @@ describe("the free-tier wallet cap", () => {
 
   test("a user who lapses from Plus with four wallets keeps all four", async () => {
     await seedThree();
-    await createWallet({ name: "Maya", type: "e-wallet", openingBalance: 40_000 });
+    await createWallet({ name: "Maya", openingBalance: 40_000 });
 
     __setTierForTests("free");
 
@@ -339,7 +341,7 @@ describe("editing a wallet", () => {
   let gcash: Wallet;
 
   beforeEach(async () => {
-    gcash = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100_000 });
+    gcash = await createWallet({ name: "GCash", openingBalance: 100_000 });
   });
 
   test("prefills from the stored wallet and saves a rename", async () => {
@@ -384,8 +386,8 @@ describe("a matcher pair belongs to exactly one wallet", () => {
   let savings: Wallet;
 
   beforeEach(async () => {
-    gcash = await createWallet({ name: "GCash", type: "e-wallet" });
-    savings = await createWallet({ name: "GSave", type: "savings" });
+    gcash = await createWallet({ name: "GCash" });
+    savings = await createWallet({ name: "GSave" });
     await setMatchers(gcash.id, [{ packageName: GCASH_PACKAGE }]);
   });
 
@@ -444,19 +446,20 @@ describe("a matcher pair belongs to exactly one wallet", () => {
 
 describe("the wallet detail actions", () => {
   test("a cash wallet offers reconciliation", async () => {
-    const cash = await createWallet({ name: "Pocket", type: "cash", openingBalance: 50_000 });
+    const cash = await createWallet({ name: "Pocket", openingBalance: 50_000 });
 
     await renderDetail(cash.id);
 
     expect(screen.getByTestId("wallet-detail-reconcile")).toBeTruthy();
   });
 
-  test.each(["bank", "e-wallet", "credit", "savings"] as const)(
-    "a %s wallet does not",
-    async (type) => {
-      const wallet = await createWallet({ name: `A ${type}`, type });
+  test.each(["com.bpi.ng.app", "com.globe.gcash.android"] as const)(
+    "a wallet tracked through %s does not",
+    async (packageName) => {
+      const created = await createWallet({ name: `Tracked via ${packageName}` });
+      await setMatchers(created.id, [{ packageName, hint: null }]);
 
-      await renderDetail(wallet.id);
+      await renderDetail(created.id);
 
       // Rule 6. A non-cash balance is re-anchored by the provider's own
       // reported figure; a typed adjustment there would fight the next snap.
@@ -465,7 +468,7 @@ describe("the wallet detail actions", () => {
   );
 
   test("archiving from the detail screen keeps the transactions by default", async () => {
-    const gcash = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100_000 });
+    const gcash = await createWallet({ name: "GCash", openingBalance: 100_000 });
     const tx = await insertTransaction({
       walletId: gcash.id,
       categoryId: UNCATEGORIZED_ID,
@@ -489,8 +492,8 @@ describe("the wallet detail actions", () => {
   });
 
   test("archiving with a chosen destination moves the transactions there", async () => {
-    const gcash = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100_000 });
-    const bpi = await createWallet({ name: "BPI", type: "bank" });
+    const gcash = await createWallet({ name: "GCash", openingBalance: 100_000 });
+    const bpi = await createWallet({ name: "BPI" });
     const tx = await insertTransaction({
       walletId: gcash.id,
       categoryId: UNCATEGORIZED_ID,
@@ -514,7 +517,7 @@ describe("the wallet detail actions", () => {
   });
 
   test("the detail screen offers no delete", async () => {
-    const gcash = await createWallet({ name: "GCash", type: "e-wallet" });
+    const gcash = await createWallet({ name: "GCash" });
 
     await renderDetail(gcash.id);
 
@@ -523,7 +526,7 @@ describe("the wallet detail actions", () => {
   });
 
   test("editing navigates to the edit route", async () => {
-    const gcash = await createWallet({ name: "GCash", type: "e-wallet" });
+    const gcash = await createWallet({ name: "GCash" });
 
     await renderDetail(gcash.id);
     fireEvent.press(screen.getByTestId("wallet-detail-edit"));
@@ -538,7 +541,7 @@ describe("the wallet detail actions", () => {
   // edit route as the top-level Edit button — the matcher picker lives only
   // in wallet_form.tsx, reachable exclusively through app/wallet/[id]/edit.tsx.
   test("the matchers card's Edit action also navigates to the edit route", async () => {
-    const gcash = await createWallet({ name: "GCash", type: "e-wallet" });
+    const gcash = await createWallet({ name: "GCash" });
 
     await renderDetail(gcash.id);
     fireEvent.press(screen.getByTestId("wallet-detail-matchers-edit"));
@@ -550,7 +553,7 @@ describe("the wallet detail actions", () => {
   });
 
   test("the matchers card's dashed + Add navigates to the edit route too", async () => {
-    const gcash = await createWallet({ name: "GCash", type: "e-wallet" });
+    const gcash = await createWallet({ name: "GCash" });
 
     await renderDetail(gcash.id);
     fireEvent.press(screen.getByTestId("wallet-detail-matchers-add"));
@@ -589,7 +592,7 @@ describe("the wallet detail actions", () => {
 
 describe("system-bar clearance", () => {
   test("wallet detail pads its content for both system bars", async () => {
-    const gcash = await createWallet({ name: "GCash", type: "e-wallet" });
+    const gcash = await createWallet({ name: "GCash" });
     mockParams = { id: gcash.id };
 
     renderWithInsets(<WalletDetailScreen />);
@@ -625,7 +628,7 @@ describe("system-bar clearance", () => {
   });
 
   test("wallet edit pads its content for both system bars", async () => {
-    const gcash = await createWallet({ name: "GCash", type: "e-wallet" });
+    const gcash = await createWallet({ name: "GCash" });
     mockParams = { id: gcash.id };
 
     renderWithInsets(<EditWalletScreen />);
@@ -672,7 +675,7 @@ describe("system-bar clearance", () => {
     expectSoleFormScreenSurface("wallet-new-scroll");
     screen.unmount();
 
-    const gcash = await createWallet({ name: "GCash", type: "e-wallet" });
+    const gcash = await createWallet({ name: "GCash" });
     await renderEdit(gcash.id);
     expectSoleFormScreenSurface("wallet-edit-scroll");
   });

@@ -174,8 +174,8 @@ let bpi: Wallet;
 beforeEach(async () => {
   await freshDb();
   await seedDefaultCategories();
-  gcash = await createWallet({ name: "GCash", type: "e-wallet" });
-  bpi = await createWallet({ name: "BPI", type: "bank" });
+  gcash = await createWallet({ name: "GCash" });
+  bpi = await createWallet({ name: "BPI" });
 });
 
 afterEach(async () => {
@@ -815,7 +815,7 @@ describe("the one-sided transfer card", () => {
     // CASH IS OFFERED ON PURPOSE — see one_sided_transfer_body.tsx's header:
     // a cash leg posts no notification, so this card is the only way a human
     // can supply it.
-    const cash: Wallet = { ...gcash, id: "w-cash", name: "Cash", type: "cash" };
+    const cash: Wallet = { ...gcash, id: "w-cash", name: "Cash" };
     const archived: Wallet = { ...gcash, id: "w-archived", name: "Retired GCash", isArchived: true };
     const queued = oneSidedItem();
 

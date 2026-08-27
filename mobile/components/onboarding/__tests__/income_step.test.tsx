@@ -145,7 +145,7 @@ describe("IncomeQuickForm", () => {
 
 describe("IncomeScreen", () => {
   test("declaring income sets a manual IncomeProfile with the entered figures", async () => {
-    const gcash = await createWallet({ name: "GCash", type: "e-wallet" });
+    const gcash = await createWallet({ name: "GCash" });
     await renderScreen();
     await waitFor(() => expect(screen.getByTestId(`income-quick-wallet-${gcash.id}`)).toBeTruthy());
 

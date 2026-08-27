@@ -31,6 +31,10 @@ const SCRATCH_VERSION = Math.max(...MIGRATIONS.map((migration) => migration.vers
  * The shape 014 uses: build the replacement, copy, drop the original, rename.
  * With foreign keys enforced this fails at the DROP, because four tables point
  * at `wallets`.
+ *
+ * The replacement deliberately OMITS `owed_pinned`, purely as a marker: its
+ * presence or absence afterwards says whether the rebuild actually happened,
+ * without this suite having to care what the live schema looks like.
  */
 const REBUILD_WALLETS_SQL = `
 CREATE TABLE wallets_new (
@@ -51,8 +55,8 @@ ALTER TABLE wallets_new RENAME TO wallets;
 async function seedWalletWithMatcher(): Promise<void> {
   const db = await getDatabase();
   await db.runAsync(
-    `INSERT INTO wallets (id, name, type, balance, currency, is_archived, created_at, updated_at)
-     VALUES ('w1', 'BPI', 'bank', 0, 'PHP', 0, 1, 1)`,
+    `INSERT INTO wallets (id, name, balance, currency, is_archived, created_at, updated_at)
+     VALUES ('w1', 'BPI', 0, 'PHP', 0, 1, 1)`,
   );
   await db.runAsync(
     `INSERT INTO wallet_matchers (id, wallet_id, package_name, hint, created_at, updated_at)
@@ -94,7 +98,7 @@ test("a flagged migration can rebuild a table four others reference", async () =
   expect(await runMigrations(db, [rebuild])).toEqual([SCRATCH_VERSION]);
 
   const columns = await db.getAllAsync<{ name: string }>("PRAGMA table_info(wallets)");
-  expect(columns.map((column) => column.name)).not.toContain("type");
+  expect(columns.map((column) => column.name)).not.toContain("owed_pinned");
 
   // The child row still points at a wallet that still exists.
   const matchers = await db.getAllAsync<{ wallet_id: string }>(
@@ -116,9 +120,9 @@ test("the same rebuild without the flag is refused", async () => {
 
   await expect(runMigrations(db, [rebuild])).rejects.toThrow();
 
-  // Rolled back: the original table, with its original column, is still there.
+  // Rolled back: the original table, with its original columns, is still there.
   const columns = await db.getAllAsync<{ name: string }>("PRAGMA table_info(wallets)");
-  expect(columns.map((column) => column.name)).toContain("type");
+  expect(columns.map((column) => column.name)).toContain("owed_pinned");
 });
 
 test("a flagged migration that leaves real orphans is rolled back", async () => {

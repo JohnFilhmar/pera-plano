@@ -31,7 +31,6 @@ describe("wallet mapper", () => {
   const wallet: Wallet = {
     id: "6f3c0f5e-8a3b-4d6e-9c1a-2b4d6e8f0a1c",
     name: "GCash",
-    type: "e-wallet",
     balance: 250075,
     currency: "PHP",
     isArchived: true,
@@ -55,7 +54,6 @@ describe("wallet mapper", () => {
     expect(row).toEqual({
       id: "6f3c0f5e-8a3b-4d6e-9c1a-2b4d6e8f0a1c",
       name: "GCash",
-      type: "e-wallet",
       balance: 250075,
       currency: "PHP",
       is_archived: 1,
@@ -96,8 +94,8 @@ describe("wallet mapper", () => {
   test("rowToWallet decodes a real inserted row (is_archived=0, distinct created/updated timestamps)", async () => {
     const db = await freshDb();
     await db.runAsync(
-      "INSERT INTO wallets (id, name, type, balance, currency, is_archived, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-      ["w_real", "BPI Savings", "bank", 500000, "PHP", 0, 1700000000000, 1700000000123],
+      "INSERT INTO wallets (id, name, balance, currency, is_archived, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      ["w_real", "BPI Savings", 500000, "PHP", 0, 1700000000000, 1700000000123],
     );
     const row = await db.getFirstAsync<Record<string, unknown>>(
       "SELECT * FROM wallets WHERE id = 'w_real'",
@@ -105,7 +103,6 @@ describe("wallet mapper", () => {
     expect(rowToWallet(row as never)).toEqual({
       id: "w_real",
       name: "BPI Savings",
-      type: "bank",
       balance: 500000,
       currency: "PHP",
       isArchived: false,
@@ -131,7 +128,7 @@ describe("wallet mapper", () => {
       "INSERT INTO categories (id, name, parent_id, icon, is_system, is_hidden, created_at, updated_at) VALUES ('c_map', 'Food', NULL, 'utensils', 1, 0, 0, 0)",
     );
     await db.runAsync(
-      "INSERT INTO wallets (id, name, type, balance, currency, is_archived, created_at, updated_at) VALUES ('w_seen', 'GCash', 'e-wallet', 100, 'PHP', 0, 1, 1)",
+      "INSERT INTO wallets (id, name, balance, currency, is_archived, created_at, updated_at) VALUES ('w_seen', 'GCash', 100, 'PHP', 0, 1, 1)",
     );
     await db.runAsync(
       "INSERT INTO transactions (id, wallet_id, category_id, amount, direction, occurred_at, source, confidence, created_at, updated_at) VALUES ('tx_seen', 'w_seen', 'c_map', 100, 'out', 1, 'notification', 0.9, 1, 1)",
@@ -149,8 +146,8 @@ describe("wallet mapper", () => {
   test("rowToWallet decodes is_archived=1 as true, not the literal number 1", async () => {
     const db = await freshDb();
     await db.runAsync(
-      "INSERT INTO wallets (id, name, type, balance, currency, is_archived, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-      ["w_archived", "Old Cash", "cash", 0, "PHP", 1, 1700000000000, 1700000000000],
+      "INSERT INTO wallets (id, name, balance, currency, is_archived, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      ["w_archived", "Old Cash", 0, "PHP", 1, 1700000000000, 1700000000000],
     );
     const row = await db.getFirstAsync<Record<string, unknown>>(
       "SELECT * FROM wallets WHERE id = 'w_archived'",
@@ -235,7 +232,7 @@ describe("transaction mapper", () => {
     const db = await freshDb();
     const now = Date.now();
     await db.runAsync(
-      "INSERT INTO wallets (id, name, type, balance, currency, is_archived, created_at, updated_at) VALUES ('w1','W','cash',0,'PHP',0,?,?)",
+      "INSERT INTO wallets (id, name, balance, currency, is_archived, created_at, updated_at) VALUES ('w1','W',0,'PHP',0,?,?)",
       [now, now],
     );
     await db.runAsync(
@@ -287,7 +284,7 @@ describe("transaction mapper", () => {
     const db = await freshDb();
     const now = Date.now();
     await db.runAsync(
-      "INSERT INTO wallets (id, name, type, balance, currency, is_archived, created_at, updated_at) VALUES ('w1','W','cash',0,'PHP',0,?,?)",
+      "INSERT INTO wallets (id, name, balance, currency, is_archived, created_at, updated_at) VALUES ('w1','W',0,'PHP',0,?,?)",
       [now, now],
     );
     await db.runAsync(

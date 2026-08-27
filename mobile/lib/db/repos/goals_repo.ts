@@ -44,11 +44,26 @@ type GoalRow = {
   updated_at: number;
 };
 
-/** Thrown when the linked wallet is missing, or is not of type `savings` (I10). */
-export class WalletNotSavingsError extends Error {
+/**
+ * Thrown when the wallet a goal is being linked to does not exist.
+ *
+ * REPLACES `WalletNotSavingsError`, WHICH ALSO REFUSED WALLETS OF THE WRONG
+ * TYPE. That rule required the user to have told the app, during onboarding,
+ * that a particular wallet was a "savings" one — a claim they had no way to
+ * make accurately and no way to see the consequence of. With the type picker
+ * gone the app would have had to INFER savings-ness and then block a goal on
+ * its own guess, which is the worst version of the rule: a user whose account
+ * the app failed to recognise would be told, with no explanation they could
+ * act on, that they may not save toward anything in it.
+ *
+ * So the restriction is gone entirely. Any wallet can back a goal; the picker
+ * still leads with the ones that look like savings, as a suggestion rather
+ * than a wall.
+ */
+export class LinkedWalletNotFoundError extends Error {
   constructor(public readonly walletId: string) {
-    super(`goal must be linked to a savings wallet: ${walletId}`);
-    this.name = "WalletNotSavingsError";
+    super(`goal cannot be linked to a wallet that does not exist: ${walletId}`);
+    this.name = "LinkedWalletNotFoundError";
   }
 }
 
@@ -87,15 +102,15 @@ function rowToGoal(row: GoalRow): Goal {
 async function assertWalletIsFree(walletId: string, exceptGoalId?: string): Promise<void> {
   const db = await getDatabase();
 
-  const wallet = await db.getFirstAsync<{ type: string }>(
-    "SELECT type FROM wallets WHERE id = ?",
-    [walletId],
-  );
-  // A missing wallet and a wrong-typed one get the SAME error on purpose: from
-  // the caller's side both mean "you cannot link this", and a separate
-  // not-found error would only be actionable by a screen that already knew the
-  // wallet existed.
-  if (!wallet || wallet.type !== "savings") throw new WalletNotSavingsError(walletId);
+  const wallet = await db.getFirstAsync<{ id: string }>("SELECT id FROM wallets WHERE id = ?", [
+    walletId,
+  ]);
+  // EXISTENCE ONLY. The wallet's kind is no longer this repository's business —
+  // see `LinkedWalletNotFoundError` for why the savings requirement was dropped
+  // rather than re-expressed against the inferred traits. The check stays
+  // because `linked_wallet_id` is a foreign key: without it the caller gets a
+  // raw SQLite constraint failure instead of an error a screen can act on.
+  if (!wallet) throw new LinkedWalletNotFoundError(walletId);
 
   const claimed = await db.getFirstAsync<{ id: string }>(
     "SELECT id FROM goals WHERE linked_wallet_id = ?",

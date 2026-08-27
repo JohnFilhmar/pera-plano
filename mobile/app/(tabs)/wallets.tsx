@@ -40,10 +40,9 @@ import { useWallets } from "@/hooks/queries/use_wallets";
 import { systemClock } from "@/lib/clock";
 import {
   archivedWallets,
-  groupWalletsByType,
+  splitByOwed,
   totalActiveBalance,
   totalActiveWalletCount,
-  WALLET_TYPE_LABELS,
 } from "@/lib/wallets/summary";
 import type { Wallet } from "@/types/domain";
 
@@ -159,7 +158,7 @@ export default function WalletsScreen() {
       );
     }
 
-    const groups = groupWalletsByType(wallets);
+    const { held, owed } = splitByOwed(wallets);
     const archived = archivedWallets(wallets);
     // The toggle changes what is VISIBLE, never what is counted (rule 17, the
     // same principle `totalActiveBalance` already applies to the peso figure
@@ -202,8 +201,7 @@ export default function WalletsScreen() {
                     // segment either way, and `ShareBar` itself renders nothing at
                     // all once every remaining share is filtered out (`total <= 0`).
                     .filter(
-                      (wallet) =>
-                        !wallet.isArchived && wallet.type !== "credit" && wallet.balance > 0,
+                      (wallet) => !wallet.isArchived && !wallet.owedBalance && wallet.balance > 0,
                     )
                     .map((wallet) => {
                       const providerKey = providerKeyForWallet(wallet.id);
@@ -227,26 +225,34 @@ export default function WalletsScreen() {
                     })}
                 />
                 <Text className="text-xs text-fg-2 dark:text-fg-2-dark">
-                  Credit balances are money you owe, so they are not counted here.
+                  Balances you owe are not counted here.
                 </Text>
               </View>
             </Card>
           </View>
 
-          {groups.map((group) => (
-            <View key={group.type}>
-              <SectionHeader
-                testID={`wallet-group-${group.type}`}
-                title={WALLET_TYPE_LABELS[group.type]}
-              />
-              {group.wallets.map(renderCard)}
+          {/* ONE LIST, NOT FIVE SECTIONS. This used to render a heading per
+              wallet type — Bank, E-wallet, Savings, Credit, Cash — off a
+              taxonomy the user was made to choose during onboarding. Only one
+              of those divisions ever changed a number, and it is the one kept
+              below: what you have, and what you owe. */}
+          {held.map(renderCard)}
+
+          {/* Rule 23 on screen rather than only in the maths: these balances
+              are money OWED, and they are excluded from the total above. The
+              heading is what makes that exclusion legible instead of looking
+              like an arithmetic error. */}
+          {owed.length > 0 ? (
+            <View testID="wallets-owed-section">
+              <SectionHeader title="Money you owe" />
+              {owed.map(renderCard)}
             </View>
-          ))}
+          ) : null}
 
           {/* Rule 5: archived wallets are hidden by default and collapse into
-              their own group at the bottom — never mixed into the type sections,
-              where their balances would read as live money. They stay out of the
-              total either way (rule 17). */}
+              their own group at the bottom — never mixed into the live lists,
+              where their balances would read as current money. They stay out of
+              the total either way (rule 17). */}
           {archived.length > 0 ? (
             <View testID="wallets-archived-section">
               <SectionHeader title="Archived" />

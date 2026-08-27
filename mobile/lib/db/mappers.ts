@@ -13,13 +13,11 @@ import type {
   TxDirection,
   TxSource,
   Wallet,
-  WalletType,
 } from "@/types/domain";
 
 export type WalletRow = {
   id: string;
   name: string;
-  type: string;
   balance: number;
   currency: string;
   is_archived: number;
@@ -43,7 +41,6 @@ export function rowToWallet(row: WalletRow): Wallet {
   return {
     id: row.id,
     name: row.name,
-    type: row.type as WalletType,
     balance: row.balance,
     currency: "PHP",
     isArchived: row.is_archived === 1,
@@ -67,7 +64,6 @@ export function walletToRow(wallet: Wallet): WalletRow {
   return {
     id: wallet.id,
     name: wallet.name,
-    type: wallet.type,
     balance: wallet.balance,
     currency: wallet.currency,
     is_archived: wallet.isArchived ? 1 : 0,

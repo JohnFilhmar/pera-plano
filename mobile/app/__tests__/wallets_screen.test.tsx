@@ -122,7 +122,7 @@ async function installRuleset(
 }
 
 async function seedDrifting(reported: Centavos): Promise<Wallet> {
-  const bpi = await createWallet({ name: "BPI", type: "bank", openingBalance: 100_000 });
+  const bpi = await createWallet({ name: "BPI", openingBalance: 100_000 });
   await insertTransaction({
     walletId: bpi.id,
     categoryId: UNCATEGORIZED_ID,
@@ -158,11 +158,11 @@ describe("grouping", () => {
     // oldest-first, so an implementation that renders insertion order — or
     // sorts alphabetically (Bank, Cash, Credit, E-wallet, Savings) — produces a
     // different sequence than the one asserted.
-    await createWallet({ name: "Pocket", type: "cash", openingBalance: 5_000 });
-    await createWallet({ name: "Visa", type: "credit", openingBalance: 1_234_500 });
-    await createWallet({ name: "BPI", type: "bank", openingBalance: 10_000 });
-    await createWallet({ name: "GSave", type: "savings", openingBalance: 20_000 });
-    await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 30_000 });
+    await createWallet({ name: "Pocket", openingBalance: 5_000 });
+    await createWallet({ name: "Visa", openingBalance: 1_234_500 });
+    await createWallet({ name: "BPI", openingBalance: 10_000 });
+    await createWallet({ name: "GSave", openingBalance: 20_000 });
+    await createWallet({ name: "GCash", openingBalance: 30_000 });
 
     renderScreen();
     await screen.findByTestId("wallet-group-bank");
@@ -177,7 +177,7 @@ describe("grouping", () => {
   });
 
   test("shows no heading for a type the user has no wallet of", async () => {
-    await createWallet({ name: "BPI", type: "bank", openingBalance: 10_000 });
+    await createWallet({ name: "BPI", openingBalance: 10_000 });
 
     renderScreen();
     await screen.findByTestId("wallet-group-bank");
@@ -189,8 +189,8 @@ describe("grouping", () => {
 
 describe("the total row", () => {
   test("EXCLUDES credit wallets — a ₱12,345.00 card does not inflate the headline", async () => {
-    await createWallet({ name: "BPI", type: "bank", openingBalance: 10_000 });
-    await createWallet({ name: "Visa", type: "credit", openingBalance: 1_234_500 });
+    await createWallet({ name: "BPI", openingBalance: 10_000 });
+    await createWallet({ name: "Visa", openingBalance: 1_234_500 });
 
     renderScreen();
     await screen.findByTestId("wallets-total-amount");
@@ -204,7 +204,6 @@ describe("the total row", () => {
   test("still shows the credit wallet's own balance, labelled as owed", async () => {
     const visa = await createWallet({
       name: "Visa",
-      type: "credit",
       openingBalance: 1_234_500,
     });
 
@@ -216,10 +215,9 @@ describe("the total row", () => {
   });
 
   test("EXCLUDES archived wallets even while the toggle is showing them (rule 17)", async () => {
-    await createWallet({ name: "BPI", type: "bank", openingBalance: 10_000 });
+    await createWallet({ name: "BPI", openingBalance: 10_000 });
     const closed = await createWallet({
       name: "Closed BDO",
-      type: "bank",
       openingBalance: 999_900,
     });
     await archiveWallet(closed.id);
@@ -239,8 +237,8 @@ describe("the total row", () => {
 
 describe("Show archived", () => {
   async function seedOneOfEach(): Promise<void> {
-    await createWallet({ name: "BPI", type: "bank", openingBalance: 10_000 });
-    const closed = await createWallet({ name: "Closed BDO", type: "bank", openingBalance: 0 });
+    await createWallet({ name: "BPI", openingBalance: 10_000 });
+    const closed = await createWallet({ name: "Closed BDO", openingBalance: 0 });
     await archiveWallet(closed.id);
   }
 
@@ -345,7 +343,7 @@ describe("balance drift", () => {
     // bank and the ledger agree, on a wallet the app has never had a bank
     // figure for, is a claim with nothing behind it.
     await installRuleset(1, DEFAULT_TUNABLES.balanceDriftToleranceCentavos);
-    const cash = await createWallet({ name: "Pocket", type: "cash", openingBalance: 50_000 });
+    const cash = await createWallet({ name: "Pocket", openingBalance: 50_000 });
 
     const client = renderScreen();
     await screen.findByTestId(`wallet-card-${cash.id}`);
@@ -419,7 +417,7 @@ describe("empty state", () => {
 
   test("does NOT render before the wallets have loaded", async () => {
     // An empty state that flashes on every cold start reads as data loss.
-    await createWallet({ name: "BPI", type: "bank", openingBalance: 10_000 });
+    await createWallet({ name: "BPI", openingBalance: 10_000 });
 
     renderScreen();
 
@@ -467,7 +465,7 @@ describe("the add-wallet button", () => {
   });
 
   test("still renders once wallets exist -- the defect this covers", async () => {
-    await createWallet({ name: "BPI", type: "bank", openingBalance: 10_000 });
+    await createWallet({ name: "BPI", openingBalance: 10_000 });
 
     renderScreen();
     await screen.findByText("BPI");
@@ -476,7 +474,7 @@ describe("the add-wallet button", () => {
   });
 
   test("opens the new-wallet screen", async () => {
-    await createWallet({ name: "BPI", type: "bank", openingBalance: 10_000 });
+    await createWallet({ name: "BPI", openingBalance: 10_000 });
 
     renderScreen();
     await screen.findByText("BPI");
@@ -492,7 +490,7 @@ describe("the add-wallet button", () => {
   // making the tab look broken.
   test("is not hidden by the free-tier wallet cap", async () => {
     for (const name of ["BPI", "GCash", "Maya", "Cash"]) {
-      await createWallet({ name, type: "e-wallet", openingBalance: 1_000 });
+      await createWallet({ name, openingBalance: 1_000 });
     }
 
     renderScreen();
@@ -504,8 +502,8 @@ describe("the add-wallet button", () => {
 
 describe("navigation", () => {
   test("tapping a card opens that wallet's detail route", async () => {
-    const bpi = await createWallet({ name: "BPI", type: "bank", openingBalance: 10_000 });
-    await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 30_000 });
+    const bpi = await createWallet({ name: "BPI", openingBalance: 10_000 });
+    await createWallet({ name: "GCash", openingBalance: 30_000 });
 
     renderScreen();
     await screen.findByTestId(`wallet-card-${bpi.id}`);
@@ -526,8 +524,8 @@ describe("navigation", () => {
 
 describe("the share bar on the total card", () => {
   test("the total card carries a share bar with one segment per wallet", async () => {
-    const bpi = await createWallet({ name: "BPI", type: "bank", openingBalance: 60_000 });
-    const gcash = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 40_000 });
+    const bpi = await createWallet({ name: "BPI", openingBalance: 60_000 });
+    const gcash = await createWallet({ name: "GCash", openingBalance: 40_000 });
 
     renderScreen();
     await screen.findByTestId("wallets-share");
@@ -542,8 +540,8 @@ describe("the share bar on the total card", () => {
     // share bar with a credit segment would draw a breakdown whose slices sum
     // to a DIFFERENT number than the total it sits under, which is the same
     // overstatement rule 23 exists to prevent, one layer down.
-    const bpi = await createWallet({ name: "BPI", type: "bank", openingBalance: 60_000 });
-    const visa = await createWallet({ name: "Visa", type: "credit", openingBalance: 1_234_500 });
+    const bpi = await createWallet({ name: "BPI", openingBalance: 60_000 });
+    const visa = await createWallet({ name: "Visa", openingBalance: 1_234_500 });
 
     renderScreen();
     await screen.findByTestId("wallets-share");
@@ -555,7 +553,7 @@ describe("the share bar on the total card", () => {
 
 describe("provider badges", () => {
   test("a wallet row shows its provider badge", async () => {
-    const gcash = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 30_000 });
+    const gcash = await createWallet({ name: "GCash", openingBalance: 30_000 });
     // No ruleset installed in this test — resolves through
     // `PACKAGE_PROVIDER_KEYS`, constants/providers.ts's static fallback table,
     // exactly the window `providerKeyForPackage`'s own doc describes.
@@ -567,7 +565,7 @@ describe("provider badges", () => {
   });
 
   test("a wallet with no matchers renders its type icon, never a provider badge", async () => {
-    const cash = await createWallet({ name: "Pocket", type: "cash", openingBalance: 5_000 });
+    const cash = await createWallet({ name: "Pocket", openingBalance: 5_000 });
 
     renderScreen();
 
@@ -581,9 +579,9 @@ describe("the total label", () => {
     // Rule 17's "the toggle changes what is VISIBLE, never what is counted" —
     // already true of the peso total — applies equally to the new "Total
     // across {n} wallets" label this task adds.
-    await createWallet({ name: "BPI", type: "bank", openingBalance: 10_000 });
-    await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 5_000 });
-    const closed = await createWallet({ name: "Closed BDO", type: "bank", openingBalance: 0 });
+    await createWallet({ name: "BPI", openingBalance: 10_000 });
+    await createWallet({ name: "GCash", openingBalance: 5_000 });
+    const closed = await createWallet({ name: "Closed BDO", openingBalance: 0 });
     await archiveWallet(closed.id);
 
     renderScreen();
@@ -601,9 +599,9 @@ describe("the total label", () => {
   // it (rule 23: a credit balance is owed, not held). The label and the total
   // it sits above must describe the same set of wallets.
   test("EXCLUDES a non-archived credit wallet from the count too — it must agree with the total it labels", async () => {
-    await createWallet({ name: "BPI", type: "bank", openingBalance: 10_000 });
-    await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 5_000 });
-    await createWallet({ name: "Visa", type: "credit", openingBalance: 1_234_500 });
+    await createWallet({ name: "BPI", openingBalance: 10_000 });
+    await createWallet({ name: "GCash", openingBalance: 5_000 });
+    await createWallet({ name: "Visa", openingBalance: 1_234_500 });
 
     renderScreen();
     await screen.findByTestId("wallets-total-amount");
@@ -619,7 +617,7 @@ describe("the total label", () => {
 
 describe("no wallet cap in beta (spec D10)", () => {
   test("there is no wallet cap upsell during beta", async () => {
-    await createWallet({ name: "BPI", type: "bank", openingBalance: 10_000 });
+    await createWallet({ name: "BPI", openingBalance: 10_000 });
 
     renderScreen();
     await screen.findByText("BPI");

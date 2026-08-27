@@ -24,6 +24,8 @@ import { BALANCE_CORRECTION_NOTE } from "@/hooks/mutations/use_correct_wallet_ba
 import { closeDatabase } from "@/lib/db/database";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions_repo";
+import { setMatchers as setWalletMatchers } from "@/lib/db/repos/wallet_matchers_repo";
+import { setWalletOwed } from "@/lib/db/repos/wallet_traits_repo";
 import { createWallet, getWallet } from "@/lib/db/repos/wallets_repo";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
@@ -93,7 +95,7 @@ beforeEach(async () => {
   await freshDb();
   await seedDefaultCategories();
   // ₱1,000.00 opening, minus a ₱200.00 spend the app DID see → recorded ₱800.00.
-  gcash = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100_000 });
+  gcash = await createWallet({ name: "GCash", openingBalance: 100_000 });
   await insertTransaction({
     walletId: gcash.id,
     categoryId: UNCATEGORIZED_ID,
@@ -295,21 +297,36 @@ test("confirming with nothing typed is refused rather than writing anything", as
   expect(screen.getByTestId("balance-correction-error")).toBeTruthy();
 });
 
-describe("wallet type guards", () => {
-  test.each(["bank", "e-wallet", "savings"] as const)("a %s wallet gets the sheet", async (type) => {
-    const wallet = await createWallet({ name: `A ${type}`, type });
+describe("which wallets get this sheet", () => {
+  test("a wallet a provider reports on gets the sheet", async () => {
+    const wallet = await createWallet({ name: "BPI" });
+    await setWalletMatchers(wallet.id, [{ packageName: "com.bpi.ng.app", hint: null }]);
 
-    renderSheet(wallet);
+    renderSheet((await getWallet(wallet.id)) as Wallet);
 
     expect(screen.getByTestId("balance-correction-sheet")).toBeTruthy();
   });
 
-  test.each(["cash", "credit"] as const)("a %s wallet renders no sheet at all", async (type) => {
-    // Cash keeps CashReconcileSheet, unmodified (rule 3). Credit is excluded
-    // because its balance is owed, not held — see this sheet's own header.
-    const wallet = await createWallet({ name: `A ${type}`, type });
+  test("a MANUAL wallet renders no sheet at all", async () => {
+    // Nothing routes here, so there is no reported figure to correct against —
+    // only the user's own count, which is what CashReconcileSheet is for
+    // (rule 3). This is the case `type: "cash"` used to name.
+    const wallet = await createWallet({ name: "Pocket" });
 
     renderSheet(wallet);
+
+    expect(screen.queryByTestId("balance-correction-sheet")).toBeNull();
+  });
+
+  test("an OWED wallet renders no sheet at all", async () => {
+    // Its balance is money owed, not held — and this sheet's question ("what
+    // does this wallet actually have?") plus its in/out mapping are written for
+    // a held balance. See the file header.
+    const wallet = await createWallet({ name: "Card" });
+    await setWalletMatchers(wallet.id, [{ packageName: "com.bpi.ng.app", hint: null }]);
+    await setWalletOwed(wallet.id, true, { pinned: true });
+
+    renderSheet((await getWallet(wallet.id)) as Wallet);
 
     expect(screen.queryByTestId("balance-correction-sheet")).toBeNull();
   });
