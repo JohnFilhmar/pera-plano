@@ -51,6 +51,7 @@ import { closeDatabase } from "@/lib/db/database";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { countOpen } from "@/lib/db/repos/review_queue_repo";
 import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions_repo";
+import { setMatchers } from "@/lib/db/repos/wallet_matchers_repo";
 import { archiveWallet, createWallet, getWallet } from "@/lib/db/repos/wallets_repo";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
@@ -298,17 +299,22 @@ describe("the cash wallet", () => {
     expect(await ledger(pocket.id)).toHaveLength(0);
   });
 
-  test("with no cash wallet it offers to create one and writes nothing", async () => {
+  test("with no manual wallet it offers to create one and writes nothing", async () => {
     await freshDb();
     await seedDefaultCategories();
     const bpi = await createWallet({ name: "BPI", openingBalance: 500_000 });
+    // TRACKED, so there is genuinely no manual wallet to fall back on. "Cash"
+    // is no longer a type — it is a wallet nothing routes to — so a wallet
+    // created without matchers WOULD be a valid default and this test would
+    // stop testing anything.
+    await setMatchers(bpi.id, [{ packageName: "com.bpi.ng.app", hint: null }]);
     await renderNew();
 
     typeAmount("manual-amount", "1234");
     save();
 
-    // Cash in a bank wallet corrupts both balances, so the screen stops and
-    // asks rather than picking the only wallet it has.
+    // Cash written into a provider-tracked wallet corrupts both balances, so
+    // the screen stops and asks rather than picking the only wallet it has.
     expect(screen.getByTestId("manual-entry-no-cash")).toBeTruthy();
     expect(await ledger()).toHaveLength(0);
     expect((await getWallet(bpi.id))?.balance).toBe(500_000);
