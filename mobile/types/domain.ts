@@ -530,7 +530,14 @@ export type ReviewKind =
   | "unknown-provider"
   | "ambiguous-transfer"
   | "possible-duplicate"
-  | "loan-match";
+  | "loan-match"
+  /**
+   * One leg of an internal transfer arrived and the other never will, because
+   * the account it came from or went to does not post notifications. The
+   * counterpart transaction does not exist yet — confirming this item MINTS it.
+   * Distinct from `ambiguous-transfer`, whose payload names a committed row.
+   */
+  | "one-sided-transfer";
 
 /**
  * Parsed-candidate payload (amount, direction, merchant, wallet/category guesses…).

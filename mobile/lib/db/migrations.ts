@@ -10,6 +10,7 @@ import loanRemindersSql from "./migrations/008_loan_reminders.sql";
 import parseStatsSql from "./migrations/009_parse_stats.sql";
 import softDeleteAndDerivedLimitsSql from "./migrations/010_soft_delete_and_derived_limits.sql";
 import loanMatchReviewKindSql from "./migrations/011_loan_match_review_kind.sql";
+import oneSidedTransferReviewKindSql from "./migrations/012_one_sided_transfer_review_kind.sql";
 
 export type Migration = { version: number; name: string; sql: string };
 
@@ -29,7 +30,10 @@ export type Migration = { version: number; name: string; sql: string };
  * (owner-approved 2026-08-20); 011_loan_match_review_kind widens the
  * `review_queue_items.kind` CHECK with `'loan-match'` so the post-commit loan
  * matcher has a card to raise (docs/04-features/06-loans.md §"Flow: automatic
- * payment matching from the ledger" step 3).
+ * payment matching from the ledger" step 3); 012_one_sided_transfer_review_kind
+ * widens the same CHECK with `'one-sided-transfer'` for a transfer leg whose
+ * counterpart never arrives as a notification and so has no committed row to
+ * link to — see that file's own header for why it isn't `'ambiguous-transfer'`.
  * NEVER edit a shipped migration — add a new numbered one instead.
  *
  * Jest cache gotcha: babel-plugin-inline-import inlines each `*.sql` file's contents into
@@ -55,6 +59,7 @@ export const MIGRATIONS: Migration[] = [
     sql: softDeleteAndDerivedLimitsSql,
   },
   { version: 11, name: "loan_match_review_kind", sql: loanMatchReviewKindSql },
+  { version: 12, name: "one_sided_transfer_review_kind", sql: oneSidedTransferReviewKindSql },
 ];
 
 /**
