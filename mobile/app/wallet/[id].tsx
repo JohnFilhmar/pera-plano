@@ -20,14 +20,15 @@
 // behind the thing that makes it safe, and DISMISS joined them with migration
 // 003. DEVICE-TESTING FIX (2026-08-18, Task 4) then split RECONCILE's non-cash
 // half into its own ADJUST BALANCE action instead of widening RECONCILE, and
-// gave credit wallets neither:
+// gave wallets whose balance is OWED neither:
 //
 //   EDIT opens app/wallet/[id]/edit.tsx.
-//   RECONCILE is offered for `type: "cash"` ONLY (Task 5 rule 6). A wallet with
+//   RECONCILE is offered ONLY for a wallet NOTHING ROUTES TO (Task 5 rule 6,
+//     restated against the trait that replaced `type: "cash"`). A wallet with
 //     a provider re-anchors itself from the reported balance-after; a typed
 //     adjustment there would fight the next snap and lose, leaving a
 //     transaction explaining a balance change that never happened. That
-//     reasoning is still exactly why RECONCILE stays cash-only — it is what
+//     reasoning is still exactly why RECONCILE stays manual-only — it is what
 //     makes ADJUST BALANCE below a separate action instead of RECONCILE
 //     simply covering more wallet types.
 //   ADJUST BALANCE is offered for bank, savings, and e-wallet types — never
@@ -522,9 +523,9 @@ export default function WalletDetailScreen() {
               as a bug; a stated reason reads as a real limit. */}
           {!wallet.isArchived && isCredit ? (
             <View className="px-4 pt-2">
-              <Text testID="wallet-detail-credit-note" className="text-sm text-fg-2 dark:text-fg-2-dark">
-                Starting balance and manual corrections aren&apos;t available for credit wallets
-                yet — a credit balance can mean either what you owe or what you have left to
+              <Text testID="wallet-detail-owed-note" className="text-sm text-fg-2 dark:text-fg-2-dark">
+                Starting balance and manual corrections aren&apos;t available for a balance you
+                owe yet — the figure can mean either what you owe or what you have left to
                 spend, and this needs its own wording to get that right. Notifications still
                 update this balance automatically.
               </Text>

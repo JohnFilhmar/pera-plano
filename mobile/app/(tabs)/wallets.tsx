@@ -6,9 +6,9 @@
 //
 // The first real screen in the app — everything before it was infrastructure —
 // and the first place the app states a number the user did not type. That
-// number is the total row, and rule 23 keeps credit wallets OUT of it: a credit
-// balance is money owed, and adding it inflates the headline figure of a
-// budgeting app by the size of the user's debt. The arithmetic lives in
+// number is the total row, and rule 23 keeps OWED wallets out of it: an owed
+// balance is money the user does not have, and adding it inflates the headline
+// figure of a budgeting app by the size of their debt. The arithmetic lives in
 // lib/wallets/summary.ts, tested on its own; this file only lays it out.
 //
 // Four reads, each thin (Global Constraints: components consume hooks, hooks

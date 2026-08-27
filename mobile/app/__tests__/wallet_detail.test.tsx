@@ -298,22 +298,29 @@ describe("matcher chips", () => {
     expect(screen.queryByText("Catches: GCash · GSave")).toBeNull();
   });
 
-  test("a CASH wallet shows no matcher section at all (rule 4)", async () => {
-    // Cash wallets have empty matchers by rule and the matcher UI is hidden
-    // for them; money enters by manual entry, transfer legs and reconciliation.
+  test("a MANUAL wallet still shows the matcher card, so it can gain a first one", async () => {
+    // REVERSES "a CASH wallet shows no matcher section at all (rule 4)". That
+    // rule hid the card for a wallet TYPED as cash — a type that no longer
+    // exists. "Cash" now MEANS a wallet with no matchers, so keeping the gate
+    // would hide the matcher card from exactly the wallets that have none, and
+    // the dashed "+ Add" chip could never be reached to add the first one.
+    //
+    // A wallet stays manual because the user never picks a source, not because
+    // the app refused to show them the control.
     const pocket = await createWallet({ name: "Pocket", openingBalance: 5_000 });
 
     renderDetail(pocket.id);
     await screen.findByText("Pocket");
 
-    expect(screen.queryByTestId("wallet-detail-matchers")).toBeNull();
+    expect(screen.getByTestId("wallet-detail-matchers")).toBeTruthy();
+    expect(screen.getByTestId("wallet-detail-matchers-add")).toBeTruthy();
   });
 
   test("the matchers card shows even before the wallet holds a matcher — the dashed Add chip needs it to", async () => {
-    // task-5b: the old gate was `matchers.length > 0`, so a fresh non-cash
-    // wallet's card never existed until AFTER the user had already found some
-    // other way in. Now it is always there for a non-cash, non-archived
-    // wallet, so "+ Add" has somewhere to live before that first matcher.
+    // task-5b: the old gate was `matchers.length > 0`, so a fresh wallet's card
+    // never existed until AFTER the user had already found some other way in.
+    // Now it is always there for any non-archived wallet, so "+ Add" has
+    // somewhere to live before that first matcher.
     renderDetail(gcash.id);
     await screen.findByText("GCash");
 
@@ -775,7 +782,7 @@ describe("correcting a provider-tracked wallet's balance (Task 4)", () => {
 
     // The missing action is EXPLAINED, not just absent — a silently missing
     // button reads as a bug; a stated reason reads as a real limit.
-    expect(screen.getByTestId("wallet-detail-credit-note")).toBeTruthy();
+    expect(screen.getByTestId("wallet-detail-owed-note")).toBeTruthy();
   });
 
   // The sheet's OWN belt-and-braces guard (rendering null for credit even if
