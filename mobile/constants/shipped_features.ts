@@ -28,7 +28,8 @@ export type FeatureKey =
   | "privacy_center"
   | "listener_health"
   | "parser_diagnostics"
-  | "shared_budgets";
+  | "shared_budgets"
+  | "problem_reports";
 
 export type ShipState = "shipped" | "soon";
 
@@ -73,6 +74,14 @@ export const SHIPPED_FEATURES: Readonly<Record<FeatureKey, ShipState>> = {
   // It also gives SoonGate a live user again — before this, the gate could not
   // close for any key, which made it read as dead machinery.
   shared_budgets: "soon",
+  // Seeded "shipped" on arrival, unlike `shared_budgets` above: the offline
+  // problem-report screen, its outbox and its retry loop all land in the same
+  // change as this key, so there is no window in which the row would promise a
+  // destination that is not there. The key exists at all so the row keeps the
+  // same gate-wrapped shape as every other row on the More hub — a later
+  // decision to hide reporting (a build for a closed pilot, say) is then one
+  // word here rather than a deleted row.
+  problem_reports: "shipped",
 };
 
 export function isShipped(key: FeatureKey): boolean {

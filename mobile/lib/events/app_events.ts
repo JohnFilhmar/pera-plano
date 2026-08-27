@@ -66,6 +66,25 @@ export type AppEventMap = {
     amount: Centavos;
     occurredAt: EpochMs;
   };
+
+  /**
+   * A problem report in the offline outbox changed state — sent, rescheduled
+   * after a failure, or refused (`lib/support/outbox_runner.ts`).
+   *
+   * THE ONLY EVENT HERE WITH NO IDENTIFIER IN ITS PAYLOAD, and the deviation
+   * is the point. The others name a row so a handler can re-read exactly what
+   * moved; this one fires from a background flush that may have moved three
+   * reports in one pass, and its single subscriber
+   * (`hooks/queries/use_support_reports.ts`) re-reads the whole unsent list
+   * regardless. A payload of ids it would immediately discard would be a
+   * contract to keep accurate for no reader.
+   *
+   * It exists because this is the app's only queue that progresses with NO
+   * user action behind it: a report can send itself while its own list is on
+   * screen, and without an event the list would keep saying "waiting to send"
+   * until the screen was left and re-entered.
+   */
+  "support:outbox_changed": Record<string, never>;
 };
 
 type AppEventName = keyof AppEventMap;

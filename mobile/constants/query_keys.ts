@@ -308,4 +308,24 @@ export const queryKeys = {
     all: ["parse_stats"] as const,
     stats: () => ["parse_stats", "stats"] as const,
   },
+  /**
+   * The offline problem-report outbox (`lib/support/support_reports_repo.ts`).
+   *
+   * `unsent()` is the only list, because it is the only one anything renders:
+   * a delivered report has a ticket number and no further story on the phone,
+   * while a queued or rejected one is a thing the user is still waiting on.
+   *
+   * INVALIDATED FROM OUTSIDE THE MUTATION LAYER TOO, which is unusual for a
+   * family here. The outbox runner sends in the background — on launch, on
+   * foreground, on a timer — so rows change with no user action and no
+   * mutation to hang an `onSuccess` off. `hooks/queries/use_support_reports.ts`
+   * subscribes to `support:outbox_changed` (lib/events/app_events.ts) and
+   * invalidates this key when it fires; without that, a report that sent
+   * itself while the user watched the list would stay listed as waiting until
+   * the screen was left and re-entered.
+   */
+  supportReports: {
+    all: ["support_reports"] as const,
+    unsent: () => ["support_reports", "unsent"] as const,
+  },
 } as const;
