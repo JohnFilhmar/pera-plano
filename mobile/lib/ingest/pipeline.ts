@@ -38,9 +38,13 @@ import { listWallets } from "@/lib/db/repos/wallets_repo";
 import { normalizeEvent } from "@/lib/ingest/normalizer";
 import { raiseLoanMatchAfterCommit } from "@/lib/loans/loan_match_queue";
 import { parseCapture, searchableTexts } from "@/lib/ingest/parser";
-import { applyOwedVerdict, recordTraitEvidence } from "@/lib/db/repos/wallet_traits_repo";
+import {
+  applyOwedVerdict,
+  hasEverAskedWalletKind,
+  recordTraitEvidence,
+} from "@/lib/db/repos/wallet_traits_repo";
 import { classifyOwed, scoreBalanceMovement, scoreText } from "@/lib/wallets/classification";
-import type { OwedPrior } from "@/lib/wallets/classification";
+import type { OwedPrior, TraitEvidence } from "@/lib/wallets/classification";
 import { enqueue } from "@/lib/db/repos/review_queue_repo";
 import { routeCapture } from "@/lib/ingest/source_router";
 import { UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
@@ -50,7 +54,7 @@ import type { NormalizedEvent } from "@/lib/ingest/normalizer";
 import type { ProviderRuleset, RulesetBundle } from "@/lib/ingest/ruleset_types";
 import type { RecentEvent } from "@/lib/ingest/dedupe_gate";
 import type { MarkTransferRule } from "@/lib/ingest/transfer_detector";
-import type { RawCapture, ReviewKind, Transaction, UserRule } from "@/types/domain";
+import type { Centavos, RawCapture, ReviewKind, Transaction, UserRule } from "@/types/domain";
 
 /**
  * Contract §5 — do not reshape. `"unreadable"` ADDED 2026-08-20 (see
@@ -529,13 +533,87 @@ async function learnWalletTrait(
       held: fromText.held + fromMovement.held,
     });
 
-    await applyOwedVerdict(
-      row.walletId,
-      classifyOwed(evidence, owedPriorFor(bundle, capture.packageName), bundle.tunables.walletTraits),
+    const verdict = classifyOwed(
+      evidence,
+      owedPriorFor(bundle, capture.packageName),
+      bundle.tunables.walletTraits,
     );
+    await applyOwedVerdict(row.walletId, verdict);
+
+    if (!verdict.confident) {
+      await maybeAskWalletKind(row.walletId, evidence, bundle);
+    }
   } catch (error) {
     console.warn("pipeline: wallet-trait evidence failed and was skipped", error);
   }
+}
+
+/** ₱1,000 — big enough to be worth a question on its own, whatever else the user has. */
+const WALLET_KIND_FLOOR_CENTAVOS = 100_000;
+/** ...or 5% of what the user has, whichever bar is LOWER. */
+const WALLET_KIND_SHARE = 0.05;
+/** ...but never below ₱100, whatever the share works out to. */
+const WALLET_KIND_MINIMUM_CENTAVOS = 10_000;
+
+/**
+ * Whether getting this wallet wrong would visibly misstate the user's money.
+ *
+ * THE LOWER OF THE FIRST TWO BARS APPLIES, which is the opposite of the obvious
+ * reading and the correct one: ₱100 wrong out of a ₱2,000 total is the same lie
+ * as ₱5,000 wrong out of ₱100,000. A flat floor alone would never ask a user
+ * whose whole balance is small; a share alone would never ask about a small
+ * wallet sitting beside a large one.
+ *
+ * AND THEN AN ABSOLUTE MINIMUM UNDER BOTH, because the share taken alone is
+ * absurd at the bottom: a user whose only wallet holds ₱1 has 100% of their
+ * money in it, and interrupting them to ask whether that peso is a debt is a
+ * question that cannot pay for the tap it costs. Below ₱100 the app keeps its
+ * assumption and says nothing.
+ */
+function isMaterialToAsk(balance: Centavos, activeTotal: Centavos): boolean {
+  const share = Math.round(activeTotal * WALLET_KIND_SHARE);
+  const scaled = share === 0 ? WALLET_KIND_FLOOR_CENTAVOS : Math.min(WALLET_KIND_FLOOR_CENTAVOS, share);
+  return balance >= Math.max(WALLET_KIND_MINIMUM_CENTAVOS, scaled);
+}
+
+/**
+ * Asks the user, but only when asking earns its interruption.
+ *
+ * THREE CONDITIONS, ALL REQUIRED. We must have LOOKED (the sample floor — an
+ * unstudied wallet is not an unclear one, it is a new one). The money must
+ * MATTER. And we must never have asked before — `hasEverAskedWalletKind` counts
+ * resolved items too, because dismissing the question is itself an answer and
+ * re-raising it turns a question into nagging.
+ *
+ * Everything else stays silently assumed-held. That is the deal this feature
+ * makes: onboarding asks nothing, and the app only comes back to the user for
+ * the one answer it cannot work out and cannot afford to guess.
+ */
+async function maybeAskWalletKind(
+  walletId: string,
+  evidence: TraitEvidence,
+  bundle: RulesetBundle,
+): Promise<void> {
+  if (evidence.sampleCount < bundle.tunables.walletTraits.owedSampleFloor) return;
+  if (await hasEverAskedWalletKind(walletId)) return;
+
+  const wallets = await listWallets();
+  const wallet = wallets.find((candidate) => candidate.id === walletId);
+  if (wallet === undefined) return;
+
+  const activeTotal = wallets
+    .filter((candidate) => !candidate.owedBalance)
+    .reduce((total, candidate) => total + candidate.balance, 0);
+  if (!isMaterialToAsk(wallet.balance, activeTotal)) return;
+
+  await enqueue({
+    kind: "wallet-kind-unclear",
+    payload: { walletId: wallet.id, walletName: wallet.name, balance: wallet.balance },
+    // NO `rawNotificationId`. The card is about a wallet, not about the capture
+    // that happened to be the third one scored — pointing at that notification
+    // would tell the user this one message raised the question, which is both
+    // untrue and unanswerable.
+  });
 }
 
 async function commit(

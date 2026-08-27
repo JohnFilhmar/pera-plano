@@ -141,6 +141,13 @@ function primaryActionFor(item: ReviewQueueItem): ReviewAction | "correct" | nul
       // the real action through `onChooseTransferWallet` once a wallet is
       // chosen; this function is never the path for it.
       return null;
+    case "wallet-kind-unclear":
+      // "Money I have" — the user confirming the assumption the app has been
+      // running on since this wallet was created. It PINS rather than merely
+      // agreeing, which is why it is a real action and not a dismissal: a
+      // wallet its owner has vouched for must not be flipped later by a run
+      // of odd notifications.
+      return { kind: "answer-wallet-kind", itemId: item.id, owed: false };
   }
 }
 
@@ -185,6 +192,13 @@ function secondaryActionFor(item: ReviewQueueItem): ReviewAction | "correct" {
       // decline "is this half of a transfer?" is to let it count normally on
       // its own, not to discard it. `confirm` with no counterpart is that.
       return { kind: "confirm", itemId: item.id };
+    case "wallet-kind-unclear":
+      // "Money I owe" — the ONLY secondary in this queue that is not a
+      // rejection, a correction or a way out. It is the other half of a
+      // two-answer question, and it is exactly as final as the primary: both
+      // pin the wallet. Rendering it in the secondary slot is a layout
+      // decision, not a statement that this answer is the lesser one.
+      return { kind: "answer-wallet-kind", itemId: item.id, owed: true };
   }
 }
 

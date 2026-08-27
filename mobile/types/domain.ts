@@ -568,7 +568,19 @@ export type ReviewKind =
    * counterpart transaction does not exist yet — confirming this item MINTS it.
    * Distinct from `ambiguous-transfer`, whose payload names a committed row.
    */
-  | "one-sided-transfer";
+  | "one-sided-transfer"
+  /**
+   * Evidence cannot settle whether this wallet's balance is money the user HAS
+   * or money they OWE, and the balance is large enough that guessing wrong
+   * would visibly misstate their total. Payload:
+   * `{ walletId, walletName, balance }`.
+   *
+   * THE ONLY KIND THAT IS NOT ABOUT A TRANSACTION. There is no capture behind
+   * it and no row to commit — the pipeline raises it after watching a wallet
+   * and failing to decide. Asked at most once per wallet, ever: dismissing it
+   * is itself an answer.
+   */
+  | "wallet-kind-unclear";
 
 /**
  * Parsed-candidate payload (amount, direction, merchant, wallet/category guesses…).

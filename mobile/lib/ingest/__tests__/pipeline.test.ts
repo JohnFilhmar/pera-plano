@@ -22,7 +22,12 @@ import * as parseStatsRepo from "@/lib/diagnostics/parse_stats_repo";
 import { createLoan, outstandingBalance } from "@/lib/db/repos/loans_repo";
 import { createUserRule } from "@/lib/db/repos/user_rules_repo";
 import { createWallet, getBalanceDrift, getWallet } from "@/lib/db/repos/wallets_repo";
-import { getTraitEvidence, setWalletOwed } from "@/lib/db/repos/wallet_traits_repo";
+import {
+  getTraitEvidence,
+  recordTraitEvidence,
+  setWalletOwed,
+} from "@/lib/db/repos/wallet_traits_repo";
+import { answerWalletKind } from "@/lib/review/resolve_actions";
 import { onAppEvent } from "@/lib/events/app_events";
 import { freshDb } from "@/test_support/db";
 import { getRawCapture, storeRawCapture } from "@/lib/db/repos/raw_notifications_repo";
@@ -1267,6 +1272,92 @@ test("three credit-shaped captures flip the wallet to owed", async () => {
   expect(reloaded?.owedBalance).toBe(true);
   // INFERRED, NOT ANSWERED. The user can still be asked, and still overrule it.
   expect(reloaded?.owedPinned).toBe(false);
+});
+
+test("a wallet the app cannot read is asked about once, and only once", async () => {
+  // Two owed signals and one held one: three samples, so we have LOOKED, but a
+  // margin of 200 against a threshold of 300, so we still cannot tell.
+  const wallet = await createWallet({ name: "BPI", type: "bank", openingBalance: 500_000 });
+  await addMatcher(wallet.id, GCASH);
+  await recordTraitEvidence(wallet.id, { owed: 200, held: 0 });
+  await recordTraitEvidence(wallet.id, { owed: 200, held: 0 });
+
+  // This capture's own movement scores held (the balance falls), landing the
+  // wallet on owed 400 / held 200 across three samples.
+  await processCapture(
+    gcashSend("cap-ask-1", {
+      text: "You sent ₱500.00 to Juan Dela Cruz. Ref No. GGG111. Your new balance is ₱1,250.00.",
+    }),
+  );
+
+  const asked = (await listOpen()).filter((entry) => entry.kind === "wallet-kind-unclear");
+  expect(asked).toHaveLength(1);
+  expect(asked[0].payload).toMatchObject({ walletId: wallet.id, walletName: "BPI" });
+
+  // A second inconclusive capture must not raise a second card.
+  await processCapture(
+    gcashSend("cap-ask-2", {
+      text: "You sent ₱300.00 to Maria Santos. Ref No. HHH222. Your new balance is ₱1,000.00.",
+    }),
+  );
+  expect((await listOpen()).filter((entry) => entry.kind === "wallet-kind-unclear")).toHaveLength(1);
+});
+
+test("a wallet too small to matter is never asked about", async () => {
+  // ₱2.00, against a ₱1,000 floor and a 5%-of-total bar it also fails.
+  const wallet = await createWallet({ name: "Loose change", type: "bank", openingBalance: 200 });
+  await addMatcher(wallet.id, GCASH);
+  await recordTraitEvidence(wallet.id, { owed: 200, held: 0 });
+  await recordTraitEvidence(wallet.id, { owed: 200, held: 0 });
+  await recordTraitEvidence(wallet.id, { owed: 0, held: 200 });
+
+  await processCapture(
+    gcashSend("cap-small", {
+      text: "You sent ₱1.00 to Juan Dela Cruz. Ref No. JJJ111. Your new balance is ₱1.00.",
+    }),
+  );
+
+  expect((await listOpen()).filter((entry) => entry.kind === "wallet-kind-unclear")).toHaveLength(0);
+});
+
+test("answering the question pins the wallet and closes the card", async () => {
+  const wallet = await createWallet({ name: "BPI", type: "bank", openingBalance: 500_000 });
+  await addMatcher(wallet.id, GCASH);
+  await recordTraitEvidence(wallet.id, { owed: 200, held: 0 });
+  await recordTraitEvidence(wallet.id, { owed: 200, held: 0 });
+  await processCapture(
+    gcashSend("cap-answer", {
+      text: "You sent ₱500.00 to Juan Dela Cruz. Ref No. KKK111. Your new balance is ₱1,250.00.",
+    }),
+  );
+
+  const [card] = (await listOpen()).filter((entry) => entry.kind === "wallet-kind-unclear");
+  await answerWalletKind(card.id, true);
+
+  const reloaded = await getWallet(wallet.id);
+  expect(reloaded?.owedBalance).toBe(true);
+  // PINNED BY EITHER ANSWER — the user settled it, and inference is done here.
+  expect(reloaded?.owedPinned).toBe(true);
+  expect((await listOpen()).filter((entry) => entry.kind === "wallet-kind-unclear")).toHaveLength(0);
+});
+
+test("answering 'money I have' pins too — it is not a dismissal", async () => {
+  const wallet = await createWallet({ name: "BPI", type: "bank", openingBalance: 500_000 });
+  await addMatcher(wallet.id, GCASH);
+  await recordTraitEvidence(wallet.id, { owed: 200, held: 0 });
+  await recordTraitEvidence(wallet.id, { owed: 200, held: 0 });
+  await processCapture(
+    gcashSend("cap-answer-held", {
+      text: "You sent ₱500.00 to Juan Dela Cruz. Ref No. LLL111. Your new balance is ₱1,250.00.",
+    }),
+  );
+
+  const [card] = (await listOpen()).filter((entry) => entry.kind === "wallet-kind-unclear");
+  await answerWalletKind(card.id, false);
+
+  const reloaded = await getWallet(wallet.id);
+  expect(reloaded?.owedBalance).toBe(false);
+  expect(reloaded?.owedPinned).toBe(true);
 });
 
 test("a wallet the user already settled is not re-decided by evidence", async () => {

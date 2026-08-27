@@ -23,6 +23,7 @@ import { queryKeys } from "@/constants/query_keys";
 import { resolve } from "@/lib/db/repos/review_queue_repo";
 import { confirmLoanMatch } from "@/lib/loans/loan_match_queue";
 import {
+  answerWalletKind,
   confirmAsTransfer,
   confirmItem,
   confirmOneSidedTransfer,
@@ -74,6 +75,16 @@ export type ReviewAction =
       counterpartWalletId: string;
       feeAmount: Centavos;
     }
+  /**
+   * The user said whether a wallet's balance is money they have or money they
+   * owe. CARRIES `owed` rather than splitting into two action kinds, because
+   * the two answers differ only in that boolean and are equally final — both
+   * pin the wallet against further inference.
+   *
+   * NOT `confirm`, and not `dismiss` either: nothing is committed and nothing
+   * is thrown away. This is the only action here that changes a WALLET.
+   */
+  | { kind: "answer-wallet-kind"; itemId: string; owed: boolean }
   | { kind: "ignore-provider"; itemId: string; packageName: string }
   | { kind: "link-transfer"; itemId: string; outTransactionId: string; inTransactionId: string }
   | { kind: "merge"; itemId: string; keepTransactionId: string; dropTransactionId: string };
@@ -109,6 +120,9 @@ async function run(action: ReviewAction): Promise<void> {
         Date.now(),
       );
       return;
+    case "answer-wallet-kind":
+      await answerWalletKind(action.itemId, action.owed);
+      return;
     case "ignore-provider":
       await ignoreProvider(action.itemId, action.packageName);
       return;
@@ -139,6 +153,13 @@ function keysFor(action: ReviewAction) {
       return [...queue, queryKeys.loans.all];
     case "ignore-provider":
       return [...queue, queryKeys.userRules.all];
+    case "answer-wallet-kind":
+      // WALLETS ONLY, and that is the whole point of listing it here rather
+      // than letting it fall through: no Transaction moved, so the ledger
+      // keys would refetch every list to render identical rows. What changed
+      // is whether this wallet's balance counts toward the Wallets-tab total
+      // and Safe-to-Spend — which is `wallets.all`, and nothing else.
+      return [...queue, queryKeys.wallets.all];
     case "merge":
     case "link-transfer":
       // Both move rows in and out of totals; neither creates a rule.
