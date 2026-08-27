@@ -80,6 +80,10 @@ const POCKET: Wallet = {
   currency: "PHP",
   isArchived: false,
   driftDismissedTransactionId: null,
+  owedBalance: false,
+  owedPinned: false,
+  // A cash wallet is one nothing routes to.
+  matcherCount: 0,
   createdAt: 1_000,
   updatedAt: 1_000,
 };

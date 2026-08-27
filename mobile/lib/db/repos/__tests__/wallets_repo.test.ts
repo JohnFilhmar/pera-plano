@@ -764,3 +764,64 @@ describe("dismissBalanceDrift records WHICH drift the user has seen", () => {
     expect(await getBalanceDrift(wallet.id)).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Held or owed, and how many routes reach the wallet (013_wallet_traits).
+// ---------------------------------------------------------------------------
+
+describe("wallet traits", () => {
+  test("a new wallet is assumed to hold money, and nobody has said so", async () => {
+    const wallet = await createWallet({ name: "BPI", type: "bank" });
+    expect(wallet.owedBalance).toBe(false);
+    // Unpinned: the app ASSUMED this, it was not told. The distinction is what
+    // lets inference correct it later without overruling the user.
+    expect(wallet.owedPinned).toBe(false);
+  });
+
+  test("an explicit credit wallet is treated as the user's own answer", async () => {
+    const wallet = await createWallet({ name: "Card", type: "credit" });
+    const reloaded = await getWallet(wallet.id);
+    expect(reloaded?.owedBalance).toBe(true);
+    expect(reloaded?.owedPinned).toBe(true);
+  });
+
+  test("matcherCount reports how many routes reach the wallet", async () => {
+    const wallet = await createWallet({ name: "GCash", type: "e-wallet" });
+    expect((await getWallet(wallet.id))?.matcherCount).toBe(0);
+
+    await db.runAsync(
+      `INSERT INTO wallet_matchers (id, wallet_id, package_name, hint, created_at, updated_at)
+       VALUES ('m1', ?, 'com.globe.gcash.android', NULL, 1, 1)`,
+      [wallet.id],
+    );
+
+    expect((await getWallet(wallet.id))?.matcherCount).toBe(1);
+    const listed = await listWallets();
+    expect(listed.find((candidate) => candidate.id === wallet.id)?.matcherCount).toBe(1);
+  });
+
+  test("matcherCount is per wallet, not a total across the table", async () => {
+    const gcash = await createWallet({ name: "GCash", type: "e-wallet" });
+    const bpi = await createWallet({ name: "BPI", type: "bank" });
+    await db.runAsync(
+      `INSERT INTO wallet_matchers (id, wallet_id, package_name, hint, created_at, updated_at)
+       VALUES ('m1', ?, 'com.globe.gcash.android', NULL, 1, 1), ('m2', ?, 'com.bpi.ng.app', NULL, 1, 1),
+              ('m3', ?, 'com.bpi.sms', NULL, 1, 1)`,
+      [gcash.id, bpi.id, bpi.id],
+    );
+
+    const listed = await listWallets();
+    expect(listed.find((candidate) => candidate.id === gcash.id)?.matcherCount).toBe(1);
+    expect(listed.find((candidate) => candidate.id === bpi.id)?.matcherCount).toBe(2);
+  });
+
+  test("archived wallets carry their trait columns too", async () => {
+    const wallet = await createWallet({ name: "Old card", type: "credit" });
+    await archiveWallet(wallet.id);
+
+    const listed = await listWallets({ includeArchived: true });
+    const found = listed.find((candidate) => candidate.id === wallet.id);
+    expect(found?.owedBalance).toBe(true);
+    expect(found?.matcherCount).toBe(0);
+  });
+});

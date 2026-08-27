@@ -25,8 +25,18 @@ export type WalletRow = {
   is_archived: number;
   /** 003_drift_dismissal — appended by ALTER TABLE, hence after `is_archived`. */
   drift_dismissed_transaction_id: string | null;
+  /** 013_wallet_traits — appended by ALTER TABLE, hence after 003's column. */
+  owed_balance: number;
+  owed_pinned: number;
   created_at: number;
   updated_at: number;
+  /**
+   * NOT A COLUMN. A `LEFT JOIN` count the wallets repo selects alongside the
+   * row, so a list screen can tell which wallets nothing routes to without a
+   * query per row. Optional because `walletToRow` produces a row shape for
+   * writing, where a derived count has no place.
+   */
+  matcher_count?: number;
 };
 
 export function rowToWallet(row: WalletRow): Wallet {
@@ -42,6 +52,12 @@ export function rowToWallet(row: WalletRow): Wallet {
     // dismissed" would silence every later drift too. It also normalizes the
     // `undefined` a row selected before 003 existed would carry.
     driftDismissedTransactionId: row.drift_dismissed_transaction_id ?? null,
+    owedBalance: row.owed_balance === 1,
+    owedPinned: row.owed_pinned === 1,
+    // `?? 0` covers a row selected without the join — writing paths, and any
+    // `SELECT *` that predates 013. Zero reads as "nothing routes here", which
+    // is the truthful answer for a row whose matchers were not asked about.
+    matcherCount: row.matcher_count ?? 0,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -56,8 +72,12 @@ export function walletToRow(wallet: Wallet): WalletRow {
     currency: wallet.currency,
     is_archived: wallet.isArchived ? 1 : 0,
     drift_dismissed_transaction_id: wallet.driftDismissedTransactionId,
+    owed_balance: wallet.owedBalance ? 1 : 0,
+    owed_pinned: wallet.owedPinned ? 1 : 0,
     created_at: wallet.createdAt,
     updated_at: wallet.updatedAt,
+    // `matcher_count` is DELIBERATELY ABSENT. It is a derived count, not a
+    // column, and this function's keys are asserted against the real table.
   };
 }
 

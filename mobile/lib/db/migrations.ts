@@ -11,6 +11,7 @@ import parseStatsSql from "./migrations/009_parse_stats.sql";
 import softDeleteAndDerivedLimitsSql from "./migrations/010_soft_delete_and_derived_limits.sql";
 import loanMatchReviewKindSql from "./migrations/011_loan_match_review_kind.sql";
 import oneSidedTransferReviewKindSql from "./migrations/012_one_sided_transfer_review_kind.sql";
+import walletTraitsSql from "./migrations/013_wallet_traits.sql";
 
 export type Migration = {
   version: number;
@@ -103,6 +104,7 @@ export const MIGRATIONS: Migration[] = [
   },
   { version: 11, name: "loan_match_review_kind", sql: loanMatchReviewKindSql },
   { version: 12, name: "one_sided_transfer_review_kind", sql: oneSidedTransferReviewKindSql },
+  { version: 13, name: "wallet_traits", sql: walletTraitsSql },
 ];
 
 /**

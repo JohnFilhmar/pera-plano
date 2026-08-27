@@ -36,6 +36,10 @@ describe("wallet mapper", () => {
     currency: "PHP",
     isArchived: true,
     driftDismissedTransactionId: "5a1d0c22-7e44-4c19-91a6-8f2b0d3e4c55",
+    owedBalance: false,
+    owedPinned: false,
+    // Derived, not stored — see the `matcher_count` note on WalletRow.
+    matcherCount: 2,
     createdAt: 1754060400000,
     updatedAt: 1754060400001,
   };
@@ -58,8 +62,14 @@ describe("wallet mapper", () => {
       // 003_drift_dismissal. APPENDED by ALTER TABLE, so it sits after the
       // original columns rather than beside `is_archived` where it reads.
       drift_dismissed_transaction_id: "5a1d0c22-7e44-4c19-91a6-8f2b0d3e4c55",
+      // 013_wallet_traits, also appended by ALTER TABLE.
+      owed_balance: 0,
+      owed_pinned: 0,
       created_at: 1754060400000,
       updated_at: 1754060400001,
+      // `matcher_count` is deliberately NOT here: it is a derived count that
+      // the read path joins in, and the test above pins these keys against the
+      // real table's columns.
     });
   });
 
@@ -101,6 +111,12 @@ describe("wallet mapper", () => {
       isArchived: false,
       // Never written, so NULL — the state every wallet starts in.
       driftDismissedTransactionId: null,
+      // Column defaults from 013: assumed to hold money, and nobody has said so.
+      owedBalance: false,
+      owedPinned: false,
+      // This SELECT does not join the matcher count, so the mapper reports the
+      // truthful zero rather than inventing one.
+      matcherCount: 0,
       createdAt: 1700000000000,
       updatedAt: 1700000000123,
     });

@@ -35,6 +35,11 @@ function wallet(
     currency: "PHP",
     isArchived,
     driftDismissedTransactionId: null,
+    // Mirrors what createWallet does with the old vocabulary while both exist:
+    // `credit` was the user answering the held/owed question.
+    owedBalance: type === "credit",
+    owedPinned: type === "credit",
+    matcherCount: type === "cash" ? 0 : 1,
     createdAt: 1_000,
     updatedAt: 1_000,
   };

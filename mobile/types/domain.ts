@@ -21,6 +21,29 @@ export type Wallet = {
   currency: "PHP";
   isArchived: boolean;
   /**
+   * The balance is money OWED, not money held: excluded from the Wallets-tab
+   * total and from Safe-to-Spend, and labelled "Owed" on its row.
+   *
+   * INFERRED (lib/wallets/classification.ts), not asked for — unless
+   * `owedPinned` says the user answered it themselves.
+   */
+  owedBalance: boolean;
+  /**
+   * The user settled `owedBalance` — by answering the review-queue question or
+   * correcting it on the wallet screen. Inference reads a pinned wallet and
+   * never writes it again.
+   */
+  owedPinned: boolean;
+  /**
+   * How many `wallet_matchers` rows route to this wallet.
+   *
+   * ZERO IS THE INTERESTING VALUE: nothing can track this wallet
+   * automatically, which is precisely what `type: "cash"` used to mean. Derived
+   * from a count rather than stored as a flag, so removing a wallet's last
+   * matcher makes it manual the moment it happens.
+   */
+  matcherCount: number;
+  /**
    * The reporting Transaction whose balance drift the user has already seen and
    * accepted (migration 003), or `null` when nothing is acknowledged.
    *

@@ -166,7 +166,7 @@ function compileTemplates(rules: ProviderRuleset[]): CompiledTemplate[] {
  *
  * Blank fields are dropped so an empty `bigText` cannot shadow a populated `text`.
  */
-function searchableTexts(capture: RawCapture): string[] {
+export function searchableTexts(capture: RawCapture): string[] {
   return [capture.bigText, capture.text, capture.title].filter(
     (field): field is string => field !== null && field.trim() !== "",
   );

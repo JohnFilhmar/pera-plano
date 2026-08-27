@@ -22,6 +22,7 @@ import * as parseStatsRepo from "@/lib/diagnostics/parse_stats_repo";
 import { createLoan, outstandingBalance } from "@/lib/db/repos/loans_repo";
 import { createUserRule } from "@/lib/db/repos/user_rules_repo";
 import { createWallet, getBalanceDrift, getWallet } from "@/lib/db/repos/wallets_repo";
+import { getTraitEvidence, setWalletOwed } from "@/lib/db/repos/wallet_traits_repo";
 import { onAppEvent } from "@/lib/events/app_events";
 import { freshDb } from "@/test_support/db";
 import { getRawCapture, storeRawCapture } from "@/lib/db/repos/raw_notifications_repo";
@@ -1183,6 +1184,117 @@ const LEARNED_BUNDLE: RulesetBundleInput = {
     },
   ],
 };
+
+// ---------------------------------------------------------------------------
+// Held or owed — the verdict that replaced the onboarding wallet-type question.
+//
+// END TO END, NOT AGAINST THE SCORER. lib/wallets/__tests__/classification.test.ts
+// already pins the rules; what these assert is that the ORCHESTRATOR feeds them
+// the right numbers. Specifically that the previous balance is reconstructed
+// from `computed_balance` rather than re-read after the snap — read it back
+// afterwards and every capture looks ordinary, which would leave this whole
+// feature silently inert with a green unit suite.
+// ---------------------------------------------------------------------------
+
+test("a spend that LOWERS the reported balance scores the wallet as holding money", async () => {
+  // Opened at ₱9,000; the capture reports ₱1,250 after a ₱500 spend. The
+  // balance fell, which is what an ordinary account does.
+  const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 900000 });
+  await addMatcher(wallet.id, GCASH);
+
+  await processCapture(gcashSend("cap-trait-held"));
+
+  expect(await getTraitEvidence(wallet.id)).toEqual({
+    owedScore: 0,
+    heldScore: 200,
+    sampleCount: 1,
+  });
+  expect((await getWallet(wallet.id))?.owedBalance).toBe(false);
+});
+
+test("a spend that RAISES the reported balance is credit-shaped", async () => {
+  // Same capture, different opening balance: ₱1,000 before, ₱1,250 after a
+  // ₱500 spend. Spending more and OWING more is what a card does.
+  const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
+  await addMatcher(wallet.id, GCASH);
+
+  await processCapture(gcashSend("cap-trait-owed"));
+
+  expect(await getTraitEvidence(wallet.id)).toEqual({
+    owedScore: 200,
+    heldScore: 0,
+    sampleCount: 1,
+  });
+});
+
+test("one credit-shaped capture is not enough to move the headline number", async () => {
+  const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
+  await addMatcher(wallet.id, GCASH);
+
+  await processCapture(gcashSend("cap-trait-single"));
+
+  // The sample floor is three. A single odd notification must not be able to
+  // pull a wallet's balance out of the user's total.
+  expect((await getWallet(wallet.id))?.owedBalance).toBe(false);
+});
+
+test("three credit-shaped captures flip the wallet to owed", async () => {
+  const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
+  await addMatcher(wallet.id, GCASH);
+
+  // Distinct amounts and references so the dedupe gate treats these as three
+  // events; each reported balance is higher than the one before, because the
+  // wallet snaps to the last one it was told.
+  await processCapture(
+    gcashSend("cap-trait-1", {
+      text: "You sent ₱500.00 to Juan Dela Cruz. Ref No. AAA111. Your new balance is ₱1,250.00.",
+    }),
+  );
+  await processCapture(
+    gcashSend("cap-trait-2", {
+      text: "You sent ₱300.00 to Maria Santos. Ref No. BBB222. Your new balance is ₱1,500.00.",
+    }),
+  );
+  await processCapture(
+    gcashSend("cap-trait-3", {
+      text: "You sent ₱200.00 to Pedro Reyes. Ref No. CCC333. Your new balance is ₱1,750.00.",
+    }),
+  );
+
+  expect(await getTraitEvidence(wallet.id)).toMatchObject({ owedScore: 600, sampleCount: 3 });
+
+  const reloaded = await getWallet(wallet.id);
+  expect(reloaded?.owedBalance).toBe(true);
+  // INFERRED, NOT ANSWERED. The user can still be asked, and still overrule it.
+  expect(reloaded?.owedPinned).toBe(false);
+});
+
+test("a wallet the user already settled is not re-decided by evidence", async () => {
+  const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
+  await addMatcher(wallet.id, GCASH);
+  await setWalletOwed(wallet.id, false, { pinned: true });
+
+  await processCapture(
+    gcashSend("cap-pin-1", {
+      text: "You sent ₱500.00 to Juan Dela Cruz. Ref No. DDD111. Your new balance is ₱1,250.00.",
+    }),
+  );
+  await processCapture(
+    gcashSend("cap-pin-2", {
+      text: "You sent ₱300.00 to Maria Santos. Ref No. EEE222. Your new balance is ₱1,500.00.",
+    }),
+  );
+  await processCapture(
+    gcashSend("cap-pin-3", {
+      text: "You sent ₱200.00 to Pedro Reyes. Ref No. FFF333. Your new balance is ₱1,750.00.",
+    }),
+  );
+
+  // The evidence is still gathered — it is not wrong, and it is what a later
+  // "that's not right" would be judged against — but the verdict is not applied.
+  expect(await getTraitEvidence(wallet.id)).toMatchObject({ owedScore: 600, sampleCount: 3 });
+  expect((await getWallet(wallet.id))?.owedBalance).toBe(false);
+});
 
 /**
  * A provider whose template vouches for itself at exactly the shipped review

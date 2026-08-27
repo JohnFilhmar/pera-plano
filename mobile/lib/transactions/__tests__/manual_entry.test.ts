@@ -32,6 +32,10 @@ function wallet(overrides: Partial<Wallet> = {}): Wallet {
     currency: "PHP",
     isArchived: false,
     driftDismissedTransactionId: null,
+    owedBalance: false,
+    owedPinned: false,
+    // The default fixture is a cash wallet — nothing routes to it.
+    matcherCount: 0,
     createdAt: 1_000,
     updatedAt: 1_000,
     ...overrides,

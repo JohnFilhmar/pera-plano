@@ -37,7 +37,10 @@ import { listUserRules } from "@/lib/db/repos/user_rules_repo";
 import { listWallets } from "@/lib/db/repos/wallets_repo";
 import { normalizeEvent } from "@/lib/ingest/normalizer";
 import { raiseLoanMatchAfterCommit } from "@/lib/loans/loan_match_queue";
-import { parseCapture } from "@/lib/ingest/parser";
+import { parseCapture, searchableTexts } from "@/lib/ingest/parser";
+import { applyOwedVerdict, recordTraitEvidence } from "@/lib/db/repos/wallet_traits_repo";
+import { classifyOwed, scoreBalanceMovement, scoreText } from "@/lib/wallets/classification";
+import type { OwedPrior } from "@/lib/wallets/classification";
 import { enqueue } from "@/lib/db/repos/review_queue_repo";
 import { routeCapture } from "@/lib/ingest/source_router";
 import { UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
@@ -430,7 +433,7 @@ async function runStages(
     });
   }
 
-  return commit(capture, event, category.categoryId, confidence, verdicts, recentRows);
+  return commit(capture, event, category.categoryId, confidence, verdicts, recentRows, bundle);
 }
 
 type Verdicts = {
@@ -478,6 +481,63 @@ function reviewKindFor(verdicts: Verdicts): ReviewKind {
   return "low-confidence";
 }
 
+/**
+ * What the ruleset believes about the provider that posted this capture, before
+ * the app has watched the wallet at all. `"unknown"` for a package no provider
+ * claims — the correct answer, and the one that contributes nothing.
+ */
+function owedPriorFor(bundle: RulesetBundle, packageName: string): OwedPrior {
+  const provider = bundle.providers.find((candidate) =>
+    candidate.packageNames.includes(packageName),
+  );
+  return provider?.traits?.owedBalance ?? "unknown";
+}
+
+/**
+ * Learns whether this wallet holds money or owes it, from the row that just
+ * committed (docs/superpowers/specs/2026-08-27-wallet-trait-inference-design.md §4).
+ *
+ * CANNOT THROW, BY CONSTRUCTION, for the same reason `raiseLoanMatchAfterCommit`
+ * cannot: the money already moved and the row is already durable. A scorer fault
+ * must never be mistaken for a failed commit.
+ *
+ * NO EXTRA READ FOR THE PREVIOUS BALANCE. Migration 002's `computed_balance` is
+ * "what the balance would have been without the provider's snap" — that is, the
+ * previous balance plus this row's signed effect — so subtracting the signed
+ * effect recovers the balance before this transaction. Reading the wallet after
+ * `insertTransaction` would return the SNAPPED balance and score every capture
+ * as ordinary, which is the one mistake that would make this whole feature
+ * quietly do nothing.
+ */
+async function learnWalletTrait(
+  capture: RawCapture,
+  row: Transaction,
+  bundle: RulesetBundle,
+): Promise<void> {
+  try {
+    const fromText = scoreText(searchableTexts(capture).join("\n"), bundle.traitSignals);
+    const signedEffect = row.direction === "out" ? -row.amount : row.amount;
+    const fromMovement = scoreBalanceMovement({
+      direction: row.direction,
+      amount: row.amount,
+      previousBalance: row.computedBalance === null ? null : row.computedBalance - signedEffect,
+      balanceAfter: row.balanceAfter,
+    });
+
+    const evidence = await recordTraitEvidence(row.walletId, {
+      owed: fromText.owed + fromMovement.owed,
+      held: fromText.held + fromMovement.held,
+    });
+
+    await applyOwedVerdict(
+      row.walletId,
+      classifyOwed(evidence, owedPriorFor(bundle, capture.packageName), bundle.tunables.walletTraits),
+    );
+  } catch (error) {
+    console.warn("pipeline: wallet-trait evidence failed and was skipped", error);
+  }
+}
+
 async function commit(
   capture: RawCapture,
   event: NormalizedEvent,
@@ -485,6 +545,7 @@ async function commit(
   confidence: number,
   verdicts: Verdicts,
   recentRows: Transaction[],
+  bundle: RulesetBundle,
 ): Promise<PipelineOutcome> {
   const row = await insertTransaction({
     // `auto_commit` requires a resolved wallet, so this cannot be null here —
@@ -530,6 +591,13 @@ async function commit(
   // `processStored` and `runGuarded` both catch silently, and the money moved
   // regardless of what this module thinks about it.
   await raiseLoanMatchAfterCommit(row);
+
+  // BEFORE the event below, not after: a verdict that flips `owed_balance`
+  // changes whether this wallet counts toward the Wallets-tab total, and the
+  // commit's own invalidation is what puts the corrected figure on screen. Run
+  // afterwards, the flip would sit unread until some other write happened to
+  // refresh the wallet queries.
+  await learnWalletTrait(capture, row, bundle);
 
   // Rule 7. After the row exists, carrying the id that was actually written —
   // M2's limit engine recomputes off this.

@@ -19,9 +19,16 @@ const CORE_TABLES = [
  * the assertion below is claiming.
  *
  * m2b Task 5 adds `loan_adjustments` (migration 005); m2c Task 1 adds
- * `bill_cycles` (migration 006); m3b Task 7 adds `parse_stats` (migration 009).
+ * `bill_cycles` (migration 006); m3b Task 7 adds `parse_stats` (migration 009);
+ * 013_wallet_traits adds `wallet_trait_evidence`, the running scores behind the
+ * held/owed verdict that replaced the onboarding wallet-type question.
  */
-const MIGRATED_TABLES = ["bill_cycles", "loan_adjustments", "parse_stats"];
+const MIGRATED_TABLES = [
+  "bill_cycles",
+  "loan_adjustments",
+  "parse_stats",
+  "wallet_trait_evidence",
+];
 
 const EXPECTED_TABLES = [...CORE_TABLES, ...MIGRATED_TABLES].sort();
 
@@ -312,6 +319,12 @@ function buildValidRows(ids: SeedIds, now: number): Record<string, Row> {
     parse_stats: {
       id: "row_parse_stats", provider_key: "gcash", day_start_at: now,
       parsed_count: 1, failed_count: 0, updated_at: now,
+    },
+    // migration 013. Keyed BY the wallet rather than by an id of its own: a
+    // wallet has exactly one running score, and the primary key says so.
+    wallet_trait_evidence: {
+      wallet_id: ids.walletId, owed_score: 250, held_score: 0,
+      sample_count: 1, updated_at: now,
     },
   };
 }
