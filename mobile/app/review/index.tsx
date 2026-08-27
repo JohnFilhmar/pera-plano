@@ -131,6 +131,16 @@ function primaryActionFor(item: ReviewQueueItem): ReviewAction | "correct" | nul
       if (candidates.length !== 1) return null;
       return { kind: "confirm-loan-match", itemId: item.id, loanId: candidates[0].loanId };
     }
+    case "one-sided-transfer":
+      // `null` FOR THE SAME REASON `loan-match` RETURNS IT ABOVE — the choice
+      // (which wallet the other leg belongs to) is the card's to make, not a
+      // single answer this function could stand for. Unlike `loan-match`
+      // there is no "exactly one candidate" shortcut either: every unarchived
+      // wallet is a candidate, and picking one for the user would mint a
+      // ledger row on an account they never named. Task 12's card dispatches
+      // the real action through `onChooseTransferWallet` once a wallet is
+      // chosen; this function is never the path for it.
+      return null;
   }
 }
 
@@ -168,6 +178,13 @@ function secondaryActionFor(item: ReviewQueueItem): ReviewAction | "correct" {
       // writing an `ignore` rule here instead would silence a real repayment
       // the user only meant to skip once.
       return { kind: "dismiss", itemId: item.id };
+    case "one-sided-transfer":
+      // "Not a transfer" — commit the captured leg UNPAIRED, exactly what
+      // `ambiguous-transfer`'s own secondary does above, and for the same
+      // reason: the money already parsed and moved, so the honest way to
+      // decline "is this half of a transfer?" is to let it count normally on
+      // its own, not to discard it. `confirm` with no counterpart is that.
+      return { kind: "confirm", itemId: item.id };
   }
 }
 
@@ -199,6 +216,11 @@ function secondaryActionFor(item: ReviewQueueItem): ReviewAction | "correct" {
  *                          `unknown-provider`'s is. A third button repeating
  *                          it would ask the user to work out which of two
  *                          identical outcomes they meant.
+ *   `one-sided-transfer` → same call as `ambiguous-transfer`, and for the
+ *                          identical reason: real money moved and parsed, so
+ *                          the open question is HOW to record it (paired or
+ *                          not), never WHETHER. Its own secondary ("Not a
+ *                          transfer") is already the honest way to decline.
  */
 function rejectActionFor(item: ReviewQueueItem): ReviewAction | null {
   return item.kind === "low-confidence" ? { kind: "dismiss", itemId: item.id } : null;

@@ -110,6 +110,17 @@ export const REVIEW_ACTIONS: Record<ReviewKind, ReviewActionPair> = {
    * promises nothing about the next one — which is exactly what the app does.
    */
   "loan-match": { primary: "Record this payment", secondary: "Not a loan payment" },
+  /**
+   * SAME WORDS AS `ambiguous-transfer`, ON PURPOSE. Both kinds ask the exact
+   * same yes/no question — "does this leg pair with another movement of the
+   * same money?" — and differ only in whether a candidate counterpart already
+   * exists to name (`ambiguous-transfer`) or has to be chosen from scratch
+   * (`one-sided-transfer`, `payload.counterpartWalletId` still `null` or a
+   * rule's guess). The card body that lets the user make that choice is
+   * Task 12's; this entry only supplies the pair's wording so the type
+   * compiles in the meantime.
+   */
+  "one-sided-transfer": { primary: "It's a transfer", secondary: "Not a transfer" },
 };
 
 /**
@@ -159,6 +170,15 @@ export const REASON_FALLBACKS: Record<ReviewKind, string> = {
    * that reads better when the candidate count is unknown.
    */
   "loan-match": "This looks like a payment on one of your loans. Record it?",
+  /**
+   * HAND-WRITTEN, LIKE `loan-match`'s, NOT A `GATE_REASONS` ENTRY — Task 10
+   * wires the gate's own `oneSidedTransfer` reason onto the payload for every
+   * real item, so this only ever answers a corrupt or hand-built row (same
+   * caveat as the two pair kinds above). Worded to match the question Task
+   * 12's card body asks ("Where did this money come from/go?"), not the
+   * gate's routing language.
+   */
+  "one-sided-transfer": "PeraPlano saw one side of a possible transfer. Where did the rest of it go?",
 };
 
 /**
@@ -387,6 +407,17 @@ const SIDE_LABELS: Record<ReviewKind, { candidate: string; counterpart: string }
     candidate: "This notification",
     counterpart: "The possible other leg",
   },
+  /**
+   * "What PeraPlano read", same as `low-confidence`/`unknown-provider` —
+   * task-10-brief.md confirms a one-sided transfer "queues an item and
+   * commits nothing", so this leg is a PROPOSAL like theirs, not an
+   * already-committed row like `loan-match`'s. `counterpart` is unreachable
+   * today: `counterpartIdOf` returns `null` for this kind (the whole point of
+   * "one-sided" is that no committed counterpart row exists to fetch), so
+   * `CounterpartSide` never renders it. Empty, like every other kind with no
+   * counterpart to name.
+   */
+  "one-sided-transfer": { candidate: "What PeraPlano read", counterpart: "" },
 };
 
 // ---------------------------------------------------------------------------
