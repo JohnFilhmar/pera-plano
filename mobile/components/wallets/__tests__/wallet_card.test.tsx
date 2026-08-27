@@ -310,7 +310,7 @@ describe("WalletCard", () => {
     expect(screen.getByText("Owed")).toBeTruthy();
   });
 
-  test("a non-credit wallet does NOT say owed", () => {
+  test("a wallet that is not owed does NOT say owed", () => {
     render(<WalletCard wallet={wallet()} drift={null} toleranceCentavos={100} />);
     expect(screen.queryByText("Owed")).toBeNull();
   });
@@ -392,7 +392,7 @@ describe("WalletCard — provider identity", () => {
     expect(screen.queryByTestId("wallet-card-w1-icon")).toBeNull();
   });
 
-  test("a provider-backed, active, non-credit wallet says it is listening", () => {
+  test("a provider-backed, active, not-owed wallet says it is listening", () => {
     render(
       <WalletCard wallet={wallet()} drift={null} toleranceCentavos={100} providerKey="gcash" />,
     );

@@ -109,8 +109,13 @@ describe("verdicts", () => {
     await expect(applyOwedVerdict("gone", { owed: true, confident: true })).resolves.toBe(false);
   });
 
-  test("an explicit credit wallet arrives already pinned, so inference cannot move it", async () => {
+  test("a wallet the user pinned as owed cannot be moved back by inference", async () => {
+    // The mirror of the pinned-held case above, and the one that matters more:
+    // a user who has said "this is money I owe" must not have their total
+    // silently re-inflated by a run of ordinary-looking notifications.
     const card = await createWallet({ name: "Card" });
+    await setWalletOwed(card.id, true, { pinned: true });
+
     expect(await applyOwedVerdict(card.id, { owed: false, confident: true })).toBe(false);
     expect((await getWallet(card.id))?.owedBalance).toBe(true);
   });
