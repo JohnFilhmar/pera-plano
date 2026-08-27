@@ -36,7 +36,7 @@ import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { getActiveRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { buildProviderChoices } from "@/lib/ingest/provider_catalogue";
 import { SEED_BUNDLE } from "@/lib/ingest/seed_rules";
-import { DEFAULT_TUNABLES } from "@/lib/ingest/ruleset_types";
+import { DEFAULT_TRAIT_SIGNALS, DEFAULT_TUNABLES } from "@/lib/ingest/ruleset_types";
 import { listObservedPackages, setProviderFilter } from "@/modules/notification_listener";
 
 import type { ProviderChoice } from "@/lib/ingest/provider_catalogue";
@@ -77,9 +77,14 @@ async function loadBundle(): Promise<RulesetBundle> {
   } catch {
     // The database is not open yet — expected during first-run onboarding.
   }
-  // `tunables` is absent from the seed JSON by design (seed_rules.ts's header);
-  // the repository fills it on read, and so does this fallback path.
-  return { ...SEED_BUNDLE, tunables: DEFAULT_TUNABLES };
+  // `tunables` and `traitSignals` are both absent from the seed JSON by design
+  // (seed_rules.ts's header); the repository fills them on read, and so does
+  // this fallback path.
+  return {
+    ...SEED_BUNDLE,
+    tunables: DEFAULT_TUNABLES,
+    traitSignals: SEED_BUNDLE.traitSignals ?? DEFAULT_TRAIT_SIGNALS,
+  };
 }
 
 export default function ProvidersScreen({ onDone }: { onDone?: () => void } = {}) {

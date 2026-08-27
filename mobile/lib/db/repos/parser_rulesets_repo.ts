@@ -24,6 +24,7 @@
 import { getDatabase } from "@/lib/db/database";
 import { newId } from "@/lib/ids";
 import {
+  DEFAULT_TRAIT_SIGNALS,
   DEFAULT_TUNABLES,
   type PartialPipelineTunables,
   type PipelineTunables,
@@ -100,6 +101,11 @@ function decodeRow(row: RulesetRow): RulesetBundle | null {
     version: row.version,
     providers: input.providers,
     tunables: withDefaultTunables(input.tunables),
+    // Filled on READ, for the same reason and at the same point in the
+    // lifecycle as the tunables above: a ruleset installed before the held/owed
+    // verdict existed picks up whatever pack the app ships today, rather than
+    // scoring nothing until the server happens to send a new bundle.
+    traitSignals: Array.isArray(input.traitSignals) ? input.traitSignals : DEFAULT_TRAIT_SIGNALS,
   };
 }
 
