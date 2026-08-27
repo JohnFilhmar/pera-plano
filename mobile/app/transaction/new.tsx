@@ -18,21 +18,26 @@
 // by a human, and merging them would tell the user they did not do something
 // they just did — while quietly leaving money in a pocket they had already
 // emptied.
+import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { useRouter } from "expo-router";
 
 import { ManualEntryForm } from "@/components/transactions/manual_entry_form";
 import { FormScreen } from "@/components/ui/form_screen";
+import { queryKeys } from "@/constants/query_keys";
 import { useKeypad } from "@/contexts/keypad_context";
+import { invalidateKeys } from "@/hooks/mutations/invalidate_keys";
 import { useCategories } from "@/hooks/queries/use_categories";
 import { useCreateTransaction } from "@/hooks/mutations/use_create_transaction";
 import { useTransactions } from "@/hooks/queries/use_transactions";
 import { useWallets } from "@/hooks/queries/use_wallets";
+import { recordTransfer } from "@/lib/transfers/transfer_service";
 
 import type { ManualEntryDraft } from "@/components/transactions/manual_entry_form";
 
 export default function NewTransactionScreen() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const wallets = useWallets();
   const categories = useCategories();
   // The ledger drives two of rule 3's defaults — the last-used cash wallet and
@@ -76,12 +81,41 @@ export default function NewTransactionScreen() {
   }
 
   function handleSubmit(draft: ManualEntryDraft): void {
-    // Task 5 wires this into lib/transfers/transfer_service.ts's
-    // recordTransfer. Until then there is nothing to submit it TO — and
-    // nothing on this screen can reach this branch anyway, since
-    // manual_entry_form.tsx's Transfer segment disables itself below two
-    // unarchived wallets — so this is an unreached guard, not a silent drop.
-    if (draft.kind === "transfer") return;
+    // A transfer moves money between the user's own wallets — two legs plus
+    // an optional fee row, written atomically by recordTransfer. It is NEVER
+    // routed through createTransaction/insertTransaction: that path writes
+    // exactly one row with no transfer_links stamp, which here would leave
+    // the money debited from fromWalletId with no counterpart anywhere —
+    // an internal movement silently counted as real spend.
+    if (draft.kind === "transfer") {
+      recordTransfer(
+        {
+          fromWalletId: draft.fromWalletId,
+          toWalletId: draft.toWalletId,
+          amount: draft.amount,
+          feeAmount: draft.feeAmount,
+          occurredAt: draft.occurredAt,
+          note: draft.note,
+        },
+        Date.now(),
+      ).then(() =>
+        // Same key set useCreateTransaction invalidates, minus reviewQueue
+        // (recordTransfer never raises a loan match) and swapped to BOTH
+        // wallets that moved instead of one, since a transfer's two legs
+        // land in two different wallets rather than the entry path's single
+        // walletId.
+        invalidateKeys(queryClient, [
+          queryKeys.transactions.all,
+          queryKeys.wallets.detail(draft.fromWalletId),
+          queryKeys.wallets.detail(draft.toWalletId),
+          queryKeys.wallets.lists(),
+        ]),
+      ).then(() => router.back());
+      // Closed only AFTER the write commits — same reasoning as the entry
+      // path's onSuccess below: a `back()` fired before the two legs land
+      // would leave a failed transfer with nobody on screen to be told.
+      return;
+    }
 
     createTransaction.mutate(
       {

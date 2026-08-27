@@ -322,6 +322,57 @@ describe("the cash wallet", () => {
 // The auto-opened keypad — numeric-input-system W1 Task 9
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Transfer mode (money-transfers Task 5) — goes through recordTransfer, not
+// insertTransaction. There is no jest.mock of either: this file already
+// verifies writes against a real database (see the header), so "went through
+// recordTransfer and not the entry path" is proven by the SHAPE of what
+// landed — two linked legs in two wallets — rather than by a spy call.
+// ---------------------------------------------------------------------------
+
+describe("a transfer draft", () => {
+  test("goes to recordTransfer, writing both legs linked, not a single insertTransaction row", async () => {
+    const bank = await createWallet({ name: "BPI", type: "bank", openingBalance: 200_000 });
+    await renderNew();
+
+    fireEvent.press(screen.getByTestId("manual-entry-segment-transfer"));
+    typeAmount("manual-amount", "1000");
+    fireEvent.press(screen.getByTestId(`manual-entry-to-wallet-${bank.id}`));
+    save();
+
+    await waitFor(async () => {
+      expect(await ledger(pocket.id)).toHaveLength(1);
+    });
+
+    // Exactly two rows total — the placeholder this task removes wrote none,
+    // and a draft that fell through to the entry branch would have written
+    // exactly one, uncategorized and unlinked, in whichever wallet the entry
+    // path defaults to.
+    expect(await ledger()).toHaveLength(2);
+
+    const [outLeg] = await ledger(pocket.id);
+    const [inLeg] = await ledger(bank.id);
+    expect(outLeg.direction).toBe("out");
+    expect(inLeg.direction).toBe("in");
+    // "1000" typed on the shared keypad is pesos — ₱1,000.00 — and with no fee
+    // typed both legs carry the full amount.
+    expect(outLeg.amount).toBe(100_000);
+    expect(inLeg.amount).toBe(100_000);
+    // Only recordTransfer's linkTransfer call stamps this; a bare
+    // insertTransaction leaves it null.
+    expect(outLeg.transferLinkId).not.toBeNull();
+    expect(outLeg.transferLinkId).toBe(inLeg.transferLinkId);
+
+    // ₱1,000.00 opening minus a ₱1,000.00 transfer out, ₱2,000.00 opening plus
+    // a ₱1,000.00 transfer in.
+    expect((await getWallet(pocket.id))?.balance).toBe(0);
+    expect((await getWallet(bank.id))?.balance).toBe(300_000);
+
+    // Same dismiss as the entry path — committed before the screen closes.
+    expect(mockBack).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("the amount panel", () => {
   test("opens on mount, before the amount field is ever pressed", async () => {
     await renderNew();
