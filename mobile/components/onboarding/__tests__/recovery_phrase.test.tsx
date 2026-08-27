@@ -74,7 +74,7 @@ jest.mock("react-native", () => {
 });
 
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
-import { Share, StyleSheet } from "react-native";
+import { BackHandler, Share, StyleSheet } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { authenticateAsync } from "expo-local-authentication";
 import { initializeKeys } from "@/lib/crypto/key_manager";
@@ -216,6 +216,122 @@ test("there is no skip affordance anywhere on the confirm step", async () => {
   expect(screen.queryByText(/not now/i)).toBeNull();
   expect(screen.queryByText(/later/i)).toBeNull();
   expect(screen.queryByText(/maybe/i)).toBeNull();
+});
+
+// ---------------------------------------------------------------------------
+// A way back OFF the confirm step, and what going back costs.
+//
+// "I've written these down" used to be a one-way door: the twelve words are
+// shown on exactly one screen, once, and a user who tapped through early had
+// no route back to them -- on the step they are least allowed to abandon.
+// Going back is not skipping (the tests above still hold: both routes end at
+// the same mandatory confirmation), and the words it goes back to are NEW
+// ones, which is the half these tests exist to pin.
+// ---------------------------------------------------------------------------
+
+test("the confirm step offers a way back to the words", async () => {
+  await proceedToConfirm();
+
+  await act(async () => {
+    fireEvent.press(screen.getByTestId("confirm-back-button"));
+  });
+
+  await waitFor(() => expect(screen.getByTestId("phrase-display")).toBeTruthy());
+});
+
+test("going back mints a NEW phrase, and says so before the user taps it", async () => {
+  const first = await proceedToConfirm();
+  expect(mockGeneratePhrase).toHaveBeenCalledTimes(1);
+  // The warning has to be readable BEFORE the tap, not after: it is the only
+  // thing standing between a half-copied phrase and a spliced one.
+  expect(screen.getByTestId("confirm-back-warning")).toBeTruthy();
+
+  await act(async () => {
+    fireEvent.press(screen.getByTestId("confirm-back-button"));
+  });
+  await waitFor(() => expect(screen.getByTestId("phrase-display")).toBeTruthy());
+
+  expect(mockGeneratePhrase).toHaveBeenCalledTimes(2);
+  expect(getDisplayedWords().join(" ")).not.toBe(first.join(" "));
+});
+
+test("after going back, only the NEW words confirm -- the abandoned ones no longer pass", async () => {
+  const first = await proceedToConfirm();
+
+  await act(async () => {
+    fireEvent.press(screen.getByTestId("confirm-back-button"));
+  });
+  await waitFor(() => expect(screen.getByTestId("phrase-display")).toBeTruthy());
+  const second = getDisplayedWords();
+
+  await act(async () => {
+    fireEvent.press(screen.getByTestId("phrase-continue-button"));
+  });
+  await waitFor(() => expect(screen.getByTestId("phrase-confirm")).toBeTruthy());
+
+  // Typing off the abandoned paper fails, rather than quietly initializing
+  // keys against a phrase the user is no longer holding.
+  const positions = getConfirmPositions();
+  fillConfirmInputs(positions.map((position) => first[position]));
+  await act(async () => {
+    fireEvent.press(screen.getByTestId("confirm-submit-button"));
+  });
+  expect(screen.getByTestId("confirm-error")).toBeTruthy();
+  expect(mockInitializeKeys).not.toHaveBeenCalled();
+
+  await submitConfirmation(second);
+  await waitFor(() => expect(mockInitializeKeys).toHaveBeenCalledWith(second));
+});
+
+test("the way back is gone once key setup is in flight -- the phrase cannot change under initializeKeys", async () => {
+  let releaseInit: () => void = () => {};
+  mockInitializeKeys.mockImplementation(
+    () =>
+      new Promise<void>((resolve) => {
+        releaseInit = () => resolve();
+      }),
+  );
+
+  const words = await proceedToConfirm();
+  await submitConfirmation(words);
+
+  await waitFor(() => expect(screen.getByTestId("recovery-phrase-initializing")).toBeTruthy());
+  expect(screen.queryByTestId("confirm-back-button")).toBeNull();
+
+  await act(async () => {
+    releaseInit();
+  });
+});
+
+test("Android's own back button returns to the words instead of dropping out of a mandatory step", async () => {
+  // On first run this flow renders outside the router's Stack, so nothing
+  // above it gives the system back gesture a meaning -- unhandled, it leaves
+  // setup. The handler must both fire the same regeneration and CONSUME the
+  // press (return true).
+  const handlers: Array<() => boolean> = [];
+  const spy = jest.spyOn(BackHandler, "addEventListener").mockImplementation(((
+    _event: string,
+    handler: () => boolean,
+  ) => {
+    handlers.push(handler);
+    return { remove: jest.fn() };
+  }) as never);
+
+  try {
+    const first = await proceedToConfirm();
+    expect(handlers).toHaveLength(1);
+
+    let consumed = false;
+    await act(async () => {
+      consumed = handlers[handlers.length - 1]();
+    });
+    expect(consumed).toBe(true);
+
+    await waitFor(() => expect(screen.getByTestId("phrase-display")).toBeTruthy());
+    expect(getDisplayedWords().join(" ")).not.toBe(first.join(" "));
+  } finally {
+    spy.mockRestore();
+  }
 });
 
 // ---------------------------------------------------------------------------

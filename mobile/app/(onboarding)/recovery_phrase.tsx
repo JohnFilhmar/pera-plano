@@ -81,8 +81,27 @@
 // (contexts/lock_context.tsx's "WHY NO AUTO-RETRY LOOP ANYWHERE HERE"), and
 // an unescapable prompt loop on a mandatory onboarding step is the worst
 // place to ship one.
+// GOING BACK FROM THE CONFIRM STEP MINTS A NEW PHRASE, ON PURPOSE. Until
+// this existed, "I've written these down" was a one-way door: the words are
+// shown on exactly one screen, once, and a user who tapped through before
+// their pen caught up had no route back to them at all -- on a step they are
+// not allowed to skip. Both the button on PhraseConfirm and Android's own
+// back gesture now return them to the display step.
+//
+// AND THAT RETURN REGENERATES, rather than re-showing the same twelve words.
+// A phrase that has been on screen and then abandoned mid-transcription is a
+// phrase whose paper copy is, by definition, in an unknown state -- some
+// prefix of it is written down, possibly torn out, possibly photographed.
+// Handing back the SAME words rewards that half-copy; handing back a fresh
+// set makes the paper unambiguously stale, which the button says out loud
+// (phrase_confirm.tsx's back warning) so nobody splices two phrases together.
+// This is safe here for the same reason "generate_error" may regenerate and
+// "init_error" may not: nothing has been initialized yet, so no phrase the
+// user might be holding opens anything. Once initializeKeys() is in flight
+// the route back is gone -- see the `stage === "confirm"` guards below.
+//
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Share, Text, View } from "react-native";
+import { BackHandler, Share, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as LocalAuthentication from "expo-local-authentication";
 import { generatePhrase } from "@/lib/crypto/recovery_phrase";
@@ -183,6 +202,48 @@ export default function RecoveryPhraseScreen({ onDone }: { onDone?: () => void }
     setConfirmAttempt((attempt) => attempt + 1);
     setStage("confirm");
   }, []);
+
+  /**
+   * The route back to the words, from the confirm step only. Bumping
+   * `retryKey` re-runs the generation effect above, which is what resets the
+   * stage to "generating", clears the old words out of state, and mints the
+   * new phrase -- one code path for "start this step over", shared with
+   * "generate_error"'s retry rather than duplicated beside it.
+   *
+   * The initializingRef guard is the same one handleConfirmed uses, for the
+   * same reason: it is set synchronously before key setup starts, so a back
+   * press that lands in the same tick as a confirm tap cannot pull the phrase
+   * out from under an initializeKeys() call that is already running.
+   */
+  const handleBackToWords = useCallback(() => {
+    if (initializingRef.current) return;
+    setRetryKey((k) => k + 1);
+  }, []);
+
+  /**
+   * Android's back button, on the confirm step only.
+   *
+   * A user who wants another look at their words reaches for the system back
+   * gesture before they read any button, and on first run this whole flow
+   * renders outside the router's Stack (see phrase_display.tsx) -- so there
+   * is no navigator above it to give that gesture a meaning. Unhandled, it
+   * fell through to the OS and backed out of setup entirely.
+   *
+   * Returning `true` CONSUMES the press, which is the point on a step the
+   * user is not allowed to skip: back means "back to the words", never "out
+   * of onboarding". The listener is registered only while `stage` is exactly
+   * "confirm", so it is already gone by the time key setup is in flight, and
+   * it never touches the display step -- backing out from there is not this
+   * fix's business.
+   */
+  useEffect(() => {
+    if (stage !== "confirm") return;
+    const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+      handleBackToWords();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [stage, handleBackToWords]);
 
   /**
    * Authenticate, then initialize -- in that order, once, with at most one
@@ -311,7 +372,17 @@ export default function RecoveryPhraseScreen({ onDone }: { onDone?: () => void }
     const footer = confirmNotice !== null || stage === "initializing";
     return (
       <View className="flex-1 bg-bg dark:bg-bg-dark">
-        <PhraseConfirm key={confirmAttempt} words={words} onConfirmed={handleConfirmed} />
+        {/* `onBack` only while the user still owns this step. During
+            "initializing" the words are already committed to a running
+            initializeKeys(), so the control is not merely disabled but
+            absent -- there is nothing to go back to that would still be
+            true. */}
+        <PhraseConfirm
+          key={confirmAttempt}
+          words={words}
+          onConfirmed={handleConfirmed}
+          onBack={stage === "confirm" ? handleBackToWords : undefined}
+        />
         {footer ? (
           <View testID="recovery-phrase-footer" style={{ paddingBottom: insets.bottom }}>
             {confirmNotice ? (
