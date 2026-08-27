@@ -1,7 +1,16 @@
+import { REVIEW_KINDS } from "@/constants/review_kinds";
 import { closeDatabase } from "@/lib/db/database";
-import { countOpen, enqueue, listOpen, purgeExpired, resolve } from "../review_queue_repo";
+import {
+  countOpen,
+  countOpenByKind,
+  enqueue,
+  listOpen,
+  listOpenPage,
+  purgeExpired,
+  resolve,
+} from "../review_queue_repo";
 import { freshDb } from "@/test_support/db";
-import type { ReviewItemPayload, ReviewKind } from "@/types/domain";
+import type { ReviewItemPayload, ReviewKind, ReviewQueueItem } from "@/types/domain";
 import type { SQLiteDatabase } from "@/lib/db/database";
 
 let db: SQLiteDatabase;
@@ -294,5 +303,185 @@ describe("expiresAt defaults to 30 days from creation when the caller doesn't su
 
     expect(item.createdAt).toBe(1_000);
     expect(item.expiresAt).toBe(1_000 + THIRTY_DAYS_MS);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// listOpenPage / countOpenByKind — the Review Queue's paged, filterable read.
+//
+// The screen used to render every open item into one ScrollView. These cover
+// the two properties that replacement has to hold: a page boundary that cannot
+// SKIP a row when the rows in front of it are triaged away (the whole reason
+// the cursor is a keyset and not an offset), and a kind filter applied in SQL
+// rather than to an already-cut page.
+// ---------------------------------------------------------------------------
+
+/**
+ * An expiry the REAL clock is still short of.
+ *
+ * The seeds below move `Date.now()` back to 1, 2, 3... so the page order is
+ * readable straight off the payload — and `enqueue`'s default expiry is
+ * `createdAt + 30 days`, which for `createdAt: 1` lands in January 1970. Every
+ * such row is already expired by the time `listOpenPage` reads the real clock,
+ * so the seed has to state its own expiry rather than take the default.
+ */
+const FAR_FUTURE = Date.now() + THIRTY_DAYS_MS;
+
+/**
+ * Seeds `count` open items whose `created_at` values are 1, 2, 3, ... so the
+ * expected page order is readable straight off the payload.
+ */
+async function seedQueue(
+  count: number,
+  kind: ReviewKind = "low-confidence",
+): Promise<ReviewQueueItem[]> {
+  const dateSpy = jest.spyOn(Date, "now");
+  const items: ReviewQueueItem[] = [];
+  for (let n = 1; n <= count; n += 1) {
+    dateSpy.mockReturnValue(n);
+    items.push(await enqueue({ kind, payload: { n }, expiresAt: FAR_FUTURE }));
+  }
+  dateSpy.mockRestore();
+  return items;
+}
+
+describe("listOpenPage", () => {
+  test("returns at most `limit` rows, oldest first, and a cursor when more remain", async () => {
+    await seedQueue(5);
+
+    const first = await listOpenPage({ limit: 2 });
+    expect(first.items.map((item) => item.payload.n)).toEqual([1, 2]);
+    expect(first.nextCursor).not.toBeNull();
+
+    const second = await listOpenPage({ limit: 2, after: first.nextCursor });
+    expect(second.items.map((item) => item.payload.n)).toEqual([3, 4]);
+
+    const third = await listOpenPage({ limit: 2, after: second.nextCursor });
+    expect(third.items.map((item) => item.payload.n)).toEqual([5]);
+    // The LAST page says so itself — the caller never has to count to find out,
+    // and a "Show more" button that fetched an empty page forever is exactly
+    // what a cursor returned unconditionally would produce.
+    expect(third.nextCursor).toBeNull();
+  });
+
+  test("a full final page still reports no next page", async () => {
+    await seedQueue(4);
+    const first = await listOpenPage({ limit: 2 });
+    const second = await listOpenPage({ limit: 2, after: first.nextCursor });
+    expect(second.items).toHaveLength(2);
+    expect(second.nextCursor).toBeNull();
+  });
+
+  test("NO ROW IS SKIPPED when page-one items are resolved before page two loads", async () => {
+    // The reason the cursor is a keyset. Under LIMIT/OFFSET, resolving the two
+    // rows already shown shortens the list under the offset and item 3 — never
+    // rendered, never triaged — is silently stepped over.
+    const items = await seedQueue(5);
+    const first = await listOpenPage({ limit: 2 });
+    expect(first.items.map((item) => item.payload.n)).toEqual([1, 2]);
+
+    await resolve(items[0].id, "confirmed");
+    await resolve(items[1].id, "dismissed");
+
+    const second = await listOpenPage({ limit: 2, after: first.nextCursor });
+    expect(second.items.map((item) => item.payload.n)).toEqual([3, 4]);
+  });
+
+  test("items sharing a millisecond are paged through exactly once each", async () => {
+    // `startIngest` drains up to 500 buffered captures in one pass, so ties on
+    // `created_at` are ordinary, not exotic. The id tiebreak is what stops a
+    // cursor built from one of them re-showing or skipping the rest.
+    const dateSpy = jest.spyOn(Date, "now").mockReturnValue(7_000);
+    for (let n = 0; n < 6; n += 1) {
+      await enqueue({ kind: "low-confidence", payload: { n }, expiresAt: FAR_FUTURE });
+    }
+    dateSpy.mockRestore();
+
+    const seen: string[] = [];
+    let cursor = null as Awaited<ReturnType<typeof listOpenPage>>["nextCursor"];
+    do {
+      const page = await listOpenPage({ limit: 2, after: cursor });
+      seen.push(...page.items.map((item) => item.id));
+      cursor = page.nextCursor;
+    } while (cursor !== null);
+
+    expect(seen).toHaveLength(6);
+    expect(new Set(seen).size).toBe(6);
+  });
+
+  test("filters by kind IN SQL, so a page of one kind is a full page of that kind", async () => {
+    // Interleaved on purpose: the three unknown-provider rows are 2nd, 4th and
+    // 6th oldest, so a filter applied to an already-cut page of 2 would return
+    // ONE row and claim that was all of them.
+    const dateSpy = jest.spyOn(Date, "now");
+    for (let n = 1; n <= 6; n += 1) {
+      dateSpy.mockReturnValue(n);
+      await enqueue({
+        kind: n % 2 === 0 ? "unknown-provider" : "low-confidence",
+        payload: { n },
+        expiresAt: FAR_FUTURE,
+      });
+    }
+    dateSpy.mockRestore();
+
+    const page = await listOpenPage({ kinds: ["unknown-provider"], limit: 2 });
+    expect(page.items.map((item) => item.payload.n)).toEqual([2, 4]);
+    expect(page.items.every((item) => item.kind === "unknown-provider")).toBe(true);
+    expect(page.nextCursor).not.toBeNull();
+  });
+
+  test("an empty kinds array means every kind, never nothing", async () => {
+    await seedQueue(3);
+    expect((await listOpenPage({ kinds: [], limit: 10 })).items).toHaveLength(3);
+  });
+
+  test("honours the same open predicate as listOpen — resolved and expired rows never appear", async () => {
+    const dateSpy = jest.spyOn(Date, "now");
+    dateSpy.mockReturnValue(1_000);
+    const expired = await enqueue({ kind: "low-confidence", payload: { n: "expired" }, expiresAt: 2_000 });
+    const resolved = await enqueue({ kind: "low-confidence", payload: { n: "resolved" } });
+    const open = await enqueue({ kind: "low-confidence", payload: { n: "open" } });
+    await resolve(resolved.id, "confirmed");
+    dateSpy.mockReturnValue(10_000);
+    const page = await listOpenPage({ limit: 10 });
+    dateSpy.mockRestore();
+
+    const ids = page.items.map((item) => item.id);
+    expect(ids).toEqual([open.id]);
+    expect(ids).not.toContain(expired.id);
+    expect(ids).not.toContain(resolved.id);
+  });
+});
+
+describe("countOpenByKind", () => {
+  test("counts each kind and reports zero for the kinds with nothing waiting", async () => {
+    await enqueue({ kind: "low-confidence", payload: {} });
+    await enqueue({ kind: "low-confidence", payload: {} });
+    await enqueue({ kind: "unknown-provider", payload: {} });
+
+    const counts = await countOpenByKind();
+    expect(counts["low-confidence"]).toBe(2);
+    expect(counts["unknown-provider"]).toBe(1);
+    // Present-and-zero, not absent. A chip that had to tell "no key" from "0"
+    // gets it wrong at the moment it matters — the last item of a kind being
+    // triaged away while that kind is the selected filter.
+    expect(counts["possible-duplicate"]).toBe(0);
+    for (const kind of REVIEW_KINDS) expect(typeof counts[kind]).toBe("number");
+  });
+
+  test("its total agrees with countOpen, and both ignore resolved and expired rows", async () => {
+    const dateSpy = jest.spyOn(Date, "now");
+    dateSpy.mockReturnValue(1_000);
+    await enqueue({ kind: "low-confidence", payload: {}, expiresAt: 2_000 });
+    const resolved = await enqueue({ kind: "ambiguous-transfer", payload: {} });
+    await enqueue({ kind: "unknown-provider", payload: {} });
+    await resolve(resolved.id, "dismissed");
+    dateSpy.mockReturnValue(10_000);
+    const counts = await countOpenByKind();
+    const total = await countOpen();
+    dateSpy.mockRestore();
+
+    expect(Object.values(counts).reduce((sum, count) => sum + count, 0)).toBe(total);
+    expect(total).toBe(1);
   });
 });

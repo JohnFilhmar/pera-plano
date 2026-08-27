@@ -81,7 +81,19 @@ export const queryKeys = {
   reviewQueue: {
     all: ["review_queue"] as const,
     open: () => ["review_queue", "open"] as const,
+    /**
+     * One paged cache entry PER FILTER. `kinds` is normalized by the caller
+     * (sorted, or `null` for "all") so that two selections of the same kinds
+     * share an entry instead of splitting the cache on array order.
+     *
+     * Deliberately NOT nested under `open()`: a mutation invalidating
+     * `reviewQueue.all` still catches both, and keeping them siblings means
+     * the unpaged `open()` list — still the contract-shaped read — never
+     * has its own entry evicted by a filter change.
+     */
+    page: (kinds: readonly string[] | null) => ["review_queue", "page", kinds] as const,
     count: () => ["review_queue", "count"] as const,
+    kindCounts: () => ["review_queue", "kind_counts"] as const,
   },
   categories: {
     all: ["categories"] as const,

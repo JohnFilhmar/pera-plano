@@ -21,26 +21,55 @@
 //   reaches, sinking a row with every capture until it expires unread at 30 days
 //   and is discarded without ever having been seen.
 //
+// A THIRD FAILURE MODE, ADDED HERE BECAUSE IT IS THE FIRST TWO AT SCALE: THE
+// QUEUE RENDERED ALL AT ONCE. This screen originally mapped every open item
+// into one `ScrollView` — a `ReviewCard` per row, each a full parse breakdown
+// with its own per-kind body and up to three buttons. That is fine at the
+// spec's "Normal" size (1–25 items) and wrong at every size past it: the first
+// frame costs the whole queue, and 200 mixed cards on one rope is not triage,
+// it is the second inbox the note above warns about, wearing a scrollbar.
+//
+// So the list is PAGED and FILTERABLE, and both are reads, not renderings:
+//
+//   PAGING IS KEYSET, ONE PAGE PER SPEC-SIZED QUEUE (`REVIEW_PAGE_SIZE` = 25).
+//   The cursor is the last row actually shown, never an offset — every action
+//   on this screen resolves an item out of the very predicate the pagination
+//   runs over, and an offset would skip whatever slid across the page boundary
+//   in between. Silently. See `ReviewCursor` in review_queue_repo.ts.
+//
+//   FILTERING IS BY KIND, IN THE QUERY. `listOpenPage` takes the kinds, so a
+//   page of "possible duplicates" is 25 duplicates. Narrowing the fetched page
+//   client-side instead would return 3-row pages and, worse, an EMPTY first
+//   page for any kind absent from the oldest 25 — a screen saying "none of
+//   these" over a queue full of them.
+//
+// NEITHER TOUCHES THE ORDER. Pages concatenate oldest-first because page 2
+// starts where page 1 ended, and `sortOldestFirst` still runs over the result.
+//
 // THIN BY DESIGN. Grouping, copy and per-kind layout live in the components; the
-// screen resolves the four collections its cards need and orders the list.
-// Global Constraints: hooks only, no repository import, no SQL.
+// screen resolves the four collections its cards need, picks the filter, and
+// orders the list. Global Constraints: hooks only, no repository import, no
+// SQL — the page size lives in the repository and the hook, never here.
 import { ChevronLeft } from "lucide-react-native";
 import { useRouter } from "expo-router";
-import { useState } from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { useCallback, useMemo, useState } from "react";
+import { FlatList, Pressable, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { CorrectSheet } from "@/components/review/correct_sheet";
 import { loanCandidates, ReviewCard } from "@/components/review/review_card";
-import { registerIcon } from "@/components/ui/button";
+import { ReviewFilterBar } from "@/components/review/review_filter_bar";
+import { Button, registerIcon } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty_state";
 import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
+import { REVIEW_KIND_LABELS } from "@/constants/review_kinds";
 import { useReviewAction, type ReviewAction } from "@/hooks/mutations/use_review_action";
 import { useCategories } from "@/hooks/queries/use_categories";
-import { useReviewQueue } from "@/hooks/queries/use_review_queue";
+import { useReviewKindCounts } from "@/hooks/queries/use_review_kind_counts";
+import { useReviewQueuePage } from "@/hooks/queries/use_review_queue_page";
 import { useRuleset } from "@/hooks/queries/use_ruleset";
 import { useWallets } from "@/hooks/queries/use_wallets";
-import type { ReviewQueueItem } from "@/types/domain";
+import type { ReviewKind, ReviewQueueItem } from "@/types/domain";
 
 const BackGlyph = registerIcon(ChevronLeft);
 
@@ -66,6 +95,40 @@ export const REVIEW_QUEUE_TITLE = "Review queue";
 export const REVIEW_EMPTY_TITLE = "All caught up.";
 export const REVIEW_EMPTY_BODY =
   "PeraPlano only asks when it isn't sure. Right now, nothing needs a second look.";
+
+/**
+ * The OTHER empty state — a filter with nothing behind it, which is a
+ * completely different fact about the world and must never borrow the reward
+ * above.
+ *
+ * "All caught up." under an active filter is a lie the user has no way to
+ * catch: thirty cards can be waiting one chip away while the screen
+ * congratulates them for an empty queue. The same distinction
+ * `ledger_list.tsx` draws between "nothing tracked yet" and "nothing matches
+ * this filter", for the same reason — an empty list has to say WHY it is
+ * empty, or the user reads it as data loss.
+ *
+ * The body names the way out, and the chip row above it is still on screen
+ * with the selected chip showing its own zero (see review_filter_bar.tsx on
+ * why that chip survives at zero).
+ */
+export const REVIEW_FILTERED_EMPTY_TITLE = "Nothing of this kind.";
+export function reviewFilteredEmptyBody(kind: ReviewKind): string {
+  return `No "${REVIEW_KIND_LABELS[kind]}" items are waiting. Tap All to see the rest of the queue.`;
+}
+
+/**
+ * docs/04-features/08-review-queue.md §UX states, "Backlog" row, in the spec's
+ * own words — shown above the list once the queue passes 25 open items.
+ *
+ * IT IS NOT A SCOLDING. The sentence blames the parsers, and it should: a
+ * backlog means the pipeline stopped recognizing something it used to, and the
+ * user's only fault is having kept using their bank. The chips directly above
+ * are the "grouped triage" the same spec row offers alongside this line.
+ */
+export const REVIEW_BACKLOG_THRESHOLD = 25;
+export const REVIEW_BACKLOG_BANNER =
+  "That's a lot of unreviewed items — parsers may be out of date.";
 
 /**
  * Oldest first (rule 2), sorted HERE rather than trusted from the caller.
@@ -244,7 +307,15 @@ export default function ReviewQueueScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
-  const { data: items } = useReviewQueue();
+  // The kind chip currently selected, `null` for the whole queue. It lives here
+  // rather than inside the bar because it KEYS THE QUERY — the filter is a
+  // different read, not a different rendering of one read (see
+  // use_review_queue_page.ts on why narrowing after the page was cut returns
+  // short pages and phantom empty states).
+  const [kind, setKind] = useState<ReviewKind | null>(null);
+
+  const queue = useReviewQueuePage(kind === null ? undefined : [kind]);
+  const { data: counts } = useReviewKindCounts();
   const { data: wallets } = useWallets();
   const { data: categories } = useCategories();
   const { data: ruleset } = useRuleset();
@@ -254,16 +325,48 @@ export default function ReviewQueueScreen() {
   // a refetch that replaces the array cannot leave a stale copy on screen.
   const [correcting, setCorrecting] = useState<string | null>(null);
 
-  const ordered = items === undefined ? undefined : sortOldestFirst(items);
+  // Pages concatenate in arrival order, which IS queue order — page 2 begins
+  // where page 1 ended. `sortOldestFirst` still runs over the result for the
+  // reason its own docblock gives: the guarantee is worth three lines and does
+  // not depend on trusting every future feeder of this list.
+  const ordered = useMemo(
+    () =>
+      queue.data === undefined
+        ? undefined
+        : sortOldestFirst(queue.data.pages.flatMap((page) => page.items)),
+    [queue.data],
+  );
   const correctingItem = ordered?.find((entry) => entry.id === correcting) ?? null;
 
-  function dispatch(action: ReviewAction | "correct", item: ReviewQueueItem): void {
-    if (action === "correct") {
-      setCorrecting(item.id);
-      return;
-    }
-    triage.mutate(action);
-  }
+  // The whole queue, not the filtered slice: the backlog banner is a statement
+  // about how much is waiting in total, and hiding it behind a chip that
+  // narrows to three items would suppress it exactly when it is most true.
+  const openTotal = useMemo(
+    () =>
+      counts === undefined
+        ? undefined
+        : Object.values(counts).reduce((sum, count) => sum + count, 0),
+    [counts],
+  );
+  // How many of the CURRENT filter are still unfetched, for the footer's label.
+  // `undefined` whenever the counts have not loaded or the arithmetic would
+  // disagree with `hasNextPage` — a button that promises "0 more" and then
+  // produces 25 is worse than one that just says "Show more".
+  const shown = ordered?.length ?? 0;
+  const filteredTotal = counts === undefined ? undefined : kind === null ? openTotal : counts[kind];
+  const remaining =
+    filteredTotal === undefined || filteredTotal - shown <= 0 ? undefined : filteredTotal - shown;
+
+  const dispatch = useCallback(
+    (action: ReviewAction | "correct", item: ReviewQueueItem): void => {
+      if (action === "correct") {
+        setCorrecting(item.id);
+        return;
+      }
+      triage.mutate(action);
+    },
+    [triage],
+  );
 
   return (
     // Insets, not a header: this screen runs `headerShown: false` and is NOT
@@ -305,6 +408,27 @@ export default function ReviewQueueScreen() {
         </Text>
       </View>
 
+      {/* Outside the list, so the chips stay reachable however far down the
+          queue the user has scrolled — the same call
+          app/(tabs)/transactions.tsx makes about its own filter bar. It
+          renders nothing at all while there is only one kind waiting (see
+          review_filter_bar.tsx). */}
+      <ReviewFilterBar counts={counts} selected={kind} onChange={setKind} />
+
+      {openTotal !== undefined && openTotal > REVIEW_BACKLOG_THRESHOLD ? (
+        <View
+          testID="review-backlog-banner"
+          // `bg-chip`, not a warn tint: the app has no opaque `warn-soft`
+          // token (constants/colors.ts — only `brand-soft` is real), and a
+          // yellow slab over a queue of honest questions would recolour the
+          // pipeline's correct refusal to guess as a fault the user caused.
+          // The sentence carries the message; the surface stays calm.
+          className="mx-4 mt-2 rounded-xl bg-chip px-4 py-3 dark:bg-chip-dark"
+        >
+          <Text className="text-body text-fg dark:text-fg-dark">{REVIEW_BACKLOG_BANNER}</Text>
+        </View>
+      ) : null}
+
       {ordered === undefined ? (
         // Nothing at all until the first read resolves. Flashing "All caught up."
         // on every cold start would congratulate the user for work they have not
@@ -315,16 +439,69 @@ export default function ReviewQueueScreen() {
         </View>
       ) : ordered.length === 0 ? (
         <View className="flex-1 justify-center">
-          <EmptyState
-            testID="review-queue-empty"
-            title={REVIEW_EMPTY_TITLE}
-            body={REVIEW_EMPTY_BODY}
-          />
+          {kind === null ? (
+            <EmptyState
+              testID="review-queue-empty"
+              title={REVIEW_EMPTY_TITLE}
+              body={REVIEW_EMPTY_BODY}
+            />
+          ) : (
+            // NOT the reward. See `REVIEW_FILTERED_EMPTY_TITLE` — "All caught
+            // up." over an active filter would congratulate the user while
+            // thirty cards wait one chip away.
+            <EmptyState
+              testID="review-queue-empty-filtered"
+              title={REVIEW_FILTERED_EMPTY_TITLE}
+              body={reviewFilteredEmptyBody(kind)}
+              action={{ label: "Show all", onPress: () => setKind(null) }}
+            />
+          )}
         </View>
       ) : (
-        <ScrollView testID="review-queue-list">
-          <View className="pb-8 pt-1">
-            {ordered.map((entry) => {
+        <FlatList
+          testID="review-queue-list"
+          data={ordered}
+          keyExtractor={(entry) => entry.id}
+          contentContainerClassName="pb-8 pt-1"
+          // `FlatList` REPLACED A `ScrollView` HERE, and the two layers are not
+          // redundant. Paging bounds what is FETCHED and held in memory (25
+          // rows, not 500); virtualization bounds what is MOUNTED inside that
+          // page. A `ReviewCard` is a heavy row — a parse breakdown, a per-kind
+          // body, up to three buttons — so a page rendered whole still costs 25
+          // of them on the first frame. React Native's default
+          // `initialNumToRender` (10) is deliberately left alone: it is already
+          // well past a phone's viewport for rows this tall, and pinning it to
+          // the page size would hand back exactly the cost this list exists to
+          // avoid.
+          //
+          // Redraw the rows when the filter changes — `renderItem` closes over
+          // `dispatch`, and a `FlatList` that never hears about a new closure
+          // is how a stale handler survives a filter change.
+          extraData={kind}
+          ListFooterComponent={
+            queue.hasNextPage ? (
+              <View className="px-4 pt-2">
+                {/* AN EXPLICIT BUTTON, NOT `onEndReached`. Auto-loading on
+                    scroll is the smoother pattern for a feed, and this is not
+                    a feed: it is a work list the user is trying to reach the
+                    END of. A queue that grows another 25 rows every time the
+                    bottom comes into view never visibly shrinks no matter how
+                    many cards are triaged, which is the exact "second inbox
+                    nobody opens" feeling this screen's header warns about.
+                    The count on the label is the point — it is the only place
+                    in the app that says how much work is actually left. */}
+                <Button
+                  testID="review-queue-load-more"
+                  variant="secondary"
+                  title={remaining === undefined ? "Show more" : `Show ${remaining} more`}
+                  loading={queue.isFetchingNextPage}
+                  disabled={queue.isFetchingNextPage}
+                  onPress={() => void queue.fetchNextPage()}
+                />
+              </View>
+            ) : null
+          }
+          renderItem={({ item: entry }) => {
               // Resolved once per entry rather than inline in `onReject`
               // below: the prop must be `undefined` (not a handler that
               // happens to no-op) whenever this kind has none, because
@@ -340,7 +517,6 @@ export default function ReviewQueueScreen() {
               const primaryAction = primaryActionFor(entry);
               return (
                 <ReviewCard
-                  key={entry.id}
                   item={entry}
                   wallets={wallets}
                   categories={categories}
@@ -370,9 +546,8 @@ export default function ReviewQueueScreen() {
                   }
                 />
               );
-            })}
-          </View>
-        </ScrollView>
+            }}
+        />
       )}
 
       {/* ONE SHEET FOR THE WHOLE LIST, not one per card. Only one correction can

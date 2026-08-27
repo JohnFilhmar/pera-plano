@@ -33,7 +33,12 @@ import { closeDatabase } from "@/lib/db/database";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { createLoan, listPayments, outstandingBalance } from "@/lib/db/repos/loans_repo";
 import { raiseLoanMatchSuggestion } from "@/lib/loans/loan_match_queue";
-import { countOpen, enqueue, resolve } from "@/lib/db/repos/review_queue_repo";
+import {
+  countOpen,
+  enqueue,
+  resolve,
+  REVIEW_PAGE_SIZE,
+} from "@/lib/db/repos/review_queue_repo";
 import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions_repo";
 import { listUserRules } from "@/lib/db/repos/user_rules_repo";
 import { createWallet } from "@/lib/db/repos/wallets_repo";
@@ -43,6 +48,7 @@ import { freshDb } from "@/test_support/db";
 import type { NewReviewItem, ReviewQueueItem, Transaction } from "@/types/domain";
 
 import ReviewQueueScreen, {
+  REVIEW_BACKLOG_BANNER,
   REVIEW_EMPTY_BODY,
   REVIEW_EMPTY_TITLE,
   sortOldestFirst,
@@ -51,7 +57,8 @@ import ReviewQueueScreen, {
 const mockBack = jest.fn();
 
 const NOW = Date.now();
-const HOUR = 60 * 60 * 1000;
+const MINUTE = 60 * 1000;
+const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 
 function makeTestClient(): QueryClient {
@@ -542,5 +549,171 @@ describe("loan-match cards", () => {
 
     await screen.findByTestId(`review-primary-${itemId}`);
     expect(screen.queryByTestId(`review-reject-${itemId}`)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FILTERING AND PAGING — what replaced "every open item in one ScrollView".
+//
+// Both properties here are about what the screen DOES NOT render. A queue that
+// mounts a ReviewCard per open row costs its whole length on the first frame
+// and, past the spec's 25-item "Normal" size, stops being triage: 200 mixed
+// cards on one rope is the second inbox this screen's header warns about,
+// wearing a scrollbar.
+// ---------------------------------------------------------------------------
+describe("the queue is paged", () => {
+  /** `count` open low-confidence items, oldest first, one minute apart. */
+  async function seedQueue(count: number): Promise<ReviewQueueItem[]> {
+    const items: ReviewQueueItem[] = [];
+    for (let n = count; n > 0; n -= 1) {
+      items.push(
+        await enqueueAt(NOW - n * MINUTE, { kind: "low-confidence", payload: gatedPayload() }),
+      );
+    }
+    // Seeded counting DOWN from the oldest, so this is already queue order.
+    return items;
+  }
+
+  // The queue is read a page at a time AND mounted a window at a time, so
+  // "is that card in the tree?" answers the wrong question — a row can be
+  // absent because it was never fetched (paging, what these tests are about)
+  // or because it is below the viewport (virtualization, React Native's job).
+  // The FOOTER LABEL separates them: it is computed from the whole queue's
+  // count minus the rows actually fetched, so "Show 2 more" is a direct
+  // statement that 25 of 27 were read — and its disappearance is the only
+  // proof that the last page landed.
+  test("fetches one page, not the whole queue, and says how many are left", async () => {
+    const items = await seedQueue(REVIEW_PAGE_SIZE + 2);
+
+    await renderScreen();
+
+    await waitFor(() => expect(screen.getByTestId(`review-card-${items[0].id}`)).toBeTruthy());
+    expect(screen.getByTestId("review-queue-load-more")).toBeTruthy();
+    // The count on the button is the only place in the app that says how much
+    // work is actually left.
+    expect(screen.getByText("Show 2 more")).toBeTruthy();
+  });
+
+  test("the next page appends to the queue rather than replacing it", async () => {
+    const items = await seedQueue(REVIEW_PAGE_SIZE + 2);
+    await renderScreen();
+    await waitFor(() => expect(screen.getByTestId("review-queue-load-more")).toBeTruthy());
+
+    fireEvent.press(screen.getByTestId("review-queue-load-more"));
+
+    // Nothing left to ask for — the second page arrived and covered the rest.
+    await waitFor(() => expect(screen.queryByTestId("review-queue-load-more")).toBeNull());
+    // Page one is still there — this is "show more", not "next page".
+    expect(screen.getByTestId(`review-card-${items[0].id}`)).toBeTruthy();
+    // And the queue never fell back to its loading state on the way.
+    expect(screen.queryByTestId("review-queue-loading")).toBeNull();
+  });
+
+  test("a queue that fits one page offers no paging control at all", async () => {
+    await seedQueue(3);
+    await renderScreen();
+
+    await waitFor(() => expect(screen.getAllByTestId(/^review-card-/)).toHaveLength(3));
+    expect(screen.queryByTestId("review-queue-load-more")).toBeNull();
+    expect(screen.queryByTestId("review-backlog-banner")).toBeNull();
+  });
+
+  test("past the spec's 25-item Normal size, the backlog banner appears", async () => {
+    await seedQueue(REVIEW_PAGE_SIZE + 1);
+    await renderScreen();
+
+    await waitFor(() => expect(screen.getByTestId("review-backlog-banner")).toBeTruthy());
+    expect(screen.getByText(REVIEW_BACKLOG_BANNER)).toBeTruthy();
+  });
+});
+
+describe("the queue is filterable by kind", () => {
+  async function seedTwoKinds(): Promise<{ parse: ReviewQueueItem; unknown: ReviewQueueItem }> {
+    const parse = await enqueueAt(NOW - 2 * HOUR, {
+      kind: "low-confidence",
+      payload: gatedPayload(),
+    });
+    const unknown = await enqueueAt(NOW - HOUR, {
+      kind: "unknown-provider",
+      payload: { amount: null, direction: null, packageName: "com.games.loud" },
+    });
+    return { parse, unknown };
+  }
+
+  test("a kind chip narrows the list, and pressing it again restores the queue", async () => {
+    const { parse, unknown } = await seedTwoKinds();
+    await renderScreen();
+    await waitFor(() => expect(screen.getAllByTestId(/^review-card-/)).toHaveLength(2));
+
+    fireEvent.press(screen.getByTestId("review-filter-chip-unknown-provider"));
+
+    // A chip press is a NEW DATABASE READ, not a re-render of loaded rows (the
+    // filter is part of the query — see use_review_queue_page.ts), so these
+    // waits have to outlast a real round trip. `waitFor`'s 1 s default is
+    // enough on an idle machine and not enough on one running the whole suite
+    // in parallel, where this read has queued behind 200 other test databases.
+    await waitFor(() => expect(screen.getAllByTestId(/^review-card-/)).toHaveLength(1), {
+      timeout: 10_000,
+    });
+    expect(screen.getByTestId(`review-card-${unknown.id}`)).toBeTruthy();
+    expect(screen.queryByTestId(`review-card-${parse.id}`)).toBeNull();
+    // The narrowing NEVER passes through the loading skeleton — see
+    // `placeholderData` in use_review_queue_page.ts. A chip that blanks the
+    // list to five grey bars reads as data being lost.
+    expect(screen.queryByTestId("review-queue-loading")).toBeNull();
+
+    // A SELECTED CHIP IS ITS OWN REMOVAL AFFORDANCE — there is no separate
+    // clear control, so this press has to be the way back.
+    fireEvent.press(screen.getByTestId("review-filter-chip-unknown-provider"));
+    await waitFor(() => expect(screen.getByTestId(`review-card-${parse.id}`)).toBeTruthy(), {
+      timeout: 10_000,
+    });
+  });
+
+  test("the chips count what is waiting", async () => {
+    await seedTwoKinds();
+    await enqueueAt(NOW - 3 * HOUR, { kind: "low-confidence", payload: gatedPayload() });
+    await renderScreen();
+
+    await waitFor(() => expect(screen.getByTestId("review-filter-bar")).toBeTruthy());
+    expect(screen.getByText("All 3")).toBeTruthy();
+    expect(screen.getByText("Needs a check 2")).toBeTruthy();
+    expect(screen.getByText("Unknown app 1")).toBeTruthy();
+  });
+
+  test("one kind waiting means no filter bar — a lone chip cannot change anything", async () => {
+    await enqueueAt(NOW - HOUR, { kind: "low-confidence", payload: gatedPayload() });
+    await renderScreen();
+
+    await waitFor(() => expect(screen.getAllByTestId(/^review-card-/)).toHaveLength(1));
+    expect(screen.queryByTestId("review-filter-bar")).toBeNull();
+  });
+
+  test("EMPTYING A FILTER IS NOT 'All caught up.' — the reward is never shown over a hidden queue", async () => {
+    const { parse, unknown } = await seedTwoKinds();
+    await renderScreen();
+    await waitFor(() => expect(screen.getAllByTestId(/^review-card-/)).toHaveLength(2));
+
+    fireEvent.press(screen.getByTestId("review-filter-chip-unknown-provider"));
+    // Same round trip, same headroom as above.
+    await waitFor(() => expect(screen.getAllByTestId(/^review-card-/)).toHaveLength(1), {
+      timeout: 10_000,
+    });
+
+    // "Not money" — the last unknown-provider item leaves the queue while the
+    // low-confidence one is still waiting one chip away.
+    fireEvent.press(await screen.findByTestId(`review-secondary-${unknown.id}`));
+
+    await waitFor(() => expect(screen.getByTestId("review-queue-empty-filtered")).toBeTruthy(), {
+      timeout: 10_000,
+    });
+    expect(screen.queryByTestId("review-queue-empty")).toBeNull();
+    expect(screen.queryByText(REVIEW_EMPTY_TITLE)).toBeNull();
+    // And the way out is on screen, because the chip that caused this is the
+    // only one still selected.
+    fireEvent.press(screen.getByText("Show all"));
+    await waitFor(() => expect(screen.getByTestId(`review-card-${parse.id}`)).toBeTruthy(), {
+      timeout: 10_000,
+    });
   });
 });
