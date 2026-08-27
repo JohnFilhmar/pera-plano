@@ -490,7 +490,15 @@ export type UserRuleAction =
   | { kind: "set-category"; categoryId: string }
   | { kind: "set-wallet"; walletId: string }
   | { kind: "set-merchant"; merchant: string }
-  | { kind: "mark-transfer" }
+  /**
+   * "Money matching this rule is a transfer to/from THIS wallet."
+   *
+   * The wallet is on the ACTION because `UserRuleMatcher` can only describe one
+   * leg — a provider, a merchant pattern, a direction. The pair is expressed as
+   * matcher-identifies-one-side, action-names-the-other. Without it the action
+   * could never fire, which is exactly the state it shipped in.
+   */
+  | { kind: "mark-transfer"; counterpartWalletId: string }
   | { kind: "suppress-recurring"; merchant: string }
   | { kind: "ignore" };
 

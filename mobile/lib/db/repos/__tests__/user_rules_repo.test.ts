@@ -87,7 +87,10 @@ test("an amount-range matcher round-trips its bounds, including a zero floor", a
 
 test("createUserRule defaults priority, isEnabled, createdFrom and the stats fields", async () => {
   const created = await createUserRule(
-    { matcher: { merchantPattern: "MERALCO" }, action: { kind: "mark-transfer" } },
+    {
+      matcher: { merchantPattern: "MERALCO" },
+      action: { kind: "mark-transfer", counterpartWalletId: "w_meralco_source" },
+    },
     T0,
   );
 
@@ -352,4 +355,26 @@ test("a matcher that parses to a non-object is dropped rather than listed", asyn
   } finally {
     warn.mockRestore();
   }
+});
+
+test("a mark-transfer rule round-trips with its counterpart wallet", async () => {
+  await createUserRule({
+    matcher: { providerKey: "gcash", merchantPattern: "BPI" },
+    action: { kind: "mark-transfer", counterpartWalletId: "w_bpi" },
+    priority: 100,
+  });
+
+  const [rule] = await listUserRules();
+  expect(rule?.action).toEqual({ kind: "mark-transfer", counterpartWalletId: "w_bpi" });
+});
+
+test("a mark-transfer row with no counterpart wallet is dropped, not defaulted", async () => {
+  await db.runAsync(
+    `INSERT INTO user_rules
+       (id, matcher_json, action_json, priority, is_enabled, created_from,
+        applied_count, last_applied_at, created_at, updated_at)
+     VALUES ('ur_legacy', '{"providerKey":"gcash"}', '{"kind":"mark-transfer"}', 100, 1, NULL, 0, NULL, 0, 0)`,
+  );
+
+  expect(await listUserRules()).toHaveLength(0);
 });
