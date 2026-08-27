@@ -72,8 +72,9 @@ export default function ReportsScreen() {
     // bottom padding — FormScreen's contentContainerStyle owns that edge, so
     // the old symmetric p-4 would double-count it.
     //
-    // RangePicker's own HORIZONTAL month strip stays a ScrollView: a different
-    // axis takes no vertical scroll range from this one.
+    // RangePicker no longer scrolls at all on either axis — its month strip is
+    // now a sheet (components/reports/month_picker.tsx), and a Modal is its
+    // own native window with its own KeypadHost.
     <FormScreen testID="reports-screen">
       <View className="gap-4 bg-bg px-4 pt-4 dark:bg-bg-dark">
         <RangePicker

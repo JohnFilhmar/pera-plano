@@ -12,13 +12,18 @@
 // `customAllowed` alone here would be a second, easy-to-drift copy of the
 // same lock icon. Interfaces note: a Plus row that NAMES the feature — not a
 // blurred preview of real data — is what rule 5 asks for here.
+import { ChevronDown } from "lucide-react-native";
 import { useState } from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 
 import { PlusGate } from "@/components/gates/plus_gate";
+import { MonthPicker } from "@/components/reports/month_picker";
+import { registerIcon } from "@/components/ui/button";
 import { DateField } from "@/components/ui/date_field";
 import { parseDateIso } from "@/lib/dates";
 import { MONTHS } from "@/lib/datetime";
+
+const ChevronGlyph = registerIcon(ChevronDown);
 import type { AvailableScopes, ReportScope } from "@/lib/reports/reports_service";
 import { ISOLATED_LINK_HIT_SLOP } from "@/lib/ui/hit_slop";
 
@@ -34,6 +39,24 @@ export type RangePickerProps = {
 function monthLabel(month: string): string {
   const [year, monthNumber] = month.split("-");
   return `${MONTHS[Number(monthNumber) - 1]} ${year}`;
+}
+
+/**
+ * `'2026-08-05'` → `'Aug 5, 2026'`. Same table again.
+ *
+ * NOT lib/datetime.ts's `formatDate`, which takes an EpochMs: converting an
+ * IsoDate to a timestamp just to format it back is the round trip that file's
+ * header warns about, and every scope string here is already local-calendar.
+ */
+function dateLabel(iso: string): string {
+  const [year, monthNumber, day] = iso.split("-");
+  return `${MONTHS[Number(monthNumber) - 1]} ${Number(day)}, ${year}`;
+}
+
+/** What the period field says. Both scope kinds name themselves. */
+function periodLabel(scope: ReportScope): string {
+  if (scope.kind === "month") return monthLabel(scope.month);
+  return `${dateLabel(scope.range.from)} – ${dateLabel(scope.range.to)}`;
 }
 
 /**
@@ -77,41 +100,52 @@ export function RangePicker({
   testID,
 }: RangePickerProps) {
   const [customOpen, setCustomOpen] = useState(false);
+  const [monthsOpen, setMonthsOpen] = useState(false);
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
 
   return (
     <View testID={testID ?? "range-picker"} className="gap-3">
       {availableScopes.customAllowed ? (
-        <ScrollView horizontal testID="range-picker-months" showsHorizontalScrollIndicator={false}>
-          <View className="flex-row gap-2">
-            {availableScopes.months.map((month) => {
-              const active = scope.kind === "month" && scope.month === month;
-              return (
-                <Pressable
-                  key={month}
-                  testID={`range-picker-month-${month}`}
-                  onPress={() => onSelectMonth(month)}
-                  accessibilityRole="button"
-                  accessibilityLabel={monthLabel(month)}
-                  className={`rounded-full px-3 py-2 ${
-                    active ? "bg-brand dark:bg-brand-dark" : "bg-surface dark:bg-surface-dark"
-                  }`}
-                >
-                  <Text
-                    className={
-                      active
-                        ? "font-semibold text-surface dark:text-surface-dark"
-                        : "text-fg dark:text-fg-dark"
-                    }
-                  >
-                    {monthLabel(month)}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        </ScrollView>
+        // ONE FIELD THAT NAMES THE PERIOD, not a strip of twelve pills.
+        //
+        // The strip was a horizontal ScrollView over a list the service hands
+        // back OLDEST FIRST, so it opened on last September with the month
+        // actually being reported on off the right edge — see
+        // month_picker.tsx's header for why a grid is the fix rather than an
+        // auto-scroll. What is left here is the ordinary Android picker shape
+        // (docs/11: "sheets for pickers"): a field showing the current value,
+        // a sheet to change it.
+        //
+        // NAMES THE CUSTOM RANGE TOO. With a custom range applied, no month
+        // pill was active and the strip said nothing at all about what was on
+        // screen; this field always states the period the charts below are
+        // drawn from.
+        <>
+          <Pressable
+            testID="range-picker-month-trigger"
+            onPress={() => setMonthsOpen(true)}
+            accessibilityRole="button"
+            accessibilityLabel={`Period, ${periodLabel(scope)}`}
+            className="min-h-[44px] flex-row items-center justify-between rounded-xl bg-surface px-3 py-2 dark:bg-surface-dark"
+          >
+            <Text className="text-lg font-semibold text-fg dark:text-fg-dark">
+              {periodLabel(scope)}
+            </Text>
+            <ChevronGlyph size={20} className="text-fg-2 dark:text-fg-2-dark" />
+          </Pressable>
+
+          <MonthPicker
+            visible={monthsOpen}
+            value={scope.kind === "month" ? scope.month : null}
+            months={availableScopes.months}
+            onDismiss={() => setMonthsOpen(false)}
+            onSelect={(month) => {
+              setMonthsOpen(false);
+              onSelectMonth(month);
+            }}
+          />
+        </>
       ) : (
         // Free has exactly one month to look at (rule 5) — a static label
         // reads as "this is what you have"; a disabled pill would read as a
