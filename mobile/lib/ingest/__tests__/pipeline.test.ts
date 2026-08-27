@@ -106,8 +106,28 @@ async function addMatcher(walletId: string, packageName: string): Promise<void> 
   );
 }
 
+/** `addMatcher`, named by provider rather than by raw package for the one-sided-transfer tests. */
+const PACKAGE_BY_PROVIDER: Record<string, string> = { gcash: GCASH };
+
+async function seedWalletMatcher(provider: keyof typeof PACKAGE_BY_PROVIDER, walletId: string): Promise<void> {
+  await addMatcher(walletId, PACKAGE_BY_PROVIDER[provider]);
+}
+
+let captureSeq = 0;
+
+/** A GCash capture with a fresh id, for tests that only care about the text. */
+function gcashCapture(overrides: Partial<RawCapture> = {}): RawCapture {
+  captureSeq += 1;
+  return capture({ id: `cap-one-sided-${captureSeq}`, ...overrides });
+}
+
 async function ledger(): Promise<Transaction[]> {
   return listTransactions({});
+}
+
+/** `listOpen`, named to match the review-queue-reading tests below. */
+async function listOpenReviewItems() {
+  return listOpen();
 }
 
 /** Committed rows in the order they were written, which is what rule 8 is about. */
@@ -815,6 +835,32 @@ test("a rival moving the same way as the event still demotes an otherwise perfec
   expect((await listOpen())[0].kind).toBe("ambiguous-transfer");
   const links = await db.getAllAsync("SELECT * FROM transfer_links");
   expect(links).toHaveLength(0);
+});
+
+test("a one-sided transfer queues an item and commits nothing", async () => {
+  // Only one leg was ever captured — a bank-funded cash-in with no matching
+  // out-leg anywhere in the ledger. `detectTransfer` reads this as `one_sided`
+  // off the "Cash In" transfer-intent keyword, and the gate must hard-route it
+  // at ANY confidence: the counterpart wallet is a guess until the user
+  // confirms, so nothing may commit.
+  const gcashWallet = await createWallet({ name: "GCash", type: "e-wallet" });
+  await seedWalletMatcher("gcash", gcashWallet.id);
+
+  await processCapture(
+    gcashCapture({ text: "Cash In of PHP 1,000.00 was successful. Ref No. ONESIDE1." }),
+  );
+
+  expect(await listTransactions({})).toHaveLength(0);
+
+  const [item] = await listOpenReviewItems();
+  expect(item?.kind).toBe("one-sided-transfer");
+  expect(item?.payload).toMatchObject({
+    amount: 100_000,
+    direction: "in",
+    walletId: gcashWallet.id,
+    counterpartWalletId: null,
+    signal: "text",
+  });
 });
 
 // ---------------------------------------------------------------------------

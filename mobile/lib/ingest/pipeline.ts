@@ -42,6 +42,7 @@ import { addCaptureListener, drainPendingCaptures } from "@/modules/notification
 import type { NormalizedEvent } from "@/lib/ingest/normalizer";
 import type { ProviderRuleset, RulesetBundle } from "@/lib/ingest/ruleset_types";
 import type { RecentEvent } from "@/lib/ingest/dedupe_gate";
+import type { MarkTransferRule } from "@/lib/ingest/transfer_detector";
 import type { RawCapture, ReviewKind, Transaction, UserRule } from "@/types/domain";
 
 /**
@@ -302,13 +303,20 @@ async function runStages(
   const since = event.occurredAt - lookbackMs(bundle);
   const recentRows = await listTransactions({ from: since });
 
-  const verdicts = await runVerdicts(event, recentRows, bundle);
+  // HOISTED ABOVE `runVerdicts`, not read again for the categorizer below.
+  // `detectTransfer`'s `mark-transfer` rules and `categorize`'s learned rules
+  // are the same `UserRule` table — reading it twice per capture would double
+  // a query that runs on every single notification for no benefit, since
+  // nothing between the two reads can change it.
+  const rules = await listUserRules();
+
+  const verdicts = await runVerdicts(event, recentRows, bundle, rules);
   if (verdicts.dedupe.kind === "duplicate") {
     return { kind: "ignored", reason: "duplicate" };
   }
 
   const history = await listTransactions({});
-  const category = categorize(event, await listUserRules(), history);
+  const category = categorize(event, rules, history);
   const confidence = applyPenalty(event.confidence, category.penalty);
 
   const decision = decideRoute({
@@ -361,6 +369,16 @@ async function runStages(
             transferReason: verdicts.transfer.reason,
           }
         : {}),
+      // The one-sided card's wallet picker is prefilled from this, never
+      // decided by it — `counterpartWalletId` is a guess (a rule match or
+      // none) until the user confirms, which is why nothing upstream ever
+      // committed a second leg for it.
+      ...(verdicts.transfer.kind === "one_sided"
+        ? {
+            counterpartWalletId: verdicts.transfer.counterpartWalletId,
+            signal: verdicts.transfer.signal,
+          }
+        : {}),
     });
   }
 
@@ -376,6 +394,7 @@ async function runVerdicts(
   event: NormalizedEvent,
   recentRows: Transaction[],
   bundle: RulesetBundle,
+  rules: UserRule[],
 ): Promise<Verdicts> {
   const recent = await recentEventsFor(recentRows, packageIndex(bundle));
   return {
@@ -384,14 +403,26 @@ async function runVerdicts(
     // either leg" needs the rows moving the SAME way as the event, and
     // filtering them out silently disables the guard whose whole job is
     // preventing a false link that hides real spend and real income at once.
-    transfer: detectTransfer(event, recentRows, bundle.tunables),
+    transfer: detectTransfer(event, recentRows, bundle.tunables, markTransferRules(rules)),
   };
+}
+
+/** The `mark-transfer` rules, in the shape the detector reads. */
+function markTransferRules(rules: UserRule[]): MarkTransferRule[] {
+  return rules
+    .filter((rule) => rule.isEnabled && rule.action.kind === "mark-transfer")
+    .map((rule) => ({
+      matcher: rule.matcher,
+      counterpartWalletId: (rule.action as { counterpartWalletId: string }).counterpartWalletId,
+      priority: rule.priority,
+    }));
 }
 
 /** Which card the Review Queue shows. `ReviewKind` has no "needs-details" member. */
 function reviewKindFor(verdicts: Verdicts): ReviewKind {
   if (verdicts.dedupe.kind === "possible-duplicate") return "possible-duplicate";
   if (verdicts.transfer.kind === "ambiguous-transfer") return "ambiguous-transfer";
+  if (verdicts.transfer.kind === "one_sided") return "one-sided-transfer";
   // Both `review_prefilled` and `review_needs_details` land here. `ReviewKind`
   // has no "needs-details" member, and adding one would duplicate information
   // the payload already carries: the card decides how much to prefill from the

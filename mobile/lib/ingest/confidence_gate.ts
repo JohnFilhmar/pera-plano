@@ -101,6 +101,8 @@ export const GATE_REASONS = {
     "This may repeat a transaction already recorded — same amount, around the same time.",
   ambiguousTransfer:
     "This may be a transfer between your own accounts rather than money leaving your budget.",
+  oneSidedTransfer:
+    "This looks like money moving between your own accounts. Tell PeraPlano where the other half went.",
   /** Should be unreachable — see `hardRouteReason`. */
   notFinancial:
     "PeraPlano did not read this notification as money, so none of these details were verified.",
@@ -209,6 +211,10 @@ function scoreBand(confidence: number, tunables: PipelineTunables): ScoreBand {
  *   3.   Is it a transfer between the user's own accounts?  Answering this
  *        changes what the row MEANS — both legs leave spend and income entirely
  *        (domain invariant I2) — and settles the wallet question along the way.
+ *        `one_sided` shares this slot with `ambiguous-transfer`: it is the
+ *        SAME question ("is this a transfer?"), just answered from only one
+ *        captured leg instead of two, so it outranks provenance and currency
+ *        for the identical reason.
  *   4-5. Do we know where it came from?  With the provenance unestablished,
  *        every parsed field below is a guess, including the currency and the
  *        wallet, so it outranks both.
@@ -243,6 +249,7 @@ function hardRouteReason(input: GateInput): string | null {
   if (input.dedupe.kind === "duplicate") return GATE_REASONS.duplicate;
   if (input.dedupe.kind === "possible-duplicate") return GATE_REASONS.possibleDuplicate;
   if (input.transfer.kind === "ambiguous-transfer") return GATE_REASONS.ambiguousTransfer;
+  if (input.transfer.kind === "one_sided") return GATE_REASONS.oneSidedTransfer;
   if (input.routed === "not_financial") return GATE_REASONS.notFinancial;
   if (input.routed === "unknown") return GATE_REASONS.unknownProvider;
   if (input.nonPhpCurrency) return GATE_REASONS.nonPhpCurrency;

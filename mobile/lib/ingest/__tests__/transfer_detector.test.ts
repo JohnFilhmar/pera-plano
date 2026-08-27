@@ -747,6 +747,35 @@ test("a matching rule supplies the wallet and wins the prefill", () => {
   });
 });
 
+test("two matching rules of different priority pick the higher-priority wallet", () => {
+  // The previous task's review found "highest-priority rule wins" resting on
+  // code inspection alone — no test exercised two matching rules at once. The
+  // wallet this returns is a PREFILL on the one-sided card, and a wrong winner
+  // mints a ledger row on the wrong account if the user confirms without
+  // reading, so the ordering needs a real assertion, not a read of `sort`.
+  //
+  // The array is given in ASCENDING priority order on purpose: an
+  // implementation that forgot to sort, or sorted ascending instead of
+  // descending, would return `matches[0]` as BANK (priority 10) and fail this
+  // test. Only a correct descending sort by priority returns SAVINGS.
+  const event = makeEvent({
+    direction: "in",
+    walletId: EWALLET,
+    providerKey: "gcash",
+    transferIntent: true,
+  });
+  const rules: MarkTransferRule[] = [
+    { matcher: { providerKey: "gcash" }, counterpartWalletId: BANK, priority: 10 },
+    { matcher: { providerKey: "gcash" }, counterpartWalletId: SAVINGS, priority: 50 },
+  ];
+
+  expect(detectTransfer(event, [], DEFAULT_TUNABLES, rules)).toEqual({
+    kind: "one_sided",
+    counterpartWalletId: SAVINGS,
+    signal: "rule",
+  });
+});
+
 test("a rule naming the event's own wallet is ignored", () => {
   // A stale rule pointing at the event's own wallet must not produce a card
   // offering to link a wallet to itself — it is discarded, not offered.
