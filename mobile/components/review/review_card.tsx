@@ -46,13 +46,14 @@ import { CircleHelp } from "lucide-react-native";
 import { useState } from "react";
 import { Text, View } from "react-native";
 
-import { AmountText } from "@/components/ui/amount_text";
+import { AmountText, formatCentavos } from "@/components/ui/amount_text";
 import { Button, registerIcon } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Chip } from "@/components/ui/chip";
 import { providerLabelForPackage } from "@/constants/providers";
 import { useRawCapture } from "@/hooks/queries/use_raw_capture";
 import { useTransaction } from "@/hooks/queries/use_transaction";
+import { autofillFrom, snippetLines, type AutofillProposal } from "@/lib/ingest/candidates";
 import { GATE_REASONS } from "@/lib/ingest/confidence_gate";
 import type { ProviderRuleset } from "@/lib/ingest/ruleset_types";
 import { centavosFrom } from "@/lib/money/peso_input";
@@ -636,28 +637,6 @@ function CounterpartSide({
 }
 
 /**
- * Up to three distinct, non-empty lines of the capture — the spec's "captured
- * snippet".
- *
- * All four fields, not just `text`: an expanded Android notification routinely
- * carries the amount the collapsed one omits, and this card's entire question is
- * "is this money?". Duplicates are collapsed because Android repeats `text` in
- * `bigText` constantly, and the same sentence printed twice reads as a bug.
- */
-function snippetLines(capture: RawCapture): string[] {
-  const seen = new Set<string>();
-  const lines: string[] = [];
-  for (const field of [capture.title, capture.text, capture.bigText, capture.subText]) {
-    const value = field?.trim();
-    if (!value || seen.has(value)) continue;
-    seen.add(value);
-    lines.push(value);
-    if (lines.length === 3) break;
-  }
-  return lines;
-}
-
-/**
  * The unknown-provider body: which app it came from, and what it said.
  *
  * BOTH HALVES ARE THE QUESTION. "Is this a money notification?" cannot be
@@ -669,12 +648,18 @@ function snippetLines(capture: RawCapture): string[] {
 function UnknownSourceBody({
   item,
   providers,
+  capture,
 }: {
   item: ReviewQueueItem;
   providers: readonly ProviderRuleset[];
+  /**
+   * READ BY THE CARD, NOT HERE (changed 2026-08-28). The card itself now needs
+   * the capture — it is what the one-tap "Record ₱x" primary is built from —
+   * and one `useRawCapture` above serves both, rather than this component
+   * fetching the same row under the same key a second time.
+   */
+  capture: RawCapture | null | undefined;
 }) {
-  const { data: capture } = useRawCapture(item.rawNotificationId);
-
   const packageName = readString(item.payload, "packageName") ?? capture?.packageName ?? null;
   // By definition no ruleset provider matches an unknown package, so this
   // resolves to the package id itself — which is still the most specific true
@@ -857,8 +842,69 @@ export type ReviewCardProps = {
    * this file refuses to ship.
    */
   onChooseTransferWallet?: (item: ReviewQueueItem, walletId: string, feeAmount: Centavos) => void;
+  /**
+   * `unknown-provider` only (2026-08-28). Commits the notification the card is
+   * showing, using the fields `candidates.ts` read out of its text — the whole
+   * point of which is that a capture the app CAN read should not open a form.
+   *
+   * Same "absent means disabled" rule as the pair: without it the primary is
+   * still labelled with what it would record, and still cannot be tapped.
+   * Withheld by this card whenever anything is a question — two live amounts,
+   * no direction keyword, no wallet to name — in which case the primary falls
+   * back to opening the correction sheet, exactly as it did before.
+   */
+  onRecordAutofill?: (item: ReviewQueueItem, proposal: AutofillCommit) => void;
+  /**
+   * The way back to the form when the primary is a one-tap commit. WITHOUT
+   * THIS the autofill path would be a trap: a user who can see the app read
+   * the wrong number would have "Not money" as their only other button, and
+   * would either discard a real transaction or record a wrong one.
+   *
+   * Rendered only alongside a live `onRecordAutofill` — when the primary
+   * already opens the sheet there is nothing for it to add.
+   */
+  onEditDetails?: (item: ReviewQueueItem) => void;
   testID?: string;
 };
+
+/** An `AutofillProposal` with the wallet the card resolved for it. */
+export type AutofillCommit = AutofillProposal & { walletId: string };
+
+/**
+ * The wallet a one-tap record would land in: the payload's own, or the user's
+ * ONLY wallet.
+ *
+ * `correct_sheet.tsx`'s `defaultWalletId` makes exactly this call and says why
+ * — with two or more wallets, which one a transaction belongs to IS a
+ * decision, and the sheet is where decisions get made. Here the stakes are
+ * higher (there is no form to correct it in before it commits), so the rule is
+ * not loosened by a single character.
+ */
+function autofillWalletId(
+  item: ReviewQueueItem,
+  wallets: readonly Wallet[],
+): string | null {
+  return readString(item.payload, "walletId") ?? (wallets.length === 1 ? wallets[0].id : null);
+}
+
+/**
+ * The primary's words when it will commit rather than open a form.
+ *
+ * NAMES ALL THREE FACTS IT IS ABOUT TO WRITE — how much, which way, which
+ * wallet — because this button is the entire confirmation. "Record this" would
+ * be a one-tap commit of numbers the user was never told, on a card whose
+ * whole premise is that the app is unsure.
+ */
+export function autofillPrimaryLabel(proposal: AutofillCommit, wallet: Wallet | null): string {
+  const amount = formatCentavos(proposal.amount);
+  const preposition = proposal.direction === "out" ? "out of" : "into";
+  return wallet === null
+    ? `Record ${amount}`
+    : `Record ${amount} ${preposition} ${wallet.name}`;
+}
+
+/** The escape hatch beside it. A verb, because it opens a form (rule 5). */
+export const AUTOFILL_EDIT_LABEL = "Change the details";
 
 export function ReviewCard({
   item,
@@ -870,6 +916,8 @@ export function ReviewCard({
   onReject,
   onChooseLoan,
   onChooseTransferWallet,
+  onRecordAutofill,
+  onEditDetails,
   testID,
 }: ReviewCardProps) {
   const actions = REVIEW_ACTIONS[item.kind];
@@ -916,6 +964,30 @@ export function ReviewCard({
   const capturedWalletId = readString(item.payload, "walletId");
 
   const isOneSidedTransfer = item.kind === "one-sided-transfer";
+  const isUnknownProvider = item.kind === "unknown-provider";
+
+  // ONLY FOR THE ONE KIND THAT HAS NO PARSE (2026-08-28). Passing `null` for
+  // every other kind keeps the query disabled, so no card starts fetching a
+  // capture it has no use for — `low-confidence` items carry a
+  // `rawNotificationId` too, and an unconditional read here would put one
+  // request per card behind a screen that previously made none.
+  const { data: capture } = useRawCapture(isUnknownProvider ? item.rawNotificationId : null);
+
+  // What the text says, when a template could not. `null` whenever the read is
+  // uncertain — see `candidates.ts`: two live amounts, or no direction cue, and
+  // this stays `null` so the primary goes on opening the form.
+  const autofill = capture === undefined || capture === null ? null : autofillFrom(capture);
+  const autofillWallet = wallets.find((wallet) => wallet.id === autofillWalletId(item, wallets));
+  const autofillCommit: AutofillCommit | null =
+    isUnknownProvider && autofill !== null && autofillWallet !== undefined
+      ? { ...autofill, walletId: autofillWallet.id }
+      : null;
+  // Same withheld-not-inert rule as `transferPrimary` below: no handler means
+  // the button renders disabled rather than doing nothing when tapped.
+  const autofillPrimary =
+    autofillCommit !== null && onRecordAutofill !== undefined
+      ? () => onRecordAutofill(item, autofillCommit)
+      : undefined;
 
   // WITHHELD, NOT SUPPLIED-AND-INERT. This file's own rule renders an absent
   // `onPrimary` as disabled-but-visible, so the outcome still reads on
@@ -929,12 +1001,23 @@ export function ReviewCard({
       : undefined;
   const primaryDisabled = isOneSidedTransfer
     ? transferPrimary === undefined
-    : onPrimary === undefined || missingField !== null;
+    : autofillCommit !== null
+      ? autofillPrimary === undefined
+      : onPrimary === undefined || missingField !== null;
   const primaryOnPress = isOneSidedTransfer
     ? (transferPrimary ?? (() => undefined))
-    : onPrimary
-      ? () => onPrimary(item)
-      : () => undefined;
+    : autofillCommit !== null
+      ? (autofillPrimary ?? (() => undefined))
+      : onPrimary
+        ? () => onPrimary(item)
+        : () => undefined;
+  // The label follows the ACTION, so the button never promises one thing and
+  // does another: with a proposal in hand it names what it will write, and
+  // without one it is still the pair's "This is a money notification".
+  const primaryTitle =
+    autofillCommit === null
+      ? primaryLabelFor(item)
+      : autofillPrimaryLabel(autofillCommit, autofillWallet ?? null);
 
   return (
     <View testID={testID ?? `review-card-${item.id}`} className="px-4 pb-3">
@@ -960,7 +1043,7 @@ export function ReviewCard({
           </View>
 
           {item.kind === "unknown-provider" ? (
-            <UnknownSourceBody item={item} providers={providers} />
+            <UnknownSourceBody item={item} providers={providers} capture={capture} />
           ) : item.kind === "wallet-kind-unclear" ? (
             /* NO SIDES, NO METER, NO CATEGORY — this is the only kind that is
                not about a transaction. There is no notification behind it, no
@@ -1058,7 +1141,7 @@ export function ReviewCard({
               other three. */}
           <Button
             testID={`review-primary-${item.id}`}
-            title={primaryLabelFor(item)}
+            title={primaryTitle}
             variant="primary"
             disabled={primaryDisabled}
             onPress={primaryOnPress}
@@ -1074,6 +1157,20 @@ export function ReviewCard({
             disabled={onSecondary === undefined}
             onPress={onSecondary ? () => onSecondary(item) : () => undefined}
           />
+
+          {/* THE WAY BACK TO THE FORM, and only when the primary no longer
+              opens one. A user who can see the app picked the wrong number
+              needs a button that is neither "record it anyway" nor "throw it
+              away" — without this the autofill path is a trap. */}
+          {autofillCommit !== null && onEditDetails !== undefined ? (
+            <Button
+              testID={`review-edit-${item.id}`}
+              title={AUTOFILL_EDIT_LABEL}
+              variant="ghost"
+              size="md"
+              onPress={() => onEditDetails(item)}
+            />
+          ) : null}
 
           {missingField === null ? null : (
             <Text

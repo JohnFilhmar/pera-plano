@@ -214,8 +214,17 @@ function boundValue(groups: Record<string, string | undefined>, name: string): s
   return trimmed === undefined || trimmed === "" ? undefined : trimmed;
 }
 
-/** Reads a direction out of one word or phrase — `"in"`/`"out"` literally, or a keyword. */
-function directionFromToken(token: string): TxDirection | undefined {
+/**
+ * Reads a direction out of one word or phrase — `"in"`/`"out"` literally, or a
+ * keyword.
+ *
+ * EXPORTED FOR `candidates.ts`, which infers a direction for a notification no
+ * ruleset matched at all. That is the same question this answers, over the same
+ * prose, so it must be the same keyword sets: a second copy in the UI layer
+ * would drift, and the direction the Review Queue offers to commit would stop
+ * agreeing with the direction the pipeline would have inferred.
+ */
+export function directionFromToken(token: string): TxDirection | undefined {
   const normalized = token.trim().toLowerCase();
   if (normalized === "in" || normalized === "out") return normalized;
 

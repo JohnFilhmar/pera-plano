@@ -31,12 +31,13 @@ import { Pressable, ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { CorrectSheet } from "@/components/review/correct_sheet";
-import { loanCandidates, ReviewCard } from "@/components/review/review_card";
+import { loanCandidates, ReviewCard, type AutofillCommit } from "@/components/review/review_card";
 import { registerIcon } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty_state";
 import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { useReviewAction, type ReviewAction } from "@/hooks/mutations/use_review_action";
 import { useCategories } from "@/hooks/queries/use_categories";
+import { useRawCapture } from "@/hooks/queries/use_raw_capture";
 import { useReviewQueue } from "@/hooks/queries/use_review_queue";
 import { useRuleset } from "@/hooks/queries/use_ruleset";
 import { useWallets } from "@/hooks/queries/use_wallets";
@@ -256,6 +257,11 @@ export default function ReviewQueueScreen() {
 
   const ordered = items === undefined ? undefined : sortOldestFirst(items);
   const correctingItem = ordered?.find((entry) => entry.id === correcting) ?? null;
+  // The notification behind the open sheet, so its fields can be seeded from
+  // the text rather than opened blank (2026-08-28). The same query key the
+  // card already read, so this resolves from cache rather than hitting the
+  // database a second time; `null` disables it when no sheet is open.
+  const { data: correctingCapture } = useRawCapture(correctingItem?.rawNotificationId ?? null);
 
   function dispatch(action: ReviewAction | "correct", item: ReviewQueueItem): void {
     if (action === "correct") {
@@ -263,6 +269,39 @@ export default function ReviewQueueScreen() {
       return;
     }
     triage.mutate(action);
+  }
+
+  /**
+   * The one-tap commit of an unknown provider's notification, from the fields
+   * `candidates.ts` read out of its text.
+   *
+   * SAME MUTATION AS THE SHEET'S SAVE, deliberately: this path must not be able
+   * to write a Transaction the sheet could not, so it goes through
+   * `correctItem` and its `proposalFrom` guards rather than a shortcut of its
+   * own.
+   *
+   * `createRule: false`, AND THAT IS THE WHOLE POINT OF SPELLING IT OUT.
+   * `CorrectionPatch` defaults it to `true` (spec rule 12: "every correction
+   * creates a rule unless the user opts out"), which is right for a correction
+   * the user typed — they said something specific. Here they agreed to a
+   * sentence on a button. Teaching the pipeline to route every future
+   * notification from this app on the strength of one glance is exactly the
+   * "the queue teaching the pipeline things nobody asked it to learn" that
+   * `correct_sheet.tsx` refuses to do; a user who wants the rule can open the
+   * sheet through "Change the details" and tick the box that says so.
+   */
+  function recordAutofill(item: ReviewQueueItem, proposal: AutofillCommit): void {
+    triage.mutate({
+      kind: "correct",
+      itemId: item.id,
+      patch: {
+        amount: proposal.amount,
+        direction: proposal.direction,
+        walletId: proposal.walletId,
+        ...(proposal.merchant === null ? {} : { merchant: proposal.merchant }),
+        createRule: false,
+      },
+    });
   }
 
   return (
@@ -360,6 +399,12 @@ export default function ReviewQueueScreen() {
                   onChooseLoan={(item, loanId) =>
                     triage.mutate({ kind: "confirm-loan-match", itemId: item.id, loanId })
                   }
+                  onRecordAutofill={recordAutofill}
+                  // The escape hatch the card renders beside a one-tap
+                  // record: the same sheet "This is a money notification"
+                  // used to open, still one tap away for anyone who can see
+                  // the app read the wrong number.
+                  onEditDetails={(item) => setCorrecting(item.id)}
                   onChooseTransferWallet={(item, walletId, feeAmount) =>
                     triage.mutate({
                       kind: "confirm-one-sided-transfer",
@@ -385,6 +430,7 @@ export default function ReviewQueueScreen() {
           item={correctingItem}
           wallets={wallets ?? []}
           categories={categories ?? []}
+          capture={correctingCapture}
           onDismiss={() => setCorrecting(null)}
           onSubmit={(patch) => {
             setCorrecting(null);

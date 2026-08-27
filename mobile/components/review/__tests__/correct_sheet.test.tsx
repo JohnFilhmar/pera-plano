@@ -32,7 +32,7 @@ import { createWallet } from "@/lib/db/repos/wallets_repo";
 import { correctItem } from "@/lib/review/resolve_actions";
 import type { CorrectionPatch } from "@/lib/review/resolve_actions";
 import { freshDb } from "@/test_support/db";
-import type { Category, ReviewQueueItem, Wallet } from "@/types/domain";
+import type { Category, RawCapture, ReviewQueueItem, Wallet } from "@/types/domain";
 
 const FOOD = "cat_food_dining";
 const TRANSPORT = "cat_transport";
@@ -127,18 +127,49 @@ function Wrapper({ children }: { children: ReactNode }) {
   );
 }
 
-function renderSheet(entry: ReviewQueueItem = item()): void {
+function renderSheet(entry: ReviewQueueItem = item(), capture: RawCapture | null = null): void {
   render(
     <CorrectSheet
       visible
       item={entry}
       wallets={WALLETS}
       categories={CATEGORIES}
+      capture={capture}
       onDismiss={onDismiss}
       onSubmit={onSubmit}
     />,
     { wrapper: Wrapper },
   );
+}
+
+/**
+ * An unknown provider's item: `{ amount: null, direction: null }`, exactly what
+ * `pipeline.ts` queues when no ruleset matched. Everything this sheet shows for
+ * one of these comes from the capture, because the payload has nothing in it.
+ */
+function unknownItem(): ReviewQueueItem {
+  return {
+    id: "item-unknown",
+    kind: "unknown-provider",
+    payload: { amount: null, direction: null, packageName: "com.bank.notanapp" },
+    rawNotificationId: "raw-1",
+    createdAt: 0,
+    expiresAt: null,
+    resolvedAt: null,
+  };
+}
+
+function unknownCapture(text: string): RawCapture {
+  return {
+    id: "raw-1",
+    packageName: "com.bank.notanapp",
+    title: "Notanapp",
+    text,
+    subText: null,
+    bigText: null,
+    postedAt: 0,
+    capturedAt: 0,
+  };
 }
 
 beforeEach(() => {
@@ -602,5 +633,113 @@ describe("the emitted patch actually survives the resolver", () => {
     const rules = await listUserRules("set-wallet");
     expect(rules).toHaveLength(1);
     expect(rules[0].action).toEqual({ kind: "set-wallet", walletId: gcash.id });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Seeded from the notification (2026-08-28)
+//
+// The unknown-provider flow reaches this sheet with a payload that holds
+// NOTHING — `pipeline.ts` queues `{ amount: null, direction: null }` because no
+// ruleset matched and no parser ran. Before this, that meant a blank form over
+// a notification the user had just identified as money: they retyped what their
+// own screen said. `candidates.ts` reads the capture; this sheet seeds from it.
+//
+// TWO PROPERTIES ARE LOAD-BEARING AND BOTH ARE ASSERTED BELOW.
+//
+//   A SEED IS STILL REPORTED IN THE PATCH. `correctItem` requires an amount
+//   from the patch or the payload, and this payload has none — so a seed folded
+//   into the diff's baseline would submit an empty patch, throw after the sheet
+//   had already closed, and look exactly like a successful save. That is the
+//   2026-08-18 preselect bug, one field over.
+//
+//   A SEED IS NOT A CORRECTION THE USER MADE. The rule checkbox defaults
+//   UNCHECKED here, because the user agreed to numbers the app proposed rather
+//   than typing something specific — teaching the pipeline from that would be
+//   the queue learning things nobody asked it to learn.
+// ---------------------------------------------------------------------------
+
+describe("seeding an unknown provider from its notification", () => {
+  test("fills the amount, direction and merchant the text carries", () => {
+    renderSheet(
+      unknownItem(),
+      unknownCapture("You sent PHP 1,250.00 to Juan Dela Cruz. New balance PHP 3,420.50."),
+    );
+
+    // The BALANCE is the trap: it is the larger number, it is an amount-like
+    // token, and committing it would put a ₱3,420.50 spend nobody made in the
+    // ledger.
+    expect(screen.getByTestId("correct-amount")).toHaveTextContent("₱1,250");
+    expect(screen.getByTestId("correct-amount")).not.toHaveTextContent("₱3,420");
+    expect(screen.getByTestId("correct-direction-out").props.accessibilityState).toMatchObject({
+      selected: true,
+    });
+    expect(screen.getByTestId("correct-merchant").props.value).toBe("Juan Dela Cruz");
+  });
+
+  test("the seeded amount is reported in the patch, not swallowed as a baseline", () => {
+    renderSheet(unknownItem(), unknownCapture("You sent PHP 1,250.00 to Juan Dela Cruz."));
+
+    fireEvent.press(screen.getByTestId("correct-wallet-wallet_gcash"));
+    fireEvent.press(screen.getByTestId("correct-save"));
+
+    const patch = onSubmit.mock.calls[0][0] as CorrectionPatch;
+    expect(patch.amount).toBe(125000);
+    expect(patch.direction).toBe("out");
+    expect(patch.walletId).toBe("wallet_gcash");
+  });
+
+  test("nothing is remembered from numbers the user only agreed to", () => {
+    renderSheet(unknownItem(), unknownCapture("You sent PHP 1,250.00 to Juan Dela Cruz."));
+
+    // Picking the wallet is what offers the rule at all (`ruleOffered`).
+    fireEvent.press(screen.getByTestId("correct-wallet-wallet_gcash"));
+
+    expect(screen.getByTestId("correct-rule-checkbox").props.accessibilityState).toMatchObject({
+      checked: false,
+    });
+    fireEvent.press(screen.getByTestId("correct-save"));
+    expect((onSubmit.mock.calls[0][0] as CorrectionPatch).createRule).toBe(false);
+  });
+
+  test("a correction the user typed still arms the checkbox", () => {
+    // The seeding must not disarm rule creation for the ORDINARY path — a
+    // parsed item corrected by hand is exactly the case spec rule 12 is about.
+    renderSheet();
+    fireEvent.press(screen.getByTestId("correct-wallet-wallet_bpi"));
+
+    expect(screen.getByTestId("correct-rule-checkbox").props.accessibilityState).toMatchObject({
+      checked: true,
+    });
+  });
+
+  test("two live amounts leave the field empty and the text tappable", () => {
+    renderSheet(
+      unknownItem(),
+      unknownCapture("PHP 1,250.00 paid to Meralco. Convenience fee PHP 15.00."),
+    );
+
+    // NOTHING IS GUESSED when two numbers are both transaction-shaped — the
+    // sheet says so and lets the user point at the one that moved.
+    expect(screen.getByTestId("correct-amount")).toHaveTextContent("₱0");
+    expect(screen.getByTestId("correct-capture-hint")).toBeTruthy();
+
+    fireEvent.press(screen.getByTestId("correct-token-1500"));
+    expect(screen.getByTestId("correct-amount")).toHaveTextContent("₱15");
+
+    // And the choice is revisable: the other number is still where the
+    // notification put it.
+    fireEvent.press(screen.getByTestId("correct-token-125000"));
+    expect(screen.getByTestId("correct-amount")).toHaveTextContent("₱1,250");
+  });
+
+  test("a parsed item is never overwritten by a weaker read of its text", () => {
+    // `low-confidence` reaches this sheet WITH a parse. The capture behind it
+    // may well contain a different number (a balance, a fee); the parser's
+    // proposal is the more trustworthy of the two and wins.
+    renderSheet(item(), unknownCapture("PHP 9,999.00 was debited"));
+
+    expect(screen.getByTestId("correct-amount")).toHaveTextContent("₱1,250");
+    expect(screen.queryByTestId("correct-capture")).toBeNull();
   });
 });
