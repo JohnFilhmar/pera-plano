@@ -558,10 +558,21 @@ export async function mergeDuplicate(
  * therefore has something to stamp, where `confirmAsTransfer` writes none (see
  * its own comment above for why that card can't teach the same way).
  *
- * THE RULE IS WRITTEN ON CONFIRM ONLY. "Not a transfer" writes nothing — that
+ * THE RULE IS WRITTEN ON CONFIRM ONLY. "Not a transfer" teaches nothing — that
  * is a statement about the one notification in front of the user, not a
- * prediction about the next one, so it is handled as a plain `dismiss`
- * (`resolve(id, "dismissed")`) with no call into this file at all.
+ * prediction about the next one — but it does NOT discard the money either. It
+ * routes to `confirmItem` (`app/review/index.tsx`'s `secondaryActionFor`
+ * returns `{ kind: "confirm" }`), which commits the captured leg UNPAIRED, per
+ * spec §5.5 and exactly as `ambiguous-transfer`'s own secondary does: the
+ * movement was parsed and the money really left the account, so declining "was
+ * this half of a transfer?" makes it an ordinary transaction, not a
+ * non-event.
+ *
+ * WHICH IS WHY A FALSE-POSITIVE PROPOSAL IS CHEAP, and worth stating here
+ * rather than leaving to be inferred: the wrong answer to this card costs the
+ * user a tap, not a row. Were the leg discarded instead, every over-eager
+ * one-sided proposal would be a chance to lose real spend, and the detector
+ * would have to be tuned far more conservatively than it is.
  */
 export async function confirmOneSidedTransfer(
   itemId: string,
