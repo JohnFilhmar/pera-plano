@@ -26,7 +26,11 @@ import { getActiveRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { recordParseResult } from "@/lib/diagnostics/parse_stats_repo";
 import { getSetting } from "@/lib/db/repos/app_settings_repo";
 import { getRawCapture, hasRawCapture, storeRawCapture } from "@/lib/db/repos/raw_notifications_repo";
-import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions_repo";
+import {
+  insertTransaction,
+  listTransactions,
+  supersedeMintedLeg,
+} from "@/lib/db/repos/transactions_repo";
 import { linkTransfer } from "@/lib/db/repos/transfer_links_repo";
 import { listMatchers } from "@/lib/db/repos/wallet_matchers_repo";
 import { listUserRules } from "@/lib/db/repos/user_rules_repo";
@@ -59,7 +63,12 @@ export type PipelineOutcome =
   | {
       kind: "ignored";
       reason: "not_financial" | "duplicate" | "unknown-provider" | "paused" | "unreadable";
-    };
+    }
+  // The late-arriving bank notification for a leg the user already minted
+  // (Task 15): the placeholder row was overwritten in place rather than a
+  // second row being committed — `transactionId` names the row that was
+  // overwritten, not a new one.
+  | { kind: "superseded"; transactionId: string };
 
 /**
  * Ten-thousandths, matching `parser.ts` and `confidence_gate.ts`.
@@ -133,12 +142,16 @@ async function recentEventsFor(
       direction: row.direction,
       referenceNo: row.referenceNo,
       occurredAt: row.occurredAt,
-      // Placeholder pending plan Task 15, which teaches the orchestrator to
-      // detect a minted leg (`source: "manual"` with a `transferLinkId` and no
-      // `rawNotificationId`) and set this from `row`. Hard-coded `false` here
-      // keeps every row on today's unchanged duplicate-review path — never
-      // `supersedes` — until that wiring exists.
-      mintedTransferLeg: false,
+      // `attachCounterpartLeg` (lib/transfers/transfer_service.ts) stamps every
+      // minted leg with this exact signature — `source: "manual"`, linked to
+      // its counterpart, no raw notification behind it — because it is the
+      // app's OWN placeholder, never something a provider sent. A manual row
+      // WITHOUT a link is an ordinary hand-typed entry (keeps today's
+      // duplicate-review behaviour); a linked row that already carries a
+      // `rawNotificationId` is a provider row that has already been
+      // superseded once and cannot be superseded again.
+      mintedTransferLeg:
+        row.source === "manual" && row.transferLinkId !== null && row.rawNotificationId === null,
     });
   }
 
@@ -319,6 +332,21 @@ async function runStages(
   const verdicts = await runVerdicts(event, recentRows, bundle, rules);
   if (verdicts.dedupe.kind === "duplicate") {
     return { kind: "ignored", reason: "duplicate" };
+  }
+  if (verdicts.dedupe.kind === "supersedes") {
+    // The transfer verdict is discarded here on purpose: the leg is already
+    // linked, and re-detecting would hunt a second counterpart for a pair that
+    // is already complete.
+    await supersedeMintedLeg(verdicts.dedupe.ofTransactionId, {
+      amount: event.amount,
+      occurredAt: event.occurredAt,
+      referenceNo: event.referenceNo ?? null,
+      balanceAfter: event.balanceAfter ?? null,
+      rawNotificationId: capture.id,
+      counterparty: event.counterparty ?? null,
+      confidence: event.confidence,
+    });
+    return { kind: "superseded", transactionId: verdicts.dedupe.ofTransactionId };
   }
 
   const history = await listTransactions({});

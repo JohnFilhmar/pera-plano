@@ -31,6 +31,7 @@ import { listOpen } from "@/lib/db/repos/review_queue_repo";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { seedParserRules } from "@/lib/ingest/seed_rules";
 import { setSetting } from "@/lib/db/repos/app_settings_repo";
+import { attachCounterpartLeg } from "@/lib/transfers/transfer_service";
 import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { __awaitIngestIdle, processCapture, startIngest } from "../pipeline";
 import type { RawCapture, Transaction } from "@/types/domain";
@@ -861,6 +862,59 @@ test("a one-sided transfer queues an item and commits nothing", async () => {
     counterpartWalletId: null,
     signal: "text",
   });
+});
+
+test("the bank's late notification replaces the minted leg rather than duplicating it", async () => {
+  // The user already confirmed a one-sided transfer (via `attachCounterpartLeg`,
+  // the same write `confirmOneSidedTransfer` makes from a Review Queue card), so
+  // a minted BPI leg — `source: "manual"`, linked, no `rawNotificationId` —
+  // already sits in the ledger opposite the captured GCash cash-in.
+  const gcashWallet = await createWallet({ name: "GCash", type: "e-wallet" });
+  const bpiWallet = await createWallet({ name: "BPI", type: "bank" });
+  await addMatcher(gcashWallet.id, GCASH);
+  await addMatcher(bpiWallet.id, BPI);
+
+  const minted = await attachCounterpartLeg(
+    {
+      captured: {
+        proposal: {
+          walletId: gcashWallet.id,
+          categoryId: UNCATEGORIZED_ID,
+          amount: 100_000,
+          direction: "in",
+          occurredAt: NOW,
+          source: "notification",
+          confidence: 0.95,
+        },
+      },
+      counterpartWalletId: bpiWallet.id,
+      feeAmount: 0,
+    },
+    NOW,
+  );
+
+  // The minted leg is the "out" side (BPI, opposite the "in" GCash cash-in).
+  // `bpi_debit_v1` (seed.json) needs the amount right after "debited" and a
+  // continuous alnum reference — hyphens are outside its `[A-Za-z0-9]{6,}`
+  // class — so the reference below is spelled to actually bind.
+  await processCapture(
+    capture({
+      id: "cap-bpi-late",
+      packageName: BPI,
+      text: "Your account was debited ₱1,000.00. Ref No. BPI000077.",
+      postedAt: NOW - MINUTE,
+    }),
+  );
+
+  const rows = await listTransactions({});
+  // Not three: the late notification takes over the minted row instead of
+  // adding a second BPI leg alongside it.
+  expect(rows).toHaveLength(2);
+
+  const superseded = rows.find((row) => row.id === minted.outLegId);
+  expect(superseded?.source).toBe("notification");
+  expect(superseded?.referenceNo).toBe("BPI000077");
+  expect(superseded?.transferLinkId).toBe(minted.transferLinkId);
 });
 
 // ---------------------------------------------------------------------------
