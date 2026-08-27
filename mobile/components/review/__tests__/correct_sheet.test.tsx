@@ -64,22 +64,26 @@ const WALLETS: Wallet[] = [
   {
     id: "wallet_gcash",
     name: "GCash",
-    type: "e-wallet",
     balance: 100000,
     currency: "PHP",
     isArchived: false,
     driftDismissedTransactionId: null,
+    owedBalance: false,
+    owedPinned: false,
+    matcherCount: 1,
     createdAt: 0,
     updatedAt: 0,
   },
   {
     id: "wallet_bpi",
     name: "BPI",
-    type: "bank",
     balance: 500000,
     currency: "PHP",
     isArchived: false,
     driftDismissedTransactionId: null,
+    owedBalance: false,
+    owedPinned: false,
+    matcherCount: 1,
     createdAt: 0,
     updatedAt: 0,
   },
@@ -547,7 +551,7 @@ describe("the emitted patch actually survives the resolver", () => {
     // baseline swap made this case fail SILENTLY — Save looked like it
     // worked, `resolveCorrect` threw with nobody catching it, and the item
     // never left the queue.
-    const gcash = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
+    const gcash = await createWallet({ name: "GCash", openingBalance: 100000 });
     const queued = await enqueue({
       kind: "low-confidence",
       payload: {

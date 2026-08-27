@@ -37,7 +37,14 @@ import { listUserRules } from "@/lib/db/repos/user_rules_repo";
 import { listWallets } from "@/lib/db/repos/wallets_repo";
 import { normalizeEvent } from "@/lib/ingest/normalizer";
 import { raiseLoanMatchAfterCommit } from "@/lib/loans/loan_match_queue";
-import { parseCapture } from "@/lib/ingest/parser";
+import { parseCapture, searchableTexts } from "@/lib/ingest/parser";
+import {
+  applyOwedVerdict,
+  hasEverAskedWalletKind,
+  recordTraitEvidence,
+} from "@/lib/db/repos/wallet_traits_repo";
+import { classifyOwed, scoreBalanceMovement, scoreText } from "@/lib/wallets/classification";
+import type { OwedPrior, TraitEvidence } from "@/lib/wallets/classification";
 import { enqueue } from "@/lib/db/repos/review_queue_repo";
 import { routeCapture } from "@/lib/ingest/source_router";
 import { UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
@@ -47,7 +54,7 @@ import type { NormalizedEvent } from "@/lib/ingest/normalizer";
 import type { ProviderRuleset, RulesetBundle } from "@/lib/ingest/ruleset_types";
 import type { RecentEvent } from "@/lib/ingest/dedupe_gate";
 import type { MarkTransferRule } from "@/lib/ingest/transfer_detector";
-import type { RawCapture, ReviewKind, Transaction, UserRule } from "@/types/domain";
+import type { Centavos, RawCapture, ReviewKind, Transaction, UserRule } from "@/types/domain";
 
 /**
  * Contract §5 — do not reshape. `"unreadable"` ADDED 2026-08-20 (see
@@ -430,7 +437,7 @@ async function runStages(
     });
   }
 
-  return commit(capture, event, category.categoryId, confidence, verdicts, recentRows);
+  return commit(capture, event, category.categoryId, confidence, verdicts, recentRows, bundle);
 }
 
 type Verdicts = {
@@ -478,6 +485,137 @@ function reviewKindFor(verdicts: Verdicts): ReviewKind {
   return "low-confidence";
 }
 
+/**
+ * What the ruleset believes about the provider that posted this capture, before
+ * the app has watched the wallet at all. `"unknown"` for a package no provider
+ * claims — the correct answer, and the one that contributes nothing.
+ */
+function owedPriorFor(bundle: RulesetBundle, packageName: string): OwedPrior {
+  const provider = bundle.providers.find((candidate) =>
+    candidate.packageNames.includes(packageName),
+  );
+  return provider?.traits?.owedBalance ?? "unknown";
+}
+
+/**
+ * Learns whether this wallet holds money or owes it, from the row that just
+ * committed (docs/superpowers/specs/2026-08-27-wallet-trait-inference-design.md §4).
+ *
+ * CANNOT THROW, BY CONSTRUCTION, for the same reason `raiseLoanMatchAfterCommit`
+ * cannot: the money already moved and the row is already durable. A scorer fault
+ * must never be mistaken for a failed commit.
+ *
+ * NO EXTRA READ FOR THE PREVIOUS BALANCE. Migration 002's `computed_balance` is
+ * "what the balance would have been without the provider's snap" — that is, the
+ * previous balance plus this row's signed effect — so subtracting the signed
+ * effect recovers the balance before this transaction. Reading the wallet after
+ * `insertTransaction` would return the SNAPPED balance and score every capture
+ * as ordinary, which is the one mistake that would make this whole feature
+ * quietly do nothing.
+ */
+async function learnWalletTrait(
+  capture: RawCapture,
+  row: Transaction,
+  bundle: RulesetBundle,
+): Promise<void> {
+  try {
+    const fromText = scoreText(searchableTexts(capture).join("\n"), bundle.traitSignals);
+    const signedEffect = row.direction === "out" ? -row.amount : row.amount;
+    const fromMovement = scoreBalanceMovement({
+      direction: row.direction,
+      amount: row.amount,
+      previousBalance: row.computedBalance === null ? null : row.computedBalance - signedEffect,
+      balanceAfter: row.balanceAfter,
+    });
+
+    const evidence = await recordTraitEvidence(row.walletId, {
+      owed: fromText.owed + fromMovement.owed,
+      held: fromText.held + fromMovement.held,
+    });
+
+    const verdict = classifyOwed(
+      evidence,
+      owedPriorFor(bundle, capture.packageName),
+      bundle.tunables.walletTraits,
+    );
+    await applyOwedVerdict(row.walletId, verdict);
+
+    if (!verdict.confident) {
+      await maybeAskWalletKind(row.walletId, evidence, bundle);
+    }
+  } catch (error) {
+    console.warn("pipeline: wallet-trait evidence failed and was skipped", error);
+  }
+}
+
+/** ₱1,000 — big enough to be worth a question on its own, whatever else the user has. */
+const WALLET_KIND_FLOOR_CENTAVOS = 100_000;
+/** ...or 5% of what the user has, whichever bar is LOWER. */
+const WALLET_KIND_SHARE = 0.05;
+/** ...but never below ₱100, whatever the share works out to. */
+const WALLET_KIND_MINIMUM_CENTAVOS = 10_000;
+
+/**
+ * Whether getting this wallet wrong would visibly misstate the user's money.
+ *
+ * THE LOWER OF THE FIRST TWO BARS APPLIES, which is the opposite of the obvious
+ * reading and the correct one: ₱100 wrong out of a ₱2,000 total is the same lie
+ * as ₱5,000 wrong out of ₱100,000. A flat floor alone would never ask a user
+ * whose whole balance is small; a share alone would never ask about a small
+ * wallet sitting beside a large one.
+ *
+ * AND THEN AN ABSOLUTE MINIMUM UNDER BOTH, because the share taken alone is
+ * absurd at the bottom: a user whose only wallet holds ₱1 has 100% of their
+ * money in it, and interrupting them to ask whether that peso is a debt is a
+ * question that cannot pay for the tap it costs. Below ₱100 the app keeps its
+ * assumption and says nothing.
+ */
+function isMaterialToAsk(balance: Centavos, activeTotal: Centavos): boolean {
+  const share = Math.round(activeTotal * WALLET_KIND_SHARE);
+  const scaled = share === 0 ? WALLET_KIND_FLOOR_CENTAVOS : Math.min(WALLET_KIND_FLOOR_CENTAVOS, share);
+  return balance >= Math.max(WALLET_KIND_MINIMUM_CENTAVOS, scaled);
+}
+
+/**
+ * Asks the user, but only when asking earns its interruption.
+ *
+ * THREE CONDITIONS, ALL REQUIRED. We must have LOOKED (the sample floor — an
+ * unstudied wallet is not an unclear one, it is a new one). The money must
+ * MATTER. And we must never have asked before — `hasEverAskedWalletKind` counts
+ * resolved items too, because dismissing the question is itself an answer and
+ * re-raising it turns a question into nagging.
+ *
+ * Everything else stays silently assumed-held. That is the deal this feature
+ * makes: onboarding asks nothing, and the app only comes back to the user for
+ * the one answer it cannot work out and cannot afford to guess.
+ */
+async function maybeAskWalletKind(
+  walletId: string,
+  evidence: TraitEvidence,
+  bundle: RulesetBundle,
+): Promise<void> {
+  if (evidence.sampleCount < bundle.tunables.walletTraits.owedSampleFloor) return;
+  if (await hasEverAskedWalletKind(walletId)) return;
+
+  const wallets = await listWallets();
+  const wallet = wallets.find((candidate) => candidate.id === walletId);
+  if (wallet === undefined) return;
+
+  const activeTotal = wallets
+    .filter((candidate) => !candidate.owedBalance)
+    .reduce((total, candidate) => total + candidate.balance, 0);
+  if (!isMaterialToAsk(wallet.balance, activeTotal)) return;
+
+  await enqueue({
+    kind: "wallet-kind-unclear",
+    payload: { walletId: wallet.id, walletName: wallet.name, balance: wallet.balance },
+    // NO `rawNotificationId`. The card is about a wallet, not about the capture
+    // that happened to be the third one scored — pointing at that notification
+    // would tell the user this one message raised the question, which is both
+    // untrue and unanswerable.
+  });
+}
+
 async function commit(
   capture: RawCapture,
   event: NormalizedEvent,
@@ -485,6 +623,7 @@ async function commit(
   confidence: number,
   verdicts: Verdicts,
   recentRows: Transaction[],
+  bundle: RulesetBundle,
 ): Promise<PipelineOutcome> {
   const row = await insertTransaction({
     // `auto_commit` requires a resolved wallet, so this cannot be null here —
@@ -530,6 +669,13 @@ async function commit(
   // `processStored` and `runGuarded` both catch silently, and the money moved
   // regardless of what this module thinks about it.
   await raiseLoanMatchAfterCommit(row);
+
+  // BEFORE the event below, not after: a verdict that flips `owed_balance`
+  // changes whether this wallet counts toward the Wallets-tab total, and the
+  // commit's own invalidation is what puts the corrected figure on screen. Run
+  // afterwards, the flip would sit unread until some other write happened to
+  // refresh the wallet queries.
+  await learnWalletTrait(capture, row, bundle);
 
   // Rule 7. After the row exists, carrying the id that was actually written —
   // M2's limit engine recomputes off this.

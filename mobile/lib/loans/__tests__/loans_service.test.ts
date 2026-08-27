@@ -65,8 +65,8 @@ async function gloan() {
 beforeEach(async () => {
   await freshDb();
   await seedDefaultCategories();
-  cash = await createWallet({ name: "Cash", type: "cash" });
-  other = await createWallet({ name: "GCash", type: "e-wallet" });
+  cash = await createWallet({ name: "Cash" });
+  other = await createWallet({ name: "GCash" });
 });
 
 afterEach(async () => {

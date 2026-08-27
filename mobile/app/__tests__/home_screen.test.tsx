@@ -100,7 +100,7 @@ beforeEach(async () => {
   __setTierForTests(null);
   mockHealth.mockResolvedValue({ granted: true, serviceConnected: true, lastCaptureAt: null });
   await seedDefaultCategories();
-  cash = await createWallet({ name: "GCash", type: "e-wallet" });
+  cash = await createWallet({ name: "GCash" });
 });
 
 afterEach(async () => {

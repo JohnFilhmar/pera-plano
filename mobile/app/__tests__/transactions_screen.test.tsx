@@ -104,8 +104,8 @@ beforeEach(async () => {
   mockPush.mockClear();
   await freshDb();
   await seedDefaultCategories();
-  gcash = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100_000 });
-  bpi = await createWallet({ name: "BPI", type: "bank", openingBalance: 500_000 });
+  gcash = await createWallet({ name: "GCash", openingBalance: 100_000 });
+  bpi = await createWallet({ name: "BPI", openingBalance: 500_000 });
 });
 
 afterEach(async () => {

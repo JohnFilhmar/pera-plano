@@ -20,14 +20,15 @@
 // behind the thing that makes it safe, and DISMISS joined them with migration
 // 003. DEVICE-TESTING FIX (2026-08-18, Task 4) then split RECONCILE's non-cash
 // half into its own ADJUST BALANCE action instead of widening RECONCILE, and
-// gave credit wallets neither:
+// gave wallets whose balance is OWED neither:
 //
 //   EDIT opens app/wallet/[id]/edit.tsx.
-//   RECONCILE is offered for `type: "cash"` ONLY (Task 5 rule 6). A wallet with
+//   RECONCILE is offered ONLY for a wallet NOTHING ROUTES TO (Task 5 rule 6,
+//     restated against the trait that replaced `type: "cash"`). A wallet with
 //     a provider re-anchors itself from the reported balance-after; a typed
 //     adjustment there would fight the next snap and lose, leaving a
 //     transaction explaining a balance change that never happened. That
-//     reasoning is still exactly why RECONCILE stays cash-only — it is what
+//     reasoning is still exactly why RECONCILE stays manual-only — it is what
 //     makes ADJUST BALANCE below a separate action instead of RECONCILE
 //     simply covering more wallet types.
 //   ADJUST BALANCE is offered for bank, savings, and e-wallet types — never
@@ -81,7 +82,8 @@ import {
 } from "@/components/wallets/balance_mismatch_badge";
 import { CashReconcileSheet } from "@/components/wallets/cash_reconcile_sheet";
 import { MatcherChipList } from "@/components/wallets/matcher_chip_list";
-import { WalletTypeIcon } from "@/components/wallets/wallet_type_icon";
+import { WalletIcon } from "@/components/wallets/wallet_icon";
+import { isManualOnly } from "@/lib/wallets/summary";
 import { palette } from "@/constants/colors";
 import { providerBadge, providerKeyForPackage } from "@/constants/providers";
 import { useArchiveWallet } from "@/hooks/mutations/use_archive_wallet";
@@ -252,7 +254,8 @@ export default function WalletDetailScreen() {
 
   // Read from the ruleset, never inlined — see components/wallets/balance_mismatch_badge.tsx.
   const toleranceCentavos = ruleset?.tunables.balanceDriftToleranceCentavos;
-  const isCash = wallet.type === "cash";
+  // Nothing routes here, so nothing can track it — what `type: "cash"` meant.
+  const isCash = isManualOnly(wallet);
   // Review fix (2026-08-18): a credit balance is the amount OWED
   // (lib/wallets/summary.ts's rule 23, and the "Owed" label in the balance
   // header below — task-5b moved it from a line under the figure to the
@@ -262,7 +265,7 @@ export default function WalletDetailScreen() {
   // question is ambiguous between owed and available credit, and getting the
   // sign wrong would record taking on debt as money received. Excluded here
   // rather than answered wrong; see the on-screen note below for why.
-  const isCredit = wallet.type === "credit";
+  const isCredit = wallet.owedBalance;
   // The badge's own predicate, so the action and the badge cannot disagree about
   // whether there is a drift to dismiss. Narrowed to the drift itself, because
   // the mutation needs the reporting transaction's id off it.
@@ -331,7 +334,7 @@ export default function WalletDetailScreen() {
               so it stays readable against the page background regardless of
               what the card beneath it is filled with. */}
           <View className="flex-row items-center gap-2 px-4 pb-3">
-            <WalletTypeIcon type={wallet.type} testID="wallet-detail-icon" />
+            <WalletIcon wallet={wallet} testID="wallet-detail-icon" />
             <Text className="flex-1 text-lg font-semibold text-fg dark:text-fg-dark">
               {wallet.name}
             </Text>
@@ -370,15 +373,15 @@ export default function WalletDetailScreen() {
                     size={28}
                   />
                 ) : (
-                  // No provider at all: the type icon, never a grey
+                  // No provider at all: the wallet glyph, never a grey
                   // "unidentified provider" badge — same rule wallet_card.tsx
                   // already follows for the identical reason (a badge here
                   // would claim a company identity this wallet does not
                   // have). Always the on-brand fill in this branch, since a
                   // null providerKey always resolves `fillForProvider` to
                   // "brand".
-                  <WalletTypeIcon
-                    type={wallet.type}
+                  <WalletIcon
+                    wallet={wallet}
                     testID="wallet-detail-header-icon"
                     className="text-on-brand dark:text-on-brand-dark"
                   />
@@ -520,9 +523,9 @@ export default function WalletDetailScreen() {
               as a bug; a stated reason reads as a real limit. */}
           {!wallet.isArchived && isCredit ? (
             <View className="px-4 pt-2">
-              <Text testID="wallet-detail-credit-note" className="text-sm text-fg-2 dark:text-fg-2-dark">
-                Starting balance and manual corrections aren&apos;t available for credit wallets
-                yet — a credit balance can mean either what you owe or what you have left to
+              <Text testID="wallet-detail-owed-note" className="text-sm text-fg-2 dark:text-fg-2-dark">
+                Starting balance and manual corrections aren&apos;t available for a balance you
+                owe yet — the figure can mean either what you owe or what you have left to
                 spend, and this needs its own wording to get that right. Notifications still
                 update this balance automatically.
               </Text>
@@ -553,13 +556,14 @@ export default function WalletDetailScreen() {
             }}
           />
 
-          {/* Rule 4: cash wallets have empty matchers and the matcher UI is
-              hidden for them — money enters by manual entry, transfer legs and
-              reconciliation, never by a notification. task-5b: this card now
-              shows for EVERY non-cash wallet, not only once it already holds a
-              matcher (the old `matchers.length > 0` gate) — the dashed "+ Add"
-              chip below only makes sense if the card can appear before a
-              wallet has its first one.
+          {/* SHOWN FOR EVERY LIVE WALLET, WITH NO "is this cash?" GATE AT ALL.
+              Rule 4 used to hide this card for a wallet TYPED as cash. Under
+              the traits that replaced the type, "cash" means a wallet with no
+              matchers — so keeping the gate would hide the matcher card from
+              exactly the wallets that have none, and the dashed "+ Add" chip
+              could never be reached to add a first one. A wallet stays manual
+              because the user never picks a source here, not because the app
+              refused to show them the control.
 
               ARCHIVED IS READ-ONLY, THE SAME INVARIANT THE ACTION ROW ABOVE
               ALREADY KEEPS (this file's own header: "an archived wallet is
@@ -570,7 +574,7 @@ export default function WalletDetailScreen() {
               supposed to preserve — only the "Edit" and "+ Add" WRITE
               affordances disappear, and only an archived wallet with
               nothing to show and nothing to do renders no card at all. */}
-          {!isCash && (!wallet.isArchived || (matchers && matchers.length > 0)) ? (
+          {!wallet.isArchived || (matchers && matchers.length > 0) ? (
             <View className="px-4 pt-3">
               <Card>
                 <View className="flex-row items-center justify-between">

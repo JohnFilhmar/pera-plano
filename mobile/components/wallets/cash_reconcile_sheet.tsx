@@ -29,6 +29,7 @@ import { useReconcileCash } from "@/hooks/mutations/use_reconcile_cash";
 import { centavosFrom } from "@/lib/money/peso_input";
 import { cashAdjustment, RECONCILE_NOTE } from "@/lib/wallets/reconcile";
 import type { Transaction, Wallet } from "@/types/domain";
+import { isManualOnly } from "@/lib/wallets/summary";
 
 export type CashReconcileSheetProps = {
   wallet: Wallet;
@@ -64,9 +65,14 @@ export function CashReconcileSheet({
   const reconcile = useReconcileCash();
 
   // Rule 6, enforced here as well as at the detail screen's action. Two guards
-  // for one rule is cheap; a reconciliation adjustment landing in a bank wallet
-  // is not.
-  if (wallet.type !== "cash") return null;
+  // for one rule is cheap; a reconciliation adjustment landing in a wallet a
+  // provider actually reports on is not.
+  //
+  // KEYED ON "NOTHING ROUTES HERE", not on a stored type. Counting what is
+  // physically in your hand is the only way to true up a wallet no notification
+  // can reach — which is what `type: "cash"` used to stand for, and is now
+  // simply the absence of any matcher.
+  if (!isManualOnly(wallet)) return null;
 
   const physical = centavosFrom(text);
   const preview = cashAdjustment(wallet.balance, physical);

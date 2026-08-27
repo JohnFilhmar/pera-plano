@@ -29,8 +29,8 @@ beforeEach(async () => {
   db = await freshDb();
   await seedCategory("cat_uncategorized", "Uncategorized");
   await seedCategory("cat_fees_charges", "Fees & Charges");
-  bpi = (await createWallet({ name: "BPI", type: "bank", openingBalance: 500_000 })).id;
-  gcash = (await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 0 })).id;
+  bpi = (await createWallet({ name: "BPI", openingBalance: 500_000 })).id;
+  gcash = (await createWallet({ name: "GCash", openingBalance: 0 })).id;
 });
 
 afterEach(async () => {

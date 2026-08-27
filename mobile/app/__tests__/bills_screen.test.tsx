@@ -107,7 +107,7 @@ beforeEach(async () => {
   jest.clearAllMocks();
   mockParams = {};
   await seedDefaultCategories();
-  cash = await createWallet({ name: "GCash", type: "e-wallet" });
+  cash = await createWallet({ name: "GCash" });
 });
 
 afterEach(async () => {

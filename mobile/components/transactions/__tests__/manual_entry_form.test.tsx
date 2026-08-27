@@ -75,17 +75,25 @@ const NOW = new Date(2026, 7, 13, 21, 30).getTime();
 const POCKET: Wallet = {
   id: "cash-pocket",
   name: "Pocket",
-  type: "cash",
   balance: 100_000,
   currency: "PHP",
   isArchived: false,
   driftDismissedTransactionId: null,
+  owedBalance: false,
+  owedPinned: false,
+  // A cash wallet is one nothing routes to.
+  matcherCount: 0,
   createdAt: 1_000,
   updatedAt: 1_000,
 };
 const JAR: Wallet = { ...POCKET, id: "cash-jar", name: "Jar" };
-const BPI: Wallet = { ...POCKET, id: "bank-bpi", name: "BPI", type: "bank" };
-const GCASH: Wallet = { ...POCKET, id: "ewallet-gcash", name: "GCash", type: "e-wallet" };
+// TRACKED, NOT MANUAL — `matcherCount: 1`. These two stand for the wallets a
+// provider reports on, which is what `type: "bank"` / `"e-wallet"` used to say.
+// Left at POCKET's zero they would all be manual wallets, and this file's whole
+// subject — that cash is offered first and never silently defaulted to the bank
+// — would have nothing to distinguish.
+const BPI: Wallet = { ...POCKET, id: "bank-bpi", name: "BPI", matcherCount: 1 };
+const GCASH: Wallet = { ...POCKET, id: "ewallet-gcash", name: "GCash", matcherCount: 1 };
 
 const CATEGORIES: Category[] = [
   {

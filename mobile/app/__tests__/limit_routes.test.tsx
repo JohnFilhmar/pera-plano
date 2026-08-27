@@ -118,7 +118,7 @@ beforeEach(async () => {
   __setTierForTests(null);
 
   await seedDefaultCategories();
-  wallet = await createWallet({ name: "GCash", type: "e-wallet" });
+  wallet = await createWallet({ name: "GCash" });
   food = await createCategory({ name: "Kainan", icon: "utensils" });
   delivery = await createCategory({ name: "Delivery", icon: "bike", parentId: food.id });
   transport = await createCategory({ name: "Byahe", icon: "bus" });

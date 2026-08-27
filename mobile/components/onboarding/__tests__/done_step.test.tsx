@@ -53,8 +53,8 @@ describe("DoneScreen", () => {
   });
 
   test("confirms the wallets, income and Limit that were actually set up", async () => {
-    await createWallet({ name: "GCash", type: "e-wallet" });
-    await createWallet({ name: "Cash", type: "cash" });
+    await createWallet({ name: "GCash" });
+    await createWallet({ name: "Cash" });
     await setManualIncome(
       { cadence: "kinsenas", averageAmount: 1_200_000, sourceWalletIds: [] },
       Date.now(),

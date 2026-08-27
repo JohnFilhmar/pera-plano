@@ -21,6 +21,7 @@
 //     tolerances, and the confidence penalties and thresholds as ruleset data
 //     precisely so they can be retuned remotely (§6 rule 6, §7 rule 3.3).
 import type { Centavos } from "@/types/domain";
+import type { OwedPrior, TraitSignal, WalletTraitTunables } from "@/lib/wallets/classification";
 
 /** One ordered pattern within a provider's pack. Contract §5. */
 export type ProviderTemplate = {
@@ -49,6 +50,18 @@ export type ProviderRuleset = {
   /** For `channel: "sms"`: bank sender-ID prefixes, e.g. `["BPI", "BDO"]` (spec §3 rule 2). */
   senderIds?: string[];
   templates: ProviderTemplate[];
+  /**
+   * What this provider's wallets probably are, before the app has watched one
+   * (lib/wallets/classification.ts).
+   *
+   * OPTIONAL AND ABSENT BY DEFAULT. An unstated prior is `"unknown"`, which
+   * contributes nothing to the verdict — the right starting position for all
+   * thirteen shipped providers, none of which is a credit-card app. It is
+   * ruleset data rather than an app constant for the same reason
+   * `packageNames` is: a provider we judge wrong is corrected without a
+   * release.
+   */
+  traits?: { owedBalance?: OwedPrior };
 };
 
 /**
@@ -96,6 +109,16 @@ export type PipelineTunables = {
    * release.
    */
   balanceDriftToleranceCentavos: Centavos;
+  /**
+   * Thresholds for the held/owed verdict (lib/wallets/classification.ts).
+   *
+   * Here for the same reason `autoCommitThreshold` is, and with more at stake:
+   * these two numbers decide whether a balance counts as money the user has or
+   * money they owe, which is the difference between a correct headline figure
+   * and one inflated by the size of a debt. They will need recalibrating once
+   * real notification corpora exist, and recalibration must not need a release.
+   */
+  walletTraits: WalletTraitTunables;
   penalties: {
     weakDirection: number;
     amountAmbiguity: number;
@@ -116,6 +139,12 @@ export type RulesetBundle = {
   version: number;
   providers: ProviderRuleset[];
   tunables: PipelineTunables;
+  /**
+   * Phrase rules for the held/owed verdict, matched against text the pipeline
+   * has already parsed. Filled from `DEFAULT_TRAIT_SIGNALS` on read when a
+   * bundle does not name its own — see `parser_rulesets_repo`.
+   */
+  traitSignals: TraitSignal[];
 };
 
 /** Tunables as they may arrive — any subset, one level deep. */
@@ -131,8 +160,9 @@ export type PartialPipelineTunables = Partial<Omit<PipelineTunables, "penalties"
  * (plan Task 1 rule 3). Every `RulesetBundle` is a valid input, so callers
  * holding a complete bundle need no conversion.
  */
-export type RulesetBundleInput = Omit<RulesetBundle, "tunables"> & {
+export type RulesetBundleInput = Omit<RulesetBundle, "tunables" | "traitSignals"> & {
   tunables?: PartialPipelineTunables;
+  traitSignals?: TraitSignal[];
 };
 
 /**
@@ -170,6 +200,27 @@ export const DEFAULT_TUNABLES: PipelineTunables = {
    * real missed transaction. Retuned remotely once M1 has parser-accuracy data.
    */
   balanceDriftToleranceCentavos: 100,
+  walletTraits: {
+    /**
+     * Three signal-weights of daylight before the verdict moves, so no single
+     * phrase can decide on its own.
+     */
+    owedMarginThreshold: 300,
+    /**
+     * Three scoring captures before any verdict is trusted. THE GATE THAT
+     * MATTERS: a bank that runs both the user's current account and their card
+     * will eventually say "statement balance" about one of them, and one such
+     * line must not be able to move the Wallets-tab total.
+     */
+    owedSampleFloor: 3,
+    /**
+     * A prior is worth less than one observed phrase, deliberately: what the
+     * device has SEEN outranks what the ruleset GUESSED — the same "seen beats
+     * guessed" ordering lib/ingest/provider_catalogue.ts already applies to
+     * package names.
+     */
+    priorWeight: 100,
+  },
   penalties: {
     /** §9.1 — direction inferred from weak cues rather than an explicit template field. */
     weakDirection: 0.15,
@@ -183,3 +234,33 @@ export const DEFAULT_TUNABLES: PipelineTunables = {
     smsChannel: 0.05,
   },
 };
+
+/**
+ * The shipped phrase pack for the held/owed verdict.
+ *
+ * ILLUSTRATIVE, LIKE EVERY OTHER PATTERN IN THIS PROJECT SO FAR. No real
+ * Philippine card or bank notification has been captured for this app
+ * (docs/03-ingest-pipeline.md §11.3), so these are the wordings such messages
+ * are EXPECTED to use, not wordings anyone has read off a device. They are here
+ * rather than in assets/parser_rules/seed.json for the same reason
+ * DEFAULT_TUNABLES is: an installed bundle that never mentions them picks up
+ * whatever this file says today, so a corrected pack ships with an app update
+ * as well as with a ruleset.
+ *
+ * WEIGHTS ARE NOT INTERCHANGEABLE. A phrase that only a credit account can
+ * produce ("minimum amount due") outweighs one a savings account might also
+ * carry in some layouts ("outstanding balance"), because the cost of the two
+ * mistakes is not symmetric: wrongly marking a wallet owed hides real money
+ * from the user's total, and wrongly leaving a card held inflates it.
+ */
+export const DEFAULT_TRAIT_SIGNALS: TraitSignal[] = [
+  { pattern: "minimum amount due", trait: "owed", weight: 250 },
+  { pattern: "statement balance", trait: "owed", weight: 200 },
+  { pattern: "credit limit", trait: "owed", weight: 200 },
+  { pattern: "amount due", trait: "owed", weight: 150 },
+  { pattern: "outstanding balance", trait: "owed", weight: 150 },
+  { pattern: "payment due", trait: "owed", weight: 150 },
+  { pattern: "available balance", trait: "held", weight: 150 },
+  { pattern: "interest earned", trait: "held", weight: 200 },
+  { pattern: "maintaining balance", trait: "held", weight: 150 },
+];

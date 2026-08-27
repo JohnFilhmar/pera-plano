@@ -43,7 +43,7 @@ let cash: Wallet;
 beforeEach(async () => {
   await freshDb();
   await seedDefaultCategories();
-  cash = await createWallet({ name: "GCash", type: "e-wallet" });
+  cash = await createWallet({ name: "GCash" });
 });
 
 afterEach(async () => {
@@ -195,7 +195,7 @@ test("A TRANSFER-LINKED TRANSACTION IS NEVER A CANDIDATE", async () => {
   // Spec rule 16's second half: "an internal movement cannot pay a bill".
   // Moving ₱2,350 into your own savings is not a Meralco payment.
   const bill = await meralco();
-  const savings = await createWallet({ name: "GSave", type: "savings" });
+  const savings = await createWallet({ name: "GSave" });
   const out = await outflow(235000, NOW - DAY, "TRANSFER TO GSAVE");
   const income = await insertTransaction({
     walletId: savings.id,

@@ -325,7 +325,7 @@ describe("Uncategorized cannot be hidden or deleted (docs §3.4 invariant 2, §5
 
 describe("deleteCategory reassigns the deleted category's own transactions instead of orphaning them", () => {
   test("deleting a child category moves its transactions to the parent, amount intact", async () => {
-    const wallet = await createWallet({ name: "Cash", type: "cash" });
+    const wallet = await createWallet({ name: "Cash" });
     const parent = await createCategory({ name: "Food (custom)", icon: "utensils" });
     const child = await createCategory({ name: "Coffee", icon: "coffee", parentId: parent.id });
     await insertTransaction({
@@ -349,7 +349,7 @@ describe("deleteCategory reassigns the deleted category's own transactions inste
 
   test("deleting a top-level category moves its transactions to Uncategorized, amount intact", async () => {
     await seedDefaultCategories();
-    const wallet = await createWallet({ name: "Cash", type: "cash" });
+    const wallet = await createWallet({ name: "Cash" });
     const custom = await createCategory({ name: "One-off", icon: "circle" });
     await insertTransaction({
       id: "tx-oneoff",
@@ -372,7 +372,7 @@ describe("deleteCategory reassigns the deleted category's own transactions inste
 describe("deleteCategory's reparent + transaction-reassign + delete are atomic", () => {
   test("when the delete step fails, no transaction is reassigned and the category survives", async () => {
     await seedDefaultCategories();
-    const wallet = await createWallet({ name: "Cash", type: "cash" });
+    const wallet = await createWallet({ name: "Cash" });
     const custom = await createCategory({ name: "Doomed", icon: "circle" });
     await insertTransaction({
       id: "tx-doomed",

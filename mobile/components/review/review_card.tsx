@@ -69,6 +69,7 @@ import type {
 
 import { ConfidenceMeter, confidencePercent } from "./confidence_meter";
 import { OneSidedTransferBody } from "./one_sided_transfer_body";
+import { WalletKindBody } from "./wallet_kind_body";
 
 /** The card's leading glyph (task-4b) — a generic "this needs a decision"
  * mark for all four kinds, not a per-kind icon: `kind` already has its own
@@ -126,6 +127,17 @@ export const REVIEW_ACTIONS: Record<ReviewKind, ReviewActionPair> = {
    * than a plain "yes".
    */
   "one-sided-transfer": { primary: "It's a transfer", secondary: "Not a transfer" },
+  /**
+   * THE ONLY PAIR WHERE NEITHER SIDE IS A REJECTION, and the only one where
+   * both sides are equally final.
+   *
+   * Every other kind offers a way to say "no, leave it alone". This card asks a
+   * question with two real answers, and BOTH of them settle it for good (they
+   * pin `owedPinned`, so inference never revisits the wallet). "Money I have"
+   * is not a dismissal — it is the user confirming the assumption the app has
+   * been running on since the wallet was created.
+   */
+  "wallet-kind-unclear": { primary: "Money I have", secondary: "Money I owe" },
 };
 
 /**
@@ -187,6 +199,16 @@ export const REASON_FALLBACKS: Record<ReviewKind, string> = {
    */
   "one-sided-transfer":
     "PeraPlano saw one leg of a transfer between your own accounts. Choose where the other half went.",
+  /**
+   * NOT A `GATE_REASONS` ENTRY EITHER, and for a stronger reason than
+   * `loan-match`'s: no capture put this item here at all. The pipeline raises
+   * it after watching a wallet across several notifications and still failing
+   * to settle the question, so the sentence explains the CONSEQUENCE rather
+   * than the trigger — the user needs to know why the answer matters, not that
+   * a scorer ran out of confidence.
+   */
+  "wallet-kind-unclear":
+    "PeraPlano cannot tell whether this balance is money you have or money you owe.",
 };
 
 /**
@@ -426,6 +448,15 @@ const SIDE_LABELS: Record<ReviewKind, { candidate: string; counterpart: string }
    * counterpart to name.
    */
   "one-sided-transfer": { candidate: "What PeraPlano read", counterpart: "" },
+  /**
+   * NO SIDES AT ALL. Every other kind puts a transaction on the card; this one
+   * is about a WALLET, so there is no notification, no amount and no direction
+   * to label. `WalletKindBody` replaces the whole panel (see the render
+   * branch), which means these strings are never read — they exist so this
+   * table stays exhaustive over `ReviewKind` and a future kind cannot be added
+   * without deciding what its sides are called.
+   */
+  "wallet-kind-unclear": { candidate: "", counterpart: "" },
 };
 
 // ---------------------------------------------------------------------------
@@ -509,6 +540,21 @@ function Side({
 function walletNameOf(wallets: readonly Wallet[], walletId: string | null): string | null {
   if (walletId === null) return null;
   return wallets.find((wallet) => wallet.id === walletId)?.name ?? null;
+}
+
+/**
+ * The wallet's CURRENT balance, for the one card that asks about a wallet
+ * rather than a transaction.
+ *
+ * Live, not the figure frozen into the payload when the question was raised —
+ * a card can sit in the queue for weeks, and asking "is the ₱4,000 in BPI
+ * money you owe?" about a balance that is now ₱11,000 asks about a number the
+ * user cannot see anywhere. `WalletKindBody` falls back to the payload's copy
+ * when the wallet has since been archived out of this list.
+ */
+function walletBalanceOf(wallets: readonly Wallet[], walletId: string | null): Centavos | null {
+  if (walletId === null) return null;
+  return wallets.find((wallet) => wallet.id === walletId)?.balance ?? null;
 }
 
 /**
@@ -915,6 +961,17 @@ export function ReviewCard({
 
           {item.kind === "unknown-provider" ? (
             <UnknownSourceBody item={item} providers={providers} />
+          ) : item.kind === "wallet-kind-unclear" ? (
+            /* NO SIDES, NO METER, NO CATEGORY — this is the only kind that is
+               not about a transaction. There is no notification behind it, no
+               amount to approve and no confidence to report; rendering the
+               usual proposal panel would put a row on screen that does not
+               exist and invite the user to approve it. */
+            <WalletKindBody
+              item={item}
+              walletName={walletNameOf(wallets, readString(item.payload, "walletId"))}
+              balance={walletBalanceOf(wallets, readString(item.payload, "walletId"))}
+            />
           ) : (
             <>
               <Side

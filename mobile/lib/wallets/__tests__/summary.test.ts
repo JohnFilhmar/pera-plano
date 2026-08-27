@@ -1,166 +1,163 @@
-// lib/wallets/__tests__/summary.test.ts — m1c plan Task 4, rule 1.
+// lib/wallets/__tests__/summary.test.ts — m1c plan Task 4 rule 1, rewritten
+// when the wallet TYPE was replaced by inferred traits.
 //
 // THE TOTAL IS THE MOST DAMAGING NUMBER IN THE APP. It is the first figure on
-// the first real screen, and docs/04-features/02-wallets.md rule 23 excludes
-// credit wallets from it because a credit balance is money OWED, not money
-// held. Adding it inflates the headline figure of a budgeting app — so every
-// credit fixture below carries a NON-ZERO balance, and each total assertion is
-// a number that changes the moment that balance is counted.
+// the first real screen, and docs/04-features/02-wallets.md rule 23 keeps owed
+// balances out of it because an owed balance is money the user does NOT have.
+// Adding it inflates the headline figure of a budgeting app by the size of a
+// debt — so every owed fixture below carries a NON-ZERO balance, and each total
+// assertion is a number that changes the moment that balance is counted.
 //
-// The grouping tests seed wallets in a DIFFERENT order than they must render,
-// so an implementation that returns insertion order (or alphabetises) fails
-// rather than passing by luck on a conveniently-ordered fixture.
-import type { Wallet, WalletType } from "@/types/domain";
+// WHAT CHANGED, AND WHAT DID NOT. The exclusion used to key on
+// `type === "credit"`, a value the user picked during onboarding before they
+// had entered a single transaction; it now keys on `owedBalance`, which the app
+// infers and the user can correct. The RULE is identical, and these tests are
+// written so they would still fail if the exclusion were dropped.
+import type { Wallet } from "@/types/domain";
 
 import {
   archivedWallets,
-  groupWalletsByType,
+  isManualOnly,
+  splitByOwed,
   totalActiveBalance,
   totalActiveWalletCount,
-  WALLET_TYPE_LABELS,
-  WALLET_TYPE_ORDER,
 } from "../summary";
 
-function wallet(
-  name: string,
-  type: WalletType,
-  balance: number,
+type WalletShape = {
+  name: string;
+  balance: number;
+  isArchived?: boolean;
+  owedBalance?: boolean;
+  matcherCount?: number;
+};
+
+function wallet({
+  name,
+  balance,
   isArchived = false,
-): Wallet {
+  owedBalance = false,
+  matcherCount = 1,
+}: WalletShape): Wallet {
   return {
     id: `id-${name}`,
     name,
-    type,
     balance,
     currency: "PHP",
     isArchived,
     driftDismissedTransactionId: null,
+    owedBalance,
+    owedPinned: false,
+    matcherCount,
     createdAt: 1_000,
     updatedAt: 1_000,
   };
 }
 
-// Deliberately NOT in render order: cash first, bank last, credit in the
-// middle. Insertion order here is cash, credit, bank, savings, e-wallet.
-const MIXED: Wallet[] = [
-  wallet("Pocket", "cash", 50_00),
-  wallet("Visa", "credit", 12_345_00),
-  wallet("BPI", "bank", 100_00),
-  wallet("GSave", "savings", 200_00),
-  wallet("GCash", "e-wallet", 300_00),
-];
+const HELD_ONE = wallet({ name: "BPI", balance: 100_00 });
+const HELD_TWO = wallet({ name: "GCash", balance: 300_00 });
+const HELD_MANUAL = wallet({ name: "Pocket", balance: 50_00, matcherCount: 0 });
+const OWED = wallet({ name: "Visa", balance: 12_345_00, owedBalance: true });
+const ARCHIVED = wallet({ name: "Old BDO", balance: 900_00, isArchived: true });
 
-describe("WALLET_TYPE_ORDER", () => {
-  test("is the plan's display order, not the type enum's declaration order", () => {
-    expect(WALLET_TYPE_ORDER).toEqual(["bank", "e-wallet", "savings", "credit", "cash"]);
+// Deliberately NOT in render order, so an implementation that returns insertion
+// order passes for the right reason rather than by luck on a tidy fixture.
+const MIXED: Wallet[] = [HELD_MANUAL, OWED, HELD_ONE, HELD_TWO];
+
+describe("splitByOwed", () => {
+  test("separates what the user has from what they owe", () => {
+    const { held, owed } = splitByOwed(MIXED);
+
+    expect(held.map((entry) => entry.name)).toEqual(["Pocket", "BPI", "GCash"]);
+    expect(owed.map((entry) => entry.name)).toEqual(["Visa"]);
+  });
+
+  test("keeps the repository's order within each half", () => {
+    // The repo returns oldest-first, and the Wallets tab renders that order.
+    const ordered = [
+      wallet({ name: "First", balance: 1 }),
+      wallet({ name: "Second", balance: 2 }),
+      wallet({ name: "Third", balance: 3 }),
+    ];
+    expect(splitByOwed(ordered).held.map((entry) => entry.name)).toEqual([
+      "First",
+      "Second",
+      "Third",
+    ]);
+  });
+
+  test("leaves archived wallets out of BOTH halves — they have their own section", () => {
+    const archivedOwed = wallet({
+      name: "Closed card",
+      balance: 500_00,
+      owedBalance: true,
+      isArchived: true,
+    });
+    const { held, owed } = splitByOwed([...MIXED, ARCHIVED, archivedOwed]);
+
+    expect(held.map((entry) => entry.name)).not.toContain("Old BDO");
+    expect(owed.map((entry) => entry.name)).not.toContain("Closed card");
+  });
+
+  test("no wallets produces two empty halves, never undefined", () => {
+    expect(splitByOwed([])).toEqual({ held: [], owed: [] });
   });
 });
 
-describe("WALLET_TYPE_LABELS", () => {
-  test("labels every type in WALLET_TYPE_ORDER", () => {
-    for (const type of WALLET_TYPE_ORDER) {
-      expect(WALLET_TYPE_LABELS[type]).toEqual(expect.any(String));
-      expect(WALLET_TYPE_LABELS[type].length).toBeGreaterThan(0);
-    }
+describe("isManualOnly", () => {
+  test("a wallet nothing routes to is manual — what `type: cash` used to mean", () => {
+    expect(isManualOnly(HELD_MANUAL)).toBe(true);
   });
 
-  test("the credit heading says the balances under it are owed, not held", () => {
-    // Rule 1: credit wallets are "shown as amounts owed". The section heading
-    // is where that is said once for the whole group.
-    expect(WALLET_TYPE_LABELS.credit.toLowerCase()).toContain("owed");
+  test("a wallet with a matcher is not manual", () => {
+    expect(isManualOnly(HELD_ONE)).toBe(false);
   });
 
-  test("no two types share a label", () => {
-    expect(new Set(Object.values(WALLET_TYPE_LABELS)).size).toBe(WALLET_TYPE_ORDER.length);
-  });
-});
-
-describe("groupWalletsByType", () => {
-  test("orders the groups bank, e-wallet, savings, credit, cash", () => {
-    expect(groupWalletsByType(MIXED).map((g) => g.type)).toEqual([
-      "bank",
-      "e-wallet",
-      "savings",
-      "credit",
-      "cash",
-    ]);
-  });
-
-  test("omits a type nobody has a wallet of", () => {
-    const groups = groupWalletsByType([wallet("BPI", "bank", 1), wallet("Pocket", "cash", 2)]);
-    expect(groups.map((g) => g.type)).toEqual(["bank", "cash"]);
-  });
-
-  test("keeps the repository's order within a group", () => {
-    const groups = groupWalletsByType([
-      wallet("BDO", "bank", 1),
-      wallet("BPI", "bank", 2),
-      wallet("Landbank", "bank", 3),
-    ]);
-    // Repository order (oldest first), NOT alphabetical — "BDO, BPI, Landbank"
-    // happens to be both, so the fixture is reversed to tell them apart.
-    expect(groups[0].wallets.map((w) => w.name)).toEqual(["BDO", "BPI", "Landbank"]);
-    const reversed = groupWalletsByType([
-      wallet("Landbank", "bank", 3),
-      wallet("BPI", "bank", 2),
-      wallet("BDO", "bank", 1),
-    ]);
-    expect(reversed[0].wallets.map((w) => w.name)).toEqual(["Landbank", "BPI", "BDO"]);
-  });
-
-  test("leaves archived wallets out of every group — they have their own section", () => {
-    const groups = groupWalletsByType([
-      wallet("BPI", "bank", 1),
-      wallet("Old BDO", "bank", 2, true),
-    ]);
-    expect(groups.map((g) => g.wallets.map((w) => w.name))).toEqual([["BPI"]]);
-  });
-
-  test("no wallets produces no groups", () => {
-    expect(groupWalletsByType([])).toEqual([]);
+  test("a wallet whose last matcher was removed becomes manual", () => {
+    // DERIVED, NOT STORED, and this is the case that makes it worth deriving:
+    // nothing can route to this wallet any more, so nothing can track it, and a
+    // stored flag would still be claiming otherwise.
+    expect(isManualOnly({ ...HELD_ONE, matcherCount: 0 })).toBe(true);
   });
 });
 
 describe("archivedWallets", () => {
   test("returns only the archived ones, in the order given", () => {
-    const list = [
-      wallet("BPI", "bank", 1),
-      wallet("Old BDO", "bank", 2, true),
-      wallet("Old GCash", "e-wallet", 3, true),
-    ];
-    expect(archivedWallets(list).map((w) => w.name)).toEqual(["Old BDO", "Old GCash"]);
+    const list = [HELD_ONE, ARCHIVED, HELD_TWO];
+    expect(archivedWallets(list).map((entry) => entry.name)).toEqual(["Old BDO"]);
   });
 
   test("returns nothing when nothing is archived", () => {
-    expect(archivedWallets([wallet("BPI", "bank", 1)])).toEqual([]);
+    expect(archivedWallets(MIXED)).toEqual([]);
   });
 });
 
 describe("totalActiveBalance", () => {
-  test("sums the active non-credit wallets", () => {
-    // 100_00 bank + 300_00 e-wallet + 200_00 savings + 50_00 cash.
-    expect(totalActiveBalance(MIXED)).toBe(650_00);
+  test("sums the active wallets the user actually holds", () => {
+    expect(totalActiveBalance([HELD_ONE, HELD_TWO, HELD_MANUAL])).toBe(450_00);
   });
 
-  test("EXCLUDES credit, whose ₱12,345.00 would otherwise inflate the headline", () => {
-    const withoutCredit = MIXED.filter((w) => w.type !== "credit");
-    expect(totalActiveBalance(MIXED)).toBe(totalActiveBalance(withoutCredit));
-    // The figure a naive `reduce` over every wallet would produce.
-    expect(totalActiveBalance(MIXED)).not.toBe(650_00 + 12_345_00);
+  test("EXCLUDES owed balances, whose ₱12,345.00 would otherwise inflate the headline", () => {
+    // The whole rule in one assertion: the owed wallet is the largest balance
+    // in the fixture, so counting it is impossible to miss.
+    expect(totalActiveBalance(MIXED)).toBe(450_00);
   });
 
-  test("a credit wallet alone totals zero, not its balance", () => {
-    expect(totalActiveBalance([wallet("Visa", "credit", 12_345_00)])).toBe(0);
+  test("an owed wallet alone totals zero, not its balance", () => {
+    expect(totalActiveBalance([OWED])).toBe(0);
   });
 
-  test("EXCLUDES archived wallets (spec rule 17), even while the toggle shows them", () => {
-    const withArchived = [...MIXED, wallet("Closed BDO", "bank", 999_00, true)];
-    expect(totalActiveBalance(withArchived)).toBe(650_00);
+  test("EXCLUDES archived wallets, even while the toggle is showing them", () => {
+    expect(totalActiveBalance([HELD_ONE, ARCHIVED])).toBe(100_00);
   });
 
-  test("excludes an archived CREDIT wallet on both counts at once", () => {
-    const withArchivedCredit = [...MIXED, wallet("Old Visa", "credit", 777_00, true)];
-    expect(totalActiveBalance(withArchivedCredit)).toBe(650_00);
+  test("excludes an archived OWED wallet on both counts at once", () => {
+    const archivedOwed = wallet({
+      name: "Closed card",
+      balance: 500_00,
+      owedBalance: true,
+      isArchived: true,
+    });
+    expect(totalActiveBalance([HELD_ONE, archivedOwed])).toBe(100_00);
   });
 
   test("no wallets totals zero", () => {
@@ -168,33 +165,28 @@ describe("totalActiveBalance", () => {
   });
 
   test("sums in centavos, never rounding to pesos", () => {
-    expect(totalActiveBalance([wallet("A", "cash", 5), wallet("B", "cash", 7)])).toBe(12);
+    const odd = [wallet({ name: "A", balance: 12_34 }), wallet({ name: "B", balance: 56_78 })];
+    expect(totalActiveBalance(odd)).toBe(69_12);
   });
 });
 
 describe("totalActiveWalletCount", () => {
-  // The label and the figure it sits above must count the same wallets — see
-  // this function's own header. Every case here mirrors a `totalActiveBalance`
-  // case above, on the same MIXED fixture, so the two can be read side by side.
-  test("counts the same wallets totalActiveBalance sums — 4, not all 5", () => {
-    expect(totalActiveWalletCount(MIXED)).toBe(4);
+  // The label and the figure it sits above must count the same wallets — a
+  // count built from a different filter silently disagrees with its own total.
+  test("counts exactly the wallets totalActiveBalance sums", () => {
+    expect(totalActiveWalletCount(MIXED)).toBe(3);
   });
 
-  test("EXCLUDES credit, the exact wallet a naive `!isArchived`-only filter used to count", () => {
-    const withoutCredit = MIXED.filter((w) => w.type !== "credit");
-    expect(totalActiveWalletCount(MIXED)).toBe(totalActiveWalletCount(withoutCredit));
-    // The count a filter on archived-only (the bug this function replaces)
-    // would have produced.
-    expect(totalActiveWalletCount(MIXED)).not.toBe(5);
+  test("EXCLUDES owed wallets — the exact wallet a naive `!isArchived` filter counts", () => {
+    expect(totalActiveWalletCount([HELD_ONE, OWED])).toBe(1);
   });
 
-  test("a credit wallet alone counts zero, not one", () => {
-    expect(totalActiveWalletCount([wallet("Visa", "credit", 12_345_00)])).toBe(0);
+  test("an owed wallet alone counts zero, not one", () => {
+    expect(totalActiveWalletCount([OWED])).toBe(0);
   });
 
-  test("EXCLUDES archived wallets, even while the toggle shows them", () => {
-    const withArchived = [...MIXED, wallet("Closed BDO", "bank", 999_00, true)];
-    expect(totalActiveWalletCount(withArchived)).toBe(4);
+  test("EXCLUDES archived wallets, even while the toggle is showing them", () => {
+    expect(totalActiveWalletCount([HELD_ONE, ARCHIVED])).toBe(1);
   });
 
   test("no wallets counts zero", () => {

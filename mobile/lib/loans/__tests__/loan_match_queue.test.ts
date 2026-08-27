@@ -85,7 +85,7 @@ async function loanMatchItems() {
 beforeEach(async () => {
   db = await freshDb();
   await seedDefaultCategories();
-  cash = await createWallet({ name: "Cash", type: "cash" });
+  cash = await createWallet({ name: "Cash" });
 });
 
 afterEach(async () => {

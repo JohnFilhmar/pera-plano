@@ -11,15 +11,35 @@ export type EpochMs = number;
 export type IsoDate = string;
 
 // ---------- Wallet ----------
-export type WalletType = "bank" | "e-wallet" | "cash" | "credit" | "savings";
-
 export type Wallet = {
   id: string;
   name: string;
-  type: WalletType;
   balance: Centavos;
   currency: "PHP";
   isArchived: boolean;
+  /**
+   * The balance is money OWED, not money held: excluded from the Wallets-tab
+   * total and from Safe-to-Spend, and labelled "Owed" on its row.
+   *
+   * INFERRED (lib/wallets/classification.ts), not asked for — unless
+   * `owedPinned` says the user answered it themselves.
+   */
+  owedBalance: boolean;
+  /**
+   * The user settled `owedBalance` — by answering the review-queue question or
+   * correcting it on the wallet screen. Inference reads a pinned wallet and
+   * never writes it again.
+   */
+  owedPinned: boolean;
+  /**
+   * How many `wallet_matchers` rows route to this wallet.
+   *
+   * ZERO IS THE INTERESTING VALUE: nothing can track this wallet
+   * automatically, which is precisely what `type: "cash"` used to mean. Derived
+   * from a count rather than stored as a flag, so removing a wallet's last
+   * matcher makes it manual the moment it happens.
+   */
+  matcherCount: number;
   /**
    * The reporting Transaction whose balance drift the user has already seen and
    * accepted (migration 003), or `null` when nothing is acknowledged.
@@ -39,7 +59,6 @@ export type Wallet = {
 
 export type NewWallet = {
   name: string;
-  type: WalletType;
   /** Opening balance anchor (docs/02-domain-model.md §3.1); defaults to 0. */
   openingBalance?: Centavos;
 };
@@ -545,7 +564,19 @@ export type ReviewKind =
    * counterpart transaction does not exist yet — confirming this item MINTS it.
    * Distinct from `ambiguous-transfer`, whose payload names a committed row.
    */
-  | "one-sided-transfer";
+  | "one-sided-transfer"
+  /**
+   * Evidence cannot settle whether this wallet's balance is money the user HAS
+   * or money they OWE, and the balance is large enough that guessing wrong
+   * would visibly misstate their total. Payload:
+   * `{ walletId, walletName, balance }`.
+   *
+   * THE ONLY KIND THAT IS NOT ABOUT A TRANSACTION. There is no capture behind
+   * it and no row to commit — the pipeline raises it after watching a wallet
+   * and failing to decide. Asked at most once per wallet, ever: dismissing it
+   * is itself an answer.
+   */
+  | "wallet-kind-unclear";
 
 /**
  * Parsed-candidate payload (amount, direction, merchant, wallet/category guesses…).

@@ -63,7 +63,7 @@ beforeEach(async () => {
   await freshDb();
   __setTierForTests(null);
   await seedDefaultCategories();
-  await createWallet({ name: "GCash", type: "e-wallet" });
+  await createWallet({ name: "GCash" });
 });
 
 afterEach(async () => {

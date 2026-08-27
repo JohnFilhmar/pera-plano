@@ -125,7 +125,7 @@ beforeEach(async () => {
   jest.clearAllMocks();
   await freshDb();
   await seedDefaultCategories();
-  walletId = (await createWallet({ name: "GCash", type: "e-wallet" })).id;
+  walletId = (await createWallet({ name: "GCash" })).id;
 });
 
 afterEach(async () => {

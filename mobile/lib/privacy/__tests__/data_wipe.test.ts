@@ -42,13 +42,13 @@ let db: SQLiteDatabase;
  */
 async function seedOneRowPerTable(): Promise<void> {
   await db.runAsync(
-    `INSERT INTO wallets (id, name, type, balance, currency, is_archived, created_at, updated_at)
-     VALUES ('w1', 'GCash', 'e-wallet', 10000, 'PHP', 0, ?, ?)`,
+    `INSERT INTO wallets (id, name, balance, currency, is_archived, created_at, updated_at)
+     VALUES ('w1', 'GCash', 10000, 'PHP', 0, ?, ?)`,
     [NOW, NOW],
   );
   await db.runAsync(
-    `INSERT INTO wallets (id, name, type, balance, currency, is_archived, created_at, updated_at)
-     VALUES ('w2', 'Goal jar', 'cash', 0, 'PHP', 0, ?, ?)`,
+    `INSERT INTO wallets (id, name, balance, currency, is_archived, created_at, updated_at)
+     VALUES ('w2', 'Goal jar', 0, 'PHP', 0, ?, ?)`,
     [NOW, NOW],
   );
   await db.runAsync(
@@ -169,6 +169,16 @@ async function seedOneRowPerTable(): Promise<void> {
      VALUES ('ps1', 'gcash', ?, 1, 0, ?)`,
     [NOW, NOW],
   );
+  // migration 013 — the running scores behind the held/owed verdict. NOT
+  // content-free like parse_stats above: these numbers are derived from what
+  // the user's own notifications said, so a wipe that left them behind would
+  // leave the app still holding a conclusion about accounts it was told to
+  // forget.
+  await db.runAsync(
+    `INSERT INTO wallet_trait_evidence (wallet_id, owed_score, held_score, sample_count, updated_at)
+     VALUES ('w1', 250, 0, 1, ?)`,
+    [NOW],
+  );
   await setSetting("capture_enabled", false);
 }
 
@@ -209,6 +219,7 @@ test("listWipeableTables enumerates every data table this test seeds — nothing
     "review_queue_items",
     "parser_rulesets",
     "parse_stats",
+    "wallet_trait_evidence",
   ];
 
   for (const table of seeded) {

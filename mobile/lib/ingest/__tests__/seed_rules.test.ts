@@ -14,7 +14,7 @@ import {
   getActiveVersion,
   upsertRuleset,
 } from "@/lib/db/repos/parser_rulesets_repo";
-import { DEFAULT_TUNABLES } from "@/lib/ingest/ruleset_types";
+import { DEFAULT_TRAIT_SIGNALS, DEFAULT_TUNABLES } from "@/lib/ingest/ruleset_types";
 import { SEED_BUNDLE, seedParserRules } from "@/lib/ingest/seed_rules";
 import { freshDb } from "@/test_support/db";
 import seedJson from "@/assets/parser_rules/seed.json";
@@ -515,4 +515,39 @@ test("seedParserRules does not overwrite a higher server-supplied version", asyn
   expect(read!.providers.map((p) => p.providerKey)).toEqual(["server_only_provider"]);
   // The seed was never written at all, not written-then-shadowed.
   expect(await rowCount()).toBe(1);
+});
+
+// ---------- wallet trait inference ----------
+// The held/owed verdict (lib/wallets/classification.ts) reads its thresholds
+// and its phrase rules off the ruleset, so a provider we classify wrong is
+// corrected without an app release — the same promise §11.1 already makes for
+// package names.
+
+test("the shipped tunables carry the wallet-trait thresholds", () => {
+  expect(DEFAULT_TUNABLES.walletTraits).toEqual({
+    owedMarginThreshold: 300,
+    owedSampleFloor: 3,
+    priorWeight: 100,
+  });
+});
+
+test("the shipped signal pack scores both sides, in whole numbers", () => {
+  const owed = DEFAULT_TRAIT_SIGNALS.filter((signal) => signal.trait === "owed");
+  const held = DEFAULT_TRAIT_SIGNALS.filter((signal) => signal.trait === "held");
+
+  expect(owed.length).toBeGreaterThan(0);
+  expect(held.length).toBeGreaterThan(0);
+  // Scores are summed straight into INTEGER columns; a float here would round
+  // silently on the way into SQLite.
+  expect(DEFAULT_TRAIT_SIGNALS.every((signal) => Number.isInteger(signal.weight))).toBe(true);
+});
+
+test("no seeded provider is presumed to be a credit account", () => {
+  // None of the thirteen is a credit-card app — cards reach us through bank
+  // apps — so the first owed verdicts must come from text and behaviour rather
+  // than from a guess this file made about an entire provider.
+  const presumed = SEED_BUNDLE.providers.filter(
+    (provider) => provider.traits?.owedBalance === "likely",
+  );
+  expect(presumed).toEqual([]);
 });

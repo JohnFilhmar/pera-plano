@@ -174,8 +174,8 @@ let bpi: Wallet;
 beforeEach(async () => {
   await freshDb();
   await seedDefaultCategories();
-  gcash = await createWallet({ name: "GCash", type: "e-wallet" });
-  bpi = await createWallet({ name: "BPI", type: "bank" });
+  gcash = await createWallet({ name: "GCash" });
+  bpi = await createWallet({ name: "BPI" });
 });
 
 afterEach(async () => {
@@ -815,7 +815,7 @@ describe("the one-sided transfer card", () => {
     // CASH IS OFFERED ON PURPOSE — see one_sided_transfer_body.tsx's header:
     // a cash leg posts no notification, so this card is the only way a human
     // can supply it.
-    const cash: Wallet = { ...gcash, id: "w-cash", name: "Cash", type: "cash" };
+    const cash: Wallet = { ...gcash, id: "w-cash", name: "Cash" };
     const archived: Wallet = { ...gcash, id: "w-archived", name: "Retired GCash", isArchived: true };
     const queued = oneSidedItem();
 
@@ -958,5 +958,77 @@ describe("the one-sided transfer card", () => {
 
     const primary = await screen.findByTestId(`review-primary-${queued.id}`);
     expect(primary.props.accessibilityState.disabled).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// wallet-kind-unclear — the only card that is about a wallet, not a transaction
+// ---------------------------------------------------------------------------
+
+describe("the wallet-kind card", () => {
+  function walletKindItem(overrides: Partial<ReviewQueueItem> = {}): ReviewQueueItem {
+    return item({
+      id: "r-wallet-kind",
+      kind: "wallet-kind-unclear",
+      payload: { walletId: bpi.id, walletName: "BPI", balance: 250_000 },
+      ...overrides,
+    });
+  }
+
+  test("asks about the wallet by name, in money the user can read", async () => {
+    render(<ReviewCard item={walletKindItem()} wallets={[gcash, bpi]} />, { wrapper: Wrapper });
+
+    const question = await screen.findByTestId("wallet-kind-question-r-wallet-kind");
+    expect(String(question.props.children)).toContain("BPI");
+    expect(String(question.props.children)).toMatch(/money you have, or money you owe/i);
+  });
+
+  test("quotes the wallet's CURRENT balance, not the one frozen into the payload", async () => {
+    // The card can sit in the queue for weeks. Asking about a figure the user
+    // cannot see anywhere is worse than asking without one.
+    const stale = walletKindItem({
+      payload: { walletId: bpi.id, walletName: "BPI", balance: 1 },
+    });
+    render(<ReviewCard item={stale} wallets={[gcash, { ...bpi, balance: 777_700 }]} />, {
+      wrapper: Wrapper,
+    });
+
+    const question = await screen.findByTestId("wallet-kind-question-r-wallet-kind");
+    expect(String(question.props.children)).toContain("₱7,777.00");
+  });
+
+  test("falls back to the payload's copy when the wallet is no longer listed", async () => {
+    render(<ReviewCard item={walletKindItem()} wallets={[]} />, { wrapper: Wrapper });
+
+    const question = await screen.findByTestId("wallet-kind-question-r-wallet-kind");
+    expect(String(question.props.children)).toContain("BPI");
+    expect(String(question.props.children)).toContain("₱2,500.00");
+  });
+
+  test("offers two answers, neither of them a rejection", async () => {
+    const queued = walletKindItem();
+    render(
+      <ReviewCard item={queued} wallets={[gcash, bpi]} onPrimary={jest.fn()} onSecondary={jest.fn()} />,
+      { wrapper: Wrapper },
+    );
+
+    expect(await screen.findByTestId(`review-primary-${queued.id}`)).toHaveTextContent(
+      "Money I have",
+    );
+    expect(await screen.findByTestId(`review-secondary-${queued.id}`)).toHaveTextContent(
+      "Money I owe",
+    );
+  });
+
+  test("shows no proposal panel and no confidence meter", async () => {
+    const queued = walletKindItem();
+    render(<ReviewCard item={queued} wallets={[gcash, bpi]} />, { wrapper: Wrapper });
+
+    await screen.findByTestId("wallet-kind-body-r-wallet-kind");
+    // There is no notification behind this card: no amount to approve, and no
+    // score to report. Rendering either would put a transaction on screen that
+    // does not exist.
+    expect(screen.queryByTestId(`review-candidate-${queued.id}`)).toBeNull();
+    expect(screen.queryByTestId(`review-confidence-${queued.id}`)).toBeNull();
   });
 });

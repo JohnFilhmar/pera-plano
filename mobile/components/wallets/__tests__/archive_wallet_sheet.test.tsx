@@ -22,11 +22,13 @@ function wallet(overrides: Partial<Wallet> = {}): Wallet {
   return {
     id: "w-gcash",
     name: "GCash",
-    type: "e-wallet",
     balance: 100_000,
     currency: "PHP",
     isArchived: false,
     driftDismissedTransactionId: null,
+    owedBalance: false,
+    owedPinned: false,
+    matcherCount: 1,
     createdAt: 1,
     updatedAt: 1,
     ...overrides,
@@ -34,8 +36,8 @@ function wallet(overrides: Partial<Wallet> = {}): Wallet {
 }
 
 const OTHERS: Wallet[] = [
-  wallet({ id: "w-bpi", name: "BPI", type: "bank" }),
-  wallet({ id: "w-cash", name: "Pocket", type: "cash" }),
+  wallet({ id: "w-bpi", name: "BPI" }),
+  wallet({ id: "w-cash", name: "Pocket" }),
 ];
 
 function renderSheet(overrides: Partial<React.ComponentProps<typeof ArchiveWalletSheet>> = {}) {

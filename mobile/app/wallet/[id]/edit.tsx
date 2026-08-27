@@ -77,7 +77,7 @@ export default function EditWalletScreen() {
   function save(values: WalletFormValues): void {
     setError(null);
     updateWallet.mutate(
-      { id: walletId, patch: { name: values.name, type: values.type } },
+      { id: walletId, patch: { name: values.name } },
       {
         onSuccess: () => {
           setMatchers.mutate(
@@ -144,7 +144,6 @@ export default function EditWalletScreen() {
           errorMessage={error}
           initial={{
             name: wallet.name,
-            type: wallet.type,
             matchers: (ownMatchers ?? []).map((matcher) => ({
               packageName: matcher.packageName,
               hint: matcher.hint,

@@ -59,6 +59,8 @@ function bundleOf(providers: Array<[key: string, packages: string[]]>): RulesetB
       templates: [],
     })),
     tunables: DEFAULT_TUNABLES,
+    // Irrelevant to catalogue building; present because a bundle carries one.
+    traitSignals: [],
   };
 }
 

@@ -1,11 +1,19 @@
 // components/wallets/wallet_form.tsx — m1c plan Task 5. One form, two routes:
 // app/wallet/new.tsx and app/wallet/[id]/edit.tsx.
 //
-// NAME AND TYPE ARE BOTH REQUIRED, AND TYPE HAS NO DEFAULT. A pre-selected
-// "bank" would make every wallet a bank for anyone who tapped past the field,
-// and `type` is not cosmetic: it decides whether the matcher UI appears at all
-// (cash has none), whether reconciliation is offered, and whether the balance
-// counts as money owed rather than money held (credit, spec rule 23).
+// THE TYPE QUESTION IS GONE, AND WITH IT THE ONLY REQUIRED FIELD BESIDES THE
+// NAME. This form used to demand one of bank / e-wallet / savings / credit /
+// cash before it would submit. That was a taxonomy the user did not think in,
+// forced to one answer when a provider app commonly fronts several kinds of
+// account, and asked before a single transaction existed to judge it by.
+//
+// WHAT THE FIVE VALUES ACTUALLY DID, AND WHERE THEY WENT. "credit" decided
+// whether the balance counted as money owed — now inferred and correctable
+// (lib/wallets/classification.ts). "cash" decided whether the matcher picker
+// appeared — now simply whether the user picks any matchers, which is the same
+// fact stated by the control they were already using. The other three chose an
+// icon. So the picker below is a matcher picker and nothing else: choosing no
+// notification source is what makes a wallet manual.
 //
 // THE OPENING BALANCE IS A CREATE-ONLY FIELD. `updateWallet` refuses to patch
 // `balance` on purpose — it is the ledger's running total, moved only by the
@@ -22,54 +30,15 @@ import { AmountText } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
 import { NumericField } from "@/components/ui/numeric_field";
 import { SectionHeader } from "@/components/ui/section_header";
-import { SegmentedControl } from "@/components/ui/segmented_control";
-import type { Segment } from "@/components/ui/segmented_control";
 import { centavosFrom } from "@/lib/money/peso_input";
-import { WALLET_TYPE_ORDER } from "@/lib/wallets/summary";
 import type { MatcherOwner } from "@/lib/wallets/matchers";
 import type { ProviderRuleset } from "@/lib/ingest/ruleset_types";
-import type { Centavos, NewWalletMatcher, WalletType } from "@/types/domain";
+import type { Centavos, NewWalletMatcher } from "@/types/domain";
 
 import { MatcherPicker } from "./matcher_picker";
 
-/**
- * Short labels for the wallet-type `SegmentedControl` (task-5b restyle).
- *
- * NOT `WALLET_TYPE_LABELS` (lib/wallets/summary.ts). That map's credit entry
- * is "Credit — amounts owed" — right for a Wallets-tab SECTION HEADING, where
- * the qualifier only has to be stated once for a whole group, and much too
- * long for one of five tabs squeezed into a single `SegmentedControl` row.
- * The qualifier is not lost: `chooseType` still drives every credit-specific
- * behaviour this form and the detail screen have (rule 23), this is purely
- * which WORDS label the tab.
- */
-const TYPE_SEGMENT_LABELS: Record<WalletType, string> = {
-  bank: "Bank",
-  "e-wallet": "E-wallet",
-  savings: "Savings",
-  credit: "Credit",
-  cash: "Cash",
-};
-
-const TYPE_SEGMENTS: ReadonlyArray<Segment<WalletType>> = WALLET_TYPE_ORDER.map((candidate) => ({
-  value: candidate,
-  label: TYPE_SEGMENT_LABELS[candidate],
-}));
-
-/**
- * A value outside `WalletType`, so `SegmentedControl<WalletType | typeof
- * TYPE_UNSET>` can represent "nothing chosen yet" without a `null` in its
- * generic (`SegmentedControl`'s `T extends string`, so `null` cannot be a
- * member). No segment's `value` is ever this, so nothing highlights while
- * `type` is `null` — preserving the "NO DEFAULT TYPE" rule above: a
- * pre-highlighted segment would be the exact bug that rule exists to avoid,
- * just moved from a list row to a segmented one.
- */
-const TYPE_UNSET = "__unset__" as const;
-
 export type WalletFormValues = {
   name: string;
-  type: WalletType;
   openingBalance: Centavos;
   matchers: NewWalletMatcher[];
 };
@@ -103,7 +72,6 @@ export function WalletForm({
   testID = "wallet-form",
 }: WalletFormProps) {
   const [name, setName] = useState(initial?.name ?? "");
-  const [type, setType] = useState<WalletType | null>(initial?.type ?? null);
   // WHAT THE USER KEYED, not a parsed number — centavos are derived from it on
   // submit and a formatted string is never parsed back (lib/money/peso_input.ts).
   //
@@ -120,29 +88,20 @@ export function WalletForm({
 
   const trimmedName = name.trim();
   const nameMissing = trimmedName === "";
-  const typeMissing = type === null;
-  const isCash = type === "cash";
-
-  function chooseType(next: WalletType): void {
-    setType(next);
-    // Spec rule 4: cash wallets have empty `matchers[]` and the matcher UI is
-    // hidden for them. Merely HIDING the picker while keeping what it held
-    // would leave a cash wallet catching GCash with nothing on screen that says
-    // so — a route the user can neither see nor remove.
-    if (next === "cash") setMatchers([]);
-  }
 
   function submit(): void {
     if (submitting) return;
-    if (nameMissing || type === null) {
+    if (nameMissing) {
       setShowErrors(true);
       return;
     }
     onSubmit({
       name: trimmedName,
-      type,
       openingBalance: centavosFrom(balanceText),
-      matchers: type === "cash" ? [] : matchers,
+      // Whatever the user picked, including nothing. An empty list is not a
+      // missing answer here — it is the answer that makes this a wallet the
+      // app cannot track for them.
+      matchers,
     });
   }
 
@@ -174,37 +133,6 @@ export function WalletForm({
           </Text>
         ) : null}
       </View>
-
-      <View className="gap-1 px-4 pt-4">
-        <Text className="text-micro font-semibold text-fg-2 dark:text-fg-2-dark">
-          What kind of money location is this?
-        </Text>
-        {/* `TYPE_UNSET`, not `type`, is what makes "nothing chosen yet"
-            representable — see that constant's own comment above. Passing
-            `type` directly here would be a type error (`SegmentedControl`'s
-            `T extends string`, and `null` is not a `WalletType`), and
-            defaulting the prop to a real type while leaving `type` state
-            `null` would show a segment highlighted that submit still
-            refuses — the exact "looks chosen, was not" bug the ListRow
-            version never had a chance to introduce, because nothing there
-            was pre-selected either. */}
-        <SegmentedControl<WalletType | typeof TYPE_UNSET>
-          testID="wallet-form-type"
-          segments={TYPE_SEGMENTS}
-          value={type ?? TYPE_UNSET}
-          onChange={(next) => {
-            if (next !== TYPE_UNSET) chooseType(next);
-          }}
-        />
-      </View>
-      {showErrors && typeMissing ? (
-        <Text
-          testID="wallet-form-type-error"
-          className="px-4 text-sm text-danger dark:text-danger-dark"
-        >
-          Pick what kind of money location this is — it decides how the wallet is tracked.
-        </Text>
-      ) : null}
 
       {showOpeningBalance ? (
         <View className="gap-1 px-4 pt-4">
@@ -243,21 +171,22 @@ export function WalletForm({
         </View>
       ) : null}
 
-      {/* Rule 4 again: nothing at all for cash, not a disabled section. An
-          empty "Notifications" heading on a cash wallet reads as a feature that
-          failed to load rather than as one that cannot apply. */}
-      {!isCash && type !== null ? (
-        <View>
-          <SectionHeader title="Which notifications land here?" />
-          <MatcherPicker
-            providers={providers}
-            value={matchers}
-            onChange={setMatchers}
-            owners={owners}
-            walletId={walletId}
-          />
-        </View>
-      ) : null}
+      {/* ALWAYS SHOWN NOW, AND IT IS THE ONLY PLACE "cash" ever lived. A user
+          who picks nothing here has made a manual wallet — the app will not
+          pretend it can track it, and the reconcile sheet becomes available on
+          the detail screen. The section used to be hidden entirely for a wallet
+          typed as cash; there is no type to hide it by any more, and hiding it
+          by "no matchers yet" would remove the very control needed to add one. */}
+      <View>
+        <SectionHeader title="Which notifications land here?" />
+        <MatcherPicker
+          providers={providers}
+          value={matchers}
+          onChange={setMatchers}
+          owners={owners}
+          walletId={walletId}
+        />
+      </View>
 
       {errorMessage ? (
         <Text testID="wallet-form-error" className="px-4 text-danger dark:text-danger-dark">

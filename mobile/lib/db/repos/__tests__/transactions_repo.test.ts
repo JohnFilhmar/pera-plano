@@ -49,7 +49,7 @@ beforeEach(async () => {
   db = await freshDb();
   await seedCategory(CATEGORY_ID, "Food & Dining");
   await seedCategory(OTHER_CATEGORY_ID, "Transport");
-  walletId = (await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 })).id;
+  walletId = (await createWallet({ name: "GCash", openingBalance: 100000 })).id;
 });
 
 afterEach(async () => {
@@ -142,7 +142,7 @@ test("listTransactions returns newest first", async () => {
 });
 
 test("listTransactions filters by wallet, category, direction and [from, to)", async () => {
-  const otherWalletId = (await createWallet({ name: "Cash", type: "cash" })).id;
+  const otherWalletId = (await createWallet({ name: "Cash" })).id;
   const a = await insertTransaction({
     walletId,
     categoryId: CATEGORY_ID,
@@ -257,7 +257,7 @@ test("sumSpend adds outgoing money only, excluding transfer legs", async () => {
 });
 
 test("sumSpend honours the exclusive upper bound and category/wallet filters", async () => {
-  const otherWalletId = (await createWallet({ name: "Cash", type: "cash" })).id;
+  const otherWalletId = (await createWallet({ name: "Cash" })).id;
   await insertTransaction({
     walletId,
     categoryId: CATEGORY_ID,
@@ -506,7 +506,7 @@ describe("listTransactions window is [from, to): from inclusive, to exclusive, i
 
 describe("TxFilter fields combine with AND semantics, not OR", () => {
   test("combining walletId and categoryId returns strictly fewer rows than either filter alone", async () => {
-    const otherWalletId = (await createWallet({ name: "Cash", type: "cash" })).id;
+    const otherWalletId = (await createWallet({ name: "Cash" })).id;
     // wallet=A,category=FOOD ; wallet=A,category=TRANSPORT ; wallet=B,category=FOOD
     const walletAFood = await insertTransaction({
       walletId,
@@ -806,7 +806,7 @@ describe("updateTransaction keeps the wallet balance in step with the ledger", (
   });
 
   test("moving a transaction to another wallet reverses it from the old and applies it to the new", async () => {
-    const other = await createWallet({ name: "Maya", type: "e-wallet", openingBalance: 50000 });
+    const other = await createWallet({ name: "Maya", openingBalance: 50000 });
     const tx = await insertTransaction({
       walletId,
       categoryId: CATEGORY_ID,
@@ -828,7 +828,7 @@ describe("updateTransaction keeps the wallet balance in step with the ledger", (
   });
 
   test("changing the wallet AND the amount together settles both wallets exactly", async () => {
-    const other = await createWallet({ name: "Maya", type: "e-wallet", openingBalance: 50000 });
+    const other = await createWallet({ name: "Maya", openingBalance: 50000 });
     const tx = await insertTransaction({
       walletId,
       categoryId: CATEGORY_ID,
@@ -966,7 +966,7 @@ describe("updateTransaction keeps the wallet balance in step with the ledger", (
     // of every transaction against it. Any single missed or doubled adjustment
     // above shows up here as a mismatch.
     const OPENING = 100000; // the shared `walletId` wallet's opening balance
-    const other = await createWallet({ name: "Maya", type: "e-wallet", openingBalance: 0 });
+    const other = await createWallet({ name: "Maya", openingBalance: 0 });
 
     const a = await insertTransaction({
       walletId,
@@ -1119,7 +1119,7 @@ describe("a reported balance-after SETS the wallet balance instead of moving it"
   });
 
   test("the snap only touches the reporting wallet, never a sibling", async () => {
-    const other = await createWallet({ name: "Maya", type: "e-wallet", openingBalance: 50000 });
+    const other = await createWallet({ name: "Maya", openingBalance: 50000 });
     await insertTransaction({
       walletId, categoryId: CATEGORY_ID, amount: 15000, direction: "out",
       occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 900000,
@@ -1284,7 +1284,7 @@ describe("reassignWalletTransactions", () => {
   }
 
   beforeEach(async () => {
-    target = (await createWallet({ name: "BPI", type: "bank", openingBalance: 0 })).id;
+    target = (await createWallet({ name: "BPI", openingBalance: 0 })).id;
   });
 
   test("moves every transaction to the new wallet", async () => {
@@ -1470,7 +1470,7 @@ describe("supersedeMintedLeg replaces a minted transfer leg with the provider's 
   let bpi: string;
 
   beforeEach(async () => {
-    bpi = (await createWallet({ name: "BPI", type: "bank", openingBalance: 0 })).id;
+    bpi = (await createWallet({ name: "BPI", openingBalance: 0 })).id;
     // `transactions.raw_notification_id` is a foreign key onto raw_notifications(id)
     // (001_core.sql), so every test below that supersedes onto "raw_1" needs the
     // row to actually exist first, the same way reassignWalletTransactions's own

@@ -10,6 +10,7 @@ import {
   updateWallet,
   WalletNotFoundError,
 } from "../wallets_repo";
+import { setWalletOwed } from "@/lib/db/repos/wallet_traits_repo";
 import { deleteTransaction, insertTransaction } from "../transactions_repo";
 import { freshDb } from "@/test_support/db";
 import type { SQLiteDatabase } from "@/lib/db/database";
@@ -29,7 +30,7 @@ afterEach(async () => {
 // ---------------------------------------------------------------------------
 
 test("createWallet persists a wallet with a uuid id and defaults", async () => {
-  const wallet = await createWallet({ name: "GCash", type: "e-wallet" });
+  const wallet = await createWallet({ name: "GCash" });
   expect(wallet.id).toMatch(
     /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   );
@@ -48,7 +49,6 @@ test("createWallet persists a wallet with a uuid id and defaults", async () => {
 test("createWallet uses openingBalance as the balance anchor", async () => {
   const wallet = await createWallet({
     name: "BPI Payroll",
-    type: "bank",
     openingBalance: 1234567,
   });
   expect(wallet.balance).toBe(1234567);
@@ -56,25 +56,25 @@ test("createWallet uses openingBalance as the balance anchor", async () => {
 });
 
 test("createWallet rejects a duplicate name among non-archived wallets", async () => {
-  await createWallet({ name: "GCash", type: "e-wallet" });
+  await createWallet({ name: "GCash" });
   // Asserted on the error class rather than a message regex (review finding 2):
   // every later repo copies this pattern for its own invariant, and a typed
   // error survives a message wording tweak that a regex match would not.
-  await expect(createWallet({ name: "GCash", type: "e-wallet" })).rejects.toThrow(
+  await expect(createWallet({ name: "GCash" })).rejects.toThrow(
     DuplicateNameError,
   );
 });
 
 test("createWallet allows reusing the name of an archived wallet, case-insensitively too", async () => {
-  const first = await createWallet({ name: "GCash", type: "e-wallet" });
+  const first = await createWallet({ name: "GCash" });
   await db.runAsync("UPDATE wallets SET is_archived = 1 WHERE id = ?", [first.id]);
-  const second = await createWallet({ name: "GCash", type: "e-wallet" });
+  const second = await createWallet({ name: "GCash" });
   expect(second.id).not.toBe(first.id);
 
   // The exemption must survive the case-insensitivity fix too: archiving "GCash"
   // frees the name for a differently-cased "gcash", not just an exact-case one.
   await db.runAsync("UPDATE wallets SET is_archived = 1 WHERE id = ?", [second.id]);
-  const third = await createWallet({ name: "gcash", type: "e-wallet" });
+  const third = await createWallet({ name: "gcash" });
   expect(third.id).not.toBe(second.id);
 });
 
@@ -83,8 +83,8 @@ test("getWallet returns null for an unknown id", async () => {
 });
 
 test("listWallets hides archived wallets by default and can include them", async () => {
-  const cash = await createWallet({ name: "Cash on hand", type: "cash" });
-  const old = await createWallet({ name: "Old bank", type: "bank" });
+  const cash = await createWallet({ name: "Cash on hand" });
+  const old = await createWallet({ name: "Old bank" });
   await db.runAsync("UPDATE wallets SET is_archived = 1 WHERE id = ?", [old.id]);
 
   const active = await listWallets();
@@ -108,15 +108,15 @@ describe("createWallet's duplicate-name check is case-insensitive (review findin
   // uniqueness invariant — not an edge case. SQLite's default TEXT collation is
   // BINARY, so this fails unless the comparison explicitly opts into NOCASE.
   test("'GCash' then 'gcash' collide", async () => {
-    await createWallet({ name: "GCash", type: "e-wallet" });
-    await expect(createWallet({ name: "gcash", type: "e-wallet" })).rejects.toThrow(
+    await createWallet({ name: "GCash" });
+    await expect(createWallet({ name: "gcash" })).rejects.toThrow(
       DuplicateNameError,
     );
   });
 
   test("DuplicateNameError carries the offending (as-typed) name", async () => {
-    await createWallet({ name: "GCash", type: "e-wallet" });
-    await expect(createWallet({ name: "gcash", type: "e-wallet" })).rejects.toMatchObject({
+    await createWallet({ name: "GCash" });
+    await expect(createWallet({ name: "gcash" })).rejects.toMatchObject({
       walletName: "gcash",
     });
   });
@@ -139,8 +139,8 @@ describe("listWallets archived filter — both directions must hold independentl
   // one active row and you only check one side. These two tests each fail if
   // the filter is flipped, and fail for the OPPOSITE reason from each other.
   test("an archived wallet is absent from the default list", async () => {
-    const active = await createWallet({ name: "Everyday", type: "cash" });
-    const archived = await createWallet({ name: "Retired", type: "bank" });
+    const active = await createWallet({ name: "Everyday" });
+    const archived = await createWallet({ name: "Retired" });
     await db.runAsync("UPDATE wallets SET is_archived = 1 WHERE id = ?", [archived.id]);
 
     const result = await listWallets();
@@ -150,8 +150,8 @@ describe("listWallets archived filter — both directions must hold independentl
   });
 
   test("an archived wallet is present when includeArchived is true", async () => {
-    const active = await createWallet({ name: "Everyday", type: "cash" });
-    const archived = await createWallet({ name: "Retired", type: "bank" });
+    const active = await createWallet({ name: "Everyday" });
+    const archived = await createWallet({ name: "Retired" });
     await db.runAsync("UPDATE wallets SET is_archived = 1 WHERE id = ?", [archived.id]);
 
     const result = await listWallets({ includeArchived: true });
@@ -170,13 +170,13 @@ describe("listWallets ordering is by created_at, not insertion order, with archi
     const dateSpy = jest.spyOn(Date, "now");
     dateSpy.mockReturnValueOnce(3_000); // Wallet C
     dateSpy.mockReturnValueOnce(3_000);
-    const walletC = await createWallet({ name: "Wallet C", type: "cash" });
+    const walletC = await createWallet({ name: "Wallet C" });
     dateSpy.mockReturnValueOnce(1_000); // Wallet A
     dateSpy.mockReturnValueOnce(1_000);
-    const walletA = await createWallet({ name: "Wallet A", type: "bank" });
+    const walletA = await createWallet({ name: "Wallet A" });
     dateSpy.mockReturnValueOnce(2_000); // Wallet B
     dateSpy.mockReturnValueOnce(2_000);
-    const walletB = await createWallet({ name: "Wallet B", type: "savings" });
+    const walletB = await createWallet({ name: "Wallet B" });
     dateSpy.mockRestore();
 
     const active = await listWallets();
@@ -198,7 +198,6 @@ describe("balance stays an exact integer centavo value end to end", () => {
     const TEN_MILLION_PESOS_IN_CENTAVOS = 1_000_000_000;
     const wallet = await createWallet({
       name: "Trust Fund",
-      type: "savings",
       openingBalance: TEN_MILLION_PESOS_IN_CENTAVOS,
     });
     expect(wallet.balance).toBe(TEN_MILLION_PESOS_IN_CENTAVOS);
@@ -218,7 +217,7 @@ describe("balance stays an exact integer centavo value end to end", () => {
 
 describe("archiving a wallet is not deleting it (invariant I4)", () => {
   test("a transaction booked against a wallet stays readable after the wallet is archived", async () => {
-    const wallet = await createWallet({ name: "Everyday", type: "cash" });
+    const wallet = await createWallet({ name: "Everyday" });
     const now = Date.now();
     await db.runAsync(
       "INSERT INTO categories (id, name, parent_id, icon, is_system, is_hidden, created_at, updated_at) VALUES (?, ?, NULL, ?, 0, 0, ?, ?)",
@@ -248,7 +247,7 @@ describe("archiving a wallet is not deleting it (invariant I4)", () => {
   });
 
   test("deleting a wallet with a transaction against it is rejected outright, not silently orphaning", async () => {
-    const wallet = await createWallet({ name: "Everyday", type: "cash" });
+    const wallet = await createWallet({ name: "Everyday" });
     const now = Date.now();
     await db.runAsync(
       "INSERT INTO categories (id, name, parent_id, icon, is_system, is_hidden, created_at, updated_at) VALUES (?, ?, NULL, ?, 0, 0, ?, ?)",
@@ -281,7 +280,7 @@ describe("updateWallet edits the wallet's own fields and nothing else", () => {
   test("renames a wallet, bumps updated_at, and leaves created_at and the balance alone", async () => {
     const dateSpy = jest.spyOn(Date, "now");
     dateSpy.mockReturnValue(1_000);
-    const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 250_00 });
+    const wallet = await createWallet({ name: "GCash", openingBalance: 250_00 });
     dateSpy.mockReturnValue(9_000);
     const updated = await updateWallet(wallet.id, { name: "GCash Main" });
     dateSpy.mockRestore();
@@ -296,23 +295,19 @@ describe("updateWallet edits the wallet's own fields and nothing else", () => {
     expect((await getWallet(wallet.id))?.balance).toBe(250_00);
   });
 
-  test("changes the type", async () => {
-    const wallet = await createWallet({ name: "Coins.ph", type: "e-wallet" });
-    const updated = await updateWallet(wallet.id, { type: "savings" });
-    expect(updated.type).toBe("savings");
-    expect((await getWallet(wallet.id))?.type).toBe("savings");
-  });
+  test("an empty patch leaves every field alone rather than nulling one", async () => {
+    // A naive `UPDATE ... SET name = ?` with `patch.name` bound directly
+    // writes NULL over the untouched column. The wallet's own editable surface
+    // is down to its name — the type field this test used to exercise is gone —
+    // so what is guarded here is that saving the form without touching anything
+    // is a no-op rather than a wipe.
+    const wallet = await createWallet({ name: "BPI Payroll", openingBalance: 100_00 });
+    const untouched = await updateWallet(wallet.id, {});
 
-  test("an omitted key leaves that field alone rather than nulling it", async () => {
-    // A naive `UPDATE ... SET name = ?, type = ?` with `patch.name` bound
-    // directly writes NULL/undefined over the untouched column. Patching ONLY
-    // the type must leave the name intact, and vice versa.
-    const wallet = await createWallet({ name: "BPI Payroll", type: "bank" });
-    const typeOnly = await updateWallet(wallet.id, { type: "savings" });
-    expect(typeOnly.name).toBe("BPI Payroll");
-
-    const nameOnly = await updateWallet(wallet.id, { name: "BPI Savings" });
-    expect(nameOnly.type).toBe("savings");
+    expect(untouched.name).toBe("BPI Payroll");
+    expect(untouched.balance).toBe(100_00);
+    expect(untouched.owedBalance).toBe(false);
+    expect((await getWallet(wallet.id))?.name).toBe("BPI Payroll");
   });
 
   test("throws WalletNotFoundError for an unknown id", async () => {
@@ -322,8 +317,8 @@ describe("updateWallet edits the wallet's own fields and nothing else", () => {
   });
 
   test("rejects a rename onto another non-archived wallet's name, case-insensitively", async () => {
-    await createWallet({ name: "GCash", type: "e-wallet" });
-    const other = await createWallet({ name: "Maya", type: "e-wallet" });
+    await createWallet({ name: "GCash" });
+    const other = await createWallet({ name: "Maya" });
     // Invariant 1 has to hold on the UPDATE path too — enforcing it only in
     // createWallet leaves renaming as an unguarded back door into two live
     // wallets sharing a name, which is exactly what the matcher rules key on.
@@ -331,7 +326,7 @@ describe("updateWallet edits the wallet's own fields and nothing else", () => {
   });
 
   test("re-casing a wallet's OWN name is allowed — the self-row must be excluded from the check", async () => {
-    const wallet = await createWallet({ name: "gcash", type: "e-wallet" });
+    const wallet = await createWallet({ name: "gcash" });
     // A collision check written as "any non-archived row with this name" finds
     // the row being renamed and refuses every no-op save the form makes.
     const updated = await updateWallet(wallet.id, { name: "GCash" });
@@ -339,8 +334,8 @@ describe("updateWallet edits the wallet's own fields and nothing else", () => {
   });
 
   test("a name freed by archiving may be taken by a rename", async () => {
-    const retired = await createWallet({ name: "Old GCash", type: "e-wallet" });
-    const current = await createWallet({ name: "Maya", type: "e-wallet" });
+    const retired = await createWallet({ name: "Old GCash" });
+    const current = await createWallet({ name: "Maya" });
     await archiveWallet(retired.id);
 
     const updated = await updateWallet(current.id, { name: "Old GCash" });
@@ -352,7 +347,7 @@ describe("archiveWallet sets the flag and never deletes (invariant I4)", () => {
   test("flips is_archived and bumps updated_at, leaving the row in place", async () => {
     const dateSpy = jest.spyOn(Date, "now");
     dateSpy.mockReturnValue(1_000);
-    const wallet = await createWallet({ name: "Old bank", type: "bank" });
+    const wallet = await createWallet({ name: "Old bank" });
     dateSpy.mockReturnValue(9_000);
     await archiveWallet(wallet.id);
     dateSpy.mockRestore();
@@ -367,7 +362,7 @@ describe("archiveWallet sets the flag and never deletes (invariant I4)", () => {
     // The whole reason there is no deleteWallet: the schema's NO ACTION foreign
     // key would reject the DELETE, and an archive implemented as delete-and-
     // recreate would orphan (or destroy) the ledger behind it.
-    const wallet = await createWallet({ name: "Everyday", type: "cash" });
+    const wallet = await createWallet({ name: "Everyday" });
     const now = Date.now();
     await db.runAsync(
       "INSERT INTO categories (id, name, parent_id, icon, is_system, is_hidden, created_at, updated_at) VALUES (?, ?, NULL, ?, 0, 0, ?, ?)",
@@ -389,8 +384,8 @@ describe("archiveWallet sets the flag and never deletes (invariant I4)", () => {
   });
 
   test("an archived wallet leaves listWallets() but stays readable by id and via includeArchived", async () => {
-    const keep = await createWallet({ name: "Everyday", type: "cash" });
-    const retire = await createWallet({ name: "Old bank", type: "bank" });
+    const keep = await createWallet({ name: "Everyday" });
+    const retire = await createWallet({ name: "Old bank" });
     await archiveWallet(retire.id);
 
     expect((await listWallets()).map((w) => w.id)).toEqual([keep.id]);
@@ -403,7 +398,7 @@ describe("archiveWallet sets the flag and never deletes (invariant I4)", () => {
   });
 
   test("archiving twice is a no-op, not an error", async () => {
-    const wallet = await createWallet({ name: "Old bank", type: "bank" });
+    const wallet = await createWallet({ name: "Old bank" });
     await archiveWallet(wallet.id);
     await expect(archiveWallet(wallet.id)).resolves.toBeUndefined();
     expect((await getWallet(wallet.id))?.isArchived).toBe(true);
@@ -414,9 +409,9 @@ describe("archiveWallet sets the flag and never deletes (invariant I4)", () => {
   });
 
   test("archiving frees the name for a new wallet", async () => {
-    const first = await createWallet({ name: "GCash", type: "e-wallet" });
+    const first = await createWallet({ name: "GCash" });
     await archiveWallet(first.id);
-    const second = await createWallet({ name: "GCash", type: "e-wallet" });
+    const second = await createWallet({ name: "GCash" });
     expect(second.id).not.toBe(first.id);
   });
 });
@@ -451,7 +446,7 @@ describe("getBalanceDrift reports the gap between the provider's figure and ours
     // Not `{ drift: 0 }`. A zero drift renders a badge saying the bank and the
     // ledger agree — a claim the app has no basis whatsoever for making on a
     // cash wallet, or on any wallet before its first reporting notification.
-    const wallet = await createWallet({ name: "Pocket cash", type: "cash", openingBalance: 50000 });
+    const wallet = await createWallet({ name: "Pocket cash", openingBalance: 50000 });
     await insertTransaction({
       walletId: wallet.id, categoryId: CATEGORY_ID, amount: 12000, direction: "out",
       occurredAt: 1000, source: "manual", confidence: 1,
@@ -468,7 +463,7 @@ describe("getBalanceDrift reports the gap between the provider's figure and ours
     // Opening ₱1,000.00, a ₱150.00 spend, and the provider says ₱9,000.00.
     // computed = 100000 - 15000 = 85000. reported = 900000. drift = 815000.
     // All three are different numbers, so a transposed field is visible.
-    const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
+    const wallet = await createWallet({ name: "GCash", openingBalance: 100000 });
     const report = await insertTransaction({
       walletId: wallet.id, categoryId: CATEGORY_ID, amount: 15000, direction: "out",
       occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 900000,
@@ -489,7 +484,7 @@ describe("getBalanceDrift reports the gap between the provider's figure and ours
   test("drift is reported MINUS computed, so a bank holding less than we counted reads negative", async () => {
     // The sign carries meaning the explainer needs: negative means the app
     // over-counted (a spend it missed), positive means it under-counted.
-    const wallet = await createWallet({ name: "BPI", type: "bank", openingBalance: 100000 });
+    const wallet = await createWallet({ name: "BPI", openingBalance: 100000 });
     const report = await insertTransaction({
       walletId: wallet.id, categoryId: CATEGORY_ID, amount: 10000, direction: "out",
       occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 60000,
@@ -507,7 +502,7 @@ describe("getBalanceDrift reports the gap between the provider's figure and ours
     // The agreeing case must still produce figures: this is what tells the UI
     // "checked, and it matches", which is a different statement from "never
     // checked" — and it is the only way the drift tolerance can be applied.
-    const wallet = await createWallet({ name: "Maya", type: "e-wallet", openingBalance: 100000 });
+    const wallet = await createWallet({ name: "Maya", openingBalance: 100000 });
     const report = await insertTransaction({
       walletId: wallet.id, categoryId: CATEGORY_ID, amount: 15000, direction: "out",
       occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 85000,
@@ -523,7 +518,7 @@ describe("getBalanceDrift reports the gap between the provider's figure and ours
   });
 
   test("reads the LATEST reported balance, not the first one", async () => {
-    const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
+    const wallet = await createWallet({ name: "GCash", openingBalance: 100000 });
     await insertTransaction({
       walletId: wallet.id, categoryId: CATEGORY_ID, amount: 10000, direction: "out",
       occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 700000,
@@ -546,7 +541,7 @@ describe("getBalanceDrift reports the gap between the provider's figure and ours
   });
 
   test("non-reporting transactions between two reports are folded into the computed figure", async () => {
-    const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
+    const wallet = await createWallet({ name: "GCash", openingBalance: 100000 });
     await insertTransaction({
       walletId: wallet.id, categoryId: CATEGORY_ID, amount: 10000, direction: "out",
       occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 700000,
@@ -577,7 +572,7 @@ describe("getBalanceDrift reports the gap between the provider's figure and ours
     // is whatever the last COMMITTED report said, and the explainer has to
     // describe that same figure or it would explain a balance the wallet does
     // not have. Deliberately committed with the older occurred_at LAST.
-    const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
+    const wallet = await createWallet({ name: "GCash", openingBalance: 100000 });
     await insertTransaction({
       walletId: wallet.id, categoryId: CATEGORY_ID, amount: 10000, direction: "out",
       occurredAt: 9000, source: "notification", confidence: 0.95, balanceAfter: 700000,
@@ -593,8 +588,8 @@ describe("getBalanceDrift reports the gap between the provider's figure and ours
   });
 
   test("one wallet's report never leaks into another wallet's drift", async () => {
-    const reporting = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
-    const quiet = await createWallet({ name: "Pocket cash", type: "cash", openingBalance: 20000 });
+    const reporting = await createWallet({ name: "GCash", openingBalance: 100000 });
+    const quiet = await createWallet({ name: "Pocket cash", openingBalance: 20000 });
     await insertTransaction({
       walletId: reporting.id, categoryId: CATEGORY_ID, amount: 15000, direction: "out",
       occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 900000,
@@ -649,13 +644,13 @@ describe("dismissBalanceDrift records WHICH drift the user has seen", () => {
   test("a brand-new wallet has dismissed nothing", async () => {
     // NULL, not a falsy id and not an empty string: "nothing acknowledged" has
     // to be distinguishable from every id this app can generate.
-    const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
+    const wallet = await createWallet({ name: "GCash", openingBalance: 100000 });
     expect(wallet.driftDismissedTransactionId).toBeNull();
     expect((await getWallet(wallet.id))?.driftDismissedTransactionId).toBeNull();
   });
 
   test("dismissing reports the same id back as the reporting transaction's", async () => {
-    const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
+    const wallet = await createWallet({ name: "GCash", openingBalance: 100000 });
     const first = await report(wallet.id, 15000, 900000);
 
     await dismissBalanceDrift(wallet.id, first.id);
@@ -679,7 +674,7 @@ describe("dismissBalanceDrift records WHICH drift the user has seen", () => {
     // and the failure it represents in the app is the one that matters: a real
     // reconciliation problem the user is never told about, with no way to
     // notice, because they once dismissed an unrelated one.
-    const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
+    const wallet = await createWallet({ name: "GCash", openingBalance: 100000 });
     const first = await report(wallet.id, 15000, 900000);
     await dismissBalanceDrift(wallet.id, first.id);
 
@@ -697,8 +692,8 @@ describe("dismissBalanceDrift records WHICH drift the user has seen", () => {
   test("dismissing one wallet's drift leaves another wallet's untouched", async () => {
     // A flag stored per app rather than per wallet passes every single-wallet
     // test above and silences a bank the user has never looked at.
-    const gcash = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
-    const bpi = await createWallet({ name: "BPI", type: "bank", openingBalance: 100000 });
+    const gcash = await createWallet({ name: "GCash", openingBalance: 100000 });
+    const bpi = await createWallet({ name: "BPI", openingBalance: 100000 });
     const gcashReport = await report(gcash.id, 15000, 900000);
     const bpiReport = await report(bpi.id, 15000, 900000);
 
@@ -710,7 +705,7 @@ describe("dismissBalanceDrift records WHICH drift the user has seen", () => {
   });
 
   test("the dismissal is stored, not remembered — it survives a re-read from the row", async () => {
-    const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
+    const wallet = await createWallet({ name: "GCash", openingBalance: 100000 });
     const first = await report(wallet.id, 15000, 900000);
 
     await dismissBalanceDrift(wallet.id, first.id);
@@ -729,7 +724,7 @@ describe("dismissBalanceDrift records WHICH drift the user has seen", () => {
   test("it bumps updated_at and moves NOTHING else on the wallet", async () => {
     // Dismissing accepts the snap silently — spec rule 3's own words. A balance
     // that moved here would be money appearing with no transaction to explain it.
-    const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
+    const wallet = await createWallet({ name: "GCash", openingBalance: 100000 });
     const first = await report(wallet.id, 15000, 900000);
     const before = await getWallet(wallet.id);
 
@@ -754,7 +749,7 @@ describe("dismissBalanceDrift records WHICH drift the user has seen", () => {
     // delete and the merge would fail with an error naming neither. Clearing it
     // is also the right answer on its own terms: a dismissal of a transaction
     // that no longer exists acknowledges nothing.
-    const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
+    const wallet = await createWallet({ name: "GCash", openingBalance: 100000 });
     const first = await report(wallet.id, 15000, 900000);
     await dismissBalanceDrift(wallet.id, first.id);
 
@@ -762,5 +757,72 @@ describe("dismissBalanceDrift records WHICH drift the user has seen", () => {
 
     expect((await getWallet(wallet.id))?.driftDismissedTransactionId).toBeNull();
     expect(await getBalanceDrift(wallet.id)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Held or owed, and how many routes reach the wallet (013_wallet_traits).
+// ---------------------------------------------------------------------------
+
+describe("wallet traits", () => {
+  test("a new wallet is assumed to hold money, and nobody has said so", async () => {
+    const wallet = await createWallet({ name: "BPI" });
+    expect(wallet.owedBalance).toBe(false);
+    // Unpinned: the app ASSUMED this, it was not told. The distinction is what
+    // lets inference correct it later without overruling the user.
+    expect(wallet.owedPinned).toBe(false);
+  });
+
+  test("the user's own answer is what pins the wallet", async () => {
+    // Nobody is asked at creation any more, so pinning can only come from the
+    // user settling the question later — the review-queue card, or the wallet
+    // screen's correction. Both land here.
+    const wallet = await createWallet({ name: "Card" });
+    await setWalletOwed(wallet.id, true, { pinned: true });
+
+    const reloaded = await getWallet(wallet.id);
+    expect(reloaded?.owedBalance).toBe(true);
+    expect(reloaded?.owedPinned).toBe(true);
+  });
+
+  test("matcherCount reports how many routes reach the wallet", async () => {
+    const wallet = await createWallet({ name: "GCash" });
+    expect((await getWallet(wallet.id))?.matcherCount).toBe(0);
+
+    await db.runAsync(
+      `INSERT INTO wallet_matchers (id, wallet_id, package_name, hint, created_at, updated_at)
+       VALUES ('m1', ?, 'com.globe.gcash.android', NULL, 1, 1)`,
+      [wallet.id],
+    );
+
+    expect((await getWallet(wallet.id))?.matcherCount).toBe(1);
+    const listed = await listWallets();
+    expect(listed.find((candidate) => candidate.id === wallet.id)?.matcherCount).toBe(1);
+  });
+
+  test("matcherCount is per wallet, not a total across the table", async () => {
+    const gcash = await createWallet({ name: "GCash" });
+    const bpi = await createWallet({ name: "BPI" });
+    await db.runAsync(
+      `INSERT INTO wallet_matchers (id, wallet_id, package_name, hint, created_at, updated_at)
+       VALUES ('m1', ?, 'com.globe.gcash.android', NULL, 1, 1), ('m2', ?, 'com.bpi.ng.app', NULL, 1, 1),
+              ('m3', ?, 'com.bpi.sms', NULL, 1, 1)`,
+      [gcash.id, bpi.id, bpi.id],
+    );
+
+    const listed = await listWallets();
+    expect(listed.find((candidate) => candidate.id === gcash.id)?.matcherCount).toBe(1);
+    expect(listed.find((candidate) => candidate.id === bpi.id)?.matcherCount).toBe(2);
+  });
+
+  test("archived wallets carry their trait columns too", async () => {
+    const wallet = await createWallet({ name: "Old card" });
+    await setWalletOwed(wallet.id, true, { pinned: true });
+    await archiveWallet(wallet.id);
+
+    const listed = await listWallets({ includeArchived: true });
+    const found = listed.find((candidate) => candidate.id === wallet.id);
+    expect(found?.owedBalance).toBe(true);
+    expect(found?.matcherCount).toBe(0);
   });
 });

@@ -337,7 +337,7 @@ function makeProvider(overrides: Partial<ProviderRuleset> = {}): ProviderRuleset
 }
 
 function bundleOf(providers: ProviderRuleset[]): RulesetBundle {
-  return { version: 1, providers, tunables: DEFAULT_TUNABLES };
+  return { version: 1, providers, tunables: DEFAULT_TUNABLES, traitSignals: [] };
 }
 
 test("a package listed by two providers resolves to the first in bundle order", () => {

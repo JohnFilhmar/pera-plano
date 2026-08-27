@@ -269,7 +269,7 @@ describe("only RECOGNISED observed providers are proposed (task-2-brief)", () =>
     // the raw, unrecognised package.
     await waitFor(async () => expect(await listWallets()).toHaveLength(1));
     const wallets = await listWallets();
-    expect(wallets[0].type).toBe("cash");
+    expect(wallets[0].name).toBe("Cash");
     expect(wallets.some((wallet) => wallet.name === UNKNOWN_APP)).toBe(false);
   });
 });
@@ -283,7 +283,10 @@ describe("opening balances at creation (task-4-brief rule 1)", () => {
     fireEvent.press(screen.getByTestId("onboarding-primary-button"));
 
     await waitFor(async () => expect(await listWallets()).toHaveLength(2));
-    const gcashWallet = (await listWallets()).find((wallet) => wallet.type === "e-wallet")!;
+    // The proposal, not the cash row the step always adds. Selected by
+    // exclusion rather than by name: the name comes from `providerLabel`, and
+    // this test is about the BALANCE, not about what the label resolves to.
+    const gcashWallet = (await listWallets()).find((wallet) => wallet.name !== "Cash")!;
     expect(gcashWallet.balance).toBe(0);
     // And Continue actually continued — a blank balance is a real, complete
     // answer, not a validation error silently holding the flow in place.
@@ -300,7 +303,7 @@ describe("opening balances at creation (task-4-brief rule 1)", () => {
     fireEvent.press(screen.getByTestId("onboarding-primary-button"));
 
     await waitFor(async () => expect(await listWallets()).toHaveLength(2));
-    const gcashWallet = (await listWallets()).find((wallet) => wallet.type === "e-wallet")!;
+    const gcashWallet = (await listWallets()).find((wallet) => wallet.name !== "Cash")!;
     expect(gcashWallet.balance).toBe(300_000);
   });
 });

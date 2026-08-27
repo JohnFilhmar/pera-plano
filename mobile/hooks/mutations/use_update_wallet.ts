@@ -9,11 +9,11 @@ import { invalidateKeys } from "./invalidate_keys";
 
 export type UpdateWalletVariables = {
   id: string;
-  patch: Partial<Pick<Wallet, "name" | "type">>;
+  patch: Partial<Pick<Wallet, "name">>;
 };
 
 /**
- * Renames or re-types a wallet.
+ * Renames a wallet — the only field of its own it still has to edit.
  *
  * Invalidates the list (its row shows the name) and THIS wallet's detail —
  * not `wallets.all`, which would also drop every other wallet's cached detail

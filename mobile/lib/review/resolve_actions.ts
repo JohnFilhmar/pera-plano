@@ -37,6 +37,7 @@ import { UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { getActiveRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { getRawCapture } from "@/lib/db/repos/raw_notifications_repo";
 import { listOpen, resolve } from "@/lib/db/repos/review_queue_repo";
+import { setWalletOwed } from "@/lib/db/repos/wallet_traits_repo";
 import {
   deleteTransaction,
   getTransaction,
@@ -599,4 +600,33 @@ export async function confirmOneSidedTransfer(
     await resolve(itemId, "confirmed");
     return committedId;
   });
+}
+
+/**
+ * The user answers the one question inference could not settle: is this
+ * balance money you have, or money you owe?
+ *
+ * EITHER ANSWER PINS, and that is the whole point. "Money I have" is not a
+ * dismissal — it is the user confirming the assumption the app has been running
+ * on, and a wallet whose owner has confirmed it must not be flipped later by a
+ * run of odd notifications. This is the only card where the secondary action is
+ * as final as the primary.
+ *
+ * NO LEDGER WRITE AND NO `teachFrom`. Every other resolve action here commits,
+ * links or merges a transaction, and teaches a UserRule from what the user
+ * chose. This one changes a property of a WALLET: there is no row to write, no
+ * capture to learn a pattern from, and nothing about the next notification that
+ * this answer should silently decide.
+ */
+export async function answerWalletKind(itemId: string, owed: boolean): Promise<void> {
+  const item = await openItem(itemId);
+  if (item === null) return;
+
+  const walletId = item.payload.walletId;
+  if (typeof walletId !== "string" || walletId === "") {
+    throw new IncompleteReviewItemError(itemId, "walletId");
+  }
+
+  await setWalletOwed(walletId, owed, { pinned: true });
+  await resolve(itemId, "confirmed");
 }

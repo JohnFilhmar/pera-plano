@@ -44,6 +44,8 @@ import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categori
 import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions_repo";
 import { linkTransfer } from "@/lib/db/repos/transfer_links_repo";
+import { setMatchers } from "@/lib/db/repos/wallet_matchers_repo";
+import { setWalletOwed } from "@/lib/db/repos/wallet_traits_repo";
 import { archiveWallet, createWallet, getWallet } from "@/lib/db/repos/wallets_repo";
 import { DEFAULT_TUNABLES } from "@/lib/ingest/ruleset_types";
 import { queryClient as appQueryClient } from "@/lib/query_client";
@@ -151,8 +153,21 @@ beforeEach(async () => {
       balanceDriftToleranceCentavos: DEFAULT_TUNABLES.balanceDriftToleranceCentavos,
     },
   });
-  gcash = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100_000 });
+  gcash = await createWallet({ name: "GCash", openingBalance: 100_000 });
 });
+
+/**
+ * Makes a wallet PROVIDER-TRACKED, which is what `type: "bank"` /
+ * `"e-wallet"` used to assert about a fixture.
+ *
+ * NOT IN `beforeEach`, deliberately: the matcher-chip tests below assert the
+ * EXACT chips a wallet shows, so a matcher every fixture silently carried would
+ * break them. Only the tests that turn on "a provider reports on this one" —
+ * which balance sheet is offered — ask for it.
+ */
+async function makeTracked(walletId: string): Promise<void> {
+  await setMatchers(walletId, [{ packageName: GCASH_PACKAGE, hint: null }]);
+}
 
 afterEach(async () => {
   await closeDatabase();
@@ -194,8 +209,9 @@ describe("the balance header", () => {
     expect(screen.getByTestId("wallet-detail-balance")).toHaveTextContent("₱1,000.00");
   });
 
-  test("a credit wallet's balance is labelled as owed, not as money held", async () => {
-    const visa = await createWallet({ name: "Visa", type: "credit", openingBalance: 1_234_500 });
+  test("an owed wallet's balance is labelled as owed, not as money held", async () => {
+    const visa = await createWallet({ name: "Visa", openingBalance: 1_234_500 });
+    await setWalletOwed(visa.id, true, { pinned: true });
 
     renderDetail(visa.id);
 
@@ -263,7 +279,7 @@ describe("matcher chips", () => {
   });
 
   test("shows the sub-account hint that separates GCash main from GSave", async () => {
-    const gsave = await createWallet({ name: "GSave", type: "savings", openingBalance: 0 });
+    const gsave = await createWallet({ name: "GSave", openingBalance: 0 });
     await insertMatcher(gsave.id, GCASH_PACKAGE, "GSave");
 
     renderDetail(gsave.id);
@@ -272,7 +288,7 @@ describe("matcher chips", () => {
   });
 
   test("shows only THIS wallet's matchers", async () => {
-    const gsave = await createWallet({ name: "GSave", type: "savings", openingBalance: 0 });
+    const gsave = await createWallet({ name: "GSave", openingBalance: 0 });
     await insertMatcher(gcash.id, GCASH_PACKAGE, null);
     await insertMatcher(gsave.id, GCASH_PACKAGE, "GSave");
 
@@ -282,22 +298,29 @@ describe("matcher chips", () => {
     expect(screen.queryByText("Catches: GCash · GSave")).toBeNull();
   });
 
-  test("a CASH wallet shows no matcher section at all (rule 4)", async () => {
-    // Cash wallets have empty matchers by rule and the matcher UI is hidden
-    // for them; money enters by manual entry, transfer legs and reconciliation.
-    const pocket = await createWallet({ name: "Pocket", type: "cash", openingBalance: 5_000 });
+  test("a MANUAL wallet still shows the matcher card, so it can gain a first one", async () => {
+    // REVERSES "a CASH wallet shows no matcher section at all (rule 4)". That
+    // rule hid the card for a wallet TYPED as cash — a type that no longer
+    // exists. "Cash" now MEANS a wallet with no matchers, so keeping the gate
+    // would hide the matcher card from exactly the wallets that have none, and
+    // the dashed "+ Add" chip could never be reached to add the first one.
+    //
+    // A wallet stays manual because the user never picks a source, not because
+    // the app refused to show them the control.
+    const pocket = await createWallet({ name: "Pocket", openingBalance: 5_000 });
 
     renderDetail(pocket.id);
     await screen.findByText("Pocket");
 
-    expect(screen.queryByTestId("wallet-detail-matchers")).toBeNull();
+    expect(screen.getByTestId("wallet-detail-matchers")).toBeTruthy();
+    expect(screen.getByTestId("wallet-detail-matchers-add")).toBeTruthy();
   });
 
   test("the matchers card shows even before the wallet holds a matcher — the dashed Add chip needs it to", async () => {
-    // task-5b: the old gate was `matchers.length > 0`, so a fresh non-cash
-    // wallet's card never existed until AFTER the user had already found some
-    // other way in. Now it is always there for a non-cash, non-archived
-    // wallet, so "+ Add" has somewhere to live before that first matcher.
+    // task-5b: the old gate was `matchers.length > 0`, so a fresh wallet's card
+    // never existed until AFTER the user had already found some other way in.
+    // Now it is always there for any non-archived wallet, so "+ Add" has
+    // somewhere to live before that first matcher.
     renderDetail(gcash.id);
     await screen.findByText("GCash");
 
@@ -411,7 +434,7 @@ describe("the balance header's provider fill (task-5b)", () => {
       ],
       tunables: { balanceDriftToleranceCentavos: DEFAULT_TUNABLES.balanceDriftToleranceCentavos },
     });
-    const maya = await createWallet({ name: "Maya wallet", type: "e-wallet", openingBalance: 0 });
+    const maya = await createWallet({ name: "Maya wallet", openingBalance: 0 });
     await insertMatcher(maya.id, MAYA_PACKAGE, null);
 
     renderDetail(maya.id);
@@ -428,7 +451,7 @@ describe("the balance header's provider fill (task-5b)", () => {
     expect(screen.getByTestId("wallet-detail-provider-maya")).toBeTruthy();
   });
 
-  test("a wallet with no provider at all also falls back to bg-brand, with the type icon instead of a badge", async () => {
+  test("a wallet with no provider at all also falls back to bg-brand, with the wallet glyph instead of a badge", async () => {
     renderDetail(gcash.id);
     await screen.findByText("GCash");
 
@@ -448,7 +471,7 @@ describe("the balance header's provider fill (task-5b)", () => {
 
 describe("the period in/out summary (task-5b)", () => {
   test("shows THIS wallet's money in and out for the current period only", async () => {
-    const other = await createWallet({ name: "BPI", type: "bank", openingBalance: 0 });
+    const other = await createWallet({ name: "BPI", openingBalance: 0 });
     const now = Date.now();
     await insertTransaction({
       walletId: gcash.id,
@@ -494,7 +517,7 @@ describe("the period in/out summary (task-5b)", () => {
   });
 
   test("a transfer leg is excluded, the same rule the Reports tab uses", async () => {
-    const bpi = await createWallet({ name: "BPI", type: "bank", openingBalance: 0 });
+    const bpi = await createWallet({ name: "BPI", openingBalance: 0 });
     const now = Date.now();
     const leg = await insertTransaction({
       walletId: gcash.id,
@@ -540,7 +563,7 @@ describe("the period in/out summary (task-5b)", () => {
 
 describe("the wallet's transactions", () => {
   async function seedLedger(): Promise<void> {
-    const other = await createWallet({ name: "BPI", type: "bank", openingBalance: 500_000 });
+    const other = await createWallet({ name: "BPI", openingBalance: 500_000 });
     await insertTransaction({
       walletId: gcash.id,
       categoryId: UNCATEGORIZED_ID,
@@ -594,7 +617,7 @@ describe("the wallet's transactions", () => {
     // implementations is how a transfer leg ends up muted on one screen and
     // counted as spending on the other, so the day header and the transfer row
     // state are asserted HERE too — on the screen that reuses them.
-    const bpi = await createWallet({ name: "BPI", type: "bank", openingBalance: 0 });
+    const bpi = await createWallet({ name: "BPI", openingBalance: 0 });
     const leg = await insertTransaction({
       walletId: gcash.id,
       categoryId: UNCATEGORIZED_ID,
@@ -631,7 +654,8 @@ describe("the wallet's transactions", () => {
 });
 
 describe("the actions m1c Task 5 added", () => {
-  test("edit and archive are offered; reconcile is not, because this is not cash", async () => {
+  test("edit and archive are offered; reconcile is not, because a provider reports on this one", async () => {
+    await makeTracked(gcash.id);
     await insertTransaction({
       walletId: gcash.id,
       categoryId: UNCATEGORIZED_ID,
@@ -648,9 +672,9 @@ describe("the actions m1c Task 5 added", () => {
 
     expect(screen.getByTestId("wallet-detail-edit")).toBeTruthy();
     expect(screen.getByTestId("wallet-detail-archive")).toBeTruthy();
-    // Task 5 rule 6: cash only. An e-wallet re-anchors itself from the
-    // provider's reported balance-after, and a typed adjustment would fight
-    // the next snap.
+    // Task 5 rule 6, restated against the trait: reconciliation is for wallets
+    // NOTHING routes to. This one re-anchors itself from the provider's own
+    // reported balance-after, and a typed count would fight the next snap.
     expect(screen.queryByTestId("wallet-detail-reconcile")).toBeNull();
   });
 
@@ -671,20 +695,24 @@ describe("the actions m1c Task 5 added", () => {
 // through the ordinary commit path — never a direct write to `wallets.balance`.
 // ---------------------------------------------------------------------------
 
-describe("correcting a non-cash wallet's balance (Task 4)", () => {
-  test("a non-cash wallet offers a balance adjustment", async () => {
+describe("correcting a provider-tracked wallet's balance (Task 4)", () => {
+  test("a provider-tracked wallet offers a balance adjustment", async () => {
+    await makeTracked(gcash.id);
+
     renderDetail(gcash.id);
     await screen.findByText("GCash");
 
     expect(screen.getByTestId("wallet-detail-adjust-balance")).toBeTruthy();
-    // Rule 3: this is not reconciliation, and cash's action is not offered
-    // beside it.
+    // Rule 3: this is not reconciliation, and the manual wallet's action is
+    // not offered beside it.
     expect(screen.queryByTestId("wallet-detail-reconcile")).toBeNull();
   });
 
   test("the adjustment writes a ledger entry rather than setting the balance directly", async () => {
     // gcash opens at ₱1,000.00 (beforeEach). The user says it actually holds
     // ₱1,500.00 — ₱500.00 the app never saw arrive.
+    await makeTracked(gcash.id);
+
     renderDetail(gcash.id);
     await screen.findByText("GCash");
 
@@ -715,8 +743,9 @@ describe("correcting a non-cash wallet's balance (Task 4)", () => {
     expect(written.balanceAfter).toBeNull();
   });
 
-  test("cash wallets still use the reconcile sheet (regression on rule 3)", async () => {
-    const pocket = await createWallet({ name: "Pocket", type: "cash", openingBalance: 5_000 });
+  test("a wallet nothing routes to still uses the reconcile sheet (regression on rule 3)", async () => {
+    // No matchers — the case `type: "cash"` used to name.
+    const pocket = await createWallet({ name: "Pocket", openingBalance: 5_000 });
 
     renderDetail(pocket.id);
     await screen.findByText("Pocket");
@@ -737,20 +766,23 @@ describe("correcting a non-cash wallet's balance (Task 4)", () => {
   // Excluded rather than answered wrong.
   // -------------------------------------------------------------------------
 
-  test("a credit wallet offers no balance adjustment, and says why", async () => {
-    const visa = await createWallet({ name: "Visa", type: "credit", openingBalance: 500_000 });
+  test("an owed wallet offers no balance adjustment, and says why", async () => {
+    const visa = await createWallet({ name: "Visa", openingBalance: 500_000 });
+    await makeTracked(visa.id);
+    await setWalletOwed(visa.id, true, { pinned: true });
 
     renderDetail(visa.id);
     await screen.findByText("Visa");
 
-    // Neither action — this is not cash, and it is not safely correctable
-    // by this sheet either.
+    // Neither action — a provider reports on it, so there is nothing to count
+    // by hand, and its balance is money owed, which this sheet cannot correct
+    // safely either.
     expect(screen.queryByTestId("wallet-detail-adjust-balance")).toBeNull();
     expect(screen.queryByTestId("wallet-detail-reconcile")).toBeNull();
 
     // The missing action is EXPLAINED, not just absent — a silently missing
     // button reads as a bug; a stated reason reads as a real limit.
-    expect(screen.getByTestId("wallet-detail-credit-note")).toBeTruthy();
+    expect(screen.getByTestId("wallet-detail-owed-note")).toBeTruthy();
   });
 
   // The sheet's OWN belt-and-braces guard (rendering null for credit even if
@@ -877,7 +909,7 @@ describe("dismissing a balance drift", () => {
   test("dismissing one wallet's drift leaves another wallet's badge alone", async () => {
     // A flag stored per app rather than per wallet passes every single-wallet
     // test above and silences a bank the user has never opened.
-    const bpi = await createWallet({ name: "BPI", type: "bank", openingBalance: 100_000 });
+    const bpi = await createWallet({ name: "BPI", openingBalance: 100_000 });
     await reportBalance(gcash.id, 15_000, 900_000);
     await reportBalance(bpi.id, 15_000, 900_000);
 
@@ -906,7 +938,7 @@ describe("dismissing a balance drift", () => {
     // `drift === null` is not a drift of zero and not a dismissed one. Treating
     // "never reported" as either would put a control on a cash wallet for a
     // disagreement no provider has ever claimed.
-    const pocket = await createWallet({ name: "Pocket", type: "cash", openingBalance: 5_000 });
+    const pocket = await createWallet({ name: "Pocket", openingBalance: 5_000 });
 
     const view = renderDetail(pocket.id);
     await waitForDriftDecision(view, pocket.id);

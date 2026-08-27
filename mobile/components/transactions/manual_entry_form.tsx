@@ -37,6 +37,7 @@ import {
 } from "@/lib/transactions/manual_entry";
 
 import type { Category, Centavos, EpochMs, Transaction, TxDirection, Wallet } from "@/types/domain";
+import { isManualOnly } from "@/lib/wallets/summary";
 
 const CloseGlyph = registerIcon(X);
 const NoteGlyph = registerIcon(Type);
@@ -171,17 +172,15 @@ export function ManualEntryForm({
   const [chosenToWalletId, setChosenToWalletId] = useState<string | null>(null);
   const [feeAmount, setFeeAmount] = useState("");
 
-  // Spec: archived wallets are hidden from every picker, and cash is listed
-  // first — this screen exists for cash; everything else is the exception.
+  // Spec: archived wallets are hidden from every picker, and the wallets
+  // nothing can track are listed first — this screen exists for the spending no
+  // notification will ever report; everything else is the exception.
   const selectable = useMemo(() => {
     const active = wallets.filter((wallet) => !wallet.isArchived);
-    return [
-      ...active.filter((wallet) => wallet.type === "cash"),
-      ...active.filter((wallet) => wallet.type !== "cash"),
-    ];
+    return [...active.filter(isManualOnly), ...active.filter((wallet) => !isManualOnly(wallet))];
   }, [wallets]);
 
-  const hasCashWallet = selectable.some((wallet) => wallet.type === "cash");
+  const hasCashWallet = selectable.some(isManualOnly);
   const defaultWallet = useMemo(
     () => lastUsedCashWallet(wallets, transactions),
     [wallets, transactions],
