@@ -43,6 +43,7 @@
 // doc comment for why that one kind is the only exception to "disabled means
 // no handler".
 import { CircleHelp } from "lucide-react-native";
+import { useState } from "react";
 import { Text, View } from "react-native";
 
 import { AmountText } from "@/components/ui/amount_text";
@@ -54,6 +55,7 @@ import { useRawCapture } from "@/hooks/queries/use_raw_capture";
 import { useTransaction } from "@/hooks/queries/use_transaction";
 import { GATE_REASONS } from "@/lib/ingest/confidence_gate";
 import type { ProviderRuleset } from "@/lib/ingest/ruleset_types";
+import { centavosFrom } from "@/lib/money/peso_input";
 import type {
   Category,
   Centavos,
@@ -66,6 +68,7 @@ import type {
 } from "@/types/domain";
 
 import { ConfidenceMeter, confidencePercent } from "./confidence_meter";
+import { OneSidedTransferBody } from "./one_sided_transfer_body";
 
 /** The card's leading glyph (task-4b) — a generic "this needs a decision"
  * mark for all four kinds, not a per-kind icon: `kind` already has its own
@@ -174,11 +177,14 @@ export const REASON_FALLBACKS: Record<ReviewKind, string> = {
    * HAND-WRITTEN, LIKE `loan-match`'s, NOT A `GATE_REASONS` ENTRY — Task 10
    * wires the gate's own `oneSidedTransfer` reason onto the payload for every
    * real item, so this only ever answers a corrupt or hand-built row (same
-   * caveat as the two pair kinds above). Worded to match the question Task
-   * 12's card body asks ("Where did this money come from/go?"), not the
+   * caveat as the two pair kinds above). Same facts as the gate's own
+   * sentence ("money moving between your own accounts") but pointed at the
+   * question Task 12's card body actually asks the user to answer — which
+   * wallet the other half went to or came from — rather than restating the
    * gate's routing language.
    */
-  "one-sided-transfer": "PeraPlano saw one side of a possible transfer. Where did the rest of it go?",
+  "one-sided-transfer":
+    "PeraPlano saw one leg of a transfer between your own accounts. Choose where the other half went.",
 };
 
 /**
@@ -791,6 +797,18 @@ export type ReviewCardProps = {
    * refuses to ship.
    */
   onChooseLoan?: (item: ReviewQueueItem, loanId: string) => void;
+  /**
+   * `one-sided-transfer` only, task-12 — the counterpart to `onChooseLoan`
+   * above and the same reason it exists: the wallet is a CHOICE the card
+   * owns (`app/review/index.tsx`'s `primaryActionFor` returns `null` for
+   * this kind, exactly as it does for a multi-candidate `loan-match`), so
+   * there is no single answer any screen-level function could stand for.
+   * Absent means the primary renders disabled once a wallet is picked, same
+   * "absent means disabled" rule as every other pair in this file — a money
+   * decision that silently does nothing when tapped is the one affordance
+   * this file refuses to ship.
+   */
+  onChooseTransferWallet?: (item: ReviewQueueItem, walletId: string, feeAmount: Centavos) => void;
   testID?: string;
 };
 
@@ -803,6 +821,7 @@ export function ReviewCard({
   onSecondary,
   onReject,
   onChooseLoan,
+  onChooseTransferWallet,
   testID,
 }: ReviewCardProps) {
   const actions = REVIEW_ACTIONS[item.kind];
@@ -830,6 +849,44 @@ export function ReviewCard({
   // an unmapped wallet is a routine hard route rather than an edge case. See
   // `missingLedgerField`. Also defensive against a hand-built or older row.
   const missingField = item.kind === "low-confidence" ? missingLedgerField(item) : null;
+
+  // Task 12. Held on the CARD, not the screen — `app/review/index.tsx`'s
+  // `primaryActionFor` returns `null` for this kind for exactly this reason
+  // (same as it does for a multi-candidate `loan-match`): the wallet is a
+  // choice only this card has the controls to make. Seeded from
+  // `payload.counterpartWalletId`, a `mark-transfer` rule's prefill — NEVER
+  // treated as the answer, only as where the selection starts; every wallet
+  // row stays tappable regardless (`one_sided_transfer_body.tsx`'s header).
+  // `key={entry.id}` on the screen's list remounts this component per item,
+  // so a fresh `useState` call is enough to reset the selection between
+  // cards — no effect needed to re-sync it on re-render.
+  const [transferWalletId, setTransferWalletId] = useState<string | null>(
+    readString(item.payload, "counterpartWalletId"),
+  );
+  const [transferFeeText, setTransferFeeText] = useState("");
+  const transferFee = centavosFrom(transferFeeText);
+  const capturedWalletId = readString(item.payload, "walletId");
+
+  const isOneSidedTransfer = item.kind === "one-sided-transfer";
+
+  // WITHHELD, NOT SUPPLIED-AND-INERT. This file's own rule renders an absent
+  // `onPrimary` as disabled-but-visible, so the outcome still reads on
+  // screen while the tap that would mint a ledger row on an unnamed wallet
+  // cannot happen. `transferWalletId !== null` narrows the type for the
+  // closure below, which is also why this is computed once rather than
+  // inline in the two JSX props that read it.
+  const transferPrimary =
+    isOneSidedTransfer && transferWalletId !== null && onChooseTransferWallet !== undefined
+      ? () => onChooseTransferWallet(item, transferWalletId, transferFee)
+      : undefined;
+  const primaryDisabled = isOneSidedTransfer
+    ? transferPrimary === undefined
+    : onPrimary === undefined || missingField !== null;
+  const primaryOnPress = isOneSidedTransfer
+    ? (transferPrimary ?? (() => undefined))
+    : onPrimary
+      ? () => onPrimary(item)
+      : () => undefined;
 
   return (
     <View testID={testID ?? `review-card-${item.id}`} className="px-4 pb-3">
@@ -884,6 +941,17 @@ export function ReviewCard({
               {loans.length === 0 ? null : (
                 <LoanMatchBody item={item} candidates={loans} onChooseLoan={onChooseLoan} />
               )}
+              {isOneSidedTransfer ? (
+                <OneSidedTransferBody
+                  item={item}
+                  wallets={wallets}
+                  capturedWalletId={capturedWalletId}
+                  selectedWalletId={transferWalletId}
+                  onSelectWallet={setTransferWalletId}
+                  feeText={transferFeeText}
+                  onChangeFeeText={setTransferFeeText}
+                />
+              ) : null}
               {/* No score, no meter. `unknown-provider` never reaches here, and
                   a payload that lost its `confidence` would otherwise render a
                   0% bar — the app reporting a measurement it never took.
@@ -933,8 +1001,8 @@ export function ReviewCard({
             testID={`review-primary-${item.id}`}
             title={primaryLabelFor(item)}
             variant="primary"
-            disabled={onPrimary === undefined || missingField !== null}
-            onPress={onPrimary ? () => onPrimary(item) : () => undefined}
+            disabled={primaryDisabled}
+            onPress={primaryOnPress}
           />
           {/* "Correct" stays enabled even while the primary is blocked —
               supplying the amount is exactly the way forward, and disabling

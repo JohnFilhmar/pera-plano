@@ -346,6 +346,14 @@ export default function ReviewQueueScreen() {
                   onChooseLoan={(item, loanId) =>
                     triage.mutate({ kind: "confirm-loan-match", itemId: item.id, loanId })
                   }
+                  onChooseTransferWallet={(item, walletId, feeAmount) =>
+                    triage.mutate({
+                      kind: "confirm-one-sided-transfer",
+                      itemId: item.id,
+                      counterpartWalletId: walletId,
+                      feeAmount,
+                    })
+                  }
                 />
               );
             })}

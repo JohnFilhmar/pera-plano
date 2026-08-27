@@ -27,6 +27,8 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import type { ReactNode } from "react";
 import { StyleSheet } from "react-native";
 
+import { KeypadHost } from "@/components/ui/keypad_host";
+import { KeypadProvider } from "@/contexts/keypad_context";
 import { closeDatabase } from "@/lib/db/database";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { storeRawCapture } from "@/lib/db/repos/raw_notifications_repo";
@@ -69,8 +71,19 @@ function makeTestClient(): QueryClient {
   });
 }
 
+// KeypadProvider AND A ROOT HOST (numeric-input-system Task 14, same fix
+// `correct_sheet.test.tsx` already carries) — Task 12's one-sided-transfer
+// body renders a `NumericField` for the fee, whose `useKeypad()` throws with
+// no provider above it in the tree.
 function Wrapper({ children }: { children: ReactNode }) {
-  return <QueryClientProvider client={makeTestClient()}>{children}</QueryClientProvider>;
+  return (
+    <QueryClientProvider client={makeTestClient()}>
+      <KeypadProvider>
+        <KeypadHost />
+        {children}
+      </KeypadProvider>
+    </QueryClientProvider>
+  );
 }
 
 function item(overrides: Partial<ReviewQueueItem> = {}): ReviewQueueItem {
@@ -771,5 +784,116 @@ describe("the proposed transaction", () => {
     // no way to detect.
     expect(candidate).not.toHaveTextContent(/₱0\.00/);
     expect(candidate).toHaveTextContent(/not read/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The one-sided transfer card — money-transfers spec Task 12. Confirming this
+// card MINTS a second ledger row on whichever wallet is selected here, so the
+// four things pinned below are exactly the ways that could go wrong: a wallet
+// offered that should not be (the captured leg's own, or an archived one), a
+// wallet withheld that should be offered (cash — the ATM-withdrawal case this
+// whole feature exists to catch), a prefill treated as a decision instead of a
+// suggestion, and a primary that is live before there is anything to submit.
+// ---------------------------------------------------------------------------
+
+function oneSidedItem(payloadOverrides: Record<string, unknown> = {}): ReviewQueueItem {
+  return itemOfKind("one-sided-transfer", {
+    id: "r-onesided",
+    payload: gatedPayload({
+      reason: GATE_REASONS.oneSidedTransfer,
+      walletId: gcash.id,
+      counterpartWalletId: null,
+      signal: "text",
+      ...payloadOverrides,
+    }),
+  });
+}
+
+describe("the one-sided transfer card", () => {
+  test("offers every other unarchived wallet, never the captured leg's own", async () => {
+    // CASH IS OFFERED ON PURPOSE — see one_sided_transfer_body.tsx's header:
+    // a cash leg posts no notification, so this card is the only way a human
+    // can supply it.
+    const cash: Wallet = { ...gcash, id: "w-cash", name: "Cash", type: "cash" };
+    const archived: Wallet = { ...gcash, id: "w-archived", name: "Retired GCash", isArchived: true };
+    const queued = oneSidedItem();
+
+    render(
+      <ReviewCard
+        item={queued}
+        wallets={[gcash, bpi, cash, archived]}
+        onPrimary={jest.fn()}
+        onSecondary={jest.fn()}
+        onChooseTransferWallet={jest.fn()}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    expect(await screen.findByTestId(`one-sided-wallet-${bpi.id}`)).toBeTruthy();
+    expect(screen.queryByTestId(`one-sided-wallet-${cash.id}`)).not.toBeNull();
+    expect(screen.queryByTestId(`one-sided-wallet-${gcash.id}`)).toBeNull();
+    expect(screen.queryByTestId(`one-sided-wallet-${archived.id}`)).toBeNull();
+  });
+
+  test("a rule-sourced item preselects its wallet", async () => {
+    const queued = oneSidedItem({ counterpartWalletId: bpi.id, signal: "rule" });
+
+    render(
+      <ReviewCard
+        item={queued}
+        wallets={[gcash, bpi]}
+        onPrimary={jest.fn()}
+        onSecondary={jest.fn()}
+        onChooseTransferWallet={jest.fn()}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    const preselected = await screen.findByTestId(`one-sided-wallet-${bpi.id}`);
+    expect(preselected.props.accessibilityState?.selected).toBe(true);
+  });
+
+  test("confirming reports the chosen wallet and fee", async () => {
+    const onChoose = jest.fn();
+    const queued = oneSidedItem();
+
+    render(
+      <ReviewCard
+        item={queued}
+        wallets={[gcash, bpi]}
+        onPrimary={jest.fn()}
+        onSecondary={jest.fn()}
+        onChooseTransferWallet={onChoose}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    fireEvent.press(await screen.findByTestId(`one-sided-wallet-${bpi.id}`));
+    fireEvent.press(await screen.findByTestId(`review-primary-${queued.id}`));
+
+    expect(onChoose).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "one-sided-transfer" }),
+      bpi.id,
+      0,
+    );
+  });
+
+  test("the primary is withheld until a wallet is chosen", async () => {
+    const queued = oneSidedItem();
+
+    render(
+      <ReviewCard
+        item={queued}
+        wallets={[gcash, bpi]}
+        onPrimary={jest.fn()}
+        onSecondary={jest.fn()}
+        onChooseTransferWallet={jest.fn()}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    const primary = await screen.findByTestId(`review-primary-${queued.id}`);
+    expect(primary.props.accessibilityState.disabled).toBe(true);
   });
 });
