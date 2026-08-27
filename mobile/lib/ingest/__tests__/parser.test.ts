@@ -1113,3 +1113,41 @@ test("a foreign currency mentioned away from the amount does not block the parse
   expect(event).not.toBeNull();
   expect(event!.amount).toBe(5000);
 });
+
+// ---------------------------------------------------------------------------
+// transferIntent — a trigger for asking, never for acting (see parser.ts).
+// ---------------------------------------------------------------------------
+
+test("a cash-in notification carries transferIntent", () => {
+  const provider = makeProvider({
+    templates: [
+      makeTemplate({
+        match: `You have received ${AMOUNT} cash in from (?<counterparty>[^.]+)`,
+        direction: "in",
+      }),
+    ],
+  });
+
+  const parsed = parseCapture(
+    // ILLUSTRATIVE
+    makeCapture({ text: "You have received ₱1,000.00 cash in from BPI." }),
+    [provider],
+  );
+
+  expect(parsed?.transferIntent).toBe(true);
+});
+
+test("an ordinary purchase does not carry transferIntent", () => {
+  const provider = makeProvider({
+    templates: [
+      makeTemplate({ match: `You paid ${AMOUNT} to (?<merchant>[^.]+)`, direction: "out" }),
+    ],
+  });
+
+  const parsed = parseCapture(
+    makeCapture({ text: "You paid ₱250.00 to Jollibee." }), // ILLUSTRATIVE
+    [provider],
+  );
+
+  expect(parsed?.transferIntent).toBeUndefined();
+});

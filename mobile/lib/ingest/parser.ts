@@ -40,6 +40,12 @@ export type ParsedEvent = {
   occurredAt: number;
   walletHint?: string;
   confidence: number;
+  /**
+   * The notification's wording says money moved between accounts. Read by
+   * transfer_detector.ts as one of the two triggers for proposing a one-sided
+   * transfer. Absent means "no signal", NOT "not a transfer".
+   */
+  transferIntent?: boolean;
 };
 
 /**
@@ -72,6 +78,19 @@ const DIRECTION_KEYWORD_PATTERN = new RegExp(
   `\\b(${DIRECTION_KEYWORDS.map(([word]) => word).join("|")})`,
   "iu",
 );
+
+/**
+ * Words that say "this moved between accounts" rather than "this was spent".
+ *
+ * A TRIGGER FOR ASKING, NEVER FOR ACTING. A false positive costs one dismissable
+ * Review Queue card; a false negative costs only the status quo, in which a
+ * one-sided transfer is never mentioned at all. So the set leans inclusive.
+ *
+ * Overlaps DIRECTION_KEYWORDS on purpose — "deposit" and "withdraw" are cues for
+ * both questions, and the two scans answer different ones.
+ */
+const TRANSFER_INTENT_PATTERN =
+  /\b(cash[ -]?in|transfer|sent to|padala|deposit|withdraw|fund transfer|instapay|pesonet|top[ -]?up|load to|add money)/iu;
 
 /** How a direction was arrived at. Only `keyword` is a weak cue (§9.1). */
 type DirectionSource = "template_field" | "capture_group" | "keyword";
@@ -406,6 +425,12 @@ function buildEvent(
 
   const walletHint = boundValue(groups, "walletHint");
   if (walletHint !== undefined) event.walletHint = walletHint;
+
+  // Assigned only when true, matching this block's "optional fields are present
+  // or absent, never `undefined`" convention.
+  if (searchableTexts(capture).some((field) => TRANSFER_INTENT_PATTERN.test(field))) {
+    event.transferIntent = true;
+  }
 
   return event;
 }
