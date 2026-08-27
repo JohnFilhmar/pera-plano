@@ -54,6 +54,9 @@ jest.mock("expo-modules-core", () => {
     // seen posting notifications, which is how the onboarding picker stops
     // guessing at package names.
     listObservedPackages: jest.fn(),
+    // App-label plan -- the real, current name Android shows for a package,
+    // which is what stops the picker offering a bank's pre-rebrand name.
+    getAppLabels: jest.fn(),
     addListener: jest.fn(),
   };
   return {
@@ -69,6 +72,7 @@ import {
   addCaptureListener,
   clearCaptureBuffer,
   drainPendingCaptures,
+  getAppLabels,
   getCapturePublicKey,
   getListenerHealth,
   isAccessGranted,
@@ -102,6 +106,7 @@ type MockNativeModule = {
   setProviderFilter: jest.Mock;
   getListenerHealth: jest.Mock;
   listObservedPackages: jest.Mock;
+  getAppLabels: jest.Mock;
   addListener: jest.Mock;
 };
 
@@ -547,6 +552,7 @@ describe("the contract §4 listener surface", () => {
       lastCaptureAt: null,
     });
     mockNativeModule.listObservedPackages.mockResolvedValue([]);
+    mockNativeModule.getAppLabels.mockResolvedValue({});
     mockNativeModule.addListener.mockReturnValue(subscriptionStub());
   });
 
@@ -611,6 +617,12 @@ describe("the contract §4 listener surface", () => {
       nativeMethod: "listObservedPackages",
       call: () => listObservedPackages(),
       nativeArgs: [],
+    },
+    {
+      wrapper: "getAppLabels",
+      nativeMethod: "getAppLabels",
+      call: () => getAppLabels(["com.globe.gcash.android"]),
+      nativeArgs: [["com.globe.gcash.android"]],
     },
     {
       // The one wrapper whose native counterpart is NOT its namesake: capture
@@ -886,6 +898,55 @@ describe("the contract §4 listener surface", () => {
       mockNativeModule.listObservedPackages.mockResolvedValue([]);
 
       await expect(listObservedPackages()).resolves.toEqual([]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // getAppLabels -- the name the user's own launcher shows for a package.
+  //
+  // The seed's brand names are hand-written and go stale on a rebrand: the
+  // package `ph.seabank.seabank` never changes, but the app it installs is
+  // called Maribank now. A picker tile reading "seabank" asks the user to
+  // recognise a company that no longer exists under that name, on the one
+  // screen whose entire job is that recognition.
+  // -------------------------------------------------------------------------
+
+  describe("getAppLabels", () => {
+    it("resolves with the native map unchanged", async () => {
+      mockNativeModule.getAppLabels.mockResolvedValue({ "ph.seabank.seabank": "Maribank" });
+
+      await expect(getAppLabels(["ph.seabank.seabank"])).resolves.toEqual({
+        "ph.seabank.seabank": "Maribank",
+      });
+    });
+
+    it("is PARTIAL -- a package with no resolvable label is simply absent", async () => {
+      // Absence is the contract, and callers depend on being able to tell it
+      // from a real answer: a placeholder value here would pre-empt their own
+      // fallback chain and print something worse than the seed's name.
+      mockNativeModule.getAppLabels.mockResolvedValue({ "com.globe.gcash.android": "GCash" });
+
+      const labels = await getAppLabels(["com.globe.gcash.android", "com.not.installed"]);
+
+      expect(labels).toEqual({ "com.globe.gcash.android": "GCash" });
+      expect("com.not.installed" in labels).toBe(false);
+    });
+
+    it("does not cross the bridge at all for an empty list", async () => {
+      // A picker with no choices has nothing to ask about, and the native
+      // side would answer `{}` after a round trip anyway.
+      await expect(getAppLabels([])).resolves.toEqual({});
+
+      expect(mockNativeModule.getAppLabels).not.toHaveBeenCalled();
+    });
+
+    it("rejects when the bridge itself fails, rather than swallowing it", async () => {
+      // Per-package failures are swallowed NATIVELY into absence; a rejection
+      // here means the call itself did not happen, which callers handle by
+      // degrading the whole screen to seed names.
+      mockNativeModule.getAppLabels.mockRejectedValue(new Error("bridge is gone"));
+
+      await expect(getAppLabels(["com.globe.gcash.android"])).rejects.toThrow("bridge is gone");
     });
   });
 });

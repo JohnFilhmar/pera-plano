@@ -34,10 +34,10 @@ import { Text, View } from "react-native";
 import { ProviderPicker } from "@/components/onboarding/provider_picker";
 import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { getActiveRuleset } from "@/lib/db/repos/parser_rulesets_repo";
-import { buildProviderChoices } from "@/lib/ingest/provider_catalogue";
+import { applyAppLabels, buildProviderChoices } from "@/lib/ingest/provider_catalogue";
 import { SEED_BUNDLE } from "@/lib/ingest/seed_rules";
 import { DEFAULT_TRAIT_SIGNALS, DEFAULT_TUNABLES } from "@/lib/ingest/ruleset_types";
-import { listObservedPackages, setProviderFilter } from "@/modules/notification_listener";
+import { getAppLabels, listObservedPackages, setProviderFilter } from "@/modules/notification_listener";
 
 import type { ProviderChoice } from "@/lib/ingest/provider_catalogue";
 import type { ObservedPackage } from "@/modules/notification_listener";
@@ -56,6 +56,29 @@ async function loadObserved(): Promise<ObservedPackage[]> {
     return await listObservedPackages();
   } catch {
     return [];
+  }
+}
+
+/**
+ * The real app names for `packageNames`, or nothing.
+ *
+ * DEGRADES TO `{}`, NEVER TO AN ERROR, for the same reason `loadObserved`
+ * does: a picker labelled from the seed's brand names is exactly what shipped
+ * before this call existed. The names are an improvement on the fallback
+ * chain, not a prerequisite for it, and failing onboarding over them would
+ * trade a stale label for a dead screen.
+ */
+async function loadAppLabels(packageNames: string[]): Promise<Record<string, string>> {
+  try {
+    // `?? {}` IS LOAD-BEARING, not belt-and-braces. This screen is one of the
+    // few whose failure mode is INVISIBLE: a nullish map reaches
+    // `applyAppLabels`, the property read throws inside the effect, and the
+    // screen sits on "Looking for apps on your phone…" forever with no error
+    // shown and onboarding unable to continue. A missing label is worth
+    // nothing; a wedged onboarding step costs the whole install.
+    return (await getAppLabels(packageNames)) ?? {};
+  } catch {
+    return {};
   }
 }
 
@@ -98,9 +121,18 @@ export default function ProvidersScreen({ onDone }: { onDone?: () => void } = {}
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([loadObserved(), loadBundle()]).then(([observed, bundle]) => {
-      if (!cancelled) setChoices(buildProviderChoices(observed, bundle));
-    });
+    // THREE STEPS, AND THE THIRD CANNOT BE PARALLELISED WITH THE OTHER TWO:
+    // the label lookup is keyed on the package list, and the package list is
+    // what `buildProviderChoices` produces. The tiles are still rendered once,
+    // fully named — never named from the seed and then re-labelled a beat
+    // later, which would flicker a stale brand across the screen for exactly
+    // as long as it takes to read it.
+    (async () => {
+      const [observed, bundle] = await Promise.all([loadObserved(), loadBundle()]);
+      const catalogue = buildProviderChoices(observed, bundle);
+      const labels = await loadAppLabels(catalogue.map((choice) => choice.packageName));
+      if (!cancelled) setChoices(applyAppLabels(catalogue, labels));
+    })();
     return () => {
       cancelled = true;
     };

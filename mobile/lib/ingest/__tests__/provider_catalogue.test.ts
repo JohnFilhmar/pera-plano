@@ -14,7 +14,7 @@
 // and the second row's tap toggles a different entry than the one the user is
 // looking at. That is the specific bug this file exists to catch.
 import { DEFAULT_TUNABLES } from "@/lib/ingest/ruleset_types";
-import { buildProviderChoices } from "@/lib/ingest/provider_catalogue";
+import { applyAppLabels, buildProviderChoices } from "@/lib/ingest/provider_catalogue";
 import seedJson from "@/assets/parser_rules/seed.json";
 
 import type { ObservedPackage } from "@/modules/notification_listener";
@@ -117,7 +117,9 @@ test("that single entry sits in the observed group and is still marked suggested
 
   expect(gcash).toEqual({
     packageName: GCASH,
-    displayName: "gcash",
+    providerKey: "gcash",
+    appLabel: null,
+    displayName: "GCash",
     seen: true,
     suggested: true,
   });
@@ -150,7 +152,7 @@ test("a package listed by two different seed providers is still emitted once", (
   // First provider wins the name — arbitrary but deterministic, and the
   // alternative (last wins) would make the label depend on catalogue ordering
   // the server can change underneath us.
-  expect(choices[0].displayName).toBe("first");
+  expect(choices[0].providerKey).toBe("first");
 });
 
 // ---------------------------------------------------------------------------
@@ -166,6 +168,8 @@ test("an observed package absent from the seed renders under its raw package nam
   // invisible in the one screen that could fix it.
   expect(entry).toEqual({
     packageName: UNSEEDED_BANK,
+    providerKey: null,
+    appLabel: null,
     displayName: UNSEEDED_BANK,
     seen: true,
     suggested: false,
@@ -176,9 +180,13 @@ test("a seed package never observed is a suggestion under its provider key", () 
   const choices = buildProviderChoices([], SEED);
   const bpi = choices.find((c) => c.packageName === BPI_GUESS);
 
+  // The PRINTED name is the curated brand name, not the routing key: the key
+  // is what the ruleset matches on and is carried separately now.
   expect(bpi).toEqual({
     packageName: BPI_GUESS,
-    displayName: "bpi",
+    providerKey: "bpi",
+    appLabel: null,
+    displayName: "BPI",
     seen: false,
     suggested: true,
   });
@@ -193,7 +201,7 @@ test("every one of the seed's package names is offered, including the SMS relay'
       expect(offered.has(packageName)).toBe(true);
     }
   }
-  expect(choices.filter((c) => c.displayName === "sms_relay")).toHaveLength(3);
+  expect(choices.filter((c) => c.providerKey === "sms_relay")).toHaveLength(3);
 });
 
 // ---------------------------------------------------------------------------
@@ -215,4 +223,79 @@ test("a blank package name is dropped rather than rendered as an unlabelled row"
   const choices = buildProviderChoices([observed(""), observed("   "), observed(GCASH)], SEED);
 
   expect(choices.filter((c) => c.seen).map((c) => c.packageName)).toEqual([GCASH]);
+});
+
+
+// ---------------------------------------------------------------------------
+// applyAppLabels — the real names read off the device.
+//
+// The bug that motivated this: `ph.seabank.seabank` is the SeaBank package,
+// the app on the phone is now called Maribank, and the picker offered a tile
+// reading "seabank" — a brand the user cannot match to anything on their
+// launcher, on the one screen whose only job is that recognition.
+// ---------------------------------------------------------------------------
+
+/** A package whose seeded brand name has gone stale — the motivating case. */
+const REBRANDED = "ph.seabank.seabank";
+
+test("the device's app label wins over the curated brand name", () => {
+  const bundle = bundleOf([["seabank", [REBRANDED]]]);
+  const choices = applyAppLabels(buildProviderChoices([observed(REBRANDED)], bundle), {
+    [REBRANDED]: "Maribank",
+  });
+
+  expect(choices[0].displayName).toBe("Maribank");
+  expect(choices[0].appLabel).toBe("Maribank");
+  // The ROUTING key is untouched. A rebrand renames the app, never the
+  // package, and every matcher and ruleset lookup keys on this.
+  expect(choices[0].providerKey).toBe("seabank");
+  expect(choices[0].packageName).toBe(REBRANDED);
+});
+
+test("a package with no label keeps the name it already had", () => {
+  const choices = applyAppLabels(buildProviderChoices([], SEED), {});
+  const bpi = choices.find((c) => c.packageName === BPI_GUESS);
+
+  // Not blanked, not dropped: "Common in the Philippines" is BY DEFINITION
+  // apps this phone does not have, so every one of them is unlabelled.
+  expect(bpi?.displayName).toBe("BPI");
+  expect(bpi?.appLabel).toBeNull();
+});
+
+test("an observed app the catalogue has never heard of gets a real name", () => {
+  const choices = applyAppLabels(buildProviderChoices([observed(UNSEEDED_BANK)], SEED), {
+    [UNSEEDED_BANK]: "Real Bank PH",
+  });
+  const entry = choices.find((c) => c.packageName === UNSEEDED_BANK);
+
+  // The whole point of learning package names: before this, an unrecognised
+  // bank rendered as a raw `com.example.realbank.ph` tile.
+  expect(entry?.displayName).toBe("Real Bank PH");
+  expect(entry?.providerKey).toBeNull();
+});
+
+test("a blank label is ignored rather than blanking the tile", () => {
+  const choices = applyAppLabels(buildProviderChoices([], SEED), { [BPI_GUESS]: "   " });
+
+  expect(choices.find((c) => c.packageName === BPI_GUESS)?.displayName).toBe("BPI");
+});
+
+test("labels are trimmed", () => {
+  const choices = applyAppLabels(buildProviderChoices([], SEED), { [BPI_GUESS]: "  BPI Mobile  " });
+
+  expect(choices.find((c) => c.packageName === BPI_GUESS)?.displayName).toBe("BPI Mobile");
+});
+
+test("every choice survives labelling, in order", () => {
+  const before = buildProviderChoices([observed(GCASH), observed(UNSEEDED_BANK)], SEED);
+  const after = applyAppLabels(before, { [GCASH]: "GCash" });
+
+  expect(after.map((c) => c.packageName)).toEqual(before.map((c) => c.packageName));
+});
+
+test("a label for a package that is not in the list changes nothing", () => {
+  const before = buildProviderChoices([], SEED);
+  const after = applyAppLabels(before, { "com.not.in.the.list": "Ghost" });
+
+  expect(after).toEqual(before);
 });
