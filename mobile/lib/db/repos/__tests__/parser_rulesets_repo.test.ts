@@ -1,6 +1,7 @@
 import { closeDatabase } from "@/lib/db/database";
 import { freshDb } from "@/test_support/db";
 import {
+  DEFAULT_TRAIT_SIGNALS,
   DEFAULT_TUNABLES,
   type ProviderRuleset,
   type ProviderTemplate,
@@ -88,6 +89,7 @@ function bundleWithCustomTunables(version: number, providers: ProviderRuleset[])
       autoCommitThreshold: 0.95,
       penalties: { ...DEFAULT_TUNABLES.penalties, smsChannel: 0.2 },
     },
+    traitSignals: DEFAULT_TRAIT_SIGNALS,
   };
 }
 
@@ -96,6 +98,7 @@ function soloProviderBundle(version: number, providerKey: string): RulesetBundle
     version,
     providers: [{ ...gcashProvider(), providerKey }],
     tunables: DEFAULT_TUNABLES,
+    traitSignals: DEFAULT_TRAIT_SIGNALS,
   };
 }
 
@@ -232,6 +235,12 @@ test("DEFAULT_TUNABLES matches the spec values exactly", () => {
   // ₱1.00 — docs/04-features/02-wallets.md §14 open question 1, an initial
   // value the M1 corpus is expected to correct.
   expect(DEFAULT_TUNABLES.balanceDriftToleranceCentavos).toBe(100);
+  // The held/owed verdict's two gates, plus what a provider prior is worth.
+  // No spec section to cite: these are chosen values, and the reasoning for
+  // each is in ruleset_types.ts beside them.
+  expect(DEFAULT_TUNABLES.walletTraits.owedMarginThreshold).toBe(300);
+  expect(DEFAULT_TUNABLES.walletTraits.owedSampleFloor).toBe(3);
+  expect(DEFAULT_TUNABLES.walletTraits.priorWeight).toBe(100);
 
   // The exact key set, so a tunable added or renamed without a spec value
   // pinned here fails instead of shipping unasserted.
@@ -247,6 +256,12 @@ test("DEFAULT_TUNABLES matches the spec values exactly", () => {
     "transferFeeFloorCentavos",
     "transferFeeRate",
     "transferPrimaryWindowMs",
+    "walletTraits",
+  ]);
+  expect(Object.keys(DEFAULT_TUNABLES.walletTraits).sort()).toEqual([
+    "owedMarginThreshold",
+    "owedSampleFloor",
+    "priorWeight",
   ]);
   expect(Object.keys(DEFAULT_TUNABLES.penalties).sort()).toEqual([
     "amountAmbiguity",
@@ -310,6 +325,7 @@ test("a partial tunables object is completed from DEFAULT_TUNABLES", async () =>
     prefilledThreshold: 0.6,
     reviewFloorThreshold: 0.5,
     balanceDriftToleranceCentavos: 100,
+    walletTraits: { owedMarginThreshold: 300, owedSampleFloor: 3, priorWeight: 100 },
     penalties: {
       weakDirection: 0.15,
       amountAmbiguity: 0.3,
@@ -364,4 +380,47 @@ test("a corrupt payload falls back to the newest parseable version instead of th
   } finally {
     warn.mockRestore();
   }
+});
+
+test("a bundle that names no trait signals reads back with the shipped pack", async () => {
+  // SAME ARGUMENT AS withDefaultTunables, AND THE SAME PLACE IN THE LIFECYCLE:
+  // filled on READ, so a ruleset installed before this feature existed picks up
+  // whatever signal pack the app ships today rather than none at all.
+  await upsertRuleset({
+    version: 1,
+    providers: [{ providerKey: "p", packageNames: ["com.p"], version: 1, channel: "push", templates: [] }],
+  });
+
+  const read = await getActiveRuleset();
+  expect(read!.traitSignals).toEqual(DEFAULT_TRAIT_SIGNALS);
+});
+
+test("a bundle that names its own trait signals keeps them", async () => {
+  await upsertRuleset({
+    version: 1,
+    providers: [{ providerKey: "p", packageNames: ["com.p"], version: 1, channel: "push", templates: [] }],
+    traitSignals: [{ pattern: "utang", trait: "owed", weight: 500 }],
+  });
+
+  const read = await getActiveRuleset();
+  expect(read!.traitSignals).toEqual([{ pattern: "utang", trait: "owed", weight: 500 }]);
+});
+
+test("a provider's owed prior survives the round trip", async () => {
+  await upsertRuleset({
+    version: 1,
+    providers: [
+      {
+        providerKey: "somecard",
+        packageNames: ["com.somecard"],
+        version: 1,
+        channel: "push",
+        templates: [],
+        traits: { owedBalance: "likely" },
+      },
+    ],
+  });
+
+  const read = await getActiveRuleset();
+  expect(read!.providers[0].traits).toEqual({ owedBalance: "likely" });
 });

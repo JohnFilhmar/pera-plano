@@ -1,60 +1,70 @@
-// lib/wallets/summary.ts — how the Wallets tab orders, labels and totals a
-// list of wallets (m1c plan Task 4 rule 1; docs/04-features/02-wallets.md).
+// lib/wallets/summary.ts — how the Wallets tab splits, labels and totals a list
+// of wallets (m1c plan Task 4 rule 1; docs/04-features/02-wallets.md).
 //
 // PURE, AND DELIBERATELY NOT INLINE IN THE SCREEN. The total at the top of the
 // Wallets tab is the first figure the app states that the user did not type,
-// and rule 23 excludes credit wallets from it because a credit balance is
-// money OWED, not money held. An inline `wallets.reduce((n, w) => n + w.balance)`
-// in JSX is one keystroke away from being right and impossible to test
+// and rule 23 keeps owed balances out of it because an owed balance is money
+// OWED, not money held. An inline `wallets.reduce((n, w) => n + w.balance)` in
+// JSX is one keystroke away from being right and impossible to test
 // exhaustively; here it is a function with its own suite.
-import type { Centavos, Wallet, WalletType } from "@/types/domain";
+//
+// WHAT THE TYPE GROUPS BECAME. This file used to group wallets into bank /
+// e-wallet / savings / credit / cash sections, ordered by a hand-written
+// `WALLET_TYPE_ORDER`. That taxonomy is gone: onboarding no longer asks for it,
+// and of the five values only "credit" ever changed a number. What is left is
+// the distinction that actually matters to a total — held or owed — plus a
+// derived "nothing routes here" that stands in for what cash meant.
+import type { Centavos, Wallet } from "@/types/domain";
+
+/** The Wallets tab's two lists. */
+export type OwedSplit = { held: Wallet[]; owed: Wallet[] };
 
 /**
- * Display order for the type groups (plan rule 1) — NOT the declaration order
- * of `WalletType`, and not alphabetical.
+ * Active wallets, split into what the user HAS and what they OWE, each in the
+ * order given (the repository already returns oldest-first).
  *
- * It runs from the accounts a salary lands in down to the ones a user touches
- * by hand, with credit second-to-last: what you owe reads after what you have,
- * and cash — the only type the app cannot track automatically — reads last.
+ * ARCHIVED WALLETS ARE IN NEITHER. They belong to the collapsed "Archived"
+ * section at the bottom of the list (docs/04 §UX states), not mixed into live
+ * money where their balances would read as current.
  */
-export const WALLET_TYPE_ORDER: readonly WalletType[] = [
-  "bank",
-  "e-wallet",
-  "savings",
-  "credit",
-  "cash",
-];
-
-/**
- * Section headings. The credit heading carries "amounts owed" because that is
- * where the distinction can be made once for a whole group instead of being
- * repeated (and possibly missed) on every row.
- */
-export const WALLET_TYPE_LABELS: Record<WalletType, string> = {
-  bank: "Bank",
-  "e-wallet": "E-wallet",
-  savings: "Savings",
-  credit: "Credit — amounts owed",
-  cash: "Cash",
-};
-
-export type WalletGroup = { type: WalletType; wallets: Wallet[] };
-
-/**
- * Active wallets, grouped by type in `WALLET_TYPE_ORDER`, with empty groups
- * omitted and the caller's order preserved inside each group (the repository
- * already returns oldest-first).
- *
- * Archived wallets are LEFT OUT entirely: they belong to the collapsed
- * "Archived" section at the bottom of the list (docs/04 §UX states), not
- * mixed into the type groups where their balances would read as live money.
- */
-export function groupWalletsByType(wallets: readonly Wallet[]): WalletGroup[] {
+export function splitByOwed(wallets: readonly Wallet[]): OwedSplit {
   const active = wallets.filter((wallet) => !wallet.isArchived);
-  return WALLET_TYPE_ORDER.map((type) => ({
-    type,
-    wallets: active.filter((wallet) => wallet.type === type),
-  })).filter((group) => group.wallets.length > 0);
+  return {
+    held: active.filter((wallet) => !wallet.owedBalance),
+    owed: active.filter((wallet) => wallet.owedBalance),
+  };
+}
+
+/**
+ * Nothing routes to this wallet, so nothing can track it automatically — which
+ * is exactly what `type: "cash"` meant before the app stopped asking. It is
+ * what makes the reconcile sheet available, what puts a wallet first in the
+ * manual-entry picker, and what the "you'll need to add these yourself" copy
+ * is about.
+ *
+ * DERIVED, NOT STORED, and the difference is load-bearing: a wallet whose last
+ * matcher is removed becomes manual THE MOMENT IT DOES. A stored flag would
+ * need something to notice and update it, and until that something ran the app
+ * would be offering automatic tracking for a wallet no notification can reach.
+ */
+export function isManualOnly(wallet: Wallet): boolean {
+  return wallet.matcherCount === 0;
+}
+
+/**
+ * The three states a wallet can be in, once the type enum is gone.
+ *
+ * OWED OUTRANKS MANUAL, and the order matters for a hand-tracked credit card:
+ * "you owe this" changes what the balance MEANS, while "nothing routes here"
+ * only says how it gets updated. Where one word has to stand for the wallet —
+ * an icon, a CSV column — it should be the one that changes the reading.
+ */
+export type WalletKind = "owed" | "manual" | "tracked";
+
+export function walletKind(wallet: Wallet): WalletKind {
+  if (wallet.owedBalance) return "owed";
+  if (isManualOnly(wallet)) return "manual";
+  return "tracked";
 }
 
 /** The archived tail, in the order given. Empty unless the caller asked the
@@ -68,11 +78,11 @@ export function archivedWallets(wallets: readonly Wallet[]): Wallet[] {
  *
  * TWO EXCLUSIONS, BOTH FROM THE SPEC, AND BOTH ONE-WAY:
  *
- *   CREDIT (rule 23). A credit wallet's balance is the outstanding amount
- *   owed. Adding it inflates the headline number of a budgeting app by the
- *   size of the user's debt — the single most damaging number this app can
- *   get wrong, on the first screen it shows. Credit balances are displayed on
- *   their own rows, labelled as owed; they are never summed into this.
+ *   OWED (rule 23). An owed wallet's balance is the outstanding amount owed.
+ *   Adding it inflates the headline number of a budgeting app by the size of
+ *   the user's debt — the single most damaging number this app can get wrong,
+ *   on the first screen it shows. Owed balances are displayed on their own
+ *   rows, under their own heading; they are never summed into this.
  *
  *   ARCHIVED (rule 17). An archived wallet's balance leaves the Wallets-tab
  *   total and all Safe-to-Spend maths. It stays out even while the "Show
@@ -81,7 +91,7 @@ export function archivedWallets(wallets: readonly Wallet[]): Wallet[] {
  */
 export function totalActiveBalance(wallets: readonly Wallet[]): Centavos {
   return wallets
-    .filter((wallet) => !wallet.isArchived && wallet.type !== "credit")
+    .filter((wallet) => !wallet.isArchived && !wallet.owedBalance)
     .reduce((total, wallet) => total + wallet.balance, 0);
 }
 
@@ -93,12 +103,9 @@ export function totalActiveBalance(wallets: readonly Wallet[]): Centavos {
  * REASON: this label sits directly above that peso figure, so a count built
  * from a different filter silently disagrees with the total it labels. That
  * is not hypothetical — `app/(tabs)/wallets.tsx` used to compute this count
- * inline with only the archived exclusion, so a non-archived credit wallet
- * was counted here while the same wallet's balance was excluded two lines
- * below. Sharing this one filter is what makes that drift impossible instead
- * of merely unlikely, the identical argument this file's header already
- * makes for keeping `totalActiveBalance` itself out of the screen.
+ * inline with only the archived exclusion, so a wallet excluded from the total
+ * was still counted here.
  */
 export function totalActiveWalletCount(wallets: readonly Wallet[]): number {
-  return wallets.filter((wallet) => !wallet.isArchived && wallet.type !== "credit").length;
+  return wallets.filter((wallet) => !wallet.isArchived && !wallet.owedBalance).length;
 }

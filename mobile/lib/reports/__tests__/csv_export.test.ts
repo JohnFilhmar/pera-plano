@@ -67,7 +67,7 @@ function row(overrides: Partial<TransactionExportRow> = {}): TransactionExportRo
     amount: 12345,
     currency: "PHP",
     wallet: "GCash",
-    walletType: "e-wallet",
+    walletType: "tracked",
     category: "Food & Dining",
     categoryParent: "",
     merchant: "Jollibee",
@@ -235,7 +235,7 @@ test("a peso sign in a note survives the round trip", () => {
 test("wallet_type and category_parent are resolved from the real Wallet and Category rows", async () => {
   await freshDb();
 
-  const wallet = await createWallet({ name: "GCash", type: "e-wallet" });
+  const wallet = await createWallet({ name: "GCash" });
   const parent = await createCategory({ name: "Food & Dining", icon: "utensils" });
   const child = await createCategory({ name: "Fast Food", icon: "burger", parentId: parent.id });
   const topLevel = await createCategory({ name: "Transport", icon: "car" });
@@ -271,7 +271,15 @@ test("wallet_type and category_parent are resolved from the real Wallet and Cate
   const childFields = byId.get(childTx.id)!;
   expect(childFields[COLUMN.category]).toBe("Fast Food");
   expect(childFields[COLUMN.categoryParent]).toBe("Food & Dining");
-  expect(childFields[COLUMN.walletType]).toBe("e-wallet");
+  // The column keeps its name and changes its vocabulary: it used to carry the
+  // wallet type the user picked at onboarding, and now carries what the app
+  // works out. Renaming the column would break every spreadsheet already
+  // reading an export.
+  //
+  // `manual` because this fixture's wallet has no matchers — nothing routes to
+  // it, which is the honest answer for a wallet created straight through the
+  // repository with no notification source attached.
+  expect(childFields[COLUMN.walletType]).toBe("manual");
 
   const topFields = [...byId.values()].find((fields) => fields[COLUMN.category] === "Transport")!;
   expect(topFields[COLUMN.categoryParent]).toBe("");
@@ -280,8 +288,8 @@ test("wallet_type and category_parent are resolved from the real Wallet and Cate
 test("linked transfer legs export with matching transfer_link_id and is_transfer=yes", async () => {
   await freshDb();
 
-  const sending = await createWallet({ name: "BPI", type: "bank", openingBalance: 100000 });
-  const receiving = await createWallet({ name: "GCash", type: "e-wallet" });
+  const sending = await createWallet({ name: "BPI", openingBalance: 100000 });
+  const receiving = await createWallet({ name: "GCash" });
   const category = await createCategory({ name: "Transfer", icon: "arrow-right-left" });
 
   const outLeg = await insertTransaction({

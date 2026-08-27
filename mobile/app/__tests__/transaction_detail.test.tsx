@@ -167,8 +167,8 @@ beforeEach(async () => {
     ],
     tunables: {},
   });
-  gcash = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 500_000 });
-  bpi = await createWallet({ name: "BPI Savings", type: "bank", openingBalance: 1_000_000 });
+  gcash = await createWallet({ name: "GCash", openingBalance: 500_000 });
+  bpi = await createWallet({ name: "BPI Savings", openingBalance: 1_000_000 });
 });
 
 afterEach(async () => {

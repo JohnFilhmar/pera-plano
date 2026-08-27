@@ -29,7 +29,7 @@ let cash: Wallet;
 beforeEach(async () => {
   await freshDb();
   await seedDefaultCategories();
-  cash = await createWallet({ name: "GCash", type: "e-wallet" });
+  cash = await createWallet({ name: "GCash" });
 });
 
 afterEach(async () => {
@@ -85,7 +85,7 @@ test("SPEND COMES FROM THE LIMIT ENGINE, TRANSFERS ALREADY EXCLUDED", async () =
   // Rule 8 and rule 1 together: the exclusion is the engine's, and reproducing
   // it here would be the duplication that makes the two drift.
   await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
-  const savings = await createWallet({ name: "GSave", type: "savings" });
+  const savings = await createWallet({ name: "GSave" });
   const out = await spend(200_000, NOW - 2 * DAY_MS);
   const into = await insertTransaction({
     walletId: savings.id,
@@ -219,7 +219,7 @@ test("a skipped cycle is excluded too", async () => {
 test("A GOAL WITH A FIXED RULE FORECASTS ON EVERY PAYDAY IN THE PERIOD", async () => {
   await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
   await setManualIncome({ cadence: "kinsenas", averageAmount: 1_500_000, sourceWalletIds: [cash.id] }, NOW);
-  const savings = await createWallet({ name: "GSave", type: "savings" });
+  const savings = await createWallet({ name: "GSave" });
   const goal = await createGoal({
     name: "Emergency Fund",
     targetAmount: 5_000_000,
@@ -241,7 +241,7 @@ test("A PERCENT RULE TAKES ITS SHARE OF ONE PAY PACKET, NOT OF MONTHLY INCOME", 
   // monthly figure would reserve double on a kinsenas earner.
   await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
   await setManualIncome({ cadence: "kinsenas", averageAmount: 1_000_000, sourceWalletIds: [cash.id] }, NOW);
-  const savings = await createWallet({ name: "GSave", type: "savings" });
+  const savings = await createWallet({ name: "GSave" });
   await createGoal({
     name: "Emergency Fund",
     targetAmount: 5_000_000,
@@ -259,7 +259,7 @@ test("A GOAL WITH NO CONTRIBUTION RULE FORECASTS NOTHING", async () => {
   // simply appear as spend/transfers when they happen."
   await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
   await setManualIncome({ cadence: "kinsenas", averageAmount: 1_500_000, sourceWalletIds: [cash.id] }, NOW);
-  const savings = await createWallet({ name: "GSave", type: "savings" });
+  const savings = await createWallet({ name: "GSave" });
   await createGoal({ name: "Emergency Fund", targetAmount: 5_000_000, linkedWalletId: savings.id });
 
   const input = await buildSafeToSpendInput(TODAY, NOW);
@@ -272,7 +272,7 @@ test("AN UNPREDICTABLE CADENCE FORECASTS NOTHING RATHER THAN GUESSING", async ()
   // money against a date the app made up.
   await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
   await setManualIncome({ cadence: "irregular", averageAmount: 1_500_000, sourceWalletIds: [cash.id] }, NOW);
-  const savings = await createWallet({ name: "GSave", type: "savings" });
+  const savings = await createWallet({ name: "GSave" });
   await createGoal({
     name: "Emergency Fund",
     targetAmount: 5_000_000,
@@ -291,7 +291,7 @@ test("A CONTRIBUTION EARLIER IN THE PERIOD IS STILL FORECAST", async () => {
   // back to the user's spendable figure.
   await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
   await setManualIncome({ cadence: "kinsenas", averageAmount: 1_500_000, sourceWalletIds: [cash.id] }, NOW);
-  const savings = await createWallet({ name: "GSave", type: "savings" });
+  const savings = await createWallet({ name: "GSave" });
   await createGoal({
     name: "Emergency Fund",
     targetAmount: 5_000_000,
@@ -333,7 +333,7 @@ test("getSafeToSpend IS EXACTLY computeSafeToSpend OVER THE ASSEMBLED INPUT", as
   await setManualIncome({ cadence: "kinsenas", averageAmount: 1_500_000, sourceWalletIds: [cash.id] }, NOW);
   await meralco(20);
   await spend(620_000, NOW - 3 * DAY_MS);
-  const savings = await createWallet({ name: "GSave", type: "savings" });
+  const savings = await createWallet({ name: "GSave" });
   await createGoal({
     name: "Emergency Fund",
     targetAmount: 5_000_000,

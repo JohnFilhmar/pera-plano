@@ -17,6 +17,7 @@
 import { UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 
 import type { EpochMs, Transaction, Wallet } from "@/types/domain";
+import { isManualOnly } from "@/lib/wallets/summary";
 
 /**
  * The cash wallet the ledger touched most recently, or `null` when there is no
@@ -37,7 +38,7 @@ import type { EpochMs, Transaction, Wallet } from "@/types/domain";
  * would name a wallet the picker itself will not offer.
  */
 export function lastUsedCashWallet(wallets: Wallet[], ledger: Transaction[]): Wallet | null {
-  const cash = wallets.filter((w) => w.type === "cash" && !w.isArchived);
+  const cash = wallets.filter((w) => isManualOnly(w) && !w.isArchived);
   if (cash.length === 0) return null;
 
   const byId = new Map(cash.map((w) => [w.id, w]));

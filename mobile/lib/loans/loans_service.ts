@@ -18,16 +18,30 @@
 // way when the Plan tab could not render under Jest.
 import {
   getLoan,
+  listAdjustments,
   listLoans,
   listPayments,
   LoanNotFoundError,
   outstandingBalance,
   recordPayment,
 } from "@/lib/db/repos/loans_repo";
-import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions_repo";
+import { UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
+import {
+  getTransaction,
+  insertTransaction,
+  listTransactions,
+} from "@/lib/db/repos/transactions_repo";
 import { withUnitOfWork } from "@/lib/db/unit_of_work";
 import { startOfLocalDay } from "@/lib/dates";
-import type { Centavos, Loan, LoanPayment, Transaction } from "@/types/domain";
+import type {
+  Centavos,
+  EpochMs,
+  Loan,
+  LoanDirection,
+  LoanPayment,
+  Transaction,
+  TxDirection,
+} from "@/types/domain";
 
 import { nextDue } from "./loan_math";
 
@@ -44,6 +58,15 @@ export type PaymentCandidate = {
   amount: Centavos;
   occurredAt: number;
   merchant: string | null;
+  /**
+   * The other party the parser read off the notification — the SENDER on an
+   * inbound transfer, which is the only name an owed-to-me repayment carries.
+   * A provider's receive template captures a `counterparty` and no `merchant`
+   * (see assets/parser_rules/seed.json), so a sheet keyed on `merchant` alone
+   * labels every repayment "Unknown" — unusable in the browse-everything list,
+   * where the name is what the user is scanning for.
+   */
+  counterparty: string | null;
   /** 0..1. Above `CANDIDATE_FLOOR` to be offered at all. */
   score: number;
   /**
@@ -90,8 +113,135 @@ const AMOUNT_TOLERANCE = 0.02;
 /** Rule 8(e)'s window. */
 const TIMING_WINDOW_DAYS = 7;
 
+/**
+ * A NAME FRAGMENT IS WORTH LESS THAN THE WHOLE NAME, but it is not worth
+ * nothing.
+ *
+ * Rule 8(c) says "`counterparty` matching the Transaction `merchant` or parsed
+ * recipient", and a literal substring test reads that as an institution's
+ * name: "GLoan" appears verbatim inside "GLOAN PAYMENT". A PERSON does not
+ * survive the trip — the user writes "Kuya Ben" and GCash sends "BEN SANTOS",
+ * so the one signal carrying 0.4 of the score never fires for owed-to-me
+ * loans, which are lending to people almost by definition. That is why
+ * repayments from a borrower were never suggested while payments to a lender
+ * were: not a direction bug, a name-shape bug that only bites one direction.
+ *
+ * Below the full weight because a shared first name is genuinely weaker
+ * evidence than a full match: on its own it stays under `CANDIDATE_FLOOR` and
+ * still needs a second signal to be offered at all.
+ */
+const PARTIAL_NAME_WEIGHT = 0.25;
+
+/**
+ * What a PARTIAL payment is worth (spec rule 11: "a partial payment reduces
+ * the outstanding `nextDueAmount` remainder without advancing the date").
+ *
+ * Rule 8(d) only scores an amount within ±2% of what is due, which is a
+ * scheduled installment landing in full. Informal lending does not work that
+ * way — a borrower sends ₱500 against ₱2,000 whenever they have it — so under
+ * 8(d) alone every real partial repayment scores zero on the one signal the
+ * user can most easily verify. Worth less than an exact match, deliberately:
+ * any smaller outflow is arithmetically a "partial" of something.
+ */
+const PARTIAL_AMOUNT_WEIGHT = 0.15;
+
+/**
+ * The smallest share of what is due that still reads as a payment rather than
+ * as an unrelated purchase that happens to be smaller. A tenth: below that,
+ * "partial payment" describes a bus fare as well as it describes a repayment.
+ */
+const MIN_PARTIAL_SHARE = 0.1;
+
+/**
+ * Words that identify a RELATIONSHIP rather than a person, so they can never
+ * appear in a provider's transfer text. The user labels a loan "Kuya Ben" or
+ * "Tita Mercy" because that is who the person is to them; the bank only knows
+ * "BEN SANTOS". Left in, "KUYA" is a token that matches nothing and drags no
+ * weight — dropped, "BEN" is the token that does the work.
+ */
+const RELATIONSHIP_WORDS = new Set([
+  "KUYA",
+  "ATE",
+  "TITO",
+  "TITA",
+  "LOLO",
+  "LOLA",
+  "NANAY",
+  "TATAY",
+  "MAMA",
+  "PAPA",
+  "INAY",
+  "ITAY",
+  "SIR",
+  "MAAM",
+  "MAM",
+  "MR",
+  "MRS",
+  "MS",
+]);
+
+/** The shortest token worth comparing — below this, initials collide with everything. */
+const MIN_TOKEN_LENGTH = 3;
+
 function normalizeName(name: string | null): string {
   return (name ?? "").trim().toUpperCase();
+}
+
+/**
+ * The comparable words in a name: uppercase, punctuation and provider masking
+ * removed, relationship words and initials dropped.
+ */
+function nameTokens(name: string): string[] {
+  return name
+    .replace(/[^A-Z0-9]+/gu, " ")
+    .split(" ")
+    .filter((token) => token.length >= MIN_TOKEN_LENGTH && !RELATIONSHIP_WORDS.has(token));
+}
+
+/** One token matches another when either is the other's prefix — "SANTOS" answers "SANTOS JR". */
+function tokenMatches(left: string, right: string): boolean {
+  return left.startsWith(right) || right.startsWith(left);
+}
+
+/**
+ * How strongly a transaction's name fields identify this loan's counterparty:
+ * `full` for the whole name, `partial` for some of it, `none` otherwise.
+ *
+ * Checked against the merchant AND the parsed counterparty, because a provider
+ * writes the other party into whichever of the two its template captured — an
+ * outbound GCash transfer names a recipient, an inbound one names a sender,
+ * and rule 8(c) means both.
+ */
+function nameStrength(
+  loanCounterparty: string,
+  transaction: Transaction,
+): "full" | "partial" | "none" {
+  const loanName = normalizeName(loanCounterparty);
+  if (loanName === "") return "none";
+
+  const fields = [normalizeName(transaction.merchant), normalizeName(transaction.counterparty)]
+    .filter((field) => field !== "");
+  if (fields.length === 0) return "none";
+
+  // Containment EITHER WAY. "GLOAN PAYMENT" contains the loan's "GLoan", and a
+  // loan written "Ben Santos Jr" contains a transaction's "BEN SANTOS".
+  if (fields.some((field) => field.includes(loanName) || loanName.includes(field))) return "full";
+
+  const loanTokens = nameTokens(loanName);
+  if (loanTokens.length === 0) return "none";
+
+  const fieldTokens = fields.flatMap((field) => nameTokens(field));
+  const matched = loanTokens.filter((token) =>
+    fieldTokens.some((other) => tokenMatches(token, other)),
+  );
+
+  if (matched.length === 0) return "none";
+  // Every word of a MULTI-WORD name accounted for is the same evidence as the
+  // whole string matching — only the word order or a middle name differed. A
+  // single word is not: "Kuya Ben" reduces to the one token "BEN", and half
+  // the country has a Ben. That stays `partial`, which on its own sits under
+  // `CANDIDATE_FLOOR` and needs a second signal before it is offered.
+  return matched.length === loanTokens.length && loanTokens.length >= 2 ? "full" : "partial";
 }
 
 /**
@@ -143,6 +293,47 @@ export async function listLoanStatuses(now: number): Promise<LoanStatus[]> {
 }
 
 /**
+ * The three figures a loan is scored AGAINST: what is still owed, what the next
+ * installment asks for, and when it is asked for.
+ *
+ * EXTRACTED SO THE TWO DIRECTIONS OF THE SAME QUESTION CANNOT DRIFT.
+ * `findPaymentCandidates` asks "which transactions might pay THIS loan?" and
+ * `findLoanMatchesForTransaction` asks "which loans might THIS transaction
+ * pay?" — one screen, one post-commit hook, and the user sees both answers
+ * about the same pair of rows. Two copies of this derivation would eventually
+ * disagree about whether a free-form utang has an expected amount, and the
+ * visible symptom would be a Review Queue card suggesting a loan whose own
+ * detail screen does not offer the transaction back.
+ *
+ * `null` means SETTLED — outstanding at or below zero — which is not a weak
+ * basis but the absence of one: spec rule 20 keeps a settled loan and its
+ * history visible, and nothing may be suggested against it.
+ */
+type MatchBasis = {
+  outstanding: Centavos;
+  /** `null` for a free-form loan with no schedule and no user-set next due. */
+  expectedAmount: Centavos | null;
+  /** `null` when the loan has no date to compare a timestamp against. */
+  dueDate: string | null;
+};
+
+async function matchBasisFor(loan: Loan): Promise<MatchBasis | null> {
+  const outstanding = await outstandingBalance(loan.id);
+  if (outstanding <= 0) return null;
+
+  const due = nextDue(loan, loan.principal - outstanding) ?? {
+    dueDate: loan.nextDueDate ?? "",
+    amount: loan.nextDueAmount ?? 0,
+  };
+
+  return {
+    outstanding,
+    expectedAmount: due.amount > 0 ? due.amount : null,
+    dueDate: due.dueDate === "" ? null : due.dueDate,
+  };
+}
+
+/**
  * Scores one transaction against one loan, 0..1, using spec rule 8's signals.
  *
  * Signals (a) and (b) — explicit provider loan events and an existing UserRule
@@ -154,27 +345,51 @@ export async function listLoanStatuses(now: number): Promise<LoanStatus[]> {
 function scoreCandidate(
   loan: Loan,
   transaction: Transaction,
-  expectedAmount: Centavos | null,
-  dueDate: string | null,
+  { expectedAmount, dueDate, outstanding }: MatchBasis,
 ): { score: number; reasons: string[] } {
   let score = 0;
   const reasons: string[] = [];
 
-  const counterparty = normalizeName(loan.counterparty);
-  if (counterparty !== "") {
-    const merchant = normalizeName(transaction.merchant);
-    const recipient = normalizeName(transaction.counterparty);
-    if (merchant.includes(counterparty) || recipient.includes(counterparty)) {
+  // Worded from the LOAN'S DIRECTION. "Paid to Kuya Ben" on a loan Ben is
+  // repaying states the opposite of what happened, and the reasons list is the
+  // whole basis on which the user decides whether to accept the match.
+  const nameReason =
+    loan.direction === "i-owe"
+      ? `Paid to ${loan.counterparty}`
+      : `Received from ${loan.counterparty}`;
+
+  switch (nameStrength(loan.counterparty, transaction)) {
+    case "full":
       score += SIGNAL_WEIGHT.counterparty;
-      reasons.push(`Paid to ${loan.counterparty}`);
-    }
+      reasons.push(nameReason);
+      break;
+    case "partial":
+      score += PARTIAL_NAME_WEIGHT;
+      reasons.push(`${nameReason} — name partly matches`);
+      break;
+    default:
+      break;
   }
 
-  if (expectedAmount !== null && expectedAmount > 0) {
-    const drift = Math.abs(transaction.amount - expectedAmount) / expectedAmount;
+  // The figure a payment is measured against: what is due if there is a
+  // schedule or a user-set next due, otherwise the whole outstanding balance —
+  // a free-form utang has no installment, and without this fallback the amount
+  // signal simply never fires for the loans most likely to be repaid in bits.
+  const ceiling = expectedAmount !== null && expectedAmount > 0 ? expectedAmount : outstanding;
+
+  if (ceiling > 0) {
+    const drift = Math.abs(transaction.amount - ceiling) / ceiling;
     if (drift <= AMOUNT_TOLERANCE) {
       score += SIGNAL_WEIGHT.amount;
-      reasons.push("Matches the amount due");
+      reasons.push(expectedAmount === null ? "Settles the balance" : "Matches the amount due");
+    } else if (
+      transaction.amount < ceiling &&
+      transaction.amount >= Math.round(ceiling * MIN_PARTIAL_SHARE)
+    ) {
+      // Spec rule 11's partial: less than what is owed, but enough of it to be
+      // a payment rather than an unrelated smaller purchase.
+      score += PARTIAL_AMOUNT_WEIGHT;
+      reasons.push("Could be a partial payment");
     }
   }
 
@@ -206,18 +421,27 @@ export async function findPaymentCandidates(
   loanId: string,
   now: number,
   limit = 5,
+  /**
+   * Drops `CANDIDATE_FLOOR` and returns every unclaimed transaction that could
+   * pay this loan, scored but unfiltered — what the match sheet's "Show every
+   * transaction" fallback lists.
+   *
+   * THE FLOOR IS RIGHT FOR A SUGGESTION AND WRONG FOR A SEARCH. Scoring exists
+   * so the app does not volunteer noise, but a user who is looking at a
+   * repayment they know arrived needs to be able to point at it — and the
+   * signals are exactly weakest for the case they most often have: a partial
+   * amount from a person, on a free-form utang with no due date. Without this,
+   * the only way to record it is to create a SECOND transaction for money that
+   * already moved.
+   */
+  includeBelowFloor = false,
 ): Promise<PaymentCandidate[]> {
   const loan = await getLoan(loanId);
   if (loan === null) return [];
 
-  const outstanding = await outstandingBalance(loanId);
+  const basis = await matchBasisFor(loan);
   // A settled loan wants no payments suggested against it.
-  if (outstanding <= 0) return [];
-
-  const due = nextDue(loan, loan.principal - outstanding) ?? {
-    dueDate: loan.nextDueDate ?? "",
-    amount: loan.nextDueAmount ?? 0,
-  };
+  if (basis === null) return [];
 
   const transactions = await listTransactions({
     from: now - CANDIDATE_WINDOW_DAYS * DAY_MS,
@@ -239,16 +463,110 @@ export async function findPaymentCandidates(
       amount: transaction.amount,
       occurredAt: transaction.occurredAt,
       merchant: transaction.merchant ?? null,
-      ...scoreCandidate(
-        loan,
-        transaction,
-        due.amount > 0 ? due.amount : null,
-        due.dueDate === "" ? null : due.dueDate,
-      ),
+      counterparty: transaction.counterparty ?? null,
+      ...scoreCandidate(loan, transaction, basis),
     }))
-    .filter((candidate) => candidate.score >= CANDIDATE_FLOOR)
+    .filter((candidate) => includeBelowFloor || candidate.score >= CANDIDATE_FLOOR)
     .sort((a, b) => b.score - a.score || b.occurredAt - a.occurredAt)
     .slice(0, limit);
+}
+
+/**
+ * THE OTHER DIRECTION OF THE SAME QUESTION: which open loans might THIS one
+ * transaction pay, best first.
+ *
+ * `findPaymentCandidates` above answers "given a loan, which transactions?" and
+ * is driven by a screen — the user has already decided which loan they are
+ * looking at. This one answers "given a transaction, which loans?" and is
+ * driven by the LEDGER, which is the half spec rule 8 actually describes:
+ * "After a Transaction commits to the ledger, the matcher scores it against
+ * open loans." Without it, a repayment that lands on a Tuesday is invisible
+ * until the user happens to open Plan -> Loans and look.
+ *
+ * ONE SCORER, NOT TWO. Both call `scoreCandidate` over the same `MatchBasis`,
+ * so a transaction the queue offers is a transaction the loan's own detail
+ * screen offers back, with the same score and the same reasons. A second
+ * formula here is exactly how the two surfaces would end up contradicting each
+ * other about the user's money — and neither would look wrong on its own.
+ *
+ * THE DIRECTION FILTER IS AN INVARIANT, NOT A SIGNAL (plan rule 3, and
+ * `recordPayment`'s own guard). A loan with `direction: 'i-owe'` is paid only
+ * by an `out` transaction and `'owed-to-me'` only by an `in` one. A mismatch is
+ * excluded here rather than scored low, because there is no score at which
+ * counting a salary as a payment on a debt is correct — `recordPayment` would
+ * throw `PaymentDirectionMismatchError` on confirm, and the user would be left
+ * holding a card that cannot be accepted or explained.
+ *
+ * NOTHING HERE AUTO-MATCHES, AT ANY SCORE. Spec rule 9: only an explicit
+ * provider loan event with an unambiguous single-loan mapping may, and those
+ * are not modelled yet. Returning every plausible loan rather than the top one
+ * is the rest of that rule — "if two or more open loans are plausible for one
+ * Transaction, it is always a suggestion listing the candidates".
+ */
+export type LoanMatchCandidate = {
+  loanId: string;
+  counterparty: string;
+  direction: LoanDirection;
+  /** What is still owed on this loan, for the card to show beside the amount. */
+  outstanding: Centavos;
+  /** 0..1, the same scale and the same weights `PaymentCandidate.score` carries. */
+  score: number;
+  /** Why this loan was offered, in the user's words — see `PaymentCandidate.reasons`. */
+  reasons: string[];
+};
+
+export async function findLoanMatchesForTransaction(
+  transaction: Transaction,
+): Promise<LoanMatchCandidate[]> {
+  // ALREADY CLAIMED MEANS NOTHING TO SUGGEST (invariant I12: one transaction
+  // pays at most one loan). The same guard `findPaymentCandidates` applies from
+  // the other side — a suggestion the user cannot accept is worse than no
+  // suggestion, because they will try.
+  //
+  // SCANNED OVER **EVERY** LOAN, INCLUDING THE SETTLED AND ARCHIVED ONES, and
+  // that is not defensive padding: the payment that claimed a transaction is
+  // usually the payment that SETTLED its loan, so the loan holding the claim is
+  // precisely the one an open-loans-only scan cannot see. Narrowing this to the
+  // scoring list below would let a transaction already recorded against a
+  // cleared utang be offered again to the next loan with the same counterparty.
+  const claimants = await listLoans({ includeArchived: true });
+  for (const loan of claimants) {
+    const payments = await listPayments(loan.id);
+    if (payments.some((payment) => payment.transactionId === transaction.id)) return [];
+  }
+
+  const matches: LoanMatchCandidate[] = [];
+
+  // Open loans only for the scoring pass — spec rule 20 keeps a settled loan
+  // visible with its history, and nothing may be suggested against it.
+  for (const loan of await listLoans({ includeSettled: false })) {
+    if (payingDirection(loan) !== transaction.direction) continue;
+
+    // `listLoans({ includeSettled: false })` already filters on the same
+    // arithmetic, and this still re-checks: that SQL predicate and
+    // `outstandingBalance` are two expressions of one rule, and the basis is
+    // needed here anyway.
+    const basis = await matchBasisFor(loan);
+    if (basis === null) continue;
+
+    const { score, reasons } = scoreCandidate(loan, transaction, basis);
+    if (score < CANDIDATE_FLOOR) continue;
+
+    matches.push({
+      loanId: loan.id,
+      counterparty: loan.counterparty,
+      direction: loan.direction,
+      outstanding: basis.outstanding,
+      score,
+      reasons,
+    });
+  }
+
+  // Best first, ties broken by the older loan — a borrower repaying two utangs
+  // is far likelier to be settling the one that has been open longest, and
+  // `listLoans` already returns them in `created_at` order for a stable sort to
+  // preserve.
+  return matches.sort((a, b) => b.score - a.score);
 }
 
 /**
@@ -294,7 +612,12 @@ export async function recordManualPayment(input: {
   return withUnitOfWork(async () => {
     const transaction = await insertTransaction({
       walletId: input.walletId,
-      categoryId: UTANG_CATEGORY_ID,
+      // RULE 18 IS ABOUT I-OWE ONLY: "Payments on I-owe loans default to the
+      // Utang & Loan Payments category". Money ARRIVING from a borrower is not
+      // a loan payment the user made, and filing it under the category that
+      // names their own debts is what makes an owed-to-me repayment read, in
+      // the ledger and in Reports, as if they had paid something.
+      categoryId: loan.direction === "i-owe" ? UTANG_CATEGORY_ID : UNCATEGORIZED_ID,
       amount: input.amount,
       direction: payingDirection(loan),
       occurredAt: input.occurredAt,
@@ -304,4 +627,104 @@ export async function recordManualPayment(input: {
     });
     return recordPayment({ loanId: input.loanId, transactionId: transaction.id });
   });
+}
+
+// ---------------------------------------------------------------------------
+// History — spec rules 7 and 13
+// ---------------------------------------------------------------------------
+
+/**
+ * One line in a loan's history. Rule 7: "Every `paymentHistory[]` entry
+ * references either a ledger Transaction (matched or manually created) or a
+ * balance adjustment (Rule 13). There are no free-floating payment records."
+ *
+ * A DISCRIMINATED UNION, NOT ONE WIDENED ROW WITH NULLABLE EXTRAS, because
+ * rule 13 requires the screen to mark an adjustment "clearly ... as an
+ * adjustment, not a payment" — and a shape where the two are told apart only by
+ * which optional fields happen to be filled in is a shape where a renderer can
+ * silently forget to check. `kind` makes the distinction the first thing the
+ * type system asks about, so the marking cannot be dropped by accident.
+ */
+export type LoanHistoryEntry =
+  | {
+      kind: "payment";
+      /** The `loan_payments` row id, not the transaction's. */
+      id: string;
+      occurredAt: EpochMs;
+      /** Always positive — the ledger stores magnitude and sign separately. */
+      amount: Centavos;
+      /** `out` on an I-owe loan, `in` on an owed-to-me one (rules 7 and 17). */
+      direction: TxDirection;
+      transactionId: string;
+      walletId: string;
+    }
+  | {
+      kind: "adjustment";
+      id: string;
+      occurredAt: EpochMs;
+      /** SIGNED: positive increases what is owed, negative reduces it. */
+      amount: Centavos;
+      /** Required by rule 13, and the only record of WHY the balance moved. */
+      note: string;
+    };
+
+/**
+ * A loan's payments and balance adjustments as one list, NEWEST FIRST.
+ *
+ * THE ORDER IS DELIBERATELY THE REVERSE OF THE REPOSITORY'S. `listPayments`
+ * and `listAdjustments` both return oldest first, and for storage that is the
+ * right answer — a repayment record read end to end has to run forwards. A
+ * SCREEN is a different question: the user opens a loan to check the thing that
+ * just happened, and on a 5-6 loan collected weekly for a year that entry is
+ * forty rows down. Reversed here rather than inside the component so the
+ * ordering and the reason for it stay next to the merge that produced it.
+ *
+ * A PAYMENT WHOSE TRANSACTION IS GONE IS DROPPED, not rendered as a blank or a
+ * zero. `deletePayment`'s own header is explicit that un-matching never touches
+ * the transaction, so `deleteTransaction` is the only way a row can vanish from
+ * under a still-live link — and the honest thing to show for it is nothing,
+ * rather than a payment line with no amount that the balance beside it does not
+ * count either (`outstandingBalance` joins through the same transaction and
+ * skips it for the same reason).
+ */
+export async function listLoanHistory(loanId: string): Promise<LoanHistoryEntry[]> {
+  const [payments, adjustments] = await Promise.all([
+    listPayments(loanId),
+    listAdjustments(loanId),
+  ]);
+
+  const entries: LoanHistoryEntry[] = [];
+
+  for (const payment of payments) {
+    const transaction = await getTransaction(payment.transactionId);
+    if (transaction === null) continue;
+    entries.push({
+      kind: "payment",
+      id: payment.id,
+      occurredAt: transaction.occurredAt,
+      amount: transaction.amount,
+      direction: transaction.direction,
+      transactionId: transaction.id,
+      walletId: transaction.walletId,
+    });
+  }
+
+  for (const adjustment of adjustments) {
+    entries.push({
+      kind: "adjustment",
+      id: adjustment.id,
+      occurredAt: adjustment.occurredAt,
+      amount: adjustment.amount,
+      note: adjustment.note,
+    });
+  }
+
+  // Ties are broken on `id` so the order is TOTAL rather than merely sorted.
+  // Two entries genuinely can share an instant — a back-dated manual payment
+  // and an adjustment on the same day both land on the start of that local day
+  // — and an unstable comparator lets them swap places between renders, which
+  // reads on screen as a list flickering for no reason the user can see.
+  return entries.sort(
+    (left, right) => right.occurredAt - left.occurredAt || left.id.localeCompare(right.id),
+  );
 }

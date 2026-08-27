@@ -41,12 +41,18 @@ export default function NewGoalScreen() {
     );
   }
 
-  // Invariant I10, both halves: a savings wallet, and one no other goal has
-  // claimed. Filtering here rather than in the form keeps the form
-  // presentational — it renders the wallets it is given.
+  // Invariant I10's surviving half: a wallet no other goal has claimed.
+  // Filtering here rather than in the form keeps the form presentational — it
+  // renders the wallets it is given.
+  //
+  // THE SAVINGS REQUIREMENT IS GONE (see `LinkedWalletNotFoundError`), but OWED
+  // wallets are still left out — a goal is money you are putting aside, and
+  // "saving toward a laptop" inside a balance that represents a debt is not a
+  // thing the progress maths can express. Archived wallets are out for the same
+  // reason they are out of every other picker.
   const claimed = new Set((statuses ?? []).map((status) => status.goal.linkedWalletId));
   const available = (wallets ?? []).filter(
-    (wallet) => wallet.type === "savings" && !claimed.has(wallet.id),
+    (wallet) => !wallet.owedBalance && !wallet.isArchived && !claimed.has(wallet.id),
   );
 
   return (

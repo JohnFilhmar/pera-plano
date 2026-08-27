@@ -31,7 +31,6 @@ function makeProposal(overrides: Partial<WalletProposal> = {}): WalletProposal {
   return {
     key: "gcash",
     name: "GCash",
-    type: "e-wallet",
     packageName: "com.globe.gcash.android",
     included: true,
     openingBalanceText: "",
@@ -49,7 +48,6 @@ function renderList(proposals: WalletProposal[]): void {
       <QuickWalletList
         proposals={proposals}
         onRename={noop}
-        onChangeType={noop}
         onToggleIncluded={noop}
         onChangeOpeningBalance={noop}
       />
@@ -65,7 +63,6 @@ function renderTypeable(initial: WalletProposal[]): void {
       <QuickWalletList
         proposals={proposals}
         onRename={noop}
-        onChangeType={noop}
         onToggleIncluded={noop}
         onChangeOpeningBalance={(key, text) => {
           noop(key, text);
@@ -156,7 +153,7 @@ describe("the opening balance field", () => {
   });
 
   test("a cash proposal gets the same field — cash can start with money on hand too", () => {
-    renderList([makeProposal({ key: "cash", name: "Cash", type: "cash", packageName: null })]);
+    renderList([makeProposal({ key: "cash", name: "Cash", packageName: null })]);
 
     expect(screen.getByTestId("wallet-proposal-balance-cash")).toBeTruthy();
   });

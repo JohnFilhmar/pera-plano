@@ -46,9 +46,11 @@
 // Pure: no I/O, no clock, no database, and NO `now`. Both windows are distances
 // between the two legs' own `occurredAt` stamps, so the whole stage is a
 // function of its three arguments.
+import { matcherApplies } from "@/lib/ingest/rule_matcher";
+
 import type { NormalizedEvent } from "@/lib/ingest/normalizer";
 import type { PipelineTunables } from "@/lib/ingest/ruleset_types";
-import type { Centavos, EpochMs, Transaction, TxDirection } from "@/types/domain";
+import type { Centavos, EpochMs, Transaction, TxDirection, UserRuleMatcher } from "@/types/domain";
 
 /**
  * Why a plausible pair was not linked outright. Each maps to one clause of §7
@@ -73,7 +75,23 @@ export type TransferVerdict =
       kind: "ambiguous-transfer";
       counterpartTransactionId: string;
       reason: TransferAmbiguity;
-    };
+    }
+  /**
+   * Only one leg of a movement was ever captured, because the other account
+   * posts no notification — a bank-funded cash-in, an ATM withdrawal into cash.
+   * There is NO counterpart transaction id here because there is no counterpart
+   * row: confirming this MINTS one. `counterpartWalletId` is a prefill for the
+   * card's picker, never a decision — see §5.4 of the design spec on why an
+   * invented row is worse than a wrong pairing between two real ones.
+   */
+  | { kind: "one_sided"; counterpartWalletId: string | null; signal: "text" | "rule" };
+
+/** A `mark-transfer` UserRule, reduced to the two facts this stage reads. */
+export type MarkTransferRule = {
+  matcher: UserRuleMatcher;
+  counterpartWalletId: string;
+  priority: number;
+};
 
 /**
  * Fee arithmetic in ten-thousandths, for the reason `parser.ts` and
@@ -316,6 +334,46 @@ function hasRivalForCounterpart(
 }
 
 /**
+ * The highest-priority rule that matches and names a wallet OTHER than the
+ * event's own.
+ *
+ * The same-wallet exclusion is rule 1 again: a counterpart in the event's own
+ * wallet is not a transfer, and a stale rule pointing at it must not produce a
+ * card offering to link a wallet to itself.
+ */
+function ruleWalletFor(event: NormalizedEvent, rules: MarkTransferRule[]): string | null {
+  const matches = rules
+    .filter((rule) => rule.counterpartWalletId !== event.walletId)
+    .filter((rule) => matcherApplies(rule.matcher, event))
+    .sort((a, b) => b.priority - a.priority);
+
+  return matches[0]?.counterpartWalletId ?? null;
+}
+
+/**
+ * The fallback when nothing in the ledger pairs with this event.
+ *
+ * AN UNRESOLVED WALLET RETURNS `none`, for the same reason `canPair` refuses
+ * one: with `walletId === null` the distinctness of the two sides cannot even be
+ * established, and such an event is already a hard route to the Review Queue on
+ * its own. Proposing a transfer against an account we could not identify is the
+ * one outcome worse than proposing none.
+ */
+function oneSidedOrNone(event: NormalizedEvent, rules: MarkTransferRule[]): TransferVerdict {
+  if (event.walletId === null) return { kind: "none" };
+
+  const ruleWallet = ruleWalletFor(event, rules);
+  if (ruleWallet !== null) {
+    return { kind: "one_sided", counterpartWalletId: ruleWallet, signal: "rule" };
+  }
+  if (event.transferIntent === true) {
+    return { kind: "one_sided", counterpartWalletId: null, signal: "text" };
+  }
+
+  return { kind: "none" };
+}
+
+/**
  * Spec §7. Decides whether `event` is one leg of an internal transfer.
  *
  * `candidates` is assembled by the orchestrator — the committed transactions
@@ -341,9 +399,10 @@ export function detectTransfer(
   event: NormalizedEvent,
   candidates: Transaction[],
   tunables: PipelineTunables,
+  transferRules: MarkTransferRule[] = [],
 ): TransferVerdict {
   const pairings = pairingsFor(event, candidates, tunables);
-  if (pairings.length === 0) return { kind: "none" };
+  if (pairings.length === 0) return oneSidedOrNone(event, transferRules);
 
   const best = bestOf(pairings);
   const counterpartTransactionId = best.counterpart.id;

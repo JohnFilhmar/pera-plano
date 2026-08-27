@@ -77,6 +77,7 @@ import { LockProvider, useLock } from "@/contexts/lock_context";
 import { systemClock } from "@/lib/clock";
 import { applyGlobalFont } from "@/lib/fonts";
 import { bootstrapApp, startNetworkSyncSubscriber } from "@/lib/bootstrap";
+import { startSupportOutboxSubscriber } from "@/lib/support/outbox_runner";
 import { useApplyAllocations } from "@/hooks/mutations/use_apply_allocations";
 import { usePaydayAllocations } from "@/hooks/use_payday_allocations";
 import { BILL_HORIZON_DAYS } from "@/hooks/queries/use_bills";
@@ -263,6 +264,18 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
   useEffect(() => {
     if (bootstrapState !== "ready") return;
     return startNetworkSyncSubscriber();
+  }, [bootstrapState]);
+
+  // The offline problem-report outbox. Same gate and same teardown shape as
+  // the subscriber above, and mounted next to it because they answer the same
+  // question ("what does this app do with the network when it gets some") —
+  // but kept as its own subscriber rather than folded into
+  // `startNetworkSyncSubscriber`, because it needs a THIRD wake-up the other
+  // two calls do not: a timer, so a report that failed keeps retrying inside
+  // the session the user is already in (see lib/support/outbox_runner.ts).
+  useEffect(() => {
+    if (bootstrapState !== "ready") return;
+    return startSupportOutboxSubscriber();
   }, [bootstrapState]);
 
   // Loan reminders, rescheduled once per launch (m2b Task 9 rule 3) so they

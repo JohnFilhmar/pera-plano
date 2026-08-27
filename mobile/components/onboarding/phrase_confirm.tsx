@@ -17,6 +17,22 @@
 // wrong word at ANY of the three positions rejects the whole confirmation;
 // there is no partial credit, because partial credit is exactly what would
 // let a user who wrote down nine of twelve words pass.
+//
+// GOING BACK IS NOT SKIPPING, and `onBack` is not a back door around rule 1.
+// Both routes off this screen still end at this same confirmation: the only
+// thing `onBack` reaches is the step immediately in front of it, the one
+// showing the words. Until it existed, "I've written these down" was a
+// one-way door -- a user who tapped it while their pen was still moving, or
+// who wanted one more look before typing, had no route back to the only
+// screen in the app that ever shows those twelve words.
+//
+// AND THE WORDS THEY GO BACK TO ARE NEW ONES (the caller regenerates; see
+// app/(onboarding)/recovery_phrase.tsx's handleBackToWords). That is why the
+// button carries a sentence saying so rather than a bare arrow: a user who
+// wrote down eleven words, went back for the twelfth, and copied it off a
+// freshly minted phrase would walk away holding a line of words that opens
+// nothing -- the same failure shape the caller's two-error-stages split
+// exists to prevent, arriving through the user instead of through an error.
 import { useMemo, useState } from "react";
 import { Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -51,9 +67,14 @@ function normalizeAnswer(input: string): string {
 export function PhraseConfirm({
   words,
   onConfirmed,
+  onBack,
 }: {
   words: string[];
   onConfirmed: () => void;
+  /** Optional, exactly like the screen's own `onDone`: a caller with nowhere
+   * to send the user back to renders no back button at all, rather than a
+   * dead control that goes nowhere. */
+  onBack?: () => void;
 }) {
   const positions = useMemo(() => pickPositions(words.length, CHALLENGE_COUNT), [words.length]);
   const [answers, setAnswers] = useState<string[]>(() => positions.map(() => ""));
@@ -139,6 +160,32 @@ export function PhraseConfirm({
           onPress={handleSubmit}
         />
       </View>
+
+      {onBack ? (
+        // Disabled by the SAME `confirmed` latch that disables the inputs and
+        // the submit button: once onConfirmed has fired, key setup is in
+        // flight against these exact words, and swapping the phrase out from
+        // under a running initializeKeys is the one thing this screen must
+        // never allow. The caller stops rendering the confirm step entirely at
+        // that point anyway -- this is the belt to that suspenders.
+        <View className="mt-3 gap-1">
+          <Button
+            testID="confirm-back-button"
+            title="Go back to my words"
+            variant="ghost"
+            size="lg"
+            disabled={confirmed}
+            onPress={onBack}
+          />
+          <Text
+            testID="confirm-back-warning"
+            className="text-center text-secondary font-medium text-fg-2 dark:text-fg-2-dark"
+          >
+            You'll get a different set of twelve words, so anything you already wrote down stops
+            working.
+          </Text>
+        </View>
+      ) : null}
     </View>
   );
 }

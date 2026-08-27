@@ -19,8 +19,15 @@ jest.mock("@/modules/notification_listener", () => ({
 import { closeDatabase } from "@/lib/db/database";
 import { addCaptureListener, drainPendingCaptures } from "@/modules/notification_listener";
 import * as parseStatsRepo from "@/lib/diagnostics/parse_stats_repo";
+import { createLoan, outstandingBalance } from "@/lib/db/repos/loans_repo";
 import { createUserRule } from "@/lib/db/repos/user_rules_repo";
 import { createWallet, getBalanceDrift, getWallet } from "@/lib/db/repos/wallets_repo";
+import {
+  getTraitEvidence,
+  recordTraitEvidence,
+  setWalletOwed,
+} from "@/lib/db/repos/wallet_traits_repo";
+import { answerWalletKind } from "@/lib/review/resolve_actions";
 import { onAppEvent } from "@/lib/events/app_events";
 import { freshDb } from "@/test_support/db";
 import { getRawCapture, storeRawCapture } from "@/lib/db/repos/raw_notifications_repo";
@@ -30,6 +37,7 @@ import { listOpen } from "@/lib/db/repos/review_queue_repo";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { seedParserRules } from "@/lib/ingest/seed_rules";
 import { setSetting } from "@/lib/db/repos/app_settings_repo";
+import { attachCounterpartLeg } from "@/lib/transfers/transfer_service";
 import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { __awaitIngestIdle, processCapture, startIngest } from "../pipeline";
 import type { RawCapture, Transaction } from "@/types/domain";
@@ -105,8 +113,28 @@ async function addMatcher(walletId: string, packageName: string): Promise<void> 
   );
 }
 
+/** `addMatcher`, named by provider rather than by raw package for the one-sided-transfer tests. */
+const PACKAGE_BY_PROVIDER: Record<string, string> = { gcash: GCASH };
+
+async function seedWalletMatcher(provider: keyof typeof PACKAGE_BY_PROVIDER, walletId: string): Promise<void> {
+  await addMatcher(walletId, PACKAGE_BY_PROVIDER[provider]);
+}
+
+let captureSeq = 0;
+
+/** A GCash capture with a fresh id, for tests that only care about the text. */
+function gcashCapture(overrides: Partial<RawCapture> = {}): RawCapture {
+  captureSeq += 1;
+  return capture({ id: `cap-one-sided-${captureSeq}`, ...overrides });
+}
+
 async function ledger(): Promise<Transaction[]> {
   return listTransactions({});
+}
+
+/** `listOpen`, named to match the review-queue-reading tests below. */
+async function listOpenReviewItems() {
+  return listOpen();
 }
 
 /** Committed rows in the order they were written, which is what rule 8 is about. */
@@ -143,7 +171,7 @@ afterEach(async () => {
 // ---------------------------------------------------------------------------
 
 test("a clean GCash send commits a transaction with source notification", async () => {
-  const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 175000 });
+  const wallet = await createWallet({ name: "GCash", openingBalance: 175000 });
   await addMatcher(wallet.id, GCASH);
 
   const outcome = await processCapture(gcashSend("cap-send"));
@@ -182,7 +210,7 @@ test("the balance the provider reported reaches the committed row", async () => 
   // The wallet is opened at ₱9,000.00, deliberately NOT at a figure the ₱500.00
   // spend could turn into 125000: incrementing lands on 850000, so the two
   // paths can never produce the same answer.
-  const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 900000 });
+  const wallet = await createWallet({ name: "GCash", openingBalance: 900000 });
   await addMatcher(wallet.id, GCASH);
 
   const outcome = await processCapture(gcashSend("cap-balance"));
@@ -198,7 +226,7 @@ test("the balance the provider reported reaches the committed row", async () => 
 
 test("the drift the snap absorbed is recoverable from the wallet afterwards", async () => {
   // Rule 3's attention state needs both figures. computed = 900000 - 50000.
-  const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 900000 });
+  const wallet = await createWallet({ name: "GCash", openingBalance: 900000 });
   await addMatcher(wallet.id, GCASH);
 
   await processCapture(gcashSend("cap-drift"));
@@ -215,7 +243,7 @@ test("the drift the snap absorbed is recoverable from the wallet afterwards", as
 test("a provider notification with no balance in its text commits with balanceAfter null", async () => {
   // Most notifications do not report one, and the ordinary computed path has to
   // stay exactly as it was for them. Same GCash template, balance clause absent.
-  const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 900000 });
+  const wallet = await createWallet({ name: "GCash", openingBalance: 900000 });
   await addMatcher(wallet.id, GCASH);
 
   await processCapture(
@@ -231,7 +259,7 @@ test("a provider notification with no balance in its text commits with balanceAf
 });
 
 test("a committed transaction carries a resolvable rawNotificationRef", async () => {
-  const wallet = await createWallet({ name: "GCash", type: "e-wallet" });
+  const wallet = await createWallet({ name: "GCash" });
   await addMatcher(wallet.id, GCASH);
   const raw = gcashSend("cap-ref");
 
@@ -244,7 +272,7 @@ test("a committed transaction carries a resolvable rawNotificationRef", async ()
 });
 
 test("a successful commit announces itself on ledger:committed", async () => {
-  const wallet = await createWallet({ name: "GCash", type: "e-wallet" });
+  const wallet = await createWallet({ name: "GCash" });
   await addMatcher(wallet.id, GCASH);
   const announced: string[] = [];
   const off = onAppEvent("ledger:committed", (payload) => {
@@ -261,8 +289,56 @@ test("a successful commit announces itself on ledger:committed", async () => {
   expect(announced).toEqual([row.id]);
 });
 
+test("A COMMITTED CAPTURE IS SCORED AGAINST OPEN LOANS", async () => {
+  // docs/04-features/06-loans.md §"Flow: automatic payment matching from the
+  // ledger" step 1: "After a Transaction commits to the ledger, the matcher
+  // scores it against open loans." This is the WIRING — the matcher's own rules
+  // are covered in lib/loans/__tests__/loan_match_queue.test.ts; what only an
+  // integration test can catch is that a real capture, through all nine stages,
+  // actually reaches it.
+  //
+  // `gcashSend` is ₱500.00 out to "Juan Dela Cruz", so the loan below agrees
+  // with it on the counterparty (rule 8c) and on the amount against its
+  // outstanding balance (rule 8d) — the two signals a free-form utang has.
+  const wallet = await createWallet({ name: "GCash" });
+  await addMatcher(wallet.id, GCASH);
+  const loan = await createLoan({
+    direction: "i-owe",
+    counterparty: "Juan Dela Cruz",
+    principal: 50000,
+  });
+
+  await processCapture(gcashSend("cap-loan-match"));
+
+  const [row] = await ledger();
+  const items = (await listOpen()).filter((item) => item.kind === "loan-match");
+  expect(items).toHaveLength(1);
+  expect(items[0].payload.transactionId).toBe(row.id);
+  // A SUGGESTION, NOT A MATCH (spec rule 9): only an explicit provider loan
+  // event may auto-match, and none is modelled. The balance must not have moved.
+  expect(await outstandingBalance(loan.id)).toBe(50000);
+});
+
+test("a matcher failure never costs the commit", async () => {
+  // The money moved; the row is already durable by the time the matcher runs.
+  // `runStages` sits under two silent catches (`processStored`, `runGuarded`),
+  // so an escaping error here would look exactly like the capture failing to
+  // process — and the capture would be treated as a replay forever after.
+  const wallet = await createWallet({ name: "GCash" });
+  await addMatcher(wallet.id, GCASH);
+  await createLoan({ direction: "i-owe", counterparty: "Juan Dela Cruz", principal: 50000 });
+  await db.execAsync("DROP TABLE review_queue_items;");
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+
+  const outcome = await processCapture(gcashSend("cap-loan-broken"));
+  warn.mockRestore();
+
+  const [row] = await ledger();
+  expect(outcome).toEqual({ kind: "committed", transactionId: row.id });
+});
+
 test("a queued capture announces nothing — the ledger did not change", async () => {
-  await createWallet({ name: "GCash", type: "e-wallet" });
+  await createWallet({ name: "GCash" });
   const announced: string[] = [];
   const off = onAppEvent("ledger:committed", (payload) => {
     announced.push(payload.transactionId);
@@ -279,7 +355,7 @@ test("a queued capture announces nothing — the ledger did not change", async (
 // ---------------------------------------------------------------------------
 
 test("a low-confidence parse is queued and commits nothing", async () => {
-  const wallet = await createWallet({ name: "BPI", type: "bank" });
+  const wallet = await createWallet({ name: "BPI" });
   await addMatcher(wallet.id, MESSAGES);
 
   const outcome = await processCapture(
@@ -318,7 +394,7 @@ test("malformed text from a known provider is ignored as unreadable, never throw
   // `.resolves.toEqual` states that directly, matching the guarantee's own
   // wording, rather than leaving it implicit in a bare `await` the way the
   // two tests below (which are about the ROUTE, not the throw) do.
-  const wallet = await createWallet({ name: "GCash", type: "e-wallet" });
+  const wallet = await createWallet({ name: "GCash" });
   await addMatcher(wallet.id, GCASH);
 
   await expect(
@@ -340,7 +416,7 @@ test("malformed text from a known provider is ignored as unreadable, never throw
 // ---------------------------------------------------------------------------
 
 test("a capture from a known provider that parses to nothing is ignored rather than queued", async () => {
-  const wallet = await createWallet({ name: "GCash", type: "e-wallet" });
+  const wallet = await createWallet({ name: "GCash" });
   await addMatcher(wallet.id, GCASH);
 
   const outcome = await processCapture(
@@ -367,7 +443,7 @@ test("the raw capture survives being ignored", async () => {
   // would never go red if the discard path regressed back to queuing. Pinning
   // `{ kind: "ignored", reason: "unreadable" }` first is what ties this
   // retention property to the DISCARD path specifically.
-  await createWallet({ name: "GCash", type: "e-wallet" });
+  await createWallet({ name: "GCash" });
   const raw = capture({
     id: "cap-unreadable-raw",
     text: "Your GCash transaction of ₱500.00 could not be completed at this time.",
@@ -404,7 +480,7 @@ test("a genuine ₱0.00 capture below the floor is queued, never discarded", asy
   // amount: the parse then fails and the capture is discarded as unreadable
   // (confirmed by mutation before this test was committed).
   await upsertRuleset(ZERO_FLOOR_BUNDLE);
-  const wallet = await createWallet({ name: "GCash", type: "e-wallet" });
+  const wallet = await createWallet({ name: "GCash" });
   await addMatcher(wallet.id, GCASH);
 
   const outcome = await processCapture(
@@ -424,7 +500,7 @@ test("a genuine ₱0.00 capture below the floor is queued, never discarded", asy
 });
 
 test("the raw capture is stored even when the parse fails", async () => {
-  await createWallet({ name: "GCash", type: "e-wallet" });
+  await createWallet({ name: "GCash" });
   const raw = capture({ id: "cap-unparsed", text: "GCash: ₱500.00 something went wrong." });
 
   await processCapture(raw);
@@ -434,7 +510,7 @@ test("the raw capture is stored even when the parse fails", async () => {
 });
 
 test("an unknown provider with a money signal is queued", async () => {
-  await createWallet({ name: "GCash", type: "e-wallet" });
+  await createWallet({ name: "GCash" });
 
   const outcome = await processCapture(
     capture({ id: "cap-unknown", packageName: CHAT, title: "Ana", text: "Pautang naman ₱200.00" }),
@@ -451,7 +527,7 @@ test("an unknown provider with a money signal is queued", async () => {
 });
 
 test("an unknown provider with no money signal is ignored and nothing is stored", async () => {
-  await createWallet({ name: "GCash", type: "e-wallet" });
+  await createWallet({ name: "GCash" });
 
   const outcome = await processCapture(
     capture({ id: "cap-chat", packageName: CHAT, title: "Ana", text: "Kain tayo mamaya!" }),
@@ -465,7 +541,7 @@ test("an unknown provider with no money signal is ignored and nothing is stored"
 });
 
 test("a money-like notification from a dismissed package is ignored, not re-queued", async () => {
-  await createWallet({ name: "GCash", type: "e-wallet" });
+  await createWallet({ name: "GCash" });
   await createUserRule({ matcher: { providerKey: CHAT }, action: { kind: "ignore" } });
 
   const outcome = await processCapture(
@@ -479,7 +555,7 @@ test("a money-like notification from a dismissed package is ignored, not re-queu
 });
 
 test("a capture while paused is ignored before parsing", async () => {
-  await createWallet({ name: "GCash", type: "e-wallet" });
+  await createWallet({ name: "GCash" });
   await setSetting("capture_enabled", false);
 
   const outcome = await processCapture(gcashSend("cap-paused"));
@@ -492,8 +568,8 @@ test("a capture while paused is ignored before parsing", async () => {
 
 test("an unmapped wallet is a hard route to the queue however clean the parse", async () => {
   // Two open wallets and no matcher: the Normalizer refuses to guess (§5).
-  await createWallet({ name: "GCash", type: "e-wallet" });
-  await createWallet({ name: "Maya", type: "e-wallet" });
+  await createWallet({ name: "GCash" });
+  await createWallet({ name: "Maya" });
 
   const outcome = await processCapture(gcashSend("cap-nowallet"));
 
@@ -518,7 +594,7 @@ test("an unmapped wallet is a hard route to the queue however clean the parse", 
 // ---------------------------------------------------------------------------
 
 test("a recordParseResult failure never costs the user their transaction", async () => {
-  const wallet = await createWallet({ name: "GCash", type: "e-wallet" });
+  const wallet = await createWallet({ name: "GCash" });
   await addMatcher(wallet.id, GCASH);
   const spy = jest
     .spyOn(parseStatsRepo, "recordParseResult")
@@ -532,7 +608,7 @@ test("a recordParseResult failure never costs the user their transaction", async
 });
 
 test("a recordParseResult failure still lets a low-confidence parse reach the review queue", async () => {
-  const wallet = await createWallet({ name: "BPI", type: "bank" });
+  const wallet = await createWallet({ name: "BPI" });
   await addMatcher(wallet.id, MESSAGES);
   const spy = jest
     .spyOn(parseStatsRepo, "recordParseResult")
@@ -556,7 +632,7 @@ test("a recordParseResult failure still lets a low-confidence parse reach the re
 // ---------------------------------------------------------------------------
 
 test("the same RawCapture processed twice commits exactly one transaction", async () => {
-  const wallet = await createWallet({ name: "GCash", type: "e-wallet" });
+  const wallet = await createWallet({ name: "GCash" });
   await addMatcher(wallet.id, GCASH);
   const replayed = gcashSend("cap-replay");
 
@@ -571,7 +647,7 @@ test("the same RawCapture processed twice commits exactly one transaction", asyn
 });
 
 test("two distinct captures with identical amount, channel and timing still reach the DedupeGate", async () => {
-  const wallet = await createWallet({ name: "GCash", type: "e-wallet" });
+  const wallet = await createWallet({ name: "GCash" });
   await addMatcher(wallet.id, GCASH);
   const text = "You paid ₱100.00 to Aling Nena via QR";
 
@@ -592,7 +668,7 @@ test("two distinct captures with identical amount, channel and timing still reac
 });
 
 test("a push and SMS twin commits once", async () => {
-  const wallet = await createWallet({ name: "BPI", type: "bank" });
+  const wallet = await createWallet({ name: "BPI" });
   await addMatcher(wallet.id, BPI);
   await addMatcher(wallet.id, MESSAGES);
   await upsertRuleset(TWIN_BUNDLE);
@@ -624,7 +700,7 @@ test("a push and SMS twin commits once", async () => {
 });
 
 test("a hand-typed entry never suppresses a real notification of the same amount", async () => {
-  const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 200000 });
+  const wallet = await createWallet({ name: "GCash", openingBalance: 200000 });
   await addMatcher(wallet.id, GCASH);
   // No rawNotificationId — the RecentEvent join must report providerKey: null
   // and channel: null for this row, and the gate treats nulls as never-matching.
@@ -649,8 +725,8 @@ test("a hand-typed entry never suppresses a real notification of the same amount
 // ---------------------------------------------------------------------------
 
 test("an internal transfer between two wallets auto-links both legs", async () => {
-  const bank = await createWallet({ name: "BPI", type: "bank", openingBalance: 500000 });
-  const ewallet = await createWallet({ name: "GCash", type: "e-wallet" });
+  const bank = await createWallet({ name: "BPI", openingBalance: 500000 });
+  const ewallet = await createWallet({ name: "GCash" });
   await addMatcher(bank.id, BPI);
   await addMatcher(ewallet.id, GCASH);
 
@@ -689,8 +765,8 @@ test("an internal transfer between two wallets auto-links both legs", async () =
 });
 
 test("an ambiguous transfer is queued instead of linked", async () => {
-  const bank = await createWallet({ name: "BPI", type: "bank", openingBalance: 500000 });
-  const ewallet = await createWallet({ name: "GCash", type: "e-wallet" });
+  const bank = await createWallet({ name: "BPI", openingBalance: 500000 });
+  const ewallet = await createWallet({ name: "GCash" });
   await addMatcher(bank.id, BPI);
   await addMatcher(ewallet.id, GCASH);
 
@@ -722,8 +798,8 @@ test("an ambiguous transfer is queued instead of linked", async () => {
 });
 
 test("a rival moving the same way as the event still demotes an otherwise perfect pair", async () => {
-  const bank = await createWallet({ name: "BPI", type: "bank", openingBalance: 500000 });
-  const ewallet = await createWallet({ name: "GCash", type: "e-wallet" });
+  const bank = await createWallet({ name: "BPI", openingBalance: 500000 });
+  const ewallet = await createWallet({ name: "GCash" });
   await addMatcher(bank.id, BPI);
   await addMatcher(ewallet.id, GCASH);
 
@@ -768,12 +844,91 @@ test("a rival moving the same way as the event still demotes an otherwise perfec
   expect(links).toHaveLength(0);
 });
 
+test("a one-sided transfer queues an item and commits nothing", async () => {
+  // Only one leg was ever captured — a bank-funded cash-in with no matching
+  // out-leg anywhere in the ledger. `detectTransfer` reads this as `one_sided`
+  // off the "Cash In" transfer-intent keyword, and the gate must hard-route it
+  // at ANY confidence: the counterpart wallet is a guess until the user
+  // confirms, so nothing may commit.
+  const gcashWallet = await createWallet({ name: "GCash" });
+  await seedWalletMatcher("gcash", gcashWallet.id);
+
+  await processCapture(
+    gcashCapture({ text: "Cash In of PHP 1,000.00 was successful. Ref No. ONESIDE1." }),
+  );
+
+  expect(await listTransactions({})).toHaveLength(0);
+
+  const [item] = await listOpenReviewItems();
+  expect(item?.kind).toBe("one-sided-transfer");
+  expect(item?.payload).toMatchObject({
+    amount: 100_000,
+    direction: "in",
+    walletId: gcashWallet.id,
+    counterpartWalletId: null,
+    signal: "text",
+  });
+});
+
+test("the bank's late notification replaces the minted leg rather than duplicating it", async () => {
+  // The user already confirmed a one-sided transfer (via `attachCounterpartLeg`,
+  // the same write `confirmOneSidedTransfer` makes from a Review Queue card), so
+  // a minted BPI leg — `source: "manual"`, linked, no `rawNotificationId` —
+  // already sits in the ledger opposite the captured GCash cash-in.
+  const gcashWallet = await createWallet({ name: "GCash" });
+  const bpiWallet = await createWallet({ name: "BPI" });
+  await addMatcher(gcashWallet.id, GCASH);
+  await addMatcher(bpiWallet.id, BPI);
+
+  const minted = await attachCounterpartLeg(
+    {
+      captured: {
+        proposal: {
+          walletId: gcashWallet.id,
+          categoryId: UNCATEGORIZED_ID,
+          amount: 100_000,
+          direction: "in",
+          occurredAt: NOW,
+          source: "notification",
+          confidence: 0.95,
+        },
+      },
+      counterpartWalletId: bpiWallet.id,
+      feeAmount: 0,
+    },
+    NOW,
+  );
+
+  // The minted leg is the "out" side (BPI, opposite the "in" GCash cash-in).
+  // `bpi_debit_v1` (seed.json) needs the amount right after "debited" and a
+  // continuous alnum reference — hyphens are outside its `[A-Za-z0-9]{6,}`
+  // class — so the reference below is spelled to actually bind.
+  await processCapture(
+    capture({
+      id: "cap-bpi-late",
+      packageName: BPI,
+      text: "Your account was debited ₱1,000.00. Ref No. BPI000077.",
+      postedAt: NOW - MINUTE,
+    }),
+  );
+
+  const rows = await listTransactions({});
+  // Not three: the late notification takes over the minted row instead of
+  // adding a second BPI leg alongside it.
+  expect(rows).toHaveLength(2);
+
+  const superseded = rows.find((row) => row.id === minted.outLegId);
+  expect(superseded?.source).toBe("notification");
+  expect(superseded?.referenceNo).toBe("BPI000077");
+  expect(superseded?.transferLinkId).toBe(minted.transferLinkId);
+});
+
 // ---------------------------------------------------------------------------
 // The confidence arithmetic the orchestrator itself owns.
 // ---------------------------------------------------------------------------
 
 test("0.95 minus a 0.05 learned penalty still auto-commits", async () => {
-  const wallet = await createWallet({ name: "BPI", type: "bank", openingBalance: 500000 });
+  const wallet = await createWallet({ name: "BPI", openingBalance: 500000 });
   await addMatcher(wallet.id, MESSAGES);
   await upsertRuleset(LEARNED_BUNDLE);
   for (const index of [1, 2, 3]) {
@@ -810,7 +965,7 @@ test("0.95 minus a 0.05 learned penalty still auto-commits", async () => {
 });
 
 test("a user rule outranks the merchant map and costs no confidence", async () => {
-  const wallet = await createWallet({ name: "GCash", type: "e-wallet" });
+  const wallet = await createWallet({ name: "GCash" });
   await addMatcher(wallet.id, GCASH);
   await createUserRule({
     matcher: { merchantPattern: "jollibee" },
@@ -832,7 +987,7 @@ test("a user rule outranks the merchant map and costs no confidence", async () =
 // ---------------------------------------------------------------------------
 
 test("startIngest drains buffered captures before live ones, in postedAt order", async () => {
-  const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 900000 });
+  const wallet = await createWallet({ name: "GCash", openingBalance: 900000 });
   await addMatcher(wallet.id, GCASH);
   // Handed back out of order, exactly as an unordered native buffer would.
   mockDrain.mockResolvedValue([
@@ -855,7 +1010,7 @@ test("startIngest drains buffered captures before live ones, in postedAt order",
 });
 
 test("a crash after drainPendingCaptures loses nothing", async () => {
-  const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 900000 });
+  const wallet = await createWallet({ name: "GCash", openingBalance: 900000 });
   await addMatcher(wallet.id, GCASH);
   // A UserRule pointing at a category that no longer exists: the categorizer
   // returns it happily and `insertTransaction` dies on the foreign key. One
@@ -885,7 +1040,7 @@ test("a crash after drainPendingCaptures loses nothing", async () => {
 });
 
 test("a stage throwing leaves the capture readable and reprocessable", async () => {
-  const wallet = await createWallet({ name: "GCash", type: "e-wallet" });
+  const wallet = await createWallet({ name: "GCash" });
   await addMatcher(wallet.id, GCASH);
   await createUserRule({
     matcher: { merchantPattern: "ghost" },
@@ -902,7 +1057,7 @@ test("a stage throwing leaves the capture readable and reprocessable", async () 
 });
 
 test("a failing drain still subscribes to live captures", async () => {
-  const wallet = await createWallet({ name: "GCash", type: "e-wallet" });
+  const wallet = await createWallet({ name: "GCash" });
   await addMatcher(wallet.id, GCASH);
   // The bridge rejects when the app is outside the Keystore auth window; the
   // captures are still in the native buffer, so this costs nothing — but
@@ -918,7 +1073,7 @@ test("a failing drain still subscribes to live captures", async () => {
 });
 
 test("startIngest leaves the native buffer alone while capture is paused", async () => {
-  await createWallet({ name: "GCash", type: "e-wallet" });
+  await createWallet({ name: "GCash" });
   await setSetting("capture_enabled", false);
 
   const stop = await startIngest();
@@ -933,7 +1088,7 @@ test("startIngest leaves the native buffer alone while capture is paused", async
 });
 
 test("a replayed batch after a crash re-commits nothing", async () => {
-  const wallet = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 900000 });
+  const wallet = await createWallet({ name: "GCash", openingBalance: 900000 });
   await addMatcher(wallet.id, GCASH);
   const batch = [
     gcashSend("buf-a", { text: sendText("100.00", "REF00A"), postedAt: NOW - 5 * MINUTE }),
@@ -956,7 +1111,7 @@ test("a replayed batch after a crash re-commits nothing", async () => {
 });
 
 test("an already-stored capture is not reprocessed from the buffer", async () => {
-  const wallet = await createWallet({ name: "GCash", type: "e-wallet" });
+  const wallet = await createWallet({ name: "GCash" });
   await addMatcher(wallet.id, GCASH);
   const raw = gcashSend("buf-known");
   await storeRawCapture(raw, NOW);
@@ -1034,6 +1189,203 @@ const LEARNED_BUNDLE: RulesetBundleInput = {
     },
   ],
 };
+
+// ---------------------------------------------------------------------------
+// Held or owed — the verdict that replaced the onboarding wallet-type question.
+//
+// END TO END, NOT AGAINST THE SCORER. lib/wallets/__tests__/classification.test.ts
+// already pins the rules; what these assert is that the ORCHESTRATOR feeds them
+// the right numbers. Specifically that the previous balance is reconstructed
+// from `computed_balance` rather than re-read after the snap — read it back
+// afterwards and every capture looks ordinary, which would leave this whole
+// feature silently inert with a green unit suite.
+// ---------------------------------------------------------------------------
+
+test("a spend that LOWERS the reported balance scores the wallet as holding money", async () => {
+  // Opened at ₱9,000; the capture reports ₱1,250 after a ₱500 spend. The
+  // balance fell, which is what an ordinary account does.
+  const wallet = await createWallet({ name: "GCash", openingBalance: 900000 });
+  await addMatcher(wallet.id, GCASH);
+
+  await processCapture(gcashSend("cap-trait-held"));
+
+  expect(await getTraitEvidence(wallet.id)).toEqual({
+    owedScore: 0,
+    heldScore: 200,
+    sampleCount: 1,
+  });
+  expect((await getWallet(wallet.id))?.owedBalance).toBe(false);
+});
+
+test("a spend that RAISES the reported balance is credit-shaped", async () => {
+  // Same capture, different opening balance: ₱1,000 before, ₱1,250 after a
+  // ₱500 spend. Spending more and OWING more is what a card does.
+  const wallet = await createWallet({ name: "GCash", openingBalance: 100000 });
+  await addMatcher(wallet.id, GCASH);
+
+  await processCapture(gcashSend("cap-trait-owed"));
+
+  expect(await getTraitEvidence(wallet.id)).toEqual({
+    owedScore: 200,
+    heldScore: 0,
+    sampleCount: 1,
+  });
+});
+
+test("one credit-shaped capture is not enough to move the headline number", async () => {
+  const wallet = await createWallet({ name: "GCash", openingBalance: 100000 });
+  await addMatcher(wallet.id, GCASH);
+
+  await processCapture(gcashSend("cap-trait-single"));
+
+  // The sample floor is three. A single odd notification must not be able to
+  // pull a wallet's balance out of the user's total.
+  expect((await getWallet(wallet.id))?.owedBalance).toBe(false);
+});
+
+test("three credit-shaped captures flip the wallet to owed", async () => {
+  const wallet = await createWallet({ name: "GCash", openingBalance: 100000 });
+  await addMatcher(wallet.id, GCASH);
+
+  // Distinct amounts and references so the dedupe gate treats these as three
+  // events; each reported balance is higher than the one before, because the
+  // wallet snaps to the last one it was told.
+  await processCapture(
+    gcashSend("cap-trait-1", {
+      text: "You sent ₱500.00 to Juan Dela Cruz. Ref No. AAA111. Your new balance is ₱1,250.00.",
+    }),
+  );
+  await processCapture(
+    gcashSend("cap-trait-2", {
+      text: "You sent ₱300.00 to Maria Santos. Ref No. BBB222. Your new balance is ₱1,500.00.",
+    }),
+  );
+  await processCapture(
+    gcashSend("cap-trait-3", {
+      text: "You sent ₱200.00 to Pedro Reyes. Ref No. CCC333. Your new balance is ₱1,750.00.",
+    }),
+  );
+
+  expect(await getTraitEvidence(wallet.id)).toMatchObject({ owedScore: 600, sampleCount: 3 });
+
+  const reloaded = await getWallet(wallet.id);
+  expect(reloaded?.owedBalance).toBe(true);
+  // INFERRED, NOT ANSWERED. The user can still be asked, and still overrule it.
+  expect(reloaded?.owedPinned).toBe(false);
+});
+
+test("a wallet the app cannot read is asked about once, and only once", async () => {
+  // Two owed signals and one held one: three samples, so we have LOOKED, but a
+  // margin of 200 against a threshold of 300, so we still cannot tell.
+  const wallet = await createWallet({ name: "BPI", openingBalance: 500_000 });
+  await addMatcher(wallet.id, GCASH);
+  await recordTraitEvidence(wallet.id, { owed: 200, held: 0 });
+  await recordTraitEvidence(wallet.id, { owed: 200, held: 0 });
+
+  // This capture's own movement scores held (the balance falls), landing the
+  // wallet on owed 400 / held 200 across three samples.
+  await processCapture(
+    gcashSend("cap-ask-1", {
+      text: "You sent ₱500.00 to Juan Dela Cruz. Ref No. GGG111. Your new balance is ₱1,250.00.",
+    }),
+  );
+
+  const asked = (await listOpen()).filter((entry) => entry.kind === "wallet-kind-unclear");
+  expect(asked).toHaveLength(1);
+  expect(asked[0].payload).toMatchObject({ walletId: wallet.id, walletName: "BPI" });
+
+  // A second inconclusive capture must not raise a second card.
+  await processCapture(
+    gcashSend("cap-ask-2", {
+      text: "You sent ₱300.00 to Maria Santos. Ref No. HHH222. Your new balance is ₱1,000.00.",
+    }),
+  );
+  expect((await listOpen()).filter((entry) => entry.kind === "wallet-kind-unclear")).toHaveLength(1);
+});
+
+test("a wallet too small to matter is never asked about", async () => {
+  // ₱2.00, against a ₱1,000 floor and a 5%-of-total bar it also fails.
+  const wallet = await createWallet({ name: "Loose change", openingBalance: 200 });
+  await addMatcher(wallet.id, GCASH);
+  await recordTraitEvidence(wallet.id, { owed: 200, held: 0 });
+  await recordTraitEvidence(wallet.id, { owed: 200, held: 0 });
+  await recordTraitEvidence(wallet.id, { owed: 0, held: 200 });
+
+  await processCapture(
+    gcashSend("cap-small", {
+      text: "You sent ₱1.00 to Juan Dela Cruz. Ref No. JJJ111. Your new balance is ₱1.00.",
+    }),
+  );
+
+  expect((await listOpen()).filter((entry) => entry.kind === "wallet-kind-unclear")).toHaveLength(0);
+});
+
+test("answering the question pins the wallet and closes the card", async () => {
+  const wallet = await createWallet({ name: "BPI", openingBalance: 500_000 });
+  await addMatcher(wallet.id, GCASH);
+  await recordTraitEvidence(wallet.id, { owed: 200, held: 0 });
+  await recordTraitEvidence(wallet.id, { owed: 200, held: 0 });
+  await processCapture(
+    gcashSend("cap-answer", {
+      text: "You sent ₱500.00 to Juan Dela Cruz. Ref No. KKK111. Your new balance is ₱1,250.00.",
+    }),
+  );
+
+  const [card] = (await listOpen()).filter((entry) => entry.kind === "wallet-kind-unclear");
+  await answerWalletKind(card.id, true);
+
+  const reloaded = await getWallet(wallet.id);
+  expect(reloaded?.owedBalance).toBe(true);
+  // PINNED BY EITHER ANSWER — the user settled it, and inference is done here.
+  expect(reloaded?.owedPinned).toBe(true);
+  expect((await listOpen()).filter((entry) => entry.kind === "wallet-kind-unclear")).toHaveLength(0);
+});
+
+test("answering 'money I have' pins too — it is not a dismissal", async () => {
+  const wallet = await createWallet({ name: "BPI", openingBalance: 500_000 });
+  await addMatcher(wallet.id, GCASH);
+  await recordTraitEvidence(wallet.id, { owed: 200, held: 0 });
+  await recordTraitEvidence(wallet.id, { owed: 200, held: 0 });
+  await processCapture(
+    gcashSend("cap-answer-held", {
+      text: "You sent ₱500.00 to Juan Dela Cruz. Ref No. LLL111. Your new balance is ₱1,250.00.",
+    }),
+  );
+
+  const [card] = (await listOpen()).filter((entry) => entry.kind === "wallet-kind-unclear");
+  await answerWalletKind(card.id, false);
+
+  const reloaded = await getWallet(wallet.id);
+  expect(reloaded?.owedBalance).toBe(false);
+  expect(reloaded?.owedPinned).toBe(true);
+});
+
+test("a wallet the user already settled is not re-decided by evidence", async () => {
+  const wallet = await createWallet({ name: "GCash", openingBalance: 100000 });
+  await addMatcher(wallet.id, GCASH);
+  await setWalletOwed(wallet.id, false, { pinned: true });
+
+  await processCapture(
+    gcashSend("cap-pin-1", {
+      text: "You sent ₱500.00 to Juan Dela Cruz. Ref No. DDD111. Your new balance is ₱1,250.00.",
+    }),
+  );
+  await processCapture(
+    gcashSend("cap-pin-2", {
+      text: "You sent ₱300.00 to Maria Santos. Ref No. EEE222. Your new balance is ₱1,500.00.",
+    }),
+  );
+  await processCapture(
+    gcashSend("cap-pin-3", {
+      text: "You sent ₱200.00 to Pedro Reyes. Ref No. FFF333. Your new balance is ₱1,750.00.",
+    }),
+  );
+
+  // The evidence is still gathered — it is not wrong, and it is what a later
+  // "that's not right" would be judged against — but the verdict is not applied.
+  expect(await getTraitEvidence(wallet.id)).toMatchObject({ owedScore: 600, sampleCount: 3 });
+  expect((await getWallet(wallet.id))?.owedBalance).toBe(false);
+});
 
 /**
  * A provider whose template vouches for itself at exactly the shipped review

@@ -259,3 +259,59 @@ test("the hint no longer tells the user to type a format they cannot type", () =
   expect(hint).not.toHaveTextContent("YYYY-MM-DD");
   expect(hint).toHaveTextContent("Pick both dates to apply a custom range.");
 });
+
+// ---------------------------------------------------------------------------
+// The period field, which replaced the horizontal month strip
+// ---------------------------------------------------------------------------
+
+test("the period field names the selected month", () => {
+  withTheme(
+    <RangePicker
+      scope={MONTH_SCOPE}
+      availableScopes={PLUS_SCOPES}
+      onSelectMonth={jest.fn()}
+      onSelectCustom={jest.fn()}
+    />,
+  );
+
+  expect(screen.getByTestId("range-picker-month-trigger")).toHaveTextContent("Aug 2026");
+  // The sheet behind it stays closed until the field is pressed.
+  expect(screen.queryByTestId("range-picker-months")).toBeNull();
+});
+
+test("the period field names a custom range too", () => {
+  // The strip could not: no month pill was active while a custom range was
+  // applied, so nothing on screen said what the charts below were drawn from.
+  withTheme(
+    <RangePicker
+      scope={{ kind: "custom", range: { from: "2026-08-01", to: "2026-08-15" } }}
+      availableScopes={PLUS_SCOPES}
+      onSelectMonth={jest.fn()}
+      onSelectCustom={jest.fn()}
+    />,
+  );
+
+  expect(screen.getByTestId("range-picker-month-trigger")).toHaveTextContent(
+    "Aug 1, 2026 – Aug 15, 2026",
+  );
+});
+
+test("picking a month from the sheet reports it and closes the sheet", () => {
+  const onSelectMonth = jest.fn();
+  withTheme(
+    <RangePicker
+      scope={MONTH_SCOPE}
+      availableScopes={PLUS_SCOPES}
+      onSelectMonth={onSelectMonth}
+      onSelectCustom={jest.fn()}
+    />,
+  );
+
+  fireEvent.press(screen.getByTestId("range-picker-month-trigger"));
+  screen.getByTestId("range-picker-months");
+
+  fireEvent.press(screen.getByTestId("range-picker-month-2026-08"));
+
+  expect(onSelectMonth).toHaveBeenCalledWith("2026-08");
+  expect(screen.queryByTestId("range-picker-months")).toBeNull();
+});

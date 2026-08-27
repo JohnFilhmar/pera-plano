@@ -165,12 +165,33 @@ export function parseAmountToCentavos(raw: string): Centavos | null {
  */
 const AMOUNT_TOKEN_PATTERN = /(?:₱|PHP|Php)\s?\d[\d,]*(?:\.\d{1,2})?/gu;
 
+/**
+ * One amount-like token and where it sits, so a caller can point at it in the
+ * text the user is reading. `start`/`end` index the string that was scanned.
+ */
+export type AmountToken = {
+  text: string;
+  start: number;
+  end: number;
+};
+
+/**
+ * The tokens themselves, in reading order. See AMOUNT_TOKEN_PATTERN for what
+ * counts as one and why.
+ *
+ * `matchAll` rather than `.exec()` in a loop: it copies the pattern before
+ * scanning, so this module-level global regex's `lastIndex` is never advanced
+ * and the same text cannot scan differently depending on what ran before it.
+ */
+export function amountTokens(text: string): AmountToken[] {
+  return [...text.matchAll(AMOUNT_TOKEN_PATTERN)].map((match) => ({
+    text: match[0],
+    start: match.index,
+    end: match.index + match[0].length,
+  }));
+}
+
 /** Counts amount-like tokens. See AMOUNT_TOKEN_PATTERN for what counts and why. */
 export function countAmountTokens(text: string): number {
-  // `String.prototype.match` with a global regex resets `lastIndex` to 0 before
-  // it scans, so reusing this module-level pattern is safe. `.test()` or
-  // `.exec()` on it would NOT be: they advance `lastIndex` between calls, and
-  // the same notification would then count differently depending on what was
-  // scanned before it.
-  return text.match(AMOUNT_TOKEN_PATTERN)?.length ?? 0;
+  return amountTokens(text).length;
 }

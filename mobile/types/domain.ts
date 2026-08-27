@@ -11,15 +11,35 @@ export type EpochMs = number;
 export type IsoDate = string;
 
 // ---------- Wallet ----------
-export type WalletType = "bank" | "e-wallet" | "cash" | "credit" | "savings";
-
 export type Wallet = {
   id: string;
   name: string;
-  type: WalletType;
   balance: Centavos;
   currency: "PHP";
   isArchived: boolean;
+  /**
+   * The balance is money OWED, not money held: excluded from the Wallets-tab
+   * total and from Safe-to-Spend, and labelled "Owed" on its row.
+   *
+   * INFERRED (lib/wallets/classification.ts), not asked for — unless
+   * `owedPinned` says the user answered it themselves.
+   */
+  owedBalance: boolean;
+  /**
+   * The user settled `owedBalance` — by answering the review-queue question or
+   * correcting it on the wallet screen. Inference reads a pinned wallet and
+   * never writes it again.
+   */
+  owedPinned: boolean;
+  /**
+   * How many `wallet_matchers` rows route to this wallet.
+   *
+   * ZERO IS THE INTERESTING VALUE: nothing can track this wallet
+   * automatically, which is precisely what `type: "cash"` used to mean. Derived
+   * from a count rather than stored as a flag, so removing a wallet's last
+   * matcher makes it manual the moment it happens.
+   */
+  matcherCount: number;
   /**
    * The reporting Transaction whose balance drift the user has already seen and
    * accepted (migration 003), or `null` when nothing is acknowledged.
@@ -39,7 +59,6 @@ export type Wallet = {
 
 export type NewWallet = {
   name: string;
-  type: WalletType;
   /** Opening balance anchor (docs/02-domain-model.md §3.1); defaults to 0. */
   openingBalance?: Centavos;
 };
@@ -490,7 +509,15 @@ export type UserRuleAction =
   | { kind: "set-category"; categoryId: string }
   | { kind: "set-wallet"; walletId: string }
   | { kind: "set-merchant"; merchant: string }
-  | { kind: "mark-transfer" }
+  /**
+   * "Money matching this rule is a transfer to/from THIS wallet."
+   *
+   * The wallet is on the ACTION because `UserRuleMatcher` can only describe one
+   * leg — a provider, a merchant pattern, a direction. The pair is expressed as
+   * matcher-identifies-one-side, action-names-the-other. Without it the action
+   * could never fire, which is exactly the state it shipped in.
+   */
+  | { kind: "mark-transfer"; counterpartWalletId: string }
   | { kind: "suppress-recurring"; merchant: string }
   | { kind: "ignore" };
 
@@ -509,11 +536,47 @@ export type UserRule = {
 };
 
 // ---------- Review Queue ----------
+/**
+ * Every card the Review Queue can show. Each member is also a value the
+ * `review_queue_items.kind` CHECK constraint accepts — 001_core.sql for the
+ * first four, 011_loan_match_review_kind.sql for `loan-match` — so adding a
+ * member here without a migration produces an item that cannot be INSERTed.
+ *
+ * `loan-match` IS THE ODD ONE OUT AND THAT IS THE POINT. The other four all
+ * mean "this row is NOT in your ledger and will not be until you say so". A
+ * `loan-match` item is raised AFTER a transaction is committed and correct
+ * (docs/04-features/06-loans.md §"Flow: automatic payment matching from the
+ * ledger" step 1: "After a Transaction commits to the ledger, the matcher
+ * scores it against open loans"); the only open question is whether that
+ * already-committed row also pays down a loan. Anything that treats the kinds
+ * uniformly — a triage action that commits a payload, say — has to exclude
+ * this one, or it writes the same money twice.
+ */
 export type ReviewKind =
   | "low-confidence"
   | "unknown-provider"
   | "ambiguous-transfer"
-  | "possible-duplicate";
+  | "possible-duplicate"
+  | "loan-match"
+  /**
+   * One leg of an internal transfer arrived and the other never will, because
+   * the account it came from or went to does not post notifications. The
+   * counterpart transaction does not exist yet — confirming this item MINTS it.
+   * Distinct from `ambiguous-transfer`, whose payload names a committed row.
+   */
+  | "one-sided-transfer"
+  /**
+   * Evidence cannot settle whether this wallet's balance is money the user HAS
+   * or money they OWE, and the balance is large enough that guessing wrong
+   * would visibly misstate their total. Payload:
+   * `{ walletId, walletName, balance }`.
+   *
+   * THE ONLY KIND THAT IS NOT ABOUT A TRANSACTION. There is no capture behind
+   * it and no row to commit — the pipeline raises it after watching a wallet
+   * and failing to decide. Asked at most once per wallet, ever: dismissing it
+   * is itself an answer.
+   */
+  | "wallet-kind-unclear";
 
 /**
  * Parsed-candidate payload (amount, direction, merchant, wallet/category guesses…).

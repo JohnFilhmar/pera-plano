@@ -1,6 +1,6 @@
 import { closeDatabase, getDatabase, unlockDatabase } from "../database";
 import { MIGRATIONS, runMigrations, type Migration } from "../migrations";
-import { TEST_DEK } from "@/test_support/db";
+import { freshDb, TEST_DEK } from "@/test_support/db";
 
 const TEST_MIGRATIONS: Migration[] = [
   { version: 1, name: "one", sql: "CREATE TABLE t_one (id TEXT PRIMARY KEY);" },
@@ -298,7 +298,6 @@ describe("003_drift_dismissal upgrades a real version-2 database in place", () =
     expect(wallet).toMatchObject({
       id: "w_v1",
       name: "GCash",
-      type: "e-wallet",
       balance: 250000,
       currency: "PHP",
       is_archived: 0,
@@ -876,4 +875,29 @@ describe("009_parse_stats upgrades a real version-8 database in place", () => {
     expect(recorded).toEqual(MIGRATIONS.map((m) => ({ version: m.version, name: m.name })));
     expect(await runMigrations(db)).toEqual([]);
   });
+});
+
+test("migration 012 lets the queue hold a one-sided-transfer item", async () => {
+  const db = await freshDb();
+
+  await db.runAsync(
+    `INSERT INTO review_queue_items (id, kind, payload_json, raw_notification_id, created_at)
+     VALUES ('rq_one_sided', 'one-sided-transfer', '{}', NULL, 1)`,
+  );
+
+  const rows = await db.getAllAsync<{ kind: string }>(
+    "SELECT kind FROM review_queue_items WHERE id = 'rq_one_sided'",
+  );
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.kind).toBe("one-sided-transfer");
+});
+
+test("migration 012 keeps the open-queue index", async () => {
+  const db = await freshDb();
+
+  const indexes = await db.getAllAsync<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'review_queue_items'",
+  );
+
+  expect(indexes.map((row) => row.name)).toContain("idx_review_queue_open");
 });

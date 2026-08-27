@@ -81,7 +81,19 @@ export const queryKeys = {
   reviewQueue: {
     all: ["review_queue"] as const,
     open: () => ["review_queue", "open"] as const,
+    /**
+     * One paged cache entry PER FILTER. `kinds` is normalized by the caller
+     * (sorted, or `null` for "all") so that two selections of the same kinds
+     * share an entry instead of splitting the cache on array order.
+     *
+     * Deliberately NOT nested under `open()`: a mutation invalidating
+     * `reviewQueue.all` still catches both, and keeping them siblings means
+     * the unpaged `open()` list — still the contract-shaped read — never
+     * has its own entry evicted by a filter change.
+     */
+    page: (kinds: readonly string[] | null) => ["review_queue", "page", kinds] as const,
     count: () => ["review_queue", "count"] as const,
+    kindCounts: () => ["review_queue", "kind_counts"] as const,
   },
   categories: {
     all: ["categories"] as const,
@@ -137,6 +149,32 @@ export const queryKeys = {
     all: ["loans"] as const,
     list: () => ["loans", "list"] as const,
     detail: (id: string) => ["loans", "detail", id] as const,
+    /**
+     * The transactions that might pay this loan, keyed on WHETHER THE SCORE
+     * FLOOR APPLIES — the suggested few and the browse-everything fallback are
+     * two different answers to two different questions, and a shared key would
+     * let whichever resolved first answer for both (the same reasoning
+     * `wallets.list`'s archived flag carries).
+     *
+     * Nested under `detail(id)` so confirming a match, which invalidates
+     * `loans.all`, drops both lists: a confirmed candidate must stop being
+     * offered.
+     */
+    candidates: (id: string, includeBelowFloor: boolean = false) =>
+      ["loans", "detail", id, "candidates", includeBelowFloor] as const,
+    /**
+     * This loan's payments and balance adjustments as one list
+     * (`listLoanHistory`, spec rules 7 and 13).
+     *
+     * UNDER `detail(id)` for the same reason `candidates` is: every write that
+     * can change it — a confirmed match, a manually recorded payment, an
+     * adjustment — already invalidates `loans.all`, and prefix matching carries
+     * that straight through. A sibling root would need each of those three
+     * mutations to remember a second key, and the failure would be a history
+     * section that still shows the balance's old story right underneath the new
+     * balance.
+     */
+    history: (id: string) => ["loans", "detail", id, "history"] as const,
   },
   bills: {
     all: ["bills"] as const,
@@ -281,5 +319,25 @@ export const queryKeys = {
   parseStats: {
     all: ["parse_stats"] as const,
     stats: () => ["parse_stats", "stats"] as const,
+  },
+  /**
+   * The offline problem-report outbox (`lib/support/support_reports_repo.ts`).
+   *
+   * `unsent()` is the only list, because it is the only one anything renders:
+   * a delivered report has a ticket number and no further story on the phone,
+   * while a queued or rejected one is a thing the user is still waiting on.
+   *
+   * INVALIDATED FROM OUTSIDE THE MUTATION LAYER TOO, which is unusual for a
+   * family here. The outbox runner sends in the background — on launch, on
+   * foreground, on a timer — so rows change with no user action and no
+   * mutation to hang an `onSuccess` off. `hooks/queries/use_support_reports.ts`
+   * subscribes to `support:outbox_changed` (lib/events/app_events.ts) and
+   * invalidates this key when it fires; without that, a report that sent
+   * itself while the user watched the list would stay listed as waiting until
+   * the screen was left and re-entered.
+   */
+  supportReports: {
+    all: ["support_reports"] as const,
+    unsent: () => ["support_reports", "unsent"] as const,
   },
 } as const;

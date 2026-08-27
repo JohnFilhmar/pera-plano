@@ -34,6 +34,7 @@ import { DEFAULT_TUNABLES } from "@/lib/ingest/ruleset_types";
 
 import type { NormalizedEvent } from "@/lib/ingest/normalizer";
 import type { PipelineTunables } from "@/lib/ingest/ruleset_types";
+import type { MarkTransferRule } from "@/lib/ingest/transfer_detector";
 import type { Transaction } from "@/types/domain";
 
 const MINUTE = 60_000;
@@ -693,4 +694,110 @@ test("the windows are measured between the legs, never against a wall clock", ()
     kind: "auto_link",
     counterpartTransactionId: "tx_ancient_counterpart",
   });
+});
+
+// ---------------------------------------------------------------------------
+// The `one_sided` verdict — a movement where only one leg was ever captured,
+// because the other account posts no notification (a bank-funded GCash
+// cash-in, an ATM withdrawal into cash). `pairingsFor` finds nothing, and
+// nothing here MINTS a counterpart row: `one_sided` only ever proposes.
+// ---------------------------------------------------------------------------
+
+test("a pairing always outranks a one-sided guess", () => {
+  // The event carries `transferIntent` AND a matching rule points at a third
+  // wallet, and neither should matter: `pairingsFor` found a real counterpart,
+  // and a real pairing always outranks a one-sided guess.
+  const event = makeEvent({ direction: "out", walletId: BANK, transferIntent: true });
+  const candidate = makeCandidate();
+  const rules: MarkTransferRule[] = [
+    { matcher: {}, counterpartWalletId: SAVINGS, priority: 100 },
+  ];
+
+  expect(detectTransfer(event, [candidate], DEFAULT_TUNABLES, rules)).toEqual({
+    kind: "auto_link",
+    counterpartTransactionId: "tx_in_leg",
+  });
+});
+
+test("a text signal with no pairing proposes a one-sided transfer", () => {
+  const event = makeEvent({ direction: "in", walletId: EWALLET, transferIntent: true });
+
+  expect(detectTransfer(event, [], DEFAULT_TUNABLES, [])).toEqual({
+    kind: "one_sided",
+    counterpartWalletId: null,
+    signal: "text",
+  });
+});
+
+test("a matching rule supplies the wallet and wins the prefill", () => {
+  const event = makeEvent({
+    direction: "in",
+    walletId: EWALLET,
+    providerKey: "gcash",
+    transferIntent: true,
+  });
+  const rules: MarkTransferRule[] = [
+    { matcher: { providerKey: "gcash" }, counterpartWalletId: BANK, priority: 100 },
+  ];
+
+  expect(detectTransfer(event, [], DEFAULT_TUNABLES, rules)).toEqual({
+    kind: "one_sided",
+    counterpartWalletId: BANK,
+    signal: "rule",
+  });
+});
+
+test("two matching rules of different priority pick the higher-priority wallet", () => {
+  // The previous task's review found "highest-priority rule wins" resting on
+  // code inspection alone — no test exercised two matching rules at once. The
+  // wallet this returns is a PREFILL on the one-sided card, and a wrong winner
+  // mints a ledger row on the wrong account if the user confirms without
+  // reading, so the ordering needs a real assertion, not a read of `sort`.
+  //
+  // The array is given in ASCENDING priority order on purpose: an
+  // implementation that forgot to sort, or sorted ascending instead of
+  // descending, would return `matches[0]` as BANK (priority 10) and fail this
+  // test. Only a correct descending sort by priority returns SAVINGS.
+  const event = makeEvent({
+    direction: "in",
+    walletId: EWALLET,
+    providerKey: "gcash",
+    transferIntent: true,
+  });
+  const rules: MarkTransferRule[] = [
+    { matcher: { providerKey: "gcash" }, counterpartWalletId: BANK, priority: 10 },
+    { matcher: { providerKey: "gcash" }, counterpartWalletId: SAVINGS, priority: 50 },
+  ];
+
+  expect(detectTransfer(event, [], DEFAULT_TUNABLES, rules)).toEqual({
+    kind: "one_sided",
+    counterpartWalletId: SAVINGS,
+    signal: "rule",
+  });
+});
+
+test("a rule naming the event's own wallet is ignored", () => {
+  // A stale rule pointing at the event's own wallet must not produce a card
+  // offering to link a wallet to itself — it is discarded, not offered.
+  const event = makeEvent({ direction: "in", walletId: EWALLET, providerKey: "gcash" });
+  const rules: MarkTransferRule[] = [
+    { matcher: { providerKey: "gcash" }, counterpartWalletId: EWALLET, priority: 100 },
+  ];
+
+  expect(detectTransfer(event, [], DEFAULT_TUNABLES, rules)).toEqual({ kind: "none" });
+});
+
+test("no signal and no rule stays none", () => {
+  const event = makeEvent({ direction: "out", walletId: EWALLET, amount: 25_000 });
+
+  expect(detectTransfer(event, [], DEFAULT_TUNABLES, [])).toEqual({ kind: "none" });
+});
+
+test("an unresolved wallet never proposes a one-sided transfer", () => {
+  // §5.4 of the design spec: with `walletId === null` the distinctness of the
+  // two sides cannot even be established, so proposing a transfer against an
+  // account we could not identify is worse than proposing none.
+  const event = makeEvent({ direction: "in", walletId: null, transferIntent: true });
+
+  expect(detectTransfer(event, [], DEFAULT_TUNABLES, [])).toEqual({ kind: "none" });
 });

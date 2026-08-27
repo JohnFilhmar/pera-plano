@@ -26,13 +26,25 @@ import { getActiveRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { recordParseResult } from "@/lib/diagnostics/parse_stats_repo";
 import { getSetting } from "@/lib/db/repos/app_settings_repo";
 import { getRawCapture, hasRawCapture, storeRawCapture } from "@/lib/db/repos/raw_notifications_repo";
-import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions_repo";
+import {
+  insertTransaction,
+  listTransactions,
+  supersedeMintedLeg,
+} from "@/lib/db/repos/transactions_repo";
 import { linkTransfer } from "@/lib/db/repos/transfer_links_repo";
 import { listMatchers } from "@/lib/db/repos/wallet_matchers_repo";
 import { listUserRules } from "@/lib/db/repos/user_rules_repo";
 import { listWallets } from "@/lib/db/repos/wallets_repo";
 import { normalizeEvent } from "@/lib/ingest/normalizer";
-import { parseCapture } from "@/lib/ingest/parser";
+import { raiseLoanMatchAfterCommit } from "@/lib/loans/loan_match_queue";
+import { parseCapture, searchableTexts } from "@/lib/ingest/parser";
+import {
+  applyOwedVerdict,
+  hasEverAskedWalletKind,
+  recordTraitEvidence,
+} from "@/lib/db/repos/wallet_traits_repo";
+import { classifyOwed, scoreBalanceMovement, scoreText } from "@/lib/wallets/classification";
+import type { OwedPrior, TraitEvidence } from "@/lib/wallets/classification";
 import { enqueue } from "@/lib/db/repos/review_queue_repo";
 import { routeCapture } from "@/lib/ingest/source_router";
 import { UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
@@ -41,7 +53,8 @@ import { addCaptureListener, drainPendingCaptures } from "@/modules/notification
 import type { NormalizedEvent } from "@/lib/ingest/normalizer";
 import type { ProviderRuleset, RulesetBundle } from "@/lib/ingest/ruleset_types";
 import type { RecentEvent } from "@/lib/ingest/dedupe_gate";
-import type { RawCapture, ReviewKind, Transaction, UserRule } from "@/types/domain";
+import type { MarkTransferRule } from "@/lib/ingest/transfer_detector";
+import type { Centavos, RawCapture, ReviewKind, Transaction, UserRule } from "@/types/domain";
 
 /**
  * Contract §5 — do not reshape. `"unreadable"` ADDED 2026-08-20 (see
@@ -57,7 +70,12 @@ export type PipelineOutcome =
   | {
       kind: "ignored";
       reason: "not_financial" | "duplicate" | "unknown-provider" | "paused" | "unreadable";
-    };
+    }
+  // The late-arriving bank notification for a leg the user already minted
+  // (Task 15): the placeholder row was overwritten in place rather than a
+  // second row being committed — `transactionId` names the row that was
+  // overwritten, not a new one.
+  | { kind: "superseded"; transactionId: string };
 
 /**
  * Ten-thousandths, matching `parser.ts` and `confidence_gate.ts`.
@@ -127,10 +145,24 @@ async function recentEventsFor(
       transactionId: row.id,
       providerKey,
       channel,
+      // The row's OWN wallet, not a re-resolution: the supersede branch matches
+      // this against `event.walletId`, and a minted placeholder can only be
+      // replaced by a notification from the account it was minted on.
+      walletId: row.walletId,
       amount: row.amount,
       direction: row.direction,
       referenceNo: row.referenceNo,
       occurredAt: row.occurredAt,
+      // `attachCounterpartLeg` (lib/transfers/transfer_service.ts) stamps every
+      // minted leg with this exact signature — `source: "manual"`, linked to
+      // its counterpart, no raw notification behind it — because it is the
+      // app's OWN placeholder, never something a provider sent. A manual row
+      // WITHOUT a link is an ordinary hand-typed entry (keeps today's
+      // duplicate-review behaviour); a linked row that already carries a
+      // `rawNotificationId` is a provider row that has already been
+      // superseded once and cannot be superseded again.
+      mintedTransferLeg:
+        row.source === "manual" && row.transferLinkId !== null && row.rawNotificationId === null,
     });
   }
 
@@ -301,13 +333,45 @@ async function runStages(
   const since = event.occurredAt - lookbackMs(bundle);
   const recentRows = await listTransactions({ from: since });
 
-  const verdicts = await runVerdicts(event, recentRows, bundle);
+  // HOISTED ABOVE `runVerdicts`, not read again for the categorizer below.
+  // `detectTransfer`'s `mark-transfer` rules and `categorize`'s learned rules
+  // are the same `UserRule` table — reading it twice per capture would double
+  // a query that runs on every single notification for no benefit, since
+  // nothing between the two reads can change it.
+  const rules = await listUserRules();
+
+  const verdicts = await runVerdicts(event, recentRows, bundle, rules);
   if (verdicts.dedupe.kind === "duplicate") {
     return { kind: "ignored", reason: "duplicate" };
   }
+  if (verdicts.dedupe.kind === "supersedes") {
+    // The transfer verdict is discarded here on purpose: the leg is already
+    // linked, and re-detecting would hunt a second counterpart for a pair that
+    // is already complete.
+    await supersedeMintedLeg(verdicts.dedupe.ofTransactionId, {
+      amount: event.amount,
+      occurredAt: event.occurredAt,
+      referenceNo: event.referenceNo ?? null,
+      balanceAfter: event.balanceAfter ?? null,
+      rawNotificationId: capture.id,
+      counterparty: event.counterparty ?? null,
+      confidence: event.confidence,
+    });
+
+    // THE SAME EVENT `commit` EMITS, for the same reason: a row the ledger is
+    // already showing just changed. The BALANCE is unchanged by construction
+    // (the amounts are equal — that is what made this a supersede), but
+    // `occurredAt`, `referenceNo`, `source` and `balanceAfter` all moved, so
+    // without this the ledger and detail screens keep rendering the placeholder
+    // — "you added this manually", no reference, the minted timestamp — until
+    // some unrelated write happens to invalidate them.
+    emitAppEvent("ledger:committed", { transactionId: verdicts.dedupe.ofTransactionId });
+
+    return { kind: "superseded", transactionId: verdicts.dedupe.ofTransactionId };
+  }
 
   const history = await listTransactions({});
-  const category = categorize(event, await listUserRules(), history);
+  const category = categorize(event, rules, history);
   const confidence = applyPenalty(event.confidence, category.penalty);
 
   const decision = decideRoute({
@@ -360,10 +424,20 @@ async function runStages(
             transferReason: verdicts.transfer.reason,
           }
         : {}),
+      // The one-sided card's wallet picker is prefilled from this, never
+      // decided by it — `counterpartWalletId` is a guess (a rule match or
+      // none) until the user confirms, which is why nothing upstream ever
+      // committed a second leg for it.
+      ...(verdicts.transfer.kind === "one_sided"
+        ? {
+            counterpartWalletId: verdicts.transfer.counterpartWalletId,
+            signal: verdicts.transfer.signal,
+          }
+        : {}),
     });
   }
 
-  return commit(capture, event, category.categoryId, confidence, verdicts, recentRows);
+  return commit(capture, event, category.categoryId, confidence, verdicts, recentRows, bundle);
 }
 
 type Verdicts = {
@@ -375,6 +449,7 @@ async function runVerdicts(
   event: NormalizedEvent,
   recentRows: Transaction[],
   bundle: RulesetBundle,
+  rules: UserRule[],
 ): Promise<Verdicts> {
   const recent = await recentEventsFor(recentRows, packageIndex(bundle));
   return {
@@ -383,19 +458,162 @@ async function runVerdicts(
     // either leg" needs the rows moving the SAME way as the event, and
     // filtering them out silently disables the guard whose whole job is
     // preventing a false link that hides real spend and real income at once.
-    transfer: detectTransfer(event, recentRows, bundle.tunables),
+    transfer: detectTransfer(event, recentRows, bundle.tunables, markTransferRules(rules)),
   };
+}
+
+/** The `mark-transfer` rules, in the shape the detector reads. */
+function markTransferRules(rules: UserRule[]): MarkTransferRule[] {
+  return rules
+    .filter((rule) => rule.isEnabled && rule.action.kind === "mark-transfer")
+    .map((rule) => ({
+      matcher: rule.matcher,
+      counterpartWalletId: (rule.action as { counterpartWalletId: string }).counterpartWalletId,
+      priority: rule.priority,
+    }));
 }
 
 /** Which card the Review Queue shows. `ReviewKind` has no "needs-details" member. */
 function reviewKindFor(verdicts: Verdicts): ReviewKind {
   if (verdicts.dedupe.kind === "possible-duplicate") return "possible-duplicate";
   if (verdicts.transfer.kind === "ambiguous-transfer") return "ambiguous-transfer";
+  if (verdicts.transfer.kind === "one_sided") return "one-sided-transfer";
   // Both `review_prefilled` and `review_needs_details` land here. `ReviewKind`
   // has no "needs-details" member, and adding one would duplicate information
   // the payload already carries: the card decides how much to prefill from the
   // confidence it was given, not from a second enum that could disagree with it.
   return "low-confidence";
+}
+
+/**
+ * What the ruleset believes about the provider that posted this capture, before
+ * the app has watched the wallet at all. `"unknown"` for a package no provider
+ * claims — the correct answer, and the one that contributes nothing.
+ */
+function owedPriorFor(bundle: RulesetBundle, packageName: string): OwedPrior {
+  const provider = bundle.providers.find((candidate) =>
+    candidate.packageNames.includes(packageName),
+  );
+  return provider?.traits?.owedBalance ?? "unknown";
+}
+
+/**
+ * Learns whether this wallet holds money or owes it, from the row that just
+ * committed (docs/superpowers/specs/2026-08-27-wallet-trait-inference-design.md §4).
+ *
+ * CANNOT THROW, BY CONSTRUCTION, for the same reason `raiseLoanMatchAfterCommit`
+ * cannot: the money already moved and the row is already durable. A scorer fault
+ * must never be mistaken for a failed commit.
+ *
+ * NO EXTRA READ FOR THE PREVIOUS BALANCE. Migration 002's `computed_balance` is
+ * "what the balance would have been without the provider's snap" — that is, the
+ * previous balance plus this row's signed effect — so subtracting the signed
+ * effect recovers the balance before this transaction. Reading the wallet after
+ * `insertTransaction` would return the SNAPPED balance and score every capture
+ * as ordinary, which is the one mistake that would make this whole feature
+ * quietly do nothing.
+ */
+async function learnWalletTrait(
+  capture: RawCapture,
+  row: Transaction,
+  bundle: RulesetBundle,
+): Promise<void> {
+  try {
+    const fromText = scoreText(searchableTexts(capture).join("\n"), bundle.traitSignals);
+    const signedEffect = row.direction === "out" ? -row.amount : row.amount;
+    const fromMovement = scoreBalanceMovement({
+      direction: row.direction,
+      amount: row.amount,
+      previousBalance: row.computedBalance === null ? null : row.computedBalance - signedEffect,
+      balanceAfter: row.balanceAfter,
+    });
+
+    const evidence = await recordTraitEvidence(row.walletId, {
+      owed: fromText.owed + fromMovement.owed,
+      held: fromText.held + fromMovement.held,
+    });
+
+    const verdict = classifyOwed(
+      evidence,
+      owedPriorFor(bundle, capture.packageName),
+      bundle.tunables.walletTraits,
+    );
+    await applyOwedVerdict(row.walletId, verdict);
+
+    if (!verdict.confident) {
+      await maybeAskWalletKind(row.walletId, evidence, bundle);
+    }
+  } catch (error) {
+    console.warn("pipeline: wallet-trait evidence failed and was skipped", error);
+  }
+}
+
+/** ₱1,000 — big enough to be worth a question on its own, whatever else the user has. */
+const WALLET_KIND_FLOOR_CENTAVOS = 100_000;
+/** ...or 5% of what the user has, whichever bar is LOWER. */
+const WALLET_KIND_SHARE = 0.05;
+/** ...but never below ₱100, whatever the share works out to. */
+const WALLET_KIND_MINIMUM_CENTAVOS = 10_000;
+
+/**
+ * Whether getting this wallet wrong would visibly misstate the user's money.
+ *
+ * THE LOWER OF THE FIRST TWO BARS APPLIES, which is the opposite of the obvious
+ * reading and the correct one: ₱100 wrong out of a ₱2,000 total is the same lie
+ * as ₱5,000 wrong out of ₱100,000. A flat floor alone would never ask a user
+ * whose whole balance is small; a share alone would never ask about a small
+ * wallet sitting beside a large one.
+ *
+ * AND THEN AN ABSOLUTE MINIMUM UNDER BOTH, because the share taken alone is
+ * absurd at the bottom: a user whose only wallet holds ₱1 has 100% of their
+ * money in it, and interrupting them to ask whether that peso is a debt is a
+ * question that cannot pay for the tap it costs. Below ₱100 the app keeps its
+ * assumption and says nothing.
+ */
+function isMaterialToAsk(balance: Centavos, activeTotal: Centavos): boolean {
+  const share = Math.round(activeTotal * WALLET_KIND_SHARE);
+  const scaled = share === 0 ? WALLET_KIND_FLOOR_CENTAVOS : Math.min(WALLET_KIND_FLOOR_CENTAVOS, share);
+  return balance >= Math.max(WALLET_KIND_MINIMUM_CENTAVOS, scaled);
+}
+
+/**
+ * Asks the user, but only when asking earns its interruption.
+ *
+ * THREE CONDITIONS, ALL REQUIRED. We must have LOOKED (the sample floor — an
+ * unstudied wallet is not an unclear one, it is a new one). The money must
+ * MATTER. And we must never have asked before — `hasEverAskedWalletKind` counts
+ * resolved items too, because dismissing the question is itself an answer and
+ * re-raising it turns a question into nagging.
+ *
+ * Everything else stays silently assumed-held. That is the deal this feature
+ * makes: onboarding asks nothing, and the app only comes back to the user for
+ * the one answer it cannot work out and cannot afford to guess.
+ */
+async function maybeAskWalletKind(
+  walletId: string,
+  evidence: TraitEvidence,
+  bundle: RulesetBundle,
+): Promise<void> {
+  if (evidence.sampleCount < bundle.tunables.walletTraits.owedSampleFloor) return;
+  if (await hasEverAskedWalletKind(walletId)) return;
+
+  const wallets = await listWallets();
+  const wallet = wallets.find((candidate) => candidate.id === walletId);
+  if (wallet === undefined) return;
+
+  const activeTotal = wallets
+    .filter((candidate) => !candidate.owedBalance)
+    .reduce((total, candidate) => total + candidate.balance, 0);
+  if (!isMaterialToAsk(wallet.balance, activeTotal)) return;
+
+  await enqueue({
+    kind: "wallet-kind-unclear",
+    payload: { walletId: wallet.id, walletName: wallet.name, balance: wallet.balance },
+    // NO `rawNotificationId`. The card is about a wallet, not about the capture
+    // that happened to be the third one scored — pointing at that notification
+    // would tell the user this one message raised the question, which is both
+    // untrue and unanswerable.
+  });
 }
 
 async function commit(
@@ -405,6 +623,7 @@ async function commit(
   confidence: number,
   verdicts: Verdicts,
   recentRows: Transaction[],
+  bundle: RulesetBundle,
 ): Promise<PipelineOutcome> {
   const row = await insertTransaction({
     // `auto_commit` requires a resolved wallet, so this cannot be null here —
@@ -433,6 +652,30 @@ async function commit(
   if (verdicts.transfer.kind === "auto_link") {
     await linkAutoDetected(row, verdicts.transfer.counterpartTransactionId, recentRows, confidence);
   }
+
+  // LOANS SPEC RULE 8, STEP 1: "After a Transaction commits to the ledger, the
+  // matcher scores it against open loans." Here and not inside
+  // `insertTransaction`, because the repository is also the write path for
+  // things that are already loan payments (`recordManualPayment`) and for both
+  // legs of a goal transfer, neither of which is a commit anybody should be
+  // asked about — and because those callers run inside a unit of work, where
+  // enqueueing a review item would join a transaction that may still roll back.
+  //
+  // AWAITED, BUT INCAPABLE OF THROWING (see `raiseLoanMatchAfterCommit`). The
+  // await is so the card exists by the time this function reports "committed" —
+  // `__awaitIngestIdle` is what the drained-batch tests wait on, and a
+  // fire-and-forget promise here would make the queue's contents a race. The
+  // swallow is so a matcher fault can never be mistaken for a failed commit:
+  // `processStored` and `runGuarded` both catch silently, and the money moved
+  // regardless of what this module thinks about it.
+  await raiseLoanMatchAfterCommit(row);
+
+  // BEFORE the event below, not after: a verdict that flips `owed_balance`
+  // changes whether this wallet counts toward the Wallets-tab total, and the
+  // commit's own invalidation is what puts the corrected figure on screen. Run
+  // afterwards, the flip would sit unread until some other write happened to
+  // refresh the wallet queries.
+  await learnWalletTrait(capture, row, bundle);
 
   // Rule 7. After the row exists, carrying the id that was actually written —
   // M2's limit engine recomputes off this.

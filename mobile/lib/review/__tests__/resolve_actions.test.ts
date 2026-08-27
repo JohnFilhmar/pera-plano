@@ -37,7 +37,13 @@ jest.mock("@/lib/db/repos/review_queue_repo", () => {
 import { closeDatabase } from "@/lib/db/database";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { storeRawCapture } from "@/lib/db/repos/raw_notifications_repo";
-import { countOpen, enqueue, listOpen, resolve } from "@/lib/db/repos/review_queue_repo";
+import {
+  countOpen,
+  enqueue,
+  getReviewItem,
+  listOpen,
+  resolve,
+} from "@/lib/db/repos/review_queue_repo";
 import {
   getTransaction,
   insertTransaction,
@@ -53,6 +59,7 @@ import type { RawCapture, ReviewKind, ReviewQueueItem } from "@/types/domain";
 import {
   confirmAsTransfer,
   confirmItem,
+  confirmOneSidedTransfer,
   correctItem,
   ignoreProvider,
   mergeDuplicate,
@@ -112,8 +119,8 @@ beforeEach(async () => {
   jest.clearAllMocks();
   await freshDb();
   await seedDefaultCategories();
-  gcashId = (await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 })).id;
-  bpiId = (await createWallet({ name: "BPI", type: "bank", openingBalance: 500000 })).id;
+  gcashId = (await createWallet({ name: "GCash", openingBalance: 100000 })).id;
+  bpiId = (await createWallet({ name: "BPI", openingBalance: 500000 })).id;
 });
 
 afterEach(async () => {
@@ -526,6 +533,110 @@ describe("confirmAsTransfer commits the queued leg and pairs it in one step", ()
     expect(
       await sumSpend({ from: POSTED_AT - 1000, to: POSTED_AT + 10 * 60 * 1000 }),
     ).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// confirmOneSidedTransfer — "It's a transfer" for a leg that never got a
+// counterpart notification
+// ---------------------------------------------------------------------------
+
+describe("confirmOneSidedTransfer mints the counterpart and remembers the pair", () => {
+  // Every item here carries a stored capture so `occurredAtFor` reads
+  // `POSTED_AT` (fixed, before `NOW`) rather than falling back to the item's
+  // own `createdAt` — a REAL `Date.now()` read at enqueue time, which
+  // `attachCounterpartLeg`'s future-dated guard would reject against the
+  // fixed `NOW` this suite pins everything else to.
+  test("confirming mints the counterpart, links the pair and teaches a rule", async () => {
+    const capture = await storeCapture("raw-transfer-1");
+    const item = await enqueue({
+      kind: "one-sided-transfer",
+      rawNotificationId: capture.id,
+      payload: {
+        amount: 100_000,
+        direction: "in",
+        walletId: gcashId,
+        counterpartWalletId: null,
+        signal: "text",
+        providerKey: "gcash",
+        merchant: "BPI",
+        confidence: 0.9,
+      },
+    });
+
+    const committedId = await confirmOneSidedTransfer(item.id, bpiId, 0, NOW);
+
+    const rows = await listTransactions({});
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.transferLinkId !== null)).toBe(true);
+    expect(rows.find((row) => row.id === committedId)?.walletId).toBe(gcashId);
+
+    const [rule] = await listUserRules();
+    expect(rule?.action).toEqual({ kind: "mark-transfer", counterpartWalletId: bpiId });
+
+    expect((await getReviewItem(item.id))?.resolvedAt).not.toBeNull();
+  });
+
+  test("a fee lands on the source wallet as its own expense", async () => {
+    const capture = await storeCapture("raw-transfer-2");
+    const item = await enqueue({
+      kind: "one-sided-transfer",
+      rawNotificationId: capture.id,
+      payload: {
+        amount: 98_500,
+        direction: "in",
+        walletId: gcashId,
+        counterpartWalletId: bpiId,
+        signal: "rule",
+        providerKey: "gcash",
+        confidence: 0.9,
+      },
+    });
+
+    await confirmOneSidedTransfer(item.id, bpiId, 1_500, NOW);
+
+    const rows = await listTransactions({});
+    const fee = rows.find((row) => row.categoryId === "cat_fees_charges");
+    expect(fee?.walletId).toBe(bpiId);
+    expect(fee?.amount).toBe(1_500);
+    expect(fee?.transferLinkId).toBeNull();
+  });
+
+  test("an already-resolved item is a no-op", async () => {
+    const capture = await storeCapture("raw-transfer-3");
+    const item = await enqueue({
+      kind: "one-sided-transfer",
+      rawNotificationId: capture.id,
+      payload: { amount: 100_000, direction: "in", walletId: gcashId, confidence: 0.9 },
+    });
+    await confirmOneSidedTransfer(item.id, bpiId, 0, NOW);
+
+    expect(await confirmOneSidedTransfer(item.id, bpiId, 0, NOW)).toBeNull();
+    expect(await listTransactions({})).toHaveLength(2);
+  });
+
+  test("writes no rule when the item names neither a provider nor a merchant", async () => {
+    // No `rawNotificationId` and no `packageName`/`merchant` in the payload —
+    // `providerKeyFor` and the merchant read both come back `null`, so the
+    // matcher `teachFrom` would build has nothing in it. `Date.now()` stands in
+    // for `NOW` here only because this item has no stored capture to pin
+    // `occurredAtFor` to `POSTED_AT` (same reason the other three tests in this
+    // block add one) — `enqueue` already ran, so it is safely in the past.
+    const item = await enqueue({
+      kind: "one-sided-transfer",
+      payload: { amount: 100_000, direction: "in", walletId: gcashId, confidence: 0.9 },
+    });
+
+    const committedId = await confirmOneSidedTransfer(item.id, bpiId, 0, Date.now());
+
+    expect(committedId).not.toBeNull();
+    const rows = await listTransactions({});
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.transferLinkId !== null)).toBe(true);
+    expect((await getReviewItem(item.id))?.resolvedAt).not.toBeNull();
+    // A matcher that identifies nothing matches EVERY future one-sided event on
+    // every provider — a catch-all `mark-transfer` rule, not a taught one.
+    expect(await listUserRules()).toEqual([]);
   });
 });
 

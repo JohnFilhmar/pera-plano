@@ -79,64 +79,71 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { ProviderBadge } from "@/components/ui/provider_badge";
-import { providerLabel } from "@/constants/providers";
 import { useCreateWallet } from "@/hooks/mutations/use_create_wallet";
 import { useSetWalletMatchers } from "@/hooks/mutations/use_set_wallet_matchers";
 import { useRuleset } from "@/hooks/queries/use_ruleset";
 import { useWallets } from "@/hooks/queries/use_wallets";
 import { canCreateWallet } from "@/lib/entitlements";
-import { buildProviderChoices } from "@/lib/ingest/provider_catalogue";
+import { applyAppLabels, buildProviderChoices } from "@/lib/ingest/provider_catalogue";
 import { centavosFrom } from "@/lib/money/peso_input";
 import { matchersForProvider } from "@/lib/wallets/matchers";
-import { listObservedPackages } from "@/modules/notification_listener";
+import { getAppLabels, listObservedPackages } from "@/modules/notification_listener";
 
 import type { ProviderChoice } from "@/lib/ingest/provider_catalogue";
 import type { ProviderRuleset } from "@/lib/ingest/ruleset_types";
 import type { ObservedPackage } from "@/modules/notification_listener";
-import type { NewWalletMatcher, WalletType } from "@/types/domain";
+import type { NewWalletMatcher } from "@/types/domain";
 
 const CASH_KEY = "cash";
 
-/** A sensible starting `WalletType` per known provider — editable inline
- * (rule 2), so a wrong guess here costs one tap, not a support ticket. */
-const WALLET_TYPE_BY_PROVIDER_KEY: Record<string, WalletType> = {
-  gcash: "e-wallet",
-  maya: "e-wallet",
-  shopeepay: "e-wallet",
-  grabpay: "e-wallet",
-  seabank: "savings",
-  gotyme: "savings",
-  cimb: "savings",
-  bpi: "bank",
-  bdo: "bank",
-  unionbank: "bank",
-  metrobank: "bank",
-  landbank: "bank",
-  sms_relay: "bank",
-};
-
+/**
+ * The name to pre-fill a proposed wallet with.
+ *
+ * `choice.displayName` IS ALREADY THE RESOLVED HUMAN NAME — the app's real
+ * label off this phone where one was found, the curated brand name otherwise,
+ * the package id as a last resort (see `resolveDisplayName` in
+ * lib/ingest/provider_catalogue.ts). This used to wrap it in `providerLabel`
+ * because `displayName` was then the raw provider KEY; re-wrapping it now
+ * would ask `PROVIDER_LABELS` to look up "Maribank" and get "Maribank" back.
+ *
+ * The proposed name is editable in place on this screen, which is what makes
+ * preferring the device's label safe even where it is blunter than the
+ * curated one ("Messages" rather than "Bank SMS"): the user renames it in the
+ * field it is already sitting in. The reverse error — quietly naming their
+ * wallet after a bank that rebranded — is not something they can spot, let
+ * alone correct.
+ */
 function defaultNameFor(choice: ProviderChoice): string {
-  return providerLabel(choice.displayName);
+  return choice.displayName;
+}
+
+/**
+ * The identity two choices are "the same provider" by.
+ *
+ * `providerKey` where the catalogue claims one, and the PACKAGE NAME where it
+ * does not. Falling back to the package is what keeps two unrecognised
+ * observed apps from collapsing into each other: they both have a `null` key,
+ * and deduping on `null` would silently drop every unrecognised app but the
+ * first.
+ */
+function providerIdentity(choice: ProviderChoice): string {
+  return choice.providerKey ?? choice.packageName;
 }
 
 /** Deduplicated by provider, keeping the first package seen for each — the
  * "Also have one of these?" row offers one chip per PROVIDER, never one per
  * Android package `buildProviderChoices` happens to have listed separately
- * (task-3-brief rule 1). `choice.displayName` is the provider key here (see
- * `ProviderChoice`'s own doc), so it is the right thing to dedupe on. */
+ * (task-3-brief rule 1). */
 function dedupeByProvider(choices: ProviderChoice[]): ProviderChoice[] {
   const seen = new Set<string>();
   const deduped: ProviderChoice[] = [];
   for (const choice of choices) {
-    if (seen.has(choice.displayName)) continue;
-    seen.add(choice.displayName);
+    const identity = providerIdentity(choice);
+    if (seen.has(identity)) continue;
+    seen.add(identity);
     deduped.push(choice);
   }
   return deduped;
-}
-
-function defaultTypeFor(choice: ProviderChoice): WalletType {
-  return WALLET_TYPE_BY_PROVIDER_KEY[choice.displayName] ?? "bank";
 }
 
 /**
@@ -157,7 +164,7 @@ function matchersForChoice(
   ruleset: { providers: readonly ProviderRuleset[] } | null | undefined,
 ): NewWalletMatcher[] {
   const provider = ruleset?.providers.find(
-    (candidate) => candidate.providerKey === choice.displayName,
+    (candidate) => choice.providerKey !== null && candidate.providerKey === choice.providerKey,
   );
   return provider ? matchersForProvider(provider, undefined) : [{ packageName: choice.packageName }];
 }
@@ -166,16 +173,16 @@ function proposalFor(choice: ProviderChoice, included: boolean): WalletProposal 
   return {
     key: choice.packageName,
     name: defaultNameFor(choice),
-    type: defaultTypeFor(choice),
     packageName: choice.packageName,
-    // `choice.displayName` IS the ruleset's providerKey here (e.g. "gcash"):
-    // every choice this function ever runs on has `suggested: true`
-    // (dedupeByProvider only ever receives seen-and-suggested or
-    // suggested-only choices — see the two call sites below), and
-    // `buildProviderChoices` only sets `suggested: true` when it resolved a
-    // real provider, in which case `displayName` is that provider's key, not
-    // a raw package id. `ProviderBadge` needs exactly this, not `packageName`.
-    providerKey: choice.displayName,
+    // Non-null in practice: every choice this function runs on has
+    // `suggested: true` (dedupeByProvider only ever receives
+    // seen-and-suggested or suggested-only choices — see the two call sites
+    // below), and `buildProviderChoices` only sets `suggested: true` when it
+    // resolved a real provider. Carried as `string | null` anyway because
+    // that is what `ProviderChoice` promises and what `WalletProposal`
+    // already accepts (`CASH_PROPOSAL` is `null`), rather than asserting the
+    // invariant away with a `??` that would smuggle a package id in here.
+    providerKey: choice.providerKey,
     included,
     // Task 4 rule 1: optional, blank by default — the user opts in by typing.
     openingBalanceText: "",
@@ -186,7 +193,6 @@ function proposalFor(choice: ProviderChoice, included: boolean): WalletProposal 
 const CASH_PROPOSAL: WalletProposal = {
   key: CASH_KEY,
   name: "Cash",
-  type: "cash",
   packageName: null,
   providerKey: null,
   included: true,
@@ -201,6 +207,28 @@ async function loadObserved(): Promise<ObservedPackage[]> {
     return await listObservedPackages();
   } catch {
     return [];
+  }
+}
+
+/**
+ * The real app names for `packageNames`, or nothing — the same degrade-to-`{}`
+ * contract app/(onboarding)/providers.tsx uses, and deliberately a second
+ * small copy rather than a shared helper: this screen and that one already
+ * keep their own `loadObserved` for the same reason (that file's header on why
+ * the two screens re-derive rather than share state).
+ *
+ * A failure here costs the proposals their real names, not their existence:
+ * every choice keeps whatever `buildProviderChoices` already called it.
+ */
+async function loadAppLabels(packageNames: string[]): Promise<Record<string, string>> {
+  try {
+    // `?? {}` for the same reason providers.tsx has it: a nullish map makes
+    // `applyAppLabels` throw inside the init effect, which leaves this screen
+    // on its loading skeleton permanently — no error, no proposals, no way
+    // forward. See that file's copy of this function.
+    return (await getAppLabels(packageNames)) ?? {};
+  } catch {
+    return {};
   }
 }
 
@@ -267,54 +295,64 @@ export default function WalletsScreen({
     if (observed === null || ruleset === undefined) return;
     initializedRef.current = true;
 
-    const choices = ruleset ? buildProviderChoices(observed, ruleset) : [];
-    // Review fix (2026-08-18): deduped by provider too, not just the
-    // quick-add row — two packages of the same OBSERVED provider (both
-    // Google Messages and Samsung Messages posting sms_relay traffic) used to
-    // propose two identically-named wallets, splitting one provider's
-    // notifications across two Wallet rows by default.
-    //
-    // Bug fix (task-2-brief): `choice.seen` alone is not "this is a bank the
-    // user uses" — `buildProviderChoices` emits a choice for every OBSERVED
-    // package regardless of whether the ruleset recognises it, precisely so
-    // the provider PICKER can still offer an unrecognised package as a
-    // tickable, raw-named entry. Left unfiltered here, every app that had
-    // ever posted a notification (com.facebook.orca, com.termux, android,
-    // ...) became a pre-checked, junk-named Wallet proposal. Only a
-    // RECOGNISED observed provider (`suggested: true`) is a real proposal;
-    // `lib/ingest/provider_catalogue.ts` itself is untouched — this is a
-    // filter at the call site, not a change to what it emits.
-    const observedChoices = dedupeByProvider(
-      choices.filter((choice) => choice.seen && choice.suggested),
-    );
-    const suggestedOnly = choices.filter((choice) => !choice.seen);
+    // ASYNC NOW, BECAUSE THE NAMES COME OFF THE DEVICE. The proposed wallet
+    // names have to agree with the tiles the user just tapped on the provider
+    // step — proposing "SeaBank" one screen after they picked a tile reading
+    // "Maribank" makes them doubt they picked the right app. Guarded by
+    // `initializedRef` above exactly as before, so the await cannot let a
+    // second run in and wipe the user's edits.
+    let cancelled = false;
+    (async () => {
+      const catalogue = ruleset ? buildProviderChoices(observed, ruleset) : [];
+      const labels = await loadAppLabels(catalogue.map((choice) => choice.packageName));
+      if (cancelled) return;
+      const choices = applyAppLabels(catalogue, labels);
+      // Review fix (2026-08-18): deduped by provider too, not just the
+      // quick-add row — two packages of the same OBSERVED provider (both
+      // Google Messages and Samsung Messages posting sms_relay traffic) used to
+      // propose two identically-named wallets, splitting one provider's
+      // notifications across two Wallet rows by default.
+      //
+      // Bug fix (task-2-brief): `choice.seen` alone is not "this is a bank the
+      // user uses" — `buildProviderChoices` emits a choice for every OBSERVED
+      // package regardless of whether the ruleset recognises it, precisely so
+      // the provider PICKER can still offer an unrecognised package as a
+      // tickable, raw-named entry. Left unfiltered here, every app that had
+      // ever posted a notification (com.facebook.orca, com.termux, android,
+      // ...) became a pre-checked, junk-named Wallet proposal. Only a
+      // RECOGNISED observed provider (`suggested: true`) is a real proposal;
+      // `lib/ingest/provider_catalogue.ts` itself is untouched — this is a
+      // filter at the call site, not a change to what it emits.
+      const observedChoices = dedupeByProvider(
+        choices.filter((choice) => choice.seen && choice.suggested),
+      );
+      const suggestedOnly = choices.filter((choice) => !choice.seen);
 
-    setProposals([...observedChoices.map((choice) => proposalFor(choice, true)), CASH_PROPOSAL]);
-    // Every OBSERVED proposal now carries its provider's FULL package list
-    // too, the same as a quick-added one — seeing sms_relay via ONE package
-    // must not leave the created wallet matching only that one.
-    setPendingMatchers((current) => {
-      const next = { ...current };
-      for (const choice of observedChoices) {
-        next[choice.packageName] = matchersForChoice(choice, ruleset);
-      }
-      return next;
-    });
-    // task-3-brief rule 1: one quick-add chip per PROVIDER, not one per
-    // package `sms_relay` (or any future multi-package provider) happens to
-    // list separately.
-    setAddable(dedupeByProvider(suggestedOnly));
+      setProposals([...observedChoices.map((choice) => proposalFor(choice, true)), CASH_PROPOSAL]);
+      // Every OBSERVED proposal now carries its provider's FULL package list
+      // too, the same as a quick-added one — seeing sms_relay via ONE package
+      // must not leave the created wallet matching only that one.
+      setPendingMatchers((current) => {
+        const next = { ...current };
+        for (const choice of observedChoices) {
+          next[choice.packageName] = matchersForChoice(choice, ruleset);
+        }
+        return next;
+      });
+      // task-3-brief rule 1: one quick-add chip per PROVIDER, not one per
+      // package `sms_relay` (or any future multi-package provider) happens to
+      // list separately.
+      setAddable(dedupeByProvider(suggestedOnly));
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [observed, ruleset]);
 
   function rename(key: string, name: string): void {
     setProposals((current) =>
       current ? current.map((p) => (p.key === key ? { ...p, name } : p)) : current,
-    );
-  }
-
-  function changeType(key: string, type: WalletType): void {
-    setProposals((current) =>
-      current ? current.map((p) => (p.key === key ? { ...p, type } : p)) : current,
     );
   }
 
@@ -345,7 +383,9 @@ export default function WalletsScreen({
     }));
     // Dedupe is by provider (rule 1), so every addable entry sharing this
     // provider's label leaves the row together — not just the one tapped.
-    setAddable((current) => current.filter((c) => c.displayName !== choice.displayName));
+    setAddable((current) =>
+      current.filter((c) => providerIdentity(c) !== providerIdentity(choice)),
+    );
   }
 
   async function submit(): Promise<void> {
@@ -376,7 +416,6 @@ export default function WalletsScreen({
 
         const wallet = await createWallet.mutateAsync({
           name: proposal.name.trim(),
-          type: proposal.type,
           // Task 4 rule 1: a blank field is ₱0.00 via centavosFrom, written
           // the same way app/wallet/new.tsx already writes a manually created
           // wallet's opening balance — an anchor on the brand-new row, not a
@@ -487,7 +526,6 @@ export default function WalletsScreen({
         <QuickWalletList
           proposals={proposals}
           onRename={rename}
-          onChangeType={changeType}
           onToggleIncluded={toggleIncluded}
           onChangeOpeningBalance={changeOpeningBalance}
         />
@@ -510,7 +548,11 @@ export default function WalletsScreen({
                 accessibilityLabel={`Add ${defaultNameFor(choice)}`}
                 className="min-h-[44px] flex-row items-center gap-2 rounded-full border-2 border-dashed border-line bg-surface px-3 py-2 dark:border-line-dark dark:bg-surface-dark"
               >
-                <ProviderBadge providerKey={choice.displayName} size={16} />
+                {/* The routing key where there is one, else the printed name —
+                    never `packageName`, which would letter the square from a
+                    package id ("p" for `ph.seabank.seabank`). Same rule as
+                    provider_picker.tsx's tile. */}
+                <ProviderBadge providerKey={choice.providerKey ?? choice.displayName} size={16} />
                 <Text className="text-row font-semibold text-brand dark:text-brand-dark">
                   + {defaultNameFor(choice)}
                 </Text>

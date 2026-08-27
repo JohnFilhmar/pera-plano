@@ -10,6 +10,11 @@
 jest.mock("@/modules/notification_listener", () => ({
   clearCaptureBuffer: jest.fn().mockResolvedValue(undefined),
 }));
+// Problem-report attachments are files, not rows — mocked so the wipe's own
+// unlink step is assertable rather than silently inert.
+jest.mock("@/lib/support/attachments", () => ({
+  deleteSupportAttachmentFiles: jest.fn().mockResolvedValue(undefined),
+}));
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
@@ -17,11 +22,13 @@ import { closeDatabase } from "@/lib/db/database";
 import { getSetting, setSetting } from "@/lib/db/repos/app_settings_repo";
 import { freshDb } from "@/test_support/db";
 import { clearCaptureBuffer } from "@/modules/notification_listener";
+import { deleteSupportAttachmentFiles } from "@/lib/support/attachments";
 import { THEME_STORAGE_KEY } from "@/contexts/theme_context";
 import { listWipeableTables, wipeAllData } from "../data_wipe";
 import type { SQLiteDatabase } from "@/lib/db/database";
 
 const mockClearCaptureBuffer = clearCaptureBuffer as jest.Mock;
+const mockDeleteAttachmentFiles = deleteSupportAttachmentFiles as jest.Mock;
 
 const NOW = 1_786_000_000_000;
 
@@ -42,13 +49,13 @@ let db: SQLiteDatabase;
  */
 async function seedOneRowPerTable(): Promise<void> {
   await db.runAsync(
-    `INSERT INTO wallets (id, name, type, balance, currency, is_archived, created_at, updated_at)
-     VALUES ('w1', 'GCash', 'e-wallet', 10000, 'PHP', 0, ?, ?)`,
+    `INSERT INTO wallets (id, name, balance, currency, is_archived, created_at, updated_at)
+     VALUES ('w1', 'GCash', 10000, 'PHP', 0, ?, ?)`,
     [NOW, NOW],
   );
   await db.runAsync(
-    `INSERT INTO wallets (id, name, type, balance, currency, is_archived, created_at, updated_at)
-     VALUES ('w2', 'Goal jar', 'cash', 0, 'PHP', 0, ?, ?)`,
+    `INSERT INTO wallets (id, name, balance, currency, is_archived, created_at, updated_at)
+     VALUES ('w2', 'Goal jar', 0, 'PHP', 0, ?, ?)`,
     [NOW, NOW],
   );
   await db.runAsync(
@@ -169,6 +176,35 @@ async function seedOneRowPerTable(): Promise<void> {
      VALUES ('ps1', 'gcash', ?, 1, 0, ?)`,
     [NOW, NOW],
   );
+  // migration 013 — the running scores behind the held/owed verdict. NOT
+  // content-free like parse_stats above: these numbers are derived from what
+  // the user's own notifications said, so a wipe that left them behind would
+  // leave the app still holding a conclusion about accounts it was told to
+  // forget.
+  await db.runAsync(
+    `INSERT INTO wallet_trait_evidence (wallet_id, owed_score, held_score, sample_count, updated_at)
+     VALUES ('w1', 250, 0, 1, ?)`,
+    [NOW],
+  );
+  // migration 015 — the offline problem-report outbox. THE ONE TABLE IN THIS
+  // FIXTURE THAT HOLDS TEXT THE USER TYPED THEMSELVES, which is exactly why a
+  // wipe has to reach it: "erase everything" cannot leave a queue of reports
+  // (and their attachment paths) behind, least of all one that a later
+  // foreground would then send.
+  await db.runAsync(
+    `INSERT INTO support_reports
+       (id, title, description, topic, status, attempt_count, next_attempt_at,
+        last_error, created_at, updated_at, sent_at, ticket_ref)
+     VALUES ('rep1', 'Transfers show up twice', 'Both legs landed as spending.',
+             'wrong_amount_or_wallet', 'queued', 0, ?, NULL, ?, ?, NULL, NULL)`,
+    [NOW, NOW, NOW],
+  );
+  await db.runAsync(
+    `INSERT INTO support_report_attachments
+       (id, report_id, file_uri, mime_type, byte_size, created_at)
+     VALUES ('att1', 'rep1', 'file:///docs/support_attachments/a.png', 'image/png', 1024, ?)`,
+    [NOW],
+  );
   await setSetting("capture_enabled", false);
 }
 
@@ -209,6 +245,9 @@ test("listWipeableTables enumerates every data table this test seeds — nothing
     "review_queue_items",
     "parser_rulesets",
     "parse_stats",
+    "wallet_trait_evidence",
+    "support_reports",
+    "support_report_attachments",
   ];
 
   for (const table of seeded) {
@@ -253,6 +292,20 @@ test("wipeAllData drains and discards the native capture buffer", async () => {
   await wipeAllData();
 
   expect(mockClearCaptureBuffer).toHaveBeenCalledTimes(1);
+});
+
+// Emptying `support_report_attachments` deletes the rows that NAME the
+// screenshots, not the screenshots. Without this step a wipe would leave the
+// user's own attached images on disk while telling them everything was erased
+// — the same shape of gap the capture buffer above once had.
+test("wipeAllData unlinks the problem-report attachment files, not just their rows", async () => {
+  await seedOneRowPerTable();
+
+  await wipeAllData();
+
+  expect(mockDeleteAttachmentFiles).toHaveBeenCalledWith([
+    "file:///docs/support_attachments/a.png",
+  ]);
 });
 
 test("wipeAllData resets the onboarding flag to false, so the app returns to the onboarding entry state", async () => {

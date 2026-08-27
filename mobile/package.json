@@ -29,6 +29,7 @@
     "expo-dev-client": "~6.0.21",
     "expo-file-system": "~19.0.23",
     "expo-font": "~14.0.12",
+    "expo-image-picker": "~17.0.11",
     "expo-linking": "~8.0.12",
     "expo-local-authentication": "~17.0.8",
     "expo-notifications": "~0.32.17",
@@ -92,6 +93,7 @@
       "\\.css$": "<rootDir>/test_support/style_mock.ts",
       "^@/(.*)$": "<rootDir>/$1",
       "^@op-engineering/op-sqlite$": "<rootDir>/test_support/sqlite_mock.ts",
+      "^expo-image-picker$": "<rootDir>/test_support/image_picker_mock.ts",
       "^lucide-react-native$": "<rootDir>/node_modules/lucide-react-native/dist/cjs/lucide-react-native.js"
     },
     "transformIgnorePatterns": [

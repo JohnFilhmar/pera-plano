@@ -55,7 +55,9 @@ import type { Transaction, Wallet } from "@/types/domain";
 import { useBalanceDrift, useBalanceDrifts } from "../queries/use_balance_drift";
 import { useCategories } from "../queries/use_categories";
 import { useReviewCount, REVIEW_COUNT_POLL_MS } from "../queries/use_review_count";
+import { useReviewKindCounts } from "../queries/use_review_kind_counts";
 import { useReviewQueue } from "../queries/use_review_queue";
+import { useReviewQueuePage } from "../queries/use_review_queue_page";
 import { useRuleset } from "../queries/use_ruleset";
 import { useRawCapture, useRawCaptureExpiry } from "../queries/use_raw_capture";
 import { useTransaction } from "../queries/use_transaction";
@@ -143,8 +145,8 @@ beforeEach(async () => {
   await freshDb();
   await seedDefaultCategories();
   categoryId = UNCATEGORIZED_ID;
-  walletA = await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 });
-  walletB = await createWallet({ name: "Maya", type: "e-wallet", openingBalance: 50000 });
+  walletA = await createWallet({ name: "GCash", openingBalance: 100000 });
+  walletB = await createWallet({ name: "Maya", openingBalance: 50000 });
   txA = await insertTransaction({
     walletId: walletA.id,
     categoryId,
@@ -284,7 +286,7 @@ describe("useWallets(includeArchived) and queryKeys.wallets.list(includeArchived
   let archived: Wallet;
 
   beforeEach(async () => {
-    archived = await createWallet({ name: "Closed BDO", type: "bank" });
+    archived = await createWallet({ name: "Closed BDO" });
     await archiveWallet(archived.id);
   });
 
@@ -354,7 +356,7 @@ describe("useWallets(includeArchived) and queryKeys.wallets.list(includeArchived
 
     const { result } = renderHook(() => useCreateWallet(), { wrapper: wrapperFor(client) });
     await act(async () => {
-      result.current.mutate({ name: "Cash on hand", type: "cash" });
+      result.current.mutate({ name: "Cash on hand" });
     });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
@@ -546,6 +548,8 @@ const QUERY_HOOK_NAMES = [
   "useTransaction",
   "useCategories",
   "useReviewQueue",
+  "useReviewQueuePage",
+  "useReviewKindCounts",
   "useReviewCount",
 ] as const;
 
@@ -572,6 +576,18 @@ function queryHookCases(): Record<QueryHookName, { key: readonly unknown[]; rend
     },
     useCategories: { key: queryKeys.categories.list(), render: () => useCategories() },
     useReviewQueue: { key: queryKeys.reviewQueue.open(), render: () => useReviewQueue() },
+    // The queue screen's own two reads. They back chips and cards on a screen
+    // the user is already looking at, and every change to their numbers comes
+    // from a triage action that invalidates `reviewQueue.all` on success — so
+    // neither may ever grow a timer of its own.
+    useReviewQueuePage: {
+      key: queryKeys.reviewQueue.page(null),
+      render: () => useReviewQueuePage(),
+    },
+    useReviewKindCounts: {
+      key: queryKeys.reviewQueue.kindCounts(),
+      render: () => useReviewKindCounts(),
+    },
     useReviewCount: { key: queryKeys.reviewQueue.count(), render: () => useReviewCount() },
   };
 }
@@ -609,7 +625,7 @@ describe("useCreateWallet", () => {
 
     const { result } = renderHook(() => useCreateWallet(), { wrapper: wrapperFor(client) });
     await act(async () => {
-      result.current.mutate({ name: "Cash on hand", type: "cash" });
+      result.current.mutate({ name: "Cash on hand" });
     });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
@@ -959,7 +975,7 @@ function mutationCases(): Record<MutationHookName, () => Promise<void>> {
   }
 
   return {
-    useCreateWallet: () => fire(useCreateWallet, { name: "Cash on hand", type: "cash" as const }),
+    useCreateWallet: () => fire(useCreateWallet, { name: "Cash on hand" as const }),
     useUpdateWallet: () => fire(useUpdateWallet, { id: walletA.id, patch: { name: "Renamed" } }),
     useArchiveWallet: () => fire(useArchiveWallet, { id: walletB.id }),
     useDismissDrift: async () => {

@@ -5,7 +5,7 @@ import { getDatabase } from "@/lib/db/database";
 import { rowToTransaction, transactionToRow, type TransactionRow } from "@/lib/db/mappers";
 import { historyWindowDays } from "@/lib/entitlements";
 import { newId } from "@/lib/ids";
-import type { Centavos, NewTransaction, Transaction, TxFilter } from "@/types/domain";
+import type { Centavos, EpochMs, NewTransaction, Transaction, TxFilter } from "@/types/domain";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -24,6 +24,32 @@ export class TransactionNotFoundError extends Error {
 /** What a Transaction does to its Wallet's balance: `in` adds, `out` subtracts. */
 function signedEffect(tx: Pick<Transaction, "direction" | "amount">): Centavos {
   return tx.direction === "in" ? tx.amount : -tx.amount;
+}
+
+/**
+ * REVERSE-THEN-APPLY: moves a Wallet's balance from what `before` did to what
+ * `after` does, as two statements rather than "apply the difference". That one
+ * formulation is correct for an amount change, a direction flip and a wallet
+ * move at once — when the wallet is unchanged the two statements simply net
+ * out on the same row. Shared by `updateTransaction` and `supersedeMintedLeg`
+ * so the two paths cannot drift apart on this arithmetic.
+ */
+async function settleBalance(
+  db: Awaited<ReturnType<typeof getDatabase>>,
+  before: Pick<Transaction, "walletId" | "direction" | "amount">,
+  after: Pick<Transaction, "walletId" | "direction" | "amount">,
+  now: number,
+): Promise<void> {
+  await db.runAsync("UPDATE wallets SET balance = balance - ?, updated_at = ? WHERE id = ?", [
+    signedEffect(before),
+    now,
+    before.walletId,
+  ]);
+  await db.runAsync("UPDATE wallets SET balance = balance + ?, updated_at = ? WHERE id = ?", [
+    signedEffect(after),
+    now,
+    after.walletId,
+  ]);
 }
 
 /**
@@ -305,16 +331,90 @@ export async function updateTransaction(
         id,
       ],
     );
-    await db.runAsync("UPDATE wallets SET balance = balance - ?, updated_at = ? WHERE id = ?", [
-      signedEffect(before),
-      now,
-      before.walletId,
-    ]);
-    await db.runAsync("UPDATE wallets SET balance = balance + ?, updated_at = ? WHERE id = ?", [
-      signedEffect(after),
-      now,
-      after.walletId,
-    ]);
+    await settleBalance(db, before, after, now);
+  });
+
+  return after;
+}
+
+/**
+ * Replaces a MINTED transfer leg with the provider's own record of it.
+ *
+ * WHY THIS IS NOT `updateTransaction`. `TransactionPatch` deliberately excludes
+ * `source`, `rawNotificationId` and `balanceAfter` so the edit form cannot
+ * relabel a row's provenance. Superseding is not an edit — it is one record of a
+ * movement being replaced by a better one — so it gets its own door rather than
+ * widening that patch type for everybody.
+ *
+ * THE BALANCE IS SETTLED REVERSE-THEN-APPLY, via the same `settleBalance` helper
+ * `updateTransaction` uses: the minted row already moved the wallet balance, and
+ * the provider's amount may legitimately differ (the user guessed; the bank
+ * knows). The wallet never changes here — a supersede that landed on a different
+ * wallet would not be the same movement — so `before.walletId` and
+ * `after.walletId` are always equal and the two statements net out to the exact
+ * signed difference.
+ *
+ * `transferLinkId` IS NOT TOUCHED. The link is the same link and the pair is the
+ * same pair — the user's confirmation is not re-litigated by the arrival of a
+ * receipt.
+ *
+ * A `balanceAfter` that arrives non-null makes this row an anchor, exactly as it
+ * would on insert. Re-deriving the wallet from the last anchor is reconciliation
+ * work and stays out of scope here too — the same known limitation
+ * `updateTransaction`'s own header documents.
+ */
+export async function supersedeMintedLeg(
+  id: string,
+  provider: {
+    amount: Centavos;
+    occurredAt: EpochMs;
+    referenceNo: string | null;
+    balanceAfter: Centavos | null;
+    rawNotificationId: string;
+    counterparty: string | null;
+    confidence: number;
+  },
+): Promise<Transaction> {
+  const db = await getDatabase();
+  const before = await getTransaction(id);
+  if (!before) {
+    throw new TransactionNotFoundError(id);
+  }
+
+  const now = Date.now();
+  const after: Transaction = {
+    ...before,
+    amount: provider.amount,
+    occurredAt: provider.occurredAt,
+    referenceNo: provider.referenceNo,
+    counterparty: provider.counterparty,
+    source: "notification",
+    confidence: provider.confidence,
+    rawNotificationId: provider.rawNotificationId,
+    balanceAfter: provider.balanceAfter,
+    updatedAt: now,
+  };
+
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(
+      `UPDATE transactions
+          SET amount = ?, occurred_at = ?, reference_no = ?, counterparty = ?,
+              source = 'notification', confidence = ?, raw_notification_id = ?,
+              balance_after = ?, updated_at = ?
+        WHERE id = ?`,
+      [
+        after.amount,
+        after.occurredAt,
+        after.referenceNo,
+        after.counterparty,
+        after.confidence,
+        after.rawNotificationId,
+        after.balanceAfter,
+        after.updatedAt,
+        id,
+      ],
+    );
+    await settleBalance(db, before, after, now);
   });
 
   return after;

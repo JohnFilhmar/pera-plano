@@ -53,7 +53,7 @@ let cash: Wallet;
 beforeEach(async () => {
   await freshDb();
   await seedDefaultCategories();
-  cash = await createWallet({ name: "GCash", type: "e-wallet" });
+  cash = await createWallet({ name: "GCash" });
 });
 
 afterEach(async () => {

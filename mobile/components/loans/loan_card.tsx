@@ -209,8 +209,16 @@ export function LoanCard({ status, now, testID }: LoanCardProps) {
           <Text className="text-row font-semibold text-danger-ink dark:text-danger-ink-dark">
             Overdue promise
           </Text>
+          {/* THE BANNER HAS TO KNOW WHICH WAY THE LOAN POINTS. "Record a
+              payment when you can — X is waiting on this one" is the right
+              sentence for a debt and the exact opposite of the truth for money
+              lent out, where the user is the one waiting. One string for both
+              directions is the same conflation that let an outflow reduce an
+              owed-to-me balance. */}
           <Text className="mt-0.5 text-secondary text-danger-ink dark:text-danger-ink-dark">
-            {`Record a payment when you can — ${loan.counterparty} is waiting on this one.`}
+            {loan.direction === "i-owe"
+              ? `Record a payment when you can — ${loan.counterparty} is waiting on this one.`
+              : `${loan.counterparty} hasn't settled this yet — record it here when the money lands.`}
           </Text>
         </View>
       ) : null}

@@ -45,9 +45,15 @@ const BIND_PERMISSION = "android.permission.BIND_NOTIFICATION_LISTENER_SERVICE";
 const LISTENER_ACTION = "android.service.notification.NotificationListenerService";
 const BOOT_PERMISSION = "android.permission.RECEIVE_BOOT_COMPLETED";
 const PLUGIN_PATH = "./modules/notification_listener/app.plugin.js";
+const LAUNCHER_ACTION = "android.intent.action.MAIN";
+const LAUNCHER_CATEGORY = "android.intent.category.LAUNCHER";
+const QUERY_ALL_PACKAGES = "android.permission.QUERY_ALL_PACKAGES";
 
 const THIRD_PARTY_SERVICE = "com.example.thirdparty.SomeOtherService";
 const PRE_EXISTING_PERMISSION = "android.permission.INTERNET";
+/** Some other library's `<queries>` entry, so the tests catch a plugin that
+ * assigns over the array instead of appending to it. */
+const THIRD_PARTY_QUERY_PACKAGE = "com.example.thirdparty";
 
 // ---------------------------------------------------------------------------
 // Fixtures and helpers
@@ -65,7 +71,7 @@ function prebuiltManifest(): AndroidManifest {
     manifest: {
       $: { "xmlns:android": "http://schemas.android.com/apk/res/android" },
       "uses-permission": [{ $: { "android:name": PRE_EXISTING_PERMISSION } }],
-      queries: [],
+      queries: [{ package: [{ $: { "android:name": THIRD_PARTY_QUERY_PACKAGE } }] }],
       application: [
         {
           $: { "android:name": ".MainApplication", "android:label": "PeraPlano" },
@@ -115,6 +121,28 @@ function services(manifest: AndroidManifest) {
 function listenerServices(manifest: AndroidManifest) {
   return services(manifest).filter(
     (service) => service.$?.["android:name"] === LISTENER_SERVICE_CLASS,
+  );
+}
+
+function queries(manifest: AndroidManifest): Array<Record<string, unknown>> {
+  return (manifest.manifest as { queries?: Array<Record<string, unknown>> }).queries ?? [];
+}
+
+/**
+ * The `<queries>` entries whose `<intent>` is the MAIN/LAUNCHER pair -- the
+ * shape `AppLabels.kt` needs to resolve another app's real name on API 30+.
+ */
+function launcherQueries(manifest: AndroidManifest) {
+  return queries(manifest).filter((entry) =>
+    ((entry.intent ?? []) as Array<Record<string, Array<{ $?: Record<string, string> }>>>).some(
+      (intent) =>
+        (intent.action ?? []).some(
+          (action) => action.$?.["android:name"] === LAUNCHER_ACTION,
+        ) &&
+        (intent.category ?? []).some(
+          (category) => category.$?.["android:name"] === LAUNCHER_CATEGORY,
+        ),
+    ),
   );
 }
 
@@ -201,7 +229,38 @@ describe("notification listener config plugin", () => {
     expect(staticPermissions).not.toContain("android.permission.RECEIVE_SMS");
   });
 
-  it("leaves other libraries' services and permissions untouched", async () => {
+  it("declares MAIN/LAUNCHER package visibility so app labels can be resolved", async () => {
+    // Without this, `PackageManager.getApplicationInfo` throws
+    // NameNotFoundException for every third-party package on API 30+, and
+    // `AppLabels.kt` resolves nothing -- the picker silently falls back to the
+    // parser seed's stale brand names ("seabank" for an app now called
+    // Maribank) with no error anywhere to explain why.
+    const manifest = await applyPlugin(prebuiltManifest());
+
+    expect(launcherQueries(manifest)).toHaveLength(1);
+  });
+
+  it("applying the plugin twice does not duplicate the queries entry", async () => {
+    const manifest = await applyPlugin(prebuiltManifest(), 2);
+
+    expect(launcherQueries(manifest)).toHaveLength(1);
+  });
+
+  it("never declares QUERY_ALL_PACKAGES", async () => {
+    // POLICY GUARD -- DO NOT DELETE THIS TEST.
+    // QUERY_ALL_PACKAGES is a Play-restricted permission requiring a
+    // declaration form and a policy justification. The `<queries>` element
+    // above buys everything this app needs from it: the ability to ask about
+    // a launchable package by name. Reaching for the permission because a
+    // lookup failed is the wrong fix and a review risk on a finance app.
+    const manifest = await applyPlugin(prebuiltManifest(), 2);
+
+    expect(permissionNames(manifest)).not.toContain(QUERY_ALL_PACKAGES);
+    expect(JSON.stringify(manifest)).not.toContain("QUERY_ALL_PACKAGES");
+    expect(readAppJson().expo.android.permissions).not.toContain(QUERY_ALL_PACKAGES);
+  });
+
+  it("leaves other libraries' services, permissions and queries untouched", async () => {
     const manifest = await applyPlugin(prebuiltManifest());
 
     // A plugin that assigns `application.service = [ours]` passes every test
@@ -210,6 +269,12 @@ describe("notification listener config plugin", () => {
       services(manifest).map((service) => service.$?.["android:name"]),
     ).toEqual([THIRD_PARTY_SERVICE, LISTENER_SERVICE_CLASS]);
     expect(permissionNames(manifest)).toContain(PRE_EXISTING_PERMISSION);
+    // Same failure mode one element over: `manifest.queries = [ours]` passes
+    // the visibility test above and silently deletes another library's
+    // `<queries>` entry, which breaks THEIR package lookups, not ours — the
+    // kind of bug that surfaces as someone else's library misbehaving.
+    expect(JSON.stringify(queries(manifest))).toContain(THIRD_PARTY_QUERY_PACKAGE);
+    expect(queries(manifest)).toHaveLength(2);
   });
 
   it("names the Kotlin class that is actually shipped", async () => {

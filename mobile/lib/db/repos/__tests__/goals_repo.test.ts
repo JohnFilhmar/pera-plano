@@ -22,7 +22,7 @@ import {
   listGoals,
   updateGoal,
   WalletAlreadyHasGoalError,
-  WalletNotSavingsError,
+  LinkedWalletNotFoundError,
 } from "../goals_repo";
 
 let db: SQLiteDatabase;
@@ -33,9 +33,9 @@ let spending: Wallet;
 beforeEach(async () => {
   db = await freshDb();
   await seedDefaultCategories();
-  savings = await createWallet({ name: "GSave", type: "savings" });
-  otherSavings = await createWallet({ name: "SeaBank", type: "savings" });
-  spending = await createWallet({ name: "GCash", type: "e-wallet" });
+  savings = await createWallet({ name: "GSave" });
+  otherSavings = await createWallet({ name: "SeaBank" });
+  spending = await createWallet({ name: "GCash" });
 });
 
 afterEach(async () => {
@@ -99,22 +99,29 @@ test("getGoal returns null for an id that does not exist", async () => {
 // ---------------------------------------------------------------------------
 // Invariant I10 — a savings wallet, and only one goal on it
 // ---------------------------------------------------------------------------
-test("A NON-SAVINGS WALLET IS REJECTED", async () => {
-  // Invariant I10: "A Goal's linkedWalletId is a savings Wallet". Progress IS
-  // the wallet's balance (spec rule 1), so a goal linked to a spending wallet
-  // would report the user's grocery money as savings and celebrate a milestone
-  // every time their salary landed.
-  await expect(
-    createGoal({ name: "Nope", targetAmount: 100000, linkedWalletId: spending.id }),
-  ).rejects.toThrow(WalletNotSavingsError);
+test("ANY WALLET CAN BACK A GOAL", async () => {
+  // The savings-only rule is GONE. It required the user to have declared, during
+  // onboarding, that a wallet was "savings" — a claim they had no way to make
+  // accurately. With the type picker removed the app would have had to INFER
+  // savings-ness and then refuse a goal on its own guess, which is the worst
+  // version of the rule: a blocked user, no explanation they can act on.
+  const goal = await createGoal({
+    name: "Laptop",
+    targetAmount: 100000,
+    linkedWalletId: spending.id,
+  });
 
-  expect(await countGoals()).toBe(0);
+  expect(goal.linkedWalletId).toBe(spending.id);
+  expect(await countGoals()).toBe(1);
 });
 
-test("a wallet that does not exist is rejected too", async () => {
+test("a wallet that does not exist is still rejected", async () => {
+  // The one half of the old check that survives, and it earns its place: the
+  // column is a foreign key, so without this the caller gets a raw SQLite
+  // constraint failure instead of an error a screen can branch on.
   await expect(
     createGoal({ name: "Nope", targetAmount: 100000, linkedWalletId: "no-such-wallet" }),
-  ).rejects.toThrow(WalletNotSavingsError);
+  ).rejects.toThrow(LinkedWalletNotFoundError);
 });
 
 test("A WALLET BACKS AT MOST ONE GOAL", async () => {
@@ -253,11 +260,18 @@ test("an explicit null clears the deadline or the contribution rule", async () =
   expect(cleared.contributionRule).toBeNull();
 });
 
-test("updateGoal rejects a move to a non-savings wallet", async () => {
+test("updateGoal can move a goal to any wallet, including a spending one", async () => {
   const goal = await createGoal({ name: "Travel", targetAmount: 3000000, linkedWalletId: savings.id });
 
-  await expect(updateGoal(goal.id, { linkedWalletId: spending.id })).rejects.toThrow(
-    WalletNotSavingsError,
+  const moved = await updateGoal(goal.id, { linkedWalletId: spending.id });
+  expect(moved.linkedWalletId).toBe(spending.id);
+});
+
+test("updateGoal still rejects a move to a wallet that does not exist", async () => {
+  const goal = await createGoal({ name: "Travel", targetAmount: 3000000, linkedWalletId: savings.id });
+
+  await expect(updateGoal(goal.id, { linkedWalletId: "no-such-wallet" })).rejects.toThrow(
+    LinkedWalletNotFoundError,
   );
 });
 

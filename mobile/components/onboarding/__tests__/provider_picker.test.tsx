@@ -31,6 +31,7 @@
 // ---------------------------------------------------------------------------
 jest.mock("@/modules/notification_listener", () => ({
   listObservedPackages: jest.fn(),
+  getAppLabels: jest.fn(),
   setProviderFilter: jest.fn(),
   // Present in the mock and asserted-against but never imported by the screen.
   // A jest.fn() that is never called is the only way to prove an absence.
@@ -44,6 +45,7 @@ jest.mock("@/lib/db/repos/parser_rulesets_repo", () => ({
 
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
 import {
+  getAppLabels,
   listObservedPackages,
   setCaptureEnabled,
   setProviderFilter,
@@ -59,6 +61,7 @@ import type { ProviderChoice } from "@/lib/ingest/provider_catalogue";
 import type { RulesetBundle } from "@/lib/ingest/ruleset_types";
 
 const mockListObservedPackages = listObservedPackages as jest.Mock;
+const mockGetAppLabels = getAppLabels as jest.Mock;
 const mockSetProviderFilter = setProviderFilter as jest.Mock;
 const mockSetCaptureEnabled = setCaptureEnabled as jest.Mock;
 const mockGetActiveRuleset = getActiveRuleset as jest.Mock;
@@ -81,6 +84,8 @@ function observed(packageName: string): ObservedPackage {
 
 function choice(overrides: Partial<ProviderChoice> & { packageName: string }): ProviderChoice {
   return {
+    providerKey: null,
+    appLabel: null,
     displayName: overrides.packageName,
     seen: false,
     suggested: true,
@@ -91,6 +96,7 @@ function choice(overrides: Partial<ProviderChoice> & { packageName: string }): P
 beforeEach(() => {
   jest.clearAllMocks();
   mockListObservedPackages.mockResolvedValue([]);
+  mockGetAppLabels.mockResolvedValue({});
   mockSetProviderFilter.mockResolvedValue(undefined);
   mockSetCaptureEnabled.mockResolvedValue(undefined);
   mockGetActiveRuleset.mockResolvedValue(SEED);
@@ -519,4 +525,101 @@ describe("ProvidersScreen", () => {
     });
     await screen.findByTestId("provider-picker");
   });
+});
+
+// ---------------------------------------------------------------------------
+// REAL APP NAMES (app-label plan).
+//
+// The seed's brand names are hand-written and go stale, because banks rebrand
+// and package ids do not: `ph.seabank.seabank` still routes as "seabank" and
+// the app on the phone is called Maribank. A tile reading "seabank" asks the
+// user to recognise a company that no longer exists under that name — on the
+// one screen whose entire job is that recognition.
+// ---------------------------------------------------------------------------
+
+describe("ProvidersScreen — real app names", () => {
+  /** The motivating case: seeded under an old brand, renamed on the device. */
+  const REBRANDED = "ph.seabank.seabank";
+
+  test("a tile shows the name Android reports, not the seed's stale brand", async () => {
+    mockGetActiveRuleset.mockResolvedValue({
+      ...SEED,
+      providers: [{ providerKey: "seabank", packageNames: [REBRANDED], rules: [] }],
+    });
+    mockListObservedPackages.mockResolvedValue([observed(REBRANDED)]);
+    mockGetAppLabels.mockResolvedValue({ [REBRANDED]: "Maribank" });
+
+    await renderScreen();
+
+    expect(screen.getByTestId(`provider-name-${REBRANDED}`).props.children).toBe("Maribank");
+    // The package line stays: it is the only thing that distinguishes two
+    // tiles the device happens to label identically.
+    expect(screen.getByTestId(`provider-package-${REBRANDED}`)).toBeTruthy();
+  });
+
+  test("the packages it asks about are the ones it is about to render", async () => {
+    mockListObservedPackages.mockResolvedValue([observed(UNSEEDED_BANK)]);
+
+    await renderScreen();
+
+    const asked = mockGetAppLabels.mock.calls[0][0] as string[];
+    // Including the unrecognised observed app — the case where a real name is
+    // worth the most, since the fallback there is a raw package id.
+    expect(asked).toContain(UNSEEDED_BANK);
+    expect(asked).toContain(GCASH);
+  });
+
+  test("a label lookup that fails leaves a usable picker rather than an error", async () => {
+    mockListObservedPackages.mockResolvedValue([observed(GCASH)]);
+    mockGetAppLabels.mockRejectedValue(new Error("bridge is gone"));
+
+    await renderScreen();
+
+    // Degrades to the seeded brand name. Names are an improvement on the
+    // fallback chain, never a prerequisite for onboarding.
+    expect(screen.getByTestId(`provider-name-${GCASH}`).props.children).toBe("GCash");
+  });
+
+  test("an unlabelled catalogue app keeps its curated brand name", async () => {
+    mockGetAppLabels.mockResolvedValue({});
+
+    await renderScreen();
+
+    // "Common in the Philippines" is BY DEFINITION apps this phone does not
+    // have, so every one of them resolves to nothing.
+    expect(screen.getByTestId(`provider-name-${GCASH}`).props.children).toBe("GCash");
+  });
+
+  test("selecting a renamed tile still writes its PACKAGE, never its label", async () => {
+    mockGetActiveRuleset.mockResolvedValue({
+      ...SEED,
+      providers: [{ providerKey: "seabank", packageNames: [REBRANDED], rules: [] }],
+    });
+    mockListObservedPackages.mockResolvedValue([observed(REBRANDED)]);
+    mockGetAppLabels.mockResolvedValue({ [REBRANDED]: "Maribank" });
+
+    await renderScreen();
+    fireEvent.press(screen.getByTestId(`provider-choice-${REBRANDED}`));
+    fireEvent.press(screen.getByTestId("provider-picker-continue-button"));
+
+    // The name is display only. The filter is keyed on the package id, which
+    // is exactly what does NOT change when a bank rebrands.
+    await waitFor(() => expect(mockSetProviderFilter).toHaveBeenCalledWith([REBRANDED]));
+    expect(mockSetCaptureEnabled).not.toHaveBeenCalled();
+  });
+
+  test("a bridge that answers with nothing at all still renders the picker", async () => {
+  // REGRESSION. `getAppLabels` resolving nullish (a stubbed bridge, an older
+  // native build without the function) used to make `applyAppLabels` throw
+  // inside the load effect: no error surfaced, no tiles appeared, and
+  // onboarding sat on "Looking for apps on your phone…" with no way forward.
+  // A missing label is worth nothing; a wedged onboarding step costs the
+  // whole install.
+  mockGetAppLabels.mockResolvedValue(undefined);
+  mockListObservedPackages.mockResolvedValue([observed(GCASH)]);
+
+  await renderScreen();
+
+  expect(screen.getByTestId(`provider-name-${GCASH}`).props.children).toBe("GCash");
+});
 });

@@ -1113,3 +1113,68 @@ test("a foreign currency mentioned away from the amount does not block the parse
   expect(event).not.toBeNull();
   expect(event!.amount).toBe(5000);
 });
+
+// ---------------------------------------------------------------------------
+// transferIntent — a trigger for asking, never for acting (see parser.ts).
+// ---------------------------------------------------------------------------
+
+test("a cash-in notification carries transferIntent", () => {
+  const provider = makeProvider({
+    templates: [
+      makeTemplate({
+        match: `You have received ${AMOUNT} cash in from (?<counterparty>[^.]+)`,
+        direction: "in",
+      }),
+    ],
+  });
+
+  const parsed = parseCapture(
+    // ILLUSTRATIVE
+    makeCapture({ text: "You have received ₱1,000.00 cash in from BPI." }),
+    [provider],
+  );
+
+  expect(parsed?.transferIntent).toBe(true);
+});
+
+test("an ordinary purchase does not carry transferIntent", () => {
+  const provider = makeProvider({
+    templates: [
+      makeTemplate({ match: `You paid ${AMOUNT} to (?<merchant>[^.]+)`, direction: "out" }),
+    ],
+  });
+
+  const parsed = parseCapture(
+    makeCapture({ text: "You paid ₱250.00 to Jollibee." }), // ILLUSTRATIVE
+    [provider],
+  );
+
+  expect(parsed?.transferIntent).toBeUndefined();
+});
+
+test("a keyword substring embedded inside a larger word does not trigger transferIntent", () => {
+  // Each fixture embeds one of the shipped alternatives ("load to", "deposit",
+  // "transfer") as a literal substring inside a longer word, with a word
+  // character sitting directly in front of it — "payLOAD TO", "reDEPOSIT",
+  // "nonTRANSFERable". A bare substring scan would fire on all three. `\b`
+  // requires an actual boundary immediately before the match, and none of
+  // these have one, so this proves the guard is doing real work rather than
+  // merely being present in the source.
+  const provider = makeProvider({
+    templates: [
+      makeTemplate({ match: `You paid ${AMOUNT} to (?<merchant>[^.]+)`, direction: "out" }),
+    ],
+  });
+
+  const cases = [
+    "You paid ₱10.00 to Jollibee. Your payload to the server failed.", // embeds "load to"
+    "You paid ₱10.00 to Jollibee for a redeposit fee adjustment next month.", // embeds "deposit"
+    "You paid ₱10.00 to Jollibee for a nontransferable voucher.", // embeds "transfer"
+  ];
+
+  for (const text of cases) {
+    // ILLUSTRATIVE
+    const parsed = parseCapture(makeCapture({ text }), [provider]);
+    expect(parsed?.transferIntent).toBeUndefined();
+  }
+});

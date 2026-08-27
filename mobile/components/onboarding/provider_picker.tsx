@@ -15,6 +15,14 @@
 // reads first, and an app the seed named wrongly is still reachable here under
 // whatever Android actually calls it.
 //
+// THE NAME ON A TILE IS THE ONE ANDROID REPORTS (app-label plan), not the
+// parser seed's. The seed's brand names are hand-written and go stale, because
+// banks rebrand and package ids do not: `ph.seabank.seabank` still routes as
+// "seabank" and the app on the user's phone is called Maribank. Asking someone
+// to recognise a company that no longer exists under that name defeats the
+// only thing this screen does. `applyAppLabels` resolves the real name and
+// `displayName` arrives here already resolved — the tile never chooses.
+//
 // EVERY ROW SHOWS ITS PACKAGE NAME, not just its label. Three of the seed's
 // rows share the `sms_relay` key (one per Messages app), and a picker showing
 // three identical "sms_relay" rows would be unusable. The package name is also
@@ -75,7 +83,16 @@ function ChoiceTile({
       }`}
     >
       <View className="flex-row items-start justify-between">
-        <ProviderBadge providerKey={choice.displayName} size={20} />
+        {/*
+          `providerKey`, falling back to the PRINTED name — not to
+          `packageName`. `providerBadge`'s unknown-provider fallback letters
+          the square with the key's own initial, so a raw package id would
+          badge Maribank with "p" (for `ph.seabank.seabank`) where the
+          resolved app name gives the "M" the user expects. See
+          `providerKeyForPackage`'s doc in constants/providers.ts, which
+          returns `null` rather than a package name for this same reason.
+        */}
+        <ProviderBadge providerKey={choice.providerKey ?? choice.displayName} size={20} />
         <View
           className={
             selected

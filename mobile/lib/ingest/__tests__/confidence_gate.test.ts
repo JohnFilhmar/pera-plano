@@ -268,6 +268,27 @@ test("a non-PHP amount routes to review even at 0.99", () => {
   expect(reasonOf(decision)?.length).toBeGreaterThan(0);
 });
 
+test("a one-sided transfer is a hard route even at a high score", () => {
+  // Same slot as `ambiguousTransfer` — it is the same question ("is this a
+  // transfer?") and answering it changes what the row MEANS, so a 0.99 score
+  // must not buy past it either.
+  const decision = decideRoute({
+    confidence: 0.99,
+    hasAmount: true,
+    walletId: "w_gcash",
+    dedupe: { kind: "unique" },
+    transfer: { kind: "one_sided", counterpartWalletId: "w_bpi", signal: "rule" },
+    routed: "known",
+    nonPhpCurrency: false,
+    tunables: tunables(),
+  });
+
+  expect(decision).toEqual({
+    route: "review_prefilled",
+    reason: GATE_REASONS.oneSidedTransfer,
+  });
+});
+
 test("an auto-linked transfer is NOT a hard route and still auto-commits", () => {
   // The counter-test to the four above: `auto_link` is the TransferDetector
   // saying it is CERTAIN, and §9.2 hard-routes only the ambiguous pairs. A gate

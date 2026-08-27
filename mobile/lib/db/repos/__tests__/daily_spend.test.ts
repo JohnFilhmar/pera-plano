@@ -28,7 +28,7 @@ async function seedCategory(id: string, name: string): Promise<void> {
 beforeEach(async () => {
   db = await freshDb();
   await seedCategory(CATEGORY_ID, "Food & Dining");
-  walletId = (await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 100000 })).id;
+  walletId = (await createWallet({ name: "GCash", openingBalance: 100000 })).id;
 });
 
 afterEach(async () => {

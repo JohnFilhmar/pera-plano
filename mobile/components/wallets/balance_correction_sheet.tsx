@@ -51,6 +51,7 @@ import {
 import { centavosFrom } from "@/lib/money/peso_input";
 import { cashAdjustment } from "@/lib/wallets/reconcile";
 import type { Transaction, Wallet } from "@/types/domain";
+import { isManualOnly } from "@/lib/wallets/summary";
 
 export type BalanceCorrectionSheetProps = {
   wallet: Wallet;
@@ -88,10 +89,11 @@ export function BalanceCorrectionSheet({
   const correct = useCorrectWalletBalance();
 
   // Rule 3's mirror of cash_reconcile_sheet.tsx's own guard: this path is for
-  // every OTHER wallet type. Cash keeps its own sheet, unmodified. Credit is
-  // excluded too — see the file header for why this is a different reason
-  // than cash's.
-  if (wallet.type === "cash" || wallet.type === "credit") return null;
+  // wallets a provider reports on. A MANUAL wallet keeps its own sheet,
+  // unmodified — there is no reported figure to correct against, only the
+  // user's own count. An OWED wallet is excluded too, for the different reason
+  // in the file header.
+  if (isManualOnly(wallet) || wallet.owedBalance) return null;
 
   const stated = centavosFrom(text);
   const preview = cashAdjustment(wallet.balance, stated);

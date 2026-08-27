@@ -23,26 +23,30 @@
 // holds one drift fixed and varies only the tolerance, so an implementation
 // with the ₱1.00 default inlined fails.
 import { fireEvent, render, screen } from "@testing-library/react-native";
-import { Banknote, CreditCard, Landmark, PiggyBank, Smartphone } from "lucide-react-native";
+import { Banknote, CreditCard, Wallet as WalletGlyph } from "lucide-react-native";
 
 import type { BalanceDrift } from "@/hooks/queries/use_balance_drift";
 import type { ProviderRuleset } from "@/lib/ingest/ruleset_types";
-import type { Centavos, Wallet, WalletMatcher, WalletType } from "@/types/domain";
+import type { Centavos, Wallet, WalletMatcher } from "@/types/domain";
 
 import { BalanceMismatchBadge } from "../balance_mismatch_badge";
 import { MatcherChipList } from "../matcher_chip_list";
 import { WalletCard } from "../wallet_card";
-import { WALLET_TYPE_ICONS, WalletTypeIcon } from "../wallet_type_icon";
+import { walletKind, type WalletKind } from "@/lib/wallets/summary";
+
+import { WALLET_ICONS, WalletIcon } from "../wallet_icon";
 
 function wallet(overrides: Partial<Wallet> = {}): Wallet {
   return {
     id: "w1",
     name: "GCash",
-    type: "e-wallet",
     balance: 123_456,
     currency: "PHP",
     isArchived: false,
     driftDismissedTransactionId: null,
+    owedBalance: false,
+    owedPinned: false,
+    matcherCount: 1,
     createdAt: 1_000,
     updatedAt: 1_000,
     ...overrides,
@@ -66,36 +70,52 @@ function undismissed(
 }
 
 // ---------------------------------------------------------------------------
-// WalletTypeIcon — one glyph per type, and five DIFFERENT glyphs
+// WalletIcon — one glyph per STATE, now that there are no types
 // ---------------------------------------------------------------------------
 
-describe("WalletTypeIcon", () => {
-  const EXPECTED: [WalletType, unknown][] = [
-    ["bank", Landmark],
-    ["e-wallet", Smartphone],
-    ["savings", PiggyBank],
-    ["credit", CreditCard],
-    ["cash", Banknote],
+describe("WalletIcon", () => {
+  const EXPECTED: [WalletKind, unknown][] = [
+    ["owed", CreditCard],
+    ["manual", Banknote],
+    ["tracked", WalletGlyph],
   ];
 
-  test.each(EXPECTED)("%s maps to its own lucide icon", (type, icon) => {
-    expect(WALLET_TYPE_ICONS[type]).toBe(icon);
+  test.each(EXPECTED)("%s maps to its own lucide icon", (kind, icon) => {
+    expect(WALLET_ICONS[kind]).toBe(icon);
   });
 
-  test("all five types map to DIFFERENT icons", () => {
-    // A type-icon map is easy to write with a copy-paste duplicate in it, and
-    // two types sharing a glyph is invisible until a user misreads a row.
-    expect(new Set(Object.values(WALLET_TYPE_ICONS)).size).toBe(5);
+  test("all three states map to DIFFERENT icons", () => {
+    // Two states sharing a glyph is invisible until a user misreads a row.
+    expect(new Set(Object.values(WALLET_ICONS)).size).toBe(3);
   });
 
-  test("covers every wallet type with no extras", () => {
-    expect(Object.keys(WALLET_TYPE_ICONS).sort()).toEqual(
-      ["bank", "cash", "credit", "e-wallet", "savings"].sort(),
+  test("covers every state with no extras", () => {
+    expect(Object.keys(WALLET_ICONS).sort()).toEqual(["manual", "owed", "tracked"]);
+  });
+
+  test("an owed wallet draws the card glyph even when nothing routes to it", () => {
+    // OWED OUTRANKS MANUAL: "you owe this" changes what the number means, while
+    // "nothing routes here" only says how it gets updated.
+    expect(walletKind(wallet({ owedBalance: true, matcherCount: 0 }))).toBe("owed");
+  });
+
+  test("a wallet nothing routes to draws the banknote", () => {
+    expect(walletKind(wallet({ matcherCount: 0 }))).toBe("manual");
+  });
+
+  test("a tracked wallet draws the plain wallet glyph", () => {
+    expect(walletKind(wallet({ matcherCount: 2 }))).toBe("tracked");
+  });
+
+  test.each(EXPECTED.map(([kind]) => kind))("renders for %s", (kind) => {
+    const fixture = wallet(
+      kind === "owed"
+        ? { owedBalance: true }
+        : kind === "manual"
+          ? { matcherCount: 0 }
+          : { matcherCount: 1 },
     );
-  });
-
-  test.each(EXPECTED.map(([type]) => type))("renders for %s", (type) => {
-    render(<WalletTypeIcon type={type} testID="icon" />);
+    render(<WalletIcon wallet={fixture} testID="icon" />);
     expect(screen.getByTestId("icon")).toBeTruthy();
   });
 });
@@ -278,10 +298,10 @@ describe("WalletCard", () => {
     expect(screen.getByText("₱1,234.56")).toBeTruthy();
   });
 
-  test("a CREDIT wallet says the balance is owed", () => {
+  test("an OWED wallet says the balance is owed", () => {
     render(
       <WalletCard
-        wallet={wallet({ type: "credit", name: "Visa", balance: 12_345_00 })}
+        wallet={wallet({ owedBalance: true, name: "Visa", balance: 12_345_00 })}
         drift={null}
         toleranceCentavos={100}
       />,
@@ -290,7 +310,7 @@ describe("WalletCard", () => {
     expect(screen.getByText("Owed")).toBeTruthy();
   });
 
-  test("a non-credit wallet does NOT say owed", () => {
+  test("a wallet that is not owed does NOT say owed", () => {
     render(<WalletCard wallet={wallet()} drift={null} toleranceCentavos={100} />);
     expect(screen.queryByText("Owed")).toBeNull();
   });
@@ -342,8 +362,8 @@ describe("WalletCard", () => {
     expect(onPress).toHaveBeenCalledTimes(1);
   });
 
-  test("renders its type icon", () => {
-    render(<WalletCard wallet={wallet({ type: "bank" })} drift={null} toleranceCentavos={100} />);
+  test("renders its wallet icon", () => {
+    render(<WalletCard wallet={wallet()} drift={null} toleranceCentavos={100} />);
     expect(screen.getByTestId("wallet-card-w1-icon")).toBeTruthy();
   });
 });
@@ -372,7 +392,7 @@ describe("WalletCard — provider identity", () => {
     expect(screen.queryByTestId("wallet-card-w1-icon")).toBeNull();
   });
 
-  test("a provider-backed, active, non-credit wallet says it is listening", () => {
+  test("a provider-backed, active, not-owed wallet says it is listening", () => {
     render(
       <WalletCard wallet={wallet()} drift={null} toleranceCentavos={100} providerKey="gcash" />,
     );
@@ -409,10 +429,10 @@ describe("WalletCard — provider identity", () => {
     expect(screen.queryByText("Listening")).toBeNull();
   });
 
-  test("CREDIT wins over the listening/manual line too", () => {
+  test("OWED wins over the listening/manual line too", () => {
     render(
       <WalletCard
-        wallet={wallet({ type: "credit" })}
+        wallet={wallet({ owedBalance: true })}
         drift={null}
         toleranceCentavos={100}
         providerKey="gcash"

@@ -40,6 +40,12 @@ export type ParsedEvent = {
   occurredAt: number;
   walletHint?: string;
   confidence: number;
+  /**
+   * The notification's wording says money moved between accounts. Read by
+   * transfer_detector.ts as one of the two triggers for proposing a one-sided
+   * transfer. Absent means "no signal", NOT "not a transfer".
+   */
+  transferIntent?: boolean;
 };
 
 /**
@@ -72,6 +78,19 @@ const DIRECTION_KEYWORD_PATTERN = new RegExp(
   `\\b(${DIRECTION_KEYWORDS.map(([word]) => word).join("|")})`,
   "iu",
 );
+
+/**
+ * Words that say "this moved between accounts" rather than "this was spent".
+ *
+ * A TRIGGER FOR ASKING, NEVER FOR ACTING. A false positive costs one dismissable
+ * Review Queue card; a false negative costs only the status quo, in which a
+ * one-sided transfer is never mentioned at all. So the set leans inclusive.
+ *
+ * Overlaps DIRECTION_KEYWORDS on purpose — "deposit" and "withdraw" are cues for
+ * both questions, and the two scans answer different ones.
+ */
+const TRANSFER_INTENT_PATTERN =
+  /\b(cash[ -]?in|transfer|sent to|padala|deposit|withdraw|fund transfer|instapay|pesonet|top[ -]?up|load to|add money)/iu;
 
 /** How a direction was arrived at. Only `keyword` is a weak cue (§9.1). */
 type DirectionSource = "template_field" | "capture_group" | "keyword";
@@ -147,7 +166,7 @@ function compileTemplates(rules: ProviderRuleset[]): CompiledTemplate[] {
  *
  * Blank fields are dropped so an empty `bigText` cannot shadow a populated `text`.
  */
-function searchableTexts(capture: RawCapture): string[] {
+export function searchableTexts(capture: RawCapture): string[] {
   return [capture.bigText, capture.text, capture.title].filter(
     (field): field is string => field !== null && field.trim() !== "",
   );
@@ -195,8 +214,17 @@ function boundValue(groups: Record<string, string | undefined>, name: string): s
   return trimmed === undefined || trimmed === "" ? undefined : trimmed;
 }
 
-/** Reads a direction out of one word or phrase — `"in"`/`"out"` literally, or a keyword. */
-function directionFromToken(token: string): TxDirection | undefined {
+/**
+ * Reads a direction out of one word or phrase — `"in"`/`"out"` literally, or a
+ * keyword.
+ *
+ * EXPORTED FOR `candidates.ts`, which infers a direction for a notification no
+ * ruleset matched at all. That is the same question this answers, over the same
+ * prose, so it must be the same keyword sets: a second copy in the UI layer
+ * would drift, and the direction the Review Queue offers to commit would stop
+ * agreeing with the direction the pipeline would have inferred.
+ */
+export function directionFromToken(token: string): TxDirection | undefined {
   const normalized = token.trim().toLowerCase();
   if (normalized === "in" || normalized === "out") return normalized;
 
@@ -406,6 +434,12 @@ function buildEvent(
 
   const walletHint = boundValue(groups, "walletHint");
   if (walletHint !== undefined) event.walletHint = walletHint;
+
+  // Assigned only when true, matching this block's "optional fields are present
+  // or absent, never `undefined`" convention.
+  if (searchableTexts(capture).some((field) => TRANSFER_INTENT_PATTERN.test(field))) {
+    event.transferIntent = true;
+  }
 
   return event;
 }

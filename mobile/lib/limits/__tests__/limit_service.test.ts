@@ -35,8 +35,8 @@ let db: SQLiteDatabase;
 
 async function seedWallet(id: string): Promise<void> {
   await db.runAsync(
-    `INSERT INTO wallets (id, name, type, balance, currency, is_archived, created_at, updated_at)
-     VALUES (?, ?, 'e-wallet', 0, 'PHP', 0, 0, 0)`,
+    `INSERT INTO wallets (id, name, balance, currency, is_archived, created_at, updated_at)
+     VALUES (?, ?, 0, 'PHP', 0, 0, 0)`,
     [id, `wallet-${id}`],
   );
 }

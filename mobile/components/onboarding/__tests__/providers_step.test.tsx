@@ -34,6 +34,13 @@ jest.mock("expo-router", () => ({
 
 jest.mock("@/modules/notification_listener", () => ({
   listObservedPackages: jest.fn(),
+  // Never configured by this suite: it is about what a provider selection
+  // TURNS INTO, not about what the apps are called. Left as a bare jest.fn()
+  // DELIBERATELY — it resolves `undefined`, which is exactly the nullish map
+  // `loadAppLabels`'s `?? {}` exists to absorb. Making it resolve `{}` here
+  // would hide the wedged-forever-on-the-loading-skeleton bug that guard
+  // prevents.
+  getAppLabels: jest.fn(),
 }));
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -192,17 +199,25 @@ describe("creating wallets", () => {
     expect(screen.queryByTestId("wallets-step-error")).toBeNull();
   });
 
-  test("an edited name and type are what gets saved, not the default", async () => {
+  test("an edited name is what gets saved, not the default", async () => {
     await renderReady([GCASH]);
 
     fireEvent.changeText(screen.getByTestId(`wallet-proposal-name-${GCASH}`), "My GCash");
-    fireEvent.press(screen.getByTestId(`wallet-proposal-type-${GCASH}-savings`));
     fireEvent.press(screen.getByTestId("onboarding-primary-button"));
 
     await waitFor(async () => expect(await listWallets()).toHaveLength(2));
-    const gcashWallet = (await listWallets()).find((w) => w.name === "My GCash");
-    expect(gcashWallet).toBeTruthy();
-    expect(gcashWallet!.type).toBe("savings");
+    expect((await listWallets()).some((w) => w.name === "My GCash")).toBe(true);
+  });
+
+  test("the step never asks what kind of wallet this is", async () => {
+    // The whole point of the change: onboarding proposes wallets and asks for
+    // nothing but a name and (optionally) what is already in them.
+    await renderReady([GCASH]);
+
+    expect(screen.queryByTestId(`wallet-proposal-type-${GCASH}-savings`)).toBeNull();
+    for (const label of ["Bank", "E-wallet", "Savings", "Credit"]) {
+      expect(screen.queryByText(label)).toBeNull();
+    }
   });
 
   test("unchecking a proposal excludes it from creation", async () => {

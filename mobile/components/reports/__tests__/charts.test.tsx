@@ -256,6 +256,8 @@ test("THE RANGE PICKER SHOWS THE PLUS ROW ON FREE", () => {
   );
 
   screen.getByTestId("range-picker-current-month");
+  // Free has nothing to pick between — no period field to open a sheet with.
+  expect(screen.queryByTestId("range-picker-month-trigger")).toBeNull();
   // PlusGate's own testIDs — this component asks lib/entitlements.ts nothing
   // itself; it just wraps the row and lets PlusGate decide.
   screen.getByTestId("plus-gate");
@@ -282,7 +284,10 @@ test("THE RANGE PICKER OFFERS CUSTOM ON PLUS", () => {
   // proven for real below, when the custom-range flow actually completes.
   screen.getByTestId("plus-badge");
   expect(screen.queryByTestId("plus-gate")).toBeNull();
-  screen.getByTestId("range-picker-months");
+  // The month strip is a sheet now (components/reports/month_picker.tsx) —
+  // closed until the period field is pressed.
+  screen.getByTestId("range-picker-month-trigger");
+  expect(screen.queryByTestId("range-picker-months")).toBeNull();
 
   fireEvent.press(screen.getByTestId("range-picker-custom-toggle"));
   pickDate("range-picker-custom-from", 2026, 7, 1);

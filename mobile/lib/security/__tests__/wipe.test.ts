@@ -15,21 +15,27 @@ jest.mock("@/lib/crypto/key_manager", () => ({
 jest.mock("@/modules/notification_listener", () => ({
   clearCaptureBuffer: jest.fn(),
 }));
+jest.mock("@/lib/support/attachments", () => ({
+  deleteAllSupportAttachmentFiles: jest.fn(),
+}));
 
 import { wipeDatabase } from "@/lib/db/database";
 import { wipeKeys } from "@/lib/crypto/key_manager";
 import { clearCaptureBuffer } from "@/modules/notification_listener";
+import { deleteAllSupportAttachmentFiles } from "@/lib/support/attachments";
 import { wipeAndStartOver } from "../wipe";
 
 const mockWipeDatabase = wipeDatabase as jest.Mock;
 const mockWipeKeys = wipeKeys as jest.Mock;
 const mockClearCaptureBuffer = clearCaptureBuffer as jest.Mock;
+const mockDeleteAttachments = deleteAllSupportAttachmentFiles as jest.Mock;
 
 beforeEach(() => {
   jest.clearAllMocks();
   mockWipeDatabase.mockResolvedValue(undefined);
   mockWipeKeys.mockResolvedValue(undefined);
   mockClearCaptureBuffer.mockResolvedValue(undefined);
+  mockDeleteAttachments.mockResolvedValue(undefined);
 });
 
 test("wipes the database, the key material, AND the capture buffer", async () => {
@@ -41,6 +47,11 @@ test("wipes the database, the key material, AND the capture buffer", async () =>
   // but forgets the capture buffer (task-9-report.md's documented gap) would
   // pass every other test in this file -- only this one catches it.
   expect(mockClearCaptureBuffer).toHaveBeenCalledTimes(1);
+  // The second thing on this device that lives outside the database file:
+  // deleting the SQLite file deletes the rows that POINT at a problem report's
+  // screenshots, never the screenshots. Same class of gap as the capture
+  // buffer above, caught by the same kind of assertion.
+  expect(mockDeleteAttachments).toHaveBeenCalledTimes(1);
 });
 
 test("wipes the database BEFORE the keys -- a database wipe failure must leave the wraps intact, not orphan an unwipeable file with no key left to ever prove it happened", async () => {
@@ -54,10 +65,13 @@ test("wipes the database BEFORE the keys -- a database wipe failure must leave t
   mockClearCaptureBuffer.mockImplementation(async () => {
     order.push("captureBuffer");
   });
+  mockDeleteAttachments.mockImplementation(async () => {
+    order.push("supportAttachments");
+  });
 
   await wipeAndStartOver();
 
-  expect(order).toEqual(["database", "keys", "captureBuffer"]);
+  expect(order).toEqual(["database", "keys", "captureBuffer", "supportAttachments"]);
 });
 
 test("a database wipe failure propagates and skips wiping the keys -- no half-wiped state", async () => {

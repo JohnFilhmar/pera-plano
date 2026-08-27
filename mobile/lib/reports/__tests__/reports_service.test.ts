@@ -62,7 +62,7 @@ function baseTx(overrides: Partial<NewTransaction> & { date?: string } = {}): Ne
 beforeEach(async () => {
   db = await freshDb();
   await seedCategory(CATEGORY_ID, "Food & Dining");
-  walletId = (await createWallet({ name: "GCash", type: "e-wallet", openingBalance: 0 })).id;
+  walletId = (await createWallet({ name: "GCash", openingBalance: 0 })).id;
   jest.spyOn(Date, "now").mockReturnValue(NOW_MS);
 });
 

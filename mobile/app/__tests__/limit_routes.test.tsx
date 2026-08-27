@@ -53,6 +53,7 @@ import { createLimit, getLimit, listLimits } from "@/lib/db/repos/limits_repo";
 import { insertTransaction } from "@/lib/db/repos/transactions_repo";
 import { createWallet } from "@/lib/db/repos/wallets_repo";
 import { __setTierForTests } from "@/lib/entitlements";
+import { setManualIncome } from "@/lib/income/income_service";
 import { derivedLimitsFrom } from "@/lib/limits/limit_derivation";
 import { getLimitAlertState } from "@/lib/db/repos/limits_repo";
 import { queryClient as appQueryClient } from "@/lib/query_client";
@@ -117,7 +118,7 @@ beforeEach(async () => {
   __setTierForTests(null);
 
   await seedDefaultCategories();
-  wallet = await createWallet({ name: "GCash", type: "e-wallet" });
+  wallet = await createWallet({ name: "GCash" });
   food = await createCategory({ name: "Kainan", icon: "utensils" });
   delivery = await createCategory({ name: "Delivery", icon: "bike", parentId: food.id });
   transport = await createCategory({ name: "Byahe", icon: "bus" });
@@ -419,6 +420,43 @@ test("percent-of-income cannot be saved until income exists", async () => {
 
   await waitFor(() => expect(mockBack).not.toHaveBeenCalled());
   expect(await listLimits()).toEqual([]);
+});
+
+test("the percent field says what the percentage comes to, once income is known", async () => {
+  // The onboarding first-Limit step has always shown this sentence; the create
+  // route showed a bare "20%" until 2026-08-26, which is not a figure anyone
+  // can judge a limit by. Both screens render components/limits/limit_preview.tsx
+  // now, so this string and onboarding's cannot drift.
+  await setManualIncome(
+    { cadence: "monthly", averageAmount: 3_000_000, sourceWalletIds: [] },
+    Date.now(),
+  );
+
+  renderScreen(<NewLimitScreen />);
+
+  fireEvent.press(screen.getByTestId("limit-basis-percent"));
+  await waitFor(() => expect(screen.queryByTestId("limit-percent-blocked")).toBeNull());
+
+  typeAmount("limit-percent", "20");
+
+  // 20% of ₱30,000.00 monthly = ₱6,000.00; 600,000 × 12 ÷ 365 = ₱197.26 a day.
+  await waitFor(() =>
+    expect(screen.getByTestId("limit-percent-preview")).toHaveTextContent(
+      "₱6,000.00 every month is about ₱197.26 a day.",
+    ),
+  );
+});
+
+test("no percent sentence is drawn while income is unknown", async () => {
+  // "₱0.00 every month" beside a card saying the app does not know your income
+  // would contradict the card.
+  renderScreen(<NewLimitScreen />);
+
+  fireEvent.press(screen.getByTestId("limit-basis-percent"));
+  typeAmount("limit-percent", "20");
+
+  expect(screen.queryByTestId("limit-percent-preview")).toBeNull();
+  screen.getByTestId("limit-percent-blocked");
 });
 
 test("THE CREATE ROUTE RAISES NO SYSTEM KEYBOARD, on either basis", async () => {

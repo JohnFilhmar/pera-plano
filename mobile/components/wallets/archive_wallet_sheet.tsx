@@ -26,7 +26,7 @@ import { Chip } from "@/components/ui/chip";
 import { ListRow } from "@/components/ui/list_row";
 import type { Wallet } from "@/types/domain";
 
-import { WalletTypeIcon } from "./wallet_type_icon";
+import { WalletIcon } from "./wallet_icon";
 
 export type ArchiveWalletSheetProps = {
   wallet: Wallet;
@@ -134,7 +134,7 @@ export function ArchiveWalletSheet({
                 key={candidate.id}
                 testID={`archive-target-${candidate.id}`}
                 title={candidate.name}
-                left={<WalletTypeIcon type={candidate.type} />}
+                left={<WalletIcon wallet={candidate} />}
                 onPress={() => {
                   setTarget(candidate.id);
                   setShowError(false);

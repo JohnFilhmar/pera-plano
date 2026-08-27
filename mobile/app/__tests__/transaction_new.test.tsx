@@ -51,7 +51,8 @@ import { closeDatabase } from "@/lib/db/database";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { countOpen } from "@/lib/db/repos/review_queue_repo";
 import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions_repo";
-import { createWallet, getWallet } from "@/lib/db/repos/wallets_repo";
+import { setMatchers } from "@/lib/db/repos/wallet_matchers_repo";
+import { archiveWallet, createWallet, getWallet } from "@/lib/db/repos/wallets_repo";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
 import { typeAmount } from "@/test_support/keypad";
@@ -125,7 +126,7 @@ beforeEach(async () => {
   jest.clearAllMocks();
   await freshDb();
   await seedDefaultCategories();
-  pocket = await createWallet({ name: "Pocket", type: "cash", openingBalance: 100_000 });
+  pocket = await createWallet({ name: "Pocket", openingBalance: 100_000 });
 });
 
 afterEach(async () => {
@@ -277,7 +278,7 @@ describe("a manual entry never enters the pipeline", () => {
 
 describe("the cash wallet", () => {
   test("defaults to the cash wallet the ledger touched most recently", async () => {
-    const jar = await createWallet({ name: "Jar", type: "cash", openingBalance: 50_000 });
+    const jar = await createWallet({ name: "Jar", openingBalance: 50_000 });
     await insertTransaction({
       walletId: jar.id,
       categoryId: UNCATEGORIZED_ID,
@@ -298,17 +299,22 @@ describe("the cash wallet", () => {
     expect(await ledger(pocket.id)).toHaveLength(0);
   });
 
-  test("with no cash wallet it offers to create one and writes nothing", async () => {
+  test("with no manual wallet it offers to create one and writes nothing", async () => {
     await freshDb();
     await seedDefaultCategories();
-    const bpi = await createWallet({ name: "BPI", type: "bank", openingBalance: 500_000 });
+    const bpi = await createWallet({ name: "BPI", openingBalance: 500_000 });
+    // TRACKED, so there is genuinely no manual wallet to fall back on. "Cash"
+    // is no longer a type — it is a wallet nothing routes to — so a wallet
+    // created without matchers WOULD be a valid default and this test would
+    // stop testing anything.
+    await setMatchers(bpi.id, [{ packageName: "com.bpi.ng.app", hint: null }]);
     await renderNew();
 
     typeAmount("manual-amount", "1234");
     save();
 
-    // Cash in a bank wallet corrupts both balances, so the screen stops and
-    // asks rather than picking the only wallet it has.
+    // Cash written into a provider-tracked wallet corrupts both balances, so
+    // the screen stops and asks rather than picking the only wallet it has.
     expect(screen.getByTestId("manual-entry-no-cash")).toBeTruthy();
     expect(await ledger()).toHaveLength(0);
     expect((await getWallet(bpi.id))?.balance).toBe(500_000);
@@ -321,6 +327,94 @@ describe("the cash wallet", () => {
 // ---------------------------------------------------------------------------
 // The auto-opened keypad — numeric-input-system W1 Task 9
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Transfer mode (money-transfers Task 5) — goes through recordTransfer, not
+// insertTransaction. There is no jest.mock of either: this file already
+// verifies writes against a real database (see the header), so "went through
+// recordTransfer and not the entry path" is proven by the SHAPE of what
+// landed — two linked legs in two wallets — rather than by a spy call.
+// ---------------------------------------------------------------------------
+
+describe("a transfer draft", () => {
+  test("goes to recordTransfer, writing both legs linked, not a single insertTransaction row", async () => {
+    const bank = await createWallet({ name: "BPI", openingBalance: 200_000 });
+    // TRACKED. With no matchers it would be a second MANUAL wallet, and
+    // `lastUsedCashWallet` deliberately refuses to guess between two of those
+    // with no history — so the form would ask instead of defaulting, and the
+    // transfer under test would never be submitted at all.
+    await setMatchers(bank.id, [{ packageName: "com.bpi.ng.app", hint: null }]);
+    await renderNew();
+
+    fireEvent.press(screen.getByTestId("manual-entry-segment-transfer"));
+    typeAmount("manual-amount", "1000");
+    fireEvent.press(screen.getByTestId(`manual-entry-to-wallet-${bank.id}`));
+    save();
+
+    await waitFor(async () => {
+      expect(await ledger(pocket.id)).toHaveLength(1);
+    });
+
+    // Exactly two rows total — the placeholder this task removes wrote none,
+    // and a draft that fell through to the entry branch would have written
+    // exactly one, uncategorized and unlinked, in whichever wallet the entry
+    // path defaults to.
+    expect(await ledger()).toHaveLength(2);
+
+    const [outLeg] = await ledger(pocket.id);
+    const [inLeg] = await ledger(bank.id);
+    expect(outLeg.direction).toBe("out");
+    expect(inLeg.direction).toBe("in");
+    // "1000" typed on the shared keypad is pesos — ₱1,000.00 — and with no fee
+    // typed both legs carry the full amount.
+    expect(outLeg.amount).toBe(100_000);
+    expect(inLeg.amount).toBe(100_000);
+    // Only recordTransfer's linkTransfer call stamps this; a bare
+    // insertTransaction leaves it null.
+    expect(outLeg.transferLinkId).not.toBeNull();
+    expect(outLeg.transferLinkId).toBe(inLeg.transferLinkId);
+
+    // ₱1,000.00 opening minus a ₱1,000.00 transfer out, ₱2,000.00 opening plus
+    // a ₱1,000.00 transfer in.
+    expect((await getWallet(pocket.id))?.balance).toBe(0);
+    expect((await getWallet(bank.id))?.balance).toBe(300_000);
+
+    // Same dismiss as the entry path — committed before the screen closes.
+    expect(mockBack).toHaveBeenCalledTimes(1);
+  });
+
+  test("a rejected write says so on screen and keeps the sheet open", async () => {
+    const bank = await createWallet({ name: "BPI", openingBalance: 200_000 });
+    // TRACKED. With no matchers it would be a second MANUAL wallet, and
+    // `lastUsedCashWallet` deliberately refuses to guess between two of those
+    // with no history — so the form would ask instead of defaulting, and the
+    // transfer under test would never be submitted at all.
+    await setMatchers(bank.id, [{ packageName: "com.bpi.ng.app", hint: null }]);
+    await renderNew();
+
+    fireEvent.press(screen.getByTestId("manual-entry-segment-transfer"));
+    typeAmount("manual-amount", "1000");
+    fireEvent.press(screen.getByTestId(`manual-entry-to-wallet-${bank.id}`));
+
+    // ARCHIVED AFTER THE LIST WAS RENDERED, which is the shape every real
+    // failure on this path takes: the form is drawing a cached wallet list and
+    // the service validates against the database as it is at write time. No
+    // mock — `recordTransfer` rejects here for its own reason
+    // (`archived_wallet`), exactly as it would on a SQLite fault.
+    await archiveWallet(bank.id);
+    save();
+
+    // The transfer path is the one that writes three rows. A rejection with no
+    // surface leaves the user looking at a sheet that neither closed nor
+    // complained, with no way to tell whether their money was recorded.
+    const failure = await screen.findByTestId("manual-entry-submit-error");
+    expect(failure).toBeTruthy();
+    expect(await ledger()).toHaveLength(0);
+    expect(mockBack).not.toHaveBeenCalled();
+    // Save has to stay live, or the only thing left to do is lose the draft.
+    expect(screen.getByTestId("manual-entry-save").props.accessibilityState.disabled).toBe(false);
+  });
+});
 
 describe("the amount panel", () => {
   test("opens on mount, before the amount field is ever pressed", async () => {

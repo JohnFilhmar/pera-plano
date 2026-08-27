@@ -58,7 +58,17 @@ import type { Centavos, EpochMs, TxDirection } from "@/types/domain";
 export type DedupeVerdict =
   | { kind: "unique" }
   | { kind: "duplicate"; ofTransactionId: string }
-  | { kind: "possible-duplicate"; ofTransactionId: string };
+  | { kind: "possible-duplicate"; ofTransactionId: string }
+  /**
+   * This event is the provider's own record of a leg the app MINTED earlier,
+   * when the user confirmed a transfer only one side of which was captured.
+   *
+   * NOT `duplicate` — that outcome discards the incoming event, and here the
+   * incoming event is the authoritative one. NOT `possible-duplicate` — that
+   * asks the user a question they already answered when they confirmed the
+   * transfer.
+   */
+  | { kind: "supersedes"; ofTransactionId: string };
 
 /**
  * One already-committed transaction, carrying the two facts §6 needs that
@@ -87,10 +97,36 @@ export type RecentEvent = {
   transactionId: string;
   providerKey: string | null;
   channel: "push" | "sms" | null;
+  /**
+   * The account this row is on — the row's OWN `walletId`, straight off the
+   * `Transaction`, never a resolution redone here.
+   *
+   * READ BY THE SUPERSEDE BRANCH ONLY (`matchesMintedLeg`), because that branch
+   * is the only one that skips `describesSameMovement`, and `describesSameMovement`
+   * is where account identity is otherwise established: two rows from the same
+   * provider are two tellings from the same account. A minted leg has no
+   * provider at all, so without this field the branch is deciding "same
+   * movement?" on direction, amount and timing — facts a Cash→GCash transfer
+   * and an unrelated GCash spend of the same amount minutes later both satisfy.
+   */
+  walletId: string | null;
   amount: Centavos;
   direction: TxDirection;
   referenceNo: string | null;
   occurredAt: EpochMs;
+  /**
+   * This row was written by the app as a placeholder for a notification that had
+   * not arrived yet — `source: "manual"`, a `transferLinkId`, and no
+   * `rawNotificationId`. Supplied by the orchestrator, exactly as `providerKey`
+   * and `channel` are.
+   *
+   * IT IS THE ONE EXCEPTION TO `describesSameMovement`'s refusal of
+   * `providerKey: null` rows. That refusal protects a hand-typed entry, whose
+   * user may well have recorded a different thing; a minted leg is not that — it
+   * is a stand-in for this very notification, written on the user's explicit
+   * confirmation that the movement happened.
+   */
+  mintedTransferLeg: boolean;
 };
 
 /**
@@ -280,6 +316,51 @@ function matchesUndecidablePair(
 }
 
 /**
+ * Spec §6.2's match — same wallet, same direction, amount-equal, inside the twin
+ * window.
+ *
+ * Deliberately does NOT consult `describesSameMovement` — that function's
+ * provider rule is what this branch exists to except. Everything else it checks
+ * is restated here explicitly rather than inherited, so the exception is one
+ * function wide and cannot quietly widen. THE WALLET IS PART OF "EVERYTHING
+ * ELSE", and it has to be stated here because `describesSameMovement` is the
+ * only other place account identity is ever established (two rows agreeing on
+ * `providerKey` are two tellings from the same account) and this branch does
+ * not run it.
+ *
+ * WHAT A WALLET-BLIND VERSION COSTS. `recordTransfer` stamps BOTH legs of every
+ * hand-typed transfer as minted — `source: "manual"`, a `transferLinkId`, no
+ * raw notification — so a Cash→GCash ₱500.00 transfer at 10:00 leaves a minted
+ * CASH out leg. A real ₱500.00 GCash payment at 10:01 then agrees with it on
+ * direction, amount and the window, and supersedes it: the payment is never
+ * recorded (spend understated), the cash leg is overwritten with GCash's
+ * reference, and GCash's `balanceAfter` becomes an anchor on the cash wallet.
+ *
+ * NULL IS NOT A WILDCARD, on either side. `NormalizedEvent.walletId` is nullable
+ * — an unresolved capture is hard-routed to the Review Queue — and a wallet the
+ * app never established is no evidence that this is the account the placeholder
+ * was minted on.
+ *
+ * AMOUNT EQUALITY, NOT A TOLERANCE. A minted leg was created EQUAL to the leg
+ * the user confirmed at mint time, so an unequal provider figure is evidence of
+ * a DIFFERENT movement, not of drift — it falls through to the normal path
+ * (§6.5) untouched, same as any other row with a different amount.
+ */
+function matchesMintedLeg(
+  event: NormalizedEvent,
+  row: RecentEvent,
+  tunables: PipelineTunables,
+): boolean {
+  if (!row.mintedTransferLeg) return false;
+  if (event.walletId === null || row.walletId === null) return false;
+  if (event.walletId !== row.walletId) return false;
+  if (event.direction !== row.direction) return false;
+  if (event.amount !== row.amount) return false;
+
+  return isWithin(event, row, tunables.dedupeTwinWindowMs);
+}
+
+/**
  * The closest match in time, which is the one the verdict names.
  *
  * When more than one committed row satisfies a rule, the nearest is the likeliest
@@ -327,6 +408,21 @@ export function checkDuplicate(
   recent: RecentEvent[],
   tunables: PipelineTunables,
 ): DedupeVerdict {
+  // Checked FIRST and OUTSIDE the three tiers below: a minted leg is not
+  // competing evidence about whether two tellings describe one movement — it
+  // is the app's own placeholder for this exact notification, and the
+  // notification always wins over its placeholder. Running the strong-key or
+  // twin-window checks first could never fire on this row anyway
+  // (`describesSameMovement` refuses `providerKey: null`), but placing the
+  // supersede check first keeps that reliance explicit rather than accidental.
+  const minted = nearestInTime(
+    event,
+    recent.filter((row) => matchesMintedLeg(event, row, tunables)),
+  );
+  if (minted !== null) {
+    return { kind: "supersedes", ofTransactionId: minted.transactionId };
+  }
+
   const strongKey = nearestInTime(
     event,
     recent.filter((row) => matchesStrongKey(event, row, tunables)),

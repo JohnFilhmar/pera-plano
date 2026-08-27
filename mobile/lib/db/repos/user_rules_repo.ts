@@ -129,6 +129,17 @@ function decodeRow(row: UserRuleRow): UserRule | null {
     return null;
   }
 
+  // REJECTED, NOT DEFAULTED. A default here would be a guess about where the
+  // user's money went, and the rule would then silently propose the wrong
+  // wallet on every future notification it matched. Dropping the row costs one
+  // rule; guessing costs the user's trust in every card it produces.
+  if (action.kind === "mark-transfer" && typeof action.counterpartWalletId !== "string") {
+    console.warn(
+      `user_rules_repo: mark-transfer action on rule ${row.id} has no counterpartWalletId — skipping the rule`,
+    );
+    return null;
+  }
+
   return {
     id: row.id,
     matcher: matcher as UserRuleMatcher,

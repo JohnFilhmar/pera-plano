@@ -37,31 +37,41 @@ import {
 } from "@/lib/transactions/manual_entry";
 
 import type { Category, Centavos, EpochMs, Transaction, TxDirection, Wallet } from "@/types/domain";
+import { isManualOnly } from "@/lib/wallets/summary";
 
 const CloseGlyph = registerIcon(X);
 const NoteGlyph = registerIcon(Type);
 
-/** Expense/Income (task-4b's `SegmentedControl`) — see its header on why a
- * third "Transfer" segment does not belong here: `TxDirection` is `"in" |
- * "out"`, `ManualEntryDraft` carries no transfer concept, and a segment with
- * no field to write and no submit path to wire it into would be a live
- * control that silently does nothing — the exact dead tap this codebase's
- * other conventions (`Button`'s `iconOnly`, `ReviewCard`'s disabled-without-
- * a-handler pairs) all refuse to ship. */
+/** Expense/Income (task-4b's `SegmentedControl`). `TxDirection` stays exactly
+ * `"in" | "out"` — the ledger's column type must never hold a value it can't
+ * write — so Transfer is NOT a third member of this array. It is `kind` on
+ * `ManualEntryDraft` instead (money-transfers Task 4), driving a separate
+ * `manual-entry-segment-transfer` control rendered beside this one below. */
 const DIRECTION_SEGMENTS = [
   { value: "out", label: "Expense" },
   { value: "in", label: "Income" },
 ] as const;
 
-export type ManualEntryDraft = {
-  amount: Centavos;
-  direction: TxDirection;
-  walletId: string;
-  categoryId: string;
-  occurredAt: EpochMs;
-  merchant: string | null;
-  note: string | null;
-};
+export type ManualEntryDraft =
+  | {
+      kind: "entry";
+      amount: Centavos;
+      direction: TxDirection;
+      walletId: string;
+      categoryId: string;
+      occurredAt: EpochMs;
+      merchant: string | null;
+      note: string | null;
+    }
+  | {
+      kind: "transfer";
+      amount: Centavos;
+      feeAmount: Centavos;
+      fromWalletId: string;
+      toWalletId: string;
+      occurredAt: EpochMs;
+      note: string | null;
+    };
 
 export type ManualEntryFormProps = {
   testID?: string;
@@ -73,6 +83,18 @@ export type ManualEntryFormProps = {
   amount: string;
   onAmountChange: (text: string) => void;
   onSubmit: (draft: ManualEntryDraft) => void;
+  /**
+   * A write this form already accepted that the ROUTE then failed to commit —
+   * a rejected `recordTransfer`, say. `null` when there is nothing to report.
+   *
+   * NOT part of `showErrors`. Every other error here is a field this form can
+   * see is wrong and can therefore clear the moment the user fixes it; this one
+   * is owned by whoever performed the write, because only they know when it
+   * stops being true. Shown UNCONDITIONALLY when set, for the same reason:
+   * gating it behind a submit attempt would hide a message that only ever
+   * exists because a submit already happened.
+   */
+  submitError?: string | null;
   onCreateCashWallet: () => void;
   /**
    * The header's X (task-4b). OPTIONAL, and absent means no button rather
@@ -124,6 +146,7 @@ export function ManualEntryForm({
   amount,
   onAmountChange,
   onSubmit,
+  submitError = null,
   onCreateCashWallet,
   onClose,
 }: ManualEntryFormProps) {
@@ -140,17 +163,24 @@ export function ManualEntryForm({
   const [pickingCategory, setPickingCategory] = useState(false);
   const [showErrors, setShowErrors] = useState(false);
 
-  // Spec: archived wallets are hidden from every picker, and cash is listed
-  // first — this screen exists for cash; everything else is the exception.
+  // The third segment. A separate state, not a third `direction` value — see
+  // DIRECTION_SEGMENTS' header. Switching kind never resets amount, date or
+  // note; only the fields that don't apply on the other side (Category/
+  // Merchant here, To/Fee there) disappear.
+  const [kind, setKind] = useState<"entry" | "transfer">("entry");
+  const isTransfer = kind === "transfer";
+  const [chosenToWalletId, setChosenToWalletId] = useState<string | null>(null);
+  const [feeAmount, setFeeAmount] = useState("");
+
+  // Spec: archived wallets are hidden from every picker, and the wallets
+  // nothing can track are listed first — this screen exists for the spending no
+  // notification will ever report; everything else is the exception.
   const selectable = useMemo(() => {
     const active = wallets.filter((wallet) => !wallet.isArchived);
-    return [
-      ...active.filter((wallet) => wallet.type === "cash"),
-      ...active.filter((wallet) => wallet.type !== "cash"),
-    ];
+    return [...active.filter(isManualOnly), ...active.filter((wallet) => !isManualOnly(wallet))];
   }, [wallets]);
 
-  const hasCashWallet = selectable.some((wallet) => wallet.type === "cash");
+  const hasCashWallet = selectable.some(isManualOnly);
   const defaultWallet = useMemo(
     () => lastUsedCashWallet(wallets, transactions),
     [wallets, transactions],
@@ -167,11 +197,43 @@ export function ManualEntryForm({
   const categoryId = chosenCategoryId ?? categoryForMerchant(transactions, merchant);
 
   const amountCentavos = centavosFrom(amount);
+  const feeAmountCentavos = centavosFrom(feeAmount);
   const occurredAt = occurredAtFor(day, now);
 
   const canSave = amountCentavos > 0;
   const walletMissing = walletId === null;
   const dateInvalid = occurredAt === null;
+
+  // Fewer than two unarchived wallets means the segment has nothing to offer —
+  // disabled WITH THE REASON SHOWN rather than offered-then-refused on submit,
+  // the same no-dead-taps rule this file's header cites for `Button`'s
+  // `iconOnly` and `ReviewCard`'s disabled-without-a-handler pairs.
+  const transferAvailable = wallets.filter((wallet) => !wallet.isArchived).length >= 2;
+
+  // Reuses `selectable`'s archived-wallet filter rather than a second one; the
+  // only thing the To picker adds is excluding whichever wallet is From.
+  const toCandidates = selectable.filter((wallet) => wallet.id !== walletId);
+  // DERIVED, not just stored: a picked To that now equals From (the From list
+  // is never filtered against it, so re-picking From to the same wallet is
+  // one tap) is treated as no selection at all, in the same render — not
+  // corrected a tick later by an effect. A stale `chosenToWalletId` that
+  // happened to equal `walletId` would otherwise stay "selected" against a
+  // wallet the To list no longer even offers, and `toWalletMissing` below
+  // would wrongly read false, letting handleSave emit an equal pair the
+  // service's own `same_wallet` check exists only to catch three layers down.
+  const toWalletId = chosenToWalletId === walletId ? null : chosenToWalletId;
+  const toWalletMissing = isTransfer && toWalletId === null;
+  // `>=`, matching transfer_service.ts's own `fee_exceeds_amount` rule: an
+  // EQUAL fee would leave a zero-amount leg, which the schema's
+  // `CHECK (amount > 0)` rejects after the out-leg already exists. Closed
+  // here, in the same showErrors mechanism as walletMissing/dateInvalid/
+  // toWalletMissing, so `fee_exceeds_amount` stays a backstop the service
+  // enforces rather than a path a user can actually reach — a bare
+  // NumericField with no upper bound tied to `amount` would otherwise let
+  // an ordinary typed number trigger a validation error with no error
+  // surface on this screen to show it. Blank fee reads as 0 through the same
+  // `centavosFrom` the amount field uses, so it never trips this.
+  const feeExceedsAmount = isTransfer && feeAmountCentavos >= amountCentavos;
 
   const selectedCategory = categories.find((category) => category.id === categoryId);
   // The summary line beneath the amount (task-4b) — glanceable confirmation
@@ -183,12 +245,26 @@ export function ManualEntryForm({
   function handleSave(): void {
     if (!canSave) return;
 
-    if (walletMissing || dateInvalid) {
+    if (walletMissing || dateInvalid || toWalletMissing || feeExceedsAmount) {
       setShowErrors(true);
       return;
     }
 
+    if (isTransfer) {
+      onSubmit({
+        kind: "transfer",
+        amount: amountCentavos,
+        feeAmount: feeAmountCentavos,
+        fromWalletId: walletId,
+        toWalletId: toWalletId as string,
+        occurredAt,
+        note: trimmedOrNull(note),
+      });
+      return;
+    }
+
     onSubmit({
+      kind: "entry",
       amount: amountCentavos,
       direction,
       walletId,
@@ -246,6 +322,17 @@ export function ManualEntryForm({
         />
       </View>
 
+      {/* DIRECTLY UNDER SAVE, above the amount, because it is the answer to the
+          tap the user just made and the screen did not close on. Same
+          `text-danger` treatment as `manual-entry-fee-error` and the other
+          inline errors below — a failed write is not a different KIND of
+          problem to the user, only a later one. */}
+      {submitError === null ? null : (
+        <Text testID="manual-entry-submit-error" className="text-danger dark:text-danger-dark">
+          {submitError}
+        </Text>
+      )}
+
       {/* The amount, large and centred (task-4b, REVISED per review round 2).
           `NumericField` itself is now the hero figure (`size="hero"`) rather
           than a small, easy-to-miss real control sitting under a decorative
@@ -280,13 +367,59 @@ export function ManualEntryForm({
       {/* Direction — one of the four screens `SegmentedControl` was built
           for (task-4b). `testID="manual-entry-direction"` renders children at
           `manual-entry-direction-out`/`-in`, the exact ids the hand-rolled
-          toggle this replaces already used. */}
-      <SegmentedControl
-        testID="manual-entry-direction"
-        segments={DIRECTION_SEGMENTS}
-        value={direction}
-        onChange={setDirection}
-      />
+          toggle this replaces already used.
+
+          Transfer rides alongside it rather than inside `segments`: it is
+          NOT a `TxDirection`, `SegmentedControl` has no per-item `disabled`
+          (and none of its other five call sites need one), and this pill's
+          pinned testID is `manual-entry-segment-transfer` — a third child of
+          `testID="manual-entry-direction"` would be
+          `manual-entry-direction-transfer` instead. A second, one-off
+          control here is cheaper than reshaping a shared component for its
+          only disableable segment. */}
+      <View className="flex-row gap-2">
+        <SegmentedControl
+          testID="manual-entry-direction"
+          segments={DIRECTION_SEGMENTS}
+          value={direction}
+          onChange={(value) => {
+            setDirection(value);
+            setKind("entry");
+          }}
+        />
+        <Pressable
+          testID="manual-entry-segment-transfer"
+          disabled={!transferAvailable}
+          accessibilityRole="radio"
+          accessibilityLabel={
+            transferAvailable ? "Transfer" : "Transfer — add a second wallet first"
+          }
+          accessibilityState={{ selected: isTransfer, disabled: !transferAvailable }}
+          onPress={() => {
+            if (transferAvailable) setKind("transfer");
+          }}
+          className={`min-h-[44px] flex-1 items-center justify-center rounded-full px-3 ${
+            isTransfer ? "bg-brand dark:bg-brand-dark" : "bg-chip dark:bg-chip-dark"
+          } ${!transferAvailable ? "opacity-40" : ""}`}
+        >
+          <Text
+            numberOfLines={1}
+            className={`text-row font-semibold ${
+              isTransfer ? "text-on-brand dark:text-on-brand-dark" : "text-fg-2 dark:text-fg-2-dark"
+            }`}
+          >
+            Transfer
+          </Text>
+        </Pressable>
+      </View>
+      {!transferAvailable ? (
+        <Text
+          testID="manual-entry-transfer-unavailable"
+          className="text-fg-2 dark:text-fg-2-dark"
+        >
+          Add a second wallet to transfer between wallets.
+        </Text>
+      ) : null}
 
       {/* THE PROMPT THAT REPLACES A DANGEROUS DEFAULT. Shown only when no cash
           wallet exists AND the user has not already resolved it by picking one
@@ -311,8 +444,12 @@ export function ManualEntryForm({
         </View>
       ) : null}
 
-      {/* Wallet */}
+      {/* Wallet — relabelled "From" in transfer mode (money-transfers Task 4).
+          No visible label in entry mode, unchanged from before this task. */}
       <View className="gap-2">
+        {isTransfer ? (
+          <Text className="text-fg-2 dark:text-fg-2-dark">From</Text>
+        ) : null}
         {selectable.map((wallet) => (
           <Pressable
             key={wallet.id}
@@ -338,6 +475,53 @@ export function ManualEntryForm({
         ) : null}
       </View>
 
+      {/* To + Fee — transfer mode only. The SAME inline Pressable-per-wallet
+          shape the From list above already uses; there is no `WalletPicker`
+          component in this codebase, and this task does not invent one.
+          Fee is optional: blank reads as 0 through the same `centavosFrom`
+          the amount field already uses. */}
+      {isTransfer ? (
+        <View testID="manual-entry-to-wallet" className="gap-2">
+          <Text className="text-fg-2 dark:text-fg-2-dark">To</Text>
+          {toCandidates.map((wallet) => (
+            <Pressable
+              key={wallet.id}
+              testID={`manual-entry-to-wallet-${wallet.id}`}
+              accessibilityRole="button"
+              accessibilityState={{ selected: toWalletId === wallet.id }}
+              accessibilityLabel={wallet.name}
+              onPress={() => setChosenToWalletId(wallet.id)}
+              className={`rounded-xl px-4 py-3 ${
+                toWalletId === wallet.id
+                  ? "bg-brand-soft dark:bg-brand-soft-dark"
+                  : "bg-surface dark:bg-surface-dark"
+              }`}
+            >
+              <Text className="text-fg dark:text-fg-dark">{wallet.name}</Text>
+            </Pressable>
+          ))}
+
+          {showErrors && toWalletMissing ? (
+            <Text testID="manual-entry-to-wallet-error" className="text-danger dark:text-danger-dark">
+              Choose which wallet this went into.
+            </Text>
+          ) : null}
+
+          <NumericField
+            testID="manual-entry-fee"
+            label="Fee (optional)"
+            placeholder="₱0"
+            value={feeAmount}
+            onChangeText={setFeeAmount}
+          />
+          {showErrors && feeExceedsAmount ? (
+            <Text testID="manual-entry-fee-error" className="text-danger dark:text-danger-dark">
+              The fee can't be more than the amount you're sending.
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
+
       {/* Date */}
       <View className="gap-2">
         <DateField
@@ -360,30 +544,37 @@ export function ManualEntryForm({
         ) : null}
       </View>
 
-      {/* Category — a single Chip standing in for the hand-rolled summary
-          row this replaces (task-4b). NOT a wrapped row of every category as
-          a chip each: `category-option-{id}` and `category-picker-save`
-          below are `CategoryPicker`'s own sheet, which is also where the
-          "always categorize X as Y" rule offer lives (rule 6) — a second,
-          bypassing selector here would need to either duplicate that offer
-          or silently drop it. */}
-      <View className="flex-row">
-        <Chip
-          testID="manual-entry-category"
-          label={selectedCategory?.name ?? "Uncategorized"}
-          fill="outline"
-          onPress={() => setPickingCategory(true)}
-        />
-      </View>
+      {/* Category and Merchant — entry mode only. A transfer moves money
+          between the user's own wallets; it has no category (it is not
+          spend) and no merchant (there is no counterparty to name). */}
+      {!isTransfer ? (
+        <>
+          {/* Category — a single Chip standing in for the hand-rolled summary
+              row this replaces (task-4b). NOT a wrapped row of every category as
+              a chip each: `category-option-{id}` and `category-picker-save`
+              below are `CategoryPicker`'s own sheet, which is also where the
+              "always categorize X as Y" rule offer lives (rule 6) — a second,
+              bypassing selector here would need to either duplicate that offer
+              or silently drop it. */}
+          <View className="flex-row">
+            <Chip
+              testID="manual-entry-category"
+              label={selectedCategory?.name ?? "Uncategorized"}
+              fill="outline"
+              onPress={() => setPickingCategory(true)}
+            />
+          </View>
 
-      <TextInput
-        testID="manual-entry-merchant"
-        value={merchant}
-        onChangeText={setMerchant}
-        accessibilityLabel="Merchant"
-        placeholder="Where? (optional)"
-        className="rounded-xl bg-surface px-4 py-3 text-fg dark:bg-surface-dark dark:text-fg-dark"
-      />
+          <TextInput
+            testID="manual-entry-merchant"
+            value={merchant}
+            onChangeText={setMerchant}
+            accessibilityLabel="Merchant"
+            placeholder="Where? (optional)"
+            className="rounded-xl bg-surface px-4 py-3 text-fg dark:bg-surface-dark dark:text-fg-dark"
+          />
+        </>
+      ) : null}
 
       {/* Note, on `bg-chip` with a leading glyph (task-4b). */}
       <View className="flex-row items-center gap-2 rounded-xl bg-chip px-4 py-3 dark:bg-chip-dark">

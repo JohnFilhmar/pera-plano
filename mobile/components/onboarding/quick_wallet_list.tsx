@@ -8,11 +8,16 @@
 // only renders the list and reports edits. It never imports a repository.
 //
 // EVERY ROW STARTS EDITABLE, NOT JUST VISIBLE. Docs step 7: "The user can
-// rename, change type, ... or remove any proposal" — so a row's name is a
-// TextInput from the first frame, not a label that becomes one after a tap,
-// and its type is a set of chips rather than a fixed badge. "Creating five
-// wallets in five taps" (task-3-brief rule 2) is the one tap on the primary
-// button once every row already looks right — never five separate edit flows.
+// rename, ... or remove any proposal" — so a row's name is a TextInput from the
+// first frame, not a label that becomes one after a tap. "Creating five wallets
+// in five taps" (task-3-brief rule 2) is the one tap on the primary button once
+// every row already looks right — never five separate edit flows.
+//
+// THE TYPE CHIPS ARE GONE. That same step used to ask for one of bank /
+// e-wallet / savings / credit / cash per row, before the user had entered a
+// single transaction. The app works out the one thing that mattered instead
+// (lib/wallets/classification.ts), so a row is now a name and, optionally, what
+// is already in it.
 //
 // A ROW CAN BE EXCLUDED WITHOUT BEING REMOVED FROM THE LIST. Docs step 7 says
 // "remove any proposal"; this keeps the row on screen, unchecked, rather than
@@ -20,37 +25,34 @@
 // undone instead of a re-add from scratch.
 //
 // RESTYLE (mobile-ui-revamp Part 3 Task 6). Every row now carries a
-// `ProviderBadge` (or, for the one proposal with no provider — cash —
-// `WalletTypeIcon`) so the row reads as "which app/wallet is this" at a
+// `ProviderBadge` (or, for the one proposal with no provider — cash — a
+// plain banknote glyph) so the row reads as "which app/wallet is this" at a
 // glance instead of a bare checkbox. `proposal.name` was already routed
 // through `providerLabel()` at the call site (app/(onboarding)/wallets.tsx's
 // `defaultNameFor`, since commit 9d36c05) — the badge is what was actually
-// missing, not the label. The wallet-type row becomes a row of `Chip`s
-// (soft brand fill when selected) rather than hand-rolled pills, and the
-// balance preview moves beside the name so "the balance" reads on the right
+// missing, not the label. The balance preview sits beside the name so "the
+// balance" reads on the right
 // of the row the way the design draws it, while the editable field itself
 // (the actual keypad trigger) stays where it was, below.
 import { Pressable, Text, TextInput, View } from "react-native";
-import { Check } from "lucide-react-native";
+import { Banknote, Check } from "lucide-react-native";
 
 import { AmountText } from "@/components/ui/amount_text";
 import { registerIcon } from "@/components/ui/button";
-import { Chip } from "@/components/ui/chip";
 import { NumericField } from "@/components/ui/numeric_field";
 import { ProviderBadge } from "@/components/ui/provider_badge";
-import { WalletTypeIcon } from "@/components/wallets/wallet_type_icon";
 import { centavosFrom } from "@/lib/money/peso_input";
-import { WALLET_TYPE_LABELS, WALLET_TYPE_ORDER } from "@/lib/wallets/summary";
 import type { PesoInput } from "@/lib/money/peso_input";
-import type { WalletType } from "@/types/domain";
 
 const CheckGlyph = registerIcon(Check);
+
+/** The one row with no provider to badge. See the identity-glyph note below. */
+const CashGlyph = registerIcon(Banknote);
 
 export type WalletProposal = {
   /** Stable across re-renders: the package name, or "cash" for the one cash row. */
   key: string;
   name: string;
-  type: WalletType;
   /** `null` for the cash proposal — the only row with no matcher to attach. */
   packageName: string | null;
   /**
@@ -65,7 +67,7 @@ export type WalletProposal = {
    * field existed (components/onboarding/__tests__/quick_wallet_list.test.tsx's
    * own `makeProposal()`, out of this task's file list) keeps compiling
    * unmodified. A proposal with no `providerKey` at all renders the same
-   * `WalletTypeIcon` fallback cash gets — the answer this file already had
+   * banknote fallback cash gets — the answer this file already had
    * for "no provider to badge" before this field existed.
    */
   providerKey?: string | null;
@@ -92,7 +94,6 @@ export type WalletProposal = {
 export type QuickWalletListProps = {
   proposals: WalletProposal[];
   onRename: (key: string, name: string) => void;
-  onChangeType: (key: string, type: WalletType) => void;
   onToggleIncluded: (key: string) => void;
   onChangeOpeningBalance: (key: string, text: PesoInput) => void;
   testID?: string;
@@ -101,17 +102,15 @@ export type QuickWalletListProps = {
 function ProposalRow({
   proposal,
   onRename,
-  onChangeType,
   onToggleIncluded,
   onChangeOpeningBalance,
 }: {
   proposal: WalletProposal;
   onRename: (key: string, name: string) => void;
-  onChangeType: (key: string, type: WalletType) => void;
   onToggleIncluded: (key: string) => void;
   onChangeOpeningBalance: (key: string, text: PesoInput) => void;
 }) {
-  const { key, name, type, packageName, providerKey, included, openingBalanceText } = proposal;
+  const { key, name, packageName, providerKey, included, openingBalanceText } = proposal;
 
   return (
     <View
@@ -143,12 +142,12 @@ function ProposalRow({
         </Pressable>
 
         {/* The identity glyph: a real ProviderBadge for every provider-linked
-            proposal, and the matching WalletTypeIcon for the one proposal
-            that has no provider at all — cash. */}
+            proposal, and a plain banknote for the one proposal that has no
+            provider at all — cash, which nothing will ever route to. */}
         {providerKey ? (
           <ProviderBadge providerKey={providerKey} size={20} />
         ) : (
-          <WalletTypeIcon type={type} size={20} className="text-fg-2 dark:text-fg-2-dark" />
+          <CashGlyph size={20} className="text-fg-2 dark:text-fg-2-dark" />
         )}
 
         <TextInput
@@ -190,32 +189,6 @@ function ProposalRow({
         </Text>
       )}
 
-      {/* Cash has exactly one type by definition (WalletForm's own rule); a
-          chip row that let it become "bank" would be a wallet the matcher
-          picker elsewhere assumes never has any matchers. */}
-      {packageName ? (
-        <View className="flex-row flex-wrap gap-2">
-          {WALLET_TYPE_ORDER.filter((candidate) => candidate !== "cash").map((candidate) => (
-            <Chip
-              key={candidate}
-              testID={`wallet-proposal-type-${key}-${candidate}`}
-              label={WALLET_TYPE_LABELS[candidate]}
-              tone="brand"
-              fill={type === candidate ? "soft" : "outline"}
-              selected={type === candidate}
-              // A Chip with no `onPress` renders as an inert label rather
-              // than a disabled Pressable (its own header explains why) —
-              // the right shape for a row the user unchecked: nothing left
-              // here to edit until it is checked again. `selected` above is
-              // passed regardless of `included` — chip.tsx's own
-              // `ChipProps.selected` doc covers this exact shape: it is inert
-              // without `onPress`, not an error.
-              onPress={included ? () => onChangeType(key, candidate) : undefined}
-            />
-          ))}
-        </View>
-      ) : null}
-
       {/* Task 4 rule 1: optional, blank by default. Blank means ₱0.00, a real
           answer, not a missing one, so it carries no error state and never
           blocks Continue.
@@ -255,7 +228,6 @@ function ProposalRow({
 export function QuickWalletList({
   proposals,
   onRename,
-  onChangeType,
   onToggleIncluded,
   onChangeOpeningBalance,
   testID = "quick-wallet-list",
@@ -267,7 +239,6 @@ export function QuickWalletList({
           key={proposal.key}
           proposal={proposal}
           onRename={onRename}
-          onChangeType={onChangeType}
           onToggleIncluded={onToggleIncluded}
           onChangeOpeningBalance={onChangeOpeningBalance}
         />

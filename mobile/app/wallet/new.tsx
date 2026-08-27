@@ -75,7 +75,7 @@ export default function NewWalletScreen() {
 
     setError(null);
     createWallet.mutate(
-      { name: values.name, type: values.type, openingBalance: values.openingBalance },
+      { name: values.name, openingBalance: values.openingBalance },
       {
         onSuccess: (wallet) => {
           if (values.matchers.length === 0) {

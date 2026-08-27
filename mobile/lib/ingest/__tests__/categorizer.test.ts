@@ -270,7 +270,11 @@ test("only set-category actions categorize", () => {
     rule({ merchantPattern: "GRAB" }, { kind: "set-merchant", merchant: "Grab PH" }, {
       priority: 100,
     }),
-    rule({ merchantPattern: "GRAB" }, { kind: "mark-transfer" }, { priority: 100 }),
+    rule(
+      { merchantPattern: "GRAB" },
+      { kind: "mark-transfer", counterpartWalletId: "wallet_bpi" },
+      { priority: 100 },
+    ),
   ];
 
   // `ignore` belongs to an earlier stage; a set-wallet rule has no categoryId

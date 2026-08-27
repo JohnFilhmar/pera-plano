@@ -19,9 +19,21 @@ const CORE_TABLES = [
  * the assertion below is claiming.
  *
  * m2b Task 5 adds `loan_adjustments` (migration 005); m2c Task 1 adds
- * `bill_cycles` (migration 006); m3b Task 7 adds `parse_stats` (migration 009).
+ * `bill_cycles` (migration 006); m3b Task 7 adds `parse_stats` (migration 009);
+ * 013_wallet_traits adds `wallet_trait_evidence`, the running scores behind the
+ * held/owed verdict that replaced the onboarding wallet-type question.
  */
-const MIGRATED_TABLES = ["bill_cycles", "loan_adjustments", "parse_stats"];
+const MIGRATED_TABLES = [
+  "bill_cycles",
+  "loan_adjustments",
+  "parse_stats",
+  "wallet_trait_evidence",
+  // 015_support_reports adds the offline problem-report outbox and the media
+  // attached to each report — the only tables in this schema that hold text
+  // the user typed for someone else to read.
+  "support_reports",
+  "support_report_attachments",
+];
 
 const EXPECTED_TABLES = [...CORE_TABLES, ...MIGRATED_TABLES].sort();
 
@@ -89,7 +101,7 @@ test("CHECK constraints reject non-positive amounts and bad enums (invariant I6)
   const db = await freshDb();
   const now = Date.now();
   await db.runAsync(
-    "INSERT INTO wallets (id, name, type, balance, currency, is_archived, created_at, updated_at) VALUES ('w1', 'GCash', 'e-wallet', 0, 'PHP', 0, ?, ?)",
+    "INSERT INTO wallets (id, name, balance, currency, is_archived, created_at, updated_at) VALUES ('w1', 'GCash', 0, 'PHP', 0, ?, ?)",
     [now, now],
   );
   await db.runAsync(
@@ -101,11 +113,20 @@ test("CHECK constraints reject non-positive amounts and bad enums (invariant I6)
       "INSERT INTO transactions (id, wallet_id, category_id, amount, direction, occurred_at, source, confidence, created_at, updated_at) VALUES ('t1', 'w1', 'c1', 0, 'out', 0, 'manual', 1.0, 0, 0)",
     ),
   ).rejects.toThrow(/CHECK/i);
-  await expect(
-    db.runAsync(
-      "INSERT INTO wallets (id, name, type, balance, currency, is_archived, created_at, updated_at) VALUES ('w2', 'Bad', 'checking', 0, 'PHP', 0, 0, 0)",
-    ),
-  ).rejects.toThrow(/CHECK/i);
+  // The wallet half of this test used to insert `type: 'checking'` and expect
+  // the CHECK constraint on `wallets.type` to reject it. That column — and its
+  // five-value enum — is gone (014_drop_wallet_type.sql): the app stopped asking
+  // what kind of wallet this is, and infers the one thing that mattered instead.
+  // What replaced it is not a CHECK but a NOT NULL default, asserted here so the
+  // rebuild cannot quietly ship a nullable column.
+  const traits = await db.getAllAsync<{ name: string; notnull: number; dflt_value: string | null }>(
+    "PRAGMA table_info(wallets)",
+  );
+  for (const column of ["owed_balance", "owed_pinned"]) {
+    const found = traits.find((candidate) => candidate.name === column);
+    expect(found?.notnull).toBe(1);
+    expect(found?.dflt_value).toBe("0");
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -142,6 +163,7 @@ type SeedIds = {
   incomeProfileId: string;
   loanId: string;
   billId: string;
+  supportReportId: string;
 };
 
 /** Seeds one valid parent row per referenceable table. Returns their ids for use by VALID_ROWS. */
@@ -160,10 +182,11 @@ async function seedParents(db: SQLiteDatabase): Promise<SeedIds> {
     incomeProfileId: "seed_income_profile",
     loanId: "seed_loan",
     billId: "seed_bill",
+    supportReportId: "seed_support_report",
   };
 
   await insertRow(db, "wallets", {
-    id: ids.walletId, name: "Seed Wallet", type: "cash", balance: 0,
+    id: ids.walletId, name: "Seed Wallet", balance: 0,
     currency: "PHP", is_archived: 0, created_at: now, updated_at: now,
   });
   await insertRow(db, "categories", {
@@ -201,6 +224,11 @@ async function seedParents(db: SQLiteDatabase): Promise<SeedIds> {
     due_rule_json: "{}", reminder_offsets_json: "[]", auto_match_rule_json: null,
     category_id: ids.categoryId, created_at: now, updated_at: now,
   });
+  await insertRow(db, "support_reports", {
+    id: ids.supportReportId, title: "Seed report", description: "Seeded for the FK below.",
+    topic: "other", status: "queued", attempt_count: 0, next_attempt_at: now,
+    last_error: null, created_at: now, updated_at: now, sent_at: null, ticket_ref: null,
+  });
 
   return ids;
 }
@@ -209,7 +237,7 @@ async function seedParents(db: SQLiteDatabase): Promise<SeedIds> {
 function buildValidRows(ids: SeedIds, now: number): Record<string, Row> {
   return {
     wallets: {
-      id: "row_wallets", name: "Test Wallet", type: "cash", balance: 0,
+      id: "row_wallets", name: "Test Wallet", balance: 0,
       currency: "PHP", is_archived: 0, created_at: now, updated_at: now,
     },
     wallet_matchers: {
@@ -313,6 +341,30 @@ function buildValidRows(ids: SeedIds, now: number): Record<string, Row> {
       id: "row_parse_stats", provider_key: "gcash", day_start_at: now,
       parsed_count: 1, failed_count: 0, updated_at: now,
     },
+    // migration 013. Keyed BY the wallet rather than by an id of its own: a
+    // wallet has exactly one running score, and the primary key says so.
+    wallet_trait_evidence: {
+      wallet_id: ids.walletId, owed_score: 250, held_score: 0,
+      sample_count: 1, updated_at: now,
+    },
+    // migration 015. `status` is 'queued' | 'sent' | 'rejected' and there is no
+    // in-flight value — see types/support.ts for why an OS kill must not be
+    // able to strand a row mid-send. `next_attempt_at` is an absolute instant,
+    // not a delay.
+    support_reports: {
+      id: "row_support_reports", title: "Transfers show up twice",
+      description: "Both legs landed as spending.", topic: "wrong_amount_or_wallet",
+      status: "queued", attempt_count: 0, next_attempt_at: now, last_error: null,
+      created_at: now, updated_at: now, sent_at: null, ticket_ref: null,
+    },
+    // migration 015. Stores a PATH, never the bytes — screenshots are hundreds
+    // of kilobytes each and this database is opened and keyed on every cold
+    // start.
+    support_report_attachments: {
+      id: "row_support_report_attachments", report_id: ids.supportReportId,
+      file_uri: "file:///docs/support_attachments/a.png", mime_type: "image/png",
+      byte_size: 1024, created_at: now,
+    },
   };
 }
 
@@ -355,6 +407,7 @@ describe("foreign keys are enforced on every FK column in the schema", () => {
     { table: "bill_payments", column: "bill_id" },
     { table: "bill_payments", column: "transaction_id" },
     { table: "review_queue_items", column: "raw_notification_id" },
+    { table: "support_report_attachments", column: "report_id" },
   ];
 
   test.each(FK_COLUMNS.map(({ table, column }) => [table, column]))(
@@ -381,7 +434,7 @@ describe("referential integrity is enforced on delete, not just on insert (invar
     // fresh, otherwise-unreferenced wallet isolates the one relationship under test.
     const now = Date.now();
     await insertRow(db, "wallets", {
-      id: "wallet_to_delete", name: "Guarded Wallet", type: "cash", balance: 0,
+      id: "wallet_to_delete", name: "Guarded Wallet", balance: 0,
       currency: "PHP", is_archived: 0, created_at: now, updated_at: now,
     });
     await insertRow(db, "transactions", {
@@ -395,8 +448,21 @@ describe("referential integrity is enforced on delete, not just on insert (invar
 
 describe("NOT NULL is enforced on every required column in the schema", () => {
   const NOT_NULL_COLUMNS: Array<{ table: string; column: string }> = [
-    ...["id", "name", "type", "balance", "currency", "is_archived", "created_at", "updated_at"]
-      .map((column) => ({ table: "wallets", column })),
+    // `type` is gone (014_drop_wallet_type.sql); `owed_balance` and
+    // `owed_pinned` arrived with 013 and are NOT NULL for the same reason every
+    // other flag here is — a NULL would read as neither true nor false to the
+    // code that decides whether a balance counts toward the user's total.
+    ...[
+      "id",
+      "name",
+      "balance",
+      "currency",
+      "is_archived",
+      "owed_balance",
+      "owed_pinned",
+      "created_at",
+      "updated_at",
+    ].map((column) => ({ table: "wallets", column })),
     ...["id", "wallet_id", "package_name", "created_at", "updated_at"]
       .map((column) => ({ table: "wallet_matchers", column })),
     ...["id", "name", "icon", "is_system", "is_hidden", "created_at", "updated_at"]
@@ -439,6 +505,12 @@ describe("NOT NULL is enforced on every required column in the schema", () => {
       .map((column) => ({ table: "app_settings", column })),
     ...["id", "provider_key", "day_start_at", "parsed_count", "failed_count", "updated_at"]
       .map((column) => ({ table: "parse_stats", column })),
+    // `last_error`, `sent_at` and `ticket_ref` are deliberately absent: all
+    // three are null for the whole life of a report that sends first time.
+    ...["id", "title", "description", "topic", "status", "attempt_count", "next_attempt_at", "created_at", "updated_at"]
+      .map((column) => ({ table: "support_reports", column })),
+    ...["id", "report_id", "file_uri", "mime_type", "byte_size", "created_at"]
+      .map((column) => ({ table: "support_report_attachments", column })),
   ];
 
   test.each(NOT_NULL_COLUMNS.map(({ table, column }) => [table, column]))(

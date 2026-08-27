@@ -34,8 +34,8 @@ let gcash: Wallet;
 beforeEach(async () => {
   db = await freshDb();
   await seedDefaultCategories();
-  bpi = await createWallet({ name: "BPI", type: "bank" });
-  gcash = await createWallet({ name: "GCash", type: "e-wallet" });
+  bpi = await createWallet({ name: "BPI" });
+  gcash = await createWallet({ name: "GCash" });
 });
 
 afterEach(async () => {

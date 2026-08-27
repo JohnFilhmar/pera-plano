@@ -118,7 +118,7 @@ beforeEach(async () => {
   await freshDb();
   jest.clearAllMocks();
   await seedDefaultCategories();
-  payroll = await createWallet({ name: "BPI Payroll", type: "bank" });
+  payroll = await createWallet({ name: "BPI Payroll" });
 });
 
 afterEach(async () => {

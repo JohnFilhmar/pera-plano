@@ -43,17 +43,20 @@
 // doc comment for why that one kind is the only exception to "disabled means
 // no handler".
 import { CircleHelp } from "lucide-react-native";
+import { useState } from "react";
 import { Text, View } from "react-native";
 
-import { AmountText } from "@/components/ui/amount_text";
+import { AmountText, formatCentavos } from "@/components/ui/amount_text";
 import { Button, registerIcon } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Chip } from "@/components/ui/chip";
 import { providerLabelForPackage } from "@/constants/providers";
 import { useRawCapture } from "@/hooks/queries/use_raw_capture";
 import { useTransaction } from "@/hooks/queries/use_transaction";
+import { autofillFrom, snippetLines, type AutofillProposal } from "@/lib/ingest/candidates";
 import { GATE_REASONS } from "@/lib/ingest/confidence_gate";
 import type { ProviderRuleset } from "@/lib/ingest/ruleset_types";
+import { centavosFrom } from "@/lib/money/peso_input";
 import type {
   Category,
   Centavos,
@@ -66,6 +69,8 @@ import type {
 } from "@/types/domain";
 
 import { ConfidenceMeter, confidencePercent } from "./confidence_meter";
+import { OneSidedTransferBody } from "./one_sided_transfer_body";
+import { WalletKindBody } from "./wallet_kind_body";
 
 /** The card's leading glyph (task-4b) — a generic "this needs a decision"
  * mark for all four kinds, not a per-kind icon: `kind` already has its own
@@ -96,6 +101,44 @@ export const REVIEW_ACTIONS: Record<ReviewKind, ReviewActionPair> = {
   "possible-duplicate": { primary: "Same transaction", secondary: "Different" },
   "ambiguous-transfer": { primary: "It's a transfer", secondary: "Not a transfer" },
   "unknown-provider": { primary: "This is a money notification", secondary: "Not money" },
+  /**
+   * The fifth kind's pair, and it is the only one whose PRIMARY names a
+   * counterparty rather than a verdict — because it is the only kind whose
+   * answer is a CHOICE among the user's own loans, not a yes/no about one
+   * record. `loanMatchPrimaryLabel` builds the real string from the sole
+   * candidate; this entry is the wording when there is nothing to name (a
+   * payload that lost its candidates, or a card rendered without one).
+   *
+   * The secondary is a rejection, and per loans rule 10 that is ALL it is:
+   * "Rejecting a suggestion never creates a negative UserRule automatically."
+   * "Not a loan payment" says what the user decided about THIS transaction and
+   * promises nothing about the next one — which is exactly what the app does.
+   */
+  "loan-match": { primary: "Record this payment", secondary: "Not a loan payment" },
+  /**
+   * SAME WORDS AS `ambiguous-transfer`, ON PURPOSE. Both kinds ask the exact
+   * same yes/no question — "does this leg pair with another movement of the
+   * same money?" — and differ only in whether a candidate counterpart already
+   * exists to name (`ambiguous-transfer`) or has to be chosen from scratch
+   * (`one-sided-transfer`, `payload.counterpartWalletId` still `null` or a
+   * rule's guess). The choice itself is made in `OneSidedTransferBody`, which
+   * this file renders further down (see `isOneSidedTransfer`) — so unlike every
+   * other kind, this primary does not act on the payload as it stands: it is
+   * withheld until a wallet is selected, and reports that selection rather
+   * than a plain "yes".
+   */
+  "one-sided-transfer": { primary: "It's a transfer", secondary: "Not a transfer" },
+  /**
+   * THE ONLY PAIR WHERE NEITHER SIDE IS A REJECTION, and the only one where
+   * both sides are equally final.
+   *
+   * Every other kind offers a way to say "no, leave it alone". This card asks a
+   * question with two real answers, and BOTH of them settle it for good (they
+   * pin `owedPinned`, so inference never revisits the wallet). "Money I have"
+   * is not a dismissal — it is the user confirming the assumption the app has
+   * been running on since the wallet was created.
+   */
+  "wallet-kind-unclear": { primary: "Money I have", secondary: "Money I owe" },
 };
 
 /**
@@ -137,6 +180,36 @@ export const REASON_FALLBACKS: Record<ReviewKind, string> = {
   "unknown-provider": GATE_REASONS.unknownProvider,
   "possible-duplicate": GATE_REASONS.possibleDuplicate,
   "ambiguous-transfer": GATE_REASONS.ambiguousTransfer,
+  /**
+   * NOT a `GATE_REASONS` entry, because the confidence gate never saw this
+   * item — `loan_match_queue.ts` raises it AFTER the row was committed, with no
+   * gate involved at all. Its `loanMatchReason` is what every real payload
+   * carries; this is the singular wording, kept as the fallback for the one
+   * that reads better when the candidate count is unknown.
+   */
+  "loan-match": "This looks like a payment on one of your loans. Record it?",
+  /**
+   * HAND-WRITTEN, LIKE `loan-match`'s, NOT A `GATE_REASONS` ENTRY — Task 10
+   * wires the gate's own `oneSidedTransfer` reason onto the payload for every
+   * real item, so this only ever answers a corrupt or hand-built row (same
+   * caveat as the two pair kinds above). Same facts as the gate's own
+   * sentence ("money moving between your own accounts") but pointed at the
+   * question Task 12's card body actually asks the user to answer — which
+   * wallet the other half went to or came from — rather than restating the
+   * gate's routing language.
+   */
+  "one-sided-transfer":
+    "PeraPlano saw one leg of a transfer between your own accounts. Choose where the other half went.",
+  /**
+   * NOT A `GATE_REASONS` ENTRY EITHER, and for a stronger reason than
+   * `loan-match`'s: no capture put this item here at all. The pipeline raises
+   * it after watching a wallet across several notifications and still failing
+   * to settle the question, so the sentence explains the CONSEQUENCE rather
+   * than the trigger — the user needs to know why the answer matters, not that
+   * a scorer ran out of confidence.
+   */
+  "wallet-kind-unclear":
+    "PeraPlano cannot tell whether this balance is money you have or money you owe.",
 };
 
 /**
@@ -272,10 +345,91 @@ function counterpartIdOf(item: ReviewQueueItem): string | null {
   return null;
 }
 
+/**
+ * One loan a `loan-match` payload offers, as this card understands it.
+ *
+ * READ DEFENSIVELY OFF `payload`, NOT IMPORTED FROM `loan_match_queue.ts`.
+ * That module is where the shape is written and documented, but it reaches the
+ * loans and review-queue repositories, and pulling it into a component would
+ * drag the database layer into every render tree that mounts a card — the same
+ * separation `lib/loans/loans_service.ts`'s own header records paying for when
+ * reminders had to be moved out of it before the Plan tab could render under
+ * Jest. Reading the JSON here matches what this file already does for all four
+ * other kinds, and for the same stated reason: an item enqueued by an older
+ * build must render a partial card rather than crash the whole queue.
+ */
+export type LoanCandidateView = {
+  loanId: string;
+  counterparty: string;
+  /** `null` when the payload carried no balance — the row still renders, without one. */
+  outstanding: Centavos | null;
+  reasons: string[];
+};
+
+/** The loans this card offers, in payload order (best first — the matcher sorted them). */
+export function loanCandidates(item: ReviewQueueItem): LoanCandidateView[] {
+  if (item.kind !== "loan-match") return [];
+  const raw = item.payload.candidates;
+  if (!Array.isArray(raw)) return [];
+
+  const views: LoanCandidateView[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const candidate = entry as Record<string, unknown>;
+    const loanId = typeof candidate.loanId === "string" ? candidate.loanId : null;
+    if (loanId === null || loanId === "") continue;
+    views.push({
+      loanId,
+      // A loan always has a counterparty (`loans.counterparty` is NOT NULL), so
+      // this only ever fires for a hand-built row — but an unnamed button on a
+      // money decision is the one thing worse than no button.
+      counterparty:
+        typeof candidate.counterparty === "string" && candidate.counterparty.trim() !== ""
+          ? candidate.counterparty
+          : "This loan",
+      outstanding:
+        typeof candidate.outstanding === "number" && Number.isFinite(candidate.outstanding)
+          ? candidate.outstanding
+          : null,
+      reasons: Array.isArray(candidate.reasons)
+        ? candidate.reasons.filter((reason): reason is string => typeof reason === "string")
+        : [],
+    });
+  }
+  return views;
+}
+
+/**
+ * The primary button's words.
+ *
+ * A `loan-match` card with exactly ONE candidate names it — "Record on Kuya
+ * Ben" — because that is the whole decision, and a generic "Record this
+ * payment" would make the user scroll back up to remember which loan they were
+ * agreeing to. With two or more, the primary is not the affordance at all (the
+ * per-candidate buttons are, and the screen supplies no `onPrimary`), so the
+ * static label stands.
+ */
+export function primaryLabelFor(item: ReviewQueueItem): string {
+  const candidates = loanCandidates(item);
+  if (item.kind === "loan-match" && candidates.length === 1) {
+    return `Record on ${candidates[0].counterparty}`;
+  }
+  return REVIEW_ACTIONS[item.kind].primary;
+}
+
 /** What each side of a pair is called, so the user knows which is which. */
 const SIDE_LABELS: Record<ReviewKind, { candidate: string; counterpart: string }> = {
   "low-confidence": { candidate: "What PeraPlano read", counterpart: "" },
   "unknown-provider": { candidate: "What PeraPlano read", counterpart: "" },
+  /**
+   * "ALREADY IN YOUR LEDGER", not "What PeraPlano read". Every other card shows
+   * a PROPOSAL — a row that does not exist yet and will not until the user
+   * agrees. A loan-match card shows a row that is already committed and already
+   * counted; the only question is whether it also pays down a loan. A label
+   * implying the transaction is still pending would invite the user to reject
+   * it in the belief that rejecting keeps it out of their ledger.
+   */
+  "loan-match": { candidate: "Already in your ledger", counterpart: "" },
   "possible-duplicate": {
     candidate: "This notification",
     counterpart: "Already in your ledger",
@@ -284,6 +438,26 @@ const SIDE_LABELS: Record<ReviewKind, { candidate: string; counterpart: string }
     candidate: "This notification",
     counterpart: "The possible other leg",
   },
+  /**
+   * "What PeraPlano read", same as `low-confidence`/`unknown-provider` —
+   * task-10-brief.md confirms a one-sided transfer "queues an item and
+   * commits nothing", so this leg is a PROPOSAL like theirs, not an
+   * already-committed row like `loan-match`'s. `counterpart` is unreachable
+   * today: `counterpartIdOf` returns `null` for this kind (the whole point of
+   * "one-sided" is that no committed counterpart row exists to fetch), so
+   * `CounterpartSide` never renders it. Empty, like every other kind with no
+   * counterpart to name.
+   */
+  "one-sided-transfer": { candidate: "What PeraPlano read", counterpart: "" },
+  /**
+   * NO SIDES AT ALL. Every other kind puts a transaction on the card; this one
+   * is about a WALLET, so there is no notification, no amount and no direction
+   * to label. `WalletKindBody` replaces the whole panel (see the render
+   * branch), which means these strings are never read — they exist so this
+   * table stays exhaustive over `ReviewKind` and a future kind cannot be added
+   * without deciding what its sides are called.
+   */
+  "wallet-kind-unclear": { candidate: "", counterpart: "" },
 };
 
 // ---------------------------------------------------------------------------
@@ -370,6 +544,21 @@ function walletNameOf(wallets: readonly Wallet[], walletId: string | null): stri
 }
 
 /**
+ * The wallet's CURRENT balance, for the one card that asks about a wallet
+ * rather than a transaction.
+ *
+ * Live, not the figure frozen into the payload when the question was raised —
+ * a card can sit in the queue for weeks, and asking "is the ₱4,000 in BPI
+ * money you owe?" about a balance that is now ₱11,000 asks about a number the
+ * user cannot see anywhere. `WalletKindBody` falls back to the payload's copy
+ * when the wallet has since been archived out of this list.
+ */
+function walletBalanceOf(wallets: readonly Wallet[], walletId: string | null): Centavos | null {
+  if (walletId === null) return null;
+  return wallets.find((wallet) => wallet.id === walletId)?.balance ?? null;
+}
+
+/**
  * The committed half of a pair, plus the fee gap when there is one.
  *
  * ITS OWN COMPONENT SO THE HOOK IS UNCONDITIONAL. `useTransaction` may only be
@@ -448,28 +637,6 @@ function CounterpartSide({
 }
 
 /**
- * Up to three distinct, non-empty lines of the capture — the spec's "captured
- * snippet".
- *
- * All four fields, not just `text`: an expanded Android notification routinely
- * carries the amount the collapsed one omits, and this card's entire question is
- * "is this money?". Duplicates are collapsed because Android repeats `text` in
- * `bigText` constantly, and the same sentence printed twice reads as a bug.
- */
-function snippetLines(capture: RawCapture): string[] {
-  const seen = new Set<string>();
-  const lines: string[] = [];
-  for (const field of [capture.title, capture.text, capture.bigText, capture.subText]) {
-    const value = field?.trim();
-    if (!value || seen.has(value)) continue;
-    seen.add(value);
-    lines.push(value);
-    if (lines.length === 3) break;
-  }
-  return lines;
-}
-
-/**
  * The unknown-provider body: which app it came from, and what it said.
  *
  * BOTH HALVES ARE THE QUESTION. "Is this a money notification?" cannot be
@@ -481,12 +648,18 @@ function snippetLines(capture: RawCapture): string[] {
 function UnknownSourceBody({
   item,
   providers,
+  capture,
 }: {
   item: ReviewQueueItem;
   providers: readonly ProviderRuleset[];
+  /**
+   * READ BY THE CARD, NOT HERE (changed 2026-08-28). The card itself now needs
+   * the capture — it is what the one-tap "Record ₱x" primary is built from —
+   * and one `useRawCapture` above serves both, rather than this component
+   * fetching the same row under the same key a second time.
+   */
+  capture: RawCapture | null | undefined;
 }) {
-  const { data: capture } = useRawCapture(item.rawNotificationId);
-
   const packageName = readString(item.payload, "packageName") ?? capture?.packageName ?? null;
   // By definition no ruleset provider matches an unknown package, so this
   // resolves to the package id itself — which is still the most specific true
@@ -530,6 +703,87 @@ function UnknownSourceBody({
   );
 }
 
+/**
+ * The loans this transaction might be paying — the "listing the candidates"
+ * half of loans rule 9.
+ *
+ * WITH ONE CANDIDATE this renders its reasons and NO button: the card's own
+ * primary already says "Record on <name>" (`primaryLabelFor`), and a second
+ * control doing the identical thing on the same card is how a user learns not
+ * to read either.
+ *
+ * WITH TWO OR MORE it renders a button per loan, and the screen supplies no
+ * `onPrimary` at all — which this file's own rule renders as DISABLED, so the
+ * biggest button on the card cannot pick a loan on the user's behalf. That is
+ * rule 9 verbatim: "If two or more open loans are plausible for one
+ * Transaction, it is always a suggestion listing the candidates — never an
+ * auto-match." Choosing the top-scoring one silently would be an auto-match
+ * wearing a confirmation, and the loan it guessed wrong on is a balance the
+ * user has no reason to re-check.
+ *
+ * THE REASONS ARE NOT DECORATION. `scoreCandidate` produces them for the same
+ * purpose the match sheet needs them (loans Task 8 rule 5: each candidate shown
+ * "with its amount, date, and WHY IT MATCHED"), and here they are the only way
+ * to tell two utangs apart when both are plausible. A bare score asks the user
+ * to trust a number they cannot check, on a decision that moves a balance.
+ */
+function LoanMatchBody({
+  item,
+  candidates,
+  onChooseLoan,
+}: {
+  item: ReviewQueueItem;
+  candidates: readonly LoanCandidateView[];
+  onChooseLoan?: (item: ReviewQueueItem, loanId: string) => void;
+}) {
+  const choosing = candidates.length > 1;
+
+  return (
+    <View testID={`review-loans-${item.id}`} className="gap-2">
+      {choosing ? (
+        <Text className="text-xs uppercase text-fg-2 dark:text-fg-2-dark">
+          Which loan is this?
+        </Text>
+      ) : null}
+      {candidates.map((candidate) => (
+        <View
+          key={candidate.loanId}
+          testID={`review-loan-${item.id}-${candidate.loanId}`}
+          className="gap-1 rounded-xl bg-bg p-3 dark:bg-bg-dark"
+        >
+          <View className="flex-row items-center justify-between gap-2">
+            <Text className="flex-1 text-base font-semibold text-fg dark:text-fg-dark">
+              {candidate.counterparty}
+            </Text>
+            {candidate.outstanding === null ? null : (
+              <AmountText amount={candidate.outstanding} size="sm" />
+            )}
+          </View>
+          {candidate.reasons.length === 0 ? null : (
+            <View className="flex-row flex-wrap items-center gap-2 pt-1">
+              {candidate.reasons.map((reason) => (
+                <Chip key={reason} label={reason} fill="outline" />
+              ))}
+            </View>
+          )}
+          {choosing ? (
+            <Button
+              testID={`review-loan-choice-${item.id}-${candidate.loanId}`}
+              title={`Record on ${candidate.counterparty}`}
+              variant="secondary"
+              size="md"
+              disabled={onChooseLoan === undefined}
+              onPress={
+                onChooseLoan ? () => onChooseLoan(item, candidate.loanId) : () => undefined
+              }
+            />
+          ) : null}
+        </View>
+      ))}
+    </View>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // The card
 // ---------------------------------------------------------------------------
@@ -567,8 +821,90 @@ export type ReviewCardProps = {
    * card simply has no third button, full stop.
    */
   onReject?: (item: ReviewQueueItem) => void;
+  /**
+   * `loan-match` only, and only when the payload lists TWO OR MORE loans — the
+   * one card whose answer is a choice rather than a verdict (loans rule 9).
+   * Absent means the per-loan buttons render disabled, the same "absent means
+   * disabled" rule the pair above keeps and for the same reason: a money
+   * decision that silently does nothing when tapped is the affordance this file
+   * refuses to ship.
+   */
+  onChooseLoan?: (item: ReviewQueueItem, loanId: string) => void;
+  /**
+   * `one-sided-transfer` only, task-12 — the counterpart to `onChooseLoan`
+   * above and the same reason it exists: the wallet is a CHOICE the card
+   * owns (`app/review/index.tsx`'s `primaryActionFor` returns `null` for
+   * this kind, exactly as it does for a multi-candidate `loan-match`), so
+   * there is no single answer any screen-level function could stand for.
+   * Absent means the primary renders disabled once a wallet is picked, same
+   * "absent means disabled" rule as every other pair in this file — a money
+   * decision that silently does nothing when tapped is the one affordance
+   * this file refuses to ship.
+   */
+  onChooseTransferWallet?: (item: ReviewQueueItem, walletId: string, feeAmount: Centavos) => void;
+  /**
+   * `unknown-provider` only (2026-08-28). Commits the notification the card is
+   * showing, using the fields `candidates.ts` read out of its text — the whole
+   * point of which is that a capture the app CAN read should not open a form.
+   *
+   * Same "absent means disabled" rule as the pair: without it the primary is
+   * still labelled with what it would record, and still cannot be tapped.
+   * Withheld by this card whenever anything is a question — two live amounts,
+   * no direction keyword, no wallet to name — in which case the primary falls
+   * back to opening the correction sheet, exactly as it did before.
+   */
+  onRecordAutofill?: (item: ReviewQueueItem, proposal: AutofillCommit) => void;
+  /**
+   * The way back to the form when the primary is a one-tap commit. WITHOUT
+   * THIS the autofill path would be a trap: a user who can see the app read
+   * the wrong number would have "Not money" as their only other button, and
+   * would either discard a real transaction or record a wrong one.
+   *
+   * Rendered only alongside a live `onRecordAutofill` — when the primary
+   * already opens the sheet there is nothing for it to add.
+   */
+  onEditDetails?: (item: ReviewQueueItem) => void;
   testID?: string;
 };
+
+/** An `AutofillProposal` with the wallet the card resolved for it. */
+export type AutofillCommit = AutofillProposal & { walletId: string };
+
+/**
+ * The wallet a one-tap record would land in: the payload's own, or the user's
+ * ONLY wallet.
+ *
+ * `correct_sheet.tsx`'s `defaultWalletId` makes exactly this call and says why
+ * — with two or more wallets, which one a transaction belongs to IS a
+ * decision, and the sheet is where decisions get made. Here the stakes are
+ * higher (there is no form to correct it in before it commits), so the rule is
+ * not loosened by a single character.
+ */
+function autofillWalletId(
+  item: ReviewQueueItem,
+  wallets: readonly Wallet[],
+): string | null {
+  return readString(item.payload, "walletId") ?? (wallets.length === 1 ? wallets[0].id : null);
+}
+
+/**
+ * The primary's words when it will commit rather than open a form.
+ *
+ * NAMES ALL THREE FACTS IT IS ABOUT TO WRITE — how much, which way, which
+ * wallet — because this button is the entire confirmation. "Record this" would
+ * be a one-tap commit of numbers the user was never told, on a card whose
+ * whole premise is that the app is unsure.
+ */
+export function autofillPrimaryLabel(proposal: AutofillCommit, wallet: Wallet | null): string {
+  const amount = formatCentavos(proposal.amount);
+  const preposition = proposal.direction === "out" ? "out of" : "into";
+  return wallet === null
+    ? `Record ${amount}`
+    : `Record ${amount} ${preposition} ${wallet.name}`;
+}
+
+/** The escape hatch beside it. A verb, because it opens a form (rule 5). */
+export const AUTOFILL_EDIT_LABEL = "Change the details";
 
 export function ReviewCard({
   item,
@@ -578,9 +914,14 @@ export function ReviewCard({
   onPrimary,
   onSecondary,
   onReject,
+  onChooseLoan,
+  onChooseTransferWallet,
+  onRecordAutofill,
+  onEditDetails,
   testID,
 }: ReviewCardProps) {
   const actions = REVIEW_ACTIONS[item.kind];
+  const loans = loanCandidates(item);
   const confidence = readConfidence(item.payload);
   const counterpartId = counterpartIdOf(item);
   const amount = readAmount(item.payload);
@@ -604,6 +945,79 @@ export function ReviewCard({
   // an unmapped wallet is a routine hard route rather than an edge case. See
   // `missingLedgerField`. Also defensive against a hand-built or older row.
   const missingField = item.kind === "low-confidence" ? missingLedgerField(item) : null;
+
+  // Task 12. Held on the CARD, not the screen — `app/review/index.tsx`'s
+  // `primaryActionFor` returns `null` for this kind for exactly this reason
+  // (same as it does for a multi-candidate `loan-match`): the wallet is a
+  // choice only this card has the controls to make. Seeded from
+  // `payload.counterpartWalletId`, a `mark-transfer` rule's prefill — NEVER
+  // treated as the answer, only as where the selection starts; every wallet
+  // row stays tappable regardless (`one_sided_transfer_body.tsx`'s header).
+  // `key={entry.id}` on the screen's list remounts this component per item,
+  // so a fresh `useState` call is enough to reset the selection between
+  // cards — no effect needed to re-sync it on re-render.
+  const [transferWalletId, setTransferWalletId] = useState<string | null>(
+    readString(item.payload, "counterpartWalletId"),
+  );
+  const [transferFeeText, setTransferFeeText] = useState("");
+  const transferFee = centavosFrom(transferFeeText);
+  const capturedWalletId = readString(item.payload, "walletId");
+
+  const isOneSidedTransfer = item.kind === "one-sided-transfer";
+  const isUnknownProvider = item.kind === "unknown-provider";
+
+  // ONLY FOR THE ONE KIND THAT HAS NO PARSE (2026-08-28). Passing `null` for
+  // every other kind keeps the query disabled, so no card starts fetching a
+  // capture it has no use for — `low-confidence` items carry a
+  // `rawNotificationId` too, and an unconditional read here would put one
+  // request per card behind a screen that previously made none.
+  const { data: capture } = useRawCapture(isUnknownProvider ? item.rawNotificationId : null);
+
+  // What the text says, when a template could not. `null` whenever the read is
+  // uncertain — see `candidates.ts`: two live amounts, or no direction cue, and
+  // this stays `null` so the primary goes on opening the form.
+  const autofill = capture === undefined || capture === null ? null : autofillFrom(capture);
+  const autofillWallet = wallets.find((wallet) => wallet.id === autofillWalletId(item, wallets));
+  const autofillCommit: AutofillCommit | null =
+    isUnknownProvider && autofill !== null && autofillWallet !== undefined
+      ? { ...autofill, walletId: autofillWallet.id }
+      : null;
+  // Same withheld-not-inert rule as `transferPrimary` below: no handler means
+  // the button renders disabled rather than doing nothing when tapped.
+  const autofillPrimary =
+    autofillCommit !== null && onRecordAutofill !== undefined
+      ? () => onRecordAutofill(item, autofillCommit)
+      : undefined;
+
+  // WITHHELD, NOT SUPPLIED-AND-INERT. This file's own rule renders an absent
+  // `onPrimary` as disabled-but-visible, so the outcome still reads on
+  // screen while the tap that would mint a ledger row on an unnamed wallet
+  // cannot happen. `transferWalletId !== null` narrows the type for the
+  // closure below, which is also why this is computed once rather than
+  // inline in the two JSX props that read it.
+  const transferPrimary =
+    isOneSidedTransfer && transferWalletId !== null && onChooseTransferWallet !== undefined
+      ? () => onChooseTransferWallet(item, transferWalletId, transferFee)
+      : undefined;
+  const primaryDisabled = isOneSidedTransfer
+    ? transferPrimary === undefined
+    : autofillCommit !== null
+      ? autofillPrimary === undefined
+      : onPrimary === undefined || missingField !== null;
+  const primaryOnPress = isOneSidedTransfer
+    ? (transferPrimary ?? (() => undefined))
+    : autofillCommit !== null
+      ? (autofillPrimary ?? (() => undefined))
+      : onPrimary
+        ? () => onPrimary(item)
+        : () => undefined;
+  // The label follows the ACTION, so the button never promises one thing and
+  // does another: with a proposal in hand it names what it will write, and
+  // without one it is still the pair's "This is a money notification".
+  const primaryTitle =
+    autofillCommit === null
+      ? primaryLabelFor(item)
+      : autofillPrimaryLabel(autofillCommit, autofillWallet ?? null);
 
   return (
     <View testID={testID ?? `review-card-${item.id}`} className="px-4 pb-3">
@@ -629,7 +1043,18 @@ export function ReviewCard({
           </View>
 
           {item.kind === "unknown-provider" ? (
-            <UnknownSourceBody item={item} providers={providers} />
+            <UnknownSourceBody item={item} providers={providers} capture={capture} />
+          ) : item.kind === "wallet-kind-unclear" ? (
+            /* NO SIDES, NO METER, NO CATEGORY — this is the only kind that is
+               not about a transaction. There is no notification behind it, no
+               amount to approve and no confidence to report; rendering the
+               usual proposal panel would put a row on screen that does not
+               exist and invite the user to approve it. */
+            <WalletKindBody
+              item={item}
+              walletName={walletNameOf(wallets, readString(item.payload, "walletId"))}
+              balance={walletBalanceOf(wallets, readString(item.payload, "walletId"))}
+            />
           ) : (
             <>
               <Side
@@ -655,9 +1080,32 @@ export function ReviewCard({
                   candidateAmount={amount}
                 />
               )}
+              {loans.length === 0 ? null : (
+                <LoanMatchBody item={item} candidates={loans} onChooseLoan={onChooseLoan} />
+              )}
+              {isOneSidedTransfer ? (
+                <OneSidedTransferBody
+                  item={item}
+                  wallets={wallets}
+                  capturedWalletId={capturedWalletId}
+                  selectedWalletId={transferWalletId}
+                  onSelectWallet={setTransferWalletId}
+                  feeText={transferFeeText}
+                  onChangeFeeText={setTransferFeeText}
+                />
+              ) : null}
               {/* No score, no meter. `unknown-provider` never reaches here, and
                   a payload that lost its `confidence` would otherwise render a
-                  0% bar — the app reporting a measurement it never took. */}
+                  0% bar — the app reporting a measurement it never took.
+
+                  A `loan-match` payload carries none either, ON PURPOSE. The
+                  meter reads the INGEST confidence — how well the notification
+                  parsed — and a loan-match card's transaction parsed perfectly
+                  well; it is already committed. Painting the match score in the
+                  same bar would say "PeraPlano is 45% sure it read this
+                  notification" when what it means is "45% sure this pays that
+                  loan", and the per-candidate reasons above are the honest form
+                  of the second statement. */}
               {confidence === null ? null : (
                 <ConfidenceMeter
                   confidence={confidence}
@@ -693,10 +1141,10 @@ export function ReviewCard({
               other three. */}
           <Button
             testID={`review-primary-${item.id}`}
-            title={actions.primary}
+            title={primaryTitle}
             variant="primary"
-            disabled={onPrimary === undefined || missingField !== null}
-            onPress={onPrimary ? () => onPrimary(item) : () => undefined}
+            disabled={primaryDisabled}
+            onPress={primaryOnPress}
           />
           {/* "Correct" stays enabled even while the primary is blocked —
               supplying the amount is exactly the way forward, and disabling
@@ -709,6 +1157,20 @@ export function ReviewCard({
             disabled={onSecondary === undefined}
             onPress={onSecondary ? () => onSecondary(item) : () => undefined}
           />
+
+          {/* THE WAY BACK TO THE FORM, and only when the primary no longer
+              opens one. A user who can see the app picked the wrong number
+              needs a button that is neither "record it anyway" nor "throw it
+              away" — without this the autofill path is a trap. */}
+          {autofillCommit !== null && onEditDetails !== undefined ? (
+            <Button
+              testID={`review-edit-${item.id}`}
+              title={AUTOFILL_EDIT_LABEL}
+              variant="ghost"
+              size="md"
+              onPress={() => onEditDetails(item)}
+            />
+          ) : null}
 
           {missingField === null ? null : (
             <Text

@@ -75,17 +75,25 @@ const NOW = new Date(2026, 7, 13, 21, 30).getTime();
 const POCKET: Wallet = {
   id: "cash-pocket",
   name: "Pocket",
-  type: "cash",
   balance: 100_000,
   currency: "PHP",
   isArchived: false,
   driftDismissedTransactionId: null,
+  owedBalance: false,
+  owedPinned: false,
+  // A cash wallet is one nothing routes to.
+  matcherCount: 0,
   createdAt: 1_000,
   updatedAt: 1_000,
 };
 const JAR: Wallet = { ...POCKET, id: "cash-jar", name: "Jar" };
-const BPI: Wallet = { ...POCKET, id: "bank-bpi", name: "BPI", type: "bank" };
-const GCASH: Wallet = { ...POCKET, id: "ewallet-gcash", name: "GCash", type: "e-wallet" };
+// TRACKED, NOT MANUAL — `matcherCount: 1`. These two stand for the wallets a
+// provider reports on, which is what `type: "bank"` / `"e-wallet"` used to say.
+// Left at POCKET's zero they would all be manual wallets, and this file's whole
+// subject — that cash is offered first and never silently defaulted to the bank
+// — would have nothing to distinguish.
+const BPI: Wallet = { ...POCKET, id: "bank-bpi", name: "BPI", matcherCount: 1 };
+const GCASH: Wallet = { ...POCKET, id: "ewallet-gcash", name: "GCash", matcherCount: 1 };
 
 const CATEGORIES: Category[] = [
   {
@@ -235,6 +243,7 @@ describe("amount first", () => {
     // correct in the wallet, the direction, the date and the category.
     expect(onSubmit).toHaveBeenCalledTimes(1);
     expect(onSubmit).toHaveBeenCalledWith({
+      kind: "entry",
       amount: 123_400,
       direction: "out",
       walletId: "cash-pocket",
@@ -554,5 +563,118 @@ describe("the secondary fields", () => {
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({ merchant: null, note: null }),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The Transfer segment (money-transfers Task 4) — a wallet-to-wallet movement
+// entered once instead of typed twice. Same amount-first landing as
+// Expense/Income; what changes is which fields follow it.
+// ---------------------------------------------------------------------------
+
+/** Types into the hero amount field — mirrors `save()`'s fixed-testID shape. */
+function enterAmount(text: string): void {
+  typeAmount("manual-amount", text);
+}
+
+/** Types into the optional Fee field, transfer mode only. */
+function enterFee(text: string): void {
+  typeAmount("manual-entry-fee", text);
+}
+
+describe("the Transfer segment", () => {
+  test("swaps Category for a To wallet and a Fee", () => {
+    renderForm(<Harness wallets={[POCKET, BPI]} />);
+
+    fireEvent.press(screen.getByTestId("manual-entry-segment-transfer"));
+
+    expect(screen.queryByTestId("manual-entry-to-wallet")).not.toBeNull();
+    expect(screen.queryByTestId("manual-entry-fee")).not.toBeNull();
+    expect(screen.queryByTestId("manual-entry-category")).toBeNull();
+    expect(screen.queryByTestId("manual-entry-merchant")).toBeNull();
+  });
+
+  test("the To picker excludes the From wallet and archived wallets", () => {
+    const archived = { ...BPI, id: "bank-archived", name: "Old BPI", isArchived: true };
+    renderForm(<Harness wallets={[POCKET, BPI, archived]} />);
+
+    fireEvent.press(screen.getByTestId("manual-entry-segment-transfer"));
+
+    expect(screen.queryByTestId("manual-entry-to-wallet-cash-pocket")).toBeNull();
+    expect(screen.queryByTestId("manual-entry-to-wallet-bank-bpi")).not.toBeNull();
+    expect(screen.queryByTestId("manual-entry-to-wallet-bank-archived")).toBeNull();
+  });
+
+  test("is disabled with fewer than two unarchived wallets", () => {
+    renderForm(<Harness wallets={[POCKET]} />);
+
+    const segment = screen.getByTestId("manual-entry-segment-transfer");
+    expect(segment.props.accessibilityState?.disabled).toBe(true);
+  });
+
+  test("submitting a transfer emits a transfer draft", () => {
+    renderForm(<Harness wallets={[POCKET, BPI]} />);
+
+    fireEvent.press(screen.getByTestId("manual-entry-segment-transfer"));
+    enterAmount("1000.00");
+    fireEvent.press(screen.getByTestId("manual-entry-to-wallet-bank-bpi"));
+    enterFee("15.00");
+    save();
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "transfer",
+        amount: 100_000,
+        feeAmount: 1_500,
+        fromWalletId: "cash-pocket",
+        toWalletId: "bank-bpi",
+      }),
+    );
+  });
+
+  test("changing From to the wallet already picked as To clears the To selection, and never submits an equal pair", () => {
+    renderForm(<Harness wallets={[POCKET, BPI]} />);
+
+    fireEvent.press(screen.getByTestId("manual-entry-segment-transfer"));
+    enterAmount("1000.00");
+    fireEvent.press(screen.getByTestId("manual-entry-to-wallet-bank-bpi"));
+
+    // The From list still renders every wallet unfiltered — picking the
+    // wallet already chosen as To must not leave both fields pointing at
+    // the same wallet.
+    fireEvent.press(screen.getByTestId("manual-entry-wallet-bank-bpi"));
+
+    // BPI is now From, so it drops out of the To candidates entirely, and
+    // the survivor (cash-pocket) must NOT read as selected — the stale
+    // "bpi" choice may not silently carry over to it.
+    expect(screen.queryByTestId("manual-entry-to-wallet-bank-bpi")).toBeNull();
+    expect(
+      screen.getByTestId("manual-entry-to-wallet-cash-pocket").props.accessibilityState.selected,
+    ).toBe(false);
+
+    save();
+
+    // No selection left to submit — refused with a reason, not sent as
+    // `{ fromWalletId: "bank-bpi", toWalletId: "bank-bpi" }`.
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.getByTestId("manual-entry-to-wallet-error")).toBeTruthy();
+  });
+
+  test("a fee larger than the amount is refused with a reason, not submitted", () => {
+    renderForm(<Harness wallets={[POCKET, BPI]} />);
+
+    fireEvent.press(screen.getByTestId("manual-entry-segment-transfer"));
+    enterAmount("1000.00");
+    fireEvent.press(screen.getByTestId("manual-entry-to-wallet-bank-bpi"));
+    // The fee field has no upper bound tied to `amount` — an ordinary typed
+    // number is the only client-reachable way to hit
+    // transfer_service.ts's `fee_exceeds_amount`, and this screen has no
+    // error surface for a rejection thrown after Save. Closed here instead,
+    // the same way a missing To wallet already is.
+    enterFee("1500.00");
+    save();
+
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.getByTestId("manual-entry-fee-error")).toBeTruthy();
   });
 });

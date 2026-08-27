@@ -63,7 +63,7 @@ beforeEach(async () => {
   await freshDb();
   __setTierForTests(null);
   await seedDefaultCategories();
-  await createWallet({ name: "GCash", type: "e-wallet" });
+  await createWallet({ name: "GCash" });
 });
 
 afterEach(async () => {
@@ -87,7 +87,13 @@ test("A SCOPE THE TIER CAN NO LONGER HONOR EXPLAINS ITSELF RATHER THAN FAILING S
   __setTierForTests("plus");
   const { client } = renderScreen(<ReportsScreen />);
 
-  await screen.findByTestId("range-picker-months", {}, { timeout: 30_000 });
+  await screen.findByTestId("range-picker-month-trigger", {}, { timeout: 30_000 });
+  fireEvent.press(screen.getByTestId("range-picker-month-trigger"));
+  // The sheet opens on the SELECTED month's year, so reaching last month needs
+  // a year step every January and none of the other eleven months.
+  if (LAST_MONTH.slice(0, 4) !== TODAY.slice(0, 4)) {
+    fireEvent.press(screen.getByTestId("range-picker-year-prev"));
+  }
   fireEvent.press(screen.getByTestId(`range-picker-month-${LAST_MONTH}`));
   await waitFor(() => expect(screen.queryByTestId("reports-truncated-notice")).toBeNull(), {
     timeout: 30_000,
@@ -161,11 +167,16 @@ test("THE SCREEN SCROLLS THROUGH FormScreen, NOT A PLAIN ScrollView", async () =
     expect.objectContaining({ flexGrow: 1, paddingBottom: expect.any(Number) }),
   );
 
-  // EXACTLY TWO scrolling surfaces: FormScreen's own (the keyboard-controller
-  // jest mock renders a real ScrollView underneath KeyboardAwareScrollView)
-  // and RangePicker's HORIZONTAL month strip, which is a different axis and
-  // steals no vertical scroll range. A THIRD is the nesting regression.
+  // EXACTLY ONE scrolling surface: FormScreen's own (the keyboard-controller
+  // jest mock renders a real ScrollView underneath KeyboardAwareScrollView).
+  // A SECOND is the nesting regression.
+  //
+  // It used to be two, the other being RangePicker's HORIZONTAL month strip —
+  // a different axis, so it stole no vertical range. That strip is gone: it
+  // opened at scroll offset 0, which in an oldest-first month list is a month
+  // from last year rather than the one being reported on, and it is now a
+  // sheet (components/reports/month_picker.tsx) with no scroller at all.
   const scrollers = screen.UNSAFE_queryAllByType(ScrollView);
-  expect(scrollers).toHaveLength(2);
-  expect(scrollers.filter((node) => node.props.horizontal === true)).toHaveLength(1);
+  expect(scrollers).toHaveLength(1);
+  expect(scrollers.filter((node) => node.props.horizontal === true)).toHaveLength(0);
 });

@@ -102,7 +102,7 @@ const PACKAGE_PROVIDER_KEYS: Record<string, string> = {
  * string's first character instead, which is a worse, uglier version of the
  * SAME fallback rather than a distinct state — `null` lets a caller choose
  * that designed fallback (or a different rendering entirely, e.g. Wallets'
- * "no provider at all" WalletTypeIcon branch) instead of being handed a
+ * "no provider at all" WalletIcon branch) instead of being handed a
  * value that looks resolved but is not.
  */
 export function providerKeyForPackage(

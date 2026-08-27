@@ -180,7 +180,7 @@ test("purgeExpiredRawCaptures removes only rows at or past expiry and returns th
 });
 
 test("purging a capture a committed transaction points at clears the ref instead of failing", async () => {
-  const wallet = await createWallet({ name: "GCash", type: "e-wallet" });
+  const wallet = await createWallet({ name: "GCash" });
   await storeRawCapture(capture({ id: "cap-old" }), NOW - THIRTY_DAYS_MS - 1);
   const tx = await insertTransaction({
     walletId: wallet.id,
