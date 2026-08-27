@@ -47,6 +47,86 @@ const BOOT_PERMISSION = "android.permission.RECEIVE_BOOT_COMPLETED";
  * device's Messages app, so it would buy nothing either.
  */
 
+/**
+ * NOTE: `android.permission.QUERY_ALL_PACKAGES` is ALSO deliberately absent
+ * and must stay absent. It is a Play-restricted permission requiring a
+ * declaration form and a policy justification, and the `<queries>` element
+ * below buys everything this app needs from it. See `injectPackageQueries`.
+ */
+
+/**
+ * The MAIN/LAUNCHER pair, which is Android's own definition of "an app with an
+ * icon in the launcher" -- every bank and e-wallet PeraPlano can name.
+ */
+const LAUNCHER_ACTION = "android.intent.action.MAIN";
+const LAUNCHER_CATEGORY = "android.intent.category.LAUNCHER";
+
+/**
+ * Declares the package visibility `AppLabels.kt` needs to read another app's
+ * real name (Android 11 / API 30+).
+ *
+ * WHY VISIBILITY AT ALL: `PackageManager.getApplicationLabel` is the only
+ * source of truth for what an installed app is currently CALLED, and without
+ * a matching `<queries>` entry `getApplicationInfo` throws
+ * `NameNotFoundException` for every third-party package on API 30+. The
+ * provider picker's alternative is the parser seed's hand-written brand
+ * names, which go stale on a rebrand -- `ph.seabank.seabank` renders as
+ * "seabank" while the app on the user's phone says Maribank, and the user is
+ * being asked to confirm that this is their banking app.
+ *
+ * WHY THE BROAD INTENT FORM, NOT AN ENUMERATED `<package>` LIST: an
+ * enumerated list can only name packages this build already knows, which
+ * excludes the two cases that matter most -- an app the listener OBSERVED
+ * that the seed has never heard of, and a package added by a remote ruleset
+ * update after this APK shipped. Both would keep rendering raw package ids.
+ *
+ * WHAT THIS DOES AND DOES NOT GRANT. It lets the app ASK about a launchable
+ * package. It grants no ability to read another app's data, and this module
+ * never enumerates installed apps: `appLabels` resolves only the packages
+ * handed to it, which come from the picker's own list. It is also a strictly
+ * smaller disclosure than what this app already holds -- notification-listener
+ * access delivers the full text of every notification on the device, which
+ * necessarily includes which apps posted them.
+ *
+ * @param {import("expo/config-plugins").AndroidManifest} androidManifest
+ * @returns {import("expo/config-plugins").AndroidManifest}
+ */
+function injectPackageQueries(androidManifest) {
+  const manifest = androidManifest.manifest;
+  const queries = manifest.queries ?? [];
+
+  // IDEMPOTENT, same reason as the `<service>` below: the plugin can be
+  // applied twice, and a duplicate `<queries>` intent is merge noise at best.
+  const alreadyDeclared = queries.some((entry) =>
+    (entry?.intent ?? []).some(
+      (intent) =>
+        (intent?.action ?? []).some(
+          (action) => action?.$?.["android:name"] === LAUNCHER_ACTION,
+        ) &&
+        (intent?.category ?? []).some(
+          (category) => category?.$?.["android:name"] === LAUNCHER_CATEGORY,
+        ),
+    ),
+  );
+
+  if (!alreadyDeclared) {
+    // Appended, never assigned over: other libraries contribute their own
+    // `<queries>` entries and replacing the array would strip them.
+    queries.push({
+      intent: [
+        {
+          action: [{ $: { "android:name": LAUNCHER_ACTION } }],
+          category: [{ $: { "android:name": LAUNCHER_CATEGORY } }],
+        },
+      ],
+    });
+  }
+
+  manifest.queries = queries;
+
+  return androidManifest;
+}
+
 /** One `<service>` element, in the xml2js shape the manifest mod works in. */
 function listenerServiceElement(label) {
   return {
@@ -109,9 +189,8 @@ const withNotificationListener = (config) => {
   // name if a caller ever applies the plugin to a config without one.
   const label = config.name ?? "PeraPlano";
   return withAndroidManifest(config, (manifestConfig) => {
-    manifestConfig.modResults = injectListenerService(
-      manifestConfig.modResults,
-      label,
+    manifestConfig.modResults = injectPackageQueries(
+      injectListenerService(manifestConfig.modResults, label),
     );
     return manifestConfig;
   });

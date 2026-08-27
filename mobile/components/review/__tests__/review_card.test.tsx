@@ -736,6 +736,202 @@ describe("the unknown-provider card", () => {
 });
 
 // ---------------------------------------------------------------------------
+// The one-tap record (2026-08-28)
+//
+// An unknown provider's payload is `{ amount: null, direction: null }` by
+// construction — no ruleset matched, so no parser ran — and the card's primary
+// used to open a blank form over a notification whose text was sitting right
+// there on the same card. `candidates.ts` reads that text; these tests pin the
+// two halves of what the card does with it.
+//
+// THE DANGEROUS HALF IS THE REFUSAL, not the autofill. A primary that commits
+// the balance instead of the amount, or books a credit as a spend, is a wrong
+// row in a ledger the user has no reason to doubt — so every case where the
+// read is uncertain is asserted to fall back to the form.
+// ---------------------------------------------------------------------------
+
+describe("recording an unknown provider in one tap", () => {
+  const ONE_TAP = { rawNotificationId: "cap-unknown" };
+
+  test("a readable notification and one wallet make the primary a commit", async () => {
+    await storeRawCapture(capture(), NOW);
+    const queued = itemOfKind("unknown-provider", ONE_TAP);
+    const onPrimary = jest.fn();
+    const onRecordAutofill = jest.fn();
+
+    render(
+      <ReviewCard
+        item={queued}
+        wallets={[gcash]}
+        onPrimary={onPrimary}
+        onSecondary={jest.fn()}
+        onRecordAutofill={onRecordAutofill}
+        onEditDetails={jest.fn()}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    // NAMES ALL THREE FACTS IT WILL WRITE. This button is the whole
+    // confirmation — there is no form after it — so a user who taps it without
+    // reading the card still cannot be surprised by what lands.
+    const primary = await screen.findByTestId(`review-primary-${queued.id}`);
+    await waitFor(() =>
+      expect(primary.props.accessibilityLabel).toBe("Record ₱1,250.00 out of GCash"),
+    );
+
+    fireEvent.press(primary);
+    expect(onRecordAutofill).toHaveBeenCalledWith(queued, {
+      amount: 125000,
+      direction: "out",
+      // "debited from your account" — the preposition introduced the user's own
+      // account, not a counterparty, and a merchant of "your account" would key
+      // a rule matching everything this app ever sends.
+      merchant: null,
+      walletId: gcash.id,
+    });
+    // The form path is not merely unused, it is not wired: two ways to settle
+    // the same card would be two outcomes for one tap.
+    expect(onPrimary).not.toHaveBeenCalled();
+  });
+
+  test("the way back to the form is rendered beside it", async () => {
+    await storeRawCapture(capture(), NOW);
+    const queued = itemOfKind("unknown-provider", ONE_TAP);
+    const onEditDetails = jest.fn();
+
+    render(
+      <ReviewCard
+        item={queued}
+        wallets={[gcash]}
+        onPrimary={jest.fn()}
+        onSecondary={jest.fn()}
+        onRecordAutofill={jest.fn()}
+        onEditDetails={onEditDetails}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    // WITHOUT THIS THE AUTOFILL IS A TRAP. A user who can see the app read the
+    // wrong number would be left choosing between recording it anyway and
+    // discarding a real transaction.
+    const edit = await screen.findByTestId(`review-edit-${queued.id}`);
+    fireEvent.press(edit);
+    expect(onEditDetails).toHaveBeenCalledWith(queued);
+  });
+
+  test("two live amounts leave the primary opening the form", async () => {
+    // A payment and a fee. Nothing in the prose ranks one over the other, and
+    // picking either would be the silent wrong commit the queue exists to
+    // prevent.
+    await storeRawCapture(
+      capture({ text: "PHP 1,250.00 was debited. Convenience fee PHP 15.00." }),
+      NOW,
+    );
+    const queued = itemOfKind("unknown-provider", ONE_TAP);
+
+    render(
+      <ReviewCard
+        item={queued}
+        wallets={[gcash]}
+        onPrimary={jest.fn()}
+        onSecondary={jest.fn()}
+        onRecordAutofill={jest.fn()}
+        onEditDetails={jest.fn()}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    const primary = await screen.findByTestId(`review-primary-${queued.id}`);
+    await waitFor(() =>
+      expect(screen.getByTestId(`review-snippet-${queued.id}`)).toHaveTextContent(/fee/),
+    );
+    expect(primary.props.accessibilityLabel).toBe(REVIEW_ACTIONS["unknown-provider"].primary);
+    expect(screen.queryByTestId(`review-edit-${queued.id}`)).toBeNull();
+  });
+
+  test("a balance after the amount is not a second candidate", async () => {
+    // The shape nearly every Philippine e-wallet notification takes. If the
+    // balance counted as a candidate the one-tap path would never fire in the
+    // field — and if it OUTRANKED the amount, the ledger would gain a ₱3,420.50
+    // spend nobody made.
+    await storeRawCapture(
+      capture({ text: "PHP 1,250.00 was debited. Your new balance is PHP 3,420.50." }),
+      NOW,
+    );
+    const queued = itemOfKind("unknown-provider", ONE_TAP);
+
+    render(
+      <ReviewCard
+        item={queued}
+        wallets={[gcash]}
+        onPrimary={jest.fn()}
+        onSecondary={jest.fn()}
+        onRecordAutofill={jest.fn()}
+        onEditDetails={jest.fn()}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    const primary = await screen.findByTestId(`review-primary-${queued.id}`);
+    await waitFor(() =>
+      expect(primary.props.accessibilityLabel).toBe("Record ₱1,250.00 out of GCash"),
+    );
+  });
+
+  test("two wallets are a decision, so the form opens", async () => {
+    await storeRawCapture(capture(), NOW);
+    const queued = itemOfKind("unknown-provider", ONE_TAP);
+
+    render(
+      <ReviewCard
+        item={queued}
+        wallets={[gcash, bpi]}
+        onPrimary={jest.fn()}
+        onSecondary={jest.fn()}
+        onRecordAutofill={jest.fn()}
+        onEditDetails={jest.fn()}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    // Which wallet a transaction belongs to is exactly the question the sheet
+    // exists to ask; guessing it here would mint a row on an account the user
+    // never named.
+    const primary = await screen.findByTestId(`review-primary-${queued.id}`);
+    await waitFor(() =>
+      expect(screen.getByTestId(`review-source-${queued.id}`)).toBeTruthy(),
+    );
+    expect(primary.props.accessibilityLabel).toBe(REVIEW_ACTIONS["unknown-provider"].primary);
+  });
+
+  test("a notification with no direction cue opens the form", async () => {
+    // Defaulting the direction would book the occasional salary credit as a
+    // ₱30,000 spend, on a card the user cleared in one tap precisely because
+    // they trusted it.
+    await storeRawCapture(capture({ text: "PHP 1,250.00 GCash" }), NOW);
+    const queued = itemOfKind("unknown-provider", ONE_TAP);
+
+    render(
+      <ReviewCard
+        item={queued}
+        wallets={[gcash]}
+        onPrimary={jest.fn()}
+        onSecondary={jest.fn()}
+        onRecordAutofill={jest.fn()}
+        onEditDetails={jest.fn()}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    const primary = await screen.findByTestId(`review-primary-${queued.id}`);
+    await waitFor(() =>
+      expect(screen.getByTestId(`review-snippet-${queued.id}`)).toHaveTextContent(/1,250/),
+    );
+    expect(primary.props.accessibilityLabel).toBe(REVIEW_ACTIONS["unknown-provider"].primary);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // The prefilled fields
 // ---------------------------------------------------------------------------
 

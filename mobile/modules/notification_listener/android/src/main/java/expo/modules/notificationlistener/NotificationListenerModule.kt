@@ -201,6 +201,16 @@ class NotificationListenerModule : Module() {
       observedPackages(requireContext())
     }
 
+    // ---- Real app names (contract §4; app-label plan) --------------------
+    //
+    // Deliberately takes the packages to resolve rather than enumerating
+    // installed apps: this module never builds a list of what the user has
+    // installed, only names packages a caller already had.
+
+    AsyncFunction("getAppLabels") { packageNames: List<String> ->
+      appLabels(requireContext(), packageNames)
+    }
+
     // ---- Live capture events (contract §4; plan Task 6 rule 5) -----------
     //
     // The sink is installed only while JS is actually subscribed, and torn

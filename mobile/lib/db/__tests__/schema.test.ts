@@ -28,6 +28,11 @@ const MIGRATED_TABLES = [
   "loan_adjustments",
   "parse_stats",
   "wallet_trait_evidence",
+  // 015_support_reports adds the offline problem-report outbox and the media
+  // attached to each report — the only tables in this schema that hold text
+  // the user typed for someone else to read.
+  "support_reports",
+  "support_report_attachments",
 ];
 
 const EXPECTED_TABLES = [...CORE_TABLES, ...MIGRATED_TABLES].sort();
@@ -158,6 +163,7 @@ type SeedIds = {
   incomeProfileId: string;
   loanId: string;
   billId: string;
+  supportReportId: string;
 };
 
 /** Seeds one valid parent row per referenceable table. Returns their ids for use by VALID_ROWS. */
@@ -176,6 +182,7 @@ async function seedParents(db: SQLiteDatabase): Promise<SeedIds> {
     incomeProfileId: "seed_income_profile",
     loanId: "seed_loan",
     billId: "seed_bill",
+    supportReportId: "seed_support_report",
   };
 
   await insertRow(db, "wallets", {
@@ -216,6 +223,11 @@ async function seedParents(db: SQLiteDatabase): Promise<SeedIds> {
     id: ids.billId, name: "Seed Bill", amount: 1000, amount_mode: "fixed",
     due_rule_json: "{}", reminder_offsets_json: "[]", auto_match_rule_json: null,
     category_id: ids.categoryId, created_at: now, updated_at: now,
+  });
+  await insertRow(db, "support_reports", {
+    id: ids.supportReportId, title: "Seed report", description: "Seeded for the FK below.",
+    topic: "other", status: "queued", attempt_count: 0, next_attempt_at: now,
+    last_error: null, created_at: now, updated_at: now, sent_at: null, ticket_ref: null,
   });
 
   return ids;
@@ -335,6 +347,24 @@ function buildValidRows(ids: SeedIds, now: number): Record<string, Row> {
       wallet_id: ids.walletId, owed_score: 250, held_score: 0,
       sample_count: 1, updated_at: now,
     },
+    // migration 015. `status` is 'queued' | 'sent' | 'rejected' and there is no
+    // in-flight value — see types/support.ts for why an OS kill must not be
+    // able to strand a row mid-send. `next_attempt_at` is an absolute instant,
+    // not a delay.
+    support_reports: {
+      id: "row_support_reports", title: "Transfers show up twice",
+      description: "Both legs landed as spending.", topic: "wrong_amount_or_wallet",
+      status: "queued", attempt_count: 0, next_attempt_at: now, last_error: null,
+      created_at: now, updated_at: now, sent_at: null, ticket_ref: null,
+    },
+    // migration 015. Stores a PATH, never the bytes — screenshots are hundreds
+    // of kilobytes each and this database is opened and keyed on every cold
+    // start.
+    support_report_attachments: {
+      id: "row_support_report_attachments", report_id: ids.supportReportId,
+      file_uri: "file:///docs/support_attachments/a.png", mime_type: "image/png",
+      byte_size: 1024, created_at: now,
+    },
   };
 }
 
@@ -377,6 +407,7 @@ describe("foreign keys are enforced on every FK column in the schema", () => {
     { table: "bill_payments", column: "bill_id" },
     { table: "bill_payments", column: "transaction_id" },
     { table: "review_queue_items", column: "raw_notification_id" },
+    { table: "support_report_attachments", column: "report_id" },
   ];
 
   test.each(FK_COLUMNS.map(({ table, column }) => [table, column]))(
@@ -474,6 +505,12 @@ describe("NOT NULL is enforced on every required column in the schema", () => {
       .map((column) => ({ table: "app_settings", column })),
     ...["id", "provider_key", "day_start_at", "parsed_count", "failed_count", "updated_at"]
       .map((column) => ({ table: "parse_stats", column })),
+    // `last_error`, `sent_at` and `ticket_ref` are deliberately absent: all
+    // three are null for the whole life of a report that sends first time.
+    ...["id", "title", "description", "topic", "status", "attempt_count", "next_attempt_at", "created_at", "updated_at"]
+      .map((column) => ({ table: "support_reports", column })),
+    ...["id", "report_id", "file_uri", "mime_type", "byte_size", "created_at"]
+      .map((column) => ({ table: "support_report_attachments", column })),
   ];
 
   test.each(NOT_NULL_COLUMNS.map(({ table, column }) => [table, column]))(

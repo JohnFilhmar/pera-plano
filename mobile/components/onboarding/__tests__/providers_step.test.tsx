@@ -34,6 +34,13 @@ jest.mock("expo-router", () => ({
 
 jest.mock("@/modules/notification_listener", () => ({
   listObservedPackages: jest.fn(),
+  // Never configured by this suite: it is about what a provider selection
+  // TURNS INTO, not about what the apps are called. Left as a bare jest.fn()
+  // DELIBERATELY — it resolves `undefined`, which is exactly the nullish map
+  // `loadAppLabels`'s `?? {}` exists to absorb. Making it resolve `{}` here
+  // would hide the wedged-forever-on-the-loading-skeleton bug that guard
+  // prevents.
+  getAppLabels: jest.fn(),
 }));
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";

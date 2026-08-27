@@ -13,6 +13,7 @@ import loanMatchReviewKindSql from "./migrations/011_loan_match_review_kind.sql"
 import oneSidedTransferReviewKindSql from "./migrations/012_one_sided_transfer_review_kind.sql";
 import walletTraitsSql from "./migrations/013_wallet_traits.sql";
 import dropWalletTypeSql from "./migrations/014_drop_wallet_type.sql";
+import supportReportsSql from "./migrations/015_support_reports.sql";
 
 export type Migration = {
   version: number;
@@ -120,6 +121,11 @@ export const MIGRATIONS: Migration[] = [
     // file's header and `Migration.disablesForeignKeys` above.
     disablesForeignKeys: true,
   },
+  // Additive: two new tables, nothing rebuilt, so no `disablesForeignKeys`
+  // even though `support_report_attachments` declares a foreign key — the
+  // pragma is only needed to DROP a table others reference, and this
+  // migration drops nothing.
+  { version: 15, name: "support_reports", sql: supportReportsSql },
 ];
 
 /**

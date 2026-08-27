@@ -100,6 +100,7 @@ import {
   BarChart3,
   ChevronRight,
   Info,
+  LifeBuoy,
   Repeat,
   Settings as SettingsIcon,
   ShieldCheck,
@@ -126,6 +127,7 @@ const SettingsGlyph = registerIcon(SettingsIcon);
 const ListenerGlyph = registerIcon(Activity);
 const ParserGlyph = registerIcon(Wrench);
 const PrivacyGlyph = registerIcon(ShieldCheck);
+const ReportProblemGlyph = registerIcon(LifeBuoy);
 const AboutGlyph = registerIcon(Info);
 const ChevronGlyph = registerIcon(ChevronRight);
 
@@ -312,6 +314,30 @@ export default function MoreScreen() {
           right={<RowChevron />}
         />
       </Pressable>
+
+      {/* `problem_reports` ships in the same change as this row and its screen
+          (app/(tabs)/more/report_problem.tsx), so the gate never closes on it
+          today — kept for the same reason every other gate on this hub is
+          kept (see this file's header). Placed in "App" rather than
+          "Diagnostics" on purpose: reporting a problem is something the user
+          does, not something they inspect. */}
+      <SoonGate feature="problem_reports">
+        <Pressable
+          testID="more-report-problem"
+          onPress={() => router.push("/more/report_problem")}
+          accessibilityRole="button"
+          accessibilityLabel="Report a problem"
+        >
+          <ListRow
+            title="Report a problem"
+            subtitle="Tell us what broke. Works offline — we'll send it when you're back on."
+            // 70 chars / 22 — same arithmetic as the rows above (see header).
+            subtitleLines={4}
+            left={<RowIconDisc icon={ReportProblemGlyph} />}
+            right={<RowChevron />}
+          />
+        </Pressable>
+      </SoonGate>
 
       {/* Static — no gate, no navigation, no chevron (see this file's header
           comment). Not a feature; just what build and tier the user is on. */}

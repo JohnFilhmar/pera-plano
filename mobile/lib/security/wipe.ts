@@ -16,6 +16,7 @@
 import { wipeDatabase } from "@/lib/db/database";
 import { wipeKeys } from "@/lib/crypto/key_manager";
 import { clearCaptureBuffer } from "@/modules/notification_listener";
+import { deleteAllSupportAttachmentFiles } from "@/lib/support/attachments";
 
 /**
  * Destroys the database file, both key wraps (and the in-memory DEK), and
@@ -40,4 +41,12 @@ export async function wipeAndStartOver(): Promise<void> {
   await wipeDatabase();
   await wipeKeys();
   await clearCaptureBuffer();
+  // Problem-report attachments (migration 015) are the second thing on this
+  // device that lives outside the database file, and they land here for
+  // exactly the reason the capture buffer above does: deleting the SQLite file
+  // deletes the rows that POINT at the screenshots, not the screenshots. Last
+  // in the sequence, after the two steps whose ordering carries the
+  // recoverability argument in this file's header — and it never throws, so it
+  // cannot turn a completed wipe into a failed one.
+  await deleteAllSupportAttachmentFiles();
 }

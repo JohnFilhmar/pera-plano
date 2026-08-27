@@ -43,6 +43,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getDatabase } from "@/lib/db/database";
 import { resetSettings } from "@/lib/db/repos/app_settings_repo";
 import { listDataTableNames } from "@/lib/db/table_names";
+import { deleteSupportAttachmentFiles } from "@/lib/support/attachments";
 import { clearCaptureBuffer } from "@/modules/notification_listener";
 import { THEME_STORAGE_KEY } from "@/contexts/theme_context";
 import type { SQLiteDatabase } from "@/lib/db/database";
@@ -104,6 +105,17 @@ export async function wipeAllData(): Promise<void> {
   const db = await getDatabase();
   const tables = await listWipeableTables(db);
 
+  // Problem-report attachments live on the filesystem, not in SQLite
+  // (migration 015 stores a path, and its header says why), so emptying
+  // `support_report_attachments` below would leave the actual screenshots on
+  // disk — the same trap `clearCaptureBuffer()` at the end of this function
+  // exists for. Read BEFORE the delete, because the rows are what name the
+  // files; unlinked after it, because a failed unlink must not abort a wipe
+  // (`deleteSupportAttachmentFiles` never throws).
+  const attachmentFiles = await db.getAllAsync<{ file_uri: string }>(
+    "SELECT file_uri FROM support_report_attachments",
+  );
+
   await db.execAsync("PRAGMA foreign_keys = OFF;");
   try {
     await db.withTransactionAsync(async () => {
@@ -114,6 +126,8 @@ export async function wipeAllData(): Promise<void> {
   } finally {
     await db.execAsync("PRAGMA foreign_keys = ON;");
   }
+
+  await deleteSupportAttachmentFiles(attachmentFiles.map((row) => row.file_uri));
 
   await resetSettings();
 
