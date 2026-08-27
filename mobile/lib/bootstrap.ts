@@ -16,6 +16,7 @@ import { purgeExpired } from "@/lib/db/repos/review_queue_repo";
 import { purgeExpiredRawCaptures } from "@/lib/db/repos/raw_notifications_repo";
 import { runIncomePass } from "@/lib/income/income_ledger_subscriber";
 import { seedParserRules } from "@/lib/ingest/seed_rules";
+import { purgeOldSupportReports } from "@/lib/support/outbox_runner";
 import { runRecurringPass } from "@/lib/recurring/recurring_ledger_subscriber";
 import { checkForRulesetUpdate } from "@/services/parser_rules";
 import { sendParseStats } from "@/services/telemetry";
@@ -117,6 +118,12 @@ async function runRetention(now: number): Promise<void> {
   } catch {
     // Housekeeping only — never worth failing a launch over.
   }
+  // Delivered problem reports and their attachment files, past their 30-day
+  // keep (lib/support/outbox_runner.ts). OUTSIDE the try above, not inside it,
+  // because it swallows its own failures already — folding it in would mean a
+  // raw-capture purge that threw could skip it silently, and this is the pass
+  // that unlinks the largest files this app writes.
+  await purgeOldSupportReports(now);
 }
 
 /**
