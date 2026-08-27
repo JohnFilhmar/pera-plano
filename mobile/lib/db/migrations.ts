@@ -12,7 +12,50 @@ import softDeleteAndDerivedLimitsSql from "./migrations/010_soft_delete_and_deri
 import loanMatchReviewKindSql from "./migrations/011_loan_match_review_kind.sql";
 import oneSidedTransferReviewKindSql from "./migrations/012_one_sided_transfer_review_kind.sql";
 
-export type Migration = { version: number; name: string; sql: string };
+export type Migration = {
+  version: number;
+  name: string;
+  sql: string;
+  /**
+   * Runs with `PRAGMA foreign_keys = OFF`, for a migration that rebuilds a
+   * table OTHER TABLES REFERENCE.
+   *
+   * WHY THIS IS NOT SOMETHING A MIGRATION CAN DO FOR ITSELF. SQLite ignores a
+   * `foreign_keys` pragma issued inside a transaction, and `runMigrations`
+   * puts every migration in one. So a rebuild of `wallets` — referenced by
+   * wallet_matchers, transactions, goals and loans — cannot drop the old table
+   * from inside its own SQL without tripping the constraint, however correct
+   * the end state is. The pragma is toggled around the transaction, which is
+   * the only part that has to sit outside it; the migration itself still runs
+   * inside one and still rolls back.
+   *
+   * Migrations 011 and 012 rebuilt `review_queue_items` without any of this,
+   * because nothing references that table.
+   *
+   * THE PRICE OF ASKING is `PRAGMA foreign_key_check` before COMMIT — see
+   * `applyMigration`. Turning enforcement off means a mistake in the copy step
+   * orphans rows silently instead of failing loudly, and the check is what puts
+   * the loud failure back.
+   */
+  disablesForeignKeys?: true;
+};
+
+/**
+ * A migration that ran with foreign keys off and left rows pointing at
+ * something that no longer exists. Thrown BEFORE COMMIT, so the rebuild is
+ * rolled back rather than shipped.
+ */
+export class MigrationIntegrityError extends Error {
+  constructor(
+    readonly version: number,
+    readonly violationCount: number,
+  ) {
+    super(
+      `Migration ${version} left ${violationCount} orphaned foreign-key row(s); rolled back.`,
+    );
+    this.name = "MigrationIntegrityError";
+  }
+}
 
 /**
  * Registry of numbered migrations, ascending. Task 7 registers 001_core;
@@ -87,14 +130,46 @@ export async function runMigrations(
 
   const applied: number[] = [];
   for (const migration of pending) {
-    await db.withTransactionAsync(async () => {
-      await db.execAsync(migration.sql);
-      await db.runAsync(
-        "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
-        [migration.version, migration.name, Date.now()],
-      );
-    });
+    if (migration.disablesForeignKeys) {
+      // OUTSIDE the transaction, because that is the only place the pragma has
+      // any effect. Restored in `finally` so a failed rebuild cannot leave the
+      // connection unenforced for everything that runs after it.
+      await db.execAsync("PRAGMA foreign_keys = OFF;");
+      try {
+        await applyMigration(db, migration);
+      } finally {
+        await db.execAsync("PRAGMA foreign_keys = ON;");
+      }
+    } else {
+      await applyMigration(db, migration);
+    }
     applied.push(migration.version);
   }
   return applied;
+}
+
+/**
+ * One migration, inside one transaction.
+ *
+ * The integrity check runs BEFORE the `schema_migrations` insert and before
+ * COMMIT, so a rebuild that orphaned a row is rolled back whole — the version
+ * is not recorded, and the next launch tries again rather than starting from a
+ * database that quietly lost its references.
+ */
+async function applyMigration(db: SQLiteDatabase, migration: Migration): Promise<void> {
+  await db.withTransactionAsync(async () => {
+    await db.execAsync(migration.sql);
+
+    if (migration.disablesForeignKeys) {
+      const violations = await db.getAllAsync<{ table: string }>("PRAGMA foreign_key_check");
+      if (violations.length > 0) {
+        throw new MigrationIntegrityError(migration.version, violations.length);
+      }
+    }
+
+    await db.runAsync(
+      "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+      [migration.version, migration.name, Date.now()],
+    );
+  });
 }
