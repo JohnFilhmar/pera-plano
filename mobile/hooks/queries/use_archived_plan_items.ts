@@ -19,9 +19,10 @@ import { useQuery } from "@tanstack/react-query";
 
 import { queryKeys } from "@/constants/query_keys";
 import { listBills } from "@/lib/db/repos/bills_repo";
+import { listGoals } from "@/lib/db/repos/goals_repo";
 import { listLimits } from "@/lib/db/repos/limits_repo";
 import { listLoans } from "@/lib/db/repos/loans_repo";
-import type { Bill, Limit, Loan } from "@/types/domain";
+import type { Bill, Goal, Limit, Loan } from "@/types/domain";
 
 /**
  * `enabled` is the point of the options bag, not a convenience: these lists sit
@@ -41,6 +42,19 @@ export function useArchivedBills({ enabled = true }: ArchivedQueryOptions = {}) 
     // user's retired bills, not a ledger.
     queryFn: async (): Promise<Bill[]> =>
       (await listBills({ includeArchived: true })).filter((bill) => bill.archivedAt !== null),
+    enabled,
+  });
+}
+
+export function useArchivedGoals({ enabled = true }: ArchivedQueryOptions = {}) {
+  return useQuery({
+    queryKey: queryKeys.goals.archived(),
+    // `includeAchieved` is left at its default (true) on purpose: a goal the
+    // user reached and then cleared away is exactly the one worth being able to
+    // bring back, and filtering reached goals out of the DELETED list would
+    // hide it for a reason that only makes sense on the live list.
+    queryFn: async (): Promise<Goal[]> =>
+      (await listGoals({ includeArchived: true })).filter((goal) => goal.archivedAt !== null),
     enabled,
   });
 }

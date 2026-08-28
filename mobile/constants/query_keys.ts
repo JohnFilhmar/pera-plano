@@ -153,6 +153,8 @@ export const queryKeys = {
   goals: {
     all: ["goals"] as const,
     list: () => ["goals", "list"] as const,
+    /** The deleted tail — see `limits.archived` for why it is its own key. */
+    archived: () => ["goals", "archived"] as const,
     detail: (id: string) => ["goals", "detail", id] as const,
   },
   loans: {

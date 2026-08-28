@@ -204,7 +204,7 @@ export default function LoanDetailScreen() {
             Transactions, so removing the loan would leave the money visibly
             gone from the ledger with nothing left to explain it. */}
         <Button
-          title="Archive loan"
+          title="Delete loan"
           variant="destructive"
           testID="loan-archive"
           onPress={() => setConfirmingArchive(true)}
@@ -214,9 +214,9 @@ export default function LoanDetailScreen() {
 
       <ConfirmDialog
         visible={confirmingArchive}
-        title="Archive this loan?"
-        body="It stops appearing in Plan and its reminders stop. Every payment you recorded stays in your ledger exactly as it is."
-        confirmLabel="Archive"
+        title="Delete this loan?"
+        body="It stops appearing in Plan and its reminders stop. Every payment you recorded stays in your ledger exactly as it is, and you can restore the loan from Plan → Utang."
+        confirmLabel="Delete"
         destructive
         onCancel={() => setConfirmingArchive(false)}
         onConfirm={async () => {

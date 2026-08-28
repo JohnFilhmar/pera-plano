@@ -18,6 +18,7 @@ function goal(over: Partial<Goal> = {}): Goal {
     targetDate: "2026-12-31",
     linkedWalletId: "w-savings",
     contributionRule: null,
+    archivedAt: null,
     createdAt: on(2026, 5, 1),
     updatedAt: on(2026, 5, 1),
     ...over,

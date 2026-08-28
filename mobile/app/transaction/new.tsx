@@ -55,7 +55,7 @@ import type { ManualEntryDraft } from "@/components/transactions/manual_entry_fo
 function transferErrorMessage(error: unknown): string {
   if (error instanceof TransferValidationError) {
     if (error.reason === "archived_wallet") {
-      return "One of those wallets was archived. Nothing was recorded — pick another wallet and try again.";
+      return "One of those wallets was deleted. Nothing was recorded — pick another wallet and try again.";
     }
     if (error.reason === "unknown_wallet") {
       return "One of those wallets is no longer there. Nothing was recorded — pick another wallet and try again.";

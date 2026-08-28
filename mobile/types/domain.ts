@@ -284,6 +284,17 @@ export type Goal = {
   /** Must reference a Wallet of type 'savings' (invariant I10). */
   linkedWalletId: string;
   contributionRule: ContributionRule | null;
+  /**
+   * When the user deleted this goal, or `null` while it is live (migration
+   * 016) — the same column and the same meaning `Bill.archivedAt`,
+   * `Loan.archivedAt` and `Limit.archivedAt` already have.
+   *
+   * THE UI CALLS THIS DELETING, and the schema calls it archiving, on purpose.
+   * Every Plan entity is soft-deleted and restorable; "archive" is the word for
+   * the mechanism and "delete" is the word a user reaches for, so the buttons
+   * say Delete and the column keeps the name its three siblings already use.
+   */
+  archivedAt: EpochMs | null;
   createdAt: EpochMs;
   updatedAt: EpochMs;
 };

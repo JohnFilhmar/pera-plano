@@ -14,6 +14,7 @@ import oneSidedTransferReviewKindSql from "./migrations/012_one_sided_transfer_r
 import walletTraitsSql from "./migrations/013_wallet_traits.sql";
 import dropWalletTypeSql from "./migrations/014_drop_wallet_type.sql";
 import supportReportsSql from "./migrations/015_support_reports.sql";
+import goalSoftDeleteSql from "./migrations/016_goal_soft_delete.sql";
 
 export type Migration = {
   version: number;
@@ -126,6 +127,11 @@ export const MIGRATIONS: Migration[] = [
   // pragma is only needed to DROP a table others reference, and this
   // migration drops nothing.
   { version: 15, name: "support_reports", sql: supportReportsSql },
+  // Rebuilds `goals` to drop a column-level UNIQUE, but needs NO
+  // `disablesForeignKeys`: goals reference `wallets`, and nothing in the schema
+  // references goals, so dropping the old table breaks no constraint. Same
+  // shape as 011 and 012's `review_queue_items` rebuilds.
+  { version: 16, name: "goal_soft_delete", sql: goalSoftDeleteSql },
 ];
 
 /**

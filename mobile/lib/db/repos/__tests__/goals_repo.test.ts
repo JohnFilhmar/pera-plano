@@ -16,7 +16,8 @@ import type { Wallet } from "@/types/domain";
 import {
   countGoals,
   createGoal,
-  deleteGoal,
+  archiveGoal,
+  unarchiveGoal,
   GoalNotFoundError,
   getGoal,
   listGoals,
@@ -151,7 +152,7 @@ test("a freed wallet can back a new goal", async () => {
   // Deleting the first goal releases the wallet — otherwise a user who
   // abandoned a goal could never reuse the account behind it.
   const first = await createGoal({ name: "First", targetAmount: 5000000, linkedWalletId: savings.id });
-  await deleteGoal(first.id);
+  await archiveGoal(first.id);
 
   const second = await createGoal({ name: "Second", targetAmount: 100000, linkedWalletId: savings.id });
 
@@ -288,9 +289,12 @@ test("DELETING A GOAL LEAVES THE WALLET AND ITS TRANSACTIONS UNTOUCHED", async (
   const goal = await createGoal({ name: "Travel", targetAmount: 3000000, linkedWalletId: savings.id });
   await fundWallet(savings.id, 1200000);
 
-  await deleteGoal(goal.id);
+  await archiveGoal(goal.id);
 
-  expect(await getGoal(goal.id)).toBeNull();
+  // SOFT since migration 016: gone from every list the app reads, still on
+  // file, and still readable by id so the restore list can name it.
+  expect(await listGoals()).toEqual([]);
+  expect((await getGoal(goal.id))?.archivedAt).toEqual(expect.any(Number));
   expect((await getWallet(savings.id))?.balance).toBe(1200000);
   const rows = await db.getAllAsync<{ n: number }>(
     "SELECT COUNT(*) AS n FROM transactions WHERE wallet_id = ?",
@@ -300,7 +304,73 @@ test("DELETING A GOAL LEAVES THE WALLET AND ITS TRANSACTIONS UNTOUCHED", async (
 });
 
 test("deleting a goal that is already gone is not an error", async () => {
-  await expect(deleteGoal("no-such-goal")).resolves.toBeUndefined();
+  await expect(archiveGoal("no-such-goal")).resolves.toBeUndefined();
+});
+
+test("RESTORING A DELETED GOAL BRINGS IT BACK WHOLE", async () => {
+  // The half that did not exist before migration 016. Rebuilding a goal by hand
+  // restarts the pace the app quotes, because that is measured from created_at
+  // — so the created date surviving is the point of the test, not a detail.
+  const goal = await createGoal({
+    name: "Travel",
+    targetAmount: 3000000,
+    targetDate: "2027-01-01",
+    linkedWalletId: savings.id,
+  });
+  await archiveGoal(goal.id);
+
+  await unarchiveGoal(goal.id);
+
+  const restored = await getGoal(goal.id);
+  expect(restored?.archivedAt).toBeNull();
+  expect(restored?.createdAt).toBe(goal.createdAt);
+  expect(restored?.targetDate).toBe("2027-01-01");
+  expect((await listGoals()).map((row) => row.id)).toEqual([goal.id]);
+
+  // Idempotent and silent on both misses, matching every other unarchive.
+  await unarchiveGoal(goal.id);
+  await expect(unarchiveGoal("no-such-goal")).resolves.toBeUndefined();
+  expect((await getGoal(goal.id))?.archivedAt).toBeNull();
+});
+
+test("a restore is REFUSED when the wallet has been claimed since, by name", async () => {
+  // Deleting frees the account, so the user may have started a new goal on it.
+  // Only one live goal may hold a wallet — and the caller needs an error a
+  // screen can turn into a sentence, not a raw partial-index violation.
+  const first = await createGoal({ name: "First", targetAmount: 5000000, linkedWalletId: savings.id });
+  await archiveGoal(first.id);
+  await createGoal({ name: "Second", targetAmount: 100000, linkedWalletId: savings.id });
+
+  await expect(unarchiveGoal(first.id)).rejects.toMatchObject({ walletId: savings.id });
+
+  // And the refusal changed nothing: the deleted goal is still deleted.
+  expect((await getGoal(first.id))?.archivedAt).toEqual(expect.any(Number));
+});
+
+test("a deleted goal does not count against the free cap", async () => {
+  // `countGoals` feeds `canCreateGoal`. Counting goals the user has thrown away
+  // would trip a gate they cannot get back under, since nothing is removed.
+  const goal = await createGoal({ name: "Travel", targetAmount: 3000000, linkedWalletId: savings.id });
+  expect(await countGoals()).toBe(1);
+
+  await archiveGoal(goal.id);
+
+  expect(await countGoals()).toBe(0);
+});
+
+test("the deleted list is opt-in and holds exactly what was deleted", async () => {
+  const kept = await createGoal({ name: "Kept", targetAmount: 5000000, linkedWalletId: savings.id });
+  const gone = await createGoal({
+    name: "Gone",
+    targetAmount: 100000,
+    linkedWalletId: otherSavings.id,
+  });
+  await archiveGoal(gone.id);
+
+  expect((await listGoals()).map((row) => row.id)).toEqual([kept.id]);
+  expect((await listGoals({ includeArchived: true })).map((row) => row.id).sort()).toEqual(
+    [kept.id, gone.id].sort(),
+  );
 });
 
 // ---------------------------------------------------------------------------

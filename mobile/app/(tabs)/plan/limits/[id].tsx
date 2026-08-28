@@ -107,7 +107,7 @@ export default function LimitDetailScreen() {
       <View testID="limit-detail-missing" className="flex-1 justify-center bg-bg dark:bg-bg-dark">
         <EmptyState
           title="This limit is gone"
-          body="It was archived. Your transactions are untouched — a limit only ever watched them."
+          body="It was deleted. Your transactions are untouched — a limit only ever watched them — and you can restore it from Plan → Limits."
           action={{ label: "Back to limits", onPress: () => router.back() }}
         />
       </View>
@@ -190,7 +190,7 @@ export default function LimitDetailScreen() {
             way back is a screen that does not exist yet — an accidental tap
             should not be the way a user discovers that. */}
         <Button
-          title="Archive"
+          title="Delete limit"
           variant="destructive"
           testID="limit-archive"
           onPress={() => setConfirmingArchive(true)}
@@ -200,9 +200,9 @@ export default function LimitDetailScreen() {
 
       <ConfirmDialog
         visible={confirmingArchive}
-        title="Archive this limit?"
-        body="It stops appearing in Plan and stops alerting you. Nothing you have spent is deleted, and the breaches it recorded stay readable."
-        confirmLabel="Archive"
+        title="Delete this limit?"
+        body="It stops appearing in Plan and stops alerting you. Nothing you have spent is removed, and the breaches it recorded stay readable. You can restore it from Plan → Limits."
+        confirmLabel="Delete"
         destructive
         onCancel={() => setConfirmingArchive(false)}
         onConfirm={async () => {

@@ -51,7 +51,7 @@ export default function EditBillScreen() {
       <View testID="bill-edit-missing" className="flex-1 justify-center bg-bg dark:bg-bg-dark">
         <EmptyState
           title="This bill is gone"
-          body="It was archived. Any payments you recorded are still in your ledger."
+          body="It was deleted. Any payments you recorded are still in your ledger, and you can restore the bill from Plan → Bills."
           action={{ label: "Back to bills", onPress: () => router.back() }}
         />
       </View>

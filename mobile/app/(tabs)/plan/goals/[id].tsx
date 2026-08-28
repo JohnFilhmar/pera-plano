@@ -36,7 +36,7 @@ export default function GoalDetailScreen() {
       <View testID="goal-detail-missing" className="flex-1 justify-center bg-bg dark:bg-bg-dark">
         <EmptyState
           title="This goal is gone"
-          body="It was deleted. The money in the savings account is untouched — a goal only ever watched it."
+          body="It was deleted. The money in the savings account is untouched — a goal only ever watched it — and you can restore it from Plan → Goals."
           action={{ label: "Back to goals", onPress: () => router.back() }}
         />
       </View>
@@ -102,7 +102,8 @@ export default function GoalDetailScreen() {
         }}
       />
       <Text className="text-center text-fg-2 dark:text-fg-2-dark">
-        Deleting the goal keeps the account and every peso in it.
+        Deleting the goal keeps the account and every peso in it, and you can restore the
+        goal itself from Plan → Goals.
       </Text>
     </ScrollView>
   );

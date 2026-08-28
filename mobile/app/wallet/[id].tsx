@@ -340,7 +340,7 @@ export default function WalletDetailScreen() {
             <Text className="flex-1 text-lg font-semibold text-fg dark:text-fg-dark">
               {wallet.name}
             </Text>
-            {wallet.isArchived ? <Chip label="Archived" tone="soon" /> : null}
+            {wallet.isArchived ? <Chip label="Deleted" tone="soon" /> : null}
           </View>
 
           <View className="px-4">
@@ -512,7 +512,7 @@ export default function WalletDetailScreen() {
                     "Archive" text, only this testID. */}
                 <Button
                   testID="wallet-detail-archive"
-                  title="Archive wallet"
+                  title="Delete wallet"
                   variant="secondary"
                   onPress={() => setArchiving(true)}
                 />

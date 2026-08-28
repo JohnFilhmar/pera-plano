@@ -58,7 +58,7 @@ export default function EditLimitScreen() {
       <View testID="limit-edit-missing" className="flex-1 justify-center bg-bg dark:bg-bg-dark">
         <EmptyState
           title="This limit is gone"
-          body="It was archived. Your spending history is untouched."
+          body="It was deleted. Your spending history is untouched, and you can restore the limit from Plan → Limits."
           action={{ label: "Back to limits", onPress: () => router.back() }}
         />
       </View>

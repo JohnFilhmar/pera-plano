@@ -255,7 +255,7 @@ export default function WalletsScreen() {
               the total either way (rule 17). */}
           {archived.length > 0 ? (
             <View testID="wallets-archived-section">
-              <SectionHeader title="Archived" />
+              <SectionHeader title="Deleted" />
               {archived.map(renderCard)}
             </View>
           ) : null}
@@ -263,7 +263,7 @@ export default function WalletsScreen() {
           <View className="items-center px-4 pt-2">
             <Button
               testID="wallets-archived-toggle"
-              title={showArchived ? "Hide archived" : "Show archived"}
+              title={showArchived ? "Hide deleted" : "Show deleted"}
               variant="ghost"
               onPress={() => setShowArchived((shown) => !shown)}
             />
@@ -271,7 +271,7 @@ export default function WalletsScreen() {
 
           {/* Clears the floating add button on short devices — the same spacer
               app/(tabs)/transactions.tsx keeps under its ledger, so the last
-              wallet card and the "Show archived" toggle stay tappable rather
+              wallet card and the "Show deleted" toggle stay tappable rather
               than sitting under 56dp of button. */}
           <View className="h-16" />
         </View>

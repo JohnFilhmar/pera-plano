@@ -8,14 +8,19 @@
 // pops back with `router.back()`. Deleting the route would turn "tap a goal
 // -> goal detail -> system back" into a dead end (revamp spec R4).
 import { useRouter } from "expo-router";
+import { useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
 
 import { GoalCard } from "@/components/goals/goal_card";
+import { ArchivedSection } from "@/components/plan/archived_section";
 import { formatCentavos } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty_state";
 import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
+import { useUnarchiveGoal } from "@/hooks/mutations/use_unarchive_goal";
+import { useArchivedGoals } from "@/hooks/queries/use_archived_plan_items";
 import { useGoals } from "@/hooks/queries/use_goals";
+import { WalletAlreadyHasGoalError } from "@/lib/db/repos/goals_repo";
 import { canCreateGoal } from "@/lib/entitlements";
 import type { GoalStatus } from "@/lib/goals/goals_service";
 
@@ -46,6 +51,42 @@ export function GoalsPanel() {
     router.push(canCreateGoal(count) ? "/plan/goals/new" : "/plan/goals/new?gated=1");
   };
 
+  // Closed by default and the query is gated on it (see `ArchivedQueryOptions`).
+  // The state lives here rather than in `ArchivedSection` because it also has
+  // to reach the hook.
+  const [showDeleted, setShowDeleted] = useState(false);
+  const { data: deleted } = useArchivedGoals({ enabled: showDeleted });
+  const restore = useUnarchiveGoal();
+
+  // THE ONE RESTORE IN THE APP THAT CAN BE REFUSED. Deleting a goal frees its
+  // savings account, so the wallet may have been claimed by a new goal since —
+  // and only one live goal may hold a wallet. Naming the error rather than
+  // showing "something went wrong" is what makes the fix (delete or re-point
+  // the newer goal) findable.
+  const restoreError =
+    restore.error instanceof WalletAlreadyHasGoalError
+      ? "That goal's savings account already has another goal on it. Delete or move that one first."
+      : restore.error !== null
+        ? "That goal could not be restored."
+        : null;
+
+  const deletedSection = (
+    <ArchivedSection
+      testID="goals-archived"
+      noun="goals"
+      open={showDeleted}
+      onToggle={() => setShowDeleted((shown) => !shown)}
+      items={deleted?.map((goal) => ({
+        id: goal.id,
+        name: goal.name,
+        detail: `Target ${formatCentavos(goal.targetAmount)}`,
+      }))}
+      restoringId={restore.isPending ? (restore.variables ?? null) : null}
+      error={restoreError}
+      onRestore={(id) => restore.mutate(id)}
+    />
+  );
+
   // Render nothing until the list has loaded. An empty state that flashes on
   // every cold start reads as data loss — the rule the Wallets tab set.
   if (statuses === undefined) {
@@ -58,7 +99,10 @@ export function GoalsPanel() {
 
   if (statuses.length === 0) {
     return (
-      <View className="flex-1 justify-center bg-bg dark:bg-bg-dark">
+      // The deleted toggle is in this branch too, and it matters most here: a
+      // user who deleted their only goal lands on an empty state that otherwise
+      // reads as "the goal is gone for good" rather than "it is recoverable".
+      <View className="flex-1 justify-center gap-4 bg-bg px-4 dark:bg-bg-dark">
         {/* Rule 7's copy. */}
         <EmptyState
           testID="goals-empty"
@@ -66,6 +110,7 @@ export function GoalsPanel() {
           body="Name something you are saving for and PeraPlano will track it against a savings account."
           action={{ label: "Create a goal", onPress: onAdd }}
         />
+        {deletedSection}
       </View>
     );
   }
@@ -92,6 +137,9 @@ export function GoalsPanel() {
             />
           </Pressable>
         ))}
+        {deletedSection}
+        {/* Clears the floating action button on short devices. */}
+        <View className="h-16" />
       </ScrollView>
       <View className="absolute bottom-6 right-6">
         <Button title="Add" onPress={onAdd} testID="goals-add" />

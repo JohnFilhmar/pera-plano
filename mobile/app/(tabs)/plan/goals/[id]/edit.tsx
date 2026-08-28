@@ -48,15 +48,16 @@ export default function EditGoalScreen() {
       <View testID="goal-edit-missing" className="flex-1 justify-center bg-bg dark:bg-bg-dark">
         <EmptyState
           title="This goal is gone"
-          body="It was deleted. The money in the savings account is untouched — a goal only ever watched it."
+          body="It was deleted. The money in the savings account is untouched — a goal only ever watched it — and you can restore it from Plan → Goals."
           action={{ label: "Back to goals", onPress: () => router.back() }}
         />
       </View>
     );
   }
 
-  // The create route's filter, PLUS this goal's own wallet. `linked_wallet_id`
-  // is UNIQUE, so the account this goal already holds reads as "claimed" to the
+  // The create route's filter, PLUS this goal's own wallet. Only one LIVE goal
+  // may hold a wallet (migration 016's partial unique index), so the account
+  // this goal already holds reads as "claimed" to the
   // same test that keeps two goals off one wallet — and leaving it out here
   // would render the goal's own account as the one option the user cannot pick,
   // with no way to restore it after touching the picker. `updateGoal` already
