@@ -125,27 +125,28 @@ export function CashReconcileSheet({
             placeholder that LOOKS like a zero blurs the one distinction the
             refusal below depends on.
 
-            THE BORDER IS PERMANENT, NOT NumericField's OWN focus-only ring
-            (numeric_field.tsx:147-149 adds `border-brand` only while
-            `focused`). This wraps it in a matching, always-on `border-brand`
-            ring instead of editing that shared field for one caller's
-            emphasis — the design board's "Actual count" box is drawn with a
-            constant coloured border, unlike the plain "PeraPlano thinks you
-            have" row above it. */}
+            THE BORDER IS PERMANENT, AND `NumericField` OWNS IT (`bordered`).
+            This used to be a wrapper View painting its own always-on
+            `border-brand` ring around the field. That produced TWO rings, not
+            one: `NumericField` adds its own `border-brand` while focused, and
+            on this sheet the field is focused as soon as it is tapped — which
+            is the only way to open the keypad. Its inner box also carries
+            `mt-2`, so it sat low inside the wrapper and hung past the bottom
+            edge (owner's device report: "the input is overflowing somehow
+            another border"). One box, one radius, nothing to misalign. */}
         <View className="gap-1">
           <Text className="text-micro font-semibold text-fg-2 dark:text-fg-2-dark">
             Actual count
           </Text>
-          <View className="rounded-xl border border-brand dark:border-brand-dark">
-            <NumericField
-              testID="reconcile-amount"
-              label="Cash you have right now"
-              mode="peso"
-              placeholder="Type the amount"
-              value={text}
-              onChangeText={setText}
-            />
-          </View>
+          <NumericField
+            testID="reconcile-amount"
+            label="Cash you have right now"
+            mode="peso"
+            bordered
+            placeholder="Type the amount"
+            value={text}
+            onChangeText={setText}
+          />
           {/* `formatCentavos` directly, not `AmountText` — `AmountText`'s
               `lg` size is `font-semibold`, and the design calls for
               `font-bold` specifically at `text-title` here; nesting it

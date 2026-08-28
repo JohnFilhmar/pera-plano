@@ -221,12 +221,25 @@ export function Chip({
   const tint = effectiveFill === "soft" ? SOFT_TINT[tone] : undefined;
   const tintHex = tint === undefined ? undefined : (colorScheme === "dark" ? tint.dark : tint.light);
 
+  // EVERY variant paints a 1px border, and the non-outline ones paint it
+  // `transparent`. That is not decoration — it is what keeps a chip the same
+  // SIZE when its `fill` changes.
+  //
+  // React Native draws `backgroundColor` behind the border box, so a
+  // transparent border on a filled chip is invisible: it renders exactly what
+  // a border-less solid chip rendered before. What it also does is add the
+  // same 1px top/right/bottom/left to the layout box that `outline` already
+  // had. Without it, a selectable chip row (`due_rule_picker.tsx`, the
+  // weekday row, `filter_bar.tsx`) changed each chip's width by 2px the
+  // moment it was picked — and in a `flex-wrap` row a 2px change is enough to
+  // pull the next chip onto a different line. Tapping a chip visibly
+  // reshuffled the whole row under the finger.
   const containerClass =
     effectiveFill === "outline"
       ? "rounded-full border border-line bg-chip px-2.5 py-1 dark:border-line-dark dark:bg-chip-dark"
       : effectiveFill === "soft"
-        ? "rounded-full px-2.5 py-1"
-        : `rounded-full px-2.5 py-1 ${TONE_BG[tone]}`;
+        ? "rounded-full border border-transparent px-2.5 py-1"
+        : `rounded-full border border-transparent px-2.5 py-1 ${TONE_BG[tone]}`;
 
   const labelClass =
     effectiveFill === "solid"

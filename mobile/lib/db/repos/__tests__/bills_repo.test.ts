@@ -5,6 +5,7 @@
 import { closeDatabase } from "@/lib/db/database";
 import {
   archiveBill,
+  unarchiveBill,
   BillNotFoundError,
   CycleAlreadyResolvedError,
   createBill,
@@ -428,4 +429,26 @@ test("a payment for an uncategorized transaction leaves the ledger alone", async
   await recordBillPayment({ billId: bill.id, dueDate: "2026-01-20", transactionId: tx.id });
 
   expect((await getTransaction(tx.id))?.categoryId).toBe(UNCATEGORIZED_ID);
+});
+
+test("RESTORING PUTS THE BILL BACK, AND IS IDEMPOTENT", async () => {
+  // The other half of rule 27. Archiving never deleted anything, but nothing
+  // could clear `archived_at` either, so a bill archived by mistake was gone in
+  // practice (owner's device report: "no way to see and unarchive").
+  const bill = await makeBill();
+  await archiveBill(bill.id);
+  expect(await listBills()).toEqual([]);
+
+  await unarchiveBill(bill.id);
+
+  expect((await listBills()).map((b) => b.id)).toEqual([bill.id]);
+  expect((await getBill(bill.id))?.archivedAt).toBeNull();
+
+  // A second call is a no-op rather than an error, matching the archive side.
+  await unarchiveBill(bill.id);
+  expect((await getBill(bill.id))?.archivedAt).toBeNull();
+
+  // And an id that does not exist at all resolves rather than throwing.
+  await expect(unarchiveBill("no-such-bill")).resolves.toBeUndefined();
+  expect((await listBills()).map((b) => b.id)).toEqual([bill.id]);
 });

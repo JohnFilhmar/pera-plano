@@ -34,6 +34,7 @@ import { centavosFrom } from "@/lib/money/peso_input";
 import type { MatcherOwner } from "@/lib/wallets/matchers";
 import type { ProviderRuleset } from "@/lib/ingest/ruleset_types";
 import type { Centavos, NewWalletMatcher } from "@/types/domain";
+import { usePlaceholderColor } from "@/lib/ui/placeholder";
 
 import { MatcherPicker } from "./matcher_picker";
 
@@ -71,6 +72,7 @@ export function WalletForm({
   showOpeningBalance = false,
   testID = "wallet-form",
 }: WalletFormProps) {
+  const placeholderColor = usePlaceholderColor();
   const [name, setName] = useState(initial?.name ?? "");
   // WHAT THE USER KEYED, not a parsed number — centavos are derived from it on
   // submit and a formatted string is never parsed back (lib/money/peso_input.ts).
@@ -119,6 +121,7 @@ export function WalletForm({
       <View className="gap-1 px-4 pt-4">
         <Text className="text-micro font-semibold text-fg-2 dark:text-fg-2-dark">Name</Text>
         <TextInput
+          placeholderTextColor={placeholderColor}
           testID="wallet-form-name"
           value={name}
           onChangeText={setName}

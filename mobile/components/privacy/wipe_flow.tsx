@@ -40,6 +40,7 @@ import { Text, TextInput, View } from "react-native";
 import { Button } from "@/components/ui/button";
 import { BottomSheet } from "@/components/ui/bottom_sheet";
 import { ConfirmDialog } from "@/components/ui/confirm_dialog";
+import { usePlaceholderColor } from "@/lib/ui/placeholder";
 
 /** The exact word docs Flow F step 2 requires — no case-folding, no trimming shortcuts beyond surrounding whitespace. */
 const CONFIRM_WORD = "DELETE";
@@ -79,6 +80,7 @@ export type WipeFlowProps = {
 type Step = "idle" | "confirm" | "type-delete";
 
 export function WipeFlow({ onConfirmed, busy = false, testID = "wipe-flow" }: WipeFlowProps) {
+  const placeholderColor = usePlaceholderColor();
   const [step, setStep] = useState<Step>("idle");
   const [typedWord, setTypedWord] = useState("");
 
@@ -127,6 +129,7 @@ export function WipeFlow({ onConfirmed, busy = false, testID = "wipe-flow" }: Wi
         <View className="gap-3">
           <Text className="text-fg-2 dark:text-fg-2-dark">{WIPE_STEP_TWO_BODY}</Text>
           <TextInput
+            placeholderTextColor={placeholderColor}
             testID="wipe-confirm-input"
             value={typedWord}
             onChangeText={setTypedWord}

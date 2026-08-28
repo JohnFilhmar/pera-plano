@@ -43,6 +43,7 @@ import { NumericField } from "@/components/ui/numeric_field";
 import { ProviderBadge } from "@/components/ui/provider_badge";
 import { centavosFrom } from "@/lib/money/peso_input";
 import type { PesoInput } from "@/lib/money/peso_input";
+import { usePlaceholderColor } from "@/lib/ui/placeholder";
 
 const CheckGlyph = registerIcon(Check);
 
@@ -110,6 +111,7 @@ function ProposalRow({
   onToggleIncluded: (key: string) => void;
   onChangeOpeningBalance: (key: string, text: PesoInput) => void;
 }) {
+  const placeholderColor = usePlaceholderColor();
   const { key, name, packageName, providerKey, included, openingBalanceText } = proposal;
 
   return (
@@ -151,6 +153,7 @@ function ProposalRow({
         )}
 
         <TextInput
+          placeholderTextColor={placeholderColor}
           testID={`wallet-proposal-name-${key}`}
           value={name}
           onChangeText={(text) => onRename(key, text)}

@@ -62,6 +62,7 @@ import { useTransactions } from "@/hooks/queries/use_transactions";
 import { useWallets } from "@/hooks/queries/use_wallets";
 import { formatDateTime } from "@/lib/datetime";
 import type { Transaction, TxSource } from "@/types/domain";
+import { usePlaceholderColor } from "@/lib/ui/placeholder";
 
 /**
  * The header medallion's glyph — a GENERIC mark, not one resolved from
@@ -123,6 +124,7 @@ function Field({
 }
 
 export default function TransactionDetailScreen() {
+  const placeholderColor = usePlaceholderColor();
   const { id } = useLocalSearchParams<{ id: string }>();
   const transactionId = id ?? "";
   // A full-screen route outside the tab navigator: nothing above it clears the
@@ -396,6 +398,7 @@ export default function TransactionDetailScreen() {
                     one field with no wrong value, and a button the user does not
                     press is a note they believe they wrote and did not. */}
                 <TextInput
+                  placeholderTextColor={placeholderColor}
                   testID="transaction-detail-note-input"
                   value={note ?? transaction.note ?? ""}
                   onChangeText={setNote}

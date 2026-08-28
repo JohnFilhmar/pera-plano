@@ -40,6 +40,7 @@ type GoalRow = {
   target_date: string | null;
   linked_wallet_id: string;
   contribution_rule_json: string | null;
+  archived_at: number | null;
   created_at: number;
   updated_at: number;
 };
@@ -93,6 +94,7 @@ function rowToGoal(row: GoalRow): Goal {
       row.contribution_rule_json === null
         ? null
         : (JSON.parse(row.contribution_rule_json) as ContributionRule),
+    archivedAt: row.archived_at ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -112,8 +114,14 @@ async function assertWalletIsFree(walletId: string, exceptGoalId?: string): Prom
   // raw SQLite constraint failure instead of an error a screen can act on.
   if (!wallet) throw new LinkedWalletNotFoundError(walletId);
 
+  // `archived_at IS NULL` — a DELETED GOAL DOES NOT HOLD ITS WALLET. That was
+  // already true when goals were hard-deleted (the row was gone), and migration
+  // 016 keeps it true by replacing the column-level UNIQUE with a partial index
+  // over live rows only. Without this clause a user who deleted a goal could
+  // never start a new one on the same account, and nothing on screen would say
+  // why — the goal blocking them is one they cannot see.
   const claimed = await db.getFirstAsync<{ id: string }>(
-    "SELECT id FROM goals WHERE linked_wallet_id = ?",
+    "SELECT id FROM goals WHERE linked_wallet_id = ? AND archived_at IS NULL",
     [walletId],
   );
   if (claimed && claimed.id !== exceptGoalId) throw new WalletAlreadyHasGoalError(walletId);
@@ -168,16 +176,29 @@ export async function getGoal(id: string): Promise<Goal | null> {
  * the linked wallet — progress IS that balance (rule 1), so there is nothing
  * else it could be derived from.
  */
-export async function listGoals(opts?: { includeAchieved?: boolean }): Promise<Goal[]> {
+export async function listGoals(opts?: {
+  includeAchieved?: boolean;
+  includeArchived?: boolean;
+}): Promise<Goal[]> {
   const db = await getDatabase();
   const includeAchieved = opts?.includeAchieved ?? true;
 
+  // DELETED GOALS ARE OUT BY DEFAULT, unlike reached ones. A reached goal is
+  // hidden from nobody — the spec gives it a celebration card with actions on
+  // it — whereas a deleted goal is one the user has said they are done with,
+  // and every screen that reads this list is showing the plan as it stands.
+  // `includeArchived: true` is how the restore list gets at them.
+  const archivedClause = opts?.includeArchived === true ? "" : " goals.archived_at IS NULL";
+
   const rows = await db.getAllAsync<GoalRow>(
     includeAchieved
-      ? "SELECT * FROM goals ORDER BY created_at"
+      ? `SELECT goals.* FROM goals${archivedClause === "" ? "" : ` WHERE${archivedClause}`}
+          ORDER BY goals.created_at`
       : `SELECT goals.* FROM goals
            JOIN wallets ON wallets.id = goals.linked_wallet_id
-          WHERE wallets.balance < goals.target_amount
+          WHERE wallets.balance < goals.target_amount${
+            archivedClause === "" ? "" : ` AND${archivedClause}`
+          }
           ORDER BY goals.created_at`,
   );
   return rows.map(rowToGoal);
@@ -232,21 +253,73 @@ export async function updateGoal(id: string, patch: Partial<NewGoal>): Promise<G
 }
 
 /**
- * Deletes a goal. Idempotent.
+ * Deletes a goal — SOFT, by stamping `archived_at` (migration 016). Idempotent.
  *
- * NEVER TOUCHES THE WALLET OR ITS TRANSACTIONS (rule 3). The money is real; the
- * goal is a lens over it. A delete that took the savings with it would turn
- * abandoning a plan into losing the plan's savings — and it also frees the
- * wallet, so the user can start a fresh goal on the same account.
+ * REPLACES A REAL `DELETE FROM goals`, finishing the rule 010 applied to loans
+ * and limits ("soft-delete data, no hard delete") on the one Plan entity it
+ * skipped. The exception goals used to have was a good argument about the wrong
+ * noun: hard delete never touched the WALLET or a peso in it, which is true and
+ * is not the loss. What a mistaken delete destroyed was the PLAN — target,
+ * deadline, payday rule, and the created date the quoted pace is measured from.
+ *
+ * THE NAME. `archiveGoal`, not `deleteGoal`, because the mechanism is the
+ * archive its three siblings already use and the column is `archived_at`. The
+ * BUTTON says "Delete goal": that is the word a user reaches for, and every
+ * Plan entity is restorable, so the app says delete and means archive
+ * everywhere rather than teaching two words for one idea.
+ *
+ * STILL NEVER TOUCHES THE WALLET OR ITS TRANSACTIONS (rule 3), and still frees
+ * the account for a new goal — `assertWalletIsFree` and migration 016's partial
+ * unique index both scope the one-goal-per-wallet rule to LIVE rows, so this
+ * keeps the one thing the old hard delete genuinely got right.
  */
-export async function deleteGoal(id: string): Promise<void> {
+export async function archiveGoal(id: string): Promise<void> {
   const db = await getDatabase();
-  await db.runAsync("DELETE FROM goals WHERE id = ?", [id]);
+  const now = Date.now();
+  await db.runAsync(
+    "UPDATE goals SET archived_at = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL",
+    [now, now, id],
+  );
 }
 
-/** Feeds `canCreateGoal` at the call site (m2 Global Constraint 10). */
+/**
+ * Restores a deleted goal. The exact inverse of `archiveGoal`.
+ *
+ * THE WALLET IS THE ONE THING THIS CAN FAIL ON. Deleting a goal frees its
+ * account, so the user may well have started a NEW goal on that wallet since —
+ * and migration 016's partial unique index would reject a second live goal
+ * against it with a raw SQLite constraint error. `assertWalletIsFree` runs
+ * first so the caller gets `WalletAlreadyHasGoalError`, which a screen can turn
+ * into a sentence, instead.
+ *
+ * IDEMPOTENT AND SILENT on an unknown or already-live id, matching every other
+ * unarchive in this codebase: a caller retrying is asking for a state that
+ * already holds.
+ */
+export async function unarchiveGoal(id: string): Promise<void> {
+  const goal = await getGoal(id);
+  if (goal === null || goal.archivedAt === null) return;
+
+  await assertWalletIsFree(goal.linkedWalletId, id);
+
+  const db = await getDatabase();
+  await db.runAsync(
+    "UPDATE goals SET archived_at = NULL, updated_at = ? WHERE id = ? AND archived_at IS NOT NULL",
+    [Date.now(), id],
+  );
+}
+
+/**
+ * Feeds `canCreateGoal` at the call site (m2 Global Constraint 10).
+ *
+ * LIVE GOALS ONLY. Counting deleted ones would let a user hit the Free cap with
+ * goals they had already thrown away and leave no way back under it, since
+ * nothing is removed any more — the same reasoning `countLoans` records.
+ */
 export async function countGoals(): Promise<number> {
   const db = await getDatabase();
-  const row = await db.getFirstAsync<{ n: number }>("SELECT COUNT(*) AS n FROM goals");
+  const row = await db.getFirstAsync<{ n: number }>(
+    "SELECT COUNT(*) AS n FROM goals WHERE archived_at IS NULL",
+  );
   return row?.n ?? 0;
 }

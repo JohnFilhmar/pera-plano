@@ -18,6 +18,7 @@ import {
   LimitNotFoundError,
   listLimits,
   setLimitAlertState,
+  unarchiveLimit,
   updateLimit,
 } from "../limits_repo";
 
@@ -366,4 +367,20 @@ test("updating a limit does not disturb its alert state", async () => {
   await updateLimit(limit.id, { value: 900000 });
 
   expect(await getLimitAlertState(limit.id)).toEqual(STATE);
+});
+
+test("restoring a limit puts it back in the list, and is idempotent", async () => {
+  const limit = await createLimit({ scope: "annual", basis: "fixed", value: 12000000 });
+  await archiveLimit(limit.id);
+  expect((await listLimits()).map((l) => l.id)).not.toContain(limit.id);
+
+  await unarchiveLimit(limit.id);
+
+  expect((await listLimits()).map((l) => l.id)).toContain(limit.id);
+  expect((await getLimit(limit.id))!.archivedAt).toBeNull();
+
+  // Idempotent and silent on both misses, matching `archiveLimit`.
+  await unarchiveLimit(limit.id);
+  await expect(unarchiveLimit("no-such-limit")).resolves.toBeUndefined();
+  expect((await getLimit(limit.id))!.archivedAt).toBeNull();
 });

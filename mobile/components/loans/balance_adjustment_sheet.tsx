@@ -43,6 +43,7 @@ import { toDateIso } from "@/lib/dates";
 import { centavosFrom } from "@/lib/money/peso_input";
 import { occurredAtFor } from "@/lib/transactions/manual_entry";
 import type { EpochMs, Loan } from "@/types/domain";
+import { usePlaceholderColor } from "@/lib/ui/placeholder";
 
 /**
  * Which way the balance moves. Named for the EFFECT rather than for the sign,
@@ -77,6 +78,7 @@ export function BalanceAdjustmentSheet({
   now,
   testID = "balance-adjustment-sheet",
 }: BalanceAdjustmentSheetProps) {
+  const placeholderColor = usePlaceholderColor();
   const iOwe = loan.direction === "i-owe";
 
   const [effect, setEffect] = useState<AdjustmentEffect>("adds");
@@ -221,6 +223,7 @@ export function BalanceAdjustmentSheet({
             What is it for?
           </Text>
           <TextInput
+            placeholderTextColor={placeholderColor}
             testID="loan-adjustment-note"
             className="min-h-[44px] rounded-xl bg-chip px-3 py-3 text-fg dark:bg-chip-dark dark:text-fg-dark"
             placeholder="Late fee, interest, Ate paid the collector..."

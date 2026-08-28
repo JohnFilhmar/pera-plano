@@ -21,15 +21,19 @@
 // section "Paid this cycle (collapsed)" — it is reassurance, not a to-do, and
 // putting it first would make a well-run month look like a wall of work.
 import { useRouter } from "expo-router";
+import { useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 
 import { BillRow } from "@/components/bills/bill_row";
-import { AmountText } from "@/components/ui/amount_text";
+import { ArchivedSection } from "@/components/plan/archived_section";
+import { AmountText, formatCentavos } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty_state";
 import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { SectionHeader } from "@/components/ui/section_header";
+import { useUnarchiveBill } from "@/hooks/mutations/use_unarchive_bill";
+import { useArchivedBills } from "@/hooks/queries/use_archived_plan_items";
 import { useBills } from "@/hooks/queries/use_bills";
 import type { BillStatus } from "@/lib/bills/bills_service";
 import { systemClock } from "@/lib/clock";
@@ -49,6 +53,29 @@ export function BillsPanel() {
   const router = useRouter();
   const { data: statuses } = useBills();
 
+  // Closed by default, and the query is gated on it — see
+  // `ArchivedQueryOptions`. Both live here rather than inside
+  // `ArchivedSection` because the flag has to reach the hook.
+  const [showArchived, setShowArchived] = useState(false);
+  const { data: archived } = useArchivedBills({ enabled: showArchived });
+  const restore = useUnarchiveBill();
+
+  const archivedSection = (
+    <ArchivedSection
+      testID="bills-archived"
+      noun="bills"
+      open={showArchived}
+      onToggle={() => setShowArchived((shown) => !shown)}
+      items={archived?.map((bill) => ({
+        id: bill.id,
+        name: bill.name,
+        detail: formatCentavos(bill.amount),
+      }))}
+      restoringId={restore.isPending ? (restore.variables ?? null) : null}
+      onRestore={(id) => restore.mutate(id)}
+    />
+  );
+
   if (statuses === undefined) {
     return (
       <View testID="bills-loading" className="flex-1 bg-bg dark:bg-bg-dark">
@@ -59,13 +86,18 @@ export function BillsPanel() {
 
   if (statuses.length === 0) {
     return (
-      <View className="flex-1 justify-center bg-bg dark:bg-bg-dark">
+      // THE ARCHIVE TOGGLE BELONGS IN THIS BRANCH TOO, and it is the branch
+      // that needs it most: a user who archived their only bill lands here, and
+      // an empty state that says "No bills tracked yet" with nothing else on it
+      // reads as "your bill is gone" rather than "your bill is filed away".
+      <View className="flex-1 justify-center gap-4 bg-bg px-4 dark:bg-bg-dark">
         <EmptyState
           testID="bills-empty"
           title="No bills tracked yet"
           body="Add the ones you never want to miss — rent, Meralco, tuition, a subscription."
           action={{ label: "Add a bill", onPress: () => router.push("/plan/bills/new") }}
         />
+        {archivedSection}
       </View>
     );
   }
@@ -116,6 +148,8 @@ export function BillsPanel() {
             </View>
           );
         })}
+        {archivedSection}
+
         {/* Clears the floating action button on short devices. */}
         <View className="h-16" />
       </ScrollView>

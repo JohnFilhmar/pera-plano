@@ -48,7 +48,7 @@ export default function EditLoanScreen() {
       <View testID="loan-edit-missing" className="flex-1 justify-center bg-bg dark:bg-bg-dark">
         <EmptyState
           title="This loan is gone"
-          body="It was archived. Any payments you recorded are still in your ledger."
+          body="It was deleted. Any payments you recorded are still in your ledger, and you can restore the loan from Plan → Utang."
           action={{ label: "Back to loans", onPress: () => router.back() }}
         />
       </View>

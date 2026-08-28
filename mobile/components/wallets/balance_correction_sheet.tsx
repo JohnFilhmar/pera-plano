@@ -151,24 +151,22 @@ export function BalanceCorrectionSheet({
             placeholder that LOOKS like a zero blurs the one distinction the
             refusal below depends on.
 
-            THE BORDER IS A PERMANENT WRAPPER, NOT NumericField's OWN
-            focus-only ring — see cash_reconcile_sheet.tsx's identical note;
-            this sheet keeps the same rhythm rather than a second, drifting
-            copy of that reasoning. */}
+            THE BORDER IS PERMANENT AND `NumericField` OWNS IT (`bordered`) —
+            see cash_reconcile_sheet.tsx's note on the double ring the old
+            wrapper produced. */}
         <View className="gap-1">
           <Text className="text-micro font-semibold text-fg-2 dark:text-fg-2-dark">
             Actual balance
           </Text>
-          <View className="rounded-xl border border-brand dark:border-brand-dark">
-            <NumericField
-              testID="balance-correction-amount"
-              label="This wallet's actual balance"
-              mode="peso"
-              placeholder="Type the amount"
-              value={text}
-              onChangeText={setText}
-            />
-          </View>
+          <NumericField
+            testID="balance-correction-amount"
+            label="This wallet's actual balance"
+            mode="peso"
+            bordered
+            placeholder="Type the amount"
+            value={text}
+            onChangeText={setText}
+          />
           {/* `formatCentavos` directly — see cash_reconcile_sheet.tsx's note
               on why `AmountText`'s `lg` (font-semibold) cannot reach the
               `text-title font-bold` this design calls for. */}

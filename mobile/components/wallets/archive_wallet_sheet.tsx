@@ -80,7 +80,7 @@ export function ArchiveWalletSheet({
   }
 
   return (
-    <BottomSheet visible={visible} onDismiss={onDismiss} title={`Archive ${wallet.name}`}>
+    <BottomSheet visible={visible} onDismiss={onDismiss} title={`Delete ${wallet.name}`}>
       <View testID={testID} className="gap-3">
         {/* Same sheet rhythm as cash_reconcile_sheet.tsx / balance_correction_sheet.tsx
             (task-5b) — `text-body` for the explanatory prose. Content is
@@ -88,8 +88,8 @@ export function ArchiveWalletSheet({
             regex-matches "histor", "nothing is deleted", "Review Queue" and
             "total" against this sheet's own testID, not any one paragraph. */}
         <Text className="text-body text-fg-2 dark:text-fg-2-dark">
-          Archiving retires this wallet. Nothing is deleted: its history stays in your reports, and
-          you can bring it back later.
+          This retires the wallet. Its history stays in your reports, and you can restore it from
+          the Wallets tab under &ldquo;Show deleted&rdquo;.
         </Text>
         <Text className="text-body text-fg-2 dark:text-fg-2-dark">
           Its balance leaves the total on your Wallets tab, and it stops catching notifications —
@@ -166,7 +166,7 @@ export function ArchiveWalletSheet({
           <View className="flex-1">
             <Button
               testID="archive-confirm"
-              title="Archive wallet"
+              title="Delete wallet"
               variant="outline-destructive"
               onPress={confirm}
             />

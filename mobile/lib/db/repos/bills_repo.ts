@@ -296,6 +296,32 @@ export async function archiveBill(id: string): Promise<void> {
   ]);
 }
 
+/**
+ * Puts an archived bill back. The exact inverse of `archiveBill`: it clears
+ * `archived_at` and nothing else.
+ *
+ * WHY THIS HAS TO EXIST. Every plan entity could be archived and none could be
+ * restored — no repository function, no hook, no screen — so "archive" was a
+ * one-way door that the wording ("retire", "stop watching") never claimed to
+ * be. A user who archived the wrong row had no way back to it, and because the
+ * archive deliberately never deletes, the row sat there unreachable.
+ *
+ * IDEMPOTENT AND SILENT, matching the archive side: an unknown or
+ * already-active id is a no-op rather than an error, since a caller retrying is
+ * asking for a state that already holds.
+ *
+ * `updated_at` moves because the row did change. Nothing else is touched — the
+ * history this entity explains was never removed, so there is nothing to
+ * rebuild.
+ */
+export async function unarchiveBill(id: string): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync(
+    "UPDATE bills SET archived_at = NULL, updated_at = ? WHERE id = ? AND archived_at IS NOT NULL",
+    [Date.now(), id],
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Cycles
 // ---------------------------------------------------------------------------

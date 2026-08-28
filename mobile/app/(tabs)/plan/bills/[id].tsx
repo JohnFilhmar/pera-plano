@@ -64,7 +64,7 @@ export default function BillDetailScreen() {
       <View testID="bill-detail-missing" className="flex-1 justify-center bg-bg dark:bg-bg-dark">
         <EmptyState
           title="This bill is gone"
-          body="It was archived or deleted. Any payments you recorded are still in your ledger."
+          body="It was deleted. Any payments you recorded are still in your ledger, and you can restore the bill from Plan → Bills."
           action={{ label: "Back to bills", onPress: () => router.back() }}
         />
       </View>
@@ -143,7 +143,7 @@ export default function BillDetailScreen() {
             Transaction" is easiest to guarantee by not removing the rows that
             point at them. */}
         <Button
-          title="Archive bill"
+          title="Delete bill"
           variant="destructive"
           testID="bill-archive"
           onPress={() => setConfirmingArchive(true)}
@@ -153,9 +153,9 @@ export default function BillDetailScreen() {
 
       <ConfirmDialog
         visible={confirmingArchive}
-        title="Archive this bill?"
-        body="No more cycles, reminders or automatic matching. Everything you have already paid stays in your ledger, and the amounts still inform your other estimates."
-        confirmLabel="Archive"
+        title="Delete this bill?"
+        body="No more cycles, reminders or automatic matching. Everything you have already paid stays in your ledger, and the amounts still inform your other estimates. You can restore it from Plan → Bills."
+        confirmLabel="Delete"
         destructive
         onCancel={() => setConfirmingArchive(false)}
         onConfirm={async () => {

@@ -110,6 +110,7 @@ export function DueRulePicker({ value, onChange, today, testID }: DueRulePickerP
             key={kind.value}
             testID={`due-kind-${kind.value}`}
             label={kind.label}
+            tone={value.kind === kind.value ? "brand" : "neutral"}
             fill={value.kind === kind.value ? "solid" : "outline"}
             selected={value.kind === kind.value}
             onPress={() => onChange(defaultFor(kind.value, today))}
@@ -162,6 +163,7 @@ export function DueRulePicker({ value, onChange, today, testID }: DueRulePickerP
                 key={label}
                 testID={`due-weekday-${weekday}`}
                 label={label}
+                tone={value.weekday === weekday ? "brand" : "neutral"}
                 fill={value.weekday === weekday ? "solid" : "outline"}
                 selected={value.weekday === weekday}
                 onPress={() => onChange({ ...value, weekday })}

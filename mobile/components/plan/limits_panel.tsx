@@ -40,14 +40,18 @@
 // row's semibold styling would never actually land.
 import { useRouter } from "expo-router";
 import { ChevronRight } from "lucide-react-native";
+import { useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 
 import { LimitCard } from "@/components/limits/limit_card";
+import { ArchivedSection } from "@/components/plan/archived_section";
 import { formatCentavos } from "@/components/ui/amount_text";
 import { Button, registerIcon } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty_state";
 import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
+import { useUnarchiveLimit } from "@/hooks/mutations/use_unarchive_limit";
+import { useArchivedLimits } from "@/hooks/queries/use_archived_plan_items";
 import { useCategories } from "@/hooks/queries/use_categories";
 import { useIncomeSummary } from "@/hooks/queries/use_income_summary";
 import { useLimitStatuses } from "@/hooks/queries/use_limit_statuses";
@@ -88,6 +92,28 @@ export function LimitsPanel() {
   // renders "Monthly limit · 1 category" for a moment is better than a list
   // that does not appear until a second query lands.
   const categoryNames = new Map((categories ?? []).map((category) => [category.id, category.name]));
+
+  // Closed by default and the query is gated on it — see
+  // `ArchivedQueryOptions`. The state lives here rather than in
+  // `ArchivedSection` because it also has to reach the hook.
+  const [showArchived, setShowArchived] = useState(false);
+  const { data: archivedLimits } = useArchivedLimits({ enabled: showArchived });
+  const restore = useUnarchiveLimit();
+
+  const archivedSection = (
+    <ArchivedSection
+      testID="limits-archived"
+      noun="limits"
+      open={showArchived}
+      onToggle={() => setShowArchived((shown) => !shown)}
+      items={archivedLimits?.map((limit) => ({
+        id: limit.id,
+        name: limitDisplayName(limit, categoryNames),
+      }))}
+      restoringId={restore.isPending ? (restore.variables ?? null) : null}
+      onRestore={(id) => restore.mutate(id)}
+    />
+  );
 
   const onAdd = () => {
     // Rule: the cap counts ACTIVE limits, not all of them. A user who
@@ -159,7 +185,10 @@ export function LimitsPanel() {
           <LoadingSkeleton rows={5} />
         </View>
       ) : statuses.length === 0 ? (
-        <View className="flex-1 justify-center bg-bg dark:bg-bg-dark">
+        // The archive toggle is in this branch too, and it matters most here:
+        // a user who archived their only limit lands on an empty state that
+        // otherwise reads as "your limit is gone" rather than "filed away".
+        <View className="flex-1 justify-center gap-4 bg-bg px-4 dark:bg-bg-dark">
           {/* The spec's UX-states table string, not the plan's. */}
           <EmptyState
             testID="limits-empty"
@@ -167,6 +196,7 @@ export function LimitsPanel() {
             body="A cap on spending for a day, week, month, or year — PeraPlano watches it for you."
             action={{ label: "Add a limit", onPress: onAdd }}
           />
+          {archivedSection}
         </View>
       ) : (
         <>
@@ -211,6 +241,9 @@ export function LimitsPanel() {
                 </Pressable>
               );
             })}
+            {archivedSection}
+            {/* Clears the floating action button on short devices. */}
+            <View className="h-16" />
           </ScrollView>
           <View className="absolute bottom-6 right-6">
             <Button title="Add" onPress={onAdd} testID="limits-add" />

@@ -103,6 +103,16 @@ export const queryKeys = {
     all: ["limits"] as const,
     list: () => ["limits", "list"] as const,
     /**
+     * The archived tail, read only while a "Show archived" toggle is open.
+     *
+     * A SIBLING OF `list()`, NOT A FLAG ON IT. The two answer different
+     * questions and return different shapes (raw rows here, resolved statuses
+     * there), so folding them into one key would make every cache read branch
+     * on what it got back. Both still nest under the family root, so archiving
+     * or restoring invalidates the pair together.
+     */
+    archived: () => ["limits", "archived"] as const,
+    /**
      * The limits AS THE PLAN TAB SEES THEM — each one resolved against the
      * current period, with its spend, effective limit and UX state
      * (`getLimitStatuses`, m2 Task 7).
@@ -143,11 +153,15 @@ export const queryKeys = {
   goals: {
     all: ["goals"] as const,
     list: () => ["goals", "list"] as const,
+    /** The deleted tail — see `limits.archived` for why it is its own key. */
+    archived: () => ["goals", "archived"] as const,
     detail: (id: string) => ["goals", "detail", id] as const,
   },
   loans: {
     all: ["loans"] as const,
     list: () => ["loans", "list"] as const,
+    /** The archived tail — see `limits.archived` for why it is its own key. */
+    archived: () => ["loans", "archived"] as const,
     detail: (id: string) => ["loans", "detail", id] as const,
     /**
      * The transactions that might pay this loan, keyed on WHETHER THE SCORE
@@ -179,6 +193,8 @@ export const queryKeys = {
   bills: {
     all: ["bills"] as const,
     list: () => ["bills", "list"] as const,
+    /** The archived tail — see `limits.archived` for why it is its own key. */
+    archived: () => ["bills", "archived"] as const,
     detail: (id: string) => ["bills", "detail", id] as const,
   },
   /**

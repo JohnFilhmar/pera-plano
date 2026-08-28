@@ -220,15 +220,35 @@ describe("the balance header", () => {
     expect(screen.getByText("Owed")).toBeTruthy();
   });
 
-  test("an archived wallet still opens, and says it is archived", async () => {
-    // Archiving removes a wallet from the list, not from the app: its
+  test("a deleted wallet still opens, and says it is deleted", async () => {
+    // Deleting removes a wallet from the list, not from the app: its
     // transactions are still attached to it and still have to be readable.
+    //
+    // "Deleted", not "Archived" (owner, 2026-08-28: "replace the misleading
+    // button text from archive to 'delete'"). The mechanism is unchanged and
+    // still called archiving in the schema — `archiveWallet` below is the same
+    // call it always was — but every word the USER reads is now delete, because
+    // every retirement in the app is restorable and delete is the word people
+    // reach for.
     await archiveWallet(gcash.id);
 
     renderDetail(gcash.id);
 
     expect(await screen.findByText("GCash")).toBeTruthy();
-    expect(screen.getByText("Archived")).toBeTruthy();
+    expect(screen.getByText("Deleted")).toBeTruthy();
+  });
+
+  test("a deleted wallet offers Restore, and nothing else", async () => {
+    // The exit from a state this screen has always described as "read-only
+    // until it is unarchived" — and which, until now, nothing could leave.
+    await archiveWallet(gcash.id);
+
+    renderDetail(gcash.id);
+
+    expect(await screen.findByTestId("wallet-detail-restore")).toBeTruthy();
+    // The live-wallet actions stay hidden: a deleted wallet is still read-only.
+    expect(screen.queryByTestId("wallet-detail-edit")).toBeNull();
+    expect(screen.queryByTestId("wallet-detail-archive")).toBeNull();
   });
 
   test("an id with no wallet behind it says so rather than rendering a blank screen", async () => {

@@ -150,23 +150,39 @@ describe("the transaction-handling choice", () => {
   });
 });
 
-describe("delete is not on offer", () => {
-  test("no delete control exists anywhere in the sheet", () => {
+describe("HARD delete is not on offer", () => {
+  // THE RULE SURVIVED, THE VOCABULARY CHANGED. This block used to assert that
+  // the word "Delete" appeared nowhere in the sheet, which was a proxy for the
+  // real invariant: rule 4's "Deleting a wallet with transactions is not
+  // offered at all", backed by invariant 4 and the schema's NO ACTION foreign
+  // key on `transactions.wallet_id`.
+  //
+  // The owner renamed the user-facing action to Delete (2026-08-28: "replace
+  // the misleading button text from archive to 'delete'") now that every
+  // retirement in the app is restorable — so the proxy became false while the
+  // invariant it stood for did not. These tests assert the invariant directly
+  // instead: the only control here is the SOFT one, and the copy promises both
+  // halves of what that means.
+  test("the sheet's only destructive control is the soft, restorable one", () => {
     renderSheet();
 
-    // Rule 4: "Deleting a wallet with transactions is not offered at all."
-    // Invariant 4 forbids orphan transactions and the schema's NO ACTION
-    // foreign key on `transactions.wallet_id` blocks the DELETE outright, so a
-    // button here could only mislead or throw.
+    // No second, harder control alongside it.
     expect(screen.queryByTestId("archive-delete")).toBeNull();
-    // By label too, so a delete button added without the testID still fails.
-    expect(screen.queryByText(/^Delete/i)).toBeNull();
+    // And the one that exists is `archive-confirm` — the call that stamps
+    // `is_archived`, never a row removal.
+    expect(screen.getByTestId("archive-confirm")).toBeTruthy();
   });
 
-  test("it explains that archiving is the retirement path, not a deletion", () => {
+  test("it says the history survives AND that the wallet can be brought back", () => {
     renderSheet();
 
-    expect(screen.getByTestId("archive-wallet-sheet")).toHaveTextContent(/nothing is deleted/i);
+    // Both halves matter. "History stays" without "you can restore it" is the
+    // sentence that made the old wording misleading in the opposite direction:
+    // it explained what happened to the transactions and left the user to guess
+    // that the wallet itself was gone for good.
+    const sheet = screen.getByTestId("archive-wallet-sheet");
+    expect(sheet).toHaveTextContent(/history stays in your reports/i);
+    expect(sheet).toHaveTextContent(/restore it/i);
   });
 });
 
