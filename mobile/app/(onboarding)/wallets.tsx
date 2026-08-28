@@ -68,7 +68,7 @@
 // the step suites (components/onboarding/__tests__/providers_step.test.tsx)
 // drive this screen directly and assert on them; nothing in the app supplies
 // them, so nothing in the app depends on them either.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "expo-router";
 import { Pressable, Text, View } from "react-native";
 
@@ -83,16 +83,18 @@ import { useCreateWallet } from "@/hooks/mutations/use_create_wallet";
 import { useSetWalletMatchers } from "@/hooks/mutations/use_set_wallet_matchers";
 import { useRuleset } from "@/hooks/queries/use_ruleset";
 import { useWallets } from "@/hooks/queries/use_wallets";
+import { DuplicateNameError } from "@/lib/db/repos/wallets_repo";
 import { canCreateWallet } from "@/lib/entitlements";
 import { applyAppLabels, buildProviderChoices } from "@/lib/ingest/provider_catalogue";
-import { centavosFrom } from "@/lib/money/peso_input";
+import { centavosFrom, pesoInputFrom } from "@/lib/money/peso_input";
+import { readWalletDraft, writeWalletDraft } from "@/lib/onboarding/wallet_draft";
 import { matchersForProvider } from "@/lib/wallets/matchers";
 import { getAppLabels, listObservedPackages } from "@/modules/notification_listener";
 
 import type { ProviderChoice } from "@/lib/ingest/provider_catalogue";
 import type { ProviderRuleset } from "@/lib/ingest/ruleset_types";
 import type { ObservedPackage } from "@/modules/notification_listener";
-import type { NewWalletMatcher } from "@/types/domain";
+import type { NewWalletMatcher, Wallet } from "@/types/domain";
 
 const CASH_KEY = "cash";
 
@@ -232,6 +234,96 @@ async function loadAppLabels(packageNames: string[]): Promise<Record<string, str
   }
 }
 
+/**
+ * The identity a proposal and an already-created Wallet are the same thing by.
+ *
+ * THE NAME, CASE-FOLDED — because that is exactly what `createWallet` refuses
+ * a duplicate of (`wallets_repo.ts`: `WHERE name = ? COLLATE NOCASE AND
+ * is_archived = 0`). Matching on anything narrower here would let this screen
+ * re-offer a row the database is guaranteed to reject a second later, which is
+ * the whole failure this reconciliation exists to prevent.
+ */
+function walletIdentity(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+/** A row standing for a Wallet that already exists. Shown, never re-created. */
+function savedProposalFor(wallet: Wallet): WalletProposal {
+  return {
+    key: `saved:${wallet.id}`,
+    name: wallet.name,
+    // No provider to badge and no matcher to attach: this row writes nothing.
+    // A `Wallet` carries only `matcherCount`, not the packages behind it, and
+    // it is already matched — re-deriving them just to draw a badge would be a
+    // second, weaker copy of what the wallet screen already shows properly.
+    packageName: null,
+    providerKey: null,
+    included: true,
+    saved: true,
+    openingBalanceText: pesoInputFrom(wallet.balance),
+  };
+}
+
+/**
+ * Folds the Wallets that ALREADY EXIST into the proposal list.
+ *
+ * THE BUG THIS FIXES (owner's report, 2026-08-28). Continue on this step
+ * creates real Wallet rows and pushes the next step. A user who then realises
+ * they missed a wallet comes back — and, before this, met a list that had
+ * forgotten every one of those creations: the same providers proposed again,
+ * their balances blank. Tapping Continue re-ran `createWallet` on names that
+ * now existed, `DuplicateNameError` threw on the FIRST one, and the loop
+ * abandoned every wallet after it under the message "Some wallets couldn't be
+ * saved" — while the wallet the user had actually come back to add was one of
+ * the ones silently dropped. So the step both demanded work the user had
+ * already done and then failed at the one new thing they asked for.
+ *
+ * Reconciling makes a return visit honest: a proposal whose name is already a
+ * live Wallet becomes a read-only "already saved" row showing that Wallet's
+ * REAL balance, and every live Wallet with no proposal of its own is added as
+ * one, so what is on screen is the full truth about what exists.
+ *
+ * IDEMPOTENT ON PURPOSE — it runs again on every wallet-list refetch. A row it
+ * already marked saved matches its Wallet by name on the next pass and is
+ * counted as matched, so it is never appended a second time.
+ */
+function reconcileWithExisting(proposals: WalletProposal[], wallets: Wallet[]): WalletProposal[] {
+  if (wallets.length === 0) return proposals;
+
+  const byIdentity = new Map(wallets.map((wallet) => [walletIdentity(wallet.name), wallet]));
+  const matched = new Set<string>();
+
+  const reconciled = proposals.map((proposal) => {
+    const wallet = byIdentity.get(walletIdentity(proposal.name));
+    if (!wallet) return proposal;
+    matched.add(wallet.id);
+    // The figure comes from the Wallet, not from the draft: what the user
+    // keyed was an OPENING balance, and by now the wallet may have moved.
+    return {
+      ...proposal,
+      name: wallet.name,
+      included: true,
+      saved: true,
+      openingBalanceText: pesoInputFrom(wallet.balance),
+    };
+  });
+
+  const unproposed = wallets.filter((wallet) => !matched.has(wallet.id)).map(savedProposalFor);
+  return [...unproposed, ...reconciled];
+}
+
+/**
+ * "GCash", or "GCash and Maya", or "GCash, Maya and BPI".
+ *
+ * An error that NAMES what failed is worth more than one that counts it: the
+ * user's next move is to add those wallets by hand from the Wallets tab, and
+ * they cannot do that from "some wallets".
+ */
+function listNames(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
 export default function WalletsScreen({
   onDone,
   onBack,
@@ -243,14 +335,31 @@ export default function WalletsScreen({
   const setMatchers = useSetWalletMatchers();
 
   const [observed, setObserved] = useState<ObservedPackage[] | null>(null);
-  const [proposals, setProposals] = useState<WalletProposal[] | null>(null);
-  const [addable, setAddable] = useState<ProviderChoice[]>([]);
+  // SEEDED FROM THE DRAFT, NOT FROM NOTHING. Coming back to this step must not
+  // hand the user a blank list they have already filled in once — see
+  // lib/onboarding/wallet_draft.ts for why that draft is in memory only.
+  const [proposals, setProposals] = useState<WalletProposal[] | null>(
+    () => readWalletDraft()?.proposals ?? null,
+  );
+  const [addable, setAddable] = useState<ProviderChoice[]>(() => readWalletDraft()?.addable ?? []);
   // A quick-added proposal's full matcher set — every package its provider
   // owns (task-3-brief rule 1), keyed by the proposal's own key. A proposal
   // absent here falls back to its single `packageName` in `submit` below,
   // which is what every OBSERVED proposal already had before this.
-  const [pendingMatchers, setPendingMatchers] = useState<Record<string, NewWalletMatcher[]>>({});
-  const initializedRef = useRef(false);
+  const [pendingMatchers, setPendingMatchers] = useState<Record<string, NewWalletMatcher[]>>(
+    () => readWalletDraft()?.pendingMatchers ?? {},
+  );
+  // A restored draft IS the initialisation: rebuilding the list over it would
+  // throw away exactly the edits the draft exists to keep.
+  const initializedRef = useRef(readWalletDraft() !== null);
+
+  // Only ACTIVE wallets are "already there": an archived one does not block a
+  // name (`createWallet`'s clash check ignores it) and must not be shown as a
+  // saved row on a setup screen the user is still filling in.
+  const liveWallets = useMemo(
+    () => (existingWallets ?? []).filter((wallet) => !wallet.isArchived),
+    [existingWallets],
+  );
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -276,6 +385,23 @@ export default function WalletsScreen({
     router.back();
   }, [onBack, router]);
 
+  // KEEPS THE STEP'S UNSAVED HALF ALIVE ACROSS AN UNMOUNT. Continue pushes the
+  // next step, and coming back re-mounts this route from scratch; without this
+  // the typed balances, the renames and the quick-add taps are simply gone.
+  useEffect(() => {
+    if (proposals === null) return;
+    writeWalletDraft({ proposals, addable, pendingMatchers });
+  }, [proposals, addable, pendingMatchers]);
+
+  // Re-reads the database whenever the wallet list changes — which includes
+  // the moment this step's own creations land. That is what turns a proposal
+  // the user has already committed into a read-only "already saved" row
+  // instead of a second attempt at a name that now exists.
+  useEffect(() => {
+    if (existingWallets === undefined) return;
+    setProposals((current) => (current ? reconcileWithExisting(current, liveWallets) : current));
+  }, [existingWallets, liveWallets]);
+
   useEffect(() => {
     let cancelled = false;
     loadObserved().then((packages) => {
@@ -292,7 +418,10 @@ export default function WalletsScreen({
   // out edits the user has already made to the list.
   useEffect(() => {
     if (initializedRef.current) return;
-    if (observed === null || ruleset === undefined) return;
+    // `existingWallets` joins the gate: a list built before the database has
+    // said what is already there would flash the user a proposal for a wallet
+    // they created on a previous pass, and only correct itself a frame later.
+    if (observed === null || ruleset === undefined || existingWallets === undefined) return;
     initializedRef.current = true;
 
     // ASYNC NOW, BECAUSE THE NAMES COME OFF THE DEVICE. The proposed wallet
@@ -328,7 +457,12 @@ export default function WalletsScreen({
       );
       const suggestedOnly = choices.filter((choice) => !choice.seen);
 
-      setProposals([...observedChoices.map((choice) => proposalFor(choice, true)), CASH_PROPOSAL]);
+      setProposals(
+        reconcileWithExisting(
+          [...observedChoices.map((choice) => proposalFor(choice, true)), CASH_PROPOSAL],
+          liveWallets,
+        ),
+      );
       // Every OBSERVED proposal now carries its provider's FULL package list
       // too, the same as a quick-added one — seeing sms_relay via ONE package
       // must not leave the created wallet matching only that one.
@@ -348,7 +482,7 @@ export default function WalletsScreen({
     return () => {
       cancelled = true;
     };
-  }, [observed, ruleset]);
+  }, [observed, ruleset, existingWallets, liveWallets]);
 
   function rename(key: string, name: string): void {
     setProposals((current) =>
@@ -390,9 +524,13 @@ export default function WalletsScreen({
 
   async function submit(): Promise<void> {
     if (!proposals || submitting) return;
-    const included = proposals.filter((p) => p.included && p.name.trim() !== "");
+    // `!p.saved` IS THE WHOLE RETURN-VISIT FIX. A saved proposal is a Wallet
+    // that already exists; handing it to `createWallet` again can only raise
+    // `DuplicateNameError`, which is how a user who came back to add ONE
+    // missed wallet used to end up with an error and no new wallet at all.
+    const pending = proposals.filter((p) => p.included && !p.saved && p.name.trim() !== "");
 
-    if (included.length === 0) {
+    if (pending.length === 0) {
       advance();
       return;
     }
@@ -404,67 +542,104 @@ export default function WalletsScreen({
     // app/wallet/new.tsx applies) — onboarding runs on a fresh install, so
     // this is normally zero, but re-entering onboarding after a partial run
     // must not double-count nor under-count what is already there.
-    let runningCount = (existingWallets ?? []).filter((wallet) => !wallet.isArchived).length;
+    let runningCount = liveWallets.length;
     let wouldExceedCap = false;
 
-    try {
-      for (const proposal of included) {
-        // Rule 2: checked ONLY to decide whether to explain the cap
-        // afterward. Creation below runs unconditionally — the cap never
-        // blocks a wallet the user asked for during this setup.
-        if (!canCreateWallet(runningCount)) wouldExceedCap = true;
+    // ONE PROPOSAL'S FAILURE IS NOT THE REST'S. The loop used to sit inside a
+    // single try: the first throw abandoned every proposal after it, unread,
+    // under a message that said only "some wallets". Each proposal now carries
+    // its own failure, so a bad name costs exactly one wallet and the message
+    // can name it.
+    const created = new Set<string>();
+    const failed: string[] = [];
 
-        const wallet = await createWallet.mutateAsync({
-          name: proposal.name.trim(),
-          // Task 4 rule 1: a blank field is ₱0.00 via centavosFrom, written
-          // the same way app/wallet/new.tsx already writes a manually created
-          // wallet's opening balance — an anchor on the brand-new row, not a
-          // patch on an existing one (wallet_form.tsx:11-13's "create-only"
-          // rule is about EDITING an existing wallet's balance, never about
-          // the very INSERT that gives it its first figure).
-          //
-          // centavosFrom, replacing the centavos-by-digit helper this used to
-          // call (numeric-input-system Task 13): the proposal now carries what
-          // the user KEYED IN PESOS, so "3000" is ₱3,000.00. This screen is
-          // where the owner's report landed — 100000 used to become ₱1,000.00
-          // here.
-          openingBalance: centavosFrom(proposal.openingBalanceText),
-        });
-        // Both quick-added AND observed proposals carry their provider's FULL
-        // package list in `pendingMatchers` now (see the init effect above,
-        // and `matchersForChoice`'s own doc for why observed joined quick-add
-        // here) — so the only proposal left to reach this fallback is CASH,
-        // whose `packageName` is `null` and whose matcher list is correctly
-        // empty. A non-cash proposal missing from `pendingMatchers` would be a
-        // bug upstream, not a case this fallback is meant to paper over; per-
-        // package fallback is exactly the failure lib/wallets/matchers.ts:48-53
-        // exists to prevent (a provider whose SMS arrive via a second app
-        // silently stops being tracked), so this stays a safety net for cash
-        // alone, not a second matching path for observed providers.
-        const matchers =
-          pendingMatchers[proposal.key] ??
-          (proposal.packageName ? [{ packageName: proposal.packageName }] : []);
-        if (matchers.length > 0) {
-          await setMatchers.mutateAsync({ walletId: wallet.id, matchers });
+    try {
+      for (const proposal of pending) {
+        try {
+          // Rule 2: checked ONLY to decide whether to explain the cap
+          // afterward. Creation below runs unconditionally — the cap never
+          // blocks a wallet the user asked for during this setup.
+          if (!canCreateWallet(runningCount)) wouldExceedCap = true;
+
+          const wallet = await createWallet.mutateAsync({
+            name: proposal.name.trim(),
+            // Task 4 rule 1: a blank field is ₱0.00 via centavosFrom, written
+            // the same way app/wallet/new.tsx already writes a manually
+            // created wallet's opening balance — an anchor on the brand-new
+            // row, not a patch on an existing one (wallet_form.tsx:11-13's
+            // "create-only" rule is about EDITING an existing wallet's
+            // balance, never about the very INSERT that gives it its first
+            // figure).
+            //
+            // centavosFrom, replacing the centavos-by-digit helper this used
+            // to call (numeric-input-system Task 13): the proposal carries
+            // what the user KEYED IN PESOS, so "3000" is ₱3,000.00. This
+            // screen is where the owner's original report landed — 100000
+            // used to become ₱1,000.00 here.
+            openingBalance: centavosFrom(proposal.openingBalanceText),
+          });
+          // Both quick-added AND observed proposals carry their provider's
+          // FULL package list in `pendingMatchers` (see the init effect, and
+          // `matchersForChoice`'s own doc for why observed joined quick-add
+          // here) — so the only proposal left to reach this fallback is CASH,
+          // whose `packageName` is `null` and whose matcher list is correctly
+          // empty. Per-package fallback is exactly the failure
+          // lib/wallets/matchers.ts:48-53 exists to prevent (a provider whose
+          // SMS arrive via a second app silently stops being tracked), so this
+          // stays a safety net for cash alone, not a second matching path.
+          const matchers =
+            pendingMatchers[proposal.key] ??
+            (proposal.packageName ? [{ packageName: proposal.packageName }] : []);
+          if (matchers.length > 0) {
+            await setMatchers.mutateAsync({ walletId: wallet.id, matchers });
+          }
+          runningCount += 1;
+          created.add(proposal.key);
+        } catch (error) {
+          // A NAME THAT IS ALREADY TAKEN IS NOT A FAILURE HERE. The user asked
+          // for a wallet by that name and a wallet by that name exists — the
+          // outcome they wanted. Reporting it as an error is what made the
+          // step look broken to someone who had merely walked back a screen.
+          // It is folded in with the creations so the row settles as saved.
+          if (error instanceof DuplicateNameError) {
+            created.add(proposal.key);
+            continue;
+          }
+          failed.push(proposal.name.trim());
         }
-        runningCount += 1;
       }
-    } catch {
-      // Wallets already created stay created (gate principle 1: never delete
-      // on a failure either) — only the ones that did not get created yet are
-      // lost, and the user can add them from the Wallets tab afterward.
-      setSubmitError(
-        "Some wallets couldn't be saved. The ones that worked are ready — add any others later from the Wallets tab.",
-      );
-      return;
     } finally {
       setSubmitting(false);
     }
 
-    // ADVANCING IS DELIBERATELY OUTSIDE THE try ABOVE. That catch means one
-    // thing — "a wallet could not be saved" — and it says so on screen. Moving
-    // on is not a save, and a navigation that threw from inside it would be
-    // reported to the user as data loss that did not happen.
+    // Marked saved on the spot rather than waiting for the wallet list to come
+    // back: this is what stops a second Continue tap (or a walk back to this
+    // step) from trying to create them all over again. The reconcile effect
+    // above then corrects each row's balance to the Wallet's real one.
+    setProposals((current) =>
+      current
+        ? current.map((p) => (created.has(p.key) ? { ...p, saved: true, included: true } : p))
+        : current,
+    );
+
+    // NAMES THE WALLETS THAT DID NOT MAKE IT, and only appears when one truly
+    // did not: the recovery is "add these from the Wallets tab", which the
+    // user cannot act on if the message will not say which ones. Wallets
+    // already created stay created (gate principle 1: never delete on a
+    // failure either).
+    if (failed.length > 0) {
+      setSubmitError(
+        `${listNames(failed)} couldn't be saved. Everything else is ready — you can add ` +
+          `${failed.length === 1 ? "it" : "them"} later from the Wallets tab.`,
+      );
+      return;
+    }
+
+    // ADVANCING IS DELIBERATELY AFTER THE ERROR CHECK ABOVE, NOT INSIDE IT.
+    // That message means one thing — "a wallet could not be saved" — and it
+    // says so on screen. Moving on is not a save, and a navigation that threw
+    // from inside that path would be reported to the user as data loss that
+    // did not happen.
     if (wouldExceedCap) {
       // The explanation renders below; the flow only advances once the user
       // has actually seen it (its own "Continue" button).
@@ -506,6 +681,8 @@ export default function WalletsScreen({
     );
   }
 
+  const savedCount = proposals?.filter((proposal) => proposal.saved).length ?? 0;
+
   return (
     <OnboardingFrame
       step="wallets"
@@ -521,6 +698,20 @@ export default function WalletsScreen({
         PeraPlano sets up a wallet for each app you use, plus cash for what you spend by hand. Edit
         anything below, or uncheck what you don&apos;t want.
       </Text>
+
+      {/* Only ever shown on a RETURN visit — a first pass has nothing saved.
+          It answers the question the old screen left the user holding: the
+          wallets they set up a moment ago are still there, so the only thing
+          left to do here is the one they came back for. */}
+      {savedCount > 0 ? (
+        <Text
+          testID="wallets-step-saved-note"
+          className="text-body font-medium text-fg-2 dark:text-fg-2-dark"
+        >
+          {savedCount === 1 ? "One wallet is" : `${savedCount} wallets are`} already saved from
+          earlier — those are kept as they are. Add anything you missed below.
+        </Text>
+      ) : null}
 
       {proposals ? (
         <QuickWalletList

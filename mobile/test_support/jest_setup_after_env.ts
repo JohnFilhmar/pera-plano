@@ -8,6 +8,8 @@
 // runs after, which is where anything touching RNTL belongs.
 import { configure } from "@testing-library/react-native";
 
+import { clearWalletDraft } from "@/lib/onboarding/wallet_draft";
+
 // Safe-area insets, project-wide. See test_support/safe_area_mock.ts for why
 // the two hooks need a no-provider answer here and why only they are replaced.
 // Registered globally rather than per-suite because the surfaces that read
@@ -37,3 +39,15 @@ jest.mock("react-native-safe-area-context", () => {
 // waits the full budget. Jest's own `testTimeout` (package.json) sits above it
 // so the more specific RNTL failure message wins.
 configure({ asyncUtilTimeout: 15_000 });
+
+// The onboarding wallet step's draft is a module-level value that deliberately
+// survives an unmount (lib/onboarding/wallet_draft.ts) — which is exactly what
+// makes it survive a TEST too, so the second test in a file would otherwise
+// mount the step already holding the first one's proposals. Cleared project-
+// wide rather than in the one suite that owns the screen, because any suite
+// that renders it (the end-to-end setup flow, future step suites) inherits the
+// same hazard, and a leak here surfaces as a wrong-looking product assertion
+// rather than as shared state.
+beforeEach(() => {
+  clearWalletDraft();
+});

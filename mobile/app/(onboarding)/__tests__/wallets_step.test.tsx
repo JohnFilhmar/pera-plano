@@ -56,7 +56,8 @@ import { getAppLabels, listObservedPackages } from "@/modules/notification_liste
 import { closeDatabase } from "@/lib/db/database";
 import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { listMatchers } from "@/lib/db/repos/wallet_matchers_repo";
-import { listWallets } from "@/lib/db/repos/wallets_repo";
+import { createWallet, listWallets } from "@/lib/db/repos/wallets_repo";
+import { clearWalletDraft } from "@/lib/onboarding/wallet_draft";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
 import { typeAmount } from "@/test_support/keypad";
@@ -366,5 +367,118 @@ describe("proposed wallet names follow the device, not the seed", () => {
     // The label is display only. Routing keys on the package id, which is
     // exactly what does NOT change when a bank rebrands.
     expect(matchers.map((matcher) => matcher.packageName)).toContain(GCASH);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// COMING BACK TO THIS STEP (owner's report, 2026-08-28).
+//
+// The reported flow: set up wallets, tap Continue, realise on the next screen
+// that one wallet was missed, walk back. What the user met was a list rebuilt
+// from scratch — the same providers proposed again, every balance they had
+// keyed replaced by a blank field — and a Continue that answered "Some wallets
+// couldn't be saved", because `createWallet` refuses a duplicate name and the
+// first refusal abandoned every proposal after it, INCLUDING the one wallet
+// they had come back to add.
+//
+// These tests pin the two halves of the fix: the step recognises what it has
+// already written (from the database, so it holds even across a relaunch), and
+// it keeps what the user has typed but not yet saved (from the in-memory
+// draft). A remount with a fresh QueryClient is what "walked back to this
+// screen" actually looks like here — `renderScreen` builds a new client every
+// call, so nothing is carried by the query cache.
+// ---------------------------------------------------------------------------
+
+describe("coming back to the wallet step after it has already created wallets", () => {
+  test("a wallet created on the first pass returns as a saved row, not a blank proposal", async () => {
+    await renderReady([GCASH]);
+    typeAmount(`wallet-proposal-balance-${GCASH}`, "500");
+    fireEvent.press(screen.getByTestId("onboarding-primary-button"));
+    await waitFor(async () => expect(await listWallets()).toHaveLength(2));
+
+    // The draft is dropped deliberately: this asserts the DATABASE half of the
+    // fix on its own, which is the only half a user who relaunches still has.
+    screen.unmount();
+    clearWalletDraft();
+    await renderReady([GCASH]);
+
+    await waitFor(() => expect(screen.getByTestId(`wallet-proposal-saved-${GCASH}`)).toBeTruthy());
+    // And it is not asking for the figure a second time: the row carries the
+    // wallet's real balance, not the blank field that made the user think
+    // their first pass had been thrown away.
+    expect(screen.getByTestId(`wallet-proposal-balance-preview-${GCASH}`)).toHaveTextContent(
+      "₱500.00",
+    );
+  });
+
+  test("Continue on the return visit saves the missed wallet and reports no error", async () => {
+    await renderReady([GCASH]);
+    fireEvent.press(screen.getByTestId("onboarding-primary-button"));
+    await waitFor(async () => expect(await listWallets()).toHaveLength(2));
+
+    // Back on the step, this time with a provider that was missed the first
+    // time round — exactly the reason the user walks back.
+    screen.unmount();
+    clearWalletDraft();
+    mockPush.mockClear();
+    await renderReady([GCASH, GMESSAGES]);
+
+    fireEvent.press(screen.getByTestId("onboarding-primary-button"));
+
+    // The missed wallet lands...
+    await waitFor(async () => expect(await listWallets()).toHaveLength(3));
+    // ...the ones that already existed are not duplicated...
+    const wallets = await listWallets();
+    expect(wallets.filter((wallet) => wallet.name === "Cash")).toHaveLength(1);
+    // ...nothing is reported as lost...
+    expect(screen.queryByTestId("wallets-step-error")).toBeNull();
+    // ...and the flow moves on, which the old duplicate-name throw prevented.
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith("/(onboarding)/income"));
+  });
+
+  test("an opening balance typed but not yet saved survives leaving and coming back", async () => {
+    await renderReady([GCASH]);
+    typeAmount(`wallet-proposal-balance-${GCASH}`, "1234");
+
+    // Left WITHOUT pressing Continue — nothing is in the database yet, so the
+    // in-memory draft is the only thing standing between the user and typing
+    // all of it again.
+    screen.unmount();
+    await renderReady([GCASH]);
+
+    fireEvent.press(screen.getByTestId("onboarding-primary-button"));
+    await waitFor(async () => expect(await listWallets()).toHaveLength(2));
+    const gcashWallet = (await listWallets()).find((wallet) => wallet.name !== "Cash")!;
+    expect(gcashWallet.balance).toBe(123_400);
+  });
+
+  test("a wallet that exists but no proposal covers is still shown as saved", async () => {
+    // Nothing on this run proposes it — it is simply already there, and a step
+    // that hid it would be telling the user their wallet list is emptier than
+    // it is right before asking them to add to it.
+    await createWallet({ name: "Palawan Pera Padala", openingBalance: 25_000 });
+
+    await renderReady([GCASH]);
+
+    expect(screen.getByDisplayValue("Palawan Pera Padala")).toBeTruthy();
+  });
+
+  test("a saved row cannot be unchecked — a step never deletes a wallet", async () => {
+    await renderReady([GCASH]);
+    fireEvent.press(screen.getByTestId("onboarding-primary-button"));
+    await waitFor(async () => expect(await listWallets()).toHaveLength(2));
+
+    screen.unmount();
+    clearWalletDraft();
+    await renderReady([GCASH]);
+    await waitFor(() => expect(screen.getByTestId(`wallet-proposal-saved-${GCASH}`)).toBeTruthy());
+
+    fireEvent.press(screen.getByTestId(`wallet-proposal-toggle-${GCASH}`));
+
+    // Still saved, still there: the toggle is inert on a row that is already a
+    // real Wallet, because the only thing an uncheck could mean here is a
+    // delete this flow is not allowed to perform.
+    expect(screen.getByTestId(`wallet-proposal-saved-${GCASH}`)).toBeTruthy();
+    expect(await listWallets()).toHaveLength(2);
   });
 });

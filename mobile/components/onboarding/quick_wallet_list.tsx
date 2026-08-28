@@ -90,6 +90,23 @@ export type WalletProposal = {
    * Continue.
    */
   openingBalanceText: PesoInput;
+  /**
+   * This proposal is ALREADY A WALLET IN THE DATABASE — created by an earlier
+   * pass through this same step, and re-found on the way back in
+   * (app/(onboarding)/wallets.tsx's `reconcileWithExisting`).
+   *
+   * A saved row is shown, never re-created: `createWallet` refuses a duplicate
+   * name outright, so a step that offered it again would spend the user's tap
+   * on a guaranteed failure. It is read-only here for the same reason the
+   * wallet screen owns edits — this step has no update path, and a name field
+   * that accepted a change it silently dropped would be worse than one that
+   * says where the change belongs.
+   *
+   * Optional, so every fixture written before saved rows existed still
+   * compiles: absent means "not created yet", the state every proposal starts
+   * in.
+   */
+  saved?: boolean;
 };
 
 export type QuickWalletListProps = {
@@ -112,7 +129,7 @@ function ProposalRow({
   onChangeOpeningBalance: (key: string, text: PesoInput) => void;
 }) {
   const placeholderColor = usePlaceholderColor();
-  const { key, name, packageName, providerKey, included, openingBalanceText } = proposal;
+  const { key, name, packageName, providerKey, included, openingBalanceText, saved } = proposal;
 
   return (
     <View
@@ -124,12 +141,20 @@ function ProposalRow({
       }`}
     >
       <View className="flex-row items-center gap-3">
+        {/* A SAVED ROW CANNOT BE UNCHECKED. Unchecking means "do not create
+            this", and this one already exists — the only thing an uncheck
+            could honestly do here is delete a Wallet, which no onboarding
+            step is allowed to do (gate principle 1). It renders as a settled
+            check instead, and says so to a screen reader. */}
         <Pressable
           testID={`wallet-proposal-toggle-${key}`}
           onPress={() => onToggleIncluded(key)}
+          disabled={saved}
           accessibilityRole="checkbox"
-          accessibilityLabel={`Include ${name || "this wallet"}`}
-          accessibilityState={{ checked: included }}
+          accessibilityLabel={
+            saved ? `${name || "This wallet"} is already saved` : `Include ${name || "this wallet"}`
+          }
+          accessibilityState={{ checked: included, disabled: saved }}
           className="min-h-[44px] min-w-[44px] items-center justify-center"
         >
           <View
@@ -157,7 +182,7 @@ function ProposalRow({
           testID={`wallet-proposal-name-${key}`}
           value={name}
           onChangeText={(text) => onRename(key, text)}
-          editable={included}
+          editable={included && !saved}
           accessibilityLabel={`Wallet name${packageName ? ` for ${packageName}` : ""}`}
           className={`flex-1 rounded-lg border px-3 py-2 text-row font-semibold ${
             included
@@ -175,6 +200,15 @@ function ProposalRow({
           showSign={false}
         />
       </View>
+
+      {saved ? (
+        <Text
+          testID={`wallet-proposal-saved-${key}`}
+          className="text-micro font-medium text-fg-2 dark:text-fg-2-dark"
+        >
+          Already saved — rename it or change its balance from the Wallets tab.
+        </Text>
+      ) : null}
 
       {packageName ? (
         <Text
@@ -214,7 +248,7 @@ function ProposalRow({
           testID={`wallet-proposal-balance-${key}`}
           label={`Opening balance for ${name || "this wallet"}`}
           mode="peso"
-          disabled={!included}
+          disabled={!included || saved}
           // "Optional", not the old "0". A keypad field cannot be typed
           // into directly, so its placeholder is the only thing standing in
           // for an empty value — and a "0" there reads as a figure already

@@ -47,6 +47,7 @@ import { useIncomeSummary } from "@/hooks/queries/use_income_summary";
 import { useLimitStatuses } from "@/hooks/queries/use_limit_statuses";
 import { useWallets } from "@/hooks/queries/use_wallets";
 import { completeOnboarding } from "@/lib/onboarding/onboarding_state";
+import { clearWalletDraft } from "@/lib/onboarding/wallet_draft";
 
 const LockGlyph = registerIcon(Lock);
 
@@ -89,6 +90,11 @@ export default function DoneScreen({
     setFinishing(true);
     try {
       await completeOnboarding();
+      // The wallet step's in-memory draft has no reason to outlive the flow it
+      // belongs to: anything in it that mattered is a Wallet row by now, and a
+      // second run of onboarding (a reset, a restored backup) must start from
+      // the database, never from the last run's half-finished list.
+      clearWalletDraft();
       if (onDone) {
         onDone();
       } else {
