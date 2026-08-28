@@ -116,11 +116,19 @@ export function OneSidedTransferBody({
             onPress={() => onSelectWallet(wallet.id)}
             className={`min-h-[44px] justify-center rounded-xl px-4 py-3 ${
               wallet.id === selectedWalletId
-                ? "bg-brand-soft dark:bg-brand-soft-dark"
+                ? "bg-brand dark:bg-brand-dark"
                 : "bg-bg dark:bg-bg-dark"
             }`}
           >
-            <Text className="text-fg dark:text-fg-dark">{wallet.name}</Text>
+            <Text
+              className={
+                wallet.id === selectedWalletId
+                  ? "font-semibold text-on-brand dark:text-on-brand-dark"
+                  : "text-fg dark:text-fg-dark"
+              }
+            >
+              {wallet.name}
+            </Text>
           </Pressable>
         ))}
       </View>

@@ -106,6 +106,7 @@ export function IncomeForm({ wallets, initial, onSubmit, busy = false }: IncomeF
               key={wallet.id}
               testID={`income-wallet-${wallet.id}`}
               label={wallet.name}
+              tone={walletIds.includes(wallet.id) ? "brand" : "neutral"}
               fill={walletIds.includes(wallet.id) ? "solid" : "outline"}
               selected={walletIds.includes(wallet.id)}
               onPress={() => toggleWallet(wallet.id)}

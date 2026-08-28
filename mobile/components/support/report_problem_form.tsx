@@ -20,6 +20,7 @@ import { Text, TextInput, View } from "react-native";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { SUPPORT_TOPICS, SUPPORT_TOPIC_LABELS, type SupportTopic } from "@/types/support";
+import { usePlaceholderColor } from "@/lib/ui/placeholder";
 
 /** Enough to be a subject line, short enough to stay one. */
 const MAX_TITLE_LENGTH = 120;
@@ -58,6 +59,7 @@ export function ReportProblemForm({
   attachmentSlot,
   busy = false,
 }: ReportProblemFormProps) {
+  const placeholderColor = usePlaceholderColor();
   const [topic, setTopic] = useState<SupportTopic | null>(null);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -110,6 +112,7 @@ export function ReportProblemForm({
       <View className="gap-1">
         <FieldLabel>Title</FieldLabel>
         <TextInput
+          placeholderTextColor={placeholderColor}
           testID="support-title"
           className="min-h-[44px] rounded-xl bg-chip px-3 py-3 text-fg dark:bg-chip-dark dark:text-fg-dark"
           placeholder="Transfers show up twice"
@@ -127,6 +130,7 @@ export function ReportProblemForm({
       <View className="gap-1">
         <FieldLabel>What happened?</FieldLabel>
         <TextInput
+          placeholderTextColor={placeholderColor}
           testID="support-description"
           className="min-h-[120px] rounded-xl bg-chip px-3 py-3 text-fg dark:bg-chip-dark dark:text-fg-dark"
           placeholder="What you did, what you expected, what happened instead."

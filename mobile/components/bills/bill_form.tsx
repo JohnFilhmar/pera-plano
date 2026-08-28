@@ -36,6 +36,7 @@ import { SegmentedControl } from "@/components/ui/segmented_control";
 import { DEFAULT_REMINDER_OFFSETS } from "@/constants/bills";
 import { centavosFrom, pesoInputFrom } from "@/lib/money/peso_input";
 import type { BillAmountMode, DueRule } from "@/types/domain";
+import { usePlaceholderColor } from "@/lib/ui/placeholder";
 
 /** Step 2's field rhythm: the label that sits above every control below. */
 function FieldLabel({ children }: { children: string }) {
@@ -114,6 +115,7 @@ export function BillForm({
   initial,
   submitLabel = "Save bill",
 }: BillFormProps) {
+  const placeholderColor = usePlaceholderColor();
   const [name, setName] = useState(initial?.name ?? "");
   // pesoInputFrom, NEVER String(). `initial.amount` is Centavos and this field
   // holds PESO TEXT, so `String(initial.amount)` would seed ₱5,000.88 as
@@ -157,6 +159,7 @@ export function BillForm({
       <View className="gap-1">
         <FieldLabel>What is it?</FieldLabel>
         <TextInput
+          placeholderTextColor={placeholderColor}
           testID="bill-name"
           value={name}
           onChangeText={setName}
@@ -218,11 +221,19 @@ export function BillForm({
               onPress={() => toggleOffset(offset.value)}
               className={`min-h-[44px] justify-center rounded-lg px-3 py-2 ${
                 offsets.includes(offset.value)
-                  ? "bg-brand-soft dark:bg-brand-soft-dark"
+                  ? "bg-brand dark:bg-brand-dark"
                   : "bg-chip dark:bg-chip-dark"
               }`}
             >
-              <Text className="text-sm text-fg dark:text-fg-dark">{offset.label}</Text>
+              <Text
+                className={`text-sm ${
+                  offsets.includes(offset.value)
+                    ? "font-semibold text-on-brand dark:text-on-brand-dark"
+                    : "text-fg dark:text-fg-dark"
+                }`}
+              >
+                {offset.label}
+              </Text>
             </Pressable>
           ))}
         </View>

@@ -59,6 +59,7 @@ import { DEFAULT_LOAN_REMINDER_OFFSETS } from "@/constants/loans";
 import { buildAmortizationSchedule, buildFlatSchedule, monthlyPayment } from "@/lib/loans/loan_math";
 import { centavosFrom, pesoInputFrom } from "@/lib/money/peso_input";
 import type { Installment, Loan, LoanDirection } from "@/types/domain";
+import { usePlaceholderColor } from "@/lib/ui/placeholder";
 
 /** Step 2's field rhythm: the label that sits above every control below. */
 function FieldLabel({ children }: { children: string }) {
@@ -204,6 +205,7 @@ export function LoanForm({
   initial,
   submitLabel = "Save loan",
 }: LoanFormProps) {
+  const placeholderColor = usePlaceholderColor();
   const [direction, setDirection] = useState<LoanDirection>(initial?.direction ?? "i-owe");
   const [kind, setKind] = useState<ScheduleKind>(initial?.kind ?? "free-form");
   const [counterparty, setCounterparty] = useState(initial?.counterparty ?? "");
@@ -286,6 +288,7 @@ export function LoanForm({
         <View className="gap-1">
           <FieldLabel>{direction === "i-owe" ? "Who do you owe?" : "Who owes you?"}</FieldLabel>
           <TextInput
+            placeholderTextColor={placeholderColor}
             testID="loan-counterparty"
             className="min-h-[44px] rounded-xl bg-chip px-3 py-3 text-fg dark:bg-chip-dark dark:text-fg-dark"
             placeholder="Name or lender"
@@ -416,11 +419,19 @@ export function LoanForm({
                 onPress={() => toggleReminderOffset(offset.value)}
                 className={`min-h-[44px] justify-center rounded-lg px-3 py-2 ${
                   reminderOffsets.includes(offset.value)
-                    ? "bg-brand-soft dark:bg-brand-soft-dark"
+                    ? "bg-brand dark:bg-brand-dark"
                     : "bg-chip dark:bg-chip-dark"
                 }`}
               >
-                <Text className="text-sm text-fg dark:text-fg-dark">{offset.label}</Text>
+                <Text
+                  className={`text-sm ${
+                    reminderOffsets.includes(offset.value)
+                      ? "font-semibold text-on-brand dark:text-on-brand-dark"
+                      : "text-fg dark:text-fg-dark"
+                  }`}
+                >
+                  {offset.label}
+                </Text>
               </Pressable>
             ))}
           </View>

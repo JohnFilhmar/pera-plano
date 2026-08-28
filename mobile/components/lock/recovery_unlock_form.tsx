@@ -22,6 +22,7 @@ import { useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { normalizePhrase, validatePhrase } from "@/lib/crypto/recovery_phrase";
+import { usePlaceholderColor } from "@/lib/ui/placeholder";
 
 type WipeStep = "hidden" | "confirm1" | "confirm2";
 
@@ -52,6 +53,7 @@ export function RecoveryUnlockForm({
   onSubmitPhrase: (phrase: string[]) => void | Promise<void>;
   onWipe: () => void | Promise<void>;
 }) {
+  const placeholderColor = usePlaceholderColor();
   const [rawInput, setRawInput] = useState("");
   const [validationError, setValidationError] = useState<string | null>(null);
   const [wipeStep, setWipeStep] = useState<WipeStep>("hidden");
@@ -91,6 +93,7 @@ export function RecoveryUnlockForm({
       </Text>
 
       <TextInput
+        placeholderTextColor={placeholderColor}
         testID="recovery-phrase-input"
         value={rawInput}
         onChangeText={setRawInput}

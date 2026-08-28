@@ -20,14 +20,18 @@
 // ₱5,000 loan to a cousin are not a wash, they are two obligations pointing in
 // opposite directions, and only one of them is under the user's control.
 import { useRouter } from "expo-router";
+import { useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 
 import { dueChip, LoanCard } from "@/components/loans/loan_card";
+import { ArchivedSection } from "@/components/plan/archived_section";
 import { AmountText, formatCentavos } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty_state";
 import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { SectionHeader } from "@/components/ui/section_header";
+import { useUnarchiveLoan } from "@/hooks/mutations/use_unarchive_loan";
+import { useArchivedLoans } from "@/hooks/queries/use_archived_plan_items";
 import { useLoans } from "@/hooks/queries/use_loans";
 import { systemClock } from "@/lib/clock";
 import { canCreateLoan } from "@/lib/entitlements";
@@ -43,6 +47,32 @@ export function UtangPanel() {
     router.push(canCreateLoan(count) ? "/plan/loans/new" : "/plan/loans/new?gated=1");
   };
 
+  // Closed by default and the query is gated on it (see `ArchivedQueryOptions`).
+  // The state lives here rather than in `ArchivedSection` because it also has
+  // to reach the hook.
+  const [showArchived, setShowArchived] = useState(false);
+  const { data: archived } = useArchivedLoans({ enabled: showArchived });
+  const restore = useUnarchiveLoan();
+
+  const archivedSection = (
+    <ArchivedSection
+      testID="loans-archived"
+      noun="loans"
+      open={showArchived}
+      onToggle={() => setShowArchived((shown) => !shown)}
+      items={archived?.map((loan) => ({
+        id: loan.id,
+        name: loan.counterparty,
+        detail:
+          loan.direction === "i-owe"
+            ? `I owe \u00b7 ${formatCentavos(loan.principal)}`
+            : `Owed to me \u00b7 ${formatCentavos(loan.principal)}`,
+      }))}
+      restoringId={restore.isPending ? (restore.variables ?? null) : null}
+      onRestore={(id) => restore.mutate(id)}
+    />
+  );
+
   if (statuses === undefined) {
     return (
       <View testID="loans-loading" className="flex-1 bg-bg dark:bg-bg-dark">
@@ -56,13 +86,17 @@ export function UtangPanel() {
 
   if (statuses.length === 0) {
     return (
-      <View className="flex-1 justify-center bg-bg dark:bg-bg-dark">
+      // The archive toggle is in this branch too, and it matters most here: a
+      // user who archived their only loan lands on an empty state that
+      // otherwise reads as "the loan is gone" rather than "filed away".
+      <View className="flex-1 justify-center gap-4 bg-bg px-4 dark:bg-bg-dark">
         <EmptyState
           testID="loans-empty"
           title="No loans tracked"
           body="Track what you owe and what people owe you — including utang with no fixed terms."
           action={{ label: "Add a loan", onPress: onAdd }}
         />
+        {archivedSection}
       </View>
     );
   }
@@ -88,6 +122,9 @@ export function UtangPanel() {
           now={now}
           onOpen={(id) => router.push({ pathname: "/plan/loans/[id]", params: { id } })}
         />
+        {archivedSection}
+        {/* Clears the floating action button on short devices. */}
+        <View className="h-16" />
       </ScrollView>
       <View className="absolute bottom-6 right-6">
         <Button title="Add" onPress={onAdd} testID="loans-add" />

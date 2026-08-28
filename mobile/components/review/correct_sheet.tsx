@@ -68,6 +68,7 @@ import {
 } from "@/lib/ingest/candidates";
 import { centavosFrom, pesoInputFrom } from "@/lib/money/peso_input";
 import type { CorrectionPatch } from "@/lib/review/resolve_actions";
+import { usePlaceholderColor } from "@/lib/ui/placeholder";
 import type {
   Category,
   Centavos,
@@ -264,6 +265,7 @@ export function CorrectSheet({
   onDismiss,
   onSubmit,
 }: CorrectSheetProps) {
+  const placeholderColor = usePlaceholderColor();
   const proposed = {
     amount: readAmount(item.payload),
     direction: readDirection(item.payload),
@@ -469,11 +471,19 @@ export function CorrectSheet({
                     onPress={() => setWalletId(wallet.id)}
                     className={`min-h-[44px] justify-center rounded-xl px-4 py-3 ${
                       walletId === wallet.id
-                        ? "bg-brand-soft dark:bg-brand-soft-dark"
+                        ? "bg-brand dark:bg-brand-dark"
                         : "bg-bg dark:bg-bg-dark"
                     }`}
                   >
-                    <Text className="text-fg dark:text-fg-dark">{wallet.name}</Text>
+                    <Text
+                      className={
+                        walletId === wallet.id
+                          ? "font-semibold text-on-brand dark:text-on-brand-dark"
+                          : "text-fg dark:text-fg-dark"
+                      }
+                    >
+                      {wallet.name}
+                    </Text>
                   </Pressable>
                 ))
               )}
@@ -525,6 +535,7 @@ export function CorrectSheet({
             <View className="gap-2">
               <Text className="text-xs uppercase text-fg-2 dark:text-fg-2-dark">Merchant</Text>
               <TextInput
+                placeholderTextColor={placeholderColor}
                 testID="correct-merchant"
                 value={merchant}
                 onChangeText={setMerchant}

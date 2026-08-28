@@ -38,6 +38,7 @@ import { Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Button } from "@/components/ui/button";
+import { usePlaceholderColor } from "@/lib/ui/placeholder";
 
 const CHALLENGE_COUNT = 3;
 
@@ -76,6 +77,7 @@ export function PhraseConfirm({
    * dead control that goes nowhere. */
   onBack?: () => void;
 }) {
+  const placeholderColor = usePlaceholderColor();
   const positions = useMemo(() => pickPositions(words.length, CHALLENGE_COUNT), [words.length]);
   const [answers, setAnswers] = useState<string[]>(() => positions.map(() => ""));
   const [error, setError] = useState<string | null>(null);
@@ -133,6 +135,7 @@ export function PhraseConfirm({
             Word {position + 1}
           </Text>
           <TextInput
+            placeholderTextColor={placeholderColor}
             testID={`confirm-input-${i}`}
             value={answers[i]}
             onChangeText={(value) => handleChange(i, value)}

@@ -355,6 +355,36 @@ export async function archiveLoan(id: string): Promise<void> {
 }
 
 /**
+ * Puts an archived loan back. The exact inverse of `archiveLoan`: it clears
+ * `archived_at` and nothing else.
+ *
+ * WHY THIS HAS TO EXIST. Every plan entity could be archived and none could be
+ * restored — no repository function, no hook, no screen — so "archive" was a
+ * one-way door that the wording never claimed to be. A user who archived the
+ * wrong row had no way back to it, and because the archive deliberately never
+ * deletes, the row sat there unreachable.
+ *
+ * A RESTORED LOAN COUNTS AGAINST THE FREE CAP AGAIN, by construction rather
+ * than by a check here: `countLoans` counts rows with `archived_at IS NULL`, so
+ * clearing the column puts this loan back in that count the moment it lands.
+ * That is the correct reading of the cap — it limits live loans — but it does
+ * mean a free-tier user at the cap can restore their way over it. Left that way
+ * deliberately: refusing the restore would strand the loan permanently, which
+ * is the failure this function exists to remove, and the cap's own job (per
+ * `countLoans`) is to gate CREATING a new loan, which stays gated.
+ *
+ * IDEMPOTENT AND SILENT, matching the archive side: an unknown or already-live
+ * id is a no-op rather than an error.
+ */
+export async function unarchiveLoan(id: string): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync(
+    "UPDATE loans SET archived_at = NULL, updated_at = ? WHERE id = ? AND archived_at IS NOT NULL",
+    [Date.now(), id],
+  );
+}
+
+/**
  * Live loans only — archived ones do not count.
  *
  * WHAT THIS FEEDS: `canCreateLoan` (lib/entitlements.ts) caps the free tier.

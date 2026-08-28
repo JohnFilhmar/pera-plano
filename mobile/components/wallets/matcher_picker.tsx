@@ -41,6 +41,7 @@ import {
 import type { MatcherOwner } from "@/lib/wallets/matchers";
 import type { ProviderRuleset } from "@/lib/ingest/ruleset_types";
 import type { NewWalletMatcher } from "@/types/domain";
+import { usePlaceholderColor } from "@/lib/ui/placeholder";
 
 export type MatcherPickerProps = {
   /** The installed ruleset's provider catalogue. Empty renders nothing. */
@@ -62,6 +63,7 @@ export function MatcherPicker({
   walletId,
   testID = "matcher-picker",
 }: MatcherPickerProps) {
+  const placeholderColor = usePlaceholderColor();
   const selection = selectedHintByProvider(providers, value);
 
   /**
@@ -138,6 +140,7 @@ export function MatcherPicker({
             {selected ? (
               <View className="gap-1 px-4 pb-3">
                 <TextInput
+                  placeholderTextColor={placeholderColor}
                   testID={`matcher-hint-${provider.providerKey}`}
                   value={hint}
                   onChangeText={(text) => setHint(provider.providerKey, text)}

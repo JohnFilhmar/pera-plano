@@ -210,6 +210,39 @@ export async function archiveWallet(id: string): Promise<void> {
 }
 
 /**
+ * Brings a Wallet back out of the archive. The exact inverse of
+ * `archiveWallet`, and idempotent in the same way.
+ *
+ * THE NAME IS THE ONE THING THIS CAN FAIL ON, and it fails loudly rather than
+ * quietly. Archiving FREES a wallet's name for reuse (see `archiveWallet`), so
+ * between archiving "GCash" and restoring it the user may well have created a
+ * new "GCash". `createWallet` and `renameWallet` both enforce uniqueness
+ * against live wallets only (`is_archived = 0`), so restoring blindly would
+ * produce two live wallets with one name — which is exactly the state every
+ * picker in the app renders as two identical rows the user cannot tell apart,
+ * and which the ingest Normalizer resolves between arbitrarily.
+ *
+ * So this refuses instead, with the same error `createWallet` raises, and the
+ * caller's fix is the one that was always available: rename one of them.
+ */
+export async function unarchiveWallet(id: string): Promise<void> {
+  const db = await getDatabase();
+  const wallet = await getWallet(id);
+  if (wallet === null || !wallet.isArchived) return;
+
+  const clash = await db.getFirstAsync<{ id: string }>(
+    "SELECT id FROM wallets WHERE name = ? COLLATE NOCASE AND is_archived = 0",
+    [wallet.name],
+  );
+  if (clash) throw new DuplicateNameError(wallet.name);
+
+  await db.runAsync(
+    "UPDATE wallets SET is_archived = 0, updated_at = ? WHERE id = ? AND is_archived = 1",
+    [Date.now(), id],
+  );
+}
+
+/**
  * The two balances a Wallet has, and the gap between them.
  *
  * `reported` is the provider's own figure from the last balance-carrying

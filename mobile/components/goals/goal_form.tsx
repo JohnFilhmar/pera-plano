@@ -25,8 +25,9 @@ import { Card } from "@/components/ui/card";
 import { Chip } from "@/components/ui/chip";
 import { DateField } from "@/components/ui/date_field";
 import { NumericField } from "@/components/ui/numeric_field";
-import { centavosFrom } from "@/lib/money/peso_input";
+import { centavosFrom, pesoInputFrom } from "@/lib/money/peso_input";
 import type { ContributionRule, IsoDate, Wallet } from "@/types/domain";
+import { usePlaceholderColor } from "@/lib/ui/placeholder";
 
 /** Step 2's field rhythm: the label that sits above every control below. */
 function FieldLabel({ children }: { children: string }) {
@@ -44,12 +45,24 @@ export type GoalFormValues = {
 };
 
 export type GoalFormProps = {
-  /** Savings wallets with no goal yet — the only ones a goal may bind (I10). */
+  /**
+   * Savings wallets with no goal yet — the only ones a goal may bind (I10).
+   *
+   * ON THE EDIT SCREEN THIS MUST ALSO INCLUDE THE GOAL'S OWN WALLET. It is not
+   * "free" by that query's definition — this goal is what claims it — but a
+   * picker that omits it would show the goal's account as unselected and give
+   * the user no way to put it back. `updateGoal` already handles re-saving a
+   * goal onto its own wallet without reading it as a collision (see
+   * `assertWalletIsFree`'s `exceptGoalId`).
+   */
   availableWallets: Wallet[];
   onSubmit: (values: GoalFormValues) => void;
   /** Opens the inline savings-wallet flow (rule 3). */
   onCreateWallet: () => void;
   busy?: boolean;
+  /** Seeds every field for the edit screen. Absent means a blank create form. */
+  initial?: GoalFormValues;
+  submitLabel?: string;
 };
 
 export function GoalForm({
@@ -57,12 +70,23 @@ export function GoalForm({
   onSubmit,
   onCreateWallet,
   busy = false,
+  initial,
+  submitLabel = "Create goal",
 }: GoalFormProps) {
-  const [name, setName] = useState("");
-  const [targetText, setTargetText] = useState("");
-  const [targetDate, setTargetDate] = useState<IsoDate | null>(null);
-  const [walletId, setWalletId] = useState<string | null>(null);
-  const [ruleText, setRuleText] = useState("");
+  const placeholderColor = usePlaceholderColor();
+  const [name, setName] = useState(initial?.name ?? "");
+  // pesoInputFrom, NEVER String() — `targetAmount` is Centavos and this field
+  // holds PESO TEXT, so `String(initial.targetAmount)` would seed ₱50,000 as
+  // "5000000", a silent 100×. The same note bill_form.tsx and wallet_form.tsx
+  // both carry, because the bug has been found more than once in this codebase.
+  const [targetText, setTargetText] = useState(
+    initial?.targetAmount !== undefined ? pesoInputFrom(initial.targetAmount) : "",
+  );
+  const [targetDate, setTargetDate] = useState<IsoDate | null>(initial?.targetDate ?? null);
+  const [walletId, setWalletId] = useState<string | null>(initial?.linkedWalletId ?? null);
+  const [ruleText, setRuleText] = useState(
+    initial?.contributionRule?.kind === "fixed" ? pesoInputFrom(initial.contributionRule.amount) : "",
+  );
 
   const targetAmount = centavosFrom(targetText);
   // Rule 3's three requirements, and 001_core.sql's `CHECK (target_amount > 0)`.
@@ -82,6 +106,7 @@ export function GoalForm({
       <View className="gap-1">
         <FieldLabel>What are you saving for?</FieldLabel>
         <TextInput
+          placeholderTextColor={placeholderColor}
           testID="goal-name"
           className="min-h-[44px] rounded-xl bg-chip px-3 py-3 text-fg dark:bg-chip-dark dark:text-fg-dark"
           placeholder="Emergency fund"
@@ -151,6 +176,7 @@ export function GoalForm({
                 key={wallet.id}
                 testID={`goal-wallet-${wallet.id}`}
                 label={`${wallet.name} · ${formatCentavos(wallet.balance)}`}
+                tone={wallet.id === walletId ? "brand" : "neutral"}
                 fill={wallet.id === walletId ? "solid" : "outline"}
                 selected={wallet.id === walletId}
                 onPress={() => setWalletId(wallet.id)}
@@ -182,7 +208,7 @@ export function GoalForm({
       </PlusGate>
 
       <Button
-        title="Create goal"
+        title={submitLabel}
         testID="goal-save"
         size="lg"
         disabled={!canSave}

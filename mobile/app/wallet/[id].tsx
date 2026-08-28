@@ -87,6 +87,7 @@ import { isManualOnly } from "@/lib/wallets/summary";
 import { palette } from "@/constants/colors";
 import { providerBadge, providerKeyForPackage } from "@/constants/providers";
 import { useArchiveWallet } from "@/hooks/mutations/use_archive_wallet";
+import { useUnarchiveWallet } from "@/hooks/mutations/use_unarchive_wallet";
 import { useDismissDrift } from "@/hooks/mutations/use_dismiss_drift";
 import { useBalanceDrift } from "@/hooks/queries/use_balance_drift";
 import { useCategories } from "@/hooks/queries/use_categories";
@@ -227,6 +228,7 @@ export default function WalletDetailScreen() {
   const { data: wallets } = useWallets();
   const { data: categories } = useCategories();
   const archiveWallet = useArchiveWallet();
+  const unarchiveWallet = useUnarchiveWallet();
   const dismissDrift = useDismissDrift();
 
   if (isPending) {
@@ -515,6 +517,45 @@ export default function WalletDetailScreen() {
                   onPress={() => setArchiving(true)}
                 />
               </View>
+            </View>
+          ) : null}
+
+          {/* THE ONE ACTION AN ARCHIVED WALLET DOES GET, and the one the block
+              above has been promising since it was written: "read-only until it
+              is unarchived" described a state with no exit, because nothing in
+              the app could unarchive anything (owner's device report: "no way
+              to see and unarchive archived goals and the same for other planned
+              tabs"). Restoring is the undo of an archive, not a destructive
+              act, so it takes no confirmation sheet — unlike `ArchiveWalletSheet`,
+              which asks where the transactions should go.
+
+              THE ERROR IS SHOWN, NOT SWALLOWED. Archiving frees a wallet's name
+              for reuse, so `unarchiveWallet` refuses when a live wallet has
+              taken it (`DuplicateNameError`) rather than producing two live
+              wallets called "GCash". The user's fix is to rename one of them,
+              which is what the message says. */}
+          {wallet.isArchived ? (
+            <View className="gap-2 px-4 pt-3">
+              <Button
+                testID="wallet-detail-restore"
+                title="Restore wallet"
+                variant="secondary"
+                loading={unarchiveWallet.isPending}
+                onPress={() => unarchiveWallet.mutate(wallet.id)}
+              />
+              {unarchiveWallet.isError ? (
+                <Text
+                  testID="wallet-detail-restore-error"
+                  className="text-sm text-danger dark:text-danger-dark"
+                >
+                  Another wallet is already using the name &ldquo;{wallet.name}&rdquo;. Rename that
+                  one first, then restore this wallet.
+                </Text>
+              ) : (
+                <Text className="text-sm text-fg-2 dark:text-fg-2-dark">
+                  Restoring brings this wallet back with every transaction it already had.
+                </Text>
+              )}
             </View>
           ) : null}
 

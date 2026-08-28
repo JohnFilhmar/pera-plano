@@ -38,6 +38,7 @@ import {
 
 import type { Category, Centavos, EpochMs, Transaction, TxDirection, Wallet } from "@/types/domain";
 import { isManualOnly } from "@/lib/wallets/summary";
+import { usePlaceholderColor } from "@/lib/ui/placeholder";
 
 const CloseGlyph = registerIcon(X);
 const NoteGlyph = registerIcon(Type);
@@ -150,6 +151,7 @@ export function ManualEntryForm({
   onCreateCashWallet,
   onClose,
 }: ManualEntryFormProps) {
+  const placeholderColor = usePlaceholderColor();
   // This form IS the /transaction/new screen — a full-bleed route outside the
   // tab navigator, so nothing above it clears the status bar or Android's
   // navigation bar (app.json `edgeToEdgeEnabled`). Save now lives in its own
@@ -378,15 +380,32 @@ export function ManualEntryForm({
           control here is cheaper than reshaping a shared component for its
           only disableable segment. */}
       <View className="flex-row gap-2">
-        <SegmentedControl
-          testID="manual-entry-direction"
-          segments={DIRECTION_SEGMENTS}
-          value={direction}
-          onChange={(value) => {
-            setDirection(value);
-            setKind("entry");
-          }}
-        />
+        {/* `style={{ flex: 2 }}`, and it has to be on a wrapper here.
+            `SegmentedControl`'s own root is a plain `flex-row` View with no
+            flex of its own, so dropping it straight into this row left it with
+            a zero flex basis: its two `flex-1` segments divided a container
+            that was itself sized to nothing, and Expense/Income painted as two
+            empty ~0-width pills while the sibling Transfer Pressable (which
+            does declare `flex-1`) swallowed the rest of the row. Two shares
+            here against Transfer's one gives the three options their thirds
+            back.
+
+            Wrapped rather than fixed inside `SegmentedControl`: putting a bare
+            `flex-1` on that component's root would be right in this row and
+            wrong at every other call site, since the rest mount it as a child
+            of a COLUMN — where that would mean "stretch to fill the screen's
+            height" rather than "take a share of the row". */}
+        <View style={{ flex: 2 }}>
+          <SegmentedControl
+            testID="manual-entry-direction"
+            segments={DIRECTION_SEGMENTS}
+            value={direction}
+            onChange={(value) => {
+              setDirection(value);
+              setKind("entry");
+            }}
+          />
+        </View>
         <Pressable
           testID="manual-entry-segment-transfer"
           disabled={!transferAvailable}
@@ -460,11 +479,19 @@ export function ManualEntryForm({
             onPress={() => setChosenWalletId(wallet.id)}
             className={`rounded-xl px-4 py-3 ${
               walletId === wallet.id
-                ? "bg-brand-soft dark:bg-brand-soft-dark"
+                ? "bg-brand dark:bg-brand-dark"
                 : "bg-surface dark:bg-surface-dark"
             }`}
           >
-            <Text className="text-fg dark:text-fg-dark">{wallet.name}</Text>
+            <Text
+              className={
+                walletId === wallet.id
+                  ? "font-semibold text-on-brand dark:text-on-brand-dark"
+                  : "text-fg dark:text-fg-dark"
+              }
+            >
+              {wallet.name}
+            </Text>
           </Pressable>
         ))}
 
@@ -493,11 +520,19 @@ export function ManualEntryForm({
               onPress={() => setChosenToWalletId(wallet.id)}
               className={`rounded-xl px-4 py-3 ${
                 toWalletId === wallet.id
-                  ? "bg-brand-soft dark:bg-brand-soft-dark"
+                  ? "bg-brand dark:bg-brand-dark"
                   : "bg-surface dark:bg-surface-dark"
               }`}
             >
-              <Text className="text-fg dark:text-fg-dark">{wallet.name}</Text>
+              <Text
+                className={
+                  toWalletId === wallet.id
+                    ? "font-semibold text-on-brand dark:text-on-brand-dark"
+                    : "text-fg dark:text-fg-dark"
+                }
+              >
+                {wallet.name}
+              </Text>
             </Pressable>
           ))}
 
@@ -566,6 +601,7 @@ export function ManualEntryForm({
           </View>
 
           <TextInput
+            placeholderTextColor={placeholderColor}
             testID="manual-entry-merchant"
             value={merchant}
             onChangeText={setMerchant}
@@ -580,6 +616,7 @@ export function ManualEntryForm({
       <View className="flex-row items-center gap-2 rounded-xl bg-chip px-4 py-3 dark:bg-chip-dark">
         <NoteGlyph size={18} className="text-fg-2 dark:text-fg-2-dark" />
         <TextInput
+          placeholderTextColor={placeholderColor}
           testID="manual-entry-note"
           value={note}
           onChangeText={setNote}

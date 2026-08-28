@@ -38,6 +38,26 @@ export type NumericFieldProps = {
   mode?: KeypadMode;
   placeholder?: string;
   /**
+   * Paints the brand border ALL THE TIME instead of only while focused, for the
+   * designs where this field is the one thing on a sheet the user must fill in.
+   *
+   * IT IS A PROP AND NOT A WRAPPER, and the wrapper is exactly what it replaces
+   * (owner's device report: "the input is overflowing somehow another border").
+   * `cash_reconcile_sheet.tsx` and `balance_correction_sheet.tsx` both used to
+   * wrap this component in their own `rounded-xl border border-brand` View, and
+   * that produced TWO borders rather than one: this component's own focus ring
+   * paints inside the wrapper the moment the field is tapped — which, on those
+   * sheets, is immediately, since tapping the field is what opens the keypad.
+   * The inner box also carries `mt-2`, so it sat 8px low inside the wrapper and
+   * hung past its bottom edge. Owning the border here means there is one box,
+   * one radius, and nothing to misalign.
+   *
+   * `mt-2` is dropped along with it: both call sites already space the label
+   * from the field with their own `gap-1`, and the margin only existed for
+   * callers that do not.
+   */
+  bordered?: boolean;
+  /**
    * What `editable={false}` was on the TextInput this replaces.
    *
    * IT IS A PROP AND NOT A WRAPPER because the two call sites that needed it
@@ -85,6 +105,7 @@ export function NumericField({
   onChangeText,
   mode = "peso",
   placeholder = "",
+  bordered = false,
   disabled = false,
   size = "md",
 }: NumericFieldProps) {
@@ -165,8 +186,16 @@ export function NumericField({
   const containerClass = [
     hero
       ? "items-center justify-center rounded-2xl bg-surface px-4 py-5 dark:bg-surface-dark"
-      : "mt-2 rounded-xl bg-surface p-3 dark:bg-surface-dark",
-    focused ? "border border-brand dark:border-brand-dark" : "",
+      : bordered
+        ? "rounded-xl bg-surface p-3 dark:bg-surface-dark"
+        : "mt-2 rounded-xl bg-surface p-3 dark:bg-surface-dark",
+    // `border-transparent` when neither, so focusing a field never changes its
+    // SIZE — the same 1px-geometry rule components/ui/chip.tsx documents. A
+    // border that appears on focus and was not accounted for in layout shifts
+    // everything under it by 2px the instant the keypad opens.
+    bordered || focused
+      ? "border border-brand dark:border-brand-dark"
+      : "border border-transparent",
     disabled ? "opacity-50" : "",
   ]
     .filter(Boolean)

@@ -38,6 +38,7 @@ import { ScrollView, TextInput, View } from "react-native";
 import { registerIcon } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import type { Category, EpochMs, TxFilter, Wallet } from "@/types/domain";
+import { usePlaceholderColor } from "@/lib/ui/placeholder";
 
 const SearchGlyph = registerIcon(Search);
 
@@ -96,6 +97,7 @@ export function FilterBar({
   onOpenReview,
   testID = "filter-bar",
 }: FilterBarProps) {
+  const placeholderColor = usePlaceholderColor();
   // Archived wallets are hidden from the Wallets tab by default; offering one
   // here would resurrect it in a picker with nothing to explain where it came
   // from. Its rows stay in the ledger either way — this hides a CONTROL, never
@@ -109,6 +111,7 @@ export function FilterBar({
         <View className="min-h-[44px] flex-row items-center gap-2 rounded-full bg-chip px-4 dark:bg-chip-dark">
           <SearchGlyph size={16} className="text-fg-2 dark:text-fg-2-dark" />
           <TextInput
+            placeholderTextColor={placeholderColor}
             testID="filter-search"
             value={search}
             onChangeText={onSearchChange}

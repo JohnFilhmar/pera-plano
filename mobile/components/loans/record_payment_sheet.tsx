@@ -226,11 +226,19 @@ export function RecordPaymentSheet({
               onPress={() => setChosenWalletId(wallet.id)}
               className={`min-h-[44px] justify-center rounded-xl px-4 py-3 ${
                 walletId === wallet.id
-                  ? "bg-brand-soft dark:bg-brand-soft-dark"
+                  ? "bg-brand dark:bg-brand-dark"
                   : "bg-chip dark:bg-chip-dark"
               }`}
             >
-              <Text className="text-fg dark:text-fg-dark">{wallet.name}</Text>
+              <Text
+                className={
+                  walletId === wallet.id
+                    ? "font-semibold text-on-brand dark:text-on-brand-dark"
+                    : "text-fg dark:text-fg-dark"
+                }
+              >
+                {wallet.name}
+              </Text>
             </Pressable>
           ))}
           {showErrors && walletMissing ? (

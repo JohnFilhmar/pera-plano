@@ -236,6 +236,7 @@ export function LimitForm({
           <Chip
             testID="limit-category-everything"
             label="Everything"
+            tone={categoryFilter === null ? "brand" : "neutral"}
             fill={categoryFilter === null ? "solid" : "outline"}
             selected={categoryFilter === null}
             onPress={() => setCategoryFilter(null)}
@@ -245,6 +246,7 @@ export function LimitForm({
               key={category.id}
               testID={`limit-category-${category.id}`}
               label={category.name}
+              tone={(categoryFilter ?? []).includes(category.id) ? "brand" : "neutral"}
               fill={(categoryFilter ?? []).includes(category.id) ? "solid" : "outline"}
               selected={(categoryFilter ?? []).includes(category.id)}
               onPress={() => toggleCategory(category.id)}

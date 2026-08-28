@@ -77,6 +77,20 @@ export default function GoalDetailScreen() {
         </Text>
       </Card>
 
+      {/* EDIT SITS ABOVE DELETE, and this screen used to have only the second
+          of the two (owner's device report: "unable to edit goals"). Without
+          it, correcting a target or a deadline meant deleting the goal and
+          building it again — safe for the money (rule 3) but not for the plan,
+          which restarts its pace from a new created date. */}
+      <Button
+        title="Edit goal"
+        variant="secondary"
+        testID="goal-edit"
+        onPress={() =>
+          router.push({ pathname: "/plan/goals/[id]/edit", params: { id: status.goal.id } })
+        }
+      />
+
       <Button
         title="Delete goal"
         variant="destructive"
