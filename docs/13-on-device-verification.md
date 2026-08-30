@@ -8,6 +8,7 @@
 > | `prefsKekIsNotUserAuthenticationBound` | **PASS — first execution ever** |
 > | `prefsValueSealsAndOpensWithNoAuthenticationAtAll` | **PASS — first execution ever**, unattended |
 > | **Gate B** re-run after provider-selection | **4,920 ms** / 500 records = **9.84 ms/record**, 5,080 ms headroom |
+> | **Gate A** — Argon2id timing | **3,351 ms median** — RUN this session. **Supersedes session 1's "NOT RUN" row below**, which is still the most-read line in this document and has misled at least one later reader into rebuilding a gate that already had a number |
 > | Part 3a package-name pre-check (adb) | **6 of 15 CONFIRMED**, 1 disproven, 8 unknown — see Part 3a |
 > | Route-table "release blocker" | **DISPROVEN** — production export carries no test code at all |
 >
@@ -43,7 +44,7 @@
 > | Buffer contains no readable notification text | **PASS** — pure ciphertext, 6/6 plaintext probes absent |
 > | Durability across process death | **PASS** — captured while force-stopped |
 > | Reboot survival | **PASS** — re-bound and captured, app never opened |
-> | **Gate A** — Argon2id timing | **NOT RUN** — needs JS in Hermes; blocked |
+> | **Gate A** — Argon2id timing | **NOT RUN IN THIS SESSION** — needs JS in Hermes; blocked. **SUPERSEDED five days later**: session 2 measured 3,351 ms median. Read the Gate A section, not this row |
 > | Part 3 switches / drain-empties | **NOT RUN** — need the JS bridge; blocked |
 > | Part 4 database unreadable / ledger / re-lock | **NOT RUN** — need onboarding; blocked |
 > | Battery-manager 2 h idle | **NOT RUN** — and this device is Samsung, not one of the four target OEMs |
@@ -146,6 +147,144 @@ npx expo run:android          # or: npx eas build --profile development --platfo
 
 ---
 
+# The session runbook
+
+Follow this top to bottom with the phone in hand. The tooling lives in
+`mobile/scripts/device/` (Windows PowerShell 5.1, which is the primary shell on this machine —
+same as `docs/build-variants-adb-install.md`). Every script writes a paste-ready record into
+`mobile/device_results/`, which is gitignored scratch: the numbers belong in **this** file.
+
+**Nothing in `scripts/device/` has ever been run against hardware.** It was written and
+syntax-checked with no phone attached; `verify_harness_absent.ps1` is the only one whose whole job
+runs off-device, and it is the only one whose behaviour has actually been observed. Treat the first
+run of each of the others as debugging the harness as much as testing the app.
+
+## Rule 0 — the recovery-phrase screen
+
+One screen displays twelve words that are the master key to a user's entire financial history.
+
+**Never screenshot it, screencap it, or dump its text.** Not to a file, not to a terminal, not to
+a chat, not "just to check the extraction worked". This has already gone wrong twice here: once by
+a screenshot that put the phrase into a file and a session transcript, and once by an attempt to
+avoid that which pulled the view tree and filtered the words out with a grep that was one pattern
+too narrow — 3 of 12 words came through anyway.
+
+The lesson is that **filtering output is the wrong control**. The tooling here does not filter, it
+refuses: `adb_common.ps1`'s `Assert-NoPhraseOnScreen` asks the *device* whether any `phrase-word-*`
+node is on screen and gets back an integer, and `Get-ViewTree` and `Save-Screenshot` both throw on
+a non-zero count before any bytes cross to the laptop. There is no override flag. Do not add one.
+
+When the words genuinely have to go back into the app — the confirm step, or the Part 5 recovery
+unlock — use `enter_recovery_phrase.ps1`, which extracts them device-side into
+`/data/local/tmp`, selects them **by index**, and types them with `adb shell input text` whose
+substitution evaluates on the phone. The only thing that ever reaches this laptop is a count.
+
+**If a phrase is exposed anyway, that install is compromised.** Uninstall it — not "clear data" —
+reinstall, and onboard from a fresh phrase. A phrase that has been in a transcript opens the vault
+it was issued for, forever.
+
+## Before the phone is plugged in
+
+```powershell
+cd "D:\My Folder\pera-plano\mobile"
+npx tsc --noEmit
+npx jest --ci
+.\scripts\device\verify_harness_absent.ps1
+```
+
+The last one needs no device and no Android SDK. It exports the production JS bundle twice — once
+with the Gate A harness opted in and once without — and proves the harness is absent from the
+production build *and* that the check would have found it if it were present. Run it before any
+Play submission and after any change to `metro.config.js`, `app/dev_harness.tsx` or
+`lib/dev_harness/`.
+
+Then build and install (`docs/build-variants-adb-install.md`). For **Gate A on a release engine**,
+set the opt-in before the JS is bundled, or the harness is not in the APK at all:
+
+```powershell
+$env:APP_VARIANT = "preview"
+$env:EXPO_PUBLIC_DEV_HARNESS = "1"
+npx expo prebuild --clean -p android
+cd android; .\gradlew.bat assembleRelease
+```
+
+`eas.json` deliberately does **not** set `EXPO_PUBLIC_DEV_HARNESS` in any profile. A preview build
+can be handed to a beta tester, and a build profile that always carried the harness would put a
+verification surface in their hands. It is a per-invocation opt-in, on purpose.
+
+## The order, and why it is this order
+
+1. **Part 1, the two ship gates.** First, because a wrong answer here is *new work* — re-tuning KDF
+   parameters or the key window and re-verifying everything downstream — not a checkbox. Measuring
+   them at the end of a session means discovering at the end of a session that the session has to
+   happen again.
+   - **Gate A** → `.\scripts\device\run_gate_a.ps1`
+   - **Gate B** has passed twice (5,265 ms, then 4,920 ms). Re-run it only if the capture path
+     changed; it is not a per-session ritual.
+2. **Part 2, the instrumented Keystore suite.** `adb shell am instrument`, not Gradle — Gradle's
+   startup does not fit inside the 10-second auth window. Lock the phone first (see below).
+3. **Part 3 / 3a, the notification listener and the package names.**
+4. **Part 4, encryption end to end.**
+5. **Part 6, the MVP walkthrough** → `.\scripts\device\run_e2e_qa.ps1` for the scriptable half.
+6. **Part 8, the eyes-only checklist.** Everything no script can settle.
+7. **Part 7, the merged-manifest permission check.** Last because it needs a `--clean` prebuild,
+   which regenerates `android/` and invalidates the build everything above ran on.
+8. **Closing the session**, below.
+
+## Four things that will otherwise cost you an hour each
+
+These are encoded in `adb_common.ps1`, but know them anyway, because you will hit them by hand too.
+
+- **Screen state is readable.** `adb shell dumpsys nfc | grep mScreenState` gives `ON_UNLOCKED` /
+  `ON_LOCKED` / `OFF_LOCKED`, with no root and no special permission. Poll it.
+- **The Keystore auth window runs from the last AUTHENTICATION, not from screen-on.** A phone
+  sitting unlocked on the desk does not satisfy it. `adb shell input keyevent 26` to lock it first,
+  so the next unlock is a fresh one. Start the thing being measured *first*, let the script lock the
+  screen a few seconds later, and leave the human exactly one action to perform.
+- **Budget every wait in wall clock, never in loop iterations.** 2,400 adb round-trips sound like a
+  long wait and elapse in about three minutes.
+- **The dev client serves a stale bundle aggressively.** A fresh Metro port (8082) is the reliable
+  cache-buster. And the *only* trustworthy proof the phone took the new bundle is an
+  `Android Bundled` line in Metro's own log triggered **by the device** — a curl from the laptop
+  produces one too. `run_gate_a.ps1` records the log length before launching and only accepts a
+  line written after that point. Believing an on-device negative without this check once cost an
+  hour on an app that was already correct.
+
+## When a step fails
+
+- **Gate A lands somewhere unexpected.** Record the number and stop. Do not tune the parameters in
+  the same sitting: they are part of the on-disk format, and the owner has already made a
+  considered decision to keep them at ~3.35 s (see the Gate A section, and the parameter block in
+  `lib/crypto/recovery_phrase.ts`). A new number is an input to that decision, not an override of
+  it.
+- **No `PERAPLANO_HARNESS` line reaches logcat.** The script prints a four-point checklist. In
+  order of how often it is actually the cause: the app was locked (the router never mounts), Metro
+  was started without `EXPO_PUBLIC_DEV_HARNESS=1` (the route does not exist in the bundle at all,
+  so the deep link lands on not-found), or the bundle was stale.
+- **An auth-gated test fails with `UserNotAuthenticatedException`.** Almost always the window, not
+  the app. Lock, then unlock, then fire immediately.
+- **Anything in Part 6 fails.** Record it and keep going. Later steps depend on data earlier ones
+  create, so a mid-pass rebuild invalidates everything after it, and a failure list from one
+  complete pass is worth more than a fix applied halfway through.
+
+## Ending the session cleanly
+
+Two extra steps on top of the "Closing the session" block further down, both of which exist because
+this tooling writes to the phone:
+
+```powershell
+cd "D:\My Folder\pera-plano\mobile"
+.\scripts\device\enter_recovery_phrase.ps1 -Shred   # removes the device-side phrase file
+adb shell rm -rf /data/local/tmp/peraplano_verify   # belt and braces
+Remove-Item -Recurse -Force android
+git checkout -- package.json                        # prebuild re-adds an "ios" script every run
+git status                                          # must be clean
+```
+
+Then paste the recorded values into this document and into the commit messages at the bottom.
+
+---
+
 ## Part 1 — Two ship gates. Do these FIRST.
 
 Both fix parameters that **cannot change once a real user holds a recovery phrase**. Measuring
@@ -186,6 +325,60 @@ Time `deriveRecoveryKey` on a mid-range device. **Target ≈ 500 ms – 1 s.**
 >
 > What actually protects the phrase is its **128 bits of entropy**, exactly as the header says.
 > The Argon2id layer is defense in depth, and its parameters are close to a free variable.
+
+#### The harness — how to re-measure this, added 2026-08-30. **BUILT, NEVER RUN.**
+
+The 3,351 ms above was measured once and left no reproducible instrument behind, so re-measuring it
+meant rebuilding the whole apparatus. There is now a harness:
+
+| Piece | What it is |
+|---|---|
+| `mobile/lib/dev_harness/gate_a.ts` | The measurement. Imports the **real** `deriveRecoveryKey` and the **real** parameter record; it holds no Argon2id constants of its own |
+| `mobile/app/dev_harness.tsx` | An Expo Router route, reachable only by deep link, blocked out of production bundles |
+| `mobile/scripts/device/run_gate_a.ps1` | Drives it over adb and scrapes the result out of logcat |
+| `mobile/lib/dev_harness/__tests__/gate_a.test.ts` | Pins the things a device session would not notice — 11 tests, green |
+
+```powershell
+cd "D:\My Folder\pera-plano\mobile"
+.\scripts\device\run_gate_a.ps1                       # dev client, 5 runs after 1 warm-up
+.\scripts\device\run_gate_a.ps1 -Variant preview -NoMetro   # release engine, if built with the opt-in
+```
+
+**Why a route inside the app, and not something less invasive.** There is no way to poke JS from
+outside; the only things that execute in the app's Hermes instance are the app's own modules. A
+route is the smallest surface that runs real app code in the real engine, is addressable from adb
+with nobody tapping anything, and can be switched off at build time. A Node or JVM benchmark
+measures a different engine — this workload is already known to be ~190 ms in Node, 1.2–1.6 s under
+Jest, and 3,351 ms in Hermes — and an instrumented Android test cannot reach JS at all.
+
+**It measures the shipping code, not a copy of it.** `ARGON2ID_PARAMS` is now exported from
+`lib/crypto/recovery_phrase.ts` and read by `deriveRecoveryKey` itself, so the parameters the
+harness reports cannot drift from the parameters derivation uses without breaking derivation. The
+input is the public all-zero-entropy BIP-39 test vector, so no real phrase is ever timed and no
+field of the result carries a word, a salt or a key.
+
+**It does not decide.** It reports a median, the spread across runs, the parameters, whether the
+engine was Hermes, whether `__DEV__` was true, and the delta against the 3,351 ms on record. The
+band it prints is measured against the 500 ms – 1 s *design target*, which the owner has already
+consciously overridden. A number is an input to that decision, not a replacement for it.
+
+**Two things the recorded 3,351 ms does not settle, and the harness now makes visible:**
+
+- **It was a dev-client bundle.** The result object carries `__DEV__`, and a dev bundle carries
+  development-only checks a release bundle does not — so 3,351 ms is an upper bound on the figure a
+  shipping user would meet, not that figure. Nobody has measured the release engine.
+- **It was one device.** The A54 is a mid-range 2023 handset. The Gate B note in this document
+  already warns that a budget device at 1.5–2× slower changes the conclusion; the same warning
+  applies here, where 3.35 s becomes 5–7 s on the phones a large part of the Philippine market
+  actually holds.
+
+**Kept out of production, and checked rather than asserted.** A `process.env.EXPO_PUBLIC_DEV_HARNESS`
+guard inside the component was **not enough**: with only that guard, the minifier dropped the
+screen's JSX but Metro still pulled `lib/dev_harness/` into the graph and the sentinel string was
+sitting in the shipped Hermes bytecode. `metro.config.js` now blocks both files out of the module
+graph at the resolver unless the variable is set, which removes the route entirely. Both of those
+are observed facts about an actual `expo export`, and `scripts/device/verify_harness_absent.ps1`
+re-checks them with a positive control every time.
 
 ### Gate B — Full-buffer drain against the 10-second key window
 
@@ -521,6 +714,31 @@ checks are specifically about first-run state, and a reused install silently ski
 
 Work top to bottom. The order is not decorative: later steps depend on data earlier ones create.
 
+> **Roughly half of this is scriptable, and `mobile/scripts/device/run_e2e_qa.ps1` runs that half.**
+> Added 2026-08-30, **never executed against hardware.**
+>
+> ```powershell
+> .\scripts\device\run_e2e_qa.ps1 -List                 # the ordered step table
+> .\scripts\device\run_e2e_qa.ps1                       # everything, dev variant
+> .\scripts\device\run_e2e_qa.ps1 -From live_capture    # resume
+> .\scripts\device\run_e2e_qa.ps1 -IncludeSlow          # adds the ~6.5-minute re-lock wait
+> ```
+>
+> It launches, taps, dumps the view tree, and asserts: fresh install, first-run screen, notification
+> access, the Plan/More hub landings, the three deep links, the touch-target measurements, live
+> capture, "why was this recorded", the twin, the review queue, capture while force-stopped, the
+> buffer holding no plaintext, the database not being plain SQLite, the background re-lock, and
+> reboot survival.
+>
+> **It settles nothing on its own.** Every row it writes is an OBSERVATION, and every step it cannot
+> settle is emitted as MANUAL pointing at Part 8 rather than quietly omitted. The header line of
+> this section still stands: this part must not be marked done by inference, and a script's green
+> row is inference unless a human read what it observed.
+>
+> It never screenshots and never pulls a view tree without the device-side recovery-phrase
+> interlock clearing first; onboarding is handed to `enter_recovery_phrase.ps1` rather than driven
+> by reading the words.
+
 ### Onboarding
 - [ ] Complete onboarding end to end, including granting notification access and the battery
       exemption. It finishes without a force-quit → `________________`
@@ -613,6 +831,211 @@ re-injects a permission during the merge — that is the entire failure mode thi
 > expected and is not evidence of failure — it was generated before the change. `--clean`
 > regenerates it. Afterwards: `rm -rf android` and `git checkout -- package.json`, because prebuild
 > re-adds an `"ios"` script every run (see Closing the session).
+
+---
+
+## Part 8 — The eyes-only checklist
+
+Added 2026-08-30. **NOT RUN.** These are the checks no script can settle, gathered from
+`docs/superpowers/notes/2026-08-23-mobile-ui-revamp-handoff.md` §5 and from the visual gates
+deferred across this document.
+
+They are ordered by the app's own navigation, first run to daily use, so nothing needs a second
+lap. **Switch the phone to 3-button navigation** first (Settings → System → Gestures → System
+navigation) — it is the tightest case for every reachability check here, because the nav bar eats
+the most screen height.
+
+Each item says what to look at **and what a failure looks like**, because "check the shadow" is not
+a check. Record what you saw; "OK" is not an outcome.
+
+Everything below assumes Rule 0 in the runbook: the recovery-phrase screen is never screenshotted,
+never dumped, never described word by word.
+
+### 1. All twelve onboarding steps, from a WIPED install
+
+Uninstall first, not "clear data" — a reused install skips straight past the first-run screens.
+
+- **Look at:** every step from welcome to the finish summary, in one pass, tapping through as a
+  real user would.
+- **Failure looks like:** a Continue that silently does nothing after it has already written real
+  wallet rows; a step that dead-ends and needs a force-quit; a skip that lands somewhere unusable
+  rather than in a working app. Two defects of exactly this shape were found on 2026-08-17, and
+  both passed every per-screen test.
+- **Then repeat on a second fresh install, skipping every optional step.**
+- → `________________`
+
+### 2. The onboarding footer against the navigation bar
+
+- **Look at:** the bottom of every onboarding step, and the primary button on each.
+- **Failure looks like:** the button sitting under Android's navigation bar, or half-covered by it.
+  This has happened here: the footer carried 24dp of flat padding against a navigation bar that
+  measured 126px on this exact handset.
+- → `________________`
+
+### 3. Plan and More land on their HUB screens
+
+Still open from an interrupted session. `run_e2e_qa.ps1 -Only nav_hubs` asserts this structurally;
+this item is the visual confirmation, which is not the same thing.
+
+- **Look at:** tap Plan. Then tap More. Then navigate into a leaf under each (Bills, Settings), go
+  back to another tab, and tap Plan / More again.
+- **Failure looks like:** the tab landing directly on Bills or on Settings rather than on the hub —
+  especially on the *second* press, where a stack that restored its last leaf looks identical to a
+  hub in any test.
+- → `________________`
+
+### 4. The three touch targets deliberately left unmeasured
+
+`components/ui/date_field.tsx`, `components/ui/numeric_field.tsx`, and
+`components/transactions/manual_entry_form.tsx` (all three paths confirmed present, 2026-08-30).
+They are borderline against the 44pt minimum and their real painted height depends on an unstyled
+platform-default text size that cannot be verified off-device. They were reported rather than
+adjusted, because guessing a `hitSlop` on a widely shared primitive risks the overlapping-responder
+bug that already had to be fixed once on `Chip`.
+
+`run_e2e_qa.ps1 -Only touch_targets` prints each one's painted size in px and in dp at this
+device's density. **That is a measurement, not a verdict** — the decision is here.
+
+- **Look at:** the dp height the script reports, and then the field itself under a thumb.
+- **Failure looks like:** a number under 44dp *and* a field that needs a second attempt to hit.
+  Either alone is a judgement call; both together is a defect.
+- **Do not fix it by adding `hitSlop` on the shared primitive without checking neighbours.** A slop
+  that reaches into an adjacent responder trades a missed tap (noticed and retried) for a
+  wrong-target tap (silent).
+- → date_field `________` · numeric_field `________` · manual_entry_form `________`
+
+### 5. Adjacent-chip mis-tap
+
+Chips carry a `hitSlop` to reach the 44pt minimum their painted pill (~22px) does not meet. Rows are
+spaced `gap-2` (8px), so horizontal slop is capped at half the gap to stop neighbouring responders
+overlapping. **Jest has no real hit-testing** — it can pin the numbers and not the behaviour.
+
+- **Look at:** a dense filter row. Tap along it deliberately, aiming at each chip in turn, including
+  the short ones ("3x").
+- **Failure looks like:** the chip *next to* the one you aimed at activating. That is the failure
+  that matters, because a missed tap is noticed and retried while a wrong-chip tap silently applies
+  a filter value the user never chose.
+- → `________________`
+
+### 6. Chip geometry in dense rows
+
+- **Look at:** the same rows, at rest. Pill height, the gap between pills, wrapping onto a second
+  line.
+- **Failure looks like:** pills that read as different heights, a wrap that leaves one orphan chip,
+  or a very short label whose pill is visibly narrower than its neighbours in a way that reads as
+  broken rather than as deliberate.
+- → `________________`
+
+### 7. Card shadow and hairline, light AND dark
+
+- **Look at:** any card-heavy screen (Home, Wallets) in light mode, then the same screen in dark.
+- **Failure looks like:** in light, a shadow so faint the card has no edge at all, or so heavy it
+  reads as a modal; in dark, a hairline that has vanished into the background, or a shadow that
+  shows as a grey halo rather than depth. Dark mode is where this usually breaks, because a shadow
+  tuned on white has nothing to darken.
+- → light `________________` · dark `________________`
+
+### 8. The red Transactions tab badge
+
+- **Look at:** the badge over the Transactions tab glyph with the review queue non-empty
+  (`run_e2e_qa.ps1 -Only review_queue` forces an item into it).
+- **Failure looks like:** the badge clipped by the tab bar's edge, reflowing the other tabs when it
+  appears, or its red failing against the tab-bar background. Also worth confirming against a known
+  defect: **the count over-counts unrecognised apps** — spec rule 18 counts unknown-provider items
+  one per *source app*, while `countOpen()` counts rows, so one chatty unrecognised app inflates it.
+- → `________________`
+
+### 9. Soft warn and danger chips, in daylight
+
+- **Look at:** a warn chip and a danger chip, outdoors or under a bright window, at the phone's
+  auto brightness.
+- **Failure looks like:** the text washing out to unreadable against its own tint. This is the
+  known-bad direction: all three soft tones originally failed AA on their own tints (brand 3.96,
+  danger 3.69, warn 2.63) and were replaced with dedicated ink tokens measured at 5.63 / 6.36 /
+  5.85. Numbers that clear AA on a monitor can still be unreadable in sun.
+- → `________________`
+
+### 10. Bottom sheets against the navigation bar
+
+- **Look at:** each sheet you can reach — wallet balance correction, cash reconcile, the
+  review-queue correction sheet, the category picker.
+- **Failure looks like:** the sheet's Confirm/Save button under the nav bar, or a band of empty
+  reserved space at the bottom of a form after a sheet has been dismissed while holding the keypad
+  (roughly 350dp of reserved nothing — note WHICH screen and roughly how much).
+- → `________________`
+
+### 11. The four Plan back-stack checks
+
+- **Look at:** from Home, tap an alert → its detail screen → **Android system back**.
+- **Failure looks like:** a blank screen, or Home, instead of **the list** the detail belongs to.
+  Repeat for all four Plan surfaces (limits, bills, loans, goals) — one of them behaving is not
+  evidence about the others, since each is its own stack.
+- → limits `______` · bills `______` · loans `______` · goals `______`
+
+### 12. Motion, with "Remove animations" OFF and then ON
+
+Settings → Accessibility → Remove animations.
+
+- **Look at:** the same transitions both ways. Screen pushes, sheet presentations, the splash.
+- **Failure looks like, with it OFF:** motion that reads as wrong rather than absent — a spring
+  that overshoots and wobbles, a transition that lands late, an easing that feels mechanical. The
+  automated tests cover keyframe transcription and the reduced-motion degrade; **nothing automated
+  can tell you whether the port reads as the designer's animation**, and that is the only question
+  here.
+- **Failure looks like, with it ON:** anything still moving, or a screen that ends up in the wrong
+  final state because the animation was carrying the layout.
+- → off `________________` · on `________________`
+
+### 13. `ImagePlaceholder` overflow
+
+`components/ui/image_placeholder.tsx`. Jest runs no real Yoga layout pass, so its test can only
+assert the **absence** of a fixed height and of `overflow: hidden`. Whether the box actually grows
+is a question only a layout engine can answer.
+
+- **Look at:** the onboarding value carousel (`components/onboarding/value_carousel.tsx`) — the
+  longest art brief it renders.
+- **Failure looks like:** the brief text clipped at the bottom of the placeholder box, or running
+  outside its border, instead of the box growing to fit. One screenshot settles it.
+- → `________________`
+
+### 14. Dark mode, on the core flow
+
+- **Look at:** capture → ledger → Home, entirely in dark mode.
+- **Failure looks like:** anything unreadable, or — worse and easier to miss — a colour that reads
+  as the **wrong status**: a warn that looks like a danger, a positive amount that looks negative.
+- → `________________`
+
+### 15. The CSV, in a real spreadsheet
+
+Export a CSV and open it in Excel or Sheets. Not a text editor.
+
+- **Look at:** two specific things. A merchant name containing a comma, and the peso column.
+- **Failure looks like:** the comma merchant split across two columns, or the peso column
+  right-aligned as text rather than summing as numbers.
+- → `________________`
+
+### 16. The JSON export bundle
+
+- **Look at:** open the exported bundle and read it.
+- **Failure looks like:** truncation, missing sections, or an amount serialised in a unit that does
+  not match its label.
+- → `________________`
+
+### 17. Wipe everything
+
+Do this last: it destroys the state every check above depends on.
+
+- **Look at:** the ledger, wallets, **and the privacy centre** after the wipe — not just the home
+  screen.
+- **Failure looks like:** the app returning to onboarding while any of those three still holds a
+  row. A clean Home over a dirty database is exactly the failure this check exists for.
+- → `________________`
+
+### Commit the results
+
+```bash
+git commit --allow-empty -m "test(mobile): record eyes-only device checklist results"
+```
 
 ---
 

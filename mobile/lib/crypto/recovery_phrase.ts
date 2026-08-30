@@ -103,6 +103,31 @@ const ARGON2ID_TIME_COST = 2; // iterations
 const ARGON2ID_MEMORY_COST_KIB = 2048; // 2 MiB
 const ARGON2ID_PARALLELISM = 1;
 const ARGON2ID_OUTPUT_BYTES = 32; // 256-bit key, matches the DEK width
+
+/**
+ * The live Argon2id parameters, in one frozen record.
+ *
+ * EXPORTED FOR ONE REASON: the on-device Gate A timing harness
+ * (`lib/dev_harness/gate_a.ts`, docs/13 Part 1) has to report the parameters
+ * it actually measured. A harness that transcribed these four numbers into its
+ * own file would keep reporting them long after somebody changed them here,
+ * and a timing labelled with the wrong parameters is worse than no timing —
+ * it is a number that looks decided.
+ *
+ * `deriveRecoveryKey` reads this record rather than the four constants, so the
+ * export is load-bearing: it cannot drift from what derivation does without
+ * breaking derivation itself.
+ *
+ * Field names are the harness's / on-disk vocabulary, not `@noble/hashes`'s
+ * argument names, so the mapping to `argon2idAsync`'s `{t,m,p,dkLen}` happens
+ * in exactly one place, below.
+ */
+export const ARGON2ID_PARAMS = Object.freeze({
+  t: ARGON2ID_TIME_COST,
+  m_kib: ARGON2ID_MEMORY_COST_KIB,
+  p: ARGON2ID_PARALLELISM,
+  dk_len: ARGON2ID_OUTPUT_BYTES,
+});
 // ---------------------------------------------------------------------------
 
 const WORD_TO_INDEX = new Map<string, number>(
@@ -217,9 +242,9 @@ export async function deriveRecoveryKey(
 ): Promise<Uint8Array> {
   const password = new TextEncoder().encode(phrase.join(" "));
   return argon2idAsync(password, salt, {
-    t: ARGON2ID_TIME_COST,
-    m: ARGON2ID_MEMORY_COST_KIB,
-    p: ARGON2ID_PARALLELISM,
-    dkLen: ARGON2ID_OUTPUT_BYTES,
+    t: ARGON2ID_PARAMS.t,
+    m: ARGON2ID_PARAMS.m_kib,
+    p: ARGON2ID_PARAMS.p,
+    dkLen: ARGON2ID_PARAMS.dk_len,
   });
 }
