@@ -42,6 +42,11 @@ yarn-error.*
 /android/
 /ios/
 
+# On-device verification scratch (docs/13). Paste-ready records written by
+# scripts/device/*.ps1. They can quote text observed on screen, so they stay
+# local and their numbers get transcribed into docs/13 by hand.
+device_results/
+
 # Local Expo module build output
 modules/*/android/build/
 modules/*/android/.cxx/

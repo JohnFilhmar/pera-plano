@@ -184,7 +184,7 @@ describe("every audited notification type is producible", () => {
   });
 
   test("tracking-interrupted: producible on the interrupting channel with routable data", async () => {
-    const id = await notifyTrackingInterrupted(3, NOW);
+    const id = await notifyTrackingInterrupted(NOW);
 
     expect(id).toBe("os-id");
     expect(mockPost).toHaveBeenCalledWith(
@@ -322,10 +322,10 @@ describe("anti-spam: listener-health warnings cap at one per day (docs §6.2 rul
   });
 
   test("a second interruption the same day does not post again", async () => {
-    const first = await notifyTrackingInterrupted(2, NOW);
+    const first = await notifyTrackingInterrupted(NOW);
     expect(first).toBe("os-id");
 
-    const secondTheSameDay = await notifyTrackingInterrupted(5, NOW + 60_000);
+    const secondTheSameDay = await notifyTrackingInterrupted(NOW + 60_000);
     expect(secondTheSameDay).toBeNull();
     expect(mockPost).toHaveBeenCalledTimes(1);
   });
@@ -417,7 +417,7 @@ describe("anti-spam: global coalescing applies ACROSS channels (§6.2 rule 6)", 
 
 describe("anti-spam: quiet hours exempt listener-health and NOTHING else (§6.2 rule 7)", () => {
   test("notifyTrackingInterrupted sets bypassQuietHours; the other notifiers do not", async () => {
-    await notifyTrackingInterrupted(3, NOW);
+    await notifyTrackingInterrupted(NOW);
     expect(mockPost).toHaveBeenCalledWith(expect.objectContaining({ bypassQuietHours: true }));
 
     mockPost.mockClear();

@@ -196,11 +196,27 @@ export function paydaySummaryAlertCopy(params: { amount: Centavos }): AlertCopy 
 }
 
 // ---------------------------------------------------------------------------
-// Tracking-interrupted notice (M3). Even a bare transaction COUNT is withheld
-// locked — it is not an amount, but it is still a figure about the user's
-// finances that a stranger reading the lock screen has no business seeing.
+// Tracking-interrupted notice (M3).
+//
+// THE ONLY ALERT IN THIS CATALOGUE THAT STATES NO FIGURE AT ALL, in either
+// variant, and therefore the only one whose two variants are identical.
+//
+// It used to take a `pendingCount` and render "{n} transactions missed"
+// unlocked. That number could never be honest: a dead listener captures
+// nothing, so the app has no record of what it missed, by construction. The
+// only count on offer was the open review-queue count, which is unrelated to an
+// outage and wrong in both directions — it reads "0 transactions missed"
+// (actively reassuring, and false) once the queue is triaged, and it blames the
+// outage for stale items that predate it. In the one notification whose whole
+// job is to say the ledger stopped being trustworthy, a fabricated figure is
+// worse than no figure.
+//
+// The parameter is DELETED rather than accepted and ignored: an unused
+// parameter is an invitation for the next caller to invent a number to satisfy
+// it. A native `countPendingCaptures()` is in the v2 backlog; the richer copy
+// can return when a real number exists behind it.
 // ---------------------------------------------------------------------------
-export function trackingInterruptedAlertCopy(params: { pendingCount: number }): AlertCopy {
+export function trackingInterruptedAlertCopy(): AlertCopy {
   // "Tracking stopped working", not "Tracking paused" (task-5-brief's Step 6
   // table). "Paused" is already reserved, deliberately, for the user's OWN
   // switch elsewhere in the app (app/(tabs)/more/listener_health.tsx's
@@ -208,27 +224,17 @@ export function trackingInterruptedAlertCopy(params: { pendingCount: number }): 
   // it here for an involuntary failure (a dead listener or revoked access)
   // collides with that distinction instead of respecting it.
   const title = "Tracking stopped working";
-  const { pendingCount } = params;
-  // The body borrows docs/06 §6.1's own illustrative line ("PeraPlano
-  // stopped receiving notifications. Tap to fix tracking.") rather than the
-  // brief's "Notification access was revoked": this function only ever
-  // receives `pendingCount`, never which of the two live health facts
-  // failed (`!granted` vs `!serviceConnected` —
-  // components/privacy/health_card.tsx), and "revoked" specifically would
-  // misdescribe a disconnected-but-still-granted listener. The brief's
-  // "{n} days" figure is left out for the same reason: nothing on this call
-  // path (here or in tracking_notifier.ts) measures days since the
-  // interruption started, only a transaction count — see this dispatch's
-  // report.
+  // The body borrows docs/06 §6.1's own illustrative line rather than the
+  // brief's "Notification access was revoked": nothing on this call path is
+  // told which of the two live health facts failed (`!granted` vs
+  // `!serviceConnected` — components/privacy/health_card.tsx), and "revoked"
+  // specifically would misdescribe a disconnected-but-still-granted listener.
+  // The brief's "{n} days" figure is left out for the same reason the count is:
+  // nothing here measures how long the interruption has been running.
+  const body = "PeraPlano stopped receiving notifications. Tap to fix tracking.";
   return {
-    locked: {
-      title,
-      body: "PeraPlano stopped receiving notifications. Tap to fix tracking.",
-    },
-    unlocked: {
-      title,
-      body: `PeraPlano stopped receiving notifications — ${pendingCount} transaction${pendingCount === 1 ? "" : "s"} missed. Tap to fix tracking.`,
-    },
+    locked: { title, body },
+    unlocked: { title, body },
   };
 }
 
@@ -241,11 +247,14 @@ export function trackingInterruptedAlertCopy(params: { pendingCount: number }): 
 // this renders whatever order it is handed, so a caller that forgets to
 // coalesce produces a badly ordered notification rather than a wrong one.
 //
-// THE COUNT IS WITHHELD LOCKED, for `trackingInterruptedAlertCopy`'s reason
-// exactly: "how many of your limits are in trouble" is not an amount, but it is
-// still a figure about the user's finances that a stranger reading the lock
-// screen has no business seeing. The catalogue scan enforces it independently —
-// a bare digit in a locked variant fails `looksLikeAnAmount`.
+// THE COUNT IS WITHHELD LOCKED: "how many of your limits are in trouble" is not
+// an amount, but it is still a figure about the user's finances that a stranger
+// reading the lock screen has no business seeing. The catalogue scan enforces it
+// independently — a bare digit in a locked variant fails `looksLikeAnAmount`.
+//
+// This is now the catalogue's PRIMARY statement of that rule.
+// `trackingInterruptedAlertCopy` used to share it and is no longer an example:
+// it carries no count in either variant to withhold.
 // ---------------------------------------------------------------------------
 
 /** One limit's line in the coalesced body. Whole pesos, like every figure here. */
@@ -305,9 +314,9 @@ export function limitAlertsCopy(alerts: LimitAlert[]): AlertCopy {
 //
 // THE SPEC'S OWN EXAMPLE STRING IS THE UNLOCKED VARIANT, NOT BOTH. Rule 6
 // writes the copy as "3 updates while you were away", and that sentence
-// carries a bare count — which `trackingInterruptedAlertCopy` and
-// `limitAlertsCopy` both already withhold from a lock screen for a stated
-// reason ("not an amount, but still a figure about the user's finances"), and
+// carries a bare count — which `limitAlertsCopy` already withholds from a lock
+// screen for a stated reason ("not an amount, but still a figure about the
+// user's finances"), and
 // which alert_copy.test.ts's catalogue scan rejects outright. Rendering the
 // spec's sentence locked would be the only entry in the catalogue that leaks a
 // digit, and the scan that exists to catch exactly that would have to be
@@ -370,7 +379,7 @@ export const ALERT_COPY_CATALOGUE: Array<{ name: string; copy: AlertCopy }> = [
   },
   {
     name: "trackingInterrupted",
-    copy: trackingInterruptedAlertCopy({ pendingCount: 4 }),
+    copy: trackingInterruptedAlertCopy(),
   },
   {
     name: "limitAlerts-coalesced",

@@ -39,7 +39,7 @@ The queue lives at the top of the **Transactions** tab, with a numeric badge on 
 | Low-confidence parse | ConfidenceGate | Proposed Transaction: amount, direction, Wallet, merchant, category — uncertain fields visually flagged | **Looks right** (commits) | Tap any field chip → picker → commit |
 | Suspected duplicate | DedupeGate | Both records side by side with the differing fields highlighted | **Same transaction** (keeps one, discards the held twin) | **Different** (commits the held twin as its own Transaction) |
 | Ambiguous transfer | TransferDetector | The candidate out-leg and in-leg with wallets, amounts, and the fee difference | **It's a transfer** (creates the Transfer Link) | **Not a transfer** (legs stay independent) |
-| Unknown provider | SourceRouter unknown-bin | Source app name + captured snippet | **This is a money notification** (opens flag flow) | **Not money** (discards; repeated dismissals offer a mute — see Rules) |
+| Unknown provider | SourceRouter unknown-bin | Source app name + captured snippet | **This is a money notification** (opens flag flow) | **Not money** (discards; the repeated-dismissal mute offer is deferred to v2 — see Rules) |
 
 ### Flow: triage a low-confidence parse
 
@@ -70,7 +70,7 @@ After a correcting triage: "Apply to 12 similar past transactions?" → **Previe
 2. Tapping **This is a money notification** opens an assisted form: the app prefills whatever it can extract (an amount-looking token, a direction guess); the user confirms amount, direction, and the Wallet it belongs to.
 3. On save: a Transaction commits (`source: notification`, with `rawNotificationRef` while the raw text is retained), and a UserRule maps that source pattern → Wallet so the next capture from this source arrives pre-filled.
 4. If diagnostics sharing is enabled ([11-settings-privacy.md](11-settings-privacy.md)), a parser-coverage signal is emitted: source package and a count only — never notification content. This is how new providers earn a real parser.
-5. **Not money** → the capture is discarded. After 2 dismissals from the same source pattern, the app offers "Always ignore notifications like this" (a mute UserRule at the source level).
+5. **Not money** → the capture is discarded. After 2 dismissals from the same source pattern, the app offers "Always ignore notifications like this" (a mute UserRule at the source level). **The ×2 offer is deferred to v2** ([../09-v2-backlog.md](../09-v2-backlog.md) §2b.3): dismissal works, and a user can still mute a source directly, but the app does not volunteer it on the second dismissal.
 
 ### Flow: merge / split / link / unlink from the ledger
 
@@ -108,10 +108,22 @@ These tools also work outside the queue, directly on committed transactions — 
 |---|---|---|
 | Category correction | merchant/pattern → category (e.g., "merchant JUAN D → category Utang") | Categorizer stage |
 | Wallet correction | source pattern → Wallet (e.g., "GCash notif matching X → wallet Y") | SourceRouter/Normalizer stage |
-| "Same transaction" merge | duplicate signature → suppress twin | DedupeGate stage |
+| "Same transaction" merge | duplicate signature → suppress twin | DedupeGate stage — **deferred to v2** |
 | "It's a transfer" | wallet-pair + pattern → auto-link | TransferDetector stage |
-| "Not money" ×2 → mute | source pattern → ignore | SourceRouter stage |
+| "Not money" ×2 → mute | source pattern → ignore | SourceRouter stage — **deferred to v2** |
 | Money-notification flag | source pattern → Wallet + parse hints | SourceRouter stage |
+
+**Two of those rows are out of the MVP as of 2026-08-30, with their reasoning in
+[../09-v2-backlog.md](../09-v2-backlog.md).** The dedupe-signature rule is unwritable against the
+current rule model, which has no signature-bearing action kind and no rule input on the DedupeGate,
+so such a rule would sit in the diagnostics list unable to fire (§2b.4). The "Not money" ×2 mute is
+deferred at the counter only: dismissal works and provider-level ignore ships and is tested, but the
+app does not volunteer the mute on a second dismissal (§2b.3). In both cases the triage action
+itself is unaffected; only the rule it would have taught is deferred.
+
+The "It's a transfer" pairing rule is **not** deferred. It had the same shape of problem and was
+solved: the pair is expressed as matcher-identifies-one-side, action-names-the-other, with the
+counterpart wallet carried on a `mark-transfer` action that the transfer detector reads.
 
 13. A plain confirmation ("Looks right" with no field changed) creates no rule — it instead feeds the learned-suggestion signal that raises future confidence for that pattern.
 14. Within the Categorizer, a matching UserRule outranks the shipped merchant map and learned suggestions — a user's correction must always stick, or the queue teaches the user that triage is pointless.
@@ -177,7 +189,7 @@ Gate behavior follows the standard rule: keep data, block creation of new, never
 - [ ] Each of the four item types (low-confidence parse, suspected duplicate, ambiguous transfer, unknown provider) lands in the queue from its pipeline stage and renders its type-specific card.
 - [ ] The primary action for every item type completes in one tap; a category, wallet, amount, or direction correction completes in two.
 - [ ] Held items (low-confidence parses, held duplicate twins) are excluded from balances, Limits, reports, and Safe-to-Spend until confirmed.
-- [ ] Every correcting triage creates the corresponding UserRule per the rule-12 table, and the rule demonstrably fires on the next matching ingest.
+- [ ] Every correcting triage creates the corresponding UserRule per the rule-12 table, and the rule demonstrably fires on the next matching ingest (excluding the two rows that table marks deferred to v2).
 - [ ] A UserRule outranks the shipped merchant map when both match.
 - [ ] Retroactive replay shows an accurate count, requires preview above 10 affected transactions, and rewrites exactly the previewed set.
 - [ ] "Same transaction" discards the held twin and never removes a committed record; "Different" commits the twin.
@@ -188,7 +200,7 @@ Gate behavior follows the standard rule: keep data, block creation of new, never
 - [ ] The badge counts actionable items (unknown sources grouped per source app), caps at 99+, and updates only on resolution, expiry, or arrival — not on merely opening the queue.
 - [ ] No per-item push notification is ever sent; the daily digest fires at most once per day and only under its trigger conditions.
 - [ ] Untriaged items expire per rules 22–25 at 30 days with no auto-commit, and no raw capture survives past the 30-day TTL.
-- [ ] Two "Not money" dismissals of the same source pattern trigger the mute offer, and a mute stops future captures from that source.
+- [ ] A mute at the source level stops future captures from that source. (The two-dismissal trigger that *offers* the mute is deferred to v2 — [../09-v2-backlog.md](../09-v2-backlog.md) §2b.3 — and is not an MVP criterion.)
 
 ## Open questions
 

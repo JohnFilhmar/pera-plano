@@ -54,6 +54,27 @@ describe("selectAlertCopy", () => {
   });
 });
 
+/**
+ * Catalogue entries whose two variants are IDENTICAL BY DESIGN, because the
+ * alert has nothing private to withhold in the first place.
+ *
+ * THIS IS NOT A PRIVACY EXEMPTION, and nothing above it is relaxed: the
+ * `looksLikeAnAmount` scan still runs against these entries' locked variants,
+ * and for `trackingInterrupted` it now holds against the UNLOCKED variant too,
+ * which is strictly stronger than before. What is exempted is only the
+ * structural "the two variants differ" check, whose purpose is to catch a
+ * locked variant that is an unreviewed copy-paste of a revealing unlocked one.
+ * Once a copy carries no figure at all, identical variants are the correct
+ * outcome rather than a missed split.
+ *
+ * `trackingInterrupted` stopped carrying a `pendingCount` because no honest
+ * source for it exists: a dead listener captures nothing, and the native module
+ * exposes no non-destructive count of the capture buffer. A native
+ * `countPendingCaptures()` is in the v2 backlog; when it lands, this entry
+ * earns a real unlocked variant again and comes off this list.
+ */
+const NOTHING_TO_WITHHOLD = new Set(["trackingInterrupted"]);
+
 describe("ALERT_COPY_CATALOGUE", () => {
   it("is not empty — an empty catalogue would make every assertion below vacuously true", () => {
     expect(ALERT_COPY_CATALOGUE.length).toBeGreaterThan(0);
@@ -78,9 +99,20 @@ describe("ALERT_COPY_CATALOGUE", () => {
   );
 
   it.each(ALERT_COPY_CATALOGUE.map((entry) => [entry.name, entry.copy] as const))(
-    "%s: the locked variant is non-empty and differs from its unlocked sibling",
-    (_name, copy) => {
+    "%s: the locked variant is non-empty, and differs from its unlocked sibling unless it has nothing to withhold",
+    (name, copy) => {
       expect(copy.locked.title.length + copy.locked.body.length).toBeGreaterThan(0);
+
+      if (NOTHING_TO_WITHHOLD.has(name)) {
+        // PINNED, NOT SKIPPED. Asserting the equality rather than exempting the
+        // entry from the check keeps it honest in the other direction: an alert
+        // listed here that grows a private detail unlocked fails right here and
+        // has to come back and justify itself, instead of quietly drifting into
+        // a two-variant split nobody reviewed.
+        expect(copy.locked).toEqual(copy.unlocked);
+        return;
+      }
+
       expect(copy.locked).not.toEqual(copy.unlocked);
     },
   );
@@ -167,16 +199,15 @@ describe("paydaySummaryAlertCopy", () => {
 });
 
 describe("trackingInterruptedAlertCopy", () => {
-  it("stays actionable locked with nothing financial, even a bare count", () => {
-    const copy = trackingInterruptedAlertCopy({ pendingCount: 4 });
+  it("stays actionable locked with nothing financial in it", () => {
+    const copy = trackingInterruptedAlertCopy();
 
     expect(copy.locked.body.length).toBeGreaterThan(0);
     expect(looksLikeAnAmount(copy.locked.body)).toBe(false);
-    expect(copy.unlocked.body).toContain("4");
   });
 
   it("names the failure a stoppage, not a pause — 'paused' already means the user's own switch elsewhere in the app (app/(tabs)/more/listener_health.tsx)", () => {
-    const copy = trackingInterruptedAlertCopy({ pendingCount: 4 });
+    const copy = trackingInterruptedAlertCopy();
 
     expect(copy.locked.title).toBe("Tracking stopped working");
     expect(copy.unlocked.title).toBe("Tracking stopped working");
@@ -184,14 +215,30 @@ describe("trackingInterruptedAlertCopy", () => {
     expect(copy.unlocked.body.toLowerCase()).not.toContain("paused");
   });
 
-  it("pins the exact body strings, singular and plural", () => {
-    expect(trackingInterruptedAlertCopy({ pendingCount: 1 }).unlocked.body).toBe(
-      "PeraPlano stopped receiving notifications — 1 transaction missed. Tap to fix tracking.",
+  it("STATES NO COUNT IN EITHER VARIANT", () => {
+    // The count this used to carry could never be honest. A dead listener
+    // captures nothing, so the app has no record of what it missed; the only
+    // number on offer was the open review-queue count, which is unrelated to an
+    // outage and wrong in both directions — "0 transactions missed" once the
+    // queue is triaged (reassuring, and false), and stale items from last week
+    // blamed on an outage they predate. In the one notification whose job is to
+    // say the ledger stopped being trustworthy, a fabricated figure is worse
+    // than none. Asserted on BOTH variants, not just locked: the old unlocked
+    // body is exactly what must not come back without a real source behind it.
+    const copy = trackingInterruptedAlertCopy();
+
+    expect(looksLikeAnAmount(copy.unlocked.body)).toBe(false);
+    expect(copy.unlocked.body).not.toContain("missed");
+    expect(copy.locked.body).not.toContain("missed");
+  });
+
+  it("pins the exact body string, the same one in both variants", () => {
+    const copy = trackingInterruptedAlertCopy();
+
+    expect(copy.locked.body).toBe(
+      "PeraPlano stopped receiving notifications. Tap to fix tracking.",
     );
-    expect(trackingInterruptedAlertCopy({ pendingCount: 4 }).unlocked.body).toBe(
-      "PeraPlano stopped receiving notifications — 4 transactions missed. Tap to fix tracking.",
-    );
-    expect(trackingInterruptedAlertCopy({ pendingCount: 4 }).locked.body).toBe(
+    expect(copy.unlocked.body).toBe(
       "PeraPlano stopped receiving notifications. Tap to fix tracking.",
     );
   });

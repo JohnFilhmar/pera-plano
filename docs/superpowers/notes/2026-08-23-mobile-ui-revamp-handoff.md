@@ -338,7 +338,12 @@ correct where it was written and destructive where it lands.
 
 ---
 
-## 4b. Deferred, and why — needs an owner decision
+## 4b. Deferred, and why — decided 2026-08-30
+
+> **Decided.** The owner ruled the type-size conversion **out of the MVP** on 2026-08-30. It is
+> not an open question and not outstanding work here; it lives in
+> [../../09-v2-backlog.md](../../09-v2-backlog.md) §2b.5 with the reasoning below carried across.
+> The account is kept here because it is where the numbers were measured.
 
 **119 raw Tailwind type-size classes remain across ~55 files.** The revamp's
 type scale (`hero`/`title`/`section`/`body`/`row`/`secondary`/`micro`/`badge`)
@@ -418,6 +423,12 @@ Related: the design's fourth board, **Capture** (`₱285 tracked at Jollibee`),
 warning, Payday, and Listener down are real, via `notifyLimitAlerts`,
 `notifyPaydaySummary`, and `notifyTrackingInterrupted`. None of the three is
 wired to a live production trigger yet; that gap predates this branch.
+
+> **Decided 2026-08-30.** The action buttons and the Capture board are **out of
+> the MVP**, not pending. Both moved to
+> [../../09-v2-backlog.md](../../09-v2-backlog.md) §2b.2 with the reasoning
+> above. The unwired-production-trigger gap on the three real boards is a
+> separate matter and is not covered by that deferral.
 
 **The design's notification copy was written without checking the app's
 existing copy rules — three of four strings in one table conflicted.** The
