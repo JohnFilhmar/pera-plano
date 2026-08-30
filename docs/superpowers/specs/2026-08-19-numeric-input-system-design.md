@@ -391,7 +391,9 @@ which needs the device to diagnose at all.
 Explicitly **not** W1, each because it belongs to a later workstream in the roadmap: delete for bills
 and loans, derived limits, the Home empty-state and review-count changes (all W2); the package scan,
 the deny-by-default flip, the Privacy Centre and the review-queue dismiss action (all W3); the app
-PIN, which will reuse `NumericKeypad` in `integer` mode but touches key material and waits for W4.
+PIN, which would reuse `NumericKeypad` in `integer` mode but touches key material. That was W4;
+W4 was cut from the MVP on 2026-08-30 and now sits in
+[../../09-v2-backlog.md](../../09-v2-backlog.md) §2b.1.
 
 Amounts already stored wrong under the centavo rule are **not** migrated. There is no way to tell a
 deliberate ₱6.49 from a mistyped ₱649, and a migration that guesses would corrupt correct data to

@@ -2,7 +2,7 @@
 
 This document holds everything deliberately excluded from the MVP: for each item, what it is, why it was deferred, what must be true before it can be built, and where it will sit in the Free/Plus tier structure when it ships. The MVP scope is locked; nothing here re-enters scope without an explicit revision of the MVP scope doc. The backlog exists so that deferrals are decisions with reasons, not forgotten ideas — and so that MVP design choices (local-first, Entitlements flags, parser-as-data) keep the doors below open instead of welding them shut.
 
-**Status:** Draft v1 · 2026-08-02
+**Status:** Draft v1 · 2026-08-02 · §2b build-scope deferrals added 2026-08-30
 
 ---
 
@@ -240,6 +240,137 @@ an exportable form** — there is no second chance to collect this once the beta
 
 **Tier placement when shipped.** Account linking itself is Free. What it unlocks — cloud backup,
 multi-device sync — is already Plus in the locked tier matrix and does not move.
+
+---
+
+## 2b. Build-scope deferrals — decided 2026-08-30
+
+Six items cut from the mobile MVP by the owner on 2026-08-30. They differ in kind from §2: these are engineering scope inside features that already ship, not new product capabilities, so most of them carry no tier placement and add no row to the matrix. They are recorded at the same depth as everything above for the same reason. Each one cost a working session to reason through, and a bare title would let the debate reopen from zero the next time the question surfaces.
+
+Two of them (2b.3 and 2b.4) had been written down only in a git-ignored working file. This is now their only home.
+
+### 2b.1 App PIN as a third DEK wrap (W4) — Band: Near
+
+**What it is.** A 6-digit app PIN as a *third* way to unwrap the database encryption key, alongside the device Keystore KEK and the recovery phrase. Specified as decision §0.1 of [superpowers/specs/2026-08-19-device-issues-triage-and-roadmap.md](superpowers/specs/2026-08-19-device-issues-triage-and-roadmap.md) and scheduled there as workstream W4.
+
+**The distinction that must survive this deferral.** The PIN is an **additional** DEK wrap, never a replacement. The device screen lock stays mandatory: `isDeviceSecure()` remains a hard gate and the onboarding device-lock step is not removed. The reason is arithmetic, not preference. Six digits is 10^6 combinations. The device Keystore gives hardware-enforced rate limiting and, on most modern hardware, key material that never leaves the secure element; a PIN-derived key has neither, so an attacker with a device image can attack it offline at whatever rate their hardware allows. A high-cost Argon2id raises that cost but does not change its shape. Keeping the device key as the primary wrap means the PIN only ever *adds* an unlock path, so it can never become the weakest link. Anyone who later proposes "just use a PIN instead of the screen lock" is reopening a question already answered here and in [12-encryption-and-app-lock.md](12-encryption-and-app-lock.md) §2.
+
+**Why deferred, and what it costs.** Nothing about the data at rest. Because the screen lock stays mandatory, the database is still encrypted and still locked without this. It is defense in depth that was wanted, not a hole being left open. What is deferred is the extra unlock path for the users the owner was worried about: no fingerprint enrolled, face unlock only, or a screen lock they resent, who otherwise depend on the device credential prompt.
+
+**Why it was ordered last, and why that made it the cheapest thing to cut.** The roadmap ordered W4 after W3 for one stated reason: it is the only workstream that can lose a user's data if it is wrong. Dropping the tail of an order built on that logic removes the highest-risk work without disturbing anything ahead of it. The remaining order is W0 → W1 → W2 → W3.
+
+**Prerequisites.**
+1. W0 (the Class-3 biometric fix) shipped and verified on hardware; W4 depends on it, and the PIN's value is largest exactly where biometrics fail.
+2. `NumericKeypad` available in `integer` mode for PIN entry, per [superpowers/specs/2026-08-19-numeric-input-system-design.md](superpowers/specs/2026-08-19-numeric-input-system-design.md) §10.
+3. Device time budgeted for the wrap, unwrap, and re-wrap paths on real hardware, because this is the workstream that can destroy a ledger if it is wrong.
+
+**Tier placement when shipped.** None. It is a security surface, not a gated capability; no matrix row.
+
+---
+
+### 2b.2 Notification action buttons, and the design's "Capture" board — Band: Near
+
+**What it is.** Tappable actions on the app's own Android notifications. The design draws four notification cards carrying five actions between them: "See breakdown", "Mute 7 days", "Move ₱{amount}", "Not now", "Fix now". Recorded in [superpowers/notes/2026-08-23-mobile-ui-revamp-handoff.md](superpowers/notes/2026-08-23-mobile-ui-revamp-handoff.md) §6.
+
+**Why deferred.** A worktree-wide grep across both TypeScript and native Android found **no notification action infrastructure of any kind**: no `categoryIdentifier`, no `setNotificationCategoryAsync`, no `actionIdentifier`, no response listeners, not for these actions and not for any notification the app posts. Building them is real work, new Expo notification categories plus a response handler, and it was never in the revamp's scope. Shipping title and body copy only was the deliberate call: a button in the notification shade that does nothing is worse than no button, because unlike a dead control on a screen it is not recoverable by backing out.
+
+**The design's "Capture" board does not exist either.** The fourth board (`₱285 tracked at Jollibee`) has no builder, no notifier, and no call site. Only Limit warning, Payday, and Listener down are real, via `notifyLimitAlerts`, `notifyPaydaySummary`, and `notifyTrackingInterrupted`. None of those three is wired to a live production trigger yet; that gap predates the revamp branch and is not part of this deferral.
+
+**Prerequisites.**
+1. Expo notification categories registered and a response handler routing every `actionIdentifier` to a real destination. The actions and their infrastructure ship together or not at all.
+2. A live behavior behind each of the five actions. "Mute 7 days" and "Move ₱{amount}" are state changes, not navigations, so each needs a decision about what it writes and how it is undone.
+3. For the Capture board: a builder, a notifier, a call site, and the same notification-fatigue judgment the Review Queue already applies to per-item pushes.
+
+**Tier placement when shipped.** None. Notifications follow the feature that raises them; no matrix row.
+
+---
+
+### 2b.3 Review-queue "Not money" second-dismissal mute (the ×2 counter) — Band: Near
+
+**What it is.** [04-features/08-review-queue.md](04-features/08-review-queue.md) rule 12 and its unknown-provider flow offer "Always ignore notifications like this" after the **second** "Not money" dismissal of the same source pattern. The counter that gives "second" its meaning is what is deferred, not the mute itself.
+
+**Why deferred.** "Not money" is a **dismiss**, not `ignoreProvider`. The spec offers the mute only after the second dismissal of a source. `ignoreProvider` ships and is tested, so the ability to mute a source exists and a user can already reach it. What has no owner is the ×2 counter, and with it the gentler path where the app volunteers the mute once the user has shown that a source is repeatedly worthless.
+
+**Prerequisites.**
+1. Per-source dismissal counting that survives resolution of the item, since a dismissed capture is discarded and the count cannot live on it.
+2. A decision on what "the same source pattern" counts as: package name alone, or package plus a text signature.
+
+**Tier placement when shipped.** None. The Review Queue is Free and uncapped.
+
+**Provenance.** This reasoning existed only in `.superpowers/sdd/2026-08-02-mobile-ingest-m1c-ui/progress.md`, which is git-ignored and would have vanished on a fresh clone. That is why it is copied here verbatim in substance.
+
+---
+
+### 2b.4 The unwritable dedupe-signature UserRule — Band: Mid
+
+**What it is.** One row in [04-features/08-review-queue.md](04-features/08-review-queue.md) rule 12's UserRule table: the "Same transaction" merge teaching a duplicate-signature rule that suppresses the twin at the DedupeGate stage.
+
+**Why deferred.** It is unwritable as the model stands, and was deliberately skipped rather than half-built. `UserRuleAction` has no signature-bearing kind, `UserRuleMatcher` has no field for a duplicate signature, and `mobile/lib/ingest/dedupe_gate.ts` reads no UserRule at all. A rule of this kind would sit in the settings rule list unable to fire: visible, disableable, deletable, and inert. That is worse than its absence, because the user believes a correction was learned when nothing was.
+
+**What revisiting takes: a matcher-model change, not just UI.** The matcher describes one notification (a provider, a merchant pattern, a direction). A dedupe signature is not a property of a notification at all; it is a property of a **pair** of rows, the assertion that two records describe one movement. Nothing in the current shape of a rule can carry a claim about a pair, and the DedupeGate has no rule input to feed it into even if one existed. So this is a change to what a rule *is*, plus a new consumer, not a settings screen.
+
+**The worked precedent already exists.** The other pairing rule in the same table, "It's a transfer", had the identical problem and **shipped**: the pair is expressed as matcher-identifies-one-side, action-names-the-other, with the counterpart wallet carried on the action as `{ kind: "mark-transfer"; counterpartWalletId: string }` (`mobile/types/domain.ts`), decoded strictly rather than defaulted (`mobile/lib/db/repos/user_rules_repo.ts`), written by the Review Queue (`mobile/lib/review/resolve_actions.ts`), and read by `mobile/lib/ingest/transfer_detector.ts` via `mobile/lib/ingest/pipeline.ts`. Whoever picks up the dedupe rule should start from that shape rather than redesigning the matcher: it is the same problem solved once already.
+
+**Prerequisites.**
+1. A representation for a duplicate signature on the rule, following the mark-transfer precedent (put the half the matcher cannot describe on the action), with strict decoding rather than a default.
+2. A consumer: `dedupe_gate.ts` currently takes no rules, so it needs a rule input threaded through `pipeline.ts` the way the transfer detector's is.
+3. The kind renders sensibly in the parser-diagnostics rule list, where every rule is listed, disableable, and deletable.
+
+**Tier placement when shipped.** None; it is ingest-correctness behavior, Free like the rest of the pipeline.
+
+**Provenance.** Same git-ignored source as 2b.3, corrected on 2026-08-30: that note recorded both pairing rules as unwritable, which was true when it was written and is no longer true of the transfer rule.
+
+---
+
+### 2b.5 The 119 raw Tailwind type-size classes — Band: Near
+
+**What it is.** The revamp's type scale (`hero`/`title`/`section`/`body`/`row`/`secondary`/`micro`/`badge`) is defined in `mobile/tailwind.config.ts`, but `text-xs`/`text-sm`/`text-base`/`text-lg` and friends are still used directly in 127 places, of which 119 are unconverted across roughly 55 files. Eight were converted in `app/(tabs)/more/privacy.tsx`; the rest were left. Recorded in [superpowers/notes/2026-08-23-mobile-ui-revamp-handoff.md](superpowers/notes/2026-08-23-mobile-ui-revamp-handoff.md) §4b.
+
+**Why deferred.** They are **not a regression** from the revamp branch; they predate it. And the reason for leaving them is not effort. The mapping is not size-neutral: `text-sm`→`text-body` is identical at 14px, but `text-base`→`text-section` shrinks 16px to 15px. Converting all 119 would nudge layout across 55 files with no device available to check the result. That trade, app-wide layout drift for internal consistency and unverified on hardware, was the owner's call rather than a cleanup to absorb silently at the tail of a feature branch. The call has now been made: not in the MVP.
+
+**Forward guidance, which is the part that matters.** If it is taken on, it is its own task, done against a device, and worth doing properly. A lint rule banning the raw type-size classes is what actually keeps the scale enforced. Without one, the next screen reintroduces them and the conversion has to happen again.
+
+**Prerequisites.**
+1. A device to check the result on, since the whole objection is unverifiable layout drift.
+2. Scheduling as its own task, not folded into a feature branch alongside other changes.
+3. A lint rule banning the raw classes landing in the same task as the conversion.
+
+**Tier placement when shipped.** None. Internal consistency work with no user-facing capability.
+
+---
+
+### 2b.6 A non-destructive capture-buffer count in the native module — Band: Near
+
+**What it is.** A way to ask the native listener how many captures are sitting in its buffer undrained, without consuming them, exposed to JS. It exists to give the tracking-interrupted notification an honest figure, so its unlocked body can once again read "PeraPlano stopped receiving notifications, {n} transactions missed" as designed.
+
+**Why the figure had no honest source.** Two reasons stack, and the first is structural rather than an oversight. A dead notification listener captures nothing by definition, so the app cannot know what it missed during its own outage; the quantity the copy asks for may not be observable at all. The second is mechanical: `mobile/modules/notification_listener` exposes `drainPendingCaptures()`, which is **destructive** (it empties the buffer as it reads), and `clearCaptureBuffer()`. There is no read-only count anywhere on that surface, so even the captures that *are* buffered cannot be counted without consuming them.
+
+**Why the interim number was worse than none.** The figure was being fed from `countOpen()` in the review-queue repo, which counts items awaiting the user's review. That is a different quantity, and it is wrong in both directions. A triaged-empty queue produces "0 transactions missed", which is actively reassuring and false. A backlog of stale low-confidence parses produces a count attributed to an outage it has nothing to do with. This is the one notification whose entire job is to announce that the ledger stopped being trustworthy, so a fabricated figure in it does more damage than a missing one.
+
+**The decision, 2026-08-30.** The count comes out of the notification. The unlocked body drops its figure and matches the locked variant, which had always withheld it, so both read "PeraPlano stopped receiving notifications. Tap to fix tracking." The `pendingCount` parameter is deleted from `trackingInterruptedAlertCopy` and `notifyTrackingInterrupted` outright rather than left accepted and ignored, precisely so that no future caller can fabricate a number to satisfy a parameter that is still there.
+
+**Why the true count is deferred rather than built now.** It is native Kotlin work in `modules/notification_listener`, and nothing in that area can be verified off-hardware. Building it now would land an unproven method and add another line to the on-device checklist rather than finishing anything. Removing the false figure was the correct immediate action; supplying a true one is separate work with a device attached.
+
+**Prerequisites.**
+1. The native method and its JS binding on `modules/notification_listener`, read-only by construction so it can never be confused with `drainPendingCaptures()`.
+2. A decision on what the number means: buffered captures awaiting drain only, or also an estimate of the gap while the listener was fully dead. These are not the same quantity, and the second may not be knowable at all. If only the first is available, the copy has to say something true about a narrower fact rather than imply it covers the outage.
+3. Restoring the count to `mobile/lib/alerts/alert_copy.ts` and to its tests, which is where it was removed from.
+4. Device verification, since nothing in this area is settled off-hardware.
+
+**Tier placement when shipped.** None; it is ingest-health behavior, Free like the rest of the pipeline. If it ships, the richer designed copy returns with it.
+
+---
+
+### 2b summary
+
+| Item | Band | What unblocks it |
+|---|---|---|
+| App PIN as a third DEK wrap (W4) | Near | W0 shipped, plus device time for a key-material change |
+| Notification action buttons and the Capture board | Near | Expo notification categories and a response handler |
+| "Not money" ×2 mute counter | Near | Per-source dismissal counting that outlives the item |
+| The unwritable dedupe-signature UserRule | Mid | A matcher-model change, not UI |
+| 119 raw Tailwind type-size classes | Near | A device, its own task, and a lint rule |
+| Non-destructive capture-buffer count | Near | A native read-only count, plus a device to verify it on |
 
 ---
 

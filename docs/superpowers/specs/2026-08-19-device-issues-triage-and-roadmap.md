@@ -9,8 +9,12 @@ from the owner (hovering numeric keypad, app-level PIN, explicit bank-app scan a
 **What this document is for:** the screenshots are gone the moment the folder is cleared, and each
 one collapses to a one-line symptom that hides a root cause somewhere else in the tree. This
 records the root cause for all twelve distinct issues, the four decisions the owner made on
-2026-08-19, and the order the work happens in. W1–W4 specs reference this file rather than
+2026-08-19, and the order the work happens in. W1–W3 specs reference this file rather than
 re-deriving it.
+
+**Amended 2026-08-30:** W4 (the app PIN) was cut from the MVP and moved to
+[../../09-v2-backlog.md](../../09-v2-backlog.md) §2b.1 with its reasoning intact. §0.1 below is kept
+as the decision record it is; it is no longer scheduled work.
 
 ---
 
@@ -21,6 +25,11 @@ three of the four reverse or extend a decision already written into the codebase
 reader finding those old comments needs to know they were superseded deliberately.
 
 ### 0.1 The app PIN is an ADDITIONAL DEK wrap. The device screen lock stays mandatory.
+
+> **Deferred out of the MVP on 2026-08-30** to [../../09-v2-backlog.md](../../09-v2-backlog.md)
+> §2b.1. The reasoning below still stands and is what the backlog entry carries forward; it is a
+> record of a decision, not a pending task. Because the screen lock stays mandatory, the database
+> is still encrypted and still locked without the PIN.
 
 The 6-digit PIN becomes a third way to unwrap the DEK, alongside the device Keystore KEK and the
 recovery phrase. It does **not** replace `app/(onboarding)/device_lock.tsx`, and `isDeviceSecure()`
@@ -253,12 +262,15 @@ incomplete, and it reads as a footnote.
 | **W1** | Numeric input system: peso semantics, hovering keypad, date fields, keyboard avoidance (§1.1, §1.2, §1.7, §1.8, §1.9) | — |
 | **W2** | Delete for bills and loans, plus a list-level delete affordance for all four Plan entities; derived limits; Home copy and review-count prominence (§1.6, §1.10, §1.11, §1.12) | W1 for the forms it touches |
 | **W3** | `QUERY_ALL_PACKAGES` scan; deny-by-default capture; onboarding provider step; Privacy Centre; review-queue dismiss (§1.4, §1.5) | §0.2 scan strictly before §0.3 flip |
-| **W4** | App PIN as a third DEK wrap (§0.1) | W0 |
 
-**Order: W0 → W1 → W2 → W3 → W4.**
+**Order: W0 → W1 → W2 → W3.**
 
 W0 first because it is small and the owner cannot dependably open the app without it. W1 next
 because every subsequent form change would otherwise be written twice. W2 close behind W1 so the bad
-rows W1's bug created become removable. W3 before W4 because it is the larger user-visible win and
-touches no key material. W4 last for the same reason in reverse: it is the only workstream that can
-lose a user's data if it is wrong.
+rows W1's bug created become removable. W3 last of the four because it is the larger user-visible
+win and touches no key material.
+
+**W4 (app PIN as a third DEK wrap, §0.1) was cut on 2026-08-30** and now lives in
+[../../09-v2-backlog.md](../../09-v2-backlog.md) §2b.1. It had been ordered after W3 precisely
+because it is the only workstream that can lose a user's data if it is wrong, which is also what
+made it the cheapest to drop: nothing ahead of it in the order depends on it.

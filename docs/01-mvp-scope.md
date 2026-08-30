@@ -64,6 +64,8 @@ Also in scope, cutting across all layers: onboarding (permission explainer → N
 
 Each exclusion with its one-line reason. Expanded treatment, including prerequisites for revisiting, in [09-v2-backlog.md](09-v2-backlog.md).
 
+The table below lists product capabilities left out of the MVP. Build-scope cuts made inside features that *do* ship (the Review Queue's second-dismissal mute counter, two UserRule kinds the matcher model cannot express, and the pending Tailwind type-scale conversion) are not table rows because they are at a finer altitude; they are recorded with full reasoning in [09-v2-backlog.md](09-v2-backlog.md) §2b, decided 2026-08-30.
+
 | Item | Why it is out of MVP |
 |---|---|
 | iOS | iOS has no public API to read other apps' notifications; it needs a designed degraded/manual ingest path, not a port. |
@@ -77,6 +79,8 @@ Each exclusion with its one-line reason. Expanded treatment, including prerequis
 | Widgets / Wear | Surface-area polish that multiplies UI work without changing the core value proposition. |
 | Multi-currency | PHP-only keeps parsing, totals, and reporting unambiguous for the PH-first market. |
 | AI insights | Insight quality depends on months of clean ledger data that does not exist until after launch. |
+| App PIN as a third DEK wrap | Cut 2026-08-30. It was always an *additional* unlock path, never a replacement: the device screen lock stays mandatory, so the database is encrypted and locked without it. |
+| Notification action buttons | Cut 2026-08-30. No notification action infrastructure exists anywhere in the app; a shade button that does nothing is worse than none, so alerts ship as title and body copy only. |
 | SMS permission (`READ_SMS`) | Effectively prohibited by Google Play policy for expense tracking — permanently out, not deferred; bank SMS is covered via the default SMS app's notifications. |
 | Ads / data monetization | Permanently out; the business model is Plus, and trust is the product (see [00-product-brief.md](00-product-brief.md) non-goals). |
 
