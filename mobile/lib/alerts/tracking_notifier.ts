@@ -11,14 +11,13 @@
 // describes ("PeraPlano stopped receiving notifications. Tap to fix
 // tracking."). This file is that missing half: a real, tested function that
 // posts it correctly, with the day-level anti-spam cap IA §6.2 rule 4 names.
-// It is NOT YET CALLED from anywhere that observes a live health
-// transition — see this task's report. The natural trigger is a listener
-// registered in `app/_layout.tsx` beside the loan/bill reminder scheduling
-// effects (the same file every other process-wide subscriber in this app is
-// started from), which is out of this task's lane. Wiring the call is a
-// follow-up for whoever owns that file: call
-// `notifyTrackingInterrupted(pendingCount, systemClock.now())` when
-// `useListenerHealth`'s result turns unhealthy.
+//
+// NOW CALLED, from `lib/alerts/tracking_health_subscriber.ts`, which
+// `app/_layout.tsx` starts once bootstrap resolves. That subscriber owns the
+// half of rule 4 this file deliberately does not (see
+// `canNotifyTrackingInterrupted` below): it remembers whether the outage it is
+// looking at is the same one it already announced, so a continuing interruption
+// is not re-posted on every foreground.
 import { trackingInterruptedAlertCopy } from "./alert_copy";
 import { postAlert } from "./alerts_service";
 import { CHANNEL_LIMITS } from "./channels";
@@ -70,16 +69,13 @@ export function canNotifyTrackingInterrupted(lastNotifiedAt: EpochMs | null, now
  * effect or notification permission is denied (`postAlert`'s own contract —
  * the Home tracking banner is the surface that never depends on this).
  */
-export async function notifyTrackingInterrupted(
-  pendingCount: number,
-  now: EpochMs,
-): Promise<string | null> {
+export async function notifyTrackingInterrupted(now: EpochMs): Promise<string | null> {
   const lastNotifiedAt = await getSetting("tracking_interrupted_last_notified_at");
   if (!canNotifyTrackingInterrupted(lastNotifiedAt, now)) return null;
 
   const id = await postAlert({
     channel: CHANNEL_LIMITS,
-    copy: trackingInterruptedAlertCopy({ pendingCount }),
+    copy: trackingInterruptedAlertCopy(),
     // `kind` is the tap-routing discriminant `lib/alerts/alert_routes.ts`
     // switches on — IA §6.1: "Listener health → recovery screen (4.8)".
     data: { kind: "trackingInterrupted" },

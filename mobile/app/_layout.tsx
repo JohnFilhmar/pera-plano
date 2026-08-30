@@ -82,6 +82,9 @@ import { useApplyAllocations } from "@/hooks/mutations/use_apply_allocations";
 import { usePaydayAllocations } from "@/hooks/use_payday_allocations";
 import { BILL_HORIZON_DAYS } from "@/hooks/queries/use_bills";
 import { startIncomeLedgerSubscriber } from "@/lib/income/income_ledger_subscriber";
+import { startPaydayNotificationSubscriber } from "@/lib/income/payday_notification_subscriber";
+import { startLimitLedgerSubscriber } from "@/lib/limits/limit_ledger_subscriber";
+import { startTrackingHealthSubscriber } from "@/lib/alerts/tracking_health_subscriber";
 import { startRecurringLedgerSubscriber } from "@/lib/recurring/recurring_ledger_subscriber";
 import { listBillStatuses } from "@/lib/bills/bills_service";
 import { postOverdueNotices, scheduleBillReminders } from "@/lib/bills/bill_reminders";
@@ -96,6 +99,29 @@ import LockScreen from "./lock";
 applyGlobalFont();
 
 type BootstrapState = "pending" | "ready" | "error";
+
+/**
+ * Starts one process-wide subscriber from inside an effect without letting it
+ * take the app down, and returns the effect's teardown.
+ *
+ * WHY THE TRY/CATCH IS NOT DECORATIVE. Every subscriber in this shell swallows
+ * failures inside its own passes, but a `start` that throws SYNCHRONOUSLY —
+ * a missing native module, a database that closed under it — throws during
+ * render of the effect, which React propagates: the whole tree unmounts and the
+ * user is left with a blank app they cannot act on. That is the one failure
+ * mode m1b plan Task 11 rule 3 exists to forbid, and the derived features these
+ * subscribers drive (limits, payday summaries, tracking notices) are never
+ * worth it. Returning `undefined` on a failure is deliberate too: there is
+ * nothing to tear down, and an effect must not return a teardown it cannot run.
+ */
+function startSubscriber(name: string, start: () => () => void): (() => void) | undefined {
+  try {
+    return start();
+  } catch (error) {
+    console.warn(`${name} could not start; the app runs without it`, error);
+    return undefined;
+  }
+}
 
 function BootstrapErrorScreen({ onRetry }: { onRetry: () => void }) {
   return (
@@ -241,6 +267,39 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
   useEffect(() => {
     if (bootstrapState !== "ready") return;
     return startIncomeLedgerSubscriber();
+  }, [bootstrapState]);
+
+  // Limit recomputation re-runs on ledger commits, debounced (m2 Task 7 —
+  // limit_service.ts's header calls this "the `ledger:committed` subscriber"
+  // and the app shipped without one). `recomputeLimits` is the ONLY path that
+  // writes limit alert state, so with nothing calling it every limit's state
+  // stayed null: rollover carryover was permanently zero and no threshold ever
+  // latched as fired. Same gate and the same fire-and-forget discipline as
+  // income above — `runLimitPass` swallows its own failures.
+  useEffect(() => {
+    if (bootstrapState !== "ready") return;
+    return startSubscriber("limit recomputation", startLimitLedgerSubscriber);
+  }, [bootstrapState]);
+
+  // The payday summary PUSH (docs/06 §6.1). The in-app half is <PaydaySheets />
+  // below; this is the half that reaches a user whose app is closed. It rides
+  // the same `income:payday` event the sheet does, which is deduplicated per
+  // transaction id and persisted — so the push cannot announce a payday twice,
+  // and cannot announce one the sheet never heard about.
+  useEffect(() => {
+    if (bootstrapState !== "ready") return;
+    return startSubscriber("payday summary push", startPaydayNotificationSubscriber);
+  }, [bootstrapState]);
+
+  // Listener-health notices (docs/06 §6.1's "Listener health" row). Home's
+  // TrackingBanner already covers the user who opens the app; this covers the
+  // one who does not — the listener dies, four days pass, and four days of
+  // transactions are lost with nothing to say so. Checks on start and on every
+  // foreground, because notification access can be revoked from system settings
+  // with no callback to this app.
+  useEffect(() => {
+    if (bootstrapState !== "ready") return;
+    return startSubscriber("tracking health", startTrackingHealthSubscriber);
   }, [bootstrapState]);
 
   // Recurring-pattern detection re-runs on ledger commits, debounced (M3 Part

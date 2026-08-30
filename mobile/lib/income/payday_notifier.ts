@@ -9,14 +9,14 @@
 // (`components/income/payday_detected_sheet.tsx`) listens for — but nothing
 // in the app ever turned that event into the system notification IA §6.1
 // describes. This file is that missing half: a real, tested function that
-// posts it correctly. It is NOT YET SUBSCRIBED TO `income:payday` anywhere —
-// see this task's report for why (the natural subscriber lives beside
-// `startIncomeLedgerSubscriber` in lib/income/income_ledger_subscriber.ts,
-// which `lib/bootstrap.ts` also imports and calls un-mocked in its own test;
-// adding a static import of this module — and therefore of
-// `alerts_service.ts` → `expo-notifications` — to that file would break
-// `lib/__tests__/bootstrap.test.ts`, which mocks nothing on purpose). Wiring
-// the subscription is a one-line follow-up for whoever owns that file.
+// posts it correctly.
+//
+// NOW SUBSCRIBED, from `lib/income/payday_notification_subscriber.ts`, which
+// `app/_layout.tsx` starts once bootstrap resolves. It is a separate module
+// rather than a line in `income_ledger_subscriber.ts` because `lib/bootstrap.ts`
+// imports that file and calls it un-mocked in its own test; a static import of
+// this module — and therefore of `alerts_service.ts` → `expo-notifications` —
+// would break `lib/__tests__/bootstrap.test.ts`, which mocks nothing on purpose.
 //
 // OPT-IN, READ FRESH EVERY CALL. IA §6.1 marks this channel "Default,
 // **opt-in**" — the one channel in the app that starts silent — so this
