@@ -19,6 +19,7 @@ function result(over: Partial<SafeToSpendResult> = {}): SafeToSpendResult {
     headroom: 1_200_000,
     billsTerm: 0,
     contributionsTerm: 0,
+    plannedSavings: 0,
     daysRemaining: 20,
     overBy: 0,
     drivingLimitId: "limit-1",
@@ -349,6 +350,67 @@ test("the line names only the term that is actually non-zero", () => {
 test("nothing set aside renders no line at all — not a '₱0.00 set aside'", () => {
   render(<SafeToSpendHero {...BASE} result={result()} />);
   expect(screen.queryByTestId("sts-set-aside")).toBeNull();
+});
+
+// ---------------------------------------------------------------------------
+// Planned savings — the disclosure half of rule 6a.
+//
+// A filtered limit no longer deducts goal money, which would otherwise make
+// the figure vanish from Home entirely. It gets its own sentence, worded so it
+// never claims to have been subtracted.
+// ---------------------------------------------------------------------------
+
+test("goal money not deducted still appears, and does NOT claim to be set aside", () => {
+  render(
+    <SafeToSpendHero
+      {...BASE}
+      scopeLabel="daily"
+      result={result({
+        state: "healthy",
+        perDay: 28_000,
+        contributionsTerm: 0, // filtered limit: not deducted
+        plannedSavings: 250_000,
+        drivingFilterLabel: "8 categories",
+      })}
+    />,
+  );
+
+  expect(screen.getByTestId("sts-planned-savings")).toHaveTextContent(
+    "₱2,500.00 is going to goals this period",
+  );
+  // The old wording would re-assert the deduction the fix removed.
+  expect(screen.queryByTestId("sts-set-aside")).toBeNull();
+});
+
+test("an unfiltered limit says it ONCE, in the set-aside line that did deduct it", () => {
+  render(
+    <SafeToSpendHero
+      {...BASE}
+      result={result({ contributionsTerm: 250_000, plannedSavings: 250_000 })}
+    />,
+  );
+
+  expect(screen.getByTestId("sts-set-aside")).toHaveTextContent(/₱2,500.00 to goals/);
+  expect(screen.queryByTestId("sts-planned-savings")).toBeNull();
+});
+
+test("no goal money, no line", () => {
+  render(<SafeToSpendHero {...BASE} result={result({ plannedSavings: 0 })} />);
+  expect(screen.queryByTestId("sts-planned-savings")).toBeNull();
+});
+
+test("the planned-savings figure hides with the rest of the amounts", () => {
+  render(
+    <SafeToSpendHero
+      {...BASE}
+      amountsHidden
+      result={result({ contributionsTerm: 0, plannedSavings: 250_000 })}
+    />,
+  );
+
+  const line = screen.getByTestId("sts-planned-savings");
+  expect(line).not.toHaveTextContent("2,500");
+  expect(line).toHaveTextContent(/going to goals/);
 });
 
 test("the set-aside figures hide with the rest of the amounts", () => {

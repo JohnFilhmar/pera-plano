@@ -106,6 +106,16 @@ export type SafeToSpendResult = {
   headroom: Centavos;
   billsTerm: Centavos;
   contributionsTerm: Centavos;
+  /**
+   * Goal money planned for this period, WHETHER OR NOT it was deducted.
+   *
+   * On a filtered limit `contributionsTerm` is zero (rule 6a) — the money is
+   * real, it just cannot consume a category cap. Without this field the figure
+   * would vanish from the screen entirely, trading a wrong number for a
+   * missing one. The hero shows it on its own line, worded so it never claims
+   * to have been subtracted.
+   */
+  plannedSavings: Centavos;
   daysRemaining: number;
   /**
    * The WHOLE-PERIOD shortfall when over, zero otherwise — rule 9 is explicit
@@ -129,6 +139,7 @@ type Evaluated = {
   headroom: Centavos;
   billsTerm: Centavos;
   contributionsTerm: Centavos;
+  plannedSavings: Centavos;
   daysRemaining: number;
   numerator: Centavos;
   perDay: Centavos;
@@ -180,11 +191,14 @@ function evaluate(limit: CandidateLimit, input: SafeToSpendInput): Evaluated {
   // "your whole budget", which is the reading the canonical formula is written
   // against, and dropping it there would silently stop protecting savings for
   // every user who has one.
-  const contributionsTerm = limit.filtered
-    ? 0
-    : input.plannedContributions
-        .filter((contribution) => contribution.date >= start && contribution.date <= end)
-        .reduce((sum, contribution) => sum + contribution.amount, 0);
+  // Computed for EVERY limit, deducted only from an unfiltered one. The
+  // separation is what lets the hero keep showing the figure on a filtered
+  // limit without claiming it was subtracted.
+  const plannedSavings = input.plannedContributions
+    .filter((contribution) => contribution.date >= start && contribution.date <= end)
+    .reduce((sum, contribution) => sum + contribution.amount, 0);
+
+  const contributionsTerm = limit.filtered ? 0 : plannedSavings;
 
   const numerator = headroom - billsTerm - contributionsTerm;
 
@@ -193,6 +207,7 @@ function evaluate(limit: CandidateLimit, input: SafeToSpendInput): Evaluated {
     headroom,
     billsTerm,
     contributionsTerm,
+    plannedSavings,
     daysRemaining,
     numerator,
     // Rule 9's floor. `Math.floor` on the division, not round: showing ₱190.05
@@ -223,6 +238,7 @@ export function computeSafeToSpend(input: SafeToSpendInput): SafeToSpendResult {
       headroom: 0,
       billsTerm: 0,
       contributionsTerm: 0,
+      plannedSavings: 0,
       daysRemaining: 0,
       overBy: 0,
       drivingLimitId: null,
@@ -276,6 +292,7 @@ export function computeSafeToSpend(input: SafeToSpendInput): SafeToSpendResult {
     headroom: driving.headroom,
     billsTerm: driving.billsTerm,
     contributionsTerm: driving.contributionsTerm,
+    plannedSavings: driving.plannedSavings,
     daysRemaining: driving.daysRemaining,
     // Only a real overspend has an "over by". `committed` reports zero, and the
     // hero's set-aside line carries the figure that actually explains the day.

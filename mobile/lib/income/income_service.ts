@@ -47,7 +47,7 @@ import { listTransactions } from "@/lib/db/repos/transactions_repo";
 import { emitAppEvent } from "@/lib/events/app_events";
 import { refreshLimitBase } from "@/lib/limits/limit_service";
 import { UNKNOWN_INCOME_DETECTION, type IncomeDetectionState } from "@/types/control";
-import type { Centavos, IncomeCadence } from "@/types/domain";
+import type { Centavos, EpochMs, IncomeCadence } from "@/types/domain";
 
 import { CONFIRMED_CONFIDENCE, detectCadence, PROVISIONAL_CONFIDENCE } from "./cadence_detector";
 import { primaryStream, selectCandidates, type CandidateEvent } from "./candidates";
@@ -149,6 +149,39 @@ async function detect(now: number): Promise<Detection> {
     matchedEventIds: evidence.matchedEventIds,
     stream,
   };
+}
+
+/**
+ * The pay that ACTUALLY ARRIVED between two instants, newest last.
+ *
+ * Same evidence `detect` runs on — `primaryStream(selectCandidates(...))` — so
+ * a row counts as pay here exactly when income detection would count it, and
+ * the two can never disagree about what a payday is.
+ *
+ * IT EXISTS FOR SAFE-TO-SPEND'S CONTRIBUTIONS TERM. That term used to be a
+ * forecast off the cadence: project the kinsenas anchors, reserve a goal
+ * contribution on each. A projected date is a guess, and a wrong guess is not
+ * harmless — the owner's 2026-09-01 report was a ₱2,500 allocation reserved
+ * for a payday that had passed WITHOUT the pay arriving, which held
+ * Safe-to-Spend at ₱0.00 for a week. Salaries are late, early, split, or
+ * skipped; a date on a calendar is not evidence that money moved.
+ *
+ * `from` IS WIDENED BY THE REFUND WINDOW before querying, because rule 2's
+ * refund test compares a credit against outflows in the SEVEN DAYS BEFORE it
+ * (lib/income/candidates.ts). Querying exactly `[from, to)` would hide those
+ * outflows and let a refund at the start of the range pass as pay.
+ */
+export async function listPayEventsBetween(
+  from: EpochMs,
+  to: EpochMs,
+): Promise<CandidateEvent[]> {
+  const REFUND_LOOKBACK_MS = 7 * DAY_MS;
+  const transactions = await listTransactions({ from: from - REFUND_LOOKBACK_MS, to });
+  const loanPaymentIds = new Set(await listLoanPaymentTransactionIds());
+
+  return primaryStream(selectCandidates(transactions, loanPaymentIds))
+    .filter((event) => event.occurredAt >= from && event.occurredAt < to)
+    .sort((a, b) => a.occurredAt - b.occurredAt);
 }
 
 /**
