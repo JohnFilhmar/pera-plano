@@ -209,6 +209,18 @@ model may be *downloaded* while one is active — that is disk, not RAM — but 
 All Qwen3 dense, all **Apache 2.0** — *verify against current terms before committing*; model licences
 change and a licence read in August is not evidence in November.
 
+> **Licence re-verified 2026-08-31.** All three upstream repos read as `apache-2.0` with commercial
+> use permitted, and the check is recorded with its URLs and revisions in
+> `docs/superpowers/specs/2026-08-31-model-hosting-decision.md` §0. That file also carries the
+> expiry rule, so this table is no longer the owner of a check nobody was assigned.
+>
+> **The same reading found something this table assumes and never verified: Qwen publishes GGUFs at
+> `Q8_0` only.** `Qwen/Qwen3-0.6B-GGUF` and `Qwen/Qwen3-1.7B-GGUF` each contain exactly one `.gguf`,
+> both `Q8_0`, and no `Qwen/Qwen3-4B-Instruct-2507-GGUF` resolves at all. So **only tier 3 can be
+> sourced from Qwen directly**; the `Q4_K_M` at tiers 1, 2 and 4 and the `Q6_K` at tier 5 must come
+> from a third-party quantiser or from our own conversion. The conversion source is therefore a
+> catalogue fact, not an implementation detail, and it is the open decision in that file's §6.
+
 | id | model | quant | approx size | est. tok/s on A54 | `suppressThinking` |
 |---|---|---|---|---|---|
 | `qwen3-0.6b-q4` | Qwen3-0.6B | Q4_K_M | ~0.4 GB | 25–45 | `true` |
@@ -1018,6 +1030,18 @@ instead of parsers.
    with no recovery path. Mirrors, a version-pinned revision in the URL, and a catalogue served from
    the existing parser-rules endpoint are all options; none is chosen here. Related: §2.4's disclosure
    obligation.
+
+   > **CLOSED 2026-08-31** by `docs/superpowers/specs/2026-08-31-model-hosting-decision.md`. The
+   > chosen shape: **bytes served by the provider at a pinned `resolve/<commit-sha>/` URL, catalogue
+   > served by our server, digests compiled into the APK and never overridable by the server.** The
+   > server may repoint a `url` and retire an id; it may not add a model and it may not supply a
+   > digest, so a fully compromised server costs availability and never integrity. Adding a tier
+   > requires an app release. Proxying the bytes was considered and rejected: it buys no integrity the
+   > digest does not already provide, and costs a single point of failure plus terabyte-scale egress.
+   >
+   > **One sub-decision stays open** and is owner-only: the conversion source. Qwen's own GGUF repos
+   > ship **`Q8_0` only**, so four of the five tiers in §2.1 have no upstream-published GGUF and must
+   > come from a third-party quantiser or from our own conversion. See that file's §6.
 10. **Reload after a process kill.** Android kills the app, the user returns, and a 2.5 GB model must be
     re-read from storage. The surface must say "waking up" rather than appearing hung — and if the
     reload is slow enough, the "no model yet" state and the "model loading" state need different copy

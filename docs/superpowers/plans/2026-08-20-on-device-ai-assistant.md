@@ -208,8 +208,19 @@ Three items the spec leaves ownerless. Each blocks a later phase, and each is th
 
 ## Task 1: Resolve weight hosting and compute the digests
 
+> **PARTLY RESOLVED 2026-08-31** — `docs/superpowers/specs/2026-08-31-model-hosting-decision.md` is
+> written and is the file this task names. **Step 1 is done** (all five sub-questions answered:
+> provider-served bytes, `resolve/<commit-sha>/` pinning, served catalogue with binary-pinned digests
+> the server cannot override, and the named failure copy). **Steps 2 and 3 remain blocked** and the
+> reason is recorded in that file's §7 and §8: the digests depend on the still-open conversion-source
+> decision and on a final tier list the spike has not yet cut, and `minRamBytes` depends on the
+> spike's Task 7 PSS table. Do not fill either from estimates.
+>
+> **Step 3's question "who converts to GGUF?" turned out to be the load-bearing one.** Qwen ships
+> `Q8_0` GGUFs only, so four of five tiers have no upstream conversion. That is the open decision.
+
 **Files:**
-- Create: `docs/superpowers/specs/2026-08-2X-model-hosting-decision.md`
+- Create: `docs/superpowers/specs/2026-08-31-model-hosting-decision.md` *(created 2026-08-31)*
 
 **Why this blocks Phase 5 and Phase 6 absolutely.** `ModelSpec` (spec §2.1) requires `url: string` and `sha256: string` as **literal data in the catalogue**. `catalogue.ts` is not a module that can be stubbed and filled in later — spec §5.2/5 requires its ids to be pinned as literals in a test, its `sha256` to be 64 lowercase hex, and its `url` to be `https:`. Until someone chooses a host and computes five digests, that file is unwritable and every test over it is unwritable with it.
 
@@ -246,14 +257,14 @@ Record **the digest, the exact byte count, and the URL you computed them from, t
 - [ ] **Step 4: Commit**
 
 ```bash
-git add docs/superpowers/specs/2026-08-2X-model-hosting-decision.md
+git add docs/superpowers/specs/2026-08-31-model-hosting-decision.md
 git commit -m "docs: choose model weight hosting and record pinned digests"
 ```
 
 ## Task 2: Confirm the licence check was done, and that it is still current
 
 **Files:**
-- Modify: `docs/superpowers/specs/2026-08-2X-model-hosting-decision.md`
+- Modify: `docs/superpowers/specs/2026-08-31-model-hosting-decision.md`
 
 The spike's Task 2 owns the check. This task owns the fact that it **expires**. The spec says *"a licence read in August is not evidence in November"* and repeats the instruction four times without ever assigning it; this is the second half of that assignment.
 

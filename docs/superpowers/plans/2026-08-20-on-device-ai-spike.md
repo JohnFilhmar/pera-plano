@@ -152,6 +152,16 @@ git commit -m "docs: record the A54 RAM variant the AI tier gate depends on"
 
 ## Task 2: Re-verify the Qwen3 licence, and give the check an owner
 
+> **DONE 2026-08-31.** All three upstream repos read as `apache-2.0`, commercial use permitted, and
+> both third-party GGUF repos under consideration (`unsloth/Qwen3-1.7B-GGUF`,
+> `unsloth/Qwen3-4B-Instruct-2507-GGUF`) also read as `apache-2.0` with no added terms. No tier is
+> cut on licence grounds.
+>
+> **The table lives in `docs/superpowers/specs/2026-08-31-model-hosting-decision.md` §0, not in the
+> findings doc this task describes** — one file now answers "may we ship this file, and where does it
+> come from", which is what the implementation plan's Task 2 asked for anyway. The expiry rule and
+> the 60-day redo trigger came with it. Step 3's findings-doc header is still created by Task 12.
+
 **Files:**
 - Create: `docs/superpowers/specs/2026-08-2X-llama-rn-spike-findings.md` (started here; the rest of the file is filled in by later tasks)
 
