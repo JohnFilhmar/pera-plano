@@ -63,6 +63,38 @@ describe("/", () => {
     expect(outsideTheIllustration()).not.toMatch(/\d\s*(\/|per\s)(mo|month|year|yr)/i);
   });
 
+  // The no-price rule above strips ONE non-greedy <figure data-illustrative> match and bans
+  // currency digits from what remains. That makes "how many such figures exist" load-bearing:
+  // a second one carrying an amount would leave that amount in the stripped text and fail the
+  // rule for a reason nobody would guess from the message. Assert the count directly so the
+  // failure names the actual mistake.
+  it("keeps every peso figure inside a single illustrative block", () => {
+    const figures = [...html().matchAll(/<figure\b[^>]*data-illustrative/gi)];
+    expect(figures).toHaveLength(1);
+  });
+
+  // The revamp moved the long-form prose into <details> rather than deleting it. That is only
+  // true if it is still in the server HTML: a JavaScript accordion would render an empty
+  // shell here, and the page would quietly stop saying things a Play reviewer reads it for.
+  it("still serves the long-form prose in the HTML, inside the disclosures", () => {
+    const text = stripTags(html());
+    const catalog = getMessages("en").marketing;
+    expect(text).toContain(catalog.howItWorks.beats[0]?.long ?? "MISSING");
+    expect(text).toContain(catalog.whoItIsFor.personas[0]?.long ?? "MISSING");
+    expect(text).toContain(catalog.whyThePhilippines.facts[0]?.long ?? "MISSING");
+    expect(text).toContain(catalog.privacyPromise.paragraphs[0] ?? "MISSING");
+    expect(html()).toMatch(/<details\b/i);
+  });
+
+  // A cue that scrolls nowhere is worse than no cue, and `href="#"` is already banned two
+  // tests below — this catches the subtler version, an anchor pointing at an id that the
+  // page does not contain.
+  it("points the scroll cue at a section that exists", () => {
+    const target = getMessages("en").marketing.hero.scrollCueTarget;
+    expect(target.startsWith("#")).toBe(true);
+    expect(html()).toContain(`id="${target.slice(1)}"`);
+  });
+
   it("renders no Play badge while there is no listing to link to", () => {
     expect(html()).not.toContain('href="#"');
     expect(getMessages("en").marketing.hero.storeBadge).toBeNull();

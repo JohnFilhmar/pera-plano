@@ -14,7 +14,8 @@
   padding: 0.75rem 1.25rem;
   display: flex;
   align-items: center;
-  gap: 1.5rem;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.5rem;
 }
 
 .brand {
@@ -26,12 +27,27 @@
   text-decoration: none;
 }
 
+/* Six links wrapping onto four lines cost about 160px of a 844px phone before the page even
+   started — a third of the first screen spent on navigation. On narrow viewports the nav
+   drops to its own row and scrolls sideways inside it instead of wrapping; from 52rem up it
+   returns to sitting inline on the right. No hamburger: six links that are all reachable
+   beat five hidden behind a button. */
 .nav {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 1rem;
-  margin-left: auto;
+  order: 3;
+  flex-basis: 100%;
+  overflow-x: auto;
+  padding-bottom: 0.15rem;
+  white-space: nowrap;
   font-size: 0.925rem;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.nav::-webkit-scrollbar {
+  display: none;
 }
 
 .nav a {
@@ -47,4 +63,19 @@
   display: flex;
   align-items: center;
   gap: 0.75rem;
+  margin-left: auto;
+}
+
+@media (min-width: 52rem) {
+  .nav {
+    order: 0;
+    flex-basis: auto;
+    margin-left: auto;
+    padding-bottom: 0;
+    overflow-x: visible;
+  }
+
+  .actions {
+    margin-left: 0;
+  }
 }

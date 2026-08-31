@@ -1,0 +1,141 @@
+.shell {
+  max-width: calc(var(--measure) + 15rem);
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+
+.body {
+  min-width: 0;
+}
+
+.aside {
+  display: none;
+}
+
+.note {
+  max-width: var(--measure);
+  margin: 2.25rem auto -0.75rem;
+  padding: 0 0 0 0.9rem;
+  border-left: 2px solid var(--brand);
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.note strong {
+  display: block;
+  color: var(--text);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.note p {
+  margin: 0.35rem 0 0;
+  max-width: 46rem;
+}
+
+/* ------------------------------------------------------------------ contents */
+
+.toc {
+  position: sticky;
+  top: 5.5rem;
+  padding-right: 1rem;
+}
+
+.tocLabel {
+  margin: 0 0 0.75rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.tocList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-left: 1px solid var(--line);
+}
+
+.tocList a {
+  display: block;
+  padding: 0.4rem 0 0.4rem 0.85rem;
+  margin-left: -1px;
+  border-left: 2px solid transparent;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.35;
+  text-decoration: none;
+  transition: color 160ms ease, border-color 160ms ease;
+}
+
+.tocList a:hover {
+  color: var(--text);
+}
+
+.tocList a[data-active="true"] {
+  border-left-color: var(--brand);
+  color: var(--brand);
+  font-weight: 600;
+}
+
+/* --------------------------------------------------------------------- pager */
+
+.pager {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: 1fr 1fr;
+  max-width: var(--measure);
+  margin: 3rem auto 4rem;
+  padding-top: 2rem;
+  border-top: 1px solid var(--line);
+}
+
+.pagerLink {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+  transition: border-color 180ms ease;
+}
+
+.pagerLink:hover {
+  border-color: var(--brand);
+  color: var(--text);
+}
+
+.pagerLink[data-side="next"] {
+  justify-content: flex-end;
+  text-align: right;
+}
+
+.pagerKicker {
+  display: block;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+@media (min-width: 68rem) {
+  .shell {
+    display: grid;
+    gap: 2.5rem;
+    grid-template-columns: 14rem minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .aside {
+    display: block;
+    padding-top: 3.5rem;
+  }
+}

@@ -53,88 +53,219 @@
   },
   "marketing": {
     "hero": {
-      "eyebrow": "Philippines-first · Android",
+      "eyebrow": "Philippines-first · Android · offline by design",
       "tagline": "You never log a transaction; you only set the rules.",
-      "lede": "PeraPlano tracks your money automatically by reading the notifications your banks and e-wallets already send you, parses them on your phone, and builds a complete, categorised ledger without you typing anything.",
-      "sub": "Pera is Filipino for money, plano for plan. The name is the whole product.",
+      "lede": "Your bank and e-wallet notifications become a categorised ledger, parsed on your phone.",
+      "sub": "Pera is money. Plano is plan. The name is the whole product.",
       "storeBadge": null,
-      "storeBadgeNote": "There is no Play listing yet, so there is no download button here. When there is one, it will be a real link."
+      "storeBadgeNote": "No Play listing yet, so no download button here. When there is one, it will be a real link.",
+      "scrollCue": "Watch one notification become a transaction",
+      "scrollCueTarget": "#how-it-works"
     },
-    "whatItDoes": {
+    "demo": {
+      "heading": "What one notification becomes",
+      "disclaimer": "Illustrative only. Every notification below is invented for this demonstration; no real bank or e-wallet message is reproduced. Real provider formats are captured and versioned during implementation.",
+      "replayHeading": "Send another",
+      "stages": {
+        "arrives": "Notification arrives",
+        "parses": "Read on the device",
+        "commits": "Written to your ledger",
+        "review": "Held for your review"
+      },
+      "fieldLabels": {
+        "amount": "Amount",
+        "direction": "Direction",
+        "merchant": "Merchant",
+        "wallet": "Wallet",
+        "category": "Category",
+        "confidence": "Confidence"
+      },
+      "safeToSpendLabel": "Safe to spend, eight days to payday",
+      "uploadNote": "None of this leaves the phone. There is nowhere for it to go.",
+      "reviewPrompt": "Not confident about the category. One tap decides it, and your answer becomes a rule that replays on the next one.",
+      "reviewConfirmLabel": "Groceries",
+      "reviewAltLabel": "Dining out",
+      "samples": [
+        {
+          "id": "gcash",
+          "provider": "GCash",
+          "notification": "You have sent ₱1,500.00 to JUAN D. via GCash.",
+          "amount": "₱1,500.00",
+          "direction": "Out",
+          "merchant": "JUAN D.",
+          "wallet": "GCash",
+          "category": "Padala",
+          "confidence": "High",
+          "outcome": "commit",
+          "safeBefore": "₱6,480.00",
+          "safeAfter": "₱4,980.00"
+        },
+        {
+          "id": "maya",
+          "provider": "Maya",
+          "notification": "Payment of ₱249.00 to SPOTIFY was successful.",
+          "amount": "₱249.00",
+          "direction": "Out",
+          "merchant": "SPOTIFY",
+          "wallet": "Maya",
+          "category": "Subscriptions",
+          "confidence": "High",
+          "outcome": "commit",
+          "safeBefore": "₱4,980.00",
+          "safeAfter": "₱4,731.00"
+        },
+        {
+          "id": "bpi",
+          "provider": "BPI",
+          "notification": "Your account ending 4417 was credited ₱18,750.00.",
+          "amount": "₱18,750.00",
+          "direction": "In",
+          "merchant": "Payroll",
+          "wallet": "BPI",
+          "category": "Salary",
+          "confidence": "High",
+          "outcome": "commit",
+          "safeBefore": "₱4,731.00",
+          "safeAfter": "₱23,481.00"
+        },
+        {
+          "id": "unsure",
+          "provider": "Unsure",
+          "notification": "Purchase ₱612.00 at SM SUPERMKT-MKTI approved.",
+          "amount": "₱612.00",
+          "direction": "Out",
+          "merchant": "SM SUPERMKT-MKTI",
+          "wallet": "GCash",
+          "category": "Not sure yet",
+          "confidence": "Low",
+          "outcome": "review",
+          "safeBefore": "₱23,481.00",
+          "safeAfter": "₱22,869.00"
+        }
+      ]
+    },
+    "howItWorks": {
+      "eyebrow": "The pipeline",
       "heading": "How it works",
-      "intro": "Five steps, and you are involved in exactly one of them.",
-      "steps": [
+      "lede": "Five steps. You are involved in exactly one of them.",
+      "disclosureLabel": "What each step actually does",
+      "beats": [
         {
           "verb": "Explain",
-          "detail": "Before any system screen appears, the app tells you what Notification Access is for, what it will read, and what it discards. Every permission is skippable; skip it and the app falls back to manual entry rather than refusing to work."
+          "line": "You are told what will be read, before any system screen appears.",
+          "long": "Before any system screen appears, the app tells you what Notification Access is for, what it will read, and what it discards. Every permission is skippable; skip it and the app falls back to manual entry rather than refusing to work."
         },
         {
           "verb": "Listen",
-          "detail": "The listener runs continuously. Each notification from a provider it recognises is read on the device — never uploaded — and turned into a structured record: amount, direction, merchant, wallet, category, confidence."
+          "line": "Recognised notifications are read on the device, never uploaded.",
+          "long": "The listener runs continuously. Each notification from a provider it recognises is read on the device — never uploaded — and turned into a structured record: amount, direction, merchant, wallet, category, confidence."
         },
         {
           "verb": "Parse",
-          "detail": "High-confidence readings are recorded automatically. Anything the app is unsure about waits in the Review Queue for a one-tap confirmation, and every correction you make becomes a rule that replays on future notifications."
+          "line": "Confident readings post themselves. The rest wait for one tap.",
+          "long": "High-confidence readings are recorded automatically. Anything the app is unsure about waits in the Review Queue for a one-tap confirmation, and every correction you make becomes a rule that replays on future notifications."
         },
         {
-          "verb": "Dedupe and link transfers",
-          "detail": "A push and an SMS announcing the same payment are collapsed into one record. Moving money between your own wallets is detected as a transfer and excluded from both spending and income, so your own money does not look like expenditure."
+          "verb": "Link",
+          "line": "Duplicates collapse, and moving your own money is not spending.",
+          "long": "A push and an SMS announcing the same payment are collapsed into one record. Moving money between your own wallets is detected as a transfer and excluded from both spending and income, so your own money does not look like expenditure."
         },
         {
-          "verb": "Enforce your rules",
-          "detail": "Committed transactions update your limits, goals, bills and your Safe-to-Spend number in real time. The app notifies you when something you set a rule about happens, and stays quiet otherwise."
+          "verb": "Enforce",
+          "line": "Limits, goals and bills update the moment a transaction commits.",
+          "long": "Committed transactions update your limits, goals, bills and your Safe-to-Spend number in real time. The app notifies you when something you set a rule about happens, and stays quiet otherwise."
         }
-      ],
-      "exampleHeading": "What one notification becomes",
-      "exampleDisclaimer": "Illustrative only. This notification text is invented for the example; real provider formats are captured and versioned during implementation, and no bank message is reproduced here.",
-      "exampleNotification": "You have sent ₱1,500.00 to JUAN D. via GCash.",
-      "exampleResult": "Recorded as: ₱1,500.00 out, merchant JUAN D., wallet GCash, source notification — with a suggested category if you have a rule for that counterparty."
+      ]
     },
     "whoItIsFor": {
+      "eyebrow": "The people",
       "heading": "Who it is for",
-      "intro": "Three people, one app, no mode switches. Most readers are more than one of them.",
+      "lede": "Three people, one app, no mode switches. Most readers are more than one of them.",
+      "disclosureLabel": "The longer description",
       "personas": [
         {
           "name": "The salaried kinsenas earner",
-          "summary": "Paid kinsenas — twice a month, on the 15th and 30th, with the 30th also called katapusan. Salary lands in a payroll bank account, part of it moves to GCash for daily spending, and rent, bills and padala cluster right after payday.",
-          "pain": "The second week of each half-month, when the money runs thin and there is no answer to where it went.",
-          "gives": "Income cadence tuned to a twice-monthly pay cycle, limits that reset on your real payday rather than on the first of the month, and a Safe-to-Spend number that understands how many days are left until the 15th."
+          "definition": "kinsenas — paid twice a month, on the 15th and 30th, the second one also called katapusan",
+          "pain": "The second week of each half-month, when the money runs thin and nothing explains where it went.",
+          "gives": "Limits that reset on your real payday, not on the 1st.",
+          "long": "Salary lands in a payroll bank account, part of it moves to GCash for daily spending, and rent, bills and padala cluster right after payday. PeraPlano gives you an income cadence tuned to a twice-monthly pay cycle, limits that reset on your real payday rather than on the first of the month, and a Safe-to-Spend number that understands how many days are left until the 15th."
         },
         {
           "name": "The gig or informal-income worker",
-          "summary": "Driver, freelancer, online seller, service provider. Income arrives irregularly through GCash, Maya or bank transfers, sometimes several small payments in a day.",
-          "pain": "No payroll summary exists. Your notification history is your income record, and a manual app asks you to type it all again.",
-          "gives": "Automatic capture of every incoming payment, an irregular income cadence you can override, in-versus-out reporting that says whether a week actually netted positive, and loan tracking for the informal credit that bridges slow weeks."
+          "definition": "utang — money owed, tracked in both directions, to you and by you",
+          "pain": "No payroll summary exists. Your notification history is your income record.",
+          "gives": "Every incoming payment captured, and the week totalled honestly.",
+          "long": "Driver, freelancer, online seller, service provider. Income arrives irregularly through GCash, Maya or bank transfers, sometimes several small payments in a day. PeraPlano gives you automatic capture of every incoming payment, an irregular income cadence you can override, in-versus-out reporting that says whether a week actually netted positive, and loan tracking for the informal credit that bridges slow weeks."
         },
         {
           "name": "The e-wallet-heavy spender",
-          "summary": "Often the designated money person in the family. Daily life runs through GCash and Maya — load, transport, food delivery, online shopping, bills, padala to the province — across three or more apps at once.",
-          "pain": "Internal transfers make the history in every app double-count, and no single place shows the whole picture.",
-          "gives": "Multiple wallets modelled properly, automatic transfer detection so a GCash-to-bank move is never counted as spending, and recurring-subscription detection that surfaces the quiet monthly commitments you forgot about."
+          "definition": "padala — money sent home to family, a default category rather than an afterthought",
+          "pain": "Internal transfers make every app double-count, and no single place shows the whole picture.",
+          "gives": "Your own transfers detected, so they never read as spending.",
+          "long": "Often the designated money person in the family. Daily life runs through GCash and Maya — load, transport, food delivery, online shopping, bills, padala to the province — across three or more apps at once. PeraPlano models multiple wallets properly, detects transfers automatically so a GCash-to-bank move is never counted as spending, and surfaces the quiet recurring subscriptions you forgot about."
         }
-      ],
-      "glossaryHeading": "The words on this page",
-      "glossary": [
-        "kinsenas — being paid twice a month, on the 15th and 30th. Katapusan is the end-of-month payday.",
-        "utang — personal debt, owed to or by friends and family. PeraPlano tracks it in both directions, because money owed to you shapes what is safe to spend just as much as money you owe.",
-        "padala — money sent to family, from another city or from abroad. In PeraPlano it is a default category, not something you have to invent."
       ]
     },
     "whyThePhilippines": {
+      "eyebrow": "The ground",
       "heading": "Why the Philippines",
-      "intro": "Six facts about Filipino financial life. No global competitor is built around all six at once, and that is the whole reason this app exists.",
+      "lede": "Six facts about Filipino money. No global competitor is built around all six at once.",
+      "disclosureLabel": "Why each one matters",
       "facts": [
-        "E-wallet saturation. GCash and Maya are default payment rails for tens of millions of people. QR payments, send-money and buy-load are daily events, and every one of them emits a notification that can be read.",
-        "Notification-rich banking. Philippine banks and digital banks send push or SMS alerts for debits and credits. Even a bank SMS surfaces as a notification from your default messaging app, which the listener can read without ever requesting SMS permission.",
-        "A distinct pay rhythm. Salaried workers are paid kinsenas — twice a month, on the 15th and 30th. Budgeting apps built for monthly cycles never fit; PeraPlano treats the twice-monthly cadence as first-class.",
-        "A distinct debt culture. Informal borrowing is everywhere: utang between friends and family, 5-6 lending, appliance instalments, salary loans, credit cards. PeraPlano tracks loans in both directions.",
-        "Remittance flows. Padala is routine and budgeted, not an edge case, so it is a category the app ships with.",
-        "Android dominance. The market is overwhelmingly Android, which is also the only platform where notification listening is possible at all. Android-only is a fit, not a compromise."
+        {
+          "stat": "GCash and Maya",
+          "line": "are default rails for tens of millions.",
+          "long": "E-wallet saturation. GCash and Maya are default payment rails for tens of millions of people. QR payments, send-money and buy-load are daily events, and every one of them emits a notification that can be read."
+        },
+        {
+          "stat": "Push and SMS alerts",
+          "line": "for every debit and credit, without SMS permission.",
+          "long": "Notification-rich banking. Philippine banks and digital banks send push or SMS alerts for debits and credits. Even a bank SMS surfaces as a notification from your default messaging app, which the listener can read without ever requesting SMS permission."
+        },
+        {
+          "stat": "Twice-monthly pay",
+          "line": "is the rhythm, and monthly budgeting never fits it.",
+          "long": "A distinct pay rhythm. Salaried workers are paid kinsenas — twice a month, on the 15th and 30th. Budgeting apps built for monthly cycles never fit; PeraPlano treats the twice-monthly cadence as first-class."
+        },
+        {
+          "stat": "Informal debt",
+          "line": "is everywhere, and it runs in both directions.",
+          "long": "A distinct debt culture. Informal borrowing is everywhere: utang between friends and family, 5-6 lending, appliance instalments, salary loans, credit cards. PeraPlano tracks loans in both directions."
+        },
+        {
+          "stat": "Padala",
+          "line": "is a budget line, not an edge case.",
+          "long": "Remittance flows. Padala is routine and budgeted, not an edge case, so it is a category the app ships with."
+        },
+        {
+          "stat": "Android",
+          "line": "is the market, and the only place listening is possible.",
+          "long": "Android dominance. The market is overwhelmingly Android, which is also the only platform where notification listening is possible at all. Android-only is a fit, not a compromise."
+        }
       ]
     },
+    "privacyPromise": {
+      "eyebrow": "The boundary",
+      "heading": "Nothing leaves your phone",
+      "lede": "This is architecture, not a policy promise.",
+      "disclosureLabel": "The three sentences behind that",
+      "points": [
+        "Notifications are read and parsed on the device.",
+        "No account, no sign-in, no server copy of your ledger.",
+        "Raw notification text is encrypted, kept 30 days, then purged."
+      ],
+      "paragraphs": [
+        "Raw notification text never leaves your phone. It is stored encrypted on the device with a 30-day time-to-live so you can always answer the question why did the app record this, and then it is purged.",
+        "This is architecture, not a policy promise. There is no account, no sign-in and no server copy of your ledger, so there is nothing on our side to hand over, to lose, or to be asked for.",
+        "Cloud backup of committed transaction records — structured fields, never raw text — is a planned paid feature and is opt-in. It does not exist yet."
+      ],
+      "linkLabel": "Read the full privacy notice",
+      "linkPath": "/privacy"
+    },
     "whatItIsNot": {
+      "eyebrow": "The limits",
       "heading": "What it is not",
-      "intro": "Leading with the limits, because a money app that oversells itself is a money app you should not trust.",
+      "intro": "A money app that oversells itself is a money app you should not trust.",
       "bullets": [
         "Not a bank or an e-money issuer. PeraPlano never holds, moves or touches your funds. It observes and it plans.",
         "Not a financial advisor. It reports facts against rules you set. It does not recommend products, investments or credit.",
@@ -145,25 +276,15 @@
       "linkLabel": "The full list, and the terms",
       "linkPath": "/terms"
     },
-    "privacyPromise": {
-      "heading": "Where your data lives",
-      "paragraphs": [
-        "Raw notification text never leaves your phone. It is stored encrypted on the device with a 30-day time-to-live so you can always answer the question why did the app record this, and then it is purged.",
-        "This is architecture, not a policy promise. There is no account, no sign-in and no server copy of your ledger, so there is nothing on our side to hand over, to lose, or to be asked for.",
-        "Cloud backup of committed transaction records — structured fields, never raw text — is a planned paid feature and is opt-in. It does not exist yet."
-      ],
-      "linkLabel": "Read the full privacy notice",
-      "linkPath": "/privacy"
-    },
     "tiersLink": {
       "heading": "Free and Plus",
-      "body": "Automatic tracking is never limited by tier, and privacy controls are never behind a paywall. What paying adds is depth. The full comparison sits with the commercial terms rather than here, and no price is published yet because none has been decided.",
+      "body": "Automatic tracking is never limited by tier, and privacy controls are never behind a paywall. What paying adds is depth. No price is published yet because none has been decided.",
       "linkLabel": "Compare Free and Plus",
       "linkPath": "/terms"
     },
     "builtAlongside": {
       "heading": "Built alongside",
-      "body": "PeraPlano is one of several projects by the same independent developer, built and maintained alone.",
+      "body": "One of several projects by the same independent developer, built and maintained alone.",
       "linkLabel": "Other work by the same developer"
     }
   },
@@ -196,7 +317,11 @@
         "heading": "Every control you have",
         "intro": "Reproduced in full from PeraPlano's internal privacy document. Controls are named with honest verbs — pause, wipe, delete — and every control screen in the app states what it does and what it does not do.",
         "caption": "Every control PeraPlano gives you, what it does, and where to find it.",
-        "headers": ["Control", "What it does", "Where"],
+        "headers": [
+          "Control",
+          "What it does",
+          "Where"
+        ],
         "rows": [
           [
             "Pause listening (global)",
@@ -274,7 +399,10 @@
         "heading": "Your rights under RA 10173, and how to use them",
         "intro": "The Data Privacy Act of 2012 gives you these rights. Each one maps to a control that already exists in the app rather than to a request form, because a right you have to ask us to honour is slower than a right you can exercise yourself.",
         "caption": "Each right under the Data Privacy Act of 2012, and the control that delivers it.",
-        "headers": ["Your right", "How PeraPlano honours it"],
+        "headers": [
+          "Your right",
+          "How PeraPlano honours it"
+        ],
         "rows": [
           [
             "Right to be informed",
@@ -346,7 +474,11 @@
       "whyWeProcess": {
         "heading": "Why we process your data",
         "caption": "The purpose and the lawful basis for each thing PeraPlano does with your data.",
-        "headers": ["Processing activity", "Lawful basis", "Notes"],
+        "headers": [
+          "Processing activity",
+          "Lawful basis",
+          "Notes"
+        ],
         "rows": [
           [
             "Reading transaction notifications and keeping your on-device ledger",
@@ -494,7 +626,10 @@
       "yourRights": {
         "heading": "Your rights",
         "caption": "Your rights under the Data Privacy Act of 2012, and the control in the app that delivers each one.",
-        "headers": ["Your right", "How PeraPlano honors it"],
+        "headers": [
+          "Your right",
+          "How PeraPlano honors it"
+        ],
         "rows": [
           [
             "To be informed",
@@ -537,18 +672,27 @@
       "notRequested": {
         "heading": "What we deliberately do not ask for",
         "caption": "Permissions and data sources PeraPlano does not request, and why.",
-        "headers": ["Not requested", "Why"],
+        "headers": [
+          "Not requested",
+          "Why"
+        ],
         "rows": [
           [
             "SMS permissions (reading your text messages)",
             "Google Play's SMS and Call Log policy effectively prohibits reading SMS for expense tracking. Bank SMS still reach PeraPlano as notifications posted by your default SMS app, which the listener reads like any other notification."
           ],
-          ["Call log permissions", "No product use."],
+          [
+            "Call log permissions",
+            "No product use."
+          ],
           [
             "Accessibility services as a way in",
             "Explicitly ruled out. Using accessibility APIs to collect data violates Play policy and would poison the trust story this product is built on."
           ],
-          ["Location", "No product use."],
+          [
+            "Location",
+            "No product use."
+          ],
           [
             "Contacts",
             "No product use. Counterparty names come only from the notification text your providers already sent you."
@@ -607,19 +751,67 @@
         "heading": "Free and Plus",
         "intro": "Automatic tracking is never limited by tier. The free tier is meant to stay genuinely useful forever; paying buys depth — more wallets, unlimited limits and goals, full loan amortisation, longer history, projection and backup.",
         "caption": "The locked capability matrix for the free and Plus tiers.",
-        "headers": ["Capability", "Free", "Plus"],
+        "headers": [
+          "Capability",
+          "Free",
+          "Plus"
+        ],
         "rows": [
-          ["Auto-tracking (notification ingest)", "Unlimited", "Unlimited"],
-          ["Wallets", "3", "Unlimited"],
-          ["Limits", "1 active", "Unlimited + per-category"],
-          ["Goals", "1", "Unlimited + payday auto-allocate"],
-          ["Loans", "1, basic tracking (balance + next due)", "Unlimited + full amortization schedule"],
-          ["History", "90 days", "Unlimited"],
-          ["Reports", "Basic monthly", "Full + trends + custom range"],
-          ["Export", "—", "CSV (PDF later)"],
-          ["Cloud backup / multi-device sync", "—", "✓"],
-          ["Recurring/subscription detection", "—", "✓"],
-          ["Safe-to-Spend", "Today only", "Projected to end of period"]
+          [
+            "Auto-tracking (notification ingest)",
+            "Unlimited",
+            "Unlimited"
+          ],
+          [
+            "Wallets",
+            "3",
+            "Unlimited"
+          ],
+          [
+            "Limits",
+            "1 active",
+            "Unlimited + per-category"
+          ],
+          [
+            "Goals",
+            "1",
+            "Unlimited + payday auto-allocate"
+          ],
+          [
+            "Loans",
+            "1, basic tracking (balance + next due)",
+            "Unlimited + full amortization schedule"
+          ],
+          [
+            "History",
+            "90 days",
+            "Unlimited"
+          ],
+          [
+            "Reports",
+            "Basic monthly",
+            "Full + trends + custom range"
+          ],
+          [
+            "Export",
+            "—",
+            "CSV (PDF later)"
+          ],
+          [
+            "Cloud backup / multi-device sync",
+            "—",
+            "✓"
+          ],
+          [
+            "Recurring/subscription detection",
+            "—",
+            "✓"
+          ],
+          [
+            "Safe-to-Spend",
+            "Today only",
+            "Projected to end of period"
+          ]
         ],
         "afterTable": [
           "The matrix above is the locked definition of the tiers, and it describes the intended shape of the product on the day PeraPlano Plus becomes purchasable — not the app you can install right now. No one is on a limited tier today: tier limits are not enforced at all in the current build, every capability is built and working, and everyone using the app has full capability whatever the Free column says. The entitlement layer that applies these caps is switched on later, in one place; when it is, the caps apply going forward and never retroactively.",
@@ -819,6 +1011,22 @@
           "That route would remove the sign-in identity and all server-side backup data within 30 days. The ledger on the phone would survive unless you asked for that to go as well, and the screen would say so plainly before you chose.",
           "None of it exists yet. Until it does, the instructions above are the only deletion there is to describe, because on-device storage is the only storage there is."
         ]
+      }
+    }
+  },
+  "document": {
+    "contentsLabel": "On this page",
+    "pagerLabel": "More pages",
+    "previousLabel": "Previous",
+    "nextLabel": "Next",
+    "notes": {
+      "installed-apps": {
+        "heading": "Why this page exists",
+        "body": "Google Play requires an app that can see which apps are installed to say so in public, in plain language, and to name what it does with the answer. This is that page, and the list below is the whole of it."
+      },
+      "data-deletion": {
+        "heading": "Why this page exists",
+        "body": "Google Play requires a public route to deleting your data, reachable without installing anything. Because PeraPlano keeps your ledger on your phone and nowhere else, most of what follows is something you do on the device rather than something you ask us for."
       }
     }
   }

@@ -1,0 +1,93 @@
+.wrap {
+  display: grid;
+  gap: 2rem;
+  align-items: center;
+  grid-template-columns: 1fr;
+}
+
+.device {
+  position: relative;
+  width: 12.5rem;
+  height: 21rem;
+  padding: 0.85rem;
+  border: 2px dashed var(--brand);
+  border-radius: 1.9rem;
+  background: var(--surface);
+}
+
+/* The dashed edge is the whole diagram, so it gets a halo rather than a caption. */
+.device::before {
+  content: "";
+  position: absolute;
+  inset: -0.85rem;
+  border-radius: 2.6rem;
+  background: radial-gradient(closest-side, rgba(34, 197, 94, 0.14), transparent);
+  pointer-events: none;
+}
+
+.notch {
+  position: absolute;
+  top: 0.55rem;
+  left: 50%;
+  width: 3.2rem;
+  height: 0.3rem;
+  border-radius: 999px;
+  background: var(--line);
+  transform: translateX(-50%);
+}
+
+.screen {
+  display: grid;
+  gap: 0.6rem;
+  place-content: center;
+  justify-items: center;
+  height: 100%;
+  border-radius: 1.2rem;
+  background: var(--mint);
+}
+
+.mark {
+  margin-bottom: 0.4rem;
+}
+
+.row {
+  width: 7.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--brand) 30%, transparent);
+}
+
+.row[data-short] {
+  width: 5rem;
+}
+
+.points {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.points li {
+  position: relative;
+  margin: 0 0 1rem;
+  padding-left: 1.6rem;
+  font-size: 1.02rem;
+}
+
+.points li::before {
+  content: "";
+  position: absolute;
+  top: 0.62em;
+  left: 0;
+  width: 0.7rem;
+  height: 0.7rem;
+  border: 2px solid var(--brand);
+  border-radius: 50%;
+}
+
+@media (min-width: 48rem) {
+  .wrap {
+    grid-template-columns: auto 1fr;
+    gap: 3.5rem;
+  }
+}

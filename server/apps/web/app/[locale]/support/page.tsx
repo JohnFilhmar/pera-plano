@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { getConfig } from "@peraplano/common";
 import { SupportPage } from "@/components/pages/support_page";
+import { DocumentShell } from "@/components/chrome/document_shell";
 import { getMessages } from "@/messages/index";
 
 export async function generateMetadata({
@@ -18,5 +19,10 @@ export async function generateMetadata({
 
 export default async function Page({ params }: { params: Promise<{ locale: "en" }> }) {
   const { locale } = await params;
-  return <SupportPage messages={getMessages(locale)} config={getConfig()} />;
+  const messages = getMessages(locale);
+  return (
+    <DocumentShell messages={messages} locale={locale} path="/support">
+      <SupportPage messages={messages} config={getConfig()} />
+    </DocumentShell>
+  );
 }
