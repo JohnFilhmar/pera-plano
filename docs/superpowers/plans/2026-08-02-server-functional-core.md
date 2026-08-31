@@ -438,6 +438,11 @@ copy: a Fastify handler that just returns a value can be synchronous, and a plug
 `expect(fn).toThrow("some_code")` matches the wrong field. Assert `.code` explicitly, or use
 `rejects.toMatchObject({ code })` for async.
 
+**`res.json() as { ... }` is a lint error.** `light-my-request` already types `json<T>()` as a
+generic, so the cast is redundant and `no-unnecessary-type-assertion` rejects it. Every route test
+block below uses that idiom. Write `res.json<{ requestId: string }>()` instead of
+`res.json() as { requestId: string }`. Same semantics, different syntax.
+
 - [ ] **Step 2: Create a models-free schema and generate the client**
 
 `server/apps/api/prisma/schema.prisma`:
@@ -1327,6 +1332,12 @@ git commit -m "feat(server): hs256 access tokens and opaque refresh token genera
 - Consumes: `app.prisma` (Task 4), `ApiError` (Task 3), `OTP_TTL_MS` / `generateOtpCode` / `hashOtpCode` (Task 5).
 - Produces:
   - `requestOtp(prisma: PrismaClient, destination: string, otpSecret: string, nowMs?: number): Promise<{ requestId: string; code: string }>` from `src/services/auth_service.ts` — Tasks 8/9 tests call it directly to obtain the plaintext code (the route never returns the code).
+
+> **Blocks production, recorded 2026-08-31.** This route writes the OTP to `request.log.info`, which
+> `backend-security-baseline` forbids: logs redact tokens, OTPs, and PII. It is acceptable only
+> because there is no delivery mechanism, so the endpoint cannot serve real users yet. **The task
+> that adds a mail provider must delete the `otpCode` field from that log call in the same change,
+> not merely stop using it.** Do not ship OTP delivery and OTP logging together.
   - Route `POST /v1/auth/otp/request` — body `{ channel: "email", destination }` → `{ requestId }`. Delivery is dev-only: the code is written to the server log, never to the response.
   - `resetDb(prisma: PrismaClient): Promise<void>` from `test/helpers/db.ts` — truncates all 7 tables; every DB integration test file uses it in `beforeEach`.
 
@@ -1441,6 +1452,7 @@ import { OTP_TTL_MS, generateOtpCode, hashOtpCode } from "../lib/otp.js";
 export async function requestOtp(
   prisma: PrismaClient,
   destination: string,
+  otpSecret: string,
   nowMs: number = Date.now(),
 ): Promise<{ requestId: string; code: string }> {
   const requestId = randomUUID();
@@ -2839,6 +2851,28 @@ git commit -m "feat(server): versioned parser rules route with gcash maya bpi se
 ---
 
 ### Task 12: Telemetry — aggregate-only parse stats with per-IP rate limit
+
+> **Amended 2026-08-31, after Task 7 review. This task also covers the auth endpoints.**
+>
+> `backend-security-baseline` requires tiered limits, "strict on auth/OTP/password endpoints", and
+> the original plan registered `@fastify/rate-limit` here for telemetry alone. That leaves
+> `POST /v1/auth/otp/request` unauthenticated and unbounded: anyone can generate `otp_requests` rows
+> without limit, and once a real mail provider replaces the dev log, send mail to any address on
+> demand. `OTP_MAX_ATTEMPTS` does not help, because it bounds guesses against an existing request,
+> not the creation of new ones.
+>
+> When registering the plugin, add a strict tier to the auth routes as well:
+>
+> - `POST /v1/auth/otp/request` and `POST /v1/auth/otp/verify`: strict, per IP.
+> - `POST /v1/auth/token/refresh`: strict, per IP.
+> - `POST /v1/telemetry/parse_stats`: `config.telemetryRateLimitMax`, per IP, as originally written.
+>
+> Add `AUTH_RATE_LIMIT_MAX` to `config.ts` alongside the existing limit, defaulting to `10` per
+> minute, following the same throw-on-invalid pattern. Test it the same way the telemetry limit is
+> tested: build an app with a tiny budget and assert the `429` plus the `rate_limited` error code
+> that `errorHandler` already maps.
+>
+> The linking plan's Google routes carry their own `GOOGLE_AUTH_RATE_LIMIT_MAX` and are not affected.
 
 **Files:**
 - Create: `server/apps/api/src/routes/telemetry_routes.ts`

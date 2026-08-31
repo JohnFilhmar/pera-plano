@@ -26,6 +26,9 @@ Every task's requirements implicitly include this section.
   Sync assertions go through the `codeOf` helper defined in Tasks 2 and 3; async ones use
   `await expect(promise).rejects.toMatchObject({ code: "some_code" })`. Plain `Error` throws from
   `loadConfig` and the CLI are message matches and correctly keep `.toThrow("...")`.
+- **`res.json() as { ... }` is a lint error.** `light-my-request` types `json<T>()` as a generic, so
+  the cast is redundant and `no-unnecessary-type-assertion` rejects it. Write
+  `response.json<{ identity: { googleSub: string } }>()`, never `response.json() as { ... }`.
 - **`async` without `await` is a lint error.** The repo runs
   `@typescript-eslint/recommendedTypeChecked`, which sets `require-await` to error. Mark a route
   handler, plugin, or test callback `async` only when its body actually awaits. A Fastify handler
