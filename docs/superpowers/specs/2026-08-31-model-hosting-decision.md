@@ -225,7 +225,7 @@ each tier as it survives.
 
 | id | sha256 | status |
 |---|---|---|
-| `qwen3-0.6b-q4` | | pending |
+| `qwen3-0.6b-q4` | `ac2d97712095a558e31573f62f466a3f9d93990898b0ec79d7c974c1780d524a` | **computed 2026-08-31** |
 | `qwen3-1.7b-q4` | `b139949c5bd74937ad8ed8c8cf3d9ffb1e99c866c823204dc42c0d91fa181897` | **computed 2026-08-31** |
 | `qwen3-1.7b-q8` | | pending |
 | `qwen3-4b-2507-q4` | | pending |

@@ -84,56 +84,91 @@ production, the tokens are still decoded and still paid for in latency, and the 
 
 ---
 
-## Question 5 (tier 2): strict tool-pick accuracy — **97%, far above the ~70% bar**
+## Question 5: strict tool-pick accuracy — **both tiers clear ~70%, but only with the grammar**
 
-The question §7.3 row 2 gates the whole chat surface on. Tier 2 (`qwen3-1.7b-q4`), the 12-question
-cut-down of §5.5's 30, three passes, 36 generations:
+The question §7.3 row 2 gates the whole chat surface on. Two tiers, the 12-question cut-down of
+§5.5's 30, three passes each, run **unconstrained and then grammar-constrained** because those measure
+different things.
 
-| Pass | Strict | `name_correct` | Failed |
-|---|---|---|---|
-| 1 | 11/12 (92%) | **12/12** | q08 |
-| 2 | 12/12 (100%) | 12/12 | — |
-| 3 | 12/12 (100%) | 12/12 | — |
-| **Mean** | **35/36 = 97%** | **36/36** | |
+| Model | Unconstrained | Grammar-constrained |
+|---|---|---|
+| `qwen3-0.6b-q4` (tier 1) | 8, 7, 6 → **58%** | 9, 10, 9 → **78%** |
+| `qwen3-1.7b-q4` (tier 2) | 11, 10, 11 → **89%** | 11, 12, 12 → **97%** |
 
-**Tool selection was perfect: 36 out of 36.** That includes both Taglish questions, both two-tool
-questions, and — importantly — **both out-of-scope questions, where naming any tool at all is a
-failure.** The over-eager-tool-use failure mode §5.5 worried about did not appear once.
+**Both tiers clear the ~70% bar when constrained. Tier 1 does not clear it unconstrained.**
 
-### The single miss is a period-extraction bug in Taglish, not a tool-selection one
+### Why both numbers had to be taken
 
-**q08: *"nung nakaraang buwan, saan napunta ang pera ko?"*** — expected
-`get_spend_by_category / last_month`. The model chose the right tool and the wrong period.
-"nung nakaraang buwan" is *last month*.
+Scoring a 0.6B unconstrained conflates two failures that have nothing to do with each other, and only
+one of them is a reason to cut a tier. Tier 1's unconstrained output shows it plainly:
 
-This is precisely why §5.5 forbids partial credit: right tool with the wrong period is a wrong answer
-to the user, and it is the difference between showing them August and showing them July. It is also
-why the scorer keeps `name_correct` and `args_correct` as separate counters — a period-extraction
-problem is prompt work on temporal phrases, while a tool-selection problem would have been a far
-deeper worry. This is the shallow one.
+```
+q08 → {"category":"this_month","period":"this_month"}     no "tool" key at all
+q09 → ```json{"tool":"get_limits","args":{"}}`            right tool, truncated JSON
+```
 
-**It is also flaky rather than systematic: q08 failed once in three passes and passed twice.** That
-matters for how it gets fixed. A deterministic failure would be a prompt bug; an intermittent one at
-non-zero temperature is a sampling margin, and the fix is either a clearer temporal instruction in the
-prompt or a lower temperature for the tool-selection round. Both belong to Task 10, not here.
+q09 chose correctly and then failed to close its own JSON. That is a **serialisation** failure, and
+serialisation is exactly what GBNF guarantees — question 2 measured 0 malformed in 50. The
+sub-counters confirm it: across every unconstrained tier-1 pass, `name_correct` **equals** strict and
+`right_tool_wrong_args` is **empty**. It never once picked the right tool and fumbled the argument; it
+failed to emit a parseable call at all.
+
+**So the 20-point gap between 58% and 78% is almost entirely format, not judgement.** The 0.6B largely
+knows which tool it wants and cannot reliably write it down.
+
+**Design consequence, and it is a real one:** for tier 2 the grammar is belt-and-braces. **For tier 1
+it is load-bearing.** A tier-1 build that ships without GBNF is a tier-1 build that fails more than
+40% of questions. That is a hard requirement on `lib/ai/tools/grammar.ts`, not an optimisation to be
+deferred.
+
+Constraining also **halves the variance**: tier 2 unconstrained scored 97% in one session and 89% in
+another, while constrained it scored 97% in both.
+
+### What still fails, and it is not what the spec feared most
+
+Tier 1's constrained failures are concentrated and diagnosable:
+
+| Question | Failed | What it is |
+|---|---|---|
+| **q08** Taglish *"nung nakaraang buwan"* | 3/3 | Period extraction. Right tool, wrong period. |
+| **q12** *"Sino ang presidente ng Pilipinas?"* | 3/3 | **Over-eager tool use.** Calls a ledger tool for an out-of-scope question. |
+| **q11** *"What's the weather today?"* | 2/3 | Same. |
+
+**q08 is the one weakness shared by both tiers**, in both modes — the only question tier 2 ever gets
+wrong. A Taglish temporal phrase is the single hardest thing in this set, and the fix is prompt work
+on temporal expressions in Task 10, plus possibly a lower temperature for the tool round.
+
+**q11 and q12 are tier 1 only, and they are §5.5's over-eager-tool-use failure mode arriving exactly
+as predicted.** A grammar cannot fix this: the `CANNOT_ANSWER` branch is available and the model
+declines to take it. Tier 2 never made this mistake, in any mode, in any pass.
+
+The consequence is bounded rather than alarming: tier 1 will dispatch a ledger query for "who is the
+president", get spending data back, and then §3.5's grounding check and §3.6's output guard decide
+what the user sees. It is a relevance failure, not a fabrication one. But it is the reason tier 1
+scores 78% and not 90%, and it should be stated in any doc that calls tier 1 "free for everyone".
 
 ### What this does and does not license
 
-**Does:** tier 2 comfortably clears §7.3 row 2's ~70% bar, so on this evidence the feature ships as a
-chat surface rather than the §7.4 fallback — *for anyone who can run tier 2*.
+**Does:** on this evidence the feature ships as a **chat surface** rather than the §7.4 fallback, at
+both tiers, provided the grammar ships with it. §7.3 row 2 does not fire. §0.3's free-for-everyone
+claim survives, because tier 1 at ~0.4 GB is the tier that has to carry it and it reaches 78%.
 
 **Does not:**
-- **Tier 1 is unmeasured, and tier 1 is the whole free-tier question** (§6 risks 1 and 7). At ~0.4 GB
-  it is the only tier casually downloadable on Philippine prepaid data, and a 0.6B has far less
-  headroom for exactly the argument-extraction the one failure here landed on.
 - This is the **12-question cut-down**, not §5.5's 30, and the advice questions are excluded because
-  `triage.ts` does not exist.
-- The system prompt is **hand-written for this spike**, not the production prompt from Task 10. A
-  different prompt scores differently; this measures the model's capability, not the shipped system.
-- **Run unconstrained**, deliberately, so the number reflects the model's choice rather than a
-  grammar's compulsion (see question 2).
-- On charge, like every other timing figure here. Per-question latency was 3.1–4.8 s, slower than the
-  1.4 s single-tool case because the five-tool system prompt is longer to prefill.
+  `triage.ts` does not exist. §5.5's 30-question set is still owed.
+- The system prompt and the grammar are **hand-written for this spike**, not Task 10's production
+  prompt or Task 11's generated grammar. This measures the models' capability, not the shipped system.
+- **Three passes is a thin noise floor**, and it is visibly thin: tier 2 unconstrained scored 97% in
+  one session and 89% in another. Treat single-percentage-point differences as meaningless.
+- Tiers 3, 4 and 5 are unmeasured. Tier 4's number is the one §7.3 row 2 is actually written against,
+  and it cannot be taken on this device.
+- On charge, like every timing figure here. Per-question latency was 3.1–4.8 s on tier 2 unconstrained
+  and ~1.0 s on tier 1 constrained, the five-tool system prompt being longer to prefill than the
+  single-tool one used in question 2.
+
+**Load times, incidentally, and they favour tier 1 more than the accuracy numbers do:** tier 1 loaded
+in 1,639–2,350 ms against tier 2's 3,805–5,662 ms, and answered constrained questions in about a
+second. For §6 risk 10's wake-from-kill problem, tier 1 is the far gentler experience.
 
 ---
 
@@ -372,7 +407,7 @@ Three things cost time and are worth knowing in advance:
 | 2. Per-request GBNF | **Answered: yes**, per request and 0/50 malformed — but §3.4's grammar design fails |
 | 3. Thinking suppression | **Answered: yes**, `enable_thinking: false` under jinja, 15x on wall clock |
 | 4. Peak RSS + app-switch survival | **partial**, one sample, debug build, no app-switch test |
-| 5. Strict tool-pick accuracy | **Tier 2 answered: 97%**, 36/36 on tool name. Tier 1 still unmeasured |
+| 5. Strict tool-pick accuracy | **Answered, tiers 1 and 2.** Constrained: 78% and 97%. Tiers 3–5 unmeasured |
 | 6. APK delta | **partial**, floor of 75.4 MB, no baseline build |
 | 7. `Device.totalMemory` truthfulness | not started |
 
