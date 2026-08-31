@@ -14,9 +14,16 @@ const EMAIL_PATTERN = "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$";
 // Deliberately not `async`: the plugin body itself awaits nothing, and the repo lints
 // @typescript-eslint/require-await as an error. The handler below does await, so it stays async.
 export function authRoutes(app: FastifyInstance): Promise<void> {
+  // Strict per-IP tier for the unauthenticated auth surface: without it anyone can create
+  // otp_requests rows without limit, and mail to arbitrary addresses once a real provider
+  // replaces the dev log. OTP_MAX_ATTEMPTS only bounds guesses against an existing request.
+  // The plugin's 429 flows through `errorHandler`, which emits the `rate_limited` envelope.
+  const rateLimit = { max: app.config.authRateLimitMax, timeWindow: 60_000 };
+
   app.post(
     "/auth/otp/request",
     {
+      config: { rateLimit },
       schema: {
         body: {
           type: "object",
@@ -52,6 +59,7 @@ export function authRoutes(app: FastifyInstance): Promise<void> {
   app.post(
     "/auth/otp/verify",
     {
+      config: { rateLimit },
       schema: {
         body: {
           type: "object",
@@ -112,6 +120,7 @@ export function authRoutes(app: FastifyInstance): Promise<void> {
   app.post(
     "/auth/token/refresh",
     {
+      config: { rateLimit },
       schema: {
         body: {
           type: "object",

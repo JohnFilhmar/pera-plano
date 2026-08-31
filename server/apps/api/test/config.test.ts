@@ -14,17 +14,20 @@ describe("loadConfig", () => {
       jwtSecret: "secret",
       port: 3000,
       telemetryRateLimitMax: 60,
+      authRateLimitMax: 10,
     });
   });
 
-  it("parses PORT and TELEMETRY_RATE_LIMIT_MAX when provided", () => {
+  it("parses PORT and the rate limit maximums when provided", () => {
     const config = loadConfig({
       ...VALID_ENV,
       PORT: "8080",
       TELEMETRY_RATE_LIMIT_MAX: "5",
+      AUTH_RATE_LIMIT_MAX: "3",
     });
     expect(config.port).toBe(8080);
     expect(config.telemetryRateLimitMax).toBe(5);
+    expect(config.authRateLimitMax).toBe(3);
   });
 
   it("throws when DATABASE_URL is missing", () => {
@@ -52,5 +55,20 @@ describe("loadConfig", () => {
         TELEMETRY_RATE_LIMIT_MAX: "lots",
       }),
     ).toThrow("TELEMETRY_RATE_LIMIT_MAX");
+  });
+
+  it("throws on a non-numeric AUTH_RATE_LIMIT_MAX", () => {
+    expect(() =>
+      loadConfig({
+        ...VALID_ENV,
+        AUTH_RATE_LIMIT_MAX: "plenty",
+      }),
+    ).toThrow("AUTH_RATE_LIMIT_MAX");
+  });
+
+  it("throws on a zero AUTH_RATE_LIMIT_MAX", () => {
+    expect(() =>
+      loadConfig({ ...VALID_ENV, AUTH_RATE_LIMIT_MAX: "0" }),
+    ).toThrow("AUTH_RATE_LIMIT_MAX");
   });
 });

@@ -3,6 +3,7 @@ export type AppConfig = {
   jwtSecret: string;
   port: number;
   telemetryRateLimitMax: number;
+  authRateLimitMax: number;
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -27,5 +28,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       `Invalid TELEMETRY_RATE_LIMIT_MAX: ${env.TELEMETRY_RATE_LIMIT_MAX}`,
     );
   }
-  return { databaseUrl, jwtSecret, port, telemetryRateLimitMax };
+  // Strict tier: the OTP request endpoint is unauthenticated and creates rows (and, once a
+  // mail provider replaces the dev log, sends mail) on every call.
+  const authRateLimitMax =
+    env.AUTH_RATE_LIMIT_MAX === undefined ? 10 : Number(env.AUTH_RATE_LIMIT_MAX);
+  if (!Number.isInteger(authRateLimitMax) || authRateLimitMax < 1) {
+    throw new Error(`Invalid AUTH_RATE_LIMIT_MAX: ${env.AUTH_RATE_LIMIT_MAX}`);
+  }
+  return {
+    databaseUrl,
+    jwtSecret,
+    port,
+    telemetryRateLimitMax,
+    authRateLimitMax,
+  };
 }
