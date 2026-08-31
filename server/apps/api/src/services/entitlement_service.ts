@@ -34,13 +34,18 @@ export async function claimPregrantIfAny(
   email: string,
   nowMs: number,
 ): Promise<boolean> {
-  const pregrant = await prisma.betaPregrant.findUnique({ where: { email } });
-  if (!pregrant || pregrant.claimedAt !== null) return false;
-
-  await prisma.betaPregrant.update({
-    where: { email },
+  // Claimed with a single conditional write, not a read followed by an update.
+  // A pregrant is permanent Plus, so "single use" has to be an invariant the
+  // database enforces: read-then-update let all eight of eight concurrent
+  // callers claim the same pregrant, and the audit stamp recorded whichever
+  // request landed last rather than the one that actually won. Postgres
+  // evaluates this predicate and its write as one statement, so exactly one
+  // caller can ever see count === 1.
+  const claimed = await prisma.betaPregrant.updateMany({
+    where: { email, claimedAt: null },
     data: { claimedAt: BigInt(nowMs), claimedByUserId: userId },
   });
+  if (claimed.count === 0) return false;
 
   const existing = await prisma.entitlement.findUnique({ where: { userId } });
   if (existing?.source === "beta_cohort" || existing?.source === "manual_grant") {
