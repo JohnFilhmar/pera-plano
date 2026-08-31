@@ -381,6 +381,18 @@ Prisma models (tables): `users`, `otp_requests`, `refresh_tokens`, `parser_rules
 `telemetry_parse_stats`, `backup_vaults`, `entitlements`, `google_identities`,
 `install_attestations`.
 
+**Unknown request fields are rejected, not ignored (set 2026-08-31).** The app is built with
+`ajv.customOptions.removeAdditional: false`, so a body carrying a field the schema does not declare
+returns `400 validation_error`. Fastify's default is to strip silently, which made
+`additionalProperties: false` look like it enforced the telemetry privacy stance while enforcing
+nothing. Rejecting is the correct posture and matches `backend-security-baseline`'s
+`forbidNonWhitelisted`, but it means **a client that sends an extra field starts failing rather than
+being quietly tolerated.** Client and server schemas must move together.
+
+Rate limits, per IP, one-minute windows: auth routes `AUTH_RATE_LIMIT_MAX` (default 10), telemetry
+`TELEMETRY_RATE_LIMIT_MAX` (default 60), Google routes `GOOGLE_AUTH_RATE_LIMIT_MAX` (default 20).
+Exceeding one returns `429` with code `rate_limited`.
+
 Routes (all JSON; versioned prefix `/v1` except `/health`):
 
 | Method + path | Auth | Request → Response |

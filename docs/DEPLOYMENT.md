@@ -8,6 +8,19 @@ self-hosted box, driven from the GitHub Actions **Deploy web** workflow
 reserved for it (see `docker-compose.yml`) — so this pipeline covers nothing beyond
 `apps/web`. Extend it, don't replace it, once `apps/api` exists.
 
+**Two things the API must have before it goes behind the proxy (2026-08-31).** Both are inert today
+because nothing deploys the API, and both are silent failures rather than loud ones:
+
+1. **`Fastify({ trustProxy })` is not set.** Behind a reverse proxy, `request.ip` is the proxy's
+   address, so every client shares one rate-limit bucket. That is worse than having no limit: the
+   auth tier allows 10 requests per minute, so the first ten users per minute would consume the
+   budget for everyone, and the eleventh gets a 429. Rate limiting would also stop protecting
+   anything, since no client can be distinguished. Set `trustProxy` to the proxy's address, never
+   blanket `true`, or a client can spoof `X-Forwarded-For` and dodge the limit entirely.
+2. **The limiter uses the in-process store.** With N API replicas the effective budget is `max × N`,
+   and `backend-security-baseline` calls for Redis-backed limiting so limits hold across replicas.
+   Single-replica deploys are fine until they are not, and the failure is invisible.
+
 **Planned, not yet built (2026-08-31).** `apps/api` is specified in
 `docs/superpowers/plans/2026-08-02-server-functional-core.md`, whose Task 1 adds the workspace, an
 `api` target in `server/Dockerfile`, and a `postgres` service in the root `docker-compose.yml`, all
