@@ -1,0 +1,200 @@
+.page {
+  padding-bottom: 2rem;
+}
+
+/* The same lit band the home page opens with, so a visitor arriving here from a shared link
+   lands somewhere that is recognisably the same product. */
+.hero {
+  padding: clamp(3rem, 8vw, 5rem) 1.5rem clamp(2.5rem, 6vw, 3.5rem);
+  background: var(--ink);
+  color: #e8f0ec;
+}
+
+.heroInner {
+  max-width: var(--measure);
+  margin: 0 auto;
+}
+
+.heroEyebrow {
+  margin: 0;
+  color: #9bb0a6;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.tagline {
+  margin: 0.9rem 0 0;
+  max-width: 22ch;
+  font-size: clamp(2.1rem, 5.5vw, 3.4rem);
+  line-height: 1.06;
+  color: #ffffff;
+}
+
+.lede {
+  margin: 1.1rem 0 0;
+  max-width: 44ch;
+  font-size: clamp(1.02rem, 2vw, 1.2rem);
+  color: #cfe0d7;
+}
+
+.scrollCue {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 1.6rem;
+  padding: 0.65rem 1.1rem;
+  border: 1px solid rgba(34, 197, 94, 0.45);
+  border-radius: 999px;
+  background: rgba(34, 197, 94, 0.1);
+  color: #e8f0ec;
+  font-size: 0.92rem;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background 200ms ease, border-color 200ms ease;
+}
+
+.scrollCue::after {
+  content: "↓";
+}
+
+.scrollCue:hover {
+  border-color: var(--brand-2);
+  background: rgba(34, 197, 94, 0.18);
+  color: #ffffff;
+}
+
+.scrollCue:focus-visible {
+  outline: 2px solid var(--brand-2);
+  outline-offset: 3px;
+}
+
+.section {
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: 3rem 1.5rem 0;
+}
+
+.section h2 {
+  margin: 0 0 1rem;
+  font-size: clamp(1.5rem, 3.2vw, 2.1rem);
+}
+
+.section p {
+  max-width: 46rem;
+  margin: 0.85rem 0;
+}
+
+.eyebrow {
+  margin: 0 0 0.6rem;
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.lede2 {
+  color: var(--muted);
+}
+
+.offers {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  margin-top: 1.5rem;
+}
+
+.offer {
+  padding: 1.25rem 1.35rem;
+  border: 1px solid var(--line);
+  border-radius: 0.9rem;
+  background: var(--surface);
+}
+
+/* The first card is the reason anyone is on this page. */
+.offer:first-child {
+  border-color: var(--brand);
+  background: var(--mint);
+}
+
+.offer h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1.08rem;
+}
+
+.offer p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.offer:first-child p {
+  color: var(--text);
+}
+
+.asks {
+  margin: 1.25rem 0 0;
+  padding: 0;
+  list-style: none;
+  max-width: 46rem;
+}
+
+.asks li {
+  position: relative;
+  padding: 0.85rem 0 0.85rem 1.75rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.asks li:first-child {
+  border-top: 1px solid var(--line);
+}
+
+.asks li::before {
+  content: "";
+  position: absolute;
+  top: 1.45em;
+  left: 0.15rem;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: var(--brand);
+}
+
+.passwordNote {
+  padding: 0.85rem 1.1rem;
+  border-left: 3px solid var(--brand);
+  background: var(--mint);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.data {
+  max-width: 46rem;
+  margin: 1rem 0;
+  padding-left: 1.2rem;
+}
+
+.data li {
+  margin: 0.6rem 0;
+  color: var(--muted);
+}
+
+.closed {
+  max-width: 32rem;
+  padding: 1.3rem 1.45rem;
+  border: 1px dashed var(--line);
+  border-radius: 0.9rem;
+  background: var(--surface);
+}
+
+.closed h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1.1rem;
+}
+
+.closed p {
+  margin: 0.6rem 0 0;
+  color: var(--muted);
+}

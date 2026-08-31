@@ -21,6 +21,7 @@ describe("message catalog", () => {
       "serviceStatus",
       "counselRequired",
       "marketing",
+      "beta",
       "support",
       "privacy",
       "terms",

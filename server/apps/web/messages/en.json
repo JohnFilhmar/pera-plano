@@ -8,6 +8,7 @@
   },
   "nav": {
     "home": "Home",
+    "beta": "Beta",
     "support": "Support",
     "privacy": "Privacy",
     "terms": "Terms",
@@ -31,7 +32,8 @@
     "paragraphs": [
       "PeraPlano is an Android app. It has no sign-in, no user accounts, and no multi-device sync.",
       "Everything the app records lives in an encrypted database on your own phone. There is no copy on our servers to look at, to hand over, or to delete.",
-      "Cloud backup and multi-device sync are described in our planning documents as future PeraPlano Plus features. They are not available, and no part of your ledger is transmitted anywhere today."
+      "Cloud backup and multi-device sync are described in our planning documents as future PeraPlano Plus features. They are not available, and no part of your ledger is transmitted anywhere today.",
+      "One exception, and it is not your ledger: if you signed up as a beta tester, we hold the email address you gave us so Google Play can invite you to the closed test. That list is described in full in the privacy notice, and asking to be removed takes one message."
     ]
   },
   "counselRequired": {
@@ -511,7 +513,7 @@
       },
       "whatDataExists": {
         "heading": "What data exists, where it lives, how long it stays",
-        "note": "The table below is reproduced unchanged from the lifecycle table in PeraPlano's internal privacy document, so it describes the full design and not only the parts that have shipped. Cloud backup, row 6, is a planned PeraPlano Plus feature that is not available today, so nothing currently takes the path that row describes. Row 5 covers aggregate telemetry, and the row states its own limits: no notification content, no amounts, no merchants, no counterparties, and opt-out available.",
+        "note": "The table below is reproduced unchanged from the lifecycle table in PeraPlano's internal privacy document, so it describes the full design and not only the parts that have shipped. Cloud backup, row 6, is a planned PeraPlano Plus feature that is not available today, so nothing currently takes the path that row describes. Row 5 covers aggregate telemetry, and the row states its own limits: no notification content, no amounts, no merchants, no counterparties, and opt-out available. Row 9 is the one category that is not on your phone at all: the beta tester signup list, which exists only if you chose to join it.",
         "caption": "Every category of data PeraPlano touches: where it comes from, where it is kept, how long it stays, and whether it ever leaves your phone.",
         "headers": [
           "#",
@@ -585,6 +587,14 @@
             "Company support mailbox",
             "≤ 24 months after case closure",
             "Yes, by the user's own action; users are advised not to paste raw notification text."
+          ],
+          [
+            "9",
+            "Beta tester signup list: Google account email, first name, optional phone model, consent record",
+            "Submitted by the person on the beta page",
+            "Company spreadsheet, with Google as processor",
+            "Until public release plus ninety days, or until the person asks to be removed",
+            "Not device data. It is given to us directly, and shared with Google in order to issue the Play closed-testing invitation."
           ]
         ],
         "invariantsHeading": "Three rules that bind the table above",
@@ -606,6 +616,15 @@
           "Telemetry counts, never content. A parser failure report carries the provider's identity and a failure class, never the text that failed to parse.",
           "No enrichment. PeraPlano does not look up, buy, or infer additional data about you or the people you transact with from any outside source.",
           "Collection follows function. Every field in the data model exists because a shipped feature reads it; nothing is collected speculatively. Adding a field to anything that syncs requires an update to the table above, a review of the Play Data safety declaration, and a check of this notice in the same release."
+        ]
+      },
+      "betaProgramme": {
+        "heading": "The beta tester list",
+        "paragraphs": [
+          "If you signed up on the beta page, we hold the Google account email you gave us, a first name, an optional phone model, the date you submitted it, and the fact that you ticked the consent box. Nothing else.",
+          "The basis is your consent and the purpose is single: adding you to the closed test in Google Play Console so that Google can send you the invitation. Google acts as our processor for the spreadsheet the list lives in, and as the distributor of the test itself.",
+          "It is kept until public release plus ninety days, or until you ask to be removed, whichever comes first. Removal is by request to the support mailbox named in this notice, and the data deletion page describes the route.",
+          "This is the only category of personal data PeraPlano keeps on a server. Your ledger is not part of it, is not linked to it, and still never leaves your phone."
         ]
       },
       "whoReceivesIt": {
@@ -822,6 +841,14 @@
           "One privacy consequence of the matrix is worth stating plainly: because cloud backup is a Plus capability, the app never transmits a free-tier user's financial data off the device at all. Today it transmits nobody's — cloud backup has not shipped in any tier."
         ]
       },
+      "betaTesters": {
+        "heading": "Beta testers keep Plus",
+        "paragraphs": [
+          "If you joined the closed test through the beta page and took part in it, you keep PeraPlano Plus at no cost after public release, for as long as the app is published and Plus exists as a tier. It is not a trial, a discount, or a first year free.",
+          "The record is the signup list itself: the address you gave us and the date you gave it. If you are on that list and Plus is ever charged for, you are not charged.",
+          "Two boundaries, stated rather than discovered later. If PeraPlano is discontinued there is nothing left to grant, so this ends with the app. And if the tiers are ever renamed or reorganised, you keep the equivalent of what Plus covered on the day you joined, not whatever a future tier happens to be called."
+        ]
+      },
       "pricingNotPublished": {
         "heading": "Pricing is not published yet",
         "paragraphs": [
@@ -994,6 +1021,14 @@
           "After the purge, a transaction the app recorded automatically keeps its structured fields, but the screen that answers \"why was this recorded?\" can no longer show you the notification behind it. It says the original is no longer retained, rather than showing you nothing."
         ]
       },
+      "removeFromBetaList": {
+        "heading": "Take me off the beta tester list",
+        "paragraphs": [
+          "The beta signup list is the one thing about you that sits on our side rather than on your phone. It holds the Google account email you gave us, a first name, an optional phone model and the date.",
+          "Write to the support address and say you want off the list. The row is deleted. You do not have to prove who you are or give a reason, because the list is not tied to any account.",
+          "Leaving the list does not remove you from the closed test itself. Leave that from the test's page in the Play Store, or say so in the same message and the tester entry goes too."
+        ]
+      },
       "outOfOurReach": {
         "heading": "What deleting in the app cannot reach",
         "paragraphs": [
@@ -1030,6 +1065,96 @@
         "heading": "Why this page exists",
         "body": "Google Play requires a public route to deleting your data, reachable without installing anything. Because PeraPlano keeps your ledger on your phone and nowhere else, most of what follows is something you do on the device rather than something you ask us for."
       }
+    }
+  },
+  "beta": {
+    "title": "Become a beta tester",
+    "eyebrow": "Closed testing · Android · Philippines",
+    "tagline": "Test it before launch. Keep Plus for life.",
+    "lede": "We need a small group of people willing to run their real money through PeraPlano and tell us what it gets wrong.",
+    "scrollCue": "What we need from you",
+    "scrollCueTarget": "#what-we-ask",
+    "offer": {
+      "eyebrow": "The deal",
+      "heading": "What you get",
+      "items": [
+        {
+          "title": "Plus, free, permanently",
+          "body": "When paid tiers arrive after public release, everyone on this list keeps Plus at no cost. Not a trial, not a discount, not a first year."
+        },
+        {
+          "title": "A direct line",
+          "body": "One person builds this. What you report goes to them, not into a queue."
+        },
+        {
+          "title": "Your corrections ship",
+          "body": "Every misread notification you flag becomes a parser fix, and it lands before launch rather than after it."
+        }
+      ]
+    },
+    "asks": {
+      "eyebrow": "The work",
+      "heading": "What we are asking of you",
+      "lede": "Worth being blunt about, because a tester who installs the app and never opens it helps nobody.",
+      "items": [
+        "An Android phone you actually use for money. GCash, Maya, a bank app — whatever already sends you notifications.",
+        "A few weeks of using it as your real tracker, rather than as a demo you open once.",
+        "Telling us when a notification is read wrong, or missed completely. That is the whole job."
+      ]
+    },
+    "why": {
+      "eyebrow": "The address",
+      "heading": "Why we need a Google account email",
+      "body": "Google Play closed testing works from an email list. The address you give us goes into Play Console, and Google sends you the invitation and the opt-in link. It has to be the Google account signed in to the Play Store on the phone you will test on, or the invitation reaches nobody.",
+      "passwordNote": "We will never ask for your password. No page on this site has a password field, and no part of PeraPlano ever needs one."
+    },
+    "form": {
+      "eyebrow": "The list",
+      "heading": "Join the beta list",
+      "emailLabel": "Google account email",
+      "emailHint": "The account signed in to the Play Store on your test phone.",
+      "firstNameLabel": "First name",
+      "firstNameHint": "So the invitation is not addressed to a stranger.",
+      "deviceLabel": "Phone model",
+      "deviceHint": "Optional. Tells us which devices are actually covered.",
+      "devicePlaceholder": "Samsung A54, Redmi Note 12, Infinix Hot 30",
+      "consentLabel": "I agree to PeraPlano keeping these details in order to invite me to the closed test.",
+      "submitLabel": "Join the beta list",
+      "submittingLabel": "Sending",
+      "successHeading": "You are on the list",
+      "successBody": "Watch for an invitation from Google Play. You have to tap the opt-in link inside it before the test build becomes installable — nothing happens until you do.",
+      "duplicateHeading": "You were already on the list",
+      "duplicateBody": "Nothing changed, and nothing was duplicated. The invitation still comes from Google Play.",
+      "errorHeading": "That did not send",
+      "errors": {
+        "email": "Enter the Google account email you use on the Play Store.",
+        "firstName": "Enter a first name.",
+        "consent": "Tick the box so we know we may keep your email.",
+        "rate": "Too many attempts from this connection. Wait a minute, then try again.",
+        "closed": "Signups are not open yet.",
+        "server": "Something went wrong on our side. Try again in a moment."
+      },
+      "closedHeading": "Signups are not open from this page yet",
+      "closedBody": "The list is not accepting submissions here yet. Write to the support address below and you will be added by hand — it reaches the same list."
+    },
+    "data": {
+      "eyebrow": "The exchange",
+      "heading": "What we do with it",
+      "items": [
+        "It is used for exactly one thing: adding you to the closed test in Google Play Console.",
+        "It is kept in a private spreadsheet, and shared with Google, because Play is how the test is distributed.",
+        "It is kept until public release plus ninety days, or until you ask to be removed, whichever comes first.",
+        "No ads, no selling, no newsletter. Getting removed takes one message and no explanation."
+      ],
+      "linkLabel": "How this sits in the privacy notice",
+      "linkPath": "/privacy"
+    },
+    "promise": {
+      "eyebrow": "The commitment",
+      "heading": "About the Plus promise",
+      "body": "A promise about money belongs with the other commercial commitments rather than only on a page that is trying to recruit you. The clause on the terms page is the version that binds us, including what happens if the tiers are ever reorganised.",
+      "linkLabel": "Read the beta tester clause",
+      "linkPath": "/terms"
     }
   }
 }

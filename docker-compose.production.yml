@@ -30,5 +30,11 @@ services:
       DPO_EMAIL: ${DPO_EMAIL:-}
       SUPPORT_EMAIL: ${SUPPORT_EMAIL:-}
       NPC_REGISTRATION: ${NPC_REGISTRATION:-}
+      # Unlike everything above, these two are secrets rather than published identifiers —
+      # see the note in .github/workflows/deploy.yml. Both blank is a supported state: the
+      # /beta form is replaced by a support-mailbox notice and the API answers 503, and
+      # unlike the compliance values it does not stop the container booting.
+      BETA_SIGNUP_WEBHOOK_URL: ${BETA_SIGNUP_WEBHOOK_URL:-}
+      BETA_SIGNUP_TOKEN: ${BETA_SIGNUP_TOKEN:-}
     ports:
       - "127.0.0.1:3003:3000"

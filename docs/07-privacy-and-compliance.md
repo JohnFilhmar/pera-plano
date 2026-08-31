@@ -156,6 +156,7 @@ If cloud backup ships with a sign-in identity, Play's account-deletion policy ap
 | 6 | Cloud backup snapshots (Plus, opt-in) | Encrypted sync of rows 2–3 | Company backup infrastructure (via PIP under contract) | Until the user disables backup, wipes, or deletes the sign-in identity; server copies removed within 30 days of any of those | Yes — this is the only path user financial data ever takes off the device, and it is opt-in. |
 | 7 | Export files (CSV) | Generated on demand by the user | Wherever the user saves or shares them | User-controlled | Only by the user's own action; the app warns that exports are unencrypted and outside its protection. |
 | 8 | Support correspondence | User-initiated | Company support mailbox | ≤ 24 months after case closure | Yes, by the user's own action; users are advised not to paste raw notification text. |
+| 9 | Beta tester signup list: Google account email, first name, optional phone model, consent record | Submitted by the person on the beta page | Company spreadsheet, with Google as processor | Until public release plus ninety days, or until the person asks to be removed | Not device data. It is given to us directly, and shared with Google in order to issue the Play closed-testing invitation. |
 
 Lifecycle invariants (restating the domain invariants that bind this table):
 

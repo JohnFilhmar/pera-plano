@@ -33,11 +33,28 @@ const EMAIL_FIELDS = new Set<ComplianceField>(["DPO_EMAIL", "SUPPORT_EMAIL"]);
 
 export const DEFAULT_PUBLIC_BASE_URL = "https://peraplano.filhmar.online";
 
+/**
+ * Where the /beta signup form sends a submission. Deliberately NOT a COMPLIANCE_FIELD:
+ * those abort production boot when unset, which is right for a legal identifier published
+ * on a notice and wrong for this. A missing webhook means one optional page cannot take
+ * submissions; it must not stop the privacy notice being served.
+ *
+ * Undefined when either half is absent or the URL is unusable, so callers get one thing to
+ * check rather than two half-configured strings. The page renders a "not open yet" state
+ * and the route answers 503 — the same principle as `requiredMarker`: show the truth, never
+ * a control that silently does nothing.
+ */
+export interface BetaSignupConfig {
+  readonly webhookUrl: string;
+  readonly token: string;
+}
+
 export interface AppConfig {
   readonly nodeEnv: "development" | "test" | "production";
   readonly logLevel: LogLevel;
   readonly publicBaseUrl: string;
   readonly contacts: ComplianceContacts;
+  readonly betaSignup: BetaSignupConfig | undefined;
 }
 
 export interface EnvParseResult {
@@ -141,9 +158,37 @@ export function parseEnvironment(
       logLevel: operational.data.LOG_LEVEL,
       publicBaseUrl,
       contacts,
+      betaSignup: readBetaSignup(raw),
     },
     missing,
   };
+}
+
+/**
+ * Both halves or neither. A URL without a token would post unauthenticated submissions to a
+ * public endpoint, and a token without a URL has nowhere to go — either way the honest
+ * answer is "not configured", not "configured badly".
+ *
+ * A malformed URL is treated as absent rather than thrown, deliberately: this function runs
+ * during `next build`, and a typo in an optional integration must not make the whole site
+ * uncompilable. The page then says signups are closed, which is true.
+ */
+function readBetaSignup(
+  raw: Readonly<Record<string, string | undefined>>,
+): BetaSignupConfig | undefined {
+  const webhookUrl = raw["BETA_SIGNUP_WEBHOOK_URL"]?.trim() ?? "";
+  const token = raw["BETA_SIGNUP_TOKEN"]?.trim() ?? "";
+  if (webhookUrl === "" || token === "") return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(webhookUrl);
+  } catch {
+    return undefined;
+  }
+  // Google issues these over https; anything else means a misconfiguration that would send
+  // an email address over the wire in the clear.
+  if (parsed.protocol !== "https:") return undefined;
+  return { webhookUrl, token };
 }
 
 /** Called from apps/web/instrumentation.ts only. See the spec's §5.3. */

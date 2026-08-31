@@ -78,6 +78,11 @@ export function DataDeletionPage({ messages, config }: { messages: Messages; con
           says so once the text is gone. */}
       <Prose sections={[{ id: "self-deleting", ...s.selfDeleting }]} />
 
+      {/* The beta signup list is the only thing this page can promise to delete that is not
+          already on the reader's own phone, so it belongs here rather than as a footnote on
+          /beta. Kept above "out of our reach" deliberately: this one IS in our reach. */}
+      <Prose sections={[{ id: "remove-from-beta-list", ...s.removeFromBetaList }]} />
+
       {/* privacy §4 row 7 (exports leave the app's protection the moment they are written)
           and row 8 (support correspondence, ≤ 24 months after case closure). The support
           address comes from AppConfig, never from the catalog — "ask us" with no address
