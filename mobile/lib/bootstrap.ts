@@ -16,6 +16,7 @@ import { purgeExpired } from "@/lib/db/repos/review_queue_repo";
 import { purgeExpiredRawCaptures } from "@/lib/db/repos/raw_notifications_repo";
 import { runIncomePass } from "@/lib/income/income_ledger_subscriber";
 import { seedParserRules } from "@/lib/ingest/seed_rules";
+import { captureInstallEvidence } from "@/lib/onboarding/install_evidence";
 import { purgeOldSupportReports } from "@/lib/support/outbox_runner";
 import { runRecurringPass } from "@/lib/recurring/recurring_ledger_subscriber";
 import { checkForRulesetUpdate } from "@/services/parser_rules";
@@ -49,6 +50,18 @@ export function __resetBootstrapForTests(): void {
  * worse than the recovery screen.
  */
 export async function bootstrapApp(): Promise<BootstrapResult> {
+  // Install evidence, FIRST and awaited (google-account-linking plan Task 7).
+  // First because it is the only step here whose input can be destroyed: the
+  // device's `firstInstallTime` is the sole record that someone installed
+  // inside the beta window, and it dies with the next uninstall. Everything
+  // below can be redone on the next launch; this cannot, so it must not sit
+  // behind a migration that might throw.
+  //
+  // `.catch` for the same reason `runRetention` swallows: recording a
+  // marketing cohort is not worth a device that will not open, and the module
+  // is already write-once and null-tolerant internally, so a rejection
+  // reaching here means something outside its own contract broke.
+  await captureInstallEvidence(Date.now()).catch(() => undefined);
   const db = await getDatabase();
   await runMigrations(db);
   await seedDefaultCategories();
