@@ -8,6 +8,7 @@ import { healthRoutes } from "./routes/health_routes.js";
 import { authRoutes } from "./routes/auth_routes.js";
 import { parserRulesRoutes } from "./routes/parser_rules_routes.js";
 import { telemetryRoutes } from "./routes/telemetry_routes.js";
+import { backupRoutes } from "./routes/backup_routes.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -43,5 +44,6 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
   void app.register(authRoutes, { prefix: "/v1" });
   void app.register(parserRulesRoutes, { prefix: "/v1" });
   void app.register(telemetryRoutes, { prefix: "/v1" });
+  void app.register(backupRoutes, { prefix: "/v1" });
   return app;
 }
