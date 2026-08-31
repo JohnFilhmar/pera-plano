@@ -118,6 +118,44 @@ const BAR_CLASS: Record<FilledState, string> = {
 /** Five bullets, not the real figure — the whole point of the toggle. */
 const HIDDEN_AMOUNT = "₱•••••";
 
+/**
+ * "₱3,999.00 in bills and ₱1,000.00 to goals are already set aside", or `null`
+ * when neither term deducted anything.
+ *
+ * WHY THIS SENTENCE EXISTS. Safe-to-Spend is headroom MINUS bills MINUS
+ * contributions, so the number can be zero while the driving limit still shows
+ * money left — the two figures are measuring different things, and both are
+ * correct. Without this line the home screen simply asserts both and leaves the
+ * user to reconcile them; the owner's 2026-08-31 report is what that looks like
+ * from the outside.
+ *
+ * NULL RATHER THAN "₱0.00 set aside" on the empty case. A line that appears
+ * every day to say nothing happened trains the user to stop reading it, which
+ * costs exactly the days it matters.
+ *
+ * IT MASKS WITH THE EYE TOGGLE. The toggle exists so the screen can be opened
+ * in public; a line still printing ₱2,500.00 next to a masked hero would leak
+ * the figure the mask was for.
+ */
+export function describeSetAside(
+  billsTerm: number,
+  contributionsTerm: number,
+  amountsHidden: boolean,
+): string | null {
+  const money = (centavos: number) =>
+    amountsHidden ? HIDDEN_AMOUNT : formatCentavos(centavos);
+
+  const parts: string[] = [];
+  if (billsTerm > 0) parts.push(`${money(billsTerm)} in bills`);
+  if (contributionsTerm > 0) parts.push(`${money(contributionsTerm)} to goals`);
+  if (parts.length === 0) return null;
+
+  // "are" for two terms, "is" for one — the spec's own worked example reads
+  // "₱3,999 in bills and ₱1,000 to goals are already set aside", and a fixed
+  // verb would misagree on every single-term day, which is most of them.
+  return `${parts.join(" and ")} ${parts.length > 1 ? "are" : "is"} already set aside`;
+}
+
 export function SafeToSpendHero({
   result,
   scopeLabel,
@@ -169,6 +207,12 @@ export function SafeToSpendHero({
   const containerClass = paused
     ? "gap-3 rounded-2xl bg-surface p-5 shadow-sm dark:border dark:border-line-dark dark:bg-surface-dark"
     : `gap-3 rounded-2xl p-5 ${FILL_CLASS[state]}`;
+
+  const setAsideLabel = describeSetAside(
+    result.billsTerm,
+    result.contributionsTerm,
+    amountsHidden,
+  );
 
   const inkClass = paused ? "text-fg-2 dark:text-fg-2-dark" : INK_CLASS[state];
   const mutedInkClass = paused ? "text-fg-2 dark:text-fg-2-dark" : MUTED_INK_CLASS[state];
@@ -229,6 +273,20 @@ export function SafeToSpendHero({
           {result.drivingFilterLabel === null
             ? `from your ${scopeLabel} limit`
             : `from your ${result.drivingFilterLabel} limit`}
+        </Text>
+      )}
+
+      {/* Key flows rule 2's other half: the caption names the driving limit AND
+          "the amounts deducted for Bills and Goal contributions". The limit half
+          shipped; this half did not, and the gap is what the owner reported on
+          2026-08-31 — "You're ₱2,220.00 over ... from your 8 categories limit"
+          sitting above a limits list reading "₱0.00 / ₱280.00 · ₱280.00 left".
+          Both figures were right. On a kinsenas payday a ₱2,500 scheduled
+          contribution came out of a ₱280 daily headroom, exactly as rules 7 and
+          15 prescribe, and nothing on the screen said so. */}
+      {setAsideLabel === null ? null : (
+        <Text testID="sts-set-aside" className={`text-secondary font-medium ${mutedInkClass}`}>
+          {setAsideLabel}
         </Text>
       )}
 
