@@ -84,6 +84,99 @@ production, the tokens are still decoded and still paid for in latency, and the 
 
 ---
 
+## Question 2: does llama.cpp accept a per-request GBNF, and does it hold? — **YES to both, and the grammar *design* in §3.4 does not survive**
+
+**Accepted as a per-request option:** yes. Option key `grammar`, passed on `completion()` alongside
+`messages` and `jinja`.
+**Changing the grammar between two calls on the SAME context takes effect:** **yes**, proven below.
+**Passing `null` returns to unconstrained:** yes.
+**Does constrained decoding hold?** **Yes — 0 malformed in 50 generations** against the tool grammar.
+
+### The runtime is fine. The rules were not.
+
+The per-request assertion is the one Task 5 step 3 warns is easy to skip, and the first attempt at it
+was inconclusive: both grammars produced prose because the model never took the tool-call branch at
+all (0 tool calls in 50 runs, with no system prompt — the grammar *permits* a tool call, nothing
+*induces* one). Adding a system prompt that induces one made the test discriminating.
+
+Four grammars, same context, same prompt, three runs each:
+
+| Grammar | `{` | `[` | `\r` | Result |
+|---|---|---|---|---|
+| tool grammar (positive) | yes | — | — | **3/3 exact tool calls**, 1.4–2.7 s |
+| `[^{] [^\n]*` (spec §3.4's) | **yes 3/3** | no | no | tool call via `({...})`, ` {...}`, ` ```json{...}``` ` |
+| `[^{\n]+` | no 3/3 | — | **yes 3/3** | 64 tokens of carriage returns, 6.2–6.8 s |
+| `[a-zA-Z0-9 ,.'!?%$-]+` | no 3/3 | no 3/3 | no 3/3 | 64 tokens of garbage, 5.6–6.3 s |
+| none | yes | — | — | 3/3 exact tool calls, 1.4 s |
+
+**The presence of each forbidden character tracked the active grammar exactly, call by call, on one
+context. That is the per-request answer, and it is unambiguous.**
+
+### What the three prose grammars actually did
+
+**1. The spec's rule forbids `{` only at position 0.** `[^{]` is a single character; `[^\n]*` then
+permits `{` freely. The model emitted a complete, valid tool call three times out of three by
+prefixing `(`, a space, or a ```` ```json ```` fence. One of those — the leading space — **parses as a
+valid tool call after trimming**.
+
+**2. Excluding the brace moved the problem, twice.** `[^{\n]+` removed `{`, and the model emitted a
+bracket-style call instead (`["get_spend_by_category", "args": ["this_month"]]`). It also never
+excluded `\r`, so runs degenerated into sixty-plus carriage returns at 6.2–6.8 s against 1.4 s for a
+real answer.
+
+**3. The strict positive class removed every escape and produced garbage, not prose.** All three runs
+hit the 64-token cap with nonsense, two of them base64:
+
+```
+eyJzIjoiNjVhYWMxYi0yNjVhLWRlMjMtYmFhYi0xYmQ0LWM3MDA6NjVhYWMxYiIsInJlZiI6IjE
+  → {"s":"65aac1b-265a-de23-baab-1bd4-c700:65aac1b","ref":"1
+```
+
+**Read that carefully and do not anthropomorphise it.** The model is not cleverly smuggling JSON past
+a filter. Base64's alphabet is alphanumeric, which is all the grammar permitted, so when every token
+the model actually wanted was masked it fell into a degenerate region of a mangled distribution and
+the surviving tokens happened to spell base64. The mechanism is boring. **The consequence is not.**
+
+### The finding that reshapes §3.4
+
+**GBNF is excellent at compelling a format and useless at forbidding one.**
+
+The positive tool grammar is flawless: 3/3 exact calls, 0/50 malformed, 1.4–2.7 s. Every attempt to
+express *"anything except a tool call"* failed, and each fix only revealed the next escape — brace,
+then bracket, then carriage return, then a degenerate alphabet. A negated character class forbids
+only what its author thought of, and the author is competing against a decoder that will happily take
+any surviving path.
+
+**So §3.4's forced-answer round cannot be implemented as a restrictive grammar.** When the model's
+intended output is masked it does not gracefully fall back to prose; it emits garbage, slowly. The
+options are:
+
+1. **Run the forced round with no grammar and have the dispatcher refuse to act on a tool call in
+   that round.** Simplest, robust, and it costs nothing: unconstrained generation with a good system
+   prompt answered correctly in 1.4 s. **Recommended.**
+2. Write a genuine sentence grammar. Far harder than a character class, and everything above says the
+   first three attempts at it will be wrong.
+
+**Consequence for implementation plan Task 11 (JSON Schema → GBNF):** the generator only ever needs to
+emit *positive* grammars describing a target shape, which is exactly what it was scoped to do. It must
+**not** grow a "prose branch" that tries to describe the complement. The `prose ::= [^{] [^\n]*`
+alternative in the spec's own fixture is the bug this spike was written to find.
+
+**Consequence for `dispatch.ts`:** parse the **raw** model output, not a trimmed copy. A leading space
+in front of a tool call is invisible after `.trim()` and turns a forbidden round into a dispatched one.
+
+All four grammars are kept in `lib/grammar_fixture.ts`, the broken ones included, so each failure
+stays reproducible for whoever writes `lib/ai/tools/grammar.ts`.
+
+### Incidental, and it matters for question 5
+
+**With a system prompt and no grammar at all, tier 2 emitted the exact expected tool call every
+time** — right tool name, right enum, no surrounding prose, 1.4–1.5 s. That is an encouraging early
+read on tool-pick, though it is one hand-written prompt against one tool and is not a substitute for
+the scored 12-question eval.
+
+---
+
 ## Question 3: can thinking be suppressed, and what does it cost? — **YES, and it is the single largest latency win available**
 
 **Lever found:** the chat template's own flag, not a prompt hack. `llama.rn` accepts
@@ -223,7 +316,7 @@ Three things cost time and are worth knowing in advance:
 | Question | Status |
 |---|---|
 | 1. Loads and streams | **Answered: yes**, tier 2, 12.90 tok/s mean |
-| 2. Per-request GBNF | not started |
+| 2. Per-request GBNF | **Answered: yes**, per request and 0/50 malformed — but §3.4's grammar design fails |
 | 3. Thinking suppression | **Answered: yes**, `enable_thinking: false` under jinja, 15x on wall clock |
 | 4. Peak RSS + app-switch survival | **partial**, one sample, debug build, no app-switch test |
 | 5. Strict tool-pick accuracy | not started |

@@ -494,6 +494,34 @@ answer — a total failure that a "does it compile" test happily passes. §5.2 a
 In the **forced-answer** round (§3.4) the grammar is prose-only. Asserting *that* is how a test proves
 the answer was forced, rather than merely that the loop stopped.
 
+> **MEASURED AND OVERTURNED 2026-08-31 — the prose-only grammar does not work, at any strength.**
+> Full evidence in `docs/superpowers/specs/2026-08-31-llama-rn-spike-findings.md` §"Question 2".
+>
+> **GBNF compels a format well and forbids one not at all.** The positive tool grammar is flawless on
+> device: 3/3 exact calls and **0 malformed in 50 generations**. Every attempt to express "anything
+> except a tool call" failed, and each fix revealed the next escape route:
+>
+> - `prose ::= [^{] [^\n]*`, **the rule written above**, forbids `{` only at position 0. The model
+>   emitted a complete valid tool call 3/3 by prefixing `(`, a space, or a ```` ```json ```` fence —
+>   and the leading-space variant *parses as a tool call after `.trim()`*.
+> - `[^{\n]+` removed the brace; the model emitted a bracket-style call instead, and since `\r` was
+>   never excluded, degenerated into 60+ carriage returns at 6.2–6.8 s.
+> - A strict positive class (`[a-zA-Z0-9 ,.'!?%$-]+`) removed every escape and produced **garbage,
+>   not prose** — 64 tokens of nonsense at 5.6–6.3 s, twice in base64.
+>
+> A masked model does not fall back to prose gracefully. It emits garbage, slowly.
+>
+> **Replacement design, recommended:** run the forced-answer round **with no grammar**, and have the
+> dispatcher refuse to act on a tool call in that round. Unconstrained generation with a good system
+> prompt answered correctly in **1.4 s**, so this costs nothing. The assertion that proves the answer
+> was forced then moves from "the fourth call received the prose-only grammar" to "**the fourth call's
+> tool call, if any, was discarded and an answer was returned**" — which is the property that was
+> actually wanted.
+>
+> **§5.2's "asserts both branches" stands** for the *tool* grammar. **`dispatch.ts` must parse the raw
+> output, never a trimmed copy** (see the leading-space case above). And the Task 11 generator must
+> only ever emit positive grammars; it must not grow a branch describing the complement.
+
 ### 3.4 The dispatch loop
 
 ```
