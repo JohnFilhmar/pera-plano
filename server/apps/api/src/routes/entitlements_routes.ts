@@ -1,11 +1,9 @@
 import type { FastifyInstance } from "fastify";
+import { resolveEntitlement } from "../services/entitlement_service.js";
 
-// Stub seam. The real entitlement resolver arrives with store billing; until then the
-// route deliberately reads nothing and always answers free/stub.
 export function entitlementsRoutes(app: FastifyInstance): Promise<void> {
-  app.get("/entitlements", { preHandler: app.authenticate }, () => ({
-    tier: "free",
-    source: "stub",
-  }));
+  app.get("/entitlements", { preHandler: app.authenticate }, (request) =>
+    resolveEntitlement(app.prisma, request.userId),
+  );
   return Promise.resolve();
 }
