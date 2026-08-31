@@ -132,16 +132,41 @@ function signServiceAccountAssertion(
   return `${header}.${claims}.${signature}`;
 }
 
+type ServiceAccount = { client_email: string; private_key: string };
+
+/**
+ * Refusing at wiring time is deliberate: a server that cannot reach Play Integrity must not
+ * accept traffic. The message names the variable because "Unexpected token in JSON" in a boot
+ * log tells an operator nothing about WHICH secret is wrong.
+ */
+function parseServiceAccount(serviceAccountJson: string): ServiceAccount {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(serviceAccountJson);
+  } catch {
+    throw new Error("Invalid PLAY_INTEGRITY_SERVICE_ACCOUNT_JSON: it is not valid JSON");
+  }
+  const account = parsed as Partial<ServiceAccount> | null;
+  if (
+    typeof account?.client_email !== "string" ||
+    account.client_email.length === 0 ||
+    typeof account.private_key !== "string" ||
+    account.private_key.length === 0
+  ) {
+    throw new Error(
+      "Invalid PLAY_INTEGRITY_SERVICE_ACCOUNT_JSON: expected client_email and private_key",
+    );
+  }
+  return { client_email: account.client_email, private_key: account.private_key };
+}
+
 export function createPlayIntegrityDecoder(options: {
   packageName: string;
   serviceAccountJson: string;
   fetchImpl?: typeof fetch;
 }): PlayIntegrityDecoder {
   const doFetch = options.fetchImpl ?? fetch;
-  const account = JSON.parse(options.serviceAccountJson) as {
-    client_email: string;
-    private_key: string;
-  };
+  const account = parseServiceAccount(options.serviceAccountJson);
 
   return async (integrityToken: string) => {
     const assertion = signServiceAccountAssertion(
@@ -164,7 +189,19 @@ export function createPlayIntegrityDecoder(options: {
       throw unavailable("Could not reach Google's token endpoint");
     }
     if (!tokenResponse.ok) throw unavailable("Google refused the service-account assertion");
-    const { access_token: accessToken } = (await tokenResponse.json()) as { access_token: string };
+    // Checked, not trusted. A 200 carrying no usable token would otherwise become the header
+    // "Bearer undefined", and the caller would see a confusing Play-side failure instead of
+    // the truthful, retryable google_upstream_unavailable.
+    let tokenBody: unknown;
+    try {
+      tokenBody = await tokenResponse.json();
+    } catch {
+      throw unavailable("Google's token endpoint returned a body that is not JSON");
+    }
+    const accessToken = (tokenBody as { access_token?: unknown } | null)?.access_token;
+    if (typeof accessToken !== "string" || accessToken.length === 0) {
+      throw unavailable("Google's token endpoint returned no access token");
+    }
 
     const url = `https://playintegrity.googleapis.com/v1/${options.packageName}:decodeIntegrityToken`;
     let decodeResponse: Response;

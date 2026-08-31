@@ -327,7 +327,7 @@
   "privacy": {
     "title": "Privacy notice",
     "intro": "PeraPlano is local-first by architecture, not by policy promise: the notification text your banks and e-wallets already send you is read on your own phone, stored encrypted on that phone with a 30-day time-to-live, and never leaves it under any configuration. The only thing designed to sync off the device is committed transaction records — structured fields, never raw text — and only if you explicitly switch on cloud backup, a PeraPlano Plus feature. Syncing is not the only way data can leave a phone, so the table below lists every category that does: content-free diagnostics you can switch off, any export file you create yourself, and anything you choose to put in a support message. There are no ads, no data selling, and no third-party analytics that receive notification content.",
-    "sourceStatus": "Draft v1 · 2026-08-02",
+    "sourceStatus": "Draft v1 · 2026-08-02 · amended 2026-08-31 for Google account linking (§1, §2.3, §3.3, §3.7, §4)",
     "sourceHeading": "Where this notice comes from, and what it still lacks",
     "sourceNote": "This notice is derived from PeraPlano's internal privacy and compliance document, which is marked {status}. That document has not been reviewed by Philippine privacy counsel, so neither has this page.",
     "sections": {
@@ -451,6 +451,30 @@
             "Company support mailbox",
             "≤ 24 months after case closure",
             "Yes, by the user's own action; users are advised not to paste raw notification text."
+          ],
+          [
+            "9",
+            "Google identity (google_identities): user id, Google subject id, verified email address, verified flag, linked-at and last-verified-at timestamps",
+            "Written when the user links a Google account (§2.3)",
+            "Company server database",
+            "While the account stays linked. Removed on unlink or identity deletion, with server copies gone within 30 days (§3.7). That control is not built yet.",
+            "Yes. Together with rows 10 and 11 this is the only data a Free-tier user's device ever sends, and only if they link."
+          ],
+          [
+            "10",
+            "Install attestation (install_attestations): user id, Google subject id, package name, claim source, install-begin and first-install timestamps, app version at install, the Play Integrity licensing and recognition verdicts, and whether the beta-cohort grant was made",
+            "Install evidence read on-device by expo-application plus the Play Integrity verdict, posted on every verify call",
+            "Company server database",
+            "Kept as long as the entitlement it explains. A permanent Plus grant has to stay explainable years after it was made, so the row survives even when no grant followed. Deleted with the identity (row 9).",
+            "Yes. Facts about the install only: no transaction, amount, merchant, or notification text."
+          ],
+          [
+            "11",
+            "Beta pregrant list (beta_pregrants): email address, operator note, created-at, claimed-at, claiming user id",
+            "Typed in by the operator before the person has an account. It exists because the automatic cohort rule requires Play Integrity to report LICENSED, meaning the account got the app from Google Play, and every tester who installed over adb can never satisfy that.",
+            "Company server database",
+            "Kept while the permanent-Plus promise stands; an unclaimed row can be deleted by the operator at any time. A claimed row is audit evidence for the grant and is kept with it.",
+            "Never on a device. The email addresses come from the operator, not from an install."
           ]
         ],
         "invariantsHeading": "Three rules that bind the table above",

@@ -212,4 +212,47 @@ describe("createPlayIntegrityDecoder", () => {
     });
     await expect(decode("t")).rejects.toMatchObject({ code: "google_upstream_unavailable" });
   });
+
+  // A 200 with no usable access_token used to produce the header "Bearer undefined", so the
+  // caller saw a confusing Play-side error instead of the truthful, retryable upstream code.
+  it.each([
+    ["no access_token field", JSON.stringify({ expires_in: 3599 })],
+    ["an empty access_token", JSON.stringify({ access_token: "" })],
+    ["a non-string access_token", JSON.stringify({ access_token: 42 })],
+    ["a body that is not JSON", "<html>"],
+  ])("raises google_upstream_unavailable when the token response carries %s", async (_case, oauthBody) => {
+    let decodeCalls = 0;
+    const fetchImpl = ((url: string) => {
+      if (url.includes("oauth2")) {
+        return Promise.resolve(new Response(oauthBody, { status: 200 }));
+      }
+      decodeCalls += 1;
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    }) as unknown as typeof fetch;
+    const decode = createPlayIntegrityDecoder({
+      packageName: PACKAGE,
+      serviceAccountJson: fakeServiceAccount(),
+      fetchImpl,
+    });
+    await expect(decode("t")).rejects.toMatchObject({ code: "google_upstream_unavailable" });
+    // Never sent, rather than sent with a useless Authorization header.
+    expect(decodeCalls).toBe(0);
+  });
+
+  // Failing fast at boot is right; failing with "Unexpected token in JSON" tells an operator
+  // nothing about which secret is wrong.
+  it("names the offending variable when the service-account JSON does not parse", () => {
+    expect(() =>
+      createPlayIntegrityDecoder({ packageName: PACKAGE, serviceAccountJson: "not json" }),
+    ).toThrow("PLAY_INTEGRITY_SERVICE_ACCOUNT_JSON");
+  });
+
+  it("names the offending variable when the service-account JSON is missing its fields", () => {
+    expect(() =>
+      createPlayIntegrityDecoder({
+        packageName: PACKAGE,
+        serviceAccountJson: JSON.stringify({ client_email: "a@b" }),
+      }),
+    ).toThrow("PLAY_INTEGRITY_SERVICE_ACCOUNT_JSON");
+  });
 });

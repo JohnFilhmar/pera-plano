@@ -118,18 +118,38 @@ export function verifyGoogleIdToken({
   return { googleSub: payload.sub, email: payload.email.toLowerCase() };
 }
 
+const DEFAULT_FORCED_REFRESH_COOLDOWN_MS = 60_000;
+
 export function createGoogleJwksFetcher(options: {
   url: string;
   ttlMs?: number;
+  forcedRefreshCooldownMs?: number;
   fetchImpl?: typeof fetch;
 }): JwksFetcher {
   const ttlMs = options.ttlMs ?? 3_600_000;
+  const forcedRefreshCooldownMs =
+    options.forcedRefreshCooldownMs ?? DEFAULT_FORCED_REFRESH_COOLDOWN_MS;
   const doFetch = options.fetchImpl ?? fetch;
   let cached: { jwks: GoogleJwks; fetchedAtMs: number } | null = null;
+  let lastForcedFetchAtMs: number | null = null;
 
   return async (forceRefresh = false) => {
     const nowMs = Date.now();
-    if (!forceRefresh && cached && nowMs - cached.fetchedAtMs < ttlMs) return cached.jwks;
+    const fresh = cached !== null && nowMs - cached.fetchedAtMs < ttlMs ? cached : null;
+    if (fresh !== null) {
+      if (!forceRefresh) return fresh.jwks;
+      // A forced refresh is triggered by a `kid` the caller chose, so without a floor between
+      // refetches an unauthenticated attacker sending a fresh random kid buys one outbound
+      // Google call per attempt, from any number of addresses, and this server becomes a small
+      // amplifier. The per-IP route limit does not bound that. Genuine key rotation needs ONE
+      // refetch, not one per request, so the cooldown costs nothing real: the caller is still
+      // served the cached set rather than an error.
+      const cooling =
+        lastForcedFetchAtMs !== null && nowMs - lastForcedFetchAtMs < forcedRefreshCooldownMs;
+      if (cooling) return fresh.jwks;
+    }
+    // Stamped before the request, so a refetch that fails still spends the cooldown.
+    if (forceRefresh) lastForcedFetchAtMs = nowMs;
     let response: Response;
     try {
       response = await doFetch(options.url);

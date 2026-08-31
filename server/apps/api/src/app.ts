@@ -10,6 +10,12 @@ import { parserRulesRoutes } from "./routes/parser_rules_routes.js";
 import { telemetryRoutes } from "./routes/telemetry_routes.js";
 import { backupRoutes } from "./routes/backup_routes.js";
 import { entitlementsRoutes } from "./routes/entitlements_routes.js";
+import { googleAuthRoutes } from "./routes/google_auth_routes.js";
+import { createGoogleJwksFetcher, type JwksFetcher } from "./lib/google_id_token.js";
+import {
+  createPlayIntegrityDecoder,
+  type PlayIntegrityDecoder,
+} from "./lib/play_integrity.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -17,7 +23,20 @@ declare module "fastify" {
   }
 }
 
-export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
+/**
+ * The two collaborators that talk to Google. A test supplies both and the real
+ * adapters are never constructed, so no suite parses a service-account key or
+ * opens a socket.
+ */
+export type BuildAppSeams = {
+  fetchJwks?: JwksFetcher;
+  decodeIntegrity?: PlayIntegrityDecoder;
+};
+
+export function buildApp(
+  overrides: Partial<AppConfig> = {},
+  seams: BuildAppSeams = {},
+): FastifyInstance {
   const config: AppConfig = { ...loadConfig(), ...overrides };
   const app = Fastify({
     logger: { level: process.env.LOG_LEVEL ?? "info" },
@@ -47,5 +66,30 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
   void app.register(telemetryRoutes, { prefix: "/v1" });
   void app.register(backupRoutes, { prefix: "/v1" });
   void app.register(entitlementsRoutes, { prefix: "/v1" });
+
+  // `??` short-circuits, so a seamed app never runs these factories: the JSON key is not
+  // parsed and no HTTP client is created.
+  const fetchJwks = seams.fetchJwks ?? createGoogleJwksFetcher({ url: config.googleJwksUrl });
+  const decodeIntegrity =
+    seams.decodeIntegrity ??
+    createPlayIntegrityDecoder({
+      packageName: config.playPackageName,
+      serviceAccountJson: config.playIntegrityServiceAccountJson,
+    });
+  // Registered in its own scope, and not until ready(), because `app.prisma` is decorated
+  // by prismaPlugin above and only exists once that plugin has run.
+  void app.register((instance) =>
+    googleAuthRoutes(instance, {
+      prisma: app.prisma,
+      fetchJwks,
+      decodeIntegrity,
+      expectedAudience: config.googleOauthClientId,
+      expectedPackageName: config.playPackageName,
+      jwtSecret: config.jwtSecret,
+      betaWindowStartAt: config.betaWindowStartAt,
+      betaWindowEndAt: config.betaWindowEndAt,
+      maxSkewMs: config.integrityMaxSkewMs,
+    }),
+  );
   return app;
 }

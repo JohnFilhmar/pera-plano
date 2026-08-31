@@ -201,4 +201,63 @@ describe("createGoogleJwksFetcher", () => {
     await fetcher(true);
     expect(calls).toBe(2);
   });
+
+  // The `kid` in an ID token is attacker-controlled. One forced refetch per verification stops
+  // a single request from looping, but not an unauthenticated caller sending a fresh random kid
+  // every time and buying one outbound Google call per attempt from any number of addresses.
+  // Genuine key rotation needs ONE refetch, not one per request.
+  it("serves the cached key set for forced refreshes inside the cooldown", async () => {
+    let calls = 0;
+    const fetchImpl: typeof fetch = () => {
+      calls += 1;
+      return Promise.resolve(keySetResponse());
+    };
+    const fetcher = createGoogleJwksFetcher({
+      url: "https://example.test/certs",
+      ttlMs: 60_000,
+      fetchImpl,
+    });
+    await fetcher();
+    const refreshed = await fetcher(true);
+    const suppressed = await fetcher(true);
+    await fetcher(true);
+    expect(calls).toBe(2);
+    // Suppressed does not mean failed: the caller still gets a usable key set.
+    expect(suppressed).toEqual(refreshed);
+  });
+
+  it("allows a forced refresh again once the cooldown has elapsed", async () => {
+    let calls = 0;
+    const fetchImpl: typeof fetch = () => {
+      calls += 1;
+      return Promise.resolve(keySetResponse());
+    };
+    const fetcher = createGoogleJwksFetcher({
+      url: "https://example.test/certs",
+      ttlMs: 60_000,
+      forcedRefreshCooldownMs: 0,
+      fetchImpl,
+    });
+    await fetcher();
+    await fetcher(true);
+    await fetcher(true);
+    expect(calls).toBe(3);
+  });
+
+  it("still refetches on a forced refresh once the ttl has expired", async () => {
+    let calls = 0;
+    const fetchImpl: typeof fetch = () => {
+      calls += 1;
+      return Promise.resolve(keySetResponse());
+    };
+    const fetcher = createGoogleJwksFetcher({
+      url: "https://example.test/certs",
+      ttlMs: 0,
+      fetchImpl,
+    });
+    await fetcher();
+    await fetcher(true);
+    await fetcher(true);
+    expect(calls).toBe(3);
+  });
 });
