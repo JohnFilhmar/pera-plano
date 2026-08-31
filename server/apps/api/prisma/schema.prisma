@@ -1,0 +1,95 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          String  @id
+  destination String  @unique
+  createdAt   BigInt  @map("created_at")
+
+  refreshTokens RefreshToken[]
+  backupVault   BackupVault?
+  entitlement   Entitlement?
+
+  @@map("users")
+}
+
+model OtpRequest {
+  id          String  @id
+  destination String
+  codeHash    String  @map("code_hash")
+  expiresAt   BigInt  @map("expires_at")
+  attempts    Int     @default(0)
+  consumedAt  BigInt? @map("consumed_at")
+  createdAt   BigInt  @map("created_at")
+
+  @@map("otp_requests")
+}
+
+model RefreshToken {
+  id        String  @id
+  userId    String  @map("user_id")
+  familyId  String  @map("family_id")
+  tokenHash String  @unique @map("token_hash")
+  expiresAt BigInt  @map("expires_at")
+  revokedAt BigInt? @map("revoked_at")
+  createdAt BigInt  @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([familyId])
+  @@map("refresh_tokens")
+}
+
+model ParserRuleset {
+  id        String @id
+  version   Int    @unique
+  rulesJson Json   @map("rules_json")
+  createdAt BigInt @map("created_at")
+
+  @@map("parser_rulesets")
+}
+
+model TelemetryParseStat {
+  id             String @id
+  appVersion     String @map("app_version")
+  rulesetVersion Int    @map("ruleset_version")
+  providerKey    String @map("provider_key")
+  parsed         Int
+  failed         Int
+  periodStart    BigInt @map("period_start")
+  periodEnd      BigInt @map("period_end")
+  receivedAt     BigInt @map("received_at")
+
+  @@map("telemetry_parse_stats")
+}
+
+model BackupVault {
+  id            String @id
+  userId        String @unique @map("user_id")
+  schemaVersion Int    @map("schema_version")
+  deviceId      String @map("device_id")
+  blob          String
+  storedAt      BigInt @map("stored_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("backup_vaults")
+}
+
+model Entitlement {
+  id        String @id
+  userId    String @unique @map("user_id")
+  tier      String
+  source    String
+  updatedAt BigInt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("entitlements")
+}
