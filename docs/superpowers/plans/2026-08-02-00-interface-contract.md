@@ -21,8 +21,8 @@ pera-plano/            (git root, monorepo)
 - **Commits:** Conventional Commits (`feat:`, `fix:`, `test:`, `chore:`, `docs:`). No
   AI-attribution trailers or footers of any kind.
 - **Tests:** mobile = jest + jest-expo (`npx jest --ci`); server = vitest (`npm test` runs
-  `vitest run`), integration tests via `fastify.inject()`, Postgres via `server/docker-compose.yml`,
-  schema via Prisma migrations. TDD per plan steps.
+  `vitest run`), integration tests via `fastify.inject()`, Postgres via the `postgres` service in
+  the root `docker-compose.yml`, schema via Prisma migrations. TDD per plan steps.
 - **Currency:** integer **centavos** everywhere (DB, wire, logic). Format to `₱1,234.56` only at
   display. Type alias `type Centavos = number`.
 - **Time:** epoch milliseconds (`number`) in code and DB (`INTEGER` sqlite / `BIGINT` pg);
