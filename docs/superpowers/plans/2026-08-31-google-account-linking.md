@@ -2069,6 +2069,13 @@ git commit -m "feat(api): sign in and link accounts through google play"
 > 3. **The decoder calls `Date.now()` internally**, which contradicts this plan's rule that clocks are
 >    injected. No test pins that branch today. Leave it unless this task needs to control it; if it
 >    does, add `nowMs` to the decoder options rather than reaching for a global mock.
+> 4. **Put a cooldown on the forced JWKS refetch (found in Task 5's review).** The unknown-`kid`
+>    retry is capped at one refetch per verification, which stops a single request from looping. It
+>    does not stop an unauthenticated caller from sending a fresh random `kid` every time and adding
+>    one outbound Google call per attempt, turning this server into a small amplifier. The route's
+>    rate limit bounds it per IP but not across IPs. A minimum interval between forced refetches,
+>    60 seconds is ample, closes it without hurting real key rotation: genuine rotation needs one
+>    refetch, not one per request.
 - Produces: routes `POST /v1/auth/google/verify` and `POST /v1/auth/google/link`; `AppConfig` gains `googleOauthClientId`, `playPackageName`, `playIntegrityServiceAccountJson`, `betaWindowStartAt`, `betaWindowEndAt`, `googleJwksUrl`, `integrityMaxSkewMs`, `googleAuthRateLimitMax`; `buildApp` accepts `{ fetchJwks?: JwksFetcher; decodeIntegrity?: PlayIntegrityDecoder }` as test seams.
 
 - [ ] **Step 1: Extend the config test**
