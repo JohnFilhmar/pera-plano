@@ -994,8 +994,20 @@ git commit -m "feat(server): prisma plugin decorating app with connected client"
 **Interfaces:**
 - Consumes: nothing beyond `node:crypto`.
 - Produces (used by Tasks 7, 8, 9, 13):
-  - `sha256Hex(input: string): string` from `src/lib/hashing.ts`.
-  - From `src/lib/otp.ts`: `OTP_TTL_MS = 600_000` (10 min), `OTP_MAX_ATTEMPTS = 5`, `OTP_CODE_LENGTH = 6`, `generateOtpCode(): string` (6 decimal digits, crypto-random), `hashOtpCode(requestId: string, code: string): string` (sha256 of `requestId + ":" + code` — the requestId acts as the salt so identical codes across requests hash differently), `isOtpExpired(expiresAt: number, nowMs: number): boolean`.
+  - From `src/lib/hashing.ts`: `sha256Hex(input: string): string` and
+    `hmacSha256Hex(secret: string, input: string): string`.
+
+> **Amended 2026-08-31, after review.** The original plan hashed the OTP with a bare `sha256Hex`.
+> A 6-digit code is about 20 bits of entropy, so an unkeyed digest is recoverable from a database
+> dump in roughly a million hashes, and `otp_requests` stores the `requestId` beside the hash.
+> That turns read access into the ability to authenticate as any user with a code in flight, with
+> `OTP_MAX_ATTEMPTS` providing no defence at all because the attacker never touches the API.
+> `hashOtpCode` is now keyed with `config.jwtSecret`. `sha256Hex` stays, and stays correct, for
+> the 256-bit random refresh tokens, where the input space cannot be enumerated.
+>
+> **Every caller must thread the secret through.** Tasks 7 and 8 take an `otpSecret` parameter,
+> supplied from `app.config.jwtSecret` at the route layer.
+  - From `src/lib/otp.ts`: `OTP_TTL_MS = 600_000` (10 min), `OTP_MAX_ATTEMPTS = 5`, `OTP_CODE_LENGTH = 6`, `generateOtpCode(): string` (6 decimal digits, crypto-random), `hashOtpCode(requestId: string, code: string, secret: string): string` (HMAC-SHA256 keyed with `config.jwtSecret`, over `"otp:v1:" + requestId + ":" + code`; requestId salts, the key defeats offline brute force, the prefix domain-separates), `isOtpExpired(expiresAt: number, nowMs: number): boolean`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1088,7 +1100,7 @@ export function sha256Hex(input: string): string {
 
 ```ts
 import { randomInt } from "node:crypto";
-import { sha256Hex } from "./hashing.js";
+import { hmacSha256Hex } from "./hashing.js";
 
 export const OTP_TTL_MS = 10 * 60 * 1000;
 export const OTP_MAX_ATTEMPTS = 5;
@@ -1098,8 +1110,12 @@ export function generateOtpCode(): string {
   return randomInt(0, 1_000_000).toString().padStart(OTP_CODE_LENGTH, "0");
 }
 
-export function hashOtpCode(requestId: string, code: string): string {
-  return sha256Hex(`${requestId}:${code}`);
+export function hashOtpCode(
+  requestId: string,
+  code: string,
+  secret: string,
+): string {
+  return hmacSha256Hex(secret, `otp:v1:${requestId}:${code}`);
 }
 
 export function isOtpExpired(expiresAt: number, nowMs: number): boolean {
@@ -1310,7 +1326,7 @@ git commit -m "feat(server): hs256 access tokens and opaque refresh token genera
 **Interfaces:**
 - Consumes: `app.prisma` (Task 4), `ApiError` (Task 3), `OTP_TTL_MS` / `generateOtpCode` / `hashOtpCode` (Task 5).
 - Produces:
-  - `requestOtp(prisma: PrismaClient, destination: string, nowMs?: number): Promise<{ requestId: string; code: string }>` from `src/services/auth_service.ts` — Tasks 8/9 tests call it directly to obtain the plaintext code (the route never returns the code).
+  - `requestOtp(prisma: PrismaClient, destination: string, otpSecret: string, nowMs?: number): Promise<{ requestId: string; code: string }>` from `src/services/auth_service.ts` — Tasks 8/9 tests call it directly to obtain the plaintext code (the route never returns the code).
   - Route `POST /v1/auth/otp/request` — body `{ channel: "email", destination }` → `{ requestId }`. Delivery is dev-only: the code is written to the server log, never to the response.
   - `resetDb(prisma: PrismaClient): Promise<void>` from `test/helpers/db.ts` — truncates all 7 tables; every DB integration test file uses it in `beforeEach`.
 
@@ -1433,7 +1449,7 @@ export async function requestOtp(
     data: {
       id: requestId,
       destination,
-      codeHash: hashOtpCode(requestId, code),
+      codeHash: hashOtpCode(requestId, code, otpSecret),
       expiresAt: BigInt(nowMs + OTP_TTL_MS),
       attempts: 0,
       createdAt: BigInt(nowMs),
@@ -1524,7 +1540,7 @@ git commit -m "feat(server): otp request route with hashed codes and dev-log del
 - Consumes: `requestOtp` (Task 7), `OTP_MAX_ATTEMPTS` / `hashOtpCode` / `isOtpExpired` (Task 5), `signAccessToken` / `generateRefreshToken` / `REFRESH_TOKEN_TTL_MS` (Task 6), `sha256Hex` (Task 5), `ApiError` (Task 3).
 - Produces:
   - `type VerifyOtpResult = { kind: "ok"; userId: string; destination: string } | { kind: "not_found" } | { kind: "expired" } | { kind: "too_many_attempts" } | { kind: "invalid_code" }`
-  - `verifyOtp(prisma: PrismaClient, requestId: string, code: string, nowMs?: number): Promise<VerifyOtpResult>`
+  - `verifyOtp(prisma: PrismaClient, requestId: string, code: string, otpSecret: string, nowMs?: number): Promise<VerifyOtpResult>`
   - `issueRefreshToken(prisma: PrismaClient, userId: string, familyId: string, nowMs?: number): Promise<string>` — returns the plaintext opaque token; only its sha256 is stored. Task 9 reuses it for rotation.
   - Route `POST /v1/auth/otp/verify` — `{ requestId, code }` → `{ accessToken, refreshToken, user: { id, destination } }`.
 
