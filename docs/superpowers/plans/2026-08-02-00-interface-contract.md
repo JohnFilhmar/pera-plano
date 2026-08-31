@@ -361,13 +361,25 @@ direction?: "in"|"out", confidence: number }] }], tunables?: PipelineTunables }`
 
 ## 6. Server — Fastify + Prisma + Postgres
 
-`server/src/` layout: `app.ts` (buildApp(): FastifyInstance — no listen), `server.ts` (entry),
-`routes/<domain>_routes.ts`, `services/<domain>_service.ts`, `plugins/` (prisma, auth),
-`lib/` (jwt, otp, hashing). `server/prisma/schema.prisma` — models with `@@map`/`@map` snake_case.
-Tests in `server/test/` mirroring `routes/` + `services/`.
+**The API is a workspace, not the repo root.** `server/` is an npm-workspaces monorepo
+(`apps/*`, `libs/*`) whose root `package.json`, `tsconfig.base.json`, `vitest.config.ts` and
+`eslint.config.mjs` belong to the already-shipped `@peraplano/web`. The API is a sibling at
+`server/apps/api`, per `docs/DEPLOYMENT.md`: *"Extend it, don't replace it, once `apps/api`
+exists."* Nothing in an API task may overwrite a file at `server/` root. Amended 2026-08-31; the
+original wording said `server/src/` and predates the web workspace.
+
+`server/apps/api/src/` layout: `app.ts` (buildApp(): FastifyInstance, no listen), `server.ts`
+(entry), `routes/<domain>_routes.ts`, `services/<domain>_service.ts`, `plugins/` (prisma, auth),
+`lib/` (jwt, otp, hashing, google_id_token, play_integrity).
+`server/apps/api/prisma/schema.prisma`, models with `@@map`/`@map` snake_case.
+Tests in `server/apps/api/test/` mirroring `routes/` + `services/`.
+
+Toolchain follows the workspace it lives in, not the 2026-08-02 draft: Node `>=22`, vitest 4.
+Postgres is a service in the root `docker-compose.yml`, not a second compose file under `server/`.
 
 Prisma models (tables): `users`, `otp_requests`, `refresh_tokens`, `parser_rulesets`,
-`telemetry_parse_stats`, `backup_vaults`, `entitlements`.
+`telemetry_parse_stats`, `backup_vaults`, `entitlements`, `google_identities`,
+`install_attestations`.
 
 Routes (all JSON; versioned prefix `/v1` except `/health`):
 
@@ -381,15 +393,21 @@ Routes (all JSON; versioned prefix `/v1` except `/health`):
 | `POST /v1/telemetry/parse_stats` | — | `{ appVersion, rulesetVersion, providerKey, parsed, failed, periodStart, periodEnd }` → `202`. Aggregate counts only — never content. Rate-limited per IP. |
 | `PUT /v1/backup/vault` | Bearer | `{ schemaVersion, deviceId, blob }` (client-side-encrypted, opaque base64) → `{ storedAt }` |
 | `GET /v1/backup/vault` | Bearer | → `{ schemaVersion, deviceId, blob, storedAt }` or `404` |
-| `GET /v1/entitlements` | Bearer | → `{ tier: "free" \| "plus", source: "stub" }` (stub returns `"free"`) |
+| `POST /v1/auth/google/verify` | — | `{ idToken, integrityToken, installClaim }` → `{ accessToken, refreshToken, user: { id, destination } }`. Envelope is byte-identical to `/v1/auth/otp/verify`: tier never rides in an auth response |
+| `POST /v1/auth/google/link` | Bearer | same body → `{ identity: { googleSub, email, linkedAt } }` |
+| `GET /v1/entitlements` | Bearer | → `{ tier: "free" \| "plus", source: "stub" \| "beta_cohort" \| "play_billing" }`. Resolved, not a stub; no row resolves to `{ "free", "stub" }` |
 
 Auth: JWT access (15 min) + rotating refresh (30 d) per STACK_BASIS §8 semantics (server side).
-Errors: `{ error: { code: string, message: string } }` with proper status. Env via typed
-`server/src/config.ts` (`DATABASE_URL`, `JWT_SECRET`, `PORT`); `.env.example` committed —
-**never a real `.env`**.
+Both auth routes issue through the same `lib/jwt.ts`; Google is the primary sign-in and OTP email
+is the fallback, and neither replaces the other. Errors:
+`{ error: { code: string, message: string } }` with proper status. Env via typed
+`server/apps/api/src/config.ts` (`DATABASE_URL`, `JWT_SECRET`, `PORT`, plus the Google and Play
+variables in the linking design §11); `.env.example` committed, **never a real `.env`**.
 
-Mobile calls today: `GET /v1/parser_rules`, `POST /v1/telemetry/parse_stats` only. Auth, vault,
-entitlements: built + fully tested server-side, mobile wiring deferred (local-first MVP, no login).
+Mobile calls today: `GET /v1/parser_rules`, `POST /v1/telemetry/parse_stats` only. Auth and
+entitlements are wired to mobile by the Google linking work
+(`../specs/2026-08-31-google-account-linking-design.md`). The vault is built and fully tested
+server-side but stays unwired: no ledger data leaves the phone in that pass.
 
 ## 7. Entitlements (mobile) — `mobile/lib/entitlements.ts`
 

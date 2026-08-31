@@ -2,11 +2,34 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the entire `server/` workspace — a Fastify + Prisma + Postgres API with OTP email auth, rotating refresh tokens with reuse detection, versioned parser-ruleset distribution, aggregate-only telemetry with per-IP rate limiting, an opaque encrypted backup vault, and an entitlements stub — fully test-driven with vitest.
+> ### AMENDED 2026-08-31: the API lives at `server/apps/api`, not `server/`
+>
+> This plan was written on 2026-08-02, before `server/` became an npm-workspaces monorepo for the
+> now-shipped `@peraplano/web`. Its original Task 1 created `server/package.json`,
+> `server/tsconfig.json`, `server/vitest.config.ts` and `server/docker-compose.yml`. **Three of
+> those files now exist and belong to the web workspace. Creating them as written overwrites the
+> deployed site.**
+>
+> Global find-and-replace for every task below, including ones this amendment does not quote:
+>
+> | Written as | Read as |
+> |---|---|
+> | `server/package.json`, `server/tsconfig.json`, `server/vitest.config.ts` | `server/apps/api/…` (the `server/` root files are the web workspace's, never touched) |
+> | `server/src/…` | `server/apps/api/src/…` |
+> | `server/test/…` | `server/apps/api/test/…` |
+> | `server/prisma/…` | `server/apps/api/prisma/…` |
+> | `server/docker-compose.yml` | a `postgres` service added to the **root** `docker-compose.yml` |
+> | "run from `server/`" | run from `server/apps/api/` |
+>
+> Toolchain follows the existing workspace, not this plan's 2026-08-02 draft: **Node `>=22`**
+> (not 20.19) and **vitest 4** (not 3). Authority: `docs/DEPLOYMENT.md`, *"There is no backend API
+> service in this repo yet. Extend it, don't replace it, once `apps/api` exists."*
+
+**Goal:** Build the `server/apps/api` workspace: a Fastify + Prisma + Postgres API with OTP email auth, rotating refresh tokens with reuse detection, versioned parser-ruleset distribution, aggregate-only telemetry with per-IP rate limiting, an opaque encrypted backup vault, and entitlements, fully test-driven with vitest.
 
 **Architecture:** A side-effect-free `buildApp()` assembles the Fastify instance (plugins, routes, shared error handler — no `listen`); `server.ts` is the only entry point that listens. Prisma maps camelCase models onto snake_case Postgres tables; route handlers stay thin over `services/` (DB workflows) and `lib/` (pure crypto/token helpers). Every non-2xx response uses one envelope: `{ error: { code, message } }`. All integration tests run through `fastify.inject()` against the real dockerized Postgres.
 
-**Tech Stack:** Node.js ≥ 20.19, TypeScript strict (NodeNext ESM), Fastify 5, `@fastify/rate-limit`, `fastify-plugin`, Prisma 6 + PostgreSQL 16 (docker compose), vitest 3, tsx. JWTs are HS256, signed/verified with `node:crypto` directly — no external JWT dependency.
+**Tech Stack:** Node.js ≥ 22, TypeScript strict (NodeNext ESM), Fastify 5, `@fastify/rate-limit`, `fastify-plugin`, Prisma 6 + PostgreSQL 16 (root docker compose), vitest 4, tsx. JWTs are HS256, signed and verified with `node:crypto` directly, no external JWT dependency.
 
 ## Global Constraints
 
@@ -18,19 +41,21 @@ Every task's requirements implicitly include this section.
 - **IDs:** UUIDv4 strings generated server-side via `crypto.randomUUID()`.
 - **Commits:** Conventional Commits (`feat:`, `fix:`, `test:`, `chore:`, `docs:`). NO AI-attribution trailers or footers of any kind — no `Co-Authored-By`, no "Generated with" lines.
 - **TDD:** every behavior lands test-first; each task cycles red → green → commit.
-- **Test commands** (run from `server/`): full suite `npm test` (= `vitest run`); single file `npx vitest run <path>`.
-- **Postgres** comes from `server/docker-compose.yml` (`npm run db:up`). Integration tests TRUNCATE all tables — never point `DATABASE_URL` at data you care about. From Task 4 onward the whole suite needs Postgres up and migrated.
+- **Test commands** (run from `server/apps/api/`): full suite `npm test` (= `vitest run`); single file `npx vitest run <path>`. From `server/`, the workspace form is `npm test -w @peraplano/api`.
+- **Postgres** is the `postgres` service in the **root** `docker-compose.yml` (`npm run db:up` proxies to it). Do not add a second compose file under `server/`: the root file's header states that a compose file which has to move the first time the system grows is one everyone learns to distrust. Integration tests TRUNCATE all tables, so never point `DATABASE_URL` at data you care about. From Task 4 onward the whole suite needs Postgres up and migrated.
+- **Never write to `server/` root.** `server/package.json`, `server/tsconfig.base.json`, `server/vitest.config.ts`, `server/eslint.config.mjs` and `server/Dockerfile` belong to the shipped web workspace. The API adds a workspace member and, in Task 1 only, one new Dockerfile target and one compose service. Everything else is created under `server/apps/api/`.
 - **Secrets:** never commit a real `.env` — only `.env.example`. Never delete or overwrite an existing `.env`.
 - **Error envelope** for every non-2xx response: `{ error: { code: string, message: string } }`.
 - **Routes:** all under `/v1` prefix except `GET /health`.
-- All shell commands below run from `d:\My Folder\pera-plano\server` unless stated otherwise. If the repo root `pera-plano/` is not yet a git repository, run `git init` once at the root before Task 1's commit step.
+- All shell commands below run from `d:\My Folder\pera-plano\server\apps\api` unless stated otherwise.
 - The interface contract at `docs/superpowers/plans/2026-08-02-00-interface-contract.md` is law: exact names, signatures, routes, tables, tokens. This plan conforms to it; do not rename anything it pins.
 
 **File map (what this plan creates):**
 
 ```
-server/
-  package.json  tsconfig.json  vitest.config.ts  docker-compose.yml  .env.example  .gitignore  README.md
+server/                          MODIFIED, not created: one workspace member, one Dockerfile target
+server/apps/api/
+  package.json  tsconfig.json  vitest.config.ts  .env.example  .gitignore  README.md
   prisma/schema.prisma          prisma/migrations/           prisma/seed.ts  prisma/seed_data.ts
   src/config.ts  src/app.ts  src/server.ts
   src/lib/errors.ts  src/lib/hashing.ts  src/lib/otp.ts  src/lib/jwt.ts
@@ -53,15 +78,21 @@ server/
 ### Task 1: Project scaffold + typed config
 
 **Files:**
-- Create: `server/package.json`
-- Create: `server/tsconfig.json`
-- Create: `server/vitest.config.ts`
-- Create: `server/docker-compose.yml`
-- Create: `server/.env.example`
-- Create: `server/.gitignore`
-- Create: `server/test/setup.ts`
-- Create: `server/src/config.ts`
-- Test: `server/test/config.test.ts`
+- Create: `server/apps/api/package.json` (name `@peraplano/api`, picked up by the existing `apps/*` workspace glob, so `server/package.json` needs no edit)
+- Create: `server/apps/api/tsconfig.json` (extends `../../tsconfig.base.json`)
+- Create: `server/apps/api/vitest.config.ts`
+- Create: `server/apps/api/.env.example`
+- Create: `server/apps/api/.gitignore`
+- Create: `server/apps/api/test/setup.ts`
+- Create: `server/apps/api/src/config.ts`
+- Test: `server/apps/api/test/config.test.ts`
+- Modify: root `docker-compose.yml` (add a `postgres` service; take port 5005, which the file header already reserves for the backend)
+- Modify: `server/Dockerfile` (add an `api` target beside the existing `web` target; the `base`, `deps`, `build` and `runtime-base` stages are shared and unchanged)
+- Modify: `.github/workflows/server-ci.yml` (its `npm test` at the `server/` root already covers a new workspace; add the api build step and a Postgres service container)
+
+**Amendment note.** The three `Modify` entries land in this task's single commit together with the
+`apps/api` scaffold. Do not add an `api` Dockerfile target or compose service in a commit where
+`server/apps/api` does not yet exist: the image build would fail and take the web deploy with it.
 
 **Interfaces:**
 - Consumes: nothing (first task).
@@ -69,16 +100,16 @@ server/
 
 - [ ] **Step 1: Create the scaffold files**
 
-`server/package.json`:
+`server/apps/api/package.json`:
 
 ```json
 {
-  "name": "peraplano-server",
+  "name": "@peraplano/api",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=20.19"
+    "node": ">=22"
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",
@@ -86,8 +117,8 @@ server/
     "start": "node dist/server.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "db:up": "docker compose up -d",
-    "db:down": "docker compose down",
+    "db:up": "docker compose -f ../../../docker-compose.yml up -d postgres",
+    "db:down": "docker compose -f ../../../docker-compose.yml stop postgres",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
     "db:generate": "prisma generate",
@@ -107,15 +138,17 @@ server/
     "prisma": "^6.8.2",
     "tsx": "^4.19.4",
     "typescript": "^5.8.3",
-    "vitest": "^3.1.3"
+    "vitest": "^4.1.11"
   }
 }
 ```
 
-`server/tsconfig.json`:
+`server/apps/api/tsconfig.json` (the `extends` is what keeps one compiler config for the repo; do
+not restate options the base already sets):
 
 ```json
 {
+  "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022"],
@@ -137,7 +170,7 @@ server/
 
 Note: `"type": "module"` + NodeNext means every relative import in `src/` and `test/` uses the `.js` extension (e.g. `import { loadConfig } from "./config.js"`), even though the file on disk is `.ts`. vitest and tsx both resolve this correctly.
 
-`server/vitest.config.ts`:
+`server/apps/api/vitest.config.ts` (the root `server/vitest.config.ts` is the web workspace's and stays untouched):
 
 ```ts
 import { defineConfig } from "vitest/config";
@@ -155,19 +188,17 @@ export default defineConfig({
 
 `fileParallelism: false` is required: integration tests share one Postgres database and truncate tables between tests; parallel test files would corrupt each other.
 
-`server/docker-compose.yml`:
+Root `docker-compose.yml`, **appended to the existing `services:` block beside `peraplano-web`**.
+Do not create `server/docker-compose.yml`, and do not rewrite the file's header comment or its
+`name: peraplano` line:
 
 ```yaml
-services:
   postgres:
     image: postgres:16-alpine
-    container_name: peraplano_postgres
     environment:
       POSTGRES_USER: peraplano
       POSTGRES_PASSWORD: peraplano
       POSTGRES_DB: peraplano
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -175,12 +206,19 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
 
 volumes:
   postgres_data:
 ```
 
-`server/.env.example` (this is the committed template; NEVER commit a real `.env`):
+The base file deliberately publishes no ports, so the `5432` mapping belongs in
+`docker-compose.override.yml` (local only) and never in the staging or production overlay. Nothing
+outside the compose network should reach Postgres. Likewise `container_name` is omitted: the root
+file pins `name: peraplano`, which already makes container names stable across clones, and a
+hardcoded `container_name` would collide with the other stacks sharing this box.
+
+`server/apps/api/.env.example` (this is the committed template; NEVER commit a real `.env`):
 
 ```
 DATABASE_URL=postgresql://peraplano:peraplano@localhost:5432/peraplano
@@ -189,7 +227,7 @@ PORT=3000
 TELEMETRY_RATE_LIMIT_MAX=60
 ```
 
-`server/.gitignore`:
+`server/apps/api/.gitignore`:
 
 ```
 node_modules/
@@ -200,7 +238,7 @@ dist/
 *.log
 ```
 
-`server/test/setup.ts` (vitest setup file — provides env defaults so tests run without a `.env`):
+`server/apps/api/test/setup.ts` (vitest setup file, provides env defaults so tests run without a `.env`):
 
 ```ts
 process.env.DATABASE_URL ??=
@@ -211,12 +249,14 @@ process.env.LOG_LEVEL ??= "silent";
 
 - [ ] **Step 2: Install dependencies**
 
-Run: `npm install`
-Expected: completes without errors; `node_modules/` and `package-lock.json` created.
+Run `npm install` from `server/` (the workspace root), not from `apps/api`. npm workspaces hoist to
+one `node_modules` and one `package-lock.json` at `server/`; installing inside `apps/api` creates a
+nested tree that CI will not reproduce.
+Expected: completes without errors; `server/package-lock.json` gains the api workspace's deps.
 
 - [ ] **Step 3: Write the failing config test**
 
-`server/test/config.test.ts`:
+`server/apps/api/test/config.test.ts`:
 
 ```ts
 import { describe, it, expect } from "vitest";
@@ -327,9 +367,13 @@ Expected: PASS — 6 tests green.
 
 - [ ] **Step 7: Commit**
 
+Paths are repo-root relative, so run this from the repo root, not from `apps/api`. The scaffold, the
+Dockerfile target, the compose service and the CI change land in **one** commit, so no intermediate
+state builds an `api` image against a directory that does not exist:
+
 ```bash
-git add package.json package-lock.json tsconfig.json vitest.config.ts docker-compose.yml .env.example .gitignore test/setup.ts test/config.test.ts src/config.ts
-git commit -m "feat(server): scaffold workspace with typed env config"
+git add server/apps/api server/package-lock.json server/Dockerfile docker-compose.yml docker-compose.override.yml .github/workflows/server-ci.yml
+git commit -m "feat(api): scaffold the api workspace with typed env config"
 ```
 
 ---

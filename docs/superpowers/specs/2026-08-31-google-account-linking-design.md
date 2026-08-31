@@ -69,6 +69,11 @@ consequence.
 One new service, two new libraries, two new routes, layered on the functional-core server. Nothing
 in the ingest pipeline, the ledger, or the mobile local-first store changes.
 
+**All server paths below are relative to `server/apps/api/src/`.** The API is a workspace member of
+the `server/` npm-workspaces monorepo, beside the shipped `@peraplano/web`, per
+`docs/DEPLOYMENT.md` and the 2026-08-31 amendment to interface contract §6. Nothing here writes to
+`server/` root.
+
 ```
 POST /v1/auth/google/verify        (no auth)     sign in or sign up with Google
 POST /v1/auth/google/link          (Bearer)      attach Google to an existing OTP account
@@ -373,6 +378,9 @@ prerequisite, not part of this design.
 [../plans/2026-08-02-00-interface-contract.md](../plans/2026-08-02-00-interface-contract.md) §6 is
 pinned as law, so these edits are made there in the same change that lands this spec:
 
+0. **Done 2026-08-31 in the same change as this spec:** §6 retargeted from `server/src/` to
+   `server/apps/api/src/`, toolchain corrected to Node `>=22` and vitest 4, and Postgres moved from
+   a would-be `server/docker-compose.yml` to a service in the root compose file.
 1. Model list grows from seven to nine: add `google_identities`, `install_attestations`.
 2. Route table gains `POST /v1/auth/google/verify` and `POST /v1/auth/google/link`.
 3. `GET /v1/entitlements` response changes from `source: "stub"` returning `"free"` to

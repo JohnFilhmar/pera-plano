@@ -8,6 +8,14 @@ self-hosted box, driven from the GitHub Actions **Deploy web** workflow
 reserved for it (see `docker-compose.yml`) — so this pipeline covers nothing beyond
 `apps/web`. Extend it, don't replace it, once `apps/api` exists.
 
+**Planned, not yet built (2026-08-31).** `apps/api` is specified in
+`docs/superpowers/plans/2026-08-02-server-functional-core.md`, whose Task 1 adds the workspace, an
+`api` target in `server/Dockerfile`, and a `postgres` service in the root `docker-compose.yml`, all
+in one commit. When that lands, this document gains: the api image build, the 5005 port mapping,
+`DATABASE_URL` and `JWT_SECRET` as production environment values, `prisma migrate deploy` as a
+release step, and a database backup and restore procedure. None of those exist today, so do not
+read this file as covering the API.
+
 This mirrors the pattern already proven on `talyer-e-inventory` on the same box.
 **Production** reads its compliance/operational values from the `production` GitHub
 Environment's variables, substituted into Compose the same way talyer does it.
