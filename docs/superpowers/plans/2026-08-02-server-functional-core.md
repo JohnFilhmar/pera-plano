@@ -412,7 +412,20 @@ git commit -m "feat(api): scaffold the api workspace with typed env config"
 - [ ] **Step 1: Start Postgres**
 
 Run: `npm run db:up`
-Expected: container `peraplano_postgres` starts; `docker compose ps` shows it healthy within ~15 s.
+Expected: container `peraplano-postgres-1` starts and reports healthy within ~15 s. The service sets
+no `container_name`, so Compose derives the name from project plus service plus index. Do not grep
+for `peraplano_postgres`; no such container exists.
+
+**Every Prisma CLI invocation needs `DATABASE_URL` in its environment.** `test/setup.ts` defaults it
+for vitest only, and there is no committed `.env`, so a bare `npx prisma generate` or
+`npx prisma migrate dev` fails to resolve `env("DATABASE_URL")` in the datasource block. Prefix the
+command, for example
+`DATABASE_URL="postgresql://peraplano:peraplano@localhost:5432/peraplano" npm run db:migrate`.
+This applies to `generate` too, which reads the datasource even though it touches no database.
+
+**Imports in every test block below:** the server's eslint config sets `no-unused-vars` to `error`
+with only an underscore-prefix escape, so copying an import line that names a hook the test does not
+call turns `npm run lint` red. Import only the hooks the file actually uses.
 
 - [ ] **Step 2: Create a models-free schema and generate the client**
 

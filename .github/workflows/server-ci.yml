@@ -56,6 +56,18 @@ jobs:
       # root `typecheck` script names three tsconfigs explicitly and apps/api is not one of
       # them. And the root `npm test` only globs apps/web/**/__tests__ and libs/**/__tests__,
       # so the api's test/ directory needs its own step or it never runs in CI.
+      # The generated Prisma client is gitignored, so a clean runner has none: without
+      # this step `new PrismaClient()` throws "@prisma/client did not initialize yet".
+      # `generate` reads env("DATABASE_URL") from the schema's datasource, so it needs the
+      # variable even though it touches no database.
+      - run: npm run db:generate -w @peraplano/api
+        env:
+          DATABASE_URL: postgresql://peraplano:peraplano@localhost:5432/peraplano
+      # Migrations are not applied by the service container, which starts an empty
+      # database. Without this the schema tests query tables that do not exist.
+      - run: npm run db:deploy -w @peraplano/api
+        env:
+          DATABASE_URL: postgresql://peraplano:peraplano@localhost:5432/peraplano
       - run: npm run build -w @peraplano/api
       - run: npm test -w @peraplano/api
         env:
