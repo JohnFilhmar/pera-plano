@@ -2035,6 +2035,21 @@ git commit -m "feat(api): sign in and link accounts through google play"
 
 **Interfaces:**
 - Consumes: `verifyWithGoogle`, `linkGoogleToUser`, `createGoogleJwksFetcher`, `createPlayIntegrityDecoder`, `buildApp`, `app.authenticate`.
+
+> **Three carried over from Task 3's review, to be closed here.**
+>
+> 1. **Validate the OAuth token response before using it.** The decoder does
+>    `(await tokenResponse.json()) as { access_token: string }` and trusts it. A 200 carrying no
+>    `access_token` produces the header `Bearer undefined`, and the user sees a confusing Play-side
+>    error instead of the truthful, retryable `google_upstream_unavailable`. Check the field is a
+>    non-empty string and raise `google_upstream_unavailable` when it is not.
+> 2. **`JSON.parse` of `serviceAccountJson` has no try/catch**, so a malformed secret throws a raw
+>    `SyntaxError` at wiring time. Failing fast at boot is the right behaviour and should stay, but
+>    make the message name the offending variable, because "Unexpected token in JSON" at startup
+>    tells an operator nothing about which secret is wrong.
+> 3. **The decoder calls `Date.now()` internally**, which contradicts this plan's rule that clocks are
+>    injected. No test pins that branch today. Leave it unless this task needs to control it; if it
+>    does, add `nowMs` to the decoder options rather than reaching for a global mock.
 - Produces: routes `POST /v1/auth/google/verify` and `POST /v1/auth/google/link`; `AppConfig` gains `googleOauthClientId`, `playPackageName`, `playIntegrityServiceAccountJson`, `betaWindowStartAt`, `betaWindowEndAt`, `googleJwksUrl`, `integrityMaxSkewMs`, `googleAuthRateLimitMax`; `buildApp` accepts `{ fetchJwks?: JwksFetcher; decodeIntegrity?: PlayIntegrityDecoder }` as test seams.
 
 - [ ] **Step 1: Extend the config test**
