@@ -13,12 +13,71 @@ candidate). Debug dev-client APK, `arm64-v8a` only, `com.filldev.llamaprobe`.
 
 ---
 
-## Conditions, stated up front because they qualify every number below
+## Conditions
 
-**The phone was on USB and charging at 99% for this run.** The spike's own global constraints require
-every timing figure to be taken off charge, screen on, at stable ambient temperature, after a cold
-start. **These runs satisfy none of that.** They are therefore reported as *functional* answers and as
-*optimistic* timing bounds, and the tok/s figures must be retaken on battery before any tier is cut.
+**Most measurements below were taken on USB power**, which the spike's global constraints forbid for
+timing. **The tok/s figures have since been retaken on battery** — see the next section, which is now
+the authoritative throughput record. Everything else (tool-pick scores, memory, GBNF behaviour,
+suppression) is unaffected by charge state and stands as measured.
+
+---
+
+## THE AUTHORITATIVE THROUGHPUT NUMBERS — retaken on battery, 2026-08-31
+
+**Verified off charge, at both ends of the run**, because a retake that silently ran on mains would be
+worse than no retake:
+
+| | At launch | At completion |
+|---|---|---|
+| AC powered | false | false |
+| USB powered | false | false |
+| status | 3 (discharging) | 3 (discharging) |
+| temperature | 34.4 °C | 34.6 °C |
+
+Screen on, 128-token budget, thinking off (the shipping configuration), three runs per tier, long-form
+prompt so the model actually generates rather than answering in seven tokens.
+
+| Tier | Runs (tok/s) | **Median** | TTFT median | Load |
+|---|---|---|---|---|
+| 1 — `qwen3-0.6b-q4` | 32.10, 32.54, 32.57 | **32.54** | 55 ms | 2,174 ms |
+| 2 — `qwen3-1.7b-q4` | 10.87, 11.97, 11.45 | **11.45** | 138 ms | 5,258 ms |
+
+Spread is 1.5% on tier 1 and 10% on tier 2.
+
+### The 2026-08-21 amendment is wrong and should be retracted
+
+Spec §2.1 estimated **tier 1 at 25–45 tok/s**. Measured on battery, in-app: **32.54**. Squarely inside
+the estimate.
+
+The amendment added on 2026-08-21, from a Termux CLI measurement, reported tier 1 at **7.5–10.8
+tok/s** and instructed that *"every remaining tok/s cell"* be treated as optimistic by roughly three.
+**The real figure is three times faster than that amendment claimed, and the original estimates were
+sound.** Everything derived from that "3x pessimism" rule — including any redone §4.4 latency budget —
+is built on a bad number.
+
+The contradiction it created is also resolved. That amendment had the **0.6B running slower than the
+1.7B**, which cannot be true on one chip. It was not: tier 1 does 32.54 and tier 2 does 11.45, a
+2.8x ratio in the direction physics requires.
+
+**Most likely cause, consistent with question 6's findings:** `llama.rn` ships **fourteen
+CPU-dispatch variants** and selects a path matched to this Cortex-A78 (dotprod). The Termux run used
+a generically compiled llama.cpp build (b10553). The lesson generalises — **a CLI benchmark is not a
+measurement of the app**, and the spike existed precisely to stop the implementation plan being
+written against extrapolations.
+
+### Charging costs about 11%, not 3x
+
+Tier 2 measured **12.90 tok/s on charge** (question 1) and **11.45 on battery** — roughly **11%
+slower unplugged**. Real, worth correcting for, and nowhere near the factor the amendment feared. The
+two runs differ slightly in prompt and thinking flag, so treat 11% as approximate.
+
+**Practical consequence:** at 32.5 tok/s, tier 1 answers a typical short question in well under a
+second, and its 55 ms TTFT means the stream starts effectively instantly. The §4.4 assumption that
+this feature is slow is far too pessimistic for tier 1.
+
+---
+
+## Older runs (on charge) — kept for the reasoning, superseded on timing
 
 Runs were 64 tokens each, three consecutive, no cold start between them.
 
@@ -483,4 +542,10 @@ Three things cost time and are worth knowing in advance:
 | 6. APK delta | **partial**, floor of 75.4 MB, no baseline build |
 | 7. `Device.totalMemory` truthfulness | **Answered: exact.** Byte-identical to `/proc/meminfo` |
 
-**All timing figures above were taken on charge and must be retaken on battery.**
+**Timing figures have been retaken on battery** — see "THE AUTHORITATIVE THROUGHPUT NUMBERS" above.
+Tier 1 runs at **32.54 tok/s** and tier 2 at **11.45**, verified off charge at both ends of the run.
+The 2026-08-21 "3x pessimism" amendment is refuted and should be retracted from spec §2.1.
+
+**Still owed:** the release build (both memory figures and the APK delta are debug upper bounds), a
+baseline build without `llama.rn` for question 6's true delta, tiers 3–5 on hardware that can hold
+them, and §5.5's full 30-question eval against Task 10's production prompt.

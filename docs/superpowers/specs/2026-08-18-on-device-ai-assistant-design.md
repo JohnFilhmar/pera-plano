@@ -241,6 +241,28 @@ measured on an A54.** They exist to size the design (§4.4 assumes slowness) and
 spike's real numbers. Wherever a speed appears in the UI it is the *device's own measured* number from
 §2.5, never a value from this table.
 
+> **RETRACTED 2026-08-31. The amendment below is wrong. Do not use it.**
+>
+> Tier 1 measured **in the app, on battery, off charge at both ends of the run: 32.54 tok/s median**
+> (32.10 / 32.54 / 32.57, spread 1.5%). The table's estimate of 25–45 is **correct**. The amendment
+> below claimed 7.5–10.8 and told readers to scale every cell down by roughly three; **the real figure
+> is three times faster than it claimed.**
+>
+> It also had the 0.6B running *slower* than the 1.7B, which cannot be true on one chip. It is not:
+> tier 1 does 32.54 and tier 2 does 11.45 tok/s, a 2.8x ratio in the direction physics requires.
+>
+> **Cause:** the amendment measured a generically compiled llama.cpp CLI (build b10553) under Termux.
+> `llama.rn` ships **fourteen CPU-dispatch variants** and selects one matched to this Cortex-A78. A
+> CLI benchmark is not a measurement of the app.
+>
+> **Charging costs about 11%, not 3x** — tier 2 ran 12.90 tok/s on charge against 11.45 on battery.
+>
+> Full record: `docs/superpowers/specs/2026-08-31-llama-rn-spike-findings.md`. Anything derived from
+> the "3x pessimism" rule, including any redone §4.4 latency budget, rests on a bad number and needs
+> revisiting.
+>
+> <details><summary>The retracted 2026-08-21 amendment, kept for the record</summary>
+>
 > **Amended 2026-08-21 — tier 1 has now been measured, and the estimates are badly optimistic.**
 >
 > `qwen3-0.6b-q4` under llama.cpp CLI in Termux on the owner's A54 (build b10553,
@@ -262,6 +284,14 @@ spike's real numbers. Wherever a speed appears in the UI it is the *device's own
 > *available* memory on a device under normal pressure, not from total RAM minus an allowance.
 >
 > Full record: `docs/13-on-device-verification.md`; spike Task 1 is closed by it.
+>
+> </details>
+>
+> **Scope of the retraction, precisely.** Only the **tok/s** half above is wrong. The **memory** half
+> is not: the A54 really is the 8 GB variant, it really does sit under heavy zram pressure at idle,
+> and `minRamBytes` really must come from *available* memory rather than total. Those hold, and the
+> 2026-08-31 measurements sharpen them — 2.66 GiB available, with tier 2 alone occupying 2.51 GB PSS.
+> Two things were measured in that session and only one of them was measured wrongly.
 
 **Quant policy — owner's decision, 2026-08-21.** The catalogue's shape was questioned and is
 **confirmed as-is**: exactly one quant at tier 1, and higher precision offered only above it.
