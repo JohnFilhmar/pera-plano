@@ -6,6 +6,7 @@ import {
   requestOtp,
   verifyOtp,
   issueRefreshToken,
+  rotateRefreshToken,
 } from "../services/auth_service.js";
 
 const EMAIL_PATTERN = "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$";
@@ -105,6 +106,42 @@ export function authRoutes(app: FastifyInstance): Promise<void> {
         refreshToken,
         user: { id: result.userId, destination: result.destination },
       };
+    },
+  );
+
+  app.post(
+    "/auth/token/refresh",
+    {
+      schema: {
+        body: {
+          type: "object",
+          required: ["refreshToken"],
+          additionalProperties: false,
+          properties: {
+            refreshToken: { type: "string", minLength: 1 },
+          },
+        },
+      },
+    },
+    async (request) => {
+      const { refreshToken } = request.body as { refreshToken: string };
+      const result = await rotateRefreshToken(app.prisma, refreshToken);
+      if (result.kind === "reuse_detected") {
+        throw new ApiError(
+          401,
+          "token_reuse_detected",
+          "Refresh token reuse detected; token family revoked",
+        );
+      }
+      if (result.kind === "invalid") {
+        throw new ApiError(
+          401,
+          "invalid_token",
+          "Refresh token is invalid or expired",
+        );
+      }
+      const accessToken = signAccessToken(result.userId, app.config.jwtSecret);
+      return { accessToken, refreshToken: result.refreshToken };
     },
   );
   return Promise.resolve();

@@ -1,10 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { randomUUID } from "node:crypto";
 import { buildApp } from "../../src/app.js";
 import { resetDb } from "../helpers/db.js";
 import { OTP_MAX_ATTEMPTS } from "../../src/lib/otp.js";
 import {
   requestOtp,
   verifyOtp,
+  issueRefreshToken,
+  rotateRefreshToken,
   type VerifyOtpResult,
 } from "../../src/services/auth_service.js";
 
@@ -67,7 +70,47 @@ describe("verifyOtp under concurrency", () => {
       ),
     );
 
+    // One session, and nobody else gets one. Which refusal the losers see is a
+    // timing detail, not an invariant: a caller refused by the attempt claim
+    // reads `too_many_attempts`, one refused by the consume claim reads
+    // `not_found`. Pinning it to `not_found` made this test fail about half the
+    // time.
     expect(countKind(results, "ok")).toBe(1);
-    expect(countKind(results, "not_found")).toBe(results.length - 1);
+    expect(
+      countKind(results, "not_found") + countKind(results, "too_many_attempts"),
+    ).toBe(results.length - 1);
+  });
+});
+
+describe("rotateRefreshToken under concurrency", () => {
+  it("rotates one token exactly once, however parallel the presentations", async () => {
+    const userId = randomUUID();
+    await app.prisma.user.create({
+      data: {
+        id: userId,
+        destination: "concurrent@example.com",
+        createdAt: BigInt(Date.now()),
+      },
+    });
+    const familyId = randomUUID();
+    const token = await issueRefreshToken(app.prisma, userId, familyId);
+
+    const results = await Promise.all(
+      Array.from({ length: 2 }, () => rotateRefreshToken(app.prisma, token)),
+    );
+
+    // Exactly one caller may claim the presented token. A read-then-update
+    // rotation lets both claim it, both mint a successor, and reuse detection
+    // silently stops meaning anything.
+    const rotated = results.filter((r) => r.kind === "ok");
+    expect(rotated).toHaveLength(1);
+    // The loser is not a legitimate rotation: the token it presented was
+    // already revoked by the winner, which is exactly the replay signature.
+    expect(results.filter((r) => r.kind === "reuse_detected")).toHaveLength(1);
+
+    // One presented token plus one successor. A third row would mean two
+    // successors were minted from a single token.
+    const rows = await app.prisma.refreshToken.findMany({ where: { userId } });
+    expect(rows).toHaveLength(2);
   });
 });

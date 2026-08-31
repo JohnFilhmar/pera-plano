@@ -139,3 +139,83 @@ export async function issueRefreshToken(
   });
   return token;
 }
+
+export type RefreshClassification = "valid" | "expired" | "reused";
+
+/**
+ * The rotation decision, with no database in it. Revocation outranks expiry:
+ * a revoked token coming back is evidence of theft whatever its expiry says,
+ * and a stolen-then-expired token still has to revoke its family.
+ */
+export function classifyRefreshToken(
+  record: { expiresAt: number; revokedAt: number | null },
+  nowMs: number,
+): RefreshClassification {
+  if (record.revokedAt !== null) return "reused";
+  if (nowMs >= record.expiresAt) return "expired";
+  return "valid";
+}
+
+export type RotateResult =
+  | { kind: "ok"; userId: string; refreshToken: string }
+  | { kind: "invalid" }
+  | { kind: "reuse_detected" };
+
+/**
+ * Rotation claims the presented token with one conditional write: the same
+ * statement revokes it and requires it to have been live, so Postgres decides
+ * the winner. Reading the row first and revoking it second is the same
+ * time-of-check-to-time-of-use race `verifyOtp` had, and here it is worse than
+ * a bypassed cap: two concurrent presentations of one token both pass the
+ * check, both mint a successor, and reuse detection stops detecting anything.
+ * Only the caller whose write actually landed rotates. Do not collapse this
+ * back into a read plus an update.
+ */
+export async function rotateRefreshToken(
+  prisma: PrismaClient,
+  presentedToken: string,
+  nowMs: number = Date.now(),
+): Promise<RotateResult> {
+  const tokenHash = sha256Hex(presentedToken);
+  const claimed = await prisma.refreshToken.updateMany({
+    where: { tokenHash, revokedAt: null, expiresAt: { gt: BigInt(nowMs) } },
+    data: { revokedAt: BigInt(nowMs) },
+  });
+
+  if (claimed.count === 0) {
+    // Refused. Only now read the row, and only to say why.
+    const refused = await prisma.refreshToken.findUnique({
+      where: { tokenHash },
+    });
+    if (!refused) return { kind: "invalid" };
+    const classification = classifyRefreshToken(
+      {
+        expiresAt: Number(refused.expiresAt),
+        revokedAt:
+          refused.revokedAt === null ? null : Number(refused.revokedAt),
+      },
+      nowMs,
+    );
+    if (classification === "reused") {
+      // A rotated token came back: assume theft, kill the whole family.
+      await prisma.refreshToken.updateMany({
+        where: { familyId: refused.familyId, revokedAt: null },
+        data: { revokedAt: BigInt(nowMs) },
+      });
+      return { kind: "reuse_detected" };
+    }
+    return { kind: "invalid" };
+  }
+
+  // The claim landed, so this caller owns the rotation. The row is read only
+  // for the user and family the successor inherits.
+  const record = await prisma.refreshToken.findUnique({ where: { tokenHash } });
+  if (!record) return { kind: "invalid" };
+  const refreshToken = await issueRefreshToken(
+    prisma,
+    record.userId,
+    record.familyId,
+    nowMs,
+  );
+  return { kind: "ok", userId: record.userId, refreshToken };
+}
