@@ -94,6 +94,16 @@ import type { Category, Transaction, Wallet } from "@/types/domain";
  */
 export const TRANSFER_LABEL = "Transfer — not counted as spending";
 
+/**
+ * The adjustment equivalent (017_transaction_adjustments), phrased to the same
+ * shape so the two read as one rule rather than two exceptions.
+ *
+ * It names WHAT THE ROW IS, not what the user did, because a starting balance
+ * and a manual correction arrive at the same row through different sheets and
+ * "Balance adjustment" is true of both.
+ */
+export const ADJUSTMENT_LABEL = "Balance adjustment — not counted as spending";
+
 /** The link glyph (plan rule 3). Registered so `className` can tint it. */
 const TransferGlyph = registerIcon(ArrowLeftRight);
 
@@ -152,6 +162,13 @@ export function TransactionRow({
   // "the category is Transfers", not a merchant heuristic — the link row is the
   // only thing `sumSpend` consults, so it is the only thing the row may show.
   const isTransfer = transaction.transferLinkId !== null;
+  // Same standing as `isTransfer` on this row: a fact the repository stamped at
+  // write time, not something inferred from the note or the category. The note
+  // is what 017's backfill had to key on for rows written before the column
+  // existed, and keying the UI on it too would put a display rule and a
+  // migration heuristic in the same job.
+  const isAdjustment = transaction.isAdjustment;
+  const isUncounted = isTransfer || isAdjustment;
   const rowTestID = testID ?? `transaction-row-${transaction.id}`;
   const categoryName = category?.name ?? UNNAMED_CATEGORY;
 
@@ -185,8 +202,11 @@ export function TransactionRow({
             direction={transaction.direction}
             // The styling half of rule 3. `muted` is `fg-2` in both themes,
             // overriding the `in`/`out` colours — a transfer leg must read as
-            // neither spending nor income, because it is neither.
-            muted={isTransfer}
+            // neither spending nor income, because it is neither. An adjustment
+            // is muted for the identical reason: the owner's screenshot showed
+            // a −₱4,964.60 correction in full expense red, which is the colour
+            // the app uses to mean "this came out of your budget".
+            muted={isUncounted}
             size="md"
           />
         }
@@ -215,6 +235,19 @@ export function TransactionRow({
             className="text-xs text-fg-2 dark:text-fg-2-dark"
           >
             {TRANSFER_LABEL}
+          </Text>
+        ) : null}
+        {/* Not an `else` on the transfer arm by accident: the two are mutually
+            exclusive by construction (a reconciliation hook never links a leg),
+            and writing them as separate conditions means a row that somehow
+            became both would say so rather than hide one fact behind the
+            other. */}
+        {isAdjustment ? (
+          <Text
+            testID={`transaction-adjustment-${transaction.id}`}
+            className="text-xs text-fg-2 dark:text-fg-2-dark"
+          >
+            {ADJUSTMENT_LABEL}
           </Text>
         ) : null}
       </View>

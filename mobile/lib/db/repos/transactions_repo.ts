@@ -137,6 +137,7 @@ export async function insertTransaction(tx: NewTransaction): Promise<Transaction
       note: tx.note ?? null,
       balanceAfter,
       computedBalance: null,
+      isAdjustment: tx.isAdjustment ?? false,
       createdAt: now,
       updatedAt: now,
     };
@@ -147,8 +148,9 @@ export async function insertTransaction(tx: NewTransaction): Promise<Transaction
       `INSERT INTO transactions (
          id, wallet_id, category_id, amount, direction, occurred_at, merchant,
          counterparty, reference_no, source, confidence, raw_notification_id,
-         transfer_link_id, note, created_at, updated_at, balance_after, computed_balance
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         transfer_link_id, note, created_at, updated_at, balance_after, computed_balance,
+         is_adjustment
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         row.id,
         row.wallet_id,
@@ -168,6 +170,7 @@ export async function insertTransaction(tx: NewTransaction): Promise<Transaction
         row.updated_at,
         row.balance_after,
         row.computed_balance,
+        row.is_adjustment,
       ],
     );
 
@@ -597,6 +600,14 @@ export async function listTransactions(filter: TxFilter): Promise<Transaction[]>
   if (filter.excludeTransferLinked) {
     clauses.push("transfer_link_id IS NULL");
   }
+  // OPT-IN, unlike the two spend queries below where exclusion is unconditional.
+  // The ledger screens read through here and an adjustment belongs on them —
+  // it is a real row that really moved the balance, and hiding it would leave
+  // a wallet total the visible history cannot explain. Only callers asking
+  // "what does this person actually earn / spend / pay every month" set it.
+  if (filter.excludeAdjustments) {
+    clauses.push("is_adjustment = 0");
+  }
 
   const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
   const rows = await db.getAllAsync<TransactionRow>(
@@ -608,8 +619,16 @@ export async function listTransactions(filter: TxFilter): Promise<Transaction[]>
 
 /**
  * Total money spent in [from, to). Counts `direction = 'out'` only and never
- * counts transfer legs (invariant I2). The window is clamped to the tier's
- * history floor so Free never reports spend it cannot show.
+ * counts transfer legs (invariant I2) or balance adjustments
+ * (017_transaction_adjustments). The window is clamped to the tier's history
+ * floor so Free never reports spend it cannot show.
+ *
+ * THE ADJUSTMENT EXCLUSION IS NOT OPTIONAL HERE, unlike on `listTransactions`.
+ * This function has exactly one meaning — "how much money did this person
+ * spend" — and a correction that says "the wallet actually holds less than the
+ * ledger thought" is the user fixing the app's arithmetic, not a purchase.
+ * Every limit and every Safe-to-Spend figure funnels through here, so a caller
+ * that could opt out would be a caller that could re-introduce the bug.
  */
 export async function sumSpend(args: {
   from: number;
@@ -626,6 +645,7 @@ export async function sumSpend(args: {
   const clauses = [
     "direction = 'out'",
     "transfer_link_id IS NULL",
+    "is_adjustment = 0",
     "occurred_at >= ?",
     "occurred_at < ?",
   ];
@@ -660,10 +680,17 @@ export async function sumSpend(args: {
  *
  * WHAT COUNTS AS SPENDING here is the same rule `sumSpend` uses: outflows only,
  * transfer legs excluded (invariant I2 — moving your own money between your own
- * wallets is not spending, and counting it would double-count every top-up).
- * `sumSpend` expresses "not a transfer leg" as `transfer_link_id IS NULL` —
- * this schema has no `is_transfer` column at all (001_core.sql) — so this
- * function matches that expression exactly rather than one that does not exist.
+ * wallets is not spending, and counting it would double-count every top-up),
+ * balance adjustments excluded (017_transaction_adjustments — reconciling a
+ * wallet to the figure the user typed is not a purchase). `sumSpend` expresses
+ * "not a transfer leg" as `transfer_link_id IS NULL` — this schema has no
+ * `is_transfer` column at all (001_core.sql) — so this function matches that
+ * expression exactly rather than one that does not exist.
+ *
+ * THE TWO PREDICATES MUST STAY IDENTICAL. They already drifted once: the bar
+ * strip and the limit ring are read side by side on Home, and one of them
+ * counting a correction the other ignored is exactly the inconsistency the
+ * owner's 2026-08-30 report surfaced.
  *
  * NOT CLAMPED to the tier's history floor. Seven days is inside every window
  * the tier matrix defines, so clamping would be arithmetic with no effect and
@@ -688,6 +715,7 @@ export async function dailySpend(args: { days: number; endingOn: string }): Prom
        FROM transactions
       WHERE direction = 'out'
         AND transfer_link_id IS NULL
+        AND is_adjustment = 0
         AND date(occurred_at / 1000, 'unixepoch', 'localtime') > date(?, ?)
         AND date(occurred_at / 1000, 'unixepoch', 'localtime') <= date(?)
       GROUP BY day`,

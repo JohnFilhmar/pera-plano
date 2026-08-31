@@ -88,6 +88,12 @@ export function selectCandidates(
         // Internal movements are never income (domain invariant 2). Without
         // this, moving money between your own wallets manufactures income.
         transaction.transferLinkId === null &&
+        // Nor is a balance correction (017_transaction_adjustments). A user who
+        // tells the app "this wallet already held ₱5,000" has not been paid
+        // ₱5,000, and treating it as a pay packet would teach the cadence
+        // detector a payday that never happens and inflate every
+        // percent-of-income limit built on it.
+        !transaction.isAdjustment &&
         // A borrower repaying you is your own money coming back (loans r17).
         !loanPaymentTxIds.has(transaction.id) &&
         transaction.amount >= NOISE_FLOOR &&

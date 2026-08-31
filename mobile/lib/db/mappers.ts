@@ -97,6 +97,8 @@ export type TransactionRow = {
   /** 002_balance_after — appended by ALTER TABLE, hence last, not next to `amount`. */
   balance_after: number | null;
   computed_balance: number | null;
+  /** 017_transaction_adjustments — appended by ALTER TABLE, hence after 002's columns. */
+  is_adjustment: number;
 };
 
 export function rowToTransaction(row: TransactionRow): Transaction {
@@ -120,6 +122,10 @@ export function rowToTransaction(row: TransactionRow): Transaction {
     // normalizes the `undefined` a row selected before 002 existed would carry.
     balanceAfter: row.balance_after ?? null,
     computedBalance: row.computed_balance ?? null,
+    // `=== 1`, and the `?? 0` normalizes the `undefined` a row selected before
+    // 017 existed would carry — the same defence the two lines above apply to
+    // 002's columns.
+    isAdjustment: (row.is_adjustment ?? 0) === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -143,6 +149,7 @@ export function transactionToRow(tx: Transaction): TransactionRow {
     note: tx.note,
     balance_after: tx.balanceAfter,
     computed_balance: tx.computedBalance,
+    is_adjustment: tx.isAdjustment ? 1 : 0,
     created_at: tx.createdAt,
     updated_at: tx.updatedAt,
   };

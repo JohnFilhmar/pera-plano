@@ -146,6 +146,7 @@ function tx(overrides: Partial<Transaction> = {}): Transaction {
     note: null,
     balanceAfter: null,
     computedBalance: null,
+    isAdjustment: false,
     createdAt: 1_000,
     updatedAt: 1_000,
     ...overrides,

@@ -15,6 +15,7 @@ import walletTraitsSql from "./migrations/013_wallet_traits.sql";
 import dropWalletTypeSql from "./migrations/014_drop_wallet_type.sql";
 import supportReportsSql from "./migrations/015_support_reports.sql";
 import goalSoftDeleteSql from "./migrations/016_goal_soft_delete.sql";
+import transactionAdjustmentsSql from "./migrations/017_transaction_adjustments.sql";
 
 export type Migration = {
   version: number;
@@ -132,6 +133,9 @@ export const MIGRATIONS: Migration[] = [
   // references goals, so dropping the old table breaks no constraint. Same
   // shape as 011 and 012's `review_queue_items` rebuilds.
   { version: 16, name: "goal_soft_delete", sql: goalSoftDeleteSql },
+  // Additive column plus a backfill of the rows two reconciliation hooks
+  // already wrote. No rebuild, so no `disablesForeignKeys`.
+  { version: 17, name: "transaction_adjustments", sql: transactionAdjustmentsSql },
 ];
 
 /**

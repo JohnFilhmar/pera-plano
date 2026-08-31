@@ -72,6 +72,12 @@ export default function LimitDetailScreen() {
         to: status!.window.end,
         direction: "out",
         excludeTransferLinked: true,
+        // This list is captioned "Counted this period", so it has to hold
+        // exactly what `sumSpend` counted and nothing else — the two are read
+        // together, the ring above and the receipts below. `sumSpend` excludes
+        // adjustments unconditionally (017_transaction_adjustments); this
+        // opt-in flag is how the list says the same thing.
+        excludeAdjustments: true,
       });
 
       // `listTransactions` takes a single optional walletId/categoryId, while a

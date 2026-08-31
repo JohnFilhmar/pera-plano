@@ -89,6 +89,14 @@ export function useCorrectWalletBalance() {
         source: "manual",
         confidence: 1,
         note: BALANCE_CORRECTION_NOTE,
+        // 017_transaction_adjustments. Without this the row is indistinguishable
+        // from a purchase, and every spend figure counts it: the owner's
+        // 2026-08-30 report was a −₱4,964.60 correction reported as an expense,
+        // which pushed a ₱266 daily limit to ₱4,998.03 spent and pinned
+        // Safe-to-Spend at ₱0.00. The row still moves the wallet balance — that
+        // is what it is for — it just stops claiming money left the user's
+        // control.
+        isAdjustment: true,
       });
     },
     onSuccess: (_transaction, { walletId }) =>

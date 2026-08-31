@@ -45,7 +45,7 @@ import {
   localDateKey,
   matchesSearch,
 } from "../ledger_list";
-import { TRANSFER_LABEL } from "../transaction_row";
+import { ADJUSTMENT_LABEL, TRANSFER_LABEL } from "../transaction_row";
 
 const MINUS = "−";
 
@@ -74,6 +74,7 @@ function tx(overrides: Partial<Transaction> = {}): Transaction {
     note: null,
     balanceAfter: null,
     computedBalance: null,
+    isAdjustment: false,
     createdAt: 1_000,
     updatedAt: 1_000,
     ...overrides,
@@ -430,6 +431,57 @@ describe("a transfer leg — the single most important row state", () => {
     expect(classesOf("transaction-amount-t1")).toContain("text-fg-2");
     expect(classesOf("transaction-amount-t1")).not.toContain("text-brand");
     expect(screen.getByTestId("transaction-transfer-t1")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Balance adjustments — the owner's 2026-08-30 report. The same two halves the
+// transfer block above asserts, on the row that caused the bug: the screenshot
+// showed a −₱4,964.60 correction rendered in full expense red with no label,
+// which is the app telling the user they spent it.
+// ---------------------------------------------------------------------------
+describe("a balance adjustment row", () => {
+  const ADJUSTMENT = tx({
+    id: "t1",
+    direction: "out",
+    amount: 496_460,
+    isAdjustment: true,
+    note: "Starting balance / manual correction",
+  });
+
+  test("renders MUTED and carries the not-counted label", () => {
+    renderLedger([ADJUSTMENT]);
+
+    expect(classesOf("transaction-amount-t1")).toContain("text-fg-2");
+    expect(screen.getByTestId("transaction-adjustment-t1")).toHaveTextContent(
+      "Balance adjustment — not counted as spending",
+    );
+  });
+
+  test("the label is its own sentence, not the transfer one", () => {
+    // A correction is not a transfer, and telling the user it is would be a
+    // second wrong explanation in place of the first.
+    renderLedger([ADJUSTMENT]);
+
+    expect(ADJUSTMENT_LABEL).toBe("Balance adjustment — not counted as spending");
+    expect(screen.getByText(ADJUSTMENT_LABEL)).toBeTruthy();
+    expect(screen.queryByText(TRANSFER_LABEL)).toBeNull();
+  });
+
+  test("an ordinary row carries no adjustment label", () => {
+    renderLedger([tx({ id: "t1", isAdjustment: false })]);
+    expect(screen.queryByTestId("transaction-adjustment-t1")).toBeNull();
+  });
+
+  test("the day header nets it out, so header and row agree", () => {
+    // The header is where the contradiction would show: a row saying "not
+    // counted as spending" under a NET that counted it.
+    expect(
+      dayNet([
+        tx({ id: "t1", direction: "out", amount: 66_261 }),
+        tx({ id: "t2", direction: "out", amount: 496_460, isAdjustment: true }),
+      ]),
+    ).toBe(-66_261);
   });
 });
 
