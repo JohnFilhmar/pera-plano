@@ -90,6 +90,7 @@ import { AppState, type AppStateStatus } from "react-native";
 import * as LocalAuthentication from "expo-local-authentication";
 import * as KeyManager from "@/lib/crypto/key_manager";
 import * as Database from "@/lib/db/database";
+import { emitAppEvent } from "@/lib/events/app_events";
 import * as QueryCache from "@/lib/query_client";
 import { wipeAndStartOver as performWipeAndStartOver } from "@/lib/security/wipe";
 import {
@@ -208,6 +209,10 @@ export function LockProvider({ children }: { children: ReactNode }) {
     QueryCache.clearCacheEncryptionKey();
     await Database.closeDatabase();
     KeyManager.lock();
+    // AFTER the teardown, never before: a subscriber that reads the database on
+    // this event must find it already closed. The bus swallows a throwing
+    // handler, so a broken subscriber cannot keep the ledger open.
+    await emitAppEvent("lock:engaged", {});
     setStatus("locked");
     setErrorMessage(null);
   }, []);

@@ -117,6 +117,7 @@ import { AppState } from "react-native";
 import { authenticateAsync } from "expo-local-authentication";
 import * as KeyManager from "@/lib/crypto/key_manager";
 import * as Database from "@/lib/db/database";
+import { onAppEvent } from "@/lib/events/app_events";
 import * as QueryCache from "@/lib/query_client";
 import { wipeAndStartOver } from "@/lib/security/wipe";
 import {
@@ -1007,5 +1008,82 @@ describe("background timeout", () => {
     expect(mockCloseDatabase).not.toHaveBeenCalled();
     expect(mockKeyManagerLock).not.toHaveBeenCalled();
     nowSpy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// lock:engaged
+// ---------------------------------------------------------------------------
+
+describe("lock:engaged", () => {
+  // WHY AN EVENT AND NOT AN UNMOUNT. `lib/ai/session.ts` is a module-scoped
+  // store rather than a React context — assistant state must never reach
+  // react-query, which is persisted to disk — so it cannot learn about a lock
+  // by unmounting. An event is also the only thing a test can fire at a chosen
+  // point in a token stream, which is what AI spec §4.5's race needs.
+  async function relockAfterTimeout() {
+    const { result } = renderHook(() => useLock(), { wrapper });
+    await waitFor(() => expect(result.current.status).toBe("locked"));
+    await act(async () => {
+      await result.current.unlock();
+    });
+    await waitFor(() => expect(result.current.status).toBe("unlocked"));
+
+    const nowSpy = jest.spyOn(Date, "now");
+    const t0 = 1_700_000_000_000;
+    nowSpy.mockReturnValue(t0);
+    act(() => emitAppState("background"));
+    nowSpy.mockReturnValue(t0 + 6 * 60 * 1000);
+    await act(async () => {
+      emitAppState("active");
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(result.current.status).toBe("locked"));
+    nowSpy.mockRestore();
+  }
+
+  test("re-locking emits lock:engaged", async () => {
+    const seen: unknown[] = [];
+    const off = onAppEvent("lock:engaged", (payload) => {
+      seen.push(payload);
+    });
+
+    await relockAfterTimeout();
+    off();
+
+    expect(seen).toHaveLength(1);
+  });
+
+  test("lock:engaged is emitted AFTER closeDatabase resolves", async () => {
+    // Ordering matters: a subscriber that reads the database on this event must
+    // find it already closed, not racing the close.
+    const order: string[] = [];
+    mockCloseDatabase.mockImplementation(async () => {
+      await Promise.resolve();
+      order.push("closeDatabase");
+    });
+    const off = onAppEvent("lock:engaged", () => {
+      order.push("lock:engaged");
+    });
+
+    await relockAfterTimeout();
+    off();
+
+    expect(order).toEqual(["closeDatabase", "lock:engaged"]);
+  });
+
+  test("a throwing subscriber does not prevent the lock", async () => {
+    // The bus already swallows a throwing handler, and this asserts the lock
+    // path inherits that: a broken assistant must never be able to keep the
+    // ledger open.
+    const off = onAppEvent("lock:engaged", () => {
+      throw new Error("subscriber exploded");
+    });
+
+    await relockAfterTimeout();
+    off();
+
+    expect(mockKeyManagerLock).toHaveBeenCalledTimes(1);
   });
 });
