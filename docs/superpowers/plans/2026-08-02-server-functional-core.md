@@ -3217,6 +3217,23 @@ git commit -m "feat(server): aggregate-only telemetry route with per-ip rate lim
 
 ### Task 13: Backup vault — authenticated PUT/GET of one opaque blob per user
 
+> **Gap against a published commitment, recorded 2026-08-31. There is no DELETE.**
+>
+> A user can write and read their vault but cannot erase it through the API.
+> `07-privacy-and-compliance.md` §2.3 already tells users that cloud backup is "strictly opt-in;
+> disabled by default; disabling it deletes server-side copies", and §2.4's binding rule is that the
+> notice must never claim more than the architecture delivers. Right now it does.
+>
+> It is not live, because the vault is built and tested but unwired (linking design D4), so nothing
+> has been promised to a real user yet. But `DELETE /v1/backup/vault`, scoped to `request.userId` the
+> same way PUT and GET are, has to exist before cloud backup ships, and it is also what Play's
+> account-deletion obligation will require once an identity layer lands
+> (`../specs/2026-08-21-plus-tier-prerequisites.md` §2.8).
+>
+> Neither vault route declares a rate-limit budget either. The plan calls that acceptable for MVP and
+> Fastify's 1 MiB body cap bounds the damage, but an authenticated user can rewrite their blob without
+> limit.
+
 **Files:**
 - Create: `server/apps/api/src/routes/backup_routes.ts`
 - Create: `server/apps/api/test/helpers/auth.ts`
