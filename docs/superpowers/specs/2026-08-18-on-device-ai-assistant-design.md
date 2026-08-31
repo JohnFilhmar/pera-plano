@@ -219,7 +219,14 @@ change and a licence read in August is not evidence in November.
 > both `Q8_0`, and no `Qwen/Qwen3-4B-Instruct-2507-GGUF` resolves at all. So **only tier 3 can be
 > sourced from Qwen directly**; the `Q4_K_M` at tiers 1, 2 and 4 and the `Q6_K` at tier 5 must come
 > from a third-party quantiser or from our own conversion. The conversion source is therefore a
-> catalogue fact, not an implementation detail, and it is the open decision in that file's §6.
+> catalogue fact, not an implementation detail. **Settled the same day: all five tiers come from
+> `unsloth` at pinned revisions** (that file's §2 and §6), one converter across the catalogue so that
+> §5.5's tier-2-versus-tier-3 cut compares quantisation and not converters.
+>
+> **The size estimates in the table above are accurate.** Measured blob sizes are 396,705,472 /
+> 1,107,409,472 / 1,834,426,944 / 2,497,281,120 / 3,306,261,600 bytes, against the printed ~0.4 /
+> ~1.1 / ~1.8 / ~2.5 / ~3.3 GB. Worth saying only because the tok/s column in the same table is off
+> by roughly a factor of three, and the two are easy to trust equally when they should not be.
 
 | id | model | quant | approx size | est. tok/s on A54 | `suppressThinking` |
 |---|---|---|---|---|---|
@@ -1039,9 +1046,14 @@ instead of parsers.
    > requires an app release. Proxying the bytes was considered and rejected: it buys no integrity the
    > digest does not already provide, and costs a single point of failure plus terabyte-scale egress.
    >
-   > **One sub-decision stays open** and is owner-only: the conversion source. Qwen's own GGUF repos
-   > ship **`Q8_0` only**, so four of the five tiers in §2.1 have no upstream-published GGUF and must
-   > come from a third-party quantiser or from our own conversion. See that file's §6.
+   > **Conversion source, also decided 2026-08-31:** Qwen's own GGUF repos ship **`Q8_0` only**, so
+   > four of the five tiers in §2.1 have no upstream-published GGUF. All five now come from
+   > `unsloth`, at revisions pinned in that file's §2, on the reasoning that a third-party dependency
+   > costs nothing while there is no installed base whose availability it endangers. **One converter
+   > across the whole catalogue is load-bearing, not tidiness:** tiers 2 and 3 are the same base
+   > model at two quants and §5.5 cuts one by comparing them, so sourcing them from different
+   > converters would leave the comparison measuring converter metadata as well as quantisation.
+   > Self-conversion is deferred with a named revisit trigger, not dismissed.
 10. **Reload after a process kill.** Android kills the app, the user returns, and a 2.5 GB model must be
     re-read from storage. The surface must say "waking up" rather than appearing hung — and if the
     reload is slow enough, the "no model yet" state and the "model loading" state need different copy

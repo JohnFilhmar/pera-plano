@@ -65,7 +65,7 @@ Note what is **not** in the tampering row. Because the expected digest is compil
 **availability**, not integrity. Risk 9's actual words are *"a Hugging Face URL can move, and a dead
 URL is a dead menu entry with no recovery path"*, and that is a deletion risk, not an attacker.
 
-This is the one open decision. See §6.
+**Decided 2026-08-31 in favour of the third-party conversion (`unsloth`). See §6.**
 
 ---
 
@@ -79,12 +79,31 @@ and the phone fetches from it directly. We do not proxy the bytes.
 digest in our catalogue changing, and then every verification on every device fails simultaneously,
 with a symptom that looks exactly like a network fault and is not one.
 
-Recorded revisions, for whichever source §6 settles on:
+**The pinned sources, per §6's decision.** Sizes are the real blob sizes read from the Hugging Face
+API on 2026-08-31, not the spec's estimates. They are recorded here because `ModelSpec.bytes` is an
+exact integer and because a `Content-Length` mismatch is the cheapest possible early reject (§4).
 
-- `unsloth/Qwen3-1.7B-GGUF` at `d7f544eead698dbd1f15126ef60b45a1e1933222`
-- `unsloth/Qwen3-4B-Instruct-2507-GGUF` at `a06e946bb6b655725eafa393f4a9745d460374c9`
-- `Qwen/Qwen3-0.6B-GGUF` at `23749fefcc72300e3a2ad315e1317431b06b590a`
-- `Qwen/Qwen3-1.7B-GGUF` at `90862c4b9d2787eaed51d12237eafdfe7c5f6077`
+| id | repo | file | revision | bytes |
+|---|---|---|---|---|
+| `qwen3-0.6b-q4` | `unsloth/Qwen3-0.6B-GGUF` | `Qwen3-0.6B-Q4_K_M.gguf` | `50968a4468ef4233ed78cd7c3de230dd1d61a56b` | 396,705,472 |
+| `qwen3-1.7b-q4` | `unsloth/Qwen3-1.7B-GGUF` | `Qwen3-1.7B-Q4_K_M.gguf` | `d7f544eead698dbd1f15126ef60b45a1e1933222` | 1,107,409,472 |
+| `qwen3-1.7b-q8` | `unsloth/Qwen3-1.7B-GGUF` | `Qwen3-1.7B-Q8_0.gguf` | `d7f544eead698dbd1f15126ef60b45a1e1933222` | 1,834,426,944 |
+| `qwen3-4b-2507-q4` | `unsloth/Qwen3-4B-Instruct-2507-GGUF` | `Qwen3-4B-Instruct-2507-Q4_K_M.gguf` | `a06e946bb6b655725eafa393f4a9745d460374c9` | 2,497,281,120 |
+| `qwen3-4b-2507-q6` | `unsloth/Qwen3-4B-Instruct-2507-GGUF` | `Qwen3-4B-Instruct-2507-Q6_K.gguf` | `a06e946bb6b655725eafa393f4a9745d460374c9` | 3,306,261,600 |
+
+URL form, with no `main` anywhere in it:
+
+```
+https://huggingface.co/<repo>/resolve/<revision>/<file>
+```
+
+**The spec's size estimates were accurate** (~0.4, ~1.1, ~1.8, ~2.5, ~3.3 GB against the measured
+figures above), which is worth stating only because its tok/s estimates were not, and the two are
+sometimes cited together as if equally reliable.
+
+Documented fallback, unused unless `unsloth` disappears: `Qwen/Qwen3-0.6B-GGUF` at
+`23749fefcc72300e3a2ad315e1317431b06b590a` and `Qwen/Qwen3-1.7B-GGUF` at
+`90862c4b9d2787eaed51d12237eafdfe7c5f6077`, both `Q8_0` only.
 
 **Rejected: proxying the bytes through our own server.** It buys one real thing, that Hugging Face
 never learns a user's IP. It costs a single point of failure on the download path, `Range` and resume
@@ -136,7 +155,13 @@ Additions to spec §2.3's four rules, all cheap:
 - **Hash the file as written to disk, never the stream in flight.** A partial-write or
   truncated-flush bug must not be able to pass verification. The thing verified has to be the thing
   that will later be mmap'd.
-- **Cap redirect depth, and refuse any redirect that leaves `https:`.**
+- **Cap redirect depth, and refuse any redirect that leaves `https:`.** The rule is *https-only*, and
+  deliberately **not** *same-host*. Verified 2026-08-31: a `resolve/<sha>/` URL answers **`302` to a
+  Hugging Face CDN host**, and only that second hop returns `200` with the real `Content-Length`. An
+  implementation that refuses cross-host redirects will fail every download on the happy path.
+- **Both pinned URLs were exercised end to end on 2026-08-31.** `qwen3-1.7b-q4` returned
+  `content-length: 1107409472` and `qwen3-0.6b-q4` returned `content-length: 396705472`, each exactly
+  matching the §2 table. The pinning form works and the byte counts are not transcription errors.
 - Unchanged from §2.3 and restated because they are load-bearing: download to `<id>.gguf.part`;
   rename to `<id>.gguf` only after the digest matches; `ready` is unreachable except through
   `verifying`.
@@ -155,52 +180,63 @@ reason the catalogue is served at all.
 
 ---
 
-## 6. THE OPEN DECISION: conversion source
+## 6. Conversion source: DECIDED 2026-08-31
 
-Everything above is settled. This is not, and it is owner-only because it commits either a
-dependency on a third party or roughly 13 GB of the owner's bandwidth plus an ongoing pipeline.
+**Option A. All quants come from `unsloth`.** Owner's decision, on the reasoning that the third-party
+dependency costs nothing today and there is no installed base yet whose availability it puts at risk.
+That is the correct read of the trade: the exposure here is availability, and availability matters in
+proportion to how many people are relying on it, which right now is nobody.
 
-**Option A: source the missing quants from `unsloth`.** Free, immediate, licence verified as
-`apache-2.0` today, revisions pinned above. The risk carried is that a repo we do not control is
-deleted or rewritten, which costs availability until we repoint, and repointing is exactly what §3
-rule 2 exists to make cheap.
+The alternative, converting from upstream safetensors and self-hosting, was considered and deferred
+rather than dismissed. It buys stronger provenance and immunity from a third party deleting a repo,
+and it costs roughly 13 GB of downloads plus permanent ownership of a conversion pipeline that must
+be rerun on every model refresh. It is an availability hedge, and it should be bought when there is
+availability worth hedging.
 
-**Option B: convert from upstream safetensors ourselves and host the result** in a project-controlled
-repo at a pinned revision. Strongest provenance: the only licence in the chain is upstream
-Apache-2.0, read above, and no third party can delete our artifact. Costs roughly 13 GB of downloads,
-`convert_hf_to_gguf.py` plus `llama-quantize` runs, and ownership of a conversion step that must be
-repeated on every model refresh.
+**Revisit trigger, so this decision is not merely inherited later:** convert and self-host if any
+source repo is pulled or relicensed, or at the point the tier list is final and short enough that
+converting it is one afternoon's work. Whichever comes first.
 
-**Recommendation: A now, B later if it earns itself.** The digest pin means A cannot be made to
-serve bad weights, only to disappear, and §3 rule 2 already makes disappearance a server-side
-one-liner. B's advantage is real but it is an availability hedge bought with a permanent maintenance
-burden, taken on before a single tier has been proven to run on the target hardware. Revisit B if a
-source is ever actually pulled, or once the tier list is final and small enough that converting three
-files is a one-afternoon job rather than an open-ended commitment.
+**Single converter for all tiers, and this is not a stylistic preference.** Tier 2
+(`qwen3-1.7b-q4`) and tier 3 (`qwen3-1.7b-q8`) are **the same base model at two quants**, and spec
+§5.5 cuts one of them by comparing their eval scores directly. `Qwen/Qwen3-1.7B-GGUF` does publish an
+official `Q8_0`, so tier 3 could have come from upstream, but taking tiers 2 and 3 from two different
+converters would put different chat-template and thinking-flag metadata inside the two files and make
+quant no longer the only variable between them. The §5.5 comparison would then be measuring the
+converter as much as the quantisation. One converter across the whole catalogue keeps that comparison
+honest.
+
+Upstream `Qwen/Qwen3-1.7B-GGUF` at `90862c4b9d2787eaed51d12237eafdfe7c5f6077` is recorded as the
+documented fallback for tier 3 if `unsloth` ever disappears.
 
 ---
 
 ## 7. Blocked: the digests (Task 1 step 2)
 
-**Not computable yet, and deliberately left empty rather than guessed.** They depend on §6, and the
-final tier list may be shorter than five because the spike cuts tiers on hardware grounds first
-(spec §5.5). Recording a digest against a URL other than the one that ships is worse than recording
-none: it fails on every device and presents as a network problem.
+**The source is now settled (§6) and the URLs and byte counts are pinned (§2). What is still missing
+is the digest itself, which requires downloading each file.** Left empty rather than guessed:
+recording a digest against a URL other than the one that ships is worse than recording none, because
+it fails on every device at once and presents as a network problem.
 
-| id | source repo + revision | sha256 | exact bytes |
-|---|---|---|---|
-| `qwen3-0.6b-q4` | | | |
-| `qwen3-1.7b-q4` | | | |
-| `qwen3-1.7b-q8` | | | |
-| `qwen3-4b-2507-q4` | | | |
-| `qwen3-4b-2507-q6` | | | |
+Deliberately **not** downloading all five now. The spike cuts tiers on hardware grounds before this
+matters (spec §5.5), and on the 2026-08-31 device reading tier 5 cannot load on the only test phone
+at all. Fetching 9.1 GB to digest files that may never ship is work done in the wrong order. Digest
+each tier as it survives.
 
-Filled by, per tier:
+| id | sha256 | status |
+|---|---|---|
+| `qwen3-0.6b-q4` | | pending |
+| `qwen3-1.7b-q4` | | pending, needed first (spike Task 4 starts here) |
+| `qwen3-1.7b-q8` | | pending |
+| `qwen3-4b-2507-q4` | | pending |
+| `qwen3-4b-2507-q6` | | pending, may never ship (will not load on the A54) |
+
+Filled by, per tier, against the exact URL from §2:
 
 ```bash
-curl -L -o <id>.gguf "<the pinned resolve/<sha>/ url>"
+curl -L -o <id>.gguf "https://huggingface.co/<repo>/resolve/<revision>/<file>"
 sha256sum <id>.gguf
-stat -c %s <id>.gguf
+stat -c %s <id>.gguf   # must equal the bytes column in §2
 ```
 
 The digest, the byte count, and the URL they were computed from are recorded **together**, in one row.
