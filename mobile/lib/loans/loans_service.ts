@@ -447,6 +447,11 @@ export async function findPaymentCandidates(
     from: now - CANDIDATE_WINDOW_DAYS * DAY_MS,
     to: now + 1,
     direction: payingDirection(loan),
+    // A balance correction is not a loan payment (017_transaction_adjustments).
+    // It has an amount and a direction and nothing else, so it scores on amount
+    // proximity alone and can outrank a real payment — and accepting one would
+    // record a debt as settled on the strength of the user fixing a typo.
+    excludeAdjustments: true,
   });
 
   // One query for every claimed transaction, rather than one per candidate.

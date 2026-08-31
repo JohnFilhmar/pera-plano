@@ -100,6 +100,10 @@ export function PrivacyPage({ messages, config }: { messages: Messages; config: 
       <Prose
         sections={[
           { id: "how-processing-happens", ...s.howProcessingHappens },
+          // Placed before the recipients section, because the recipients section is where a
+          // reader learns Google is involved and this is the only reason it is. Row 9 of the
+          // lifecycle table above states the retention; this states the basis and purpose.
+          { id: "beta-programme", ...s.betaProgramme },
           { id: "who-receives-it", ...s.whoReceivesIt },
           { id: "automated-decisions", ...s.automatedDecisions },
         ]}

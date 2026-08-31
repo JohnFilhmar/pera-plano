@@ -83,6 +83,13 @@ export function useReconcileCash() {
         source: "manual",
         confidence: 1,
         note: RECONCILE_NOTE,
+        // 017_transaction_adjustments — the same marker
+        // `useCorrectWalletBalance` sets, and it belongs here for the same
+        // reason: counting the physical cash in a wallet and finding ₱200 less
+        // than the ledger expected is a correction, not ₱200 of shopping. The
+        // owner's report named the non-cash sheet, but this hook writes the
+        // identical kind of row and had the identical defect.
+        isAdjustment: true,
       });
     },
     // The same key set `use_create_transaction` uses, and for the same reasons —

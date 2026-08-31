@@ -130,16 +130,21 @@ export type DayGroup = {
 };
 
 /**
- * The day's net: `in` adds, `out` subtracts, TRANSFER LEGS COUNT FOR NOTHING.
+ * The day's net: `in` adds, `out` subtracts, TRANSFER LEGS AND BALANCE
+ * ADJUSTMENTS COUNT FOR NOTHING.
  *
- * The exclusion is invariant I2 and it is the same one `sumSpend` applies in
- * SQL. Both halves have to hold or the header contradicts the row beneath it —
- * a ₱5,000 leg labelled "not counted as spending" sitting under a header that
- * counted it is a screen arguing with itself.
+ * The transfer exclusion is invariant I2 and it is the same one `sumSpend`
+ * applies in SQL. Both halves have to hold or the header contradicts the row
+ * beneath it — a ₱5,000 leg labelled "not counted as spending" sitting under a
+ * header that counted it is a screen arguing with itself.
+ *
+ * The adjustment exclusion (017_transaction_adjustments) is that same argument
+ * a second time. The row now carries `ADJUSTMENT_LABEL`, and a header that
+ * netted the correction anyway would put the contradiction back one line up.
  */
 export function dayNet(transactions: readonly Transaction[]): Centavos {
   return transactions
-    .filter((transaction) => transaction.transferLinkId === null)
+    .filter((transaction) => transaction.transferLinkId === null && !transaction.isAdjustment)
     .reduce(
       (total, transaction) =>
         total + (transaction.direction === "in" ? transaction.amount : -transaction.amount),

@@ -6,7 +6,7 @@
 // lib/reports/reports_service.ts (Task 2), which is not this file's concern.
 //
 // ---------------------------------------------------------------------------
-// TRANSFER EXCLUSION IS THE WHOLE POINT
+// EXCLUDING MOVEMENTS THAT ARE NOT MOVEMENTS IS THE WHOLE POINT
 // ---------------------------------------------------------------------------
 // docs/04-features/10-reports.md rule 1: a Transaction carrying a
 // `transferLinkId` is the user's own money moving between wallets, not
@@ -16,6 +16,11 @@
 // callers already exclude on. A user who moved ₱10,000 from GCash to a
 // savings wallet has not spent ₱10,000, and a report that counted it would be
 // lying about the one number it exists to get right.
+//
+// A Transaction carrying `isAdjustment` is dropped for the same reason
+// (017_transaction_adjustments): it reconciles a wallet to the balance the
+// user says it really holds, so no money entered or left their control. Both
+// live in `isExcluded` below.
 //
 // ---------------------------------------------------------------------------
 // RANGES ARE INCLUSIVE CALENDAR DATES, NOT THE CONTRACT'S [from, to)
@@ -105,9 +110,24 @@ function inRange(transaction: Transaction, range: DateRange): boolean {
   return date >= range.from && date <= range.to;
 }
 
-/** A Transfer Link leg — excluded everywhere in this file (rule 1). */
-function isTransfer(transaction: Transaction): boolean {
-  return transaction.transferLinkId !== null;
+/**
+ * A row that moved a number without money moving — excluded everywhere in this
+ * file.
+ *
+ * Two kinds, one rule. A Transfer Link leg is the user's own money changing
+ * pockets (rule 1). A balance adjustment is the user telling the app what a
+ * wallet really holds — a starting balance, a manual correction, a cash count
+ * (017_transaction_adjustments). Neither is spending and neither is income, and
+ * a report that counted either would be lying about the one number it exists to
+ * get right.
+ *
+ * The adjustment half was added after the owner's 2026-08-30 report: a
+ * −₱4,964.60 correction on a SeaBank wallet was being reported as an expense,
+ * which is the same class of error as counting a transfer and has the same
+ * answer.
+ */
+function isExcluded(transaction: Transaction): boolean {
+  return transaction.transferLinkId !== null || transaction.isAdjustment;
 }
 
 /**
@@ -127,7 +147,7 @@ export function summarizePeriod(transactions: Transaction[], range: DateRange): 
   let transactionCount = 0;
 
   for (const transaction of transactions) {
-    if (isTransfer(transaction)) continue;
+    if (isExcluded(transaction)) continue;
     if (!inRange(transaction, range)) continue;
 
     transactionCount += 1;
@@ -209,7 +229,7 @@ export function categoryBreakdown(
   const totals = new Map<string, Centavos>();
 
   for (const transaction of transactions) {
-    if (isTransfer(transaction)) continue;
+    if (isExcluded(transaction)) continue;
     if (transaction.direction !== "out") continue;
     if (!inRange(transaction, range)) continue;
 
@@ -274,7 +294,7 @@ export function topMerchants(
   const totals = new Map<string, { total: Centavos; count: number }>();
 
   for (const transaction of transactions) {
-    if (isTransfer(transaction)) continue;
+    if (isExcluded(transaction)) continue;
     if (transaction.direction !== "out") continue;
     if (transaction.merchant === null) continue;
     if (!inRange(transaction, range)) continue;

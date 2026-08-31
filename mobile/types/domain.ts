@@ -132,6 +132,27 @@ export type Transaction = {
    * `updateTransaction`'s note on anchors.
    */
   computedBalance: Centavos | null;
+  /**
+   * `true` when this row exists to RECONCILE the wallet's balance rather than
+   * to record money leaving or entering the user's control — a starting
+   * balance, a manual correction, a cash count (017_transaction_adjustments).
+   *
+   * It is excluded from spend, income and every report figure, for the same
+   * reason a transfer leg is (invariant I2): the money did not go anywhere. A
+   * user who tells the app "this wallet actually holds ₱4,377" has not spent
+   * the difference, and counting it blows their limits and their
+   * Safe-to-Spend on a correction they made to get the numbers RIGHT.
+   *
+   * It still MOVES THE BALANCE — that is what the row is for. Excluded from
+   * the reports, included in the wallet total, present in the ledger where
+   * the user can see it.
+   *
+   * NOT USER-EDITABLE. Absent from `TransactionPatch` alongside
+   * `transferLinkId`, and for the same reason: what counts as spending is a
+   * fact about how the row was created, not a field a category picker should
+   * be able to flip.
+   */
+  isAdjustment: boolean;
   createdAt: EpochMs;
   updatedAt: EpochMs;
 };
@@ -160,6 +181,11 @@ export type NewTransaction = {
    * would let the drift explainer be handed a number nothing verified.
    */
   balanceAfter?: Centavos | null;
+  /**
+   * Set by the two reconciliation hooks and by nothing else. Absent and
+   * `false` mean the same thing: an ordinary transaction.
+   */
+  isAdjustment?: boolean;
 };
 
 /** Contract §3 pinned filter for listTransactions. */
@@ -170,6 +196,12 @@ export type TxFilter = {
   to?: EpochMs;
   direction?: TxDirection;
   excludeTransferLinked?: boolean;
+  /**
+   * Drops balance-reconciliation rows. For callers reasoning about the user's
+   * real activity — what they earn, what recurs — not for callers rendering
+   * the ledger, where an adjustment is history the user should see.
+   */
+  excludeAdjustments?: boolean;
 };
 
 // ---------- TransferLink ----------

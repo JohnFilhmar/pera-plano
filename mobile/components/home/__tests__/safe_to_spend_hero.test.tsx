@@ -215,7 +215,7 @@ function paintedInk(ink: ParsedToken, fillHex: string): string {
   return ink.alpha >= 1 ? inkHex : composite(inkHex, ink.alpha, fillHex);
 }
 
-test.each(["healthy", "tight", "over"] as const)(
+test.each(["healthy", "tight", "committed", "over"] as const)(
   "MUTED_INK_CLASS.%s, as actually exported by safe_to_spend_hero.tsx, clears AA in light and dark",
   (state) => {
     const fill = parseLightDark(FILL_CLASS[state], "bg");
@@ -244,4 +244,126 @@ test("the /80 opacity this file used to ship fails AA on every light-mode state 
 test("over/light has almost no headroom — even a 95% opacity (a 5% reduction) still fails AA", () => {
   const ratio = contrastRatio(composite(palette["on-brand"], 0.95, palette.danger), palette.danger);
   expect(ratio).toBeLessThan(AA);
+});
+
+// ---------------------------------------------------------------------------
+// The set-aside disclosure — owner's 2026-08-31 report.
+//
+// The reported screen said "You're ₱2,220.00 over for this period / from your
+// 8 categories limit" directly above a limits list reading "Daily limit · 8
+// categories  ₱0.00 / ₱280.00 · ₱280.00 left". BOTH WERE TRUE. Today was a
+// kinsenas payday and a ₱2,500 scheduled goal contribution was deducted from a
+// ₱280 daily headroom: 280 − 2500 = −2220, which is exactly what rules 7 and
+// 15 prescribe for a daily scope.
+//
+// What was missing is the sentence that makes those two figures legible
+// together. Key flows rule 2: the caption shows "the amounts deducted for
+// Bills and Goal contributions". The hero computed `billsTerm` and
+// `contributionsTerm`, carried them on the result, and rendered neither — so on
+// any day a bill or a contribution drove the number, the screen contradicted
+// the limits list beneath it with no way to resolve the contradiction.
+// ---------------------------------------------------------------------------
+
+test("REPORTED SCREEN: a shortfall driven purely by a goal contribution explains itself", () => {
+  // Second round of the same report. The engine now classifies this as
+  // `committed` rather than `over`, because the driving limit is filtered and
+  // its own headroom was never exceeded — nothing was spent in those 8
+  // categories. The hero therefore drops the accusation and keeps the
+  // explanation.
+  render(
+    <SafeToSpendHero
+      {...BASE}
+      scopeLabel="daily"
+      result={result({
+        state: "committed",
+        perDay: 0,
+        headroom: 28000,
+        contributionsTerm: 250000,
+        daysRemaining: 1,
+        overBy: 0,
+        drivingFilterLabel: "8 categories",
+      })}
+    />,
+  );
+
+  // No "You're ₱X over" — the user did not go over anything.
+  expect(screen.queryByTestId("sts-over-by")).toBeNull();
+
+  // The line that does the explaining.
+  expect(screen.getByTestId("sts-set-aside")).toHaveTextContent(
+    "₱2,500.00 to goals is already set aside",
+  );
+
+  // Amber, not the danger red an overspend gets.
+  expect(classesOf("sts-hero")).toContain("bg-warn");
+  expect(classesOf("sts-hero")).not.toContain("bg-danger");
+});
+
+test("a genuine overspend still gets the red fill and the over-by line", () => {
+  // The other side of the split: softening a real overspend would be worse
+  // than the bug this replaced.
+  render(
+    <SafeToSpendHero
+      {...BASE}
+      result={result({ state: "over", perDay: 0, overBy: 252000, headroom: -2000 })}
+    />,
+  );
+
+  expect(classesOf("sts-hero")).toContain("bg-danger");
+  expect(screen.getByTestId("sts-over-by")).toHaveTextContent(/₱2,520.00 over/);
+});
+
+test("bills and contributions are named separately when both are deducted", () => {
+  render(
+    <SafeToSpendHero
+      {...BASE}
+      result={result({
+        state: "over",
+        perDay: 0,
+        billsTerm: 399900,
+        contributionsTerm: 100000,
+        overBy: 50000,
+      })}
+    />,
+  );
+
+  // The spec's own worked phrasing (key flows rule 2).
+  expect(screen.getByTestId("sts-set-aside")).toHaveTextContent(
+    "₱3,999.00 in bills and ₱1,000.00 to goals are already set aside",
+  );
+});
+
+test("the line names only the term that is actually non-zero", () => {
+  render(
+    <SafeToSpendHero
+      {...BASE}
+      result={result({ state: "tight", billsTerm: 399900, contributionsTerm: 0 })}
+    />,
+  );
+
+  const line = screen.getByTestId("sts-set-aside");
+  expect(line).toHaveTextContent("₱3,999.00 in bills is already set aside");
+  expect(line).not.toHaveTextContent(/goals/);
+});
+
+test("nothing set aside renders no line at all — not a '₱0.00 set aside'", () => {
+  render(<SafeToSpendHero {...BASE} result={result()} />);
+  expect(screen.queryByTestId("sts-set-aside")).toBeNull();
+});
+
+test("the set-aside figures hide with the rest of the amounts", () => {
+  // The eye toggle exists so a user can open the app in public. A line that
+  // kept printing ₱2,500.00 while every other figure was masked would leak
+  // exactly what the toggle is for.
+  render(
+    <SafeToSpendHero
+      {...BASE}
+      amountsHidden
+      result={result({ state: "over", perDay: 0, contributionsTerm: 250000, overBy: 222000 })}
+    />,
+  );
+
+  const line = screen.getByTestId("sts-set-aside");
+  expect(line).not.toHaveTextContent("2,500");
+  expect(line).toHaveTextContent(/set aside/);
 });

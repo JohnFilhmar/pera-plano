@@ -37,10 +37,22 @@
 
 /* ------------------------------------------------------------------ contents */
 
+/* Sticky needs two things, and this rule only supplies one of them. The other is that the
+   grid item wrapping it (.aside) must be as tall as the row — see the note there. A sticky
+   element can never travel further than its own containing block, so an .aside sized to its
+   contents makes this rule silently do nothing at all.
+
+   The max-height matters on /terms specifically: eleven entries is taller than a laptop
+   viewport, and without it the tail of the list would be pinned off-screen with no way to
+   reach it. */
 .toc {
   position: sticky;
   top: 5.5rem;
+  max-height: calc(100vh - 7rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding-right: 1rem;
+  scrollbar-width: thin;
 }
 
 .tocLabel {
@@ -127,15 +139,20 @@
 }
 
 @media (min-width: 68rem) {
+  /* No `align-items: start` here. It was the original bug: it sized .aside to its contents,
+     which left the sticky .toc inside it with no containing block to travel down, so the
+     contents list scrolled away with the page and never came back. The row must stretch. */
   .shell {
     display: grid;
     gap: 2.5rem;
     grid-template-columns: 14rem minmax(0, 1fr);
-    align-items: start;
   }
 
   .aside {
     display: block;
+    /* Stated rather than left to the default, because this is load-bearing: the column has
+       to span the full height of the document beside it for the sticky rail to work. */
+    align-self: stretch;
     padding-top: 3.5rem;
   }
 }

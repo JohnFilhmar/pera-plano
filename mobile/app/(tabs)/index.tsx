@@ -20,6 +20,7 @@ import { ProjectionSparkline } from "@/components/home/projection_sparkline";
 import { SafeToSpendHero } from "@/components/home/safe_to_spend_hero";
 import { TrackingBanner } from "@/components/home/tracking_banner";
 import { UpcomingBillsStrip } from "@/components/home/upcoming_bills_strip";
+import { UtangStrip } from "@/components/home/utang_strip";
 import { PlusGate } from "@/components/gates/plus_gate";
 import { BrandMark } from "@/components/ui/brand_mark";
 import { LAUNCH_MS } from "@/components/ui/brand_mark_motion";
@@ -34,6 +35,7 @@ import { useBills } from "@/hooks/queries/use_bills";
 import { useCategories } from "@/hooks/queries/use_categories";
 import { useDailySpend } from "@/hooks/queries/use_daily_spend";
 import { useGoals } from "@/hooks/queries/use_goals";
+import { useLoans } from "@/hooks/queries/use_loans";
 import { useLimitStatuses } from "@/hooks/queries/use_limit_statuses";
 import { useListenerHealth } from "@/hooks/queries/use_listener_health";
 import { useSafeToSpend } from "@/hooks/queries/use_safe_to_spend";
@@ -69,6 +71,7 @@ export default function HomeScreen() {
   const { data: dailySeries } = useDailySpend(7);
   const { data: wallets } = useWallets();
   const { data: goals } = useGoals();
+  const { data: loans } = useLoans();
   const setCaptureEnabled = useSetCaptureEnabled();
   const [amountsHidden, setAmountsHidden] = useState(false);
   // IA §5's "Home" row: only reached for its OWN reason — a healthy listener
@@ -319,6 +322,20 @@ export default function HomeScreen() {
           onOpen={(billId, dueDate) =>
             router.push({ pathname: "/plan/bills/[id]", params: { id: billId, dueDate } })
           }
+        />
+
+        {/* Below "Coming up" and above the limits, because that is the order of
+            claims on the user's money: this period's committed bills, then what
+            is owed outside this period, then the caps the rest is measured
+            against. It renders nothing at all when nothing is owed. */}
+        <UtangStrip
+          statuses={loans}
+          // `systemClock`, not `Date.now()` — the same composition-edge rule
+          // `todayIndex` above follows, and what lets a "due in 3d" countdown
+          // be an ordinary fixture in a test.
+          now={systemClock.now()}
+          onOpen={(loanId) => router.push({ pathname: "/plan/loans/[id]", params: { id: loanId } })}
+          onSeeAll={() => router.push("/plan/loans")}
         />
 
         <LimitProgressList

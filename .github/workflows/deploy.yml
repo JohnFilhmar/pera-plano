@@ -114,6 +114,18 @@ jobs:
       DPO_EMAIL: ${{ vars.DPO_EMAIL }}
       SUPPORT_EMAIL: ${{ vars.SUPPORT_EMAIL }}
       NPC_REGISTRATION: ${{ vars.NPC_REGISTRATION }}
+      # The beta signup pair are SECRETS, not variables, which is the one place this
+      # differs from everything above it. The values above are legal identifiers that
+      # publish verbatim on the privacy notice; these two authorise writes to the tester
+      # spreadsheet, and the deployment URL is as sensitive as the token because the token
+      # is the only thing standing in front of it. Settings -> Environments ->
+      # <environment> -> Secrets.
+      #
+      # Unset is a supported state: the /beta page renders its "signups are not open"
+      # notice and the API answers 503. It does not fail the boot gate, unlike the
+      # compliance values, so a deploy without them is degraded rather than broken.
+      BETA_SIGNUP_WEBHOOK_URL: ${{ secrets.BETA_SIGNUP_WEBHOOK_URL }}
+      BETA_SIGNUP_TOKEN: ${{ secrets.BETA_SIGNUP_TOKEN }}
     steps:
       # Fail fast, before checkout or any build work, if the chosen environment doesn't
       # match the branch this run is on. production only ever deploys from master;
