@@ -48,9 +48,57 @@ async function readStringOrNull(read: () => Promise<string>): Promise<string | n
   }
 }
 
+function isNumberOrNull(value: unknown): value is number | null {
+  return value === null || (typeof value === "number" && Number.isFinite(value));
+}
+
+function isStringOrNull(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+/**
+ * AsyncStorage is a trust boundary, so the stored record is validated rather
+ * than cast. Anything unparseable or wrong-shaped counts as absent, which lets
+ * `captureInstallEvidence` write a fresh record over it.
+ *
+ * That recovery matters more than it looks. This used to `JSON.parse` and cast:
+ * a corrupt value threw, which rejected `captureInstallEvidence`, which
+ * `bootstrap` swallows by design, so the one fact this app cannot reconstruct
+ * would never have been captured again and nothing would have reported it.
+ * Recapturing is safe because `firstInstallTime` comes from `PackageManager`
+ * and does not move unless the app is genuinely reinstalled.
+ */
+function parseStoredEvidence(raw: string): InstallEvidence | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+
+  const candidate = parsed as Record<string, unknown>;
+  if (
+    !isNumberOrNull(candidate.firstInstallAt) ||
+    !isStringOrNull(candidate.installReferrer) ||
+    !isStringOrNull(candidate.appVersionAtInstall) ||
+    typeof candidate.capturedAt !== "number" ||
+    !Number.isFinite(candidate.capturedAt)
+  ) {
+    return null;
+  }
+
+  return {
+    firstInstallAt: candidate.firstInstallAt,
+    installReferrer: candidate.installReferrer,
+    capturedAt: candidate.capturedAt,
+    appVersionAtInstall: candidate.appVersionAtInstall,
+  };
+}
+
 export async function getStoredInstallEvidence(): Promise<InstallEvidence | null> {
   const raw = await AsyncStorage.getItem(STORAGE_KEY);
-  return raw === null ? null : (JSON.parse(raw) as InstallEvidence);
+  return raw === null ? null : parseStoredEvidence(raw);
 }
 
 /**

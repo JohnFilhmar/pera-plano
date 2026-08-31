@@ -60,4 +60,48 @@ describe("getStoredInstallEvidence", () => {
     await captureInstallEvidence(NOW);
     expect((await getStoredInstallEvidence())?.firstInstallAt).toBe(INSTALLED_AT);
   });
+
+  it("treats an unparseable stored value as absent instead of throwing", async () => {
+    await AsyncStorage.setItem("install_evidence_v1", "{not json");
+    expect(await getStoredInstallEvidence()).toBeNull();
+  });
+
+  it("treats a wrong-shape stored value as absent", async () => {
+    await AsyncStorage.setItem(
+      "install_evidence_v1",
+      JSON.stringify({ firstInstallAt: "not a number", capturedAt: NOW }),
+    );
+    expect(await getStoredInstallEvidence()).toBeNull();
+  });
+});
+
+/**
+ * The install date is the one fact this app cannot reconstruct later. A corrupt
+ * stored record used to throw out of getStoredInstallEvidence, which rejected
+ * captureInstallEvidence, which bootstrap swallows by design, so the evidence
+ * would never have been captured again and nobody would have seen an error.
+ * Recapture is safe: firstInstallTime comes from PackageManager and does not
+ * move unless the app is actually reinstalled.
+ */
+describe("recovery from a corrupt stored record", () => {
+  it("recaptures rather than staying broken forever", async () => {
+    await AsyncStorage.setItem("install_evidence_v1", "{not json");
+
+    const evidence = await captureInstallEvidence(NOW);
+
+    expect(evidence.firstInstallAt).toBe(INSTALLED_AT);
+    expect((await getStoredInstallEvidence())?.firstInstallAt).toBe(INSTALLED_AT);
+  });
+
+  it("still refuses to overwrite a valid earlier record", async () => {
+    await captureInstallEvidence(NOW);
+    (Application.getInstallationTimeAsync as jest.Mock).mockResolvedValue(
+      new Date(NOW),
+    );
+
+    const second = await captureInstallEvidence(NOW + 1_000_000);
+
+    expect(second.firstInstallAt).toBe(INSTALLED_AT);
+    expect(second.capturedAt).toBe(NOW);
+  });
 });
