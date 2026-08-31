@@ -84,6 +84,63 @@ production, the tokens are still decoded and still paid for in latency, and the 
 
 ---
 
+## Question 3: can thinking be suppressed, and what does it cost? — **YES, and it is the single largest latency win available**
+
+**Lever found:** the chat template's own flag, not a prompt hack. `llama.rn` accepts
+`messages` + `jinja: true` + **`enable_thinking: false`** on `completion()`, and also exposes
+`thinking_budget_tokens`, `thinking_forced_open` and `reasoning_format` for finer control. Preference
+1 in Task 6 step 1 was available, so the stream-level stripper stays what the spec called it:
+belt-and-braces, never the mechanism.
+
+Tier 2, three runs per config, `n_predict` 128, identical prompt:
+
+| Config | median TTFT | median wall | median tokens | `<think>` visible? |
+|---|---|---|---|---|
+| unsuppressed | 115 ms | **11,086 ms** | 128 (hit the cap) | yes |
+| template-suppressed | 111 ms | **739 ms** | **7** | no |
+| stripper only | 108 ms | 10,504 ms | 128 (hit the cap) | yes, removed after the fact |
+
+**Did suppression measurably change the clock? Yes — by 15x.** 739 ms against 11,086 ms.
+
+### Three things this run settles
+
+**1. Suppression is real, and §7.3's last row does not fire.** The feared outcome was that tiers 1–3
+pay an unavoidable latency tax and the menu collapses to the two 2507 tiers, which would have
+contradicted §0.3's free-for-everyone goal. That does not happen. The hybrid tiers can be made to
+answer immediately.
+
+**2. Unsuppressed, tier 2 never produced an answer at all.** Every unsuppressed run spent all 128
+tokens inside `<think>` and hit the cap mid-thought. Not "slow" — *absent*. Meanwhile the suppressed
+runs answered in 7 tokens: *"Save money by avoiding unnecessary purchases."* Coherent, one sentence,
+under three quarters of a second.
+
+**3. The stripper failure mode is worse than the spec predicted, and the run proves it.** The
+stripper config was included precisely to demonstrate clean output with an unchanged bill, and it
+did — 10,504 ms against the unsuppressed 11,086 ms, within noise. But look at what the user would
+have seen:
+
+```
+"visible_text": ""
+```
+
+**Empty.** Because the `<think>` block never closed inside the budget, stripping it removed the
+entire output. So a stripper-only fallback does not merely fail to save time; it can hand the user a
+blank message after eleven seconds. If `enable_thinking` ever silently stops working in production
+and the stripper is all that stands behind it, the symptom is not a slow answer, it is **no answer**.
+Spec §5.6 gate 3 should be worded to fail on an empty answer, not only on a visible tag.
+
+### A methodological note for whoever repeats this
+
+**TTFT is not a discriminator here and must not be used as one.** It sat at 108–115 ms across all
+three configs, because prefill is identical no matter what the model does afterwards. Only wall clock
+separates them. A gate written against TTFT would have passed the stripper-only config.
+
+**Nor does suppression speed up decoding.** Decode rate was ~12 tok/s in every config. Suppression
+wins by not generating 120 tokens nobody asked for. The user feels wall clock; the tok/s figure is
+unchanged and would have hidden the entire effect.
+
+---
+
 ## Question 4 (partial): peak memory, and the tier ceiling moves again
 
 `dumpsys meminfo com.filldev.llamaprobe` with tier 2 resident at `n_ctx` 2048:
@@ -167,7 +224,7 @@ Three things cost time and are worth knowing in advance:
 |---|---|
 | 1. Loads and streams | **Answered: yes**, tier 2, 12.90 tok/s mean |
 | 2. Per-request GBNF | not started |
-| 3. Thinking suppression | not started, but see question 1's finding |
+| 3. Thinking suppression | **Answered: yes**, `enable_thinking: false` under jinja, 15x on wall clock |
 | 4. Peak RSS + app-switch survival | **partial**, one sample, debug build, no app-switch test |
 | 5. Strict tool-pick accuracy | not started |
 | 6. APK delta | **partial**, floor of 75.4 MB, no baseline build |
