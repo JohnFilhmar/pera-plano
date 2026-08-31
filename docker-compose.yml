@@ -38,6 +38,13 @@ services:
     restart: unless-stopped
 
   postgres:
+    # Behind a profile deliberately. `.github/workflows/deploy.yml` runs
+    # `docker compose ... up -d --build --remove-orphans` with no service list, so
+    # without this every staging and production deploy would start a Postgres with
+    # the development credentials below, serving nothing. A profile means the
+    # service exists for local work and for the day the api deploys, and starts
+    # only when something asks for it by name. `npm run db:up` passes the profile.
+    profiles: ["api"]
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: peraplano

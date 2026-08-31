@@ -86,9 +86,12 @@ server/apps/api/
 - Create: `server/apps/api/test/setup.ts`
 - Create: `server/apps/api/src/config.ts`
 - Test: `server/apps/api/test/config.test.ts`
-- Modify: root `docker-compose.yml` (add a `postgres` service; take port 5005, which the file header already reserves for the backend)
-- Modify: `server/Dockerfile` (add an `api` target beside the existing `web` target; the `base`, `deps`, `build` and `runtime-base` stages are shared and unchanged)
-- Modify: `.github/workflows/server-ci.yml` (its `npm test` at the `server/` root already covers a new workspace; add the api build step and a Postgres service container)
+- Create: `server/apps/api/tsconfig.eslint.json` (covers `src`, `test` and `vitest.config.ts`; the build `tsconfig.json` includes only `src`, so pointing the linter at it would leave the api's tests unlinted)
+- Modify: root `docker-compose.yml` (add a `postgres` service under `profiles: ["api"]`, publishing no ports). **Not** port 5005: the file header reserves 5005 for the future API service, not for Postgres. The profile is required, not cosmetic: `deploy.yml` runs `docker compose ... up -d` with no service list, so an unprofiled service would start a development-credential database on staging and production.
+- Modify: `docker-compose.override.yml` (local only: `5432:5432`)
+- Modify: `server/Dockerfile` (add an `api` target beside the existing `web` target; `base`, `deps`, `build` and `runtime-base` are shared and unchanged. Note `deps` never installs the api's runtime dependencies, so the api target needs its own install stage rather than building on `build`)
+- Modify: `server/eslint.config.mjs` (append `./apps/api/tsconfig.eslint.json` to the `project` array and add `**/dist/**` to `ignores`). This is the **only** permitted edit to a `server/` root file, and it is additive: it cannot change how any web file is linted. Without it every api file fails with `parserOptions.project` parsing errors and CI's `npm run lint` goes red.
+- Modify: `.github/workflows/server-ci.yml` (add a Postgres service container plus explicit `npm run build -w @peraplano/api` and `npm test -w @peraplano/api` steps). **The root `npm test` does not cover the api.** The root `vitest.config.ts` includes `apps/web/**/__tests__/**` and `libs/**/__tests__/**`; the api's tests live in `test/`, so without its own step the suite never runs in CI. Likewise the root `typecheck` script names three tsconfigs explicitly and `apps/api` is not one of them, which is why the api's `build` step doubles as its typecheck.
 
 **Amendment note.** The three `Modify` entries land in this task's single commit together with the
 `apps/api` scaffold. Do not add an `api` Dockerfile target or compose service in a commit where
@@ -117,8 +120,8 @@ server/apps/api/
     "start": "node dist/server.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "db:up": "docker compose -f ../../../docker-compose.yml up -d postgres",
-    "db:down": "docker compose -f ../../../docker-compose.yml stop postgres",
+    "db:up": "docker compose -f ../../../docker-compose.yml -f ../../../docker-compose.override.yml --profile api up -d postgres",
+    "db:down": "docker compose -f ../../../docker-compose.yml -f ../../../docker-compose.override.yml --profile api stop postgres",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
     "db:generate": "prisma generate",
@@ -161,12 +164,22 @@ not restate options the base already sets):
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "sourceMap": true,
+    "noEmit": false,
     "outDir": "dist",
     "rootDir": "src"
   },
   "include": ["src/**/*.ts"]
 }
 ```
+
+`"noEmit": false` is not optional. `server/tsconfig.base.json` sets `"noEmit": true` for the Next.js
+app, so without the override `npm run build` succeeds while emitting nothing, and the Docker `api`
+target ships an empty `dist/`. A build that produces no output and reports success is worse than one
+that fails.
+
+Both `-f` files are required in `db:up`: an explicit `-f` suppresses auto-loading of the override,
+and the base file publishes no ports, so a single `-f` leaves `localhost:5432` unreachable and every
+integration test from Task 4 onward fails to connect.
 
 Note: `"type": "module"` + NodeNext means every relative import in `src/` and `test/` uses the `.js` extension (e.g. `import { loadConfig } from "./config.js"`), even though the file on disk is `.ts`. vitest and tsx both resolve this correctly.
 

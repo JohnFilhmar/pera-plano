@@ -14,6 +14,7 @@ export default tseslint.config(
     // on every build — linting any of them reports on code nobody here can edit.
     ignores: [
       "**/.next/**",
+      "**/dist/**",
       "**/node_modules/**",
       "**/next-env.d.ts",
       "**/*.tsbuildinfo",
@@ -36,9 +37,15 @@ export default tseslint.config(
         // named tsconfig.json, so the service would never discover it and the vitest
         // configs and smoke setup would be linted without type information — which is
         // how a harness quietly stops being checked.
+        // apps/api gets its own tsconfig.eslint.json rather than reusing its
+        // tsconfig.json: the build config includes only src/ (rootDir src, emits to
+        // dist), while lint has to cover test/ and vitest.config.ts too. Pointing the
+        // parser at the build config would leave the api's tests unlinted, which is the
+        // same quiet failure this comment block warns about above.
         project: [
           "./apps/web/tsconfig.json",
           "./libs/common/tsconfig.json",
+          "./apps/api/tsconfig.eslint.json",
           "./tsconfig.harness.json",
         ],
         tsconfigRootDir: import.meta.dirname,

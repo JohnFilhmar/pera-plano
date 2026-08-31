@@ -22,26 +22,26 @@ describe("loadConfig", () => {
       ...VALID_ENV,
       PORT: "8080",
       TELEMETRY_RATE_LIMIT_MAX: "5",
-    } as NodeJS.ProcessEnv);
+    });
     expect(config.port).toBe(8080);
     expect(config.telemetryRateLimitMax).toBe(5);
   });
 
   it("throws when DATABASE_URL is missing", () => {
-    expect(() => loadConfig({ JWT_SECRET: "s" } as NodeJS.ProcessEnv)).toThrow(
+    expect(() => loadConfig({ JWT_SECRET: "s" })).toThrow(
       "DATABASE_URL",
     );
   });
 
   it("throws when JWT_SECRET is missing", () => {
     expect(() =>
-      loadConfig({ DATABASE_URL: "postgresql://x" } as NodeJS.ProcessEnv),
+      loadConfig({ DATABASE_URL: "postgresql://x" }),
     ).toThrow("JWT_SECRET");
   });
 
   it("throws on a non-numeric PORT", () => {
     expect(() =>
-      loadConfig({ ...VALID_ENV, PORT: "not-a-port" } as NodeJS.ProcessEnv),
+      loadConfig({ ...VALID_ENV, PORT: "not-a-port" }),
     ).toThrow("PORT");
   });
 
@@ -50,7 +50,7 @@ describe("loadConfig", () => {
       loadConfig({
         ...VALID_ENV,
         TELEMETRY_RATE_LIMIT_MAX: "lots",
-      } as NodeJS.ProcessEnv),
+      }),
     ).toThrow("TELEMETRY_RATE_LIMIT_MAX");
   });
 });
