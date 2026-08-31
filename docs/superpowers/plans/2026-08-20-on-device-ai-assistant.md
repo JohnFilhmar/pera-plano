@@ -995,14 +995,28 @@ Spec §4.4's three classes:
 
 **Interfaces:**
 - Consumes: `TOOL_SCHEMAS` from Task 6.
-- Produces: `compileGrammar(tools: readonly ToolDef[]): string`; `compileProseOnlyGrammar(): string`.
+- Produces: `compileGrammar(tools: readonly ToolDef[]): string`; `FORCED_ANSWER_GRAMMAR: string | null`.
+
+> **AMENDED 2026-08-31, after the spike.** This task originally produced a
+> `compileProseOnlyGrammar(): string` and required a `prose` branch at the root. The spike measured
+> both on the real decoder and both fail — see
+> `docs/superpowers/specs/2026-08-31-llama-rn-spike-findings.md` question 2. **GBNF compels a format
+> and cannot forbid one.** `prose ::= [^{] [^\n]*` constrains only the first character and was
+> defeated 3/3 by prefixing `(`, a space, or a ```` ```json ```` fence; forbidding the brace moved the
+> model to bracket-style calls and then to 60+ carriage returns; a strict positive character class
+> produced base64 garbage. So the compiler emits **positive grammars only**, the root is a tool call
+> and nothing else, and the forced-answer round carries **no grammar at all** while `dispatch.ts`
+> refuses to act on a tool call in that round — the spike's own recommended option. The strikethrough
+> requirements below are kept so the reasoning stays legible.
 
 **Two complementary assertions, because neither alone is enough** (spec §5.2/3):
 
 - **Golden snapshots**, one per tool, reviewed by a human once. Cheap, and catches drift.
-- **Property assertions on the emitted rule set:** every enum literal in the schema appears as an exact quoted alternative; **no literal appears that is not in the schema** (the failure that lets a model emit a fifth period); `limit` compiles to an explicit 1–20 alternation, **not `[0-9]+`**; **both** the `tool-call` and `prose` branches exist at the root; forced-answer mode emits a prose-only grammar.
+- **Property assertions on the emitted rule set:** every enum literal in the schema appears as an exact quoted alternative; **no literal appears that is not in the schema** (the failure that lets a model emit a fifth period); `limit` compiles to an explicit 1–20 alternation, **not `[0-9]+`**; ~~**both** the `tool-call` and `prose` branches exist at the root; forced-answer mode emits a prose-only grammar~~ → **the root is `tool-call` and nothing else, no negated character class appears anywhere, and `FORCED_ANSWER_GRAMMAR` is `null`.**
 
-**The `prose` branch must exist.** A grammar that only permits tool calls produces a model that can never answer — *"a total failure that a 'does it compile' test happily passes."*
+~~**The `prose` branch must exist.** A grammar that only permits tool calls produces a model that can never answer — *"a total failure that a 'does it compile' test happily passes."*~~
+
+**Corrected:** the concern is real but belongs to `dispatch.ts`, not to the compiler. A model that can never answer is what you get if the tool grammar is applied to *every* round. The fix measured by the spike is to apply the grammar only to tool rounds and run the answer round unconstrained, at 1.4 s and with the exact expected output — not to write a grammar branch describing "not a tool call", which cannot be written.
 
 **What these tests cannot prove** is that llama.cpp's GBNF parser agrees with our reading of the format. That is Phase 11's gate 2, and it is the reason this phase is gated on the spike having already proved the format once by hand.
 
