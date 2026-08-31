@@ -2,8 +2,10 @@
   position: sticky;
   top: 0;
   z-index: 40;
-  background: var(--surface);
-  opacity: 0.97;
+  /* Translucency belongs in the colour, not in `opacity`. `opacity: 0.97` here applied to
+     every descendant — including the menu panel, which hangs outside the header's own box
+     and has to be opaque to be readable over the dark hero band. */
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
   backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--line);
 }
@@ -27,55 +29,24 @@
   text-decoration: none;
 }
 
-/* Six links wrapping onto four lines cost about 160px of a 844px phone before the page even
-   started — a third of the first screen spent on navigation. On narrow viewports the nav
-   drops to its own row and scrolls sideways inside it instead of wrapping; from 52rem up it
-   returns to sitting inline on the right. No hamburger: six links that are all reachable
-   beat five hidden behind a button. */
-.nav {
-  display: flex;
-  flex-wrap: nowrap;
-  gap: 1rem;
-  order: 3;
-  flex-basis: 100%;
-  overflow-x: auto;
-  padding-bottom: 0.15rem;
-  white-space: nowrap;
-  font-size: 0.925rem;
-  scrollbar-width: none;
-  -webkit-overflow-scrolling: touch;
-}
-
-.nav::-webkit-scrollbar {
-  display: none;
-}
-
-.nav a {
-  color: var(--text);
-  text-decoration: none;
-}
-
-.nav a:hover {
-  color: var(--brand);
-}
-
+/* The navigation itself lives in nav_menu.module.css: six links wrapping onto four lines
+   cost about 160px of an 844px phone before the page started, so below 52rem they collapse
+   behind a menu button. The header stays the positioned ancestor that button's panel hangs
+   from — `position: sticky` is what makes it one, so do not swap it for a static wrapper. */
+/* On a phone the theme toggle is pushed to the right and the menu button sits after it, so
+   the two controls stay together at the thumb end of the bar. From 52rem the nav takes the
+   auto margin instead and the toggle simply follows it. */
 .actions {
   display: flex;
   align-items: center;
   gap: 0.75rem;
+  order: 1;
   margin-left: auto;
 }
 
 @media (min-width: 52rem) {
-  .nav {
-    order: 0;
-    flex-basis: auto;
-    margin-left: auto;
-    padding-bottom: 0;
-    overflow-x: visible;
-  }
-
   .actions {
+    order: 0;
     margin-left: 0;
   }
 }

@@ -14,7 +14,9 @@
     "installedApps": "Installed apps",
     "dataDeletion": "Delete your data",
     "skipToContent": "Skip to content",
-    "toggleTheme": "Toggle dark mode"
+    "toggleTheme": "Toggle dark mode",
+    "openMenu": "Menu",
+    "closeMenu": "Close"
   },
   "footer": {
     "promise": "Local-first · No ads · Your data is never sold",
