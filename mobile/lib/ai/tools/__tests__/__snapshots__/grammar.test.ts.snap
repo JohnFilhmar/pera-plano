@@ -1,51 +1,58 @@
 // Jest Snapshot v1, https://goo.gl/fbAQLP
 
 exports[`golden snapshots get_balance_total 1`] = `
-"root ::= tool-call
+"root ::= tool-call | cannot-answer
 tool-call ::= get-balance-total
+cannot-answer ::= "CANNOT_ANSWER"
 get-balance-total ::= "{\\"tool\\":\\"get_balance_total\\",\\"args\\":{}}"
 "
 `;
 
 exports[`golden snapshots get_income_profile 1`] = `
-"root ::= tool-call
+"root ::= tool-call | cannot-answer
 tool-call ::= get-income-profile
+cannot-answer ::= "CANNOT_ANSWER"
 get-income-profile ::= "{\\"tool\\":\\"get_income_profile\\",\\"args\\":{}}"
 "
 `;
 
 exports[`golden snapshots get_limits 1`] = `
-"root ::= tool-call
+"root ::= tool-call | cannot-answer
 tool-call ::= get-limits
+cannot-answer ::= "CANNOT_ANSWER"
 get-limits ::= "{\\"tool\\":\\"get_limits\\",\\"args\\":{}}"
 "
 `;
 
 exports[`golden snapshots get_safe_to_spend 1`] = `
-"root ::= tool-call
+"root ::= tool-call | cannot-answer
 tool-call ::= get-safe-to-spend
+cannot-answer ::= "CANNOT_ANSWER"
 get-safe-to-spend ::= "{\\"tool\\":\\"get_safe_to_spend\\",\\"args\\":{}}"
 "
 `;
 
 exports[`golden snapshots get_spend_by_category 1`] = `
-"root ::= tool-call
+"root ::= tool-call | cannot-answer
 tool-call ::= get-spend-by-category
+cannot-answer ::= "CANNOT_ANSWER"
 get-spend-by-category ::= "{\\"tool\\":\\"get_spend_by_category\\",\\"args\\":{\\"period\\":" get-spend-by-category-period "}}"
 get-spend-by-category-period ::= "\\"this_month\\"" | "\\"last_month\\"" | "\\"last_7_days\\"" | "\\"last_30_days\\""
 "
 `;
 
 exports[`golden snapshots get_wallets 1`] = `
-"root ::= tool-call
+"root ::= tool-call | cannot-answer
 tool-call ::= get-wallets
+cannot-answer ::= "CANNOT_ANSWER"
 get-wallets ::= "{\\"tool\\":\\"get_wallets\\",\\"args\\":{}}"
 "
 `;
 
 exports[`golden snapshots list_transactions 1`] = `
-"root ::= tool-call
+"root ::= tool-call | cannot-answer
 tool-call ::= list-transactions
+cannot-answer ::= "CANNOT_ANSWER"
 list-transactions ::= "{\\"tool\\":\\"list_transactions\\",\\"args\\":{\\"period\\":" list-transactions-period ( ",\\"direction\\":" list-transactions-direction )? ( ",\\"limit\\":" list-transactions-limit )? "}}"
 list-transactions-period ::= "\\"this_month\\"" | "\\"last_month\\"" | "\\"last_7_days\\"" | "\\"last_30_days\\""
 list-transactions-direction ::= "\\"in\\"" | "\\"out\\""
@@ -54,8 +61,9 @@ list-transactions-limit ::= "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" 
 `;
 
 exports[`golden snapshots the whole registry 1`] = `
-"root ::= tool-call
+"root ::= tool-call | cannot-answer
 tool-call ::= get-wallets | get-balance-total | get-safe-to-spend | get-limits | get-income-profile | get-spend-by-category | list-transactions
+cannot-answer ::= "CANNOT_ANSWER"
 get-wallets ::= "{\\"tool\\":\\"get_wallets\\",\\"args\\":{}}"
 get-balance-total ::= "{\\"tool\\":\\"get_balance_total\\",\\"args\\":{}}"
 get-safe-to-spend ::= "{\\"tool\\":\\"get_safe_to_spend\\",\\"args\\":{}}"

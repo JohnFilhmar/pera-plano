@@ -46,6 +46,25 @@ import type { JsonSchema, JsonSchemaProperty, ToolDef } from "./schemas";
  */
 export const FORCED_ANSWER_GRAMMAR: string | null = null;
 
+/**
+ * The escape hatch a constrained round needs, and the reason the tool grammar
+ * does not trap the model.
+ *
+ * A grammar of tool calls ALONE would compel a tool call for "who is the
+ * president of the Philippines" — there would be no other string the decoder
+ * could produce. This is a POSITIVE literal, not a complement, so it is exactly
+ * the kind of thing GBNF is good at: one fixed token the model may emit to
+ * decline.
+ *
+ * It is also honestly measured rather than hoped for. The spike's tool grammar
+ * carried this branch, and tier 1 still called a ledger tool for out-of-scope
+ * questions in 3/3 and 2/3 runs: "a grammar cannot fix this: the CANNOT_ANSWER
+ * branch is available and the model declines to take it." Tier 2 never made the
+ * mistake. The branch is necessary and it is not sufficient — which is why
+ * grounding and the output guard still sit behind it.
+ */
+export const CANNOT_ANSWER = "CANNOT_ANSWER";
+
 /** A JSON string, escaped for a GBNF double-quoted literal. */
 function jsonString(value: string): string {
   return `\\"${value}\\"`;
@@ -138,11 +157,14 @@ function compileTool(def: ToolDef): CompiledTool {
 }
 
 /**
- * The grammar for a tool round: a call to one of `tools`, and nothing else.
+ * The grammar for a constrained tool round: a call to one of `tools`, or
+ * `CANNOT_ANSWER`, and nothing else.
  *
- * It is deliberately unable to express an answer. The dispatch loop drops the
- * grammar for the round where an answer is wanted — that is the whole design,
- * and the header says why.
+ * It is deliberately unable to express an ANSWER, only a call or a decline. The
+ * dispatch loop therefore drops the grammar for every round where an answer is
+ * wanted — see `dispatch.ts`. A grammar cannot both compel a tool call and
+ * permit free prose, because the second half of that is a complement and cannot
+ * be written; the round policy is where the two are reconciled.
  */
 export function compileGrammar(tools: readonly ToolDef[]): string {
   if (tools.length === 0) {
@@ -153,8 +175,9 @@ export function compileGrammar(tools: readonly ToolDef[]): string {
 
   const compiled = tools.map(compileTool);
   const lines = [
-    "root ::= tool-call",
+    "root ::= tool-call | cannot-answer",
     `tool-call ::= ${compiled.map((tool) => tool.rule).join(" | ")}`,
+    `cannot-answer ::= "${CANNOT_ANSWER}"`,
     ...compiled.flatMap((tool) => tool.lines),
   ];
   return `${lines.join("\n")}\n`;

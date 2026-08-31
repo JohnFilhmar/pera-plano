@@ -1004,10 +1004,24 @@ Spec §4.4's three classes:
 > and cannot forbid one.** `prose ::= [^{] [^\n]*` constrains only the first character and was
 > defeated 3/3 by prefixing `(`, a space, or a ```` ```json ```` fence; forbidding the brace moved the
 > model to bracket-style calls and then to 60+ carriage returns; a strict positive character class
-> produced base64 garbage. So the compiler emits **positive grammars only**, the root is a tool call
-> and nothing else, and the forced-answer round carries **no grammar at all** while `dispatch.ts`
-> refuses to act on a tool call in that round — the spike's own recommended option. The strikethrough
-> requirements below are kept so the reasoning stays legible.
+> produced base64 garbage. So the compiler emits **positive grammars only**: the root is
+> `tool-call | cannot-answer` and nothing else, and the forced-answer round carries **no grammar at
+> all** while `dispatch.ts` refuses to act on a tool call in that round — the spike's own recommended
+> option. The strikethrough requirements below are kept so the reasoning stays legible.
+>
+> **`cannot-answer` is not a prose branch.** It is a single positive literal, `CANNOT_ANSWER`, and it
+> is required: a grammar of tool calls alone would COMPEL a tool call for "who is the president of the
+> Philippines", because no other string would be producible. The spike's own measured tool grammar
+> carried this branch — and note it is necessary, not sufficient: tier 1 still called a ledger tool for
+> out-of-scope questions in 3/3 and 2/3 runs, "the CANNOT_ANSWER branch is available and the model
+> declines to take it".
+>
+> **Round policy, which is where the grammar and the answer are reconciled (Task 17).** The tool
+> grammar can express a call or a decline and *cannot express an answer*, so `dispatch.ts` constrains
+> a round only while no tool result has been collected yet. The first round is constrained — that is
+> the round the spike's 58%→78% tier-1 improvement was measured on — and every round after it runs
+> unconstrained, so the model can actually answer from the data it now holds. A tool call may still
+> arrive unconstrained (a two-tool question needs exactly that) and is dispatched while rounds remain.
 
 **Two complementary assertions, because neither alone is enough** (spec §5.2/3):
 

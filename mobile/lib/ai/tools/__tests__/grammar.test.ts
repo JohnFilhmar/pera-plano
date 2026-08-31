@@ -13,7 +13,7 @@
 // format. That is the spike's job and it is already done: the format compiled
 // here is the one `D:\llama_probe\lib\grammar_fixture.ts` proved on the real
 // decoder on 2026-08-31, 3/3 exact tool calls and 0 malformed in 50.
-import { FORCED_ANSWER_GRAMMAR, compileGrammar } from "../grammar";
+import { CANNOT_ANSWER, FORCED_ANSWER_GRAMMAR, compileGrammar } from "../grammar";
 import { TOOL_SCHEMAS } from "../schemas";
 
 const GRAMMAR = compileGrammar(TOOL_SCHEMAS);
@@ -98,8 +98,15 @@ describe("positive grammars only", () => {
   // except a tool call" failed, and each fix revealed the next escape — brace,
   // then bracket, then carriage return, then a degenerate base64 alphabet. So
   // this compiler describes a TARGET SHAPE and never a complement.
-  test("the root is a tool call and nothing else", () => {
-    expect(GRAMMAR).toMatch(/^root\s+::=\s+tool-call\s*$/m);
+  test("the root is a tool call or an explicit decline, and nothing else", () => {
+    expect(GRAMMAR).toMatch(/^root\s+::=\s+tool-call \| cannot-answer\s*$/m);
+  });
+
+  test("the decline is a positive literal, not a complement", () => {
+    // Without it the grammar would COMPEL a tool call for "who is the president
+    // of the Philippines", because no other string would be producible. It is
+    // one fixed token, which is precisely what GBNF is good at.
+    expect(GRAMMAR).toContain(`cannot-answer ::= "${CANNOT_ANSWER}"`);
   });
 
   test("there is no prose branch", () => {
