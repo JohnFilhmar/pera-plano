@@ -84,6 +84,59 @@ production, the tokens are still decoded and still paid for in latency, and the 
 
 ---
 
+## Question 5 (tier 2): strict tool-pick accuracy — **97%, far above the ~70% bar**
+
+The question §7.3 row 2 gates the whole chat surface on. Tier 2 (`qwen3-1.7b-q4`), the 12-question
+cut-down of §5.5's 30, three passes, 36 generations:
+
+| Pass | Strict | `name_correct` | Failed |
+|---|---|---|---|
+| 1 | 11/12 (92%) | **12/12** | q08 |
+| 2 | 12/12 (100%) | 12/12 | — |
+| 3 | 12/12 (100%) | 12/12 | — |
+| **Mean** | **35/36 = 97%** | **36/36** | |
+
+**Tool selection was perfect: 36 out of 36.** That includes both Taglish questions, both two-tool
+questions, and — importantly — **both out-of-scope questions, where naming any tool at all is a
+failure.** The over-eager-tool-use failure mode §5.5 worried about did not appear once.
+
+### The single miss is a period-extraction bug in Taglish, not a tool-selection one
+
+**q08: *"nung nakaraang buwan, saan napunta ang pera ko?"*** — expected
+`get_spend_by_category / last_month`. The model chose the right tool and the wrong period.
+"nung nakaraang buwan" is *last month*.
+
+This is precisely why §5.5 forbids partial credit: right tool with the wrong period is a wrong answer
+to the user, and it is the difference between showing them August and showing them July. It is also
+why the scorer keeps `name_correct` and `args_correct` as separate counters — a period-extraction
+problem is prompt work on temporal phrases, while a tool-selection problem would have been a far
+deeper worry. This is the shallow one.
+
+**It is also flaky rather than systematic: q08 failed once in three passes and passed twice.** That
+matters for how it gets fixed. A deterministic failure would be a prompt bug; an intermittent one at
+non-zero temperature is a sampling margin, and the fix is either a clearer temporal instruction in the
+prompt or a lower temperature for the tool-selection round. Both belong to Task 10, not here.
+
+### What this does and does not license
+
+**Does:** tier 2 comfortably clears §7.3 row 2's ~70% bar, so on this evidence the feature ships as a
+chat surface rather than the §7.4 fallback — *for anyone who can run tier 2*.
+
+**Does not:**
+- **Tier 1 is unmeasured, and tier 1 is the whole free-tier question** (§6 risks 1 and 7). At ~0.4 GB
+  it is the only tier casually downloadable on Philippine prepaid data, and a 0.6B has far less
+  headroom for exactly the argument-extraction the one failure here landed on.
+- This is the **12-question cut-down**, not §5.5's 30, and the advice questions are excluded because
+  `triage.ts` does not exist.
+- The system prompt is **hand-written for this spike**, not the production prompt from Task 10. A
+  different prompt scores differently; this measures the model's capability, not the shipped system.
+- **Run unconstrained**, deliberately, so the number reflects the model's choice rather than a
+  grammar's compulsion (see question 2).
+- On charge, like every other timing figure here. Per-question latency was 3.1–4.8 s, slower than the
+  1.4 s single-tool case because the five-tool system prompt is longer to prefill.
+
+---
+
 ## Question 2: does llama.cpp accept a per-request GBNF, and does it hold? — **YES to both, and the grammar *design* in §3.4 does not survive**
 
 **Accepted as a per-request option:** yes. Option key `grammar`, passed on `completion()` alongside
@@ -319,7 +372,7 @@ Three things cost time and are worth knowing in advance:
 | 2. Per-request GBNF | **Answered: yes**, per request and 0/50 malformed — but §3.4's grammar design fails |
 | 3. Thinking suppression | **Answered: yes**, `enable_thinking: false` under jinja, 15x on wall clock |
 | 4. Peak RSS + app-switch survival | **partial**, one sample, debug build, no app-switch test |
-| 5. Strict tool-pick accuracy | not started |
+| 5. Strict tool-pick accuracy | **Tier 2 answered: 97%**, 36/36 on tool name. Tier 1 still unmeasured |
 | 6. APK delta | **partial**, floor of 75.4 MB, no baseline build |
 | 7. `Device.totalMemory` truthfulness | not started |
 
