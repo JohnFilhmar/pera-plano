@@ -1,144 +1,306 @@
 .page {
-  max-width: 68rem;
-  margin: 0 auto;
-  padding: 3rem 1.5rem 4rem;
+  /* No max-width here any more. The hero is full-bleed and the route needs a gutter the
+     reading measure does not have; each section constrains itself instead. */
+  padding-bottom: 1rem;
 }
 
-/* The hero is the only place on the site that breaks the reading measure, because it is
-   the only place that is not being read as a document. */
+/* ---------------------------------------------------------------- hero band */
+
+/* The one part of the site that is not being read as a document, and the only place the
+   theme-invariant --ink ground is used. It stays dark in light mode on purpose: a lit band
+   over a light body is the convention the reader already knows from every other finance
+   site, and it keeps the compliance pages below it legible in either mode. */
 .hero {
-  max-width: var(--measure);
-  margin: 0 auto 3.5rem;
-  text-align: center;
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  padding: clamp(3.5rem, 9vw, 6rem) 1.5rem clamp(3rem, 7vw, 5rem);
+  background: var(--ink);
+  color: #e8f0ec;
 }
 
-.hero h1 {
-  margin: 0.75rem 0;
-  font-size: clamp(1.9rem, 5vw, 2.9rem);
-  line-height: 1.15;
-  text-wrap: balance;
+.heroInner {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: clamp(2.25rem, 5vw, 3.5rem);
+  align-items: center;
+  max-width: var(--measure);
+  margin: 0 auto;
+}
+
+.heroMark {
+  display: block;
+  margin-bottom: 1.25rem;
 }
 
 .eyebrow {
-  margin: 1rem 0 0;
-  color: var(--muted);
-  font-size: 0.85rem;
-  letter-spacing: 0.08em;
+  margin: 0;
+  color: #9bb0a6;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
 }
 
+.tagline {
+  margin: 0.9rem 0 0;
+  font-size: clamp(2.4rem, 6.5vw, 4.2rem);
+  line-height: 1.04;
+  color: #ffffff;
+}
+
 .lede {
-  margin: 1rem auto 0;
-  font-size: 1.1rem;
+  margin: 1.1rem 0 0;
+  max-width: 32rem;
+  font-size: clamp(1.05rem, 2.2vw, 1.25rem);
+  color: #cfe0d7;
 }
 
 .heroSub {
-  margin: 0.75rem 0 0;
-  color: var(--muted);
+  margin: 0.7rem 0 0;
+  max-width: 32rem;
+  color: #9bb0a6;
+  font-size: 0.95rem;
+}
+
+/* A real anchor, never href="#": the page has a section to go to and the test forbids the
+   placeholder. */
+.scrollCue {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 1.75rem;
+  padding: 0.7rem 1.15rem;
+  border: 1px solid rgba(34, 197, 94, 0.45);
+  border-radius: 999px;
+  background: rgba(34, 197, 94, 0.1);
+  color: #e8f0ec;
+  font-size: 0.95rem;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background 200ms ease, border-color 200ms ease;
+}
+
+.scrollCue::after {
+  content: "↓";
+  font-size: 0.95em;
+}
+
+.scrollCue:hover {
+  border-color: var(--brand-2);
+  background: rgba(34, 197, 94, 0.18);
+  color: #ffffff;
+}
+
+.scrollCue:focus-visible {
+  outline: 2px solid var(--brand-2);
+  outline-offset: 3px;
 }
 
 /* Not styled as a button. It is a sentence explaining why the button a visitor expects is
    absent, and dressing it up would suggest something is clickable. */
 .badgeNote {
-  margin: 1.5rem 0 0;
-  color: var(--muted);
-  font-size: 0.9rem;
+  margin: 1.4rem 0 0;
+  max-width: 26rem;
+  color: #6f857a;
+  font-size: 0.85rem;
 }
 
-.section {
+.heroDemo {
+  min-width: 0;
+}
+
+@media (min-width: 62rem) {
+  .heroInner {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 27rem);
+  }
+}
+
+/* ---------------------------------------------------------------- the route */
+
+.route {
+  position: relative;
+}
+
+.waypointLink {
+  margin: 1.75rem 0 0;
+}
+
+/* The unfilled-roles admission, deliberately undesigned. It sits in the reading measure with
+   the section rhythm around it and nothing else: no card, no marker, no reveal. */
+.admission {
   max-width: var(--measure);
-  margin: 0 auto 3rem;
+  margin: 0 auto;
+  padding: 1rem 1.5rem 2rem;
 }
 
-.section p {
-  margin: 0.75rem 0;
+@media (min-width: 60rem) {
+  .admission {
+    padding-left: 5.5rem;
+  }
 }
 
-.section ul {
-  margin: 0.75rem 0;
-  padding-left: 1.25rem;
-}
+/* ------------------------------------------------------- 01 how it works */
 
-.section li {
-  margin: 0.5rem 0;
-}
-
-.steps {
-  margin: 1.5rem 0;
-  padding-left: 1.25rem;
-}
-
-.step {
-  margin: 1rem 0;
-}
-
-.step h3 {
-  margin: 0 0 0.25rem;
-}
-
-.step p {
+.beats {
+  display: grid;
+  gap: 1px;
   margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: 0.9rem;
+  background: var(--line);
+  overflow: hidden;
 }
 
-/* Bordered and captioned so that the invented notification can never be mistaken, at a
-   glance or in a screenshot, for something a bank actually sent. */
-.example {
-  margin: 2rem 0 0;
-  padding: 1.1rem 1.25rem;
-  border: 1px dashed var(--line);
-  border-radius: 0.75rem;
+.beat {
+  padding: 1.15rem 1.25rem;
   background: var(--surface);
 }
 
-.exampleHead {
+.beatIndex {
   display: block;
+  color: var(--brand);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
 }
 
-.disclaimer {
-  display: block;
-  margin-top: 0.35rem;
+.beat h3 {
+  margin: 0.35rem 0 0.3rem;
+  font-size: 1.05rem;
+}
+
+.beat p {
+  margin: 0;
   color: var(--muted);
-  font-size: 0.88rem;
+  font-size: 0.95rem;
 }
 
-.exampleQuote {
-  margin: 1rem 0 0;
-  padding-left: 0.9rem;
-  border-left: 3px solid var(--brand);
-  font-style: italic;
+@media (min-width: 46rem) {
+  .beats {
+    grid-template-columns: repeat(5, 1fr);
+  }
 }
 
-.exampleResult {
-  margin: 0.75rem 0 0;
-}
+/* --------------------------------------------------------- 02 who it is for */
 
 .personas {
   display: grid;
   gap: 1rem;
-  grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
-  margin: 1.5rem 0;
+  grid-template-columns: repeat(auto-fit, minmax(16.5rem, 1fr));
 }
 
 .persona {
-  padding: 1.1rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  padding: 1.25rem 1.35rem;
   border: 1px solid var(--line);
-  border-radius: 0.75rem;
+  border-radius: 0.9rem;
   background: var(--surface);
 }
 
 .persona h3 {
-  margin: 0 0 0.5rem;
+  margin: 0;
+  font-size: 1.08rem;
 }
 
-.persona p {
-  margin: 0.5rem 0;
+/* The glossary used to be a list at the bottom of the section. A term defined where the
+   reader first meets it is the brief §7 rule actually working rather than being complied
+   with. */
+.personaDefinition {
+  margin: 0.6rem 0 0;
+  padding: 0.5rem 0.7rem;
+  border-left: 2px solid var(--brand);
+  background: var(--mint);
+  color: var(--text);
+  font-size: 0.86rem;
 }
 
 .personaPain {
+  margin: 0.9rem 0 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.personaGives {
+  margin: 0.75rem 0 0;
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+/* ---------------------------------------------------- 03 why the Philippines */
+
+.facts {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fact {
+  padding: 0.95rem 1.1rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.fact strong {
+  display: block;
+  margin-bottom: 0.2rem;
+  color: var(--text);
+  font-size: 1rem;
+}
+
+/* -------------------------------------------------------- 05 what it is not */
+
+.limits {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.limits li {
+  padding: 0.9rem 0;
+  border-bottom: 1px solid var(--line);
   color: var(--muted);
 }
 
-.glossary li,
-.facts li {
-  margin: 0.6rem 0;
+.limits li:first-child {
+  border-top: 1px solid var(--line);
+}
+
+/* ------------------------------------------------------------------ closing */
+
+.closing {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  max-width: var(--measure);
+  margin: 2rem auto 0;
+  padding: 0 1.5rem 4rem;
+}
+
+.closingCard {
+  padding: 1.4rem 1.5rem;
+  border: 1px solid var(--line);
+  border-radius: 0.9rem;
+  background: var(--surface);
+}
+
+.closingCard h2 {
+  margin: 0 0 0.6rem;
+  font-size: 1.25rem;
+}
+
+.closingCard p {
+  margin: 0 0 0.9rem;
+  color: var(--muted);
+  font-size: 0.96rem;
 }

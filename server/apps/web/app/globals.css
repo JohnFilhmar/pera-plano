@@ -16,6 +16,17 @@
   --ph-yellow: #fcd116;
   --shadow: 0 24px 60px -24px rgba(16, 32, 26, 0.28);
   --measure: 1120px;
+
+  /* Deliberately theme-invariant, and defined here only. The hero is a lit band in both
+     themes while the document pages below it stay light in light mode — the dark-hero,
+     light-body convention, which also keeps the compliance pages readable in whichever
+     mode a Play reviewer happens to use. Contrast on --ink is 15.9:1 with #E8F0EC, on
+     --ink-2 it is 13.6:1; both AAA. Changing either means restating the ratio here. */
+  --ink: #06120e;
+  --ink-2: #0e1f18;
+  /* The route stroke. Was a literal opacity="0.55" inside brand_mark.tsx before the
+     route spine needed the same value in three more places. */
+  --trail: rgba(34, 197, 94, 0.55);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -68,6 +79,40 @@ a { color: var(--brand); text-underline-offset: 0.2em; }
 a:hover { color: var(--brand-2); }
 
 h1, h2, h3 { line-height: 1.2; letter-spacing: -0.015em; text-wrap: balance; }
+
+/* The display face is spent on h1 and h2 only. h3 stays in Manrope, because a page whose
+   every heading level shouts has no hierarchy left to give the ones that matter. */
+h1, h2 {
+  font-family: var(--font-display), var(--font-manrope), system-ui, sans-serif;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+
+/* Money and any figure that sits in a column. Manrope ships tabular figures, which is why
+   the demo does not drag a monospace face onto the page just to line up four amounts. */
+.tabular { font-variant-numeric: tabular-nums; }
+
+/* Scroll reveals. The hidden state is gated on data-js, which the bootstrap script in the root
+   layout sets synchronously — without JavaScript nothing is ever hidden, so a reader with
+   scripting off (or a crawler that does not run it) gets the whole page. */
+:root[data-js] [data-reveal] {
+  opacity: 0;
+  transform: translateY(14px);
+  transition: opacity 620ms ease, transform 620ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  transition-delay: var(--reveal-delay, 0ms);
+}
+:root[data-js] [data-reveal="in"] { opacity: 1; transform: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-js] [data-reveal] { opacity: 1; transform: none; transition: none; }
+}
+
+/* Printing, saving to PDF and headless full-page capture all render the document without
+   ever scrolling it, so anything still waiting on the observer would come out blank. This
+   is the difference between a printed privacy notice and a printed set of headings. */
+@media print {
+  :root[data-js] [data-reveal] { opacity: 1 !important; transform: none !important; }
+}
 
 /* A six-column prose table cannot fit a phone. It scrolls inside its own box so the
    page body never scrolls sideways — the most common way a content site breaks. */

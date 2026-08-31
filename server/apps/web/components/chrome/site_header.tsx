@@ -1,5 +1,6 @@
 import type { Locale, Messages } from "@/messages/index";
 import { BrandMark } from "@/components/content/brand_mark";
+import { NavMenu } from "./nav_menu";
 import { ThemeToggle } from "./theme_toggle";
 import styles from "./site_header.module.css";
 
@@ -38,13 +39,21 @@ export function SiteHeader({
             <BrandMark size={26} />
             <span>{messages.meta.siteName}</span>
           </a>
-          <nav className={styles.nav} aria-label={messages.meta.siteName}>
+          {/* The anchors are built here, on the server, and handed to NavMenu as children:
+              on a phone it collapses them behind a button, but all six are in the served
+              HTML either way. A client component that built its own links would put the
+              site's entire navigation behind hydration. */}
+          <NavMenu
+            label={messages.meta.siteName}
+            openLabel={messages.nav.openMenu}
+            closeLabel={messages.nav.closeMenu}
+          >
             {NAV_ITEMS.map((item) => (
               <a key={item.path} href={`/${locale}${item.path}`}>
                 {messages.nav[item.labelKey]}
               </a>
             ))}
-          </nav>
+          </NavMenu>
           <div className={styles.actions}>
             {/* One locale ships today (Task 4's brief). A switcher with a single option
                 is not a control, it is decoration — render nothing until it does something. */}

@@ -1,0 +1,114 @@
+.waypoint {
+  position: relative;
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: 4.5rem 1.5rem;
+}
+
+/* The marker sits in the gutter the spine occupies on wide screens, and tucks back into the
+   content column below it — the route is a device for reading order, not a layout the page
+   depends on. */
+.marker {
+  position: absolute;
+  top: 4.4rem;
+  left: -1.6rem;
+  display: none;
+  place-items: center;
+  width: 3.2rem;
+  height: 3.2rem;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--bg);
+}
+
+.head {
+  max-width: 44rem;
+}
+
+.eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0 0 0.9rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.index {
+  padding: 0.15rem 0.45rem;
+  border-radius: 0.35rem;
+  background: var(--mint);
+  color: var(--brand);
+  letter-spacing: 0.04em;
+}
+
+.head h2 {
+  margin: 0;
+  font-size: clamp(1.55rem, 3.4vw, 2.3rem);
+}
+
+.lede {
+  margin: 0.85rem 0 0;
+  font-size: 1.12rem;
+  color: var(--muted);
+}
+
+.body {
+  margin-top: 2.25rem;
+}
+
+/* Deliberately quiet. The long version is there for the reader who wants it and for the
+   reviewer who has to check it, and it should look like neither a call to action nor an
+   apology for the short version. */
+.disclosure {
+  margin-top: 2rem;
+  border-top: 1px solid var(--line);
+}
+
+.disclosure summary {
+  padding: 0.9rem 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+  cursor: pointer;
+  list-style-position: outside;
+}
+
+.disclosure summary:hover {
+  color: var(--brand);
+}
+
+.disclosure summary:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 3px;
+  border-radius: 0.25rem;
+}
+
+.disclosureBody {
+  padding-bottom: 0.75rem;
+  color: var(--muted);
+  font-size: 0.96rem;
+  max-width: 44rem;
+}
+
+.disclosureBody p,
+.disclosureBody li {
+  margin: 0.75rem 0;
+}
+
+.disclosureBody ul {
+  padding-left: 1.1rem;
+}
+
+@media (min-width: 60rem) {
+  .waypoint {
+    padding-left: 5.5rem;
+  }
+
+  .marker {
+    display: grid;
+    left: 0.6rem;
+  }
+}
