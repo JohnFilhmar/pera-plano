@@ -240,7 +240,7 @@ Auth: Bearer. Unchanged shape, real values.
 
 | Code | Status | Cause |
 |---|---|---|
-| `invalid_request` | 400 | Body fails schema validation |
+| `validation_error` | 400 | Body fails schema validation. This is the core server's existing code, reused deliberately: one validation code across every route |
 | `invalid_google_token` | 401 | Signature, issuer, audience, or expiry check failed |
 | `google_email_unverified` | 401 | `email_verified` is not true |
 | `integrity_token_invalid` | 401 | Decode failed, or package name mismatch |
@@ -295,8 +295,12 @@ a migration. An implementer must not invent a Play Billing check.
 
 Small, and one of them is time-sensitive.
 
-1. **Persist install evidence.** On first launch after upgrade, read the Install Referrer install
-   begin timestamp and `PackageManager.firstInstallTime`, and store both. This reverses
+1. **Persist install evidence.** On first launch after upgrade, capture and store the install
+   evidence, write-once. `expo-application` supplies `getInstallationTimeAsync()`, which is Android's
+   `PackageManager.firstInstallTime`, and `getInstallReferrerAsync()`, which returns the referrer
+   **string only**. The Play-supplied install-begin timestamp is not exposed by that package, so
+   first-pass claims carry `claimSource: "package_manager"` and a null `installBeginAt`; a small
+   native module can upgrade them later without changing any wire contract. This reverses
    [2026-08-22-mobile-ui-revamp-design.md](2026-08-22-mobile-ui-revamp-design.md) §6.3, which chose
    not to persist `first_install_at`. Fact 3 in §3 is why: the device is the only source, and it stops
    being a source the moment the app is uninstalled.
@@ -351,8 +355,9 @@ dockerized Postgres, no mocking of the database.
 - `routes/google_auth_routes.ts` is integration-tested for every row of the §6 error table, asserting
   both status and `error.code`.
 - `services/entitlement_service.ts` is integration-tested for all three resolution branches.
-- One test asserts the verify response has exactly the four keys in §4.2, so tier never leaks into the
-  auth envelope by accident.
+- One test asserts the verify response has exactly the three top-level keys in §4.2
+  (`accessToken`, `refreshToken`, `user`), and that `user` has exactly `id` and `destination`, so tier
+  never leaks into the auth envelope by accident.
 
 ## 13. Parallel execution slices
 
