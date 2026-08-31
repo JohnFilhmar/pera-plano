@@ -1456,6 +1456,20 @@ git commit -m "feat(api): resolve entitlements from a permanent beta cohort gran
 
 **Interfaces:**
 - Consumes: everything produced by Tasks 1 through 4, plus `signAccessToken` and `issueRefreshToken`.
+
+> **Two robustness requirements carried over from Task 2's review, to be satisfied here.**
+>
+> 1. **Validate the key set before it is cached.** `createGoogleJwksFetcher` currently caches whatever
+>    a 200 returns. A malformed or empty `keys` array is then cached for the full TTL, and every
+>    sign-in fails with `invalid_google_token` for an hour, with nothing in the logs pointing at the
+>    real cause. Reject a response whose `keys` is not a non-empty array, and let it raise
+>    `google_upstream_unavailable`, which is both truthful and retryable.
+> 2. **Force one refresh when no key matches the token's `kid`.** Google rotates signing keys and
+>    publishes new ones ahead of use, so a stale cache is usually harmless, but "usually" is not a
+>    guarantee and the failure mode is a total sign-in outage lasting the rest of the TTL. On an
+>    unknown `kid`, refetch once and retry the verification before returning `invalid_google_token`.
+>    Do not retry more than once: an attacker who can present arbitrary `kid` values must not be able
+>    to drive unbounded outbound requests to Google.
 - Produces:
   - `type GoogleAuthDeps = { prisma: PrismaClient; fetchJwks: JwksFetcher; decodeIntegrity: PlayIntegrityDecoder; expectedAudience: string; expectedPackageName: string; jwtSecret: string; betaWindowStartAt: number; betaWindowEndAt: number; maxSkewMs: number }`
   - `type GoogleAuthInput = { idToken: string; integrityToken: string; claim: InstallClaim; nowMs: number }`
