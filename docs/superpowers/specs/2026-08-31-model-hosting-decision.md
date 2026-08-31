@@ -226,10 +226,16 @@ each tier as it survives.
 | id | sha256 | status |
 |---|---|---|
 | `qwen3-0.6b-q4` | | pending |
-| `qwen3-1.7b-q4` | | pending, needed first (spike Task 4 starts here) |
+| `qwen3-1.7b-q4` | `b139949c5bd74937ad8ed8c8cf3d9ffb1e99c866c823204dc42c0d91fa181897` | **computed 2026-08-31** |
 | `qwen3-1.7b-q8` | | pending |
 | `qwen3-4b-2507-q4` | | pending |
 | `qwen3-4b-2507-q6` | | pending, may never ship (will not load on the A54) |
+
+**Tier 2 is done and checks out.** Downloaded from the §2 URL on 2026-08-31, `stat -c %s` returned
+`1107409472`, matching both the API blob size and the `Content-Length` from the HEAD request. Three
+independent readings of the same number, so `ModelSpec.bytes` for this tier is not a transcription.
+Local copy kept outside the repo at `D:\My Folder\peraplano_spike_models\qwen3-1.7b-q4.gguf` for the
+spike's use; it is 1.1 GB and does not belong in git.
 
 Filled by, per tier, against the exact URL from §2:
 

@@ -227,6 +227,36 @@ git commit -m "docs: re-verify Qwen3 licence terms for the on-device assistant"
 
 ## Task 3: Stand up the throwaway app
 
+> **Amended 2026-08-31, from actually running it.** Four things the written steps get wrong on this
+> machine, each found by hitting it:
+>
+> 1. **`create-expo-app` now scaffolds SDK 57 / RN 0.86.3 / React 19.2.3.** This plan's Tech Stack
+>    line says SDK 54 / RN 0.81.5, and `mobile/package.json` really is on `expo ~54.0.36`,
+>    `react-native 0.81.5`, `react 19.1.0`. **A spike on RN 0.86 measures nothing about a product on
+>    RN 0.81** — `llama.rn` is a JSI/TurboModule library, so both "does it build" and "how fast is
+>    it" are runtime-version-specific. Pin after scaffolding: `npm install expo@~54.0.36` then
+>    `npx expo install --fix`, and verify the three versions against `mobile/package.json` before
+>    building anything.
+> 2. **`llama.rn`'s `latest` dist-tag is a release candidate** (`0.13.0-rc.2`); the last stable is
+>    `0.12.9`. A bare `npm install llama.rn` silently puts an RC into a finance app's dependency
+>    tree. Pinned to `0.12.9` with `--save-exact`. If it will not build against RN 0.81.5, falling
+>    back to the RC is legitimate but must be recorded as a finding, not done quietly.
+> 3. **`npm install llama.rn` fails under Git Bash on Windows.** Its postinstall extracts prebuilt
+>    JNI libs and MSYS `tar` reads the Windows path as a remote host:
+>    `tar (child): Cannot connect to C: resolve failed`, then
+>    `tar: Error is not recoverable: exiting now`. Run the install from **PowerShell**, where `tar`
+>    is Windows bsdtar. Verified fix; 9 `.so` files extracted afterwards, `arm64-v8a` and `x86_64`
+>    only.
+> 4. **The app is built at `D:\llama_probe`, not at `spike/llama_probe/` inside the repo.** Project
+>    memory records a MAX_PATH build failure on this machine (the reason SDK ninja 1.10.2 was
+>    swapped for 1.13.0). A worktree path is already 62 characters before `android/app/.cxx/...`
+>    nesting begins. Deliberate deviation; the app is throwaway either way and only the findings doc
+>    is ever merged.
+>
+> Toolchain confirmed present before building: Node 22.12.0, npm 10.9.0, Temurin JDK 17.0.19,
+> NDK 27.1.12297006, cmake 3.22.1, and `ninja.exe` reporting **1.13.0** with `ninja-1.10.2.exe.bak`
+> beside it, so the memory-recorded swap is still in place.
+
 **Files:**
 - Create: `spike/llama_probe/` (whole tree)
 - Create: `spike/llama_probe/README.md`
