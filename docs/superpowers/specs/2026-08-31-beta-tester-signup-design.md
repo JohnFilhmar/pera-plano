@@ -122,6 +122,38 @@ notice, and the route answers 503. Same rule `requiredMarker` follows: publish t
 a control that silently does nothing. **This is the state the site ships in until the Apps
 Script deployment exists**, and it is covered by tests.
 
+### Where the values live
+
+Both are **GitHub Environment secrets**, not variables — the one place this differs from every
+other value in `deploy.yml`. The compliance values there are legal identifiers that publish
+verbatim on the privacy notice; these two authorise writes to the tester spreadsheet, and the
+deployment URL is as sensitive as the token, because the token is the only thing standing in
+front of it.
+
+| Environment | Source |
+|---|---|
+| Production | `secrets.BETA_SIGNUP_*`, substituted into `docker-compose.production.yml` |
+| Staging | the box-local env file its overlay already reads |
+| Local | `server/.env.local`, which is gitignored |
+
+Neither value is ever written into a committed file, and unset is a supported state rather than
+a boot failure.
+
+## 7.1 Verified against the live deployment, 2026-08-31
+
+The Apps Script deployment was tested end to end before this shipped: `GET /exec` answers the
+liveness probe, a wrong token is rejected without writing, a correct token appends a row, and
+resubmitting the same address in different capitalisation returns `duplicate: true` and adds
+nothing. The full chain through the route handler was then exercised against the real webhook.
+
+That test surfaced one thing worth recording. **Apps Script answers a POST with a 302** to
+`googleusercontent.com`, and the result is fetched from there. `fetch` handles this correctly:
+the redirect hop is a GET, and it returns the stored `doPost` result. But if that hop ever
+reached `doGet` instead, the reply would be `{ ok: true, service: … }` — and a plain `ok` check
+would have reported a successful signup while writing nothing at all. The route therefore
+requires a boolean `duplicate` field, which only `doPost` produces, and a regression test covers
+it. A silent data loss became a visible 502.
+
 ## 8. Keeping the other pages true
 
 - `/privacy` gains a "beta tester list" section (basis, purpose, recipients, retention, removal)

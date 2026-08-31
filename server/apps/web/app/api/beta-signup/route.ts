@@ -173,12 +173,20 @@ export async function POST(request: Request): Promise<Response> {
       return formPost ? redirectBack(locale, "server") : answer({ ok: false, error: "server" }, 502);
     }
 
-    const payload = (await upstream.json()) as { ok?: boolean; duplicate?: boolean };
-    if (payload.ok !== true) {
+    const payload = (await upstream.json()) as { ok?: boolean; duplicate?: unknown };
+    // `duplicate` must be present, and it is the only thing that proves doPost ran.
+    //
+    // Apps Script answers a POST with a 302 to googleusercontent.com, and the result is
+    // fetched from there. That is the normal flow and fetch handles it. But the redirect
+    // step is a GET, and if it ever reached doGet instead of the stored doPost result, the
+    // reply would be `{ ok: true, service: … }` — no `duplicate` field, and a plain `ok`
+    // check would report success for a submission that was never written. Requiring the
+    // field turns a silent data loss into a visible 502.
+    if (payload.ok !== true || typeof payload.duplicate !== "boolean") {
       return formPost ? redirectBack(locale, "server") : answer({ ok: false, error: "server" }, 502);
     }
 
-    const duplicate = payload.duplicate === true;
+    const duplicate = payload.duplicate;
     return formPost
       ? redirectBack(locale, duplicate ? "duplicate" : "ok")
       : answer({ ok: true, duplicate }, 200);

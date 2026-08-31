@@ -143,6 +143,25 @@ describe("POST /api/beta-signup", () => {
     await expect(response.json()).resolves.toEqual({ ok: false, error: "server" });
   });
 
+  // Regression guard for a silent data loss. Apps Script answers a POST with a 302 and the
+  // result is fetched from the redirect target; if that hop ever landed on doGet instead of
+  // the stored doPost result, the reply is `{ ok: true, service: … }` with no `duplicate`
+  // field. A plain `ok` check would have called that a successful signup and written
+  // nothing. Verified against the live deployment on 2026-08-31, which does behave
+  // correctly — this exists so it stays that way.
+  it("refuses a success that carries no proof the row was written", async () => {
+    const { POST } = await loadRoute(true);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(Response.json({ ok: true, service: "peraplano-beta-signup" })),
+      ),
+    );
+    const response = await POST(submission());
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toEqual({ ok: false, error: "server" });
+  });
+
   it("answers 502 when the upstream call throws, and leaks nothing about why", async () => {
     const { POST } = await loadRoute(true);
     vi.stubGlobal(
