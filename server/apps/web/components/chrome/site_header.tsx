@@ -10,6 +10,9 @@ import styles from "./site_header.module.css";
  */
 export const NAV_ITEMS = [
   { path: "", labelKey: "home" },
+  // Second, not last: it is the only page on this site asking the reader to do something,
+  // and recruitment buried behind four compliance pages recruits nobody.
+  { path: "/beta", labelKey: "beta" },
   { path: "/support", labelKey: "support" },
   { path: "/privacy", labelKey: "privacy" },
   { path: "/terms", labelKey: "terms" },

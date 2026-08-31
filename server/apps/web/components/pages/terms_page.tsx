@@ -67,6 +67,13 @@ export function TermsPage({ messages }: { messages: Messages; config: AppConfig 
       {/* brief §8: pricing in pesos is deliberately undecided. No number is invented, and
           the page says a price will appear here before anything can be bought — which is
           also the only honest thing to say while there is no way to buy Plus at all. */}
+      {/* Directly after the tier table and before the pricing clause, because it is an
+          exception to both: it says who is not charged, and it has to be readable next to
+          the thing it is an exception to. The commitment is made here rather than only on
+          /beta — a promise about money that lives solely on a recruitment page is a
+          marketing line, not a term. */}
+      <Prose sections={[{ id: "beta-testers", ...s.betaTesters }]} />
+
       <Prose
         sections={[
           { id: "pricing-not-published", ...s.pricingNotPublished },

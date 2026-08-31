@@ -14,6 +14,7 @@ function walk(dir: string): string[] {
 
 const EXPECTED_ROUTES = [
   "page.tsx",
+  "beta/page.tsx",
   "support/page.tsx",
   "privacy/page.tsx",
   "terms/page.tsx",
@@ -22,7 +23,7 @@ const EXPECTED_ROUTES = [
 ] as const;
 
 describe("route inventory", () => {
-  it("has exactly the six locale routes", () => {
+  it("has exactly the seven locale routes", () => {
     const base = `${WEB_ROOT}app/[locale]`;
     const found = walk(base)
       .filter((file) => file.endsWith("page.tsx"))
@@ -34,7 +35,7 @@ describe("route inventory", () => {
   it("links every route from both the header and the footer", () => {
     const header = readFileSync(`${WEB_ROOT}components/chrome/site_header.tsx`, "utf8");
     const footer = readFileSync(`${WEB_ROOT}components/chrome/site_footer.tsx`, "utf8");
-    for (const key of ["support", "privacy", "terms", "installed-apps", "data-deletion"]) {
+    for (const key of ["beta", "support", "privacy", "terms", "installed-apps", "data-deletion"]) {
       expect(header).toContain(key);
       // The footer renders NAV_ITEMS imported from the header, so the shared constant is
       // what actually satisfies this. That is the point: two hand-maintained lists drift.
