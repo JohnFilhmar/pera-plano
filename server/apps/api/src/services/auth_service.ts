@@ -48,6 +48,15 @@ export type VerifyOtpResult =
  * never reset or step past the counter, and a consumed or expired request is
  * rejected before either. `otpSecret` is the same key that produced the stored
  * hash: without it the row cannot be verified, which is the point.
+ *
+ * Every state check is a conditional write, never a read followed by a write.
+ * A read-then-update cap is bypassable: N concurrent verifies all read the same
+ * `attempts`, all pass the check, and all get a guess, which turns a bounded
+ * 6-digit brute force into an unbounded one. The same race let two concurrent
+ * correct verifies both see `consumedAt === null` and mint two sessions from one
+ * code. Postgres evaluates each `updateMany` predicate and its write as a single
+ * statement, so exactly one caller can win each claim. Do not "simplify" these
+ * back into a read plus an update.
  */
 export async function verifyOtp(
   prisma: PrismaClient,
@@ -56,27 +65,44 @@ export async function verifyOtp(
   otpSecret: string,
   nowMs: number = Date.now(),
 ): Promise<VerifyOtpResult> {
+  // Claims one attempt. Expiry rides in the predicate so an expired request is
+  // still refused without burning an attempt, exactly as before.
+  const claimed = await prisma.otpRequest.updateMany({
+    where: {
+      id: requestId,
+      consumedAt: null,
+      expiresAt: { gt: BigInt(nowMs) },
+      attempts: { lt: OTP_MAX_ATTEMPTS },
+    },
+    data: { attempts: { increment: 1 } },
+  });
+  if (claimed.count === 0) {
+    // Refused. Only now read the row, and only to say why.
+    const refused = await prisma.otpRequest.findUnique({
+      where: { id: requestId },
+    });
+    // A consumed request reports as not_found: that it existed is not the
+    // caller's business.
+    if (!refused || refused.consumedAt !== null) return { kind: "not_found" };
+    if (isOtpExpired(Number(refused.expiresAt), nowMs)) {
+      return { kind: "expired" };
+    }
+    return { kind: "too_many_attempts" };
+  }
+
   const request = await prisma.otpRequest.findUnique({
     where: { id: requestId },
   });
-  if (!request || request.consumedAt !== null) return { kind: "not_found" };
-  if (isOtpExpired(Number(request.expiresAt), nowMs)) {
-    return { kind: "expired" };
-  }
-  if (request.attempts >= OTP_MAX_ATTEMPTS) {
-    return { kind: "too_many_attempts" };
-  }
+  if (!request) return { kind: "not_found" };
   if (hashOtpCode(requestId, code, otpSecret) !== request.codeHash) {
-    await prisma.otpRequest.update({
-      where: { id: requestId },
-      data: { attempts: { increment: 1 } },
-    });
     return { kind: "invalid_code" };
   }
-  await prisma.otpRequest.update({
-    where: { id: requestId },
+  const consumed = await prisma.otpRequest.updateMany({
+    where: { id: requestId, consumedAt: null },
     data: { consumedAt: BigInt(nowMs) },
   });
+  // Someone else consumed it first, so this caller mints nothing.
+  if (consumed.count === 0) return { kind: "not_found" };
   const user = await prisma.user.upsert({
     where: { destination: request.destination },
     update: {},

@@ -1901,6 +1901,27 @@ git add src/services/auth_service.ts src/routes/auth_routes.ts test/routes/auth_
 git commit -m "feat(server): otp verify with attempt caps issuing jwt and refresh token"
 ```
 
+**Amendment, 2026-08-31: `verifyOtp` uses conditional writes, not read-then-update.**
+
+As first written, `verifyOtp` read the row, checked `attempts` and `consumedAt`, then wrote.
+Both checks were time-of-check-to-time-of-use races and both were reproduced with a
+`Promise.all` test in `test/services/auth_service_concurrency.test.ts`:
+
+- 10 concurrent wrong guesses against one requestId all read `attempts` before any increment
+  landed, so all 10 came back `invalid_code`. The 5-attempt cap only held for strictly serial
+  requests, which is not how a brute force arrives.
+- 8 concurrent correct verifies all saw `consumedAt === null`, so one code could mint more than
+  one session.
+
+Both are now single conditional `updateMany` statements: the attempt is claimed with
+`where: { id, consumedAt: null, expiresAt: { gt: now }, attempts: { lt: OTP_MAX_ATTEMPTS } }`
+and the row is consumed with `where: { id, consumedAt: null }`. Postgres evaluates each
+predicate and its write as one statement, so exactly one caller wins each claim. A `count` of 0
+means the write was refused, and only then is the row read to decide which result kind to
+return. The exported signature and the `VerifyOtpResult` union are unchanged.
+
+This is not over-engineering and must not be collapsed back into a read plus an update.
+
 ---
 
 ### Task 9: Token refresh — rotation, reuse detection, family revocation
