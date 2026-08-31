@@ -8,13 +8,15 @@ datasource db {
 }
 
 model User {
-  id          String  @id
-  destination String  @unique
-  createdAt   BigInt  @map("created_at")
+  id          String @id
+  destination String @unique
+  createdAt   BigInt @map("created_at")
 
-  refreshTokens RefreshToken[]
-  backupVault   BackupVault?
-  entitlement   Entitlement?
+  refreshTokens       RefreshToken[]
+  backupVault         BackupVault?
+  entitlement         Entitlement?
+  googleIdentity      GoogleIdentity?
+  installAttestations InstallAttestation[]
 
   @@map("users")
 }
@@ -92,4 +94,48 @@ model Entitlement {
   user User @relation(fields: [userId], references: [id])
 
   @@map("entitlements")
+}
+
+model GoogleIdentity {
+  id             String  @id
+  userId         String  @unique @map("user_id")
+  googleSub      String  @unique @map("google_sub")
+  email          String
+  emailVerified  Boolean @map("email_verified")
+  linkedAt       BigInt  @map("linked_at")
+  lastVerifiedAt BigInt  @map("last_verified_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("google_identities")
+}
+
+model InstallAttestation {
+  id                  String  @id
+  userId              String  @map("user_id")
+  googleSub           String  @map("google_sub")
+  packageName         String  @map("package_name")
+  claimSource         String  @map("claim_source")
+  installBeginAt      BigInt? @map("install_begin_at")
+  firstInstallAt      BigInt? @map("first_install_at")
+  appVersionAtInstall String? @map("app_version_at_install")
+  licensingVerdict    String  @map("licensing_verdict")
+  recognitionVerdict  String  @map("recognition_verdict")
+  cohortGranted       Boolean @map("cohort_granted")
+  createdAt           BigInt  @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("install_attestations")
+}
+
+model BetaPregrant {
+  id              String  @id
+  email           String  @unique
+  note            String
+  createdAt       BigInt  @map("created_at")
+  claimedAt       BigInt? @map("claimed_at")
+  claimedByUserId String? @map("claimed_by_user_id")
+
+  @@map("beta_pregrants")
 }
