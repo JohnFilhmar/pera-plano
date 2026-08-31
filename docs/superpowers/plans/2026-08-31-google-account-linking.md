@@ -3152,6 +3152,24 @@ mobile task here should run its own file plus `lib/__tests__/bootstrap.test.ts`,
 full-run result against a baseline taken immediately before its change rather than against green.
 Fixing those three is its own task and is not part of account linking.
 
+## Decisions the owner still owes, consolidated 2026-08-31
+
+Gathered here because they accumulated across a dozen reviews and none of them is discoverable from
+the code. Each one blocks something specific.
+
+| # | Decision | Blocks | Why nobody else can make it |
+|---|---|---|---|
+| D-1 | The beta window, as two epoch-ms bounds. | Any real deployment. Tests use fixed literals, so implementation is unblocked. | The grant is permanent. A wrong bound either denies the promise or hands permanent Plus to people it was never offered to. |
+| D-2 | Retention periods for `google_identities`, `install_attestations` and `beta_pregrants`. | The privacy notice, which must state them. | The docs currently state what follows from the design's own logic. Hard day counts are a policy choice. |
+| D-3 | Whether a Free-tier identity changes the NPC registration position. | Public launch, not implementation. | Privacy counsel. |
+| D-4 | Whether a benign double-refresh should log a user out. | The mobile client wiring up refresh. | Strict reuse detection revokes the family when a client fires two refreshes at once. Every mitigation weakens the detection, so it is a risk trade, not a bug fix. |
+| D-5 | Whether the beta runs on a Play testing track, sideloaded, or both. | Sizing the pregrant list. | Decided in principle (both, per §7.1), but nobody has enumerated who is on the list. |
+
+**Unlink is the one that will surprise you.** Account deletion and unlink are out of scope here, but
+the privacy document now says the control must ship in the same release as linking, and Play's
+account-deletion obligation attaches the moment an identity exists. So linking cannot ship alone. It
+is the next spec, not a follow-up.
+
 ## Open questions this plan cannot close
 
 | # | Question | Blocks |
