@@ -293,6 +293,28 @@ spike's real numbers. Wherever a speed appears in the UI it is the *device's own
 > 2026-08-31 measurements sharpen them — 2.66 GiB available, with tier 2 alone occupying 2.51 GB PSS.
 > Two things were measured in that session and only one of them was measured wrongly.
 
+> **TIER LIST CUT TO TWO — owner's decision, 2026-08-31.** The catalogue ships **tier 1
+> (`qwen3-0.6b-q4`) and tier 2 (`qwen3-1.7b-q4`) only.** Tiers 3, 4 and 5 are cut.
+>
+> **Why:** measured on the A54, tier 2 alone occupies **2.51 GB PSS against 2.66 GiB available**.
+> Tier 3's weights are 1.8 GB against tier 2's 1.06 GB and will almost certainly not load; tier 4
+> (2.5 GB) and tier 5 (3.3 GB) definitely will not — tier 5 failed outright. **No hardware available
+> to this project can test tiers 3–5**, and a menu row that appears and then crashes on load is a
+> support incident rather than a feature. §5.5 was going to cut tier 3 anyway if it scored within
+> noise of tier 2, which on current evidence it would.
+>
+> **What the two shipping tiers measured** (on battery, off charge, 2026-08-31):
+>
+> | Tier | tok/s | TTFT | Tool-pick (constrained) | PSS |
+> |---|---|---|---|---|
+> | `qwen3-0.6b-q4` | 32.54 | 55 ms | 78% | 1.25 GB |
+> | `qwen3-1.7b-q4` | 11.45 | 138 ms | 97% | 2.51 GB |
+>
+> **Consequences to carry through:** §5.2's catalogue test asserts **two** entries, not five, and its
+> pinned id literals shrink to two. Only two digests are needed and **both are already computed**
+> (hosting decision doc §7). Reinstating a larger tier is a catalogue edit plus a digest, once
+> hardware exists that can hold one.
+
 **Quant policy — owner's decision, 2026-08-21.** The catalogue's shape was questioned and is
 **confirmed as-is**: exactly one quant at tier 1, and higher precision offered only above it.
 

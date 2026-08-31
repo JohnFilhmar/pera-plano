@@ -223,13 +223,21 @@ matters (spec §5.5), and on the 2026-08-31 device reading tier 5 cannot load on
 at all. Fetching 9.1 GB to digest files that may never ship is work done in the wrong order. Digest
 each tier as it survives.
 
+**NO LONGER BLOCKED. The tier list was cut to two on 2026-08-31 and both digests are computed**, so
+`catalogue.ts` is writable today.
+
 | id | sha256 | status |
 |---|---|---|
-| `qwen3-0.6b-q4` | `ac2d97712095a558e31573f62f466a3f9d93990898b0ec79d7c974c1780d524a` | **computed 2026-08-31** |
-| `qwen3-1.7b-q4` | `b139949c5bd74937ad8ed8c8cf3d9ffb1e99c866c823204dc42c0d91fa181897` | **computed 2026-08-31** |
-| `qwen3-1.7b-q8` | | pending |
-| `qwen3-4b-2507-q4` | | pending |
-| `qwen3-4b-2507-q6` | | pending, may never ship (will not load on the A54) |
+| `qwen3-0.6b-q4` | `ac2d97712095a558e31573f62f466a3f9d93990898b0ec79d7c974c1780d524a` | **SHIPS — computed 2026-08-31** |
+| `qwen3-1.7b-q4` | `b139949c5bd74937ad8ed8c8cf3d9ffb1e99c866c823204dc42c0d91fa181897` | **SHIPS — computed 2026-08-31** |
+| `qwen3-1.7b-q8` | — | **cut** (owner, 2026-08-31) |
+| `qwen3-4b-2507-q4` | — | **cut** — will not load on any available hardware |
+| `qwen3-4b-2507-q6` | — | **cut** — failed to load on the A54 |
+
+Both shipping digests were verified twice: once on the PC and once on the device, byte counts matching
+the Hugging Face API blob size and the HTTP `Content-Length`. The three cut tiers keep their pinned
+URLs and revisions in §2 so reinstating one is a catalogue edit plus a `sha256sum`, not a new
+investigation.
 
 **Tier 2 is done and checks out.** Downloaded from the §2 URL on 2026-08-31, `stat -c %s` returned
 `1107409472`, matching both the API blob size and the `Content-Length` from the HEAD request. Three
