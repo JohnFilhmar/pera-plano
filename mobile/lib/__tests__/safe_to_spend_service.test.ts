@@ -49,6 +49,28 @@ async function spend(amount: number, occurredAt: number, categoryId = UNCATEGORI
   });
 }
 
+/**
+ * Pay that actually landed. Since rule 6a the contributions term is built from
+ * real credits rather than from projected cadence anchors, so a contribution
+ * test has to put money in the ledger — which is the whole point: a date on a
+ * calendar is no longer evidence that anything moved.
+ *
+ * `merchant` is constant so every credit lands in one `primaryStream` group,
+ * and the amount clears income rule 1's ₱500.00 noise floor.
+ */
+async function payday(amount: number, occurredAt: number) {
+  return insertTransaction({
+    walletId: cash.id,
+    categoryId: UNCATEGORIZED_ID,
+    amount,
+    direction: "in",
+    occurredAt,
+    merchant: "ACME PAYROLL",
+    source: "notification",
+    confidence: 0.9,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Rule 6 — the empty app
 // ---------------------------------------------------------------------------
@@ -216,7 +238,7 @@ test("a skipped cycle is excluded too", async () => {
 // ---------------------------------------------------------------------------
 // Contributions — rule 6
 // ---------------------------------------------------------------------------
-test("A GOAL WITH A FIXED RULE FORECASTS ON EVERY PAYDAY IN THE PERIOD", async () => {
+test("A GOAL WITH A FIXED RULE RESERVES ON EVERY PAY THAT ACTUALLY ARRIVED", async () => {
   await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
   await setManualIncome({ cadence: "kinsenas", averageAmount: 1_500_000, sourceWalletIds: [cash.id] }, NOW);
   const savings = await createWallet({ name: "GSave" });
@@ -226,14 +248,73 @@ test("A GOAL WITH A FIXED RULE FORECASTS ON EVERY PAYDAY IN THE PERIOD", async (
     linkedWalletId: savings.id,
     contributionRule: { kind: "fixed", amount: 100_000 },
   });
+  // Two credits this month, both before today (the 12th).
+  await payday(1_500_000, new Date(2026, 7, 3, 9, 0).getTime());
+  await payday(1_500_000, new Date(2026, 7, 10, 9, 0).getTime());
 
   const input = await buildSafeToSpendInput(TODAY, NOW);
 
-  // Kinsenas pays on the 15th and the last day: two anchors in August.
   expect(input.plannedContributions).toEqual([
-    { goalId: goal.id, amount: 100_000, date: "2026-08-15" },
-    { goalId: goal.id, amount: 100_000, date: "2026-08-31" },
+    { goalId: goal.id, amount: 100_000, date: "2026-08-03" },
+    { goalId: goal.id, amount: 100_000, date: "2026-08-10" },
   ]);
+});
+
+test("PAY THAT NEVER ARRIVED RESERVES NOTHING — rule 6a, the delayed-salary case", async () => {
+  // The owner's 2026-09-01 report in miniature: a kinsenas cadence, a live
+  // contribution rule, an anchor already passed, and no pay in the ledger. The
+  // old projection reserved ₱1,000 anyway and pinned the number at ₱0.00.
+  await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
+  await setManualIncome({ cadence: "kinsenas", averageAmount: 1_500_000, sourceWalletIds: [cash.id] }, NOW);
+  const savings = await createWallet({ name: "GSave" });
+  await createGoal({
+    name: "Emergency Fund",
+    targetAmount: 5_000_000,
+    linkedWalletId: savings.id,
+    contributionRule: { kind: "fixed", amount: 100_000 },
+  });
+
+  const input = await buildSafeToSpendInput(TODAY, NOW);
+
+  expect(input.plannedContributions).toEqual([]);
+});
+
+test("A PAYDAY LATER THIS PERIOD IS NOT RESERVED BEFORE IT LANDS", async () => {
+  // Bounded at today. Reserving against a payday still to come is the same
+  // guess in a shorter form, and it is the guess that broke.
+  await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
+  await setManualIncome({ cadence: "kinsenas", averageAmount: 1_500_000, sourceWalletIds: [cash.id] }, NOW);
+  const savings = await createWallet({ name: "GSave" });
+  await createGoal({
+    name: "Emergency Fund",
+    targetAmount: 5_000_000,
+    linkedWalletId: savings.id,
+    contributionRule: { kind: "fixed", amount: 100_000 },
+  });
+  await payday(1_500_000, new Date(2026, 7, 25, 9, 0).getTime()); // after TODAY
+
+  const input = await buildSafeToSpendInput(TODAY, NOW);
+
+  expect(input.plannedContributions).toEqual([]);
+});
+
+test("LATE PAY MOVES THE RESERVATION TO THE DAY IT ACTUALLY LANDED", async () => {
+  // Kinsenas would have anchored the 15th of July; the money came on the 20th.
+  // The reservation follows the money, with no expiry rule needed.
+  await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
+  await setManualIncome({ cadence: "kinsenas", averageAmount: 1_500_000, sourceWalletIds: [cash.id] }, NOW);
+  const savings = await createWallet({ name: "GSave" });
+  await createGoal({
+    name: "Emergency Fund",
+    targetAmount: 5_000_000,
+    linkedWalletId: savings.id,
+    contributionRule: { kind: "fixed", amount: 100_000 },
+  });
+  await payday(1_500_000, new Date(2026, 7, 9, 9, 0).getTime());
+
+  const input = await buildSafeToSpendInput(TODAY, NOW);
+
+  expect(input.plannedContributions.map((c) => c.date)).toEqual(["2026-08-09"]);
 });
 
 test("A PERCENT RULE TAKES ITS SHARE OF ONE PAY PACKET, NOT OF MONTHLY INCOME", async () => {
@@ -248,6 +329,7 @@ test("A PERCENT RULE TAKES ITS SHARE OF ONE PAY PACKET, NOT OF MONTHLY INCOME", 
     linkedWalletId: savings.id,
     contributionRule: { kind: "percent", percent: 10 },
   });
+  await payday(1_000_000, new Date(2026, 7, 10, 9, 0).getTime());
 
   const input = await buildSafeToSpendInput(TODAY, NOW);
 
@@ -267,9 +349,11 @@ test("A GOAL WITH NO CONTRIBUTION RULE FORECASTS NOTHING", async () => {
   expect(input.plannedContributions).toEqual([]);
 });
 
-test("AN UNPREDICTABLE CADENCE FORECASTS NOTHING RATHER THAN GUESSING", async () => {
-  // A gig worker's next payday is not knowable, and inventing one would reserve
-  // money against a date the app made up.
+test("AN IRREGULAR EARNER RESERVES ON REAL PAY LIKE ANYONE ELSE", async () => {
+  // Rule 6a retires the old "unpredictable cadence forecasts nothing" carve-out.
+  // It existed because a gig worker has no anchor to project from — but nobody
+  // projects now, so irregular pay is reserved on arrival exactly like salaried
+  // pay. Strictly better for the people the carve-out used to exclude.
   await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
   await setManualIncome({ cadence: "irregular", averageAmount: 1_500_000, sourceWalletIds: [cash.id] }, NOW);
   const savings = await createWallet({ name: "GSave" });
@@ -279,13 +363,14 @@ test("AN UNPREDICTABLE CADENCE FORECASTS NOTHING RATHER THAN GUESSING", async ()
     linkedWalletId: savings.id,
     contributionRule: { kind: "fixed", amount: 100_000 },
   });
+  await payday(1_500_000, new Date(2026, 7, 6, 9, 0).getTime());
 
   const input = await buildSafeToSpendInput(TODAY, NOW);
 
-  expect(input.plannedContributions).toEqual([]);
+  expect(input.plannedContributions.map((c) => c.date)).toEqual(["2026-08-06"]);
 });
 
-test("A CONTRIBUTION EARLIER IN THE PERIOD IS STILL FORECAST", async () => {
+test("A CONTRIBUTION EARLIER IN THE PERIOD IS STILL RESERVED", async () => {
   // Rule 6 counts "from the start of the period", not from today. On the 20th
   // the 15th's allocation is money already moved, and dropping it would hand it
   // back to the user's spendable figure.
@@ -298,6 +383,8 @@ test("A CONTRIBUTION EARLIER IN THE PERIOD IS STILL FORECAST", async () => {
     linkedWalletId: savings.id,
     contributionRule: { kind: "fixed", amount: 100_000 },
   });
+
+  await payday(1_500_000, new Date(2026, 7, 15, 9, 0).getTime());
 
   const input = await buildSafeToSpendInput("2026-08-20", new Date(2026, 7, 20, 10, 0).getTime());
 
