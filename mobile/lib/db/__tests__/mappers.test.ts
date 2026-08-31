@@ -180,6 +180,7 @@ describe("transaction mapper", () => {
     note: null,
     balanceAfter: null,
     computedBalance: null,
+    isAdjustment: false,
     createdAt: 1754060400002,
     updatedAt: 1754060400003,
   };
@@ -266,6 +267,11 @@ describe("transaction mapper", () => {
       note: null,
       balanceAfter: null,
       computedBalance: null,
+      // The INSERT above names no `is_adjustment`, so SQLite applies
+      // 017_transaction_adjustments' DEFAULT 0 — which is the case this
+      // assertion is pinning: a row written without the column reads back as
+      // an ordinary transaction, not as `undefined`.
+      isAdjustment: false,
       createdAt: now,
       updatedAt: now + 1,
     });

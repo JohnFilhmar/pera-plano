@@ -330,6 +330,12 @@ export async function findBillPaymentCandidates(
     to: Math.min(to, now + DAY_MS),
     direction: "out",
     excludeTransferLinked: true,
+    // Alongside the transfer exclusion, and for the same reason
+    // (017_transaction_adjustments): a balance correction is not a bill
+    // payment, and one that happened to land near a due date and inside the
+    // amount tolerance would mark the bill paid on the strength of a
+    // reconciliation.
+    excludeAdjustments: true,
   });
 
   const claimed = await claimedTransactionIds();

@@ -103,6 +103,7 @@ function makeCandidate(overrides: Partial<Transaction> = {}): Transaction {
     note: null,
     balanceAfter: null,
     computedBalance: null,
+    isAdjustment: false,
     createdAt: OCCURRED_AT,
     updatedAt: OCCURRED_AT,
     ...overrides,

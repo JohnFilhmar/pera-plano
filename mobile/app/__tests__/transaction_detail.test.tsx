@@ -176,6 +176,85 @@ afterEach(async () => {
 });
 
 // ---------------------------------------------------------------------------
+// "Counts toward" — the owner's 2026-08-30 report, "wallet adjust balance
+// counts as expense".
+//
+// The reported screenshot was THIS row: a starting-balance correction whose
+// detail sheet read "Counts toward: Spending". The label was not lying; the
+// row really was in every spend total. Both halves are pinned here — the
+// sentence the user reads, and the figure behind it.
+// ---------------------------------------------------------------------------
+
+describe("counts toward", () => {
+  test("a balance adjustment says it is not counted, and is not", async () => {
+    const tx = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 496_460,
+      direction: "out",
+      occurredAt: NOW,
+      source: "manual",
+      confidence: 1,
+      note: "Starting balance / manual correction",
+      isAdjustment: true,
+    });
+
+    await renderDetail(tx.id);
+
+    // A regex, not a string: the ListRow renders title AND subtitle, so its
+    // text content is "Not counted — balance adjustmentCounts toward" and an
+    // exact match would fail on the label the row is supposed to carry.
+    expect(screen.getByTestId("transaction-detail-counts-toward")).toHaveTextContent(
+      /Not counted — balance adjustment/,
+    );
+    expect(await sumSpend({ from: NOW - DAY_MS, to: NOW + DAY_MS })).toBe(0);
+  });
+
+  test("an ordinary outflow still says Spending", async () => {
+    // The other direction of the rule: a fix that labelled everything
+    // "not counted" would understate what the user is spending.
+    const tx = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: FOOD,
+      amount: 66_261,
+      direction: "out",
+      occurredAt: NOW,
+      source: "manual",
+      confidence: 1,
+    });
+
+    await renderDetail(tx.id);
+
+    // `^Spending` anchors it: "Not counted — balance adjustment" does not
+    // contain the word, but an unanchored /Spending/ would also pass against a
+    // row that said "Not counted as Spending", which is not what this asserts.
+    expect(screen.getByTestId("transaction-detail-counts-toward")).toHaveTextContent(
+      /^Spending/,
+    );
+    expect(await sumSpend({ from: NOW - DAY_MS, to: NOW + DAY_MS })).toBe(66_261);
+  });
+
+  test("an incoming adjustment is not reported as Income either", async () => {
+    const tx = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 499_500,
+      direction: "in",
+      occurredAt: NOW,
+      source: "manual",
+      confidence: 1,
+      isAdjustment: true,
+    });
+
+    await renderDetail(tx.id);
+
+    expect(screen.getByTestId("transaction-detail-counts-toward")).toHaveTextContent(
+      /Not counted — balance adjustment/,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Rule 1 — every field
 // ---------------------------------------------------------------------------
 

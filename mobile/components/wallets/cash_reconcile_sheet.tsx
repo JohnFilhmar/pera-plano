@@ -196,18 +196,24 @@ export function CashReconcileSheet({
             will be logged as — `RECONCILE_NOTE`, the actual string this
             write uses (lib/wallets/reconcile.ts), not the design board's own
             illustrative "Cash adjustment · untracked spending" (which names
-            no real constant in this codebase). A user who is told "we will
-            record ₱300.00 as money spent" can catch their own typo; one who
-            finds out afterwards has to go and delete a transaction. */}
+            no real constant in this codebase). A user who is told what will be
+            written can catch their own typo; one who finds out afterwards has
+            to go and delete a transaction.
+
+            THE "MONEY SPENT" WORDING IS GONE (017_transaction_adjustments).
+            It used to read `money spent, so your totals stay honest` — which
+            described the behaviour accurately and described the wrong
+            behaviour: the row WAS counted as spending, and on the owner's
+            device the equivalent write on a bank wallet blew a ₱266 daily
+            limit to ₱4,998.03. A count you did not make is not a purchase you
+            made. The sentence now promises what the code now does. */}
         {preview === null ? (
           <Text testID="reconcile-plan" className="text-secondary text-fg-2 dark:text-fg-2-dark">
             That matches what this wallet already says — nothing will be recorded.
           </Text>
         ) : (
           <Text testID="reconcile-plan" className="text-secondary text-fg-2 dark:text-fg-2-dark">
-            {preview.direction === "out"
-              ? `Logged as "${RECONCILE_NOTE}" — money spent, so your totals stay honest. Nothing already in your ledger changes.`
-              : `Logged as "${RECONCILE_NOTE}" — money received. Nothing already in your ledger changes.`}
+            {`Logged as "${RECONCILE_NOTE}" — a balance correction, so it moves this wallet's balance without counting as spending or income. Nothing already in your ledger changes.`}
           </Text>
         )}
 

@@ -185,23 +185,29 @@ export function BalanceCorrectionSheet({
             reported balance re-anchors the wallet from that report, the same
             way it always has; this correction does not and cannot stop it.
             Second clause (review fix, 2026-08-18): the correction transaction
-            ITSELF is not touched by that re-anchor — the balance moves on,
-            but the row stays in the ledger and keeps counting toward
-            money-in/spend totals for whatever period it falls in. That is by
-            design (rule 3 asks for an honest ledger entry, not a balance
-            patch that vanishes later), but it is a real second-order effect
-            worth saying plainly rather than leaving the user to discover it
-            in a report.
+            ITSELF is not touched by that re-anchor — the balance moves on, but
+            the row stays in the ledger. That is by design (rule 3 asks for an
+            honest ledger entry, not a balance patch that vanishes later), and
+            it is worth saying plainly rather than leaving the user to discover
+            it in a report.
 
-            STILL UNCONDITIONAL — present before any input, exactly as before
-            this restyle. components/wallets/__tests__/balance_correction_sheet.test.tsx
+            THAT CLAUSE USED TO END "and still counts toward your totals"
+            (017_transaction_adjustments). It was true when written and it was
+            describing the bug: the owner's 2026-08-30 report was this exact
+            write showing up as a −₱4,964.60 expense, over a ₱266 daily limit,
+            with Safe-to-Spend pinned at ₱0.00. The row still stays; it no
+            longer counts. Changing the code without changing this sentence
+            would have left the app promising the old behaviour.
+
+            STILL UNCONDITIONAL — present before any input.
+            components/wallets/__tests__/balance_correction_sheet.test.tsx
             asserts this by name ("shown before any input, not just after
-            confirming"), and content is verbatim: the three phrases it
-            regex-matches are untouched. */}
+            confirming"); the first two phrases it regex-matches are
+            untouched and the third moved with the behaviour. */}
         <Text testID="balance-correction-warning" className="text-secondary text-warn dark:text-warn-dark">
           This is a starting point, not a bank-confirmed figure. If a notification later reports
           this wallet&apos;s balance directly, that report will replace this correction. The entry
-          itself stays in your ledger and still counts toward your totals, even after that happens.
+          itself stays in your ledger, and it does not count as spending or income.
         </Text>
 
         {showError ? (
@@ -242,16 +248,21 @@ export function BalanceCorrectionSheet({
             names the real write, `BALANCE_CORRECTION_NOTE`
             (hooks/mutations/use_correct_wallet_balance.ts) — not the design
             board's own illustrative copy, which names no constant this
-            codebase actually has. */}
+            codebase actually has.
+
+            THE DIRECTION SPLIT IS GONE (017_transaction_adjustments). It used
+            to say "money spent" one way and "money received" the other, which
+            is what the write actually did and what the owner reported on
+            2026-08-30: a −₱4,964.60 correction counted as an expense. Both
+            directions are now the same kind of row, so both get the same
+            sentence — there is no longer a difference to describe. */}
         {preview === null ? (
           <Text testID="balance-correction-plan" className="text-secondary text-fg-2 dark:text-fg-2-dark">
             That matches what this wallet already says — nothing will be recorded.
           </Text>
         ) : (
           <Text testID="balance-correction-plan" className="text-secondary text-fg-2 dark:text-fg-2-dark">
-            {preview.direction === "out"
-              ? `Logged as "${BALANCE_CORRECTION_NOTE}" — money spent, so your totals stay honest. Nothing already in your ledger changes.`
-              : `Logged as "${BALANCE_CORRECTION_NOTE}" — money received. Nothing already in your ledger changes.`}
+            {`Logged as "${BALANCE_CORRECTION_NOTE}" — a balance correction, so it moves this wallet's balance without counting as spending or income. Nothing already in your ledger changes.`}
           </Text>
         )}
 

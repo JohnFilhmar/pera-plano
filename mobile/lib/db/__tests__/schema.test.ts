@@ -52,7 +52,7 @@ test("the schema holds the 19 contract tables plus every later migration's", asy
   expect(CORE_TABLES).toHaveLength(19);
 });
 
-test("transactions has the exact contract §3 columns in order, with 002's pair appended after them", async () => {
+test("transactions has the exact contract §3 columns in order, with later migrations' columns appended after them", async () => {
   const db = await freshDb();
   const cols = await db.getAllAsync<{ name: string }>("PRAGMA table_info(transactions)");
   expect(cols.map((c) => c.name)).toEqual([
@@ -64,6 +64,10 @@ test("transactions has the exact contract §3 columns in order, with 002's pair 
     // columns keep their exact positions — which is the assertion above still
     // being written out in full rather than sliced.
     "balance_after", "computed_balance",
+    // 017_transaction_adjustments, appended after 002's pair for the same
+    // reason. It is the row's own answer to "is this spending?", which the
+    // schema previously could only express as "does it have a transfer link?".
+    "is_adjustment",
   ]);
 });
 
@@ -469,7 +473,13 @@ describe("NOT NULL is enforced on every required column in the schema", () => {
       .map((column) => ({ table: "categories", column })),
     ...["id", "package_name", "posted_at", "captured_at", "expires_at"]
       .map((column) => ({ table: "raw_notifications", column })),
-    ...["id", "wallet_id", "category_id", "amount", "direction", "occurred_at", "source", "confidence", "created_at", "updated_at"]
+    // `is_adjustment` (017): NOT NULL DEFAULT 0, the second column in this list
+    // whose NOT NULL is backed by a default rather than always being supplied
+    // — see the `reminder_offsets_json` note below. It matters more here than
+    // most: the column decides whether a row counts as spending, and a NULL
+    // would be neither true nor false to a `is_adjustment = 0` predicate, so
+    // the row would silently vanish from every spend total.
+    ...["id", "wallet_id", "category_id", "amount", "direction", "occurred_at", "source", "confidence", "is_adjustment", "created_at", "updated_at"]
       .map((column) => ({ table: "transactions", column })),
     ...["id", "out_transaction_id", "in_transaction_id", "fee_amount", "status", "detected_by", "confidence", "created_at", "updated_at"]
       .map((column) => ({ table: "transfer_links", column })),
@@ -481,10 +491,11 @@ describe("NOT NULL is enforced on every required column in the schema", () => {
       .map((column) => ({ table: "income_profile_sources", column })),
     ...["id", "name", "target_amount", "linked_wallet_id", "created_at", "updated_at"]
       .map((column) => ({ table: "goals", column })),
-    // reminder_offsets_json (migration 008): NOT NULL DEFAULT '[-3,0,3]' — the
-    // one column here whose NOT NULL is backed by a DEFAULT rather than always
-    // being supplied by the caller, so this is the assertion that an explicit
-    // NULL is still rejected regardless.
+    // reminder_offsets_json (migration 008): NOT NULL DEFAULT '[-3,0,3]' — one
+    // of the two columns here whose NOT NULL is backed by a DEFAULT rather than
+    // always being supplied by the caller (the other is `transactions.
+    // is_adjustment`, 017), so this is the assertion that an explicit NULL is
+    // still rejected regardless.
     ...["id", "direction", "counterparty", "principal", "reminder_offsets_json", "created_at", "updated_at"]
       .map((column) => ({ table: "loans", column })),
     ...["id", "loan_id", "transaction_id", "created_at", "updated_at"]

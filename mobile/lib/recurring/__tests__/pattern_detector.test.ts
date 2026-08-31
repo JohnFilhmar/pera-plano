@@ -31,6 +31,7 @@ function tx(over: Partial<Transaction> = {}): Transaction {
     note: null,
     balanceAfter: null,
     computedBalance: null,
+    isAdjustment: false,
     createdAt: NOW,
     updatedAt: NOW,
     ...over,

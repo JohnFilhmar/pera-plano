@@ -203,15 +203,23 @@ export default function TransactionDetailScreen() {
     return packageName ? providerKeyForPackage(ruleset?.providers ?? [], packageName) : null;
   })();
 
-  // "Counts toward" (task-4b): the same three-way split rule 3 already draws
-  // on the ledger row itself (a transfer leg is neither spend nor income) —
-  // restated here as a fact about THIS transaction rather than re-derived
-  // from scratch, so the two screens can never disagree about one row.
-  const countsToward = isTransfer
-    ? "Not counted — transfer"
-    : transaction.direction === "in"
-      ? "Income"
-      : "Spending";
+  // "Counts toward" (task-4b): the same split rule 3 already draws on the
+  // ledger row itself (a transfer leg is neither spend nor income) — restated
+  // here as a fact about THIS transaction rather than re-derived from scratch,
+  // so the two screens can never disagree about one row.
+  //
+  // The adjustment arm is checked FIRST, ahead of direction, because a
+  // correction has a direction (money apparently in or out) and that direction
+  // is exactly what must not be reported. This label was the visible half of
+  // the owner's 2026-08-30 bug: the sheet said "Spending" over a starting
+  // balance, and it said it truthfully — the row really was being counted.
+  const countsToward = transaction.isAdjustment
+    ? "Not counted — balance adjustment"
+    : isTransfer
+      ? "Not counted — transfer"
+      : transaction.direction === "in"
+        ? "Income"
+        : "Spending";
 
   function commitNote(): void {
     if (!transaction || note === null) return;

@@ -1,9 +1,10 @@
 // lib/reports/__tests__/aggregate.test.ts — M3b Task 1.
 //
 // Pure report math over a list of Transactions. The single rule under test
-// throughout is transfer exclusion (docs/04-features/10-reports.md rule 1):
-// every figure here must agree that a Transfer Link leg is not spending or
-// income, no matter which function computes it.
+// throughout is exclusion of rows that moved a number without moving money:
+// transfer legs (docs/04-features/10-reports.md rule 1) and balance
+// adjustments (017_transaction_adjustments). Every figure here must agree that
+// neither is spending or income, no matter which function computes it.
 import { parseDateIso } from "@/lib/dates";
 import { categoryBreakdown, summarizePeriod, topMerchants, trendSeries } from "@/lib/reports/aggregate";
 import type { Category, Transaction } from "@/types/domain";
@@ -27,6 +28,7 @@ const BASE_TX: Transaction = {
   note: null,
   balanceAfter: null,
   computedBalance: null,
+  isAdjustment: false,
   createdAt: 0,
   updatedAt: 0,
 };
@@ -104,6 +106,61 @@ test("TRANSFER LEGS ARE EXCLUDED FROM INCOME (regression)", () => {
   ];
 
   expect(summarizePeriod(transactions, AUGUST).income).toBe(50000);
+});
+
+// ---------------------------------------------------------------------------
+// Balance adjustments — the owner's 2026-08-30 report, "wallet adjust balance
+// counts as expense". Same rule as the two tests above, second reason.
+// ---------------------------------------------------------------------------
+
+test("BALANCE ADJUSTMENTS ARE EXCLUDED FROM SPEND (regression)", () => {
+  // The reporting device's actual numbers: a ₱662.61 bill and a −₱4,964.60
+  // correction, of which only the bill was money going anywhere.
+  const transactions = [
+    tx({ date: "2026-08-30", direction: "out", amount: 66261 }),
+    tx({ date: "2026-08-30", direction: "out", amount: 496460, isAdjustment: true }),
+  ];
+
+  const summary = summarizePeriod(transactions, AUGUST);
+  expect(summary.spend).toBe(66261);
+  expect(summary.transactionCount).toBe(1);
+});
+
+test("BALANCE ADJUSTMENTS ARE EXCLUDED FROM INCOME (regression)", () => {
+  // A correction upward is not a pay packet. Left counting, it would also
+  // teach the income cadence detector a payday that never happens.
+  const transactions = [
+    tx({ date: "2026-08-30", direction: "in", amount: 50000 }),
+    tx({ date: "2026-08-30", direction: "in", amount: 499500, isAdjustment: true }),
+  ];
+
+  expect(summarizePeriod(transactions, AUGUST).income).toBe(50000);
+});
+
+test("BALANCE ADJUSTMENTS ARE EXCLUDED FROM CATEGORY TOTALS, TRENDS AND TOP MERCHANTS", () => {
+  // One assertion per surface rather than one per test: the point is that a
+  // single predicate covers all of them, and a fix applied to `summarizePeriod`
+  // alone would pass the two tests above while leaving the Reports tab wrong.
+  const transactions = [
+    tx({ date: "2026-08-05", direction: "out", amount: 20000, merchant: "Jollibee" }),
+    tx({
+      date: "2026-08-06",
+      direction: "out",
+      amount: 496460,
+      merchant: "Jollibee",
+      isAdjustment: true,
+    }),
+  ];
+
+  const categories = [category({ id: "cat_food", name: "Food & Dining" })];
+
+  expect(categoryBreakdown(transactions, categories, AUGUST)[0].total).toBe(20000);
+  expect(trendSeries(transactions, [AUGUST])[0].spend).toBe(20000);
+  expect(topMerchants(transactions, AUGUST, 5)[0]).toEqual({
+    merchant: "Jollibee",
+    total: 20000,
+    count: 1,
+  });
 });
 
 test("an empty range returns zeros, not a throw", () => {

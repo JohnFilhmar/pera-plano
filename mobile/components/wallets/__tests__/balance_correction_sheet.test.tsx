@@ -143,8 +143,14 @@ test("the notification-wins disclosure is shown before any input, not just after
   expect(warning).toHaveTextContent(/starting point, not a bank-confirmed figure/i);
   expect(warning).toHaveTextContent(/report will replace this correction/i);
   // The second-order effect folded in alongside the credit exclusion: the
-  // entry survives that re-anchor and keeps counting toward totals.
-  expect(warning).toHaveTextContent(/stays in your ledger and still counts/i);
+  // entry survives that re-anchor. It used to add "and still counts toward
+  // your totals", which was accurate and was the bug the owner reported on
+  // 2026-08-30 — a correction reported as a −₱4,964.60 expense. Since
+  // 017_transaction_adjustments the row stays and does not count, and the
+  // sentence says so.
+  expect(warning).toHaveTextContent(/stays in your ledger/i);
+  expect(warning).toHaveTextContent(/does not count as spending or income/i);
+  expect(warning).not.toHaveTextContent(/still counts toward your totals/i);
 });
 
 // ---------------------------------------------------------------------------

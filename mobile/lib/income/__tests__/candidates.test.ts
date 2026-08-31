@@ -24,6 +24,7 @@ function tx(
     transferLinkId: null,
     balanceAfter: null,
     computedBalance: null,
+    isAdjustment: false,
     note: null,
     createdAt: over.occurredAt,
     updatedAt: over.occurredAt,
