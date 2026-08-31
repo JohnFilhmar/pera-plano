@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { loadConfig, type AppConfig } from "./config.js";
 import { errorHandler } from "./lib/errors.js";
 import { prismaPlugin } from "./plugins/prisma_plugin.js";
+import { authPlugin } from "./plugins/auth_plugin.js";
 import { healthRoutes } from "./routes/health_routes.js";
 import { authRoutes } from "./routes/auth_routes.js";
 
@@ -27,6 +28,7 @@ export function buildApp(overrides: Partial<AppConfig> = {}): FastifyInstance {
     });
   });
   void app.register(prismaPlugin);
+  void app.register(authPlugin);
   void app.register(healthRoutes);
   void app.register(authRoutes, { prefix: "/v1" });
   return app;
