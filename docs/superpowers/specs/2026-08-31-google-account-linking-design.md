@@ -189,6 +189,7 @@ OTP account.
 | No user, no identity | Create both. Issue tokens. |
 | A `google_identities` row for this `google_sub` | Use its `user_id`. Update `last_verified_at`. Issue tokens. |
 | A `users` row with this email but no Google identity | Attach a new identity to that user. Do not create a second user, and do not error. |
+| A `users` row whose identity carries a **different** `google_sub` | Refuse with `409 user_already_linked`. Do not attach, do not replace. |
 
 The third case is the OTP-then-Google user, and silently unifying is correct only because
 `email_verified` was checked first.
@@ -249,6 +250,7 @@ Auth: Bearer. Unchanged shape, real values.
 | `app_not_play_licensed` | 403 | `appLicensingVerdict` is not `LICENSED`, or recognition is not `PLAY_RECOGNIZED` |
 | `install_claim_invalid` | 400 | Claim timestamps are in the future, or both are null |
 | `google_identity_already_linked` | 409 | `google_sub` already belongs to a different user |
+| `user_already_linked` | 409 | The caller's account already has a different `google_sub` linked. Distinct from the row above and never to be merged with it: that one means the Google account belongs to somebody else, this one means your account is spoken for. The remedies are opposite |
 | `google_upstream_unavailable` | 503 | JWKS or Play Integrity call failed after retry |
 
 `app_not_play_licensed` is a 403 and not a 401 deliberately: the caller authenticated fine, the app

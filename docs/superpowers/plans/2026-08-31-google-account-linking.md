@@ -1984,6 +1984,25 @@ export async function linkGoogleToUser(
     throw new ApiError(409, "google_identity_already_linked", "That Google account is already linked to another user");
   }
 
+  // `google_identities.user_id` is UNIQUE (Task 1 had to add it: Prisma cannot
+  // express this plan's own one-to-one back-relation without it). So a bare
+  // create below raises a unique violation whenever the caller already has a
+  // DIFFERENT Google account linked, surfacing as a 500. Refuse explicitly.
+  //
+  // Refusing rather than replacing is deliberate. Silently repointing an account
+  // at a new Google login is an account-takeover primitive: momentary access to a
+  // session would become permanent ownership. Changing the linked account has to
+  // be an explicit unlink-then-link flow, which is out of scope here.
+  //
+  // This code is NOT the same as google_identity_already_linked and the two must
+  // never be collapsed. That one means "this Google account belongs to somebody
+  // else"; this one means "your account is already linked to a different Google
+  // account". The remedies are opposite, so the client has to tell them apart.
+  const currentForUser = await deps.prisma.googleIdentity.findUnique({ where: { userId } });
+  if (currentForUser && currentForUser.googleSub !== verified.googleSub) {
+    throw new ApiError(409, "user_already_linked", "This account is already linked to a different Google account");
+  }
+
   const identity = existing
     ? await deps.prisma.googleIdentity.update({
         where: { googleSub: verified.googleSub },
