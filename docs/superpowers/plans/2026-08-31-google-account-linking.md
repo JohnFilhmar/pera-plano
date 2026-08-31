@@ -2736,6 +2736,13 @@ git commit -m "feat(mobile): capture install evidence once, on first launch"
   - `computeRequestHash(idToken: string, claim: InstallClaim): Promise<string>`
   - `signInWithGoogle(deps: GoogleLinkDeps): Promise<{ accessToken: string; refreshToken: string; user: { id: string; destination: string } }>`
 
+> **Validate the stored evidence before using it (carried from Task 7's review).** Task 7's
+> `getStoredInstallEvidence` casts the parsed JSON with `as InstallEvidence`. AsyncStorage is a trust
+> boundary and this repo's house style puts Zod at every boundary, so a corrupt or older-shape value
+> currently returns a malformed object rather than `null`, and `buildInstallClaim` feeds it straight
+> into a request. Parse it here, and treat a parse failure as "no evidence", which the claim shape
+> already handles with nulls.
+
 **The request hash must byte-match the server.** Task 3 pins the canonical form: a JSON object with exactly `appVersionAtInstall`, `claimSource`, `firstInstallAt`, `installBeginAt`, `packageName`, in that order, no whitespace, then `sha256(idToken + "." + canonical)` encoded base64url. The test below asserts a fixed vector so a change on either side fails loudly instead of silently rejecting every user.
 
 - [ ] **Step 1: Write the failing test**
@@ -3121,6 +3128,22 @@ git commit -m "feat(api): add the pregrant cli for pre-play testers"
 ```
 
 ---
+
+## The mobile suite is red independently of this work
+
+Recorded 2026-08-31, verified by running the named suites in isolation and by confirming this
+branch's entire mobile footprint is five files that none of them touch.
+
+`npx jest --ci` from `mobile/` fails on master: three suites with genuine failures
+(`home_screen` cannot find `projection-sparkline`, `bills_screen` totals ₱5,600 where ₱3,250 is
+expected, `review_queue` empty-state copy), plus a further group that passes in isolation and fails
+only under full-run parallel load, a flake class `test_support/jest_setup_after_env.ts` already
+documents by name.
+
+This matters for the tasks below: **the mobile suite cannot gate anything in its current state.** A
+mobile task here should run its own file plus `lib/__tests__/bootstrap.test.ts`, and compare any
+full-run result against a baseline taken immediately before its change rather than against green.
+Fixing those three is its own task and is not part of account linking.
 
 ## Open questions this plan cannot close
 
