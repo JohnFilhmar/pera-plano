@@ -43,6 +43,13 @@ export type CandidateLimit = {
   filtered: boolean;
   /** "Food & Dining", for the caption that names the filter. Null when unfiltered. */
   filterLabel: string | null;
+  /**
+   * The limit's category filter, ALREADY EXPANDED to include descendants —
+   * the same set `limit_service.ts` hands `sumSpend`, so the money this limit
+   * counts and the commitments deducted from it are decided by one list.
+   * `null` means no category filter: the limit measures all spending.
+   */
+  categoryIds: string[] | null;
 };
 
 export type UpcomingBill = {
@@ -51,6 +58,11 @@ export type UpcomingBill = {
   /** The fixed amount, or the current estimate for an estimated bill (rule 5). */
   amount: Centavos;
   dueDate: IsoDate;
+  /**
+   * The category the payment will be recorded under (`Bill.categoryId`) — what
+   * decides whether this bill can consume a given limit's headroom.
+   */
+  categoryId: string;
 };
 
 export type PlannedContribution = {
@@ -137,16 +149,42 @@ function evaluate(limit: CandidateLimit, input: SafeToSpendInput): Evaluated {
   // overdue ones, which are the bills the user most needs counted. Anything
   // already past is by definition also `<= end`, so the upper bound alone
   // expresses both halves.
+  // SCOPED TO WHAT THIS LIMIT MEASURES (rule 5a). A commitment is deducted
+  // only if paying it would actually consume this limit's headroom. A ₱3,400
+  // electricity bill cannot eat a Food & Dining cap, so subtracting it there
+  // compares two different pots and drives a number the user cannot act on —
+  // the owner's 2026-09-01 report, where every limit sat at 0% consumed and
+  // Safe-to-Spend still read ₱0.00.
+  //
+  // An unfiltered limit measures all spending, so every bill can consume it
+  // and the set is unchanged — which is what keeps the spec's canonical
+  // worked example at ₱190.05.
   const billsTerm = input.unpaidBills
     .filter((bill) => bill.dueDate <= end)
+    .filter((bill) => limit.categoryIds === null || limit.categoryIds.includes(bill.categoryId))
     .reduce((sum, bill) => sum + bill.amount, 0);
 
   // Rule 6: scheduled contributions whose date falls in the period, "counted
   // from the START of the period" — a payday allocation on the 15th is still
   // committed money on the 20th, so it is not dropped once its date passes.
-  const contributionsTerm = input.plannedContributions
-    .filter((contribution) => contribution.date >= start && contribution.date <= end)
-    .reduce((sum, contribution) => sum + contribution.amount, 0);
+  //
+  // NEVER AGAINST A FILTERED LIMIT (rule 6a). A goal contribution is committed
+  // as two legs joined by `linkTransfer` (lib/goals/goals_service.ts), and
+  // invariant I2 keeps transfer legs out of every limit's spend. It therefore
+  // carries no category and can never consume a category slice's headroom —
+  // so reserving it there is money charged against a budget it will never
+  // touch. On the reporting device that was ₱2,500 taken out of a ₱1,965.38
+  // weekly category cap, which zeroed a number that had nothing wrong with it.
+  //
+  // An unfiltered limit keeps reserving it: that limit is the closest thing to
+  // "your whole budget", which is the reading the canonical formula is written
+  // against, and dropping it there would silently stop protecting savings for
+  // every user who has one.
+  const contributionsTerm = limit.filtered
+    ? 0
+    : input.plannedContributions
+        .filter((contribution) => contribution.date >= start && contribution.date <= end)
+        .reduce((sum, contribution) => sum + contribution.amount, 0);
 
   const numerator = headroom - billsTerm - contributionsTerm;
 

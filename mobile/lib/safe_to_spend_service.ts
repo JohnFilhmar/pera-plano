@@ -11,12 +11,13 @@
 // `bill_reminders`, so nothing here reaches expo-notifications and this file
 // mocks nothing in its tests.
 import { listBillStatuses } from "@/lib/bills/bills_service";
-import { listCategories } from "@/lib/db/repos/categories_repo";
+import { listCategories, listCategoryRefs } from "@/lib/db/repos/categories_repo";
 import { listGoals } from "@/lib/db/repos/goals_repo";
 import { countOpen } from "@/lib/db/repos/review_queue_repo";
 import { addDaysIso, toDateIso } from "@/lib/dates";
 import { getIncomeSummary, type IncomeSummary } from "@/lib/income/income_service";
 import { kinsenasAnchorsBetween } from "@/lib/income/cadence_detector";
+import { expandCategoryIds } from "@/lib/limits/limit_engine";
 import { getLimitStatuses } from "@/lib/limits/limit_service";
 import { limitFilterLabel } from "@/lib/limits/limit_label";
 import { daysBetweenInclusive, periodForScope } from "@/lib/period";
@@ -96,6 +97,9 @@ async function candidateLimits(
   const categoryNames = new Map(
     (await listCategories({ includeHidden: true })).map((category) => [category.id, category.name]),
   );
+  // The parent/child pairs `expandCategoryIds` walks. Read once here rather
+  // than per limit — `candidateLimits` runs on every ledger commit.
+  const categoryRefs = await listCategoryRefs();
 
   return statuses
     .filter((status) => {
@@ -123,6 +127,15 @@ async function candidateLimits(
         (status.limit.categoryFilter?.length ?? 0) > 0 ||
         (status.limit.walletFilter?.length ?? 0) > 0,
       filterLabel: limitFilterLabel(status.limit, categoryNames),
+      // EXPANDED with `expandCategoryIds`, the same call `limit_service.ts`
+      // makes before handing the set to `sumSpend` (limits rule 4: picking a
+      // parent includes its children). Passing the raw filter would let a bill
+      // filed under a CHILD category slip past a limit that counts it, so the
+      // engine would stop deducting a bill the limit will really pay.
+      categoryIds:
+        (status.limit.categoryFilter?.length ?? 0) > 0
+          ? expandCategoryIds(status.limit.categoryFilter as string[], categoryRefs)
+          : null,
     }));
 }
 
@@ -144,6 +157,9 @@ async function unresolvedBills(now: number, horizonDays: number): Promise<Upcomi
       // (rule 5). `listBillStatuses` has already resolved which.
       amount: status.estimate.amount,
       dueDate: status.dueDate,
+      // What the payment will be filed under, so the engine can tell whether
+      // this bill could consume a given limit's headroom (rule 5a).
+      categoryId: status.bill.categoryId,
     }));
 }
 
