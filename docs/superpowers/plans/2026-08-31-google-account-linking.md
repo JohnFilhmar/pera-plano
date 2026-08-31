@@ -21,6 +21,18 @@ Every task's requirements implicitly include this section.
 - **IDs:** UUIDv4 from `crypto.randomUUID()`, generated server-side.
 - **Clocks are injected.** Every function that needs the current time takes `nowMs: number`. No production code calls `Date.now()` inside a verifiable branch, because a test that cannot pin the clock cannot test a time window.
 - **Error envelope:** `{ error: { code: string, message: string } }` for every non-2xx, thrown as `ApiError` from `src/lib/errors.ts` (core Task 3).
+- **Asserting errors.** `ApiError.message` is the human-facing sentence; the machine-readable value
+  is `.code`. `expect(fn).toThrow("some_code")` matches the MESSAGE, so it fails against a code.
+  Sync assertions go through the `codeOf` helper defined in Tasks 2 and 3; async ones use
+  `await expect(promise).rejects.toMatchObject({ code: "some_code" })`. Plain `Error` throws from
+  `loadConfig` and the CLI are message matches and correctly keep `.toThrow("...")`.
+- **`async` without `await` is a lint error.** The repo runs
+  `@typescript-eslint/recommendedTypeChecked`, which sets `require-await` to error. Mark a route
+  handler, plugin, or test callback `async` only when its body actually awaits. A Fastify handler
+  that just returns a value can be synchronous, and a plugin function that needs the
+  `Promise<void>` shape without awaiting can `return Promise.resolve()`. Most handlers in this plan
+  do await Prisma and are correctly `async`; the exceptions are the ones that only validate and
+  return.
 - **Commits:** Conventional Commits. No AI-attribution trailers or footers of any kind.
 - **TDD:** every behavior lands test-first, red then green then commit.
 - **Secrets:** never commit a real `.env`, only `.env.example`. Never delete or overwrite an existing `.env`.
@@ -275,6 +287,7 @@ Verification is a pure synchronous function that takes the key set as an argumen
 ```ts
 import { describe, it, expect, beforeAll } from "vitest";
 import { createPrivateKey, createPublicKey, createSign, generateKeyPairSync } from "node:crypto";
+import { ApiError } from "../../src/lib/errors.js";
 import { verifyGoogleIdToken, type GoogleJwks } from "../../src/lib/google_id_token.js";
 
 const AUDIENCE = "123.apps.googleusercontent.com";
@@ -318,6 +331,21 @@ function verify(token: string) {
   return verifyGoogleIdToken({ idToken: token, jwks, expectedAudience: AUDIENCE, nowMs: NOW });
 }
 
+/**
+ * ApiError.message is the human-facing sentence; the machine-readable value is
+ * .code. `expect(fn).toThrow("invalid_google_token")` matches the MESSAGE and
+ * would pass only by accident, so assertions go through here instead.
+ */
+function codeOf(fn: () => unknown): string {
+  try {
+    fn();
+  } catch (error) {
+    expect(error).toBeInstanceOf(ApiError);
+    return (error as ApiError).code;
+  }
+  expect.fail("expected the call to throw an ApiError, but it returned");
+}
+
 describe("verifyGoogleIdToken", () => {
   it("returns the subject and a lowercased email for a valid token", () => {
     expect(verify(makeToken())).toEqual({ googleSub: "1234567890", email: "tester@example.com" });
@@ -328,45 +356,45 @@ describe("verifyGoogleIdToken", () => {
   });
 
   it("rejects a malformed token", () => {
-    expect(() => verify("not.a.jwt")).toThrow("invalid_google_token");
+    expect(codeOf(() => verify("not.a.jwt"))).toBe("invalid_google_token");
   });
 
   it("rejects an unknown kid", () => {
-    expect(() => verify(makeToken({}, { kid: "other" }))).toThrow("invalid_google_token");
+    expect(codeOf(() => verify(makeToken({}, { kid: "other" })))).toBe("invalid_google_token");
   });
 
   it("rejects a non-RS256 algorithm", () => {
-    expect(() => verify(makeToken({}, { alg: "none" }))).toThrow("invalid_google_token");
+    expect(codeOf(() => verify(makeToken({}, { alg: "none" })))).toBe("invalid_google_token");
   });
 
   it("rejects a tampered payload", () => {
     const [header, , signature] = makeToken().split(".");
     const forged = b64url({ iss: "https://accounts.google.com", aud: AUDIENCE, sub: "evil" });
-    expect(() => verify(`${header}.${forged}.${signature}`)).toThrow("invalid_google_token");
+    expect(codeOf(() => verify(`${header}.${forged}.${signature}`))).toBe("invalid_google_token");
   });
 
   it("rejects a foreign issuer", () => {
-    expect(() => verify(makeToken({ iss: "https://evil.example" }))).toThrow("invalid_google_token");
+    expect(codeOf(() => verify(makeToken({ iss: "https://evil.example" })))).toBe("invalid_google_token");
   });
 
   it("rejects a foreign audience", () => {
-    expect(() => verify(makeToken({ aud: "999.apps.googleusercontent.com" }))).toThrow("invalid_google_token");
+    expect(codeOf(() => verify(makeToken({ aud: "999.apps.googleusercontent.com" })))).toBe("invalid_google_token");
   });
 
   it("rejects an expired token", () => {
-    expect(() => verify(makeToken({ exp: Math.floor(NOW / 1000) - 1 }))).toThrow("invalid_google_token");
+    expect(codeOf(() => verify(makeToken({ exp: Math.floor(NOW / 1000) - 1 })))).toBe("invalid_google_token");
   });
 
   it("rejects a token issued beyond the skew window", () => {
-    expect(() => verify(makeToken({ iat: Math.floor(NOW / 1000) + 3600 }))).toThrow("invalid_google_token");
+    expect(codeOf(() => verify(makeToken({ iat: Math.floor(NOW / 1000) + 3600 })))).toBe("invalid_google_token");
   });
 
   it("rejects an unverified email with its own code", () => {
-    expect(() => verify(makeToken({ email_verified: false }))).toThrow("google_email_unverified");
+    expect(codeOf(() => verify(makeToken({ email_verified: false })))).toBe("google_email_unverified");
   });
 
   it("rejects a token with no email", () => {
-    expect(() => verify(makeToken({ email: undefined }))).toThrow("invalid_google_token");
+    expect(codeOf(() => verify(makeToken({ email: undefined })))).toBe("invalid_google_token");
   });
 });
 ```
@@ -493,7 +521,7 @@ describe("createGoogleJwksFetcher", () => {
   it("raises google_upstream_unavailable on a non-200", async () => {
     const fetchImpl = (async () => new Response("nope", { status: 500 })) as unknown as typeof fetch;
     const fetcher = createGoogleJwksFetcher({ url: "https://example.test/certs", fetchImpl });
-    await expect(fetcher()).rejects.toThrow("google_upstream_unavailable");
+    await expect(fetcher()).rejects.toMatchObject({ code: "google_upstream_unavailable" });
   });
 });
 ```
@@ -582,6 +610,7 @@ Never rely on object insertion order to produce it. The implementation below bui
 ```ts
 import { describe, it, expect } from "vitest";
 import { createHash } from "node:crypto";
+import { ApiError } from "../../src/lib/errors.js";
 import {
   assertPlayLicensed,
   assertRequestBinding,
@@ -613,6 +642,17 @@ function payload(overrides: Partial<IntegrityPayload> = {}): IntegrityPayload {
     accountDetails: { appLicensingVerdict: "LICENSED" },
     ...overrides,
   };
+}
+
+/** Same rationale as Task 2's copy: assert the ApiError code, never its message. */
+function codeOf(fn: () => unknown): string {
+  try {
+    fn();
+  } catch (error) {
+    expect(error).toBeInstanceOf(ApiError);
+    return (error as ApiError).code;
+  }
+  expect.fail("expected the call to throw an ApiError, but it returned");
 }
 
 function check(p: IntegrityPayload) {
@@ -659,37 +699,37 @@ describe("assertRequestBinding and assertPlayLicensed", () => {
         maxSkewMs: 300_000,
       }),
     ).not.toThrow();
-    expect(() => assertPlayLicensed(p)).toThrow("app_not_play_licensed");
+    expect(codeOf(() => assertPlayLicensed(p))).toBe("app_not_play_licensed");
   });
 
   it("rejects a foreign package name", () => {
     const p = payload();
     p.requestDetails.requestPackageName = "com.evil.app";
-    expect(() => check(p)).toThrow("integrity_token_invalid");
+    expect(codeOf(() => check(p))).toBe("integrity_token_invalid");
   });
 
   it("rejects a request hash bound to a different claim", () => {
     const p = payload();
     p.requestDetails.requestHash = computeRequestHash(ID_TOKEN, { ...CLAIM, firstInstallAt: 1 });
-    expect(() => check(p)).toThrow("integrity_request_mismatch");
+    expect(codeOf(() => check(p))).toBe("integrity_request_mismatch");
   });
 
   it("rejects a missing request hash", () => {
     const p = payload();
     delete p.requestDetails.requestHash;
-    expect(() => check(p)).toThrow("integrity_request_mismatch");
+    expect(codeOf(() => check(p))).toBe("integrity_request_mismatch");
   });
 
   it("rejects a stale timestamp", () => {
     const p = payload();
     p.requestDetails.timestampMillis = String(NOW - 300_001);
-    expect(() => check(p)).toThrow("integrity_stale");
+    expect(codeOf(() => check(p))).toBe("integrity_stale");
   });
 
   it("rejects a timestamp from the future", () => {
     const p = payload();
     p.requestDetails.timestampMillis = String(NOW + 300_001);
-    expect(() => check(p)).toThrow("integrity_stale");
+    expect(codeOf(() => check(p))).toBe("integrity_stale");
   });
 
   it.each(["UNLICENSED", "UNEVALUATED", "UNKNOWN"])(
@@ -697,14 +737,14 @@ describe("assertRequestBinding and assertPlayLicensed", () => {
     (verdict) => {
       const p = payload();
       p.accountDetails.appLicensingVerdict = verdict;
-      expect(() => check(p)).toThrow("app_not_play_licensed");
+      expect(codeOf(() => check(p))).toBe("app_not_play_licensed");
     },
   );
 
   it("rejects an unrecognized app version", () => {
     const p = payload();
     p.appIntegrity.appRecognitionVerdict = "UNRECOGNIZED_VERSION";
-    expect(() => check(p)).toThrow("app_not_play_licensed");
+    expect(codeOf(() => check(p))).toBe("app_not_play_licensed");
   });
 });
 ```
@@ -875,7 +915,7 @@ describe("createPlayIntegrityDecoder", () => {
       serviceAccountJson: fakeServiceAccount(),
       fetchImpl,
     });
-    await expect(decode("t")).rejects.toThrow("google_upstream_unavailable");
+    await expect(decode("t")).rejects.toMatchObject({ code: "google_upstream_unavailable" });
   });
 });
 ```
@@ -1608,7 +1648,7 @@ describe("verifyWithGoogle", () => {
         claim: IN_WINDOW,
         nowMs: NOW,
       }),
-    ).rejects.toThrow("app_not_play_licensed");
+    ).rejects.toMatchObject({ code: "app_not_play_licensed" });
     expect(await prisma.user.count()).toBe(0);
   });
 
@@ -1654,7 +1694,7 @@ describe("verifyWithGoogle", () => {
         claim: IN_WINDOW,
         nowMs: NOW,
       }),
-    ).rejects.toThrow("app_not_play_licensed");
+    ).rejects.toMatchObject({ code: "app_not_play_licensed" });
   });
 
   it("still enforces request binding for a pregranted email", async () => {
@@ -1680,7 +1720,7 @@ describe("verifyWithGoogle", () => {
     });
     await expect(
       verifyWithGoogle(deps, { idToken, integrityToken: "it", claim: IN_WINDOW, nowMs: NOW }),
-    ).rejects.toThrow("integrity_request_mismatch");
+    ).rejects.toMatchObject({ code: "integrity_request_mismatch" });
   });
 });
 
@@ -1725,7 +1765,7 @@ describe("linkGoogleToUser", () => {
         claim: IN_WINDOW,
         nowMs: NOW,
       }),
-    ).rejects.toThrow("google_identity_already_linked");
+    ).rejects.toMatchObject({ code: "google_identity_already_linked" });
   });
 });
 ```

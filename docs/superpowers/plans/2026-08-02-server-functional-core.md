@@ -427,6 +427,17 @@ This applies to `generate` too, which reads the datasource even though it touche
 with only an underscore-prefix escape, so copying an import line that names a hook the test does not
 call turns `npm run lint` red. Import only the hooks the file actually uses.
 
+**`async` without `await` is a lint error too.** The config runs
+`@typescript-eslint/recommendedTypeChecked`, which sets `require-await` to error. Several code blocks
+below mark a route handler or plugin `async` when its body never awaits. Drop the `async` as you
+copy: a Fastify handler that just returns a value can be synchronous, and a plugin needing the
+`Promise<void>` shape can `return Promise.resolve()`. Handlers that genuinely await Prisma stay
+`async` and are fine.
+
+**Asserting errors:** `ApiError.message` is the human sentence and `.code` is the machine value, so
+`expect(fn).toThrow("some_code")` matches the wrong field. Assert `.code` explicitly, or use
+`rejects.toMatchObject({ code })` for async.
+
 - [ ] **Step 2: Create a models-free schema and generate the client**
 
 `server/apps/api/prisma/schema.prisma`:
