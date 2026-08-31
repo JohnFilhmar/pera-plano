@@ -1990,7 +1990,7 @@ export async function linkGoogleToUser(
 }
 ```
 
-If `signAccessToken`'s parameter order from core Task 6 differs from `(userId, secret, nowMs)`, use the core plan's order and adjust the call. Do not change `jwt.ts`.
+`signAccessToken(userId, secret, nowMs?)` is confirmed as built (core Task 6, commit `048942b`): the secret is the second parameter, `nowMs` an optional third. Pass `nowMs` explicitly rather than letting it default to `Date.now()`, so the service stays clock-injectable. Do not change `jwt.ts`.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 

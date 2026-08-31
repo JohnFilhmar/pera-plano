@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { createHmac } from "node:crypto";
 import {
   ACCESS_TOKEN_TTL_MS,
   REFRESH_TOKEN_TTL_MS,
@@ -51,6 +52,28 @@ describe("signAccessToken / verifyAccessToken", () => {
     expect(verifyAccessToken("not.a.jwt", SECRET, NOW)).toBeNull();
     expect(verifyAccessToken("nope", SECRET, NOW)).toBeNull();
     expect(verifyAccessToken("", SECRET, NOW)).toBeNull();
+  });
+
+  // A correctly HMAC-signed token that claims a different algorithm. The
+  // signature alone cannot catch this, because the header is part of the signed
+  // input and we signed it ourselves. Only an explicit alg check rejects it.
+  // Today nothing else would accept such a token; the guard exists so that the
+  // day a second algorithm is supported, this file is not the hole.
+  it("rejects a validly signed token whose header lies about the algorithm", () => {
+    const header = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" }))
+      .toString("base64url");
+    const payload = Buffer.from(
+      JSON.stringify({
+        sub: "user-1",
+        iat: Math.floor(NOW / 1000),
+        exp: Math.floor(NOW / 1000) + 900,
+      }),
+    ).toString("base64url");
+    const signature = createHmac("sha256", SECRET)
+      .update(`${header}.${payload}`)
+      .digest("base64url");
+
+    expect(verifyAccessToken(`${header}.${payload}.${signature}`, SECRET, NOW)).toBeNull();
   });
 });
 

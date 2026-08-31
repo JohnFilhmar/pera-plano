@@ -34,6 +34,27 @@ export function verifyAccessToken(
   const parts = token.split(".");
   if (parts.length !== 3) return null;
   const [header, payload, signature] = parts as [string, string, string];
+
+  // HS256 is the only algorithm this server issues or accepts. The signature
+  // check alone already defeats a forged header, since the header is part of
+  // the signed input, so this guard buys nothing today. It exists so that
+  // adding a second algorithm later cannot silently turn this function into an
+  // algorithm-confusion hole, which is the classic way JWT verifiers fail.
+  try {
+    const decodedHeader: unknown = JSON.parse(
+      Buffer.from(header, "base64url").toString("utf8"),
+    );
+    if (
+      typeof decodedHeader !== "object" ||
+      decodedHeader === null ||
+      (decodedHeader as { alg?: unknown }).alg !== "HS256"
+    ) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+
   const expected = hmacSign(`${header}.${payload}`, secret);
   const signatureBuf = Buffer.from(signature);
   const expectedBuf = Buffer.from(expected);
