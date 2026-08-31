@@ -13,6 +13,10 @@
     "forceConsistentCasingInFileNames": true,
     "sourceMap": true,
     "noEmit": false,
+    // A failed build must leave nothing behind. Without this, tsc emits what it
+    // managed to compile before erroring, which once scattered .js files beside
+    // the .ts sources in prisma/ and then tripped lint on files nobody wrote.
+    "noEmitOnError": true,
     "outDir": "dist",
     "rootDir": "src"
   },

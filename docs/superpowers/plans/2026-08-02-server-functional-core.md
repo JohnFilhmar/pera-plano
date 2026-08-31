@@ -2881,7 +2881,18 @@ export async function parserRulesRoutes(app: FastifyInstance): Promise<void> {
 }
 ```
 
-Note the type-only import from `prisma/seed_data.ts`: `tsc` with `rootDir: "src"` still compiles because type-only imports are erased at build time. Do not import a runtime value from `prisma/` into `src/`.
+> **Corrected 2026-08-31 during implementation: this note was wrong, and the import above does not
+> compile.** Type-only imports are erased at *emit*, but `tsc` still adds the file to the program, so
+> with `rootDir: "src"` it fails with `TS6059: File 'prisma/seed_data.ts' is not under 'rootDir'`.
+>
+> The shipped route declares the wire shape locally instead:
+> `type StoredRuleset = { version: number; providers: unknown[] }`. Relaxing `rootDir` was the
+> alternative and was rejected: it moves emit to `dist/src/server.js` and breaks `npm start`.
+>
+> `prisma/seed_data.ts` still exports `ParserTemplate`, `ProviderRuleset`, `RulesetPayload` and
+> `INITIAL_RULESET` exactly as the Interfaces section says. The test files import it as a runtime
+> value, which is fine: tests are outside the build config. Do not import anything from `prisma/`
+> into `src/`, type or value.
 
 - [ ] **Step 9: Modify `src/app.ts` to register the route**
 

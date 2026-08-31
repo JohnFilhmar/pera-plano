@@ -1,5 +1,10 @@
 node_modules/
 dist/
+# Belt and braces alongside noEmitOnError: prisma/ holds .ts sources that are
+# outside the build's rootDir, so a stray emit lands beside them rather than in
+# dist/ where it would be ignored already.
+prisma/*.js
+prisma/*.js.map
 .env
 .env.*
 !.env.example
