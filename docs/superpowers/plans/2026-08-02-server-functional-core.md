@@ -1934,6 +1934,38 @@ This is not over-engineering and must not be collapsed back into a read plus an 
 
 ### Task 9: Token refresh — rotation, reuse detection, family revocation
 
+> **Amended 2026-08-31, after implementation. Step 7's rotation body below is racy; do not copy it.**
+>
+> It was implemented verbatim first, specifically to measure it, and it failed: two simultaneous
+> rotations of one valid token both returned `kind: "ok"`, both minted a successor, and none
+> triggered reuse detection. All six route tests passed against that version, because none of them
+> was concurrent. Reuse detection that silently fails under parallelism is worse than none, since it
+> reports success while providing nothing.
+>
+> The shipped implementation claims the presented token with one conditional write, the same shape as
+> the Task 8 fix:
+>
+> ```ts
+> const claimed = await prisma.refreshToken.updateMany({
+>   where: { tokenHash, revokedAt: null, expiresAt: { gt: BigInt(nowMs) } },
+>   data: { revokedAt: BigInt(nowMs) },
+> });
+> ```
+>
+> `count === 1` means this caller owns the rotation. `count === 0` means the write was refused, and
+> only then is the row read to tell `invalid` from `reuse_detected`. Exported signatures are
+> unchanged. **Do not collapse this back into a read plus an update.**
+>
+> **Open decision, not a defect: a benign double-refresh logs the user out.** The losing concurrent
+> caller revokes the whole family, and that write can land after the winner has issued its successor,
+> killing a token the client legitimately holds. Any mobile client that fires two refreshes at once,
+> or retries after a lost response, gets logged out. That is the honest cost of strict reuse
+> detection. The usual mitigations are a short grace window in which the immediate predecessor is
+> accepted without revoking, or making rotation idempotent so re-presenting a just-rotated token
+> returns the same successor. Both weaken reuse detection. **Decide before the mobile client wires up
+> refresh**, and pin the post-race revocation state in a test once decided, because nothing asserts
+> it today.
+
 **Files:**
 - Modify: `server/apps/api/src/services/auth_service.ts` (add `classifyRefreshToken`, `rotateRefreshToken`)
 - Modify: `server/apps/api/src/routes/auth_routes.ts` (add `POST /auth/token/refresh`)
