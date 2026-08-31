@@ -276,6 +276,24 @@ before the beta ends, because it is the sole surviving source.
 
 Filed as a new v2 backlog item — see §9.
 
+**Reversed 2026-08-31. Do not read the paragraph above as the standing decision.** Two things
+changed. First, the fact it rests on is wrong: Play Console and the Play Developer API expose **no**
+per-account first-install date, and the Play Integrity payload carries none either, so the "sole
+surviving source" named above does not exist. Verified against Google's documentation in
+[2026-08-31-google-account-linking-design.md](2026-08-31-google-account-linking-design.md) §3.
+Second, that leaves the device as the only source, and it stops being one the moment the app is
+uninstalled, so deferring capture until account linking ships would have destroyed the evidence for
+anyone who uninstalled in between.
+
+`first_install_at` is therefore persisted after all, and it is already implemented:
+`mobile/lib/onboarding/install_evidence.ts` reads the install time, the install referrer string, and
+the app version at bootstrap on every launch, and stores them write-once. It runs at bootstrap
+rather than at sign-in precisely because by the time a user has a reason to link an account the fact
+may already be gone. `build_channel` and a cohort id are still not persisted; the cohort is decided
+server-side from the install claim plus a Play Integrity verdict, so the app does not need to hold
+one. The privacy consequence is written up in
+[../../07-privacy-and-compliance.md](../../07-privacy-and-compliance.md) §1 and §4.
+
 ---
 
 ## 7. Risks, and how each is handled
@@ -379,6 +397,10 @@ contrast figure into a comment again — use `lib/ui/contrast.ts` and let the te
 ### R7 · The beta tag has nothing behind it
 Deferred by decision — see §6.3. Recorded, not solved.
 
+**Updated 2026-08-31.** Half of it is solved. §6.3's deferral was reversed and the install evidence
+is now captured on device, so a cohort can be proven after the fact. The "Beta User" string in §6.2
+is still cosmetic, and the entitlement it implies still needs the server.
+
 ### R8 · Motion on the A54
 The first-auto-capture beat fires off a notification-driven ledger commit, so the JS thread may be
 parsing while it plays.
@@ -435,6 +457,8 @@ pass it requires.
   work: cohort identity, honouring the permanent-Plus promise, and the Play Console reconciliation
   question from §6.3. Prerequisite: the server exists (build order is mobile → server → web). Not
   blocked by §4's standing non-goals — account linking is not among them.
+  **Done, and amended 2026-08-31:** the item is `docs/09-v2-backlog.md` §2.12, and its Play Console
+  reconciliation question was struck there as unanswerable. See §6.3's reversal note.
 
 ---
 

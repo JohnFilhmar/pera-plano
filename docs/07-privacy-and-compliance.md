@@ -2,13 +2,15 @@
 
 This document defines PeraPlano's privacy posture and regulatory compliance plan: obligations under the Philippine Data Privacy Act of 2012 (RA 10173) and the National Privacy Commission (NPC), the Google Play policy obligations attached to notification access and finance-adjacent apps, the full data lifecycle (what data exists, where it lives, how long it is kept, and whether it ever leaves the device), the data-minimization stance, the treatment of third-party personal data that appears inside notifications, and the complete list of user-facing privacy controls. It expands §10 of the master planning context and is the source of truth for the privacy notice, the Play Data safety form, and store-review submissions. Genuinely undecided items are tracked in [08-risks-and-open-questions.md](08-risks-and-open-questions.md).
 
-**Status:** Draft v1 · 2026-08-02
+**Status:** Draft v1 · 2026-08-02 · amended 2026-08-31 for Google account linking (§1, §2.3, §3.3, §3.7, §4)
 
 ---
 
 ## 1. Privacy posture in one paragraph
 
 PeraPlano is local-first by architecture, not by policy promise. Raw notification text is parsed on-device, stored encrypted on-device with a 30-day time-to-live, and never leaves the phone under any configuration. Only committed Transaction records — structured fields, never raw text — sync off-device, and only if the user explicitly enables cloud backup, which is a Plus feature. A Free-tier user's financial data therefore never touches a server at all. There are no ads, no data selling, and no third-party analytics that receive notification content. This is the strongest honest position a notification-reading finance app can take, and every compliance argument below builds on it.
+
+**Identity carve-out, added 2026-08-31.** The sentence above is about *financial* data and it stays true, but it is no longer the whole picture. If a user chooses to link a Google account, the app sends three things to the server: a verified Google email address, the Google subject id, and a device-attested install claim (the device's first-install timestamp, its source, and the app version at install). That happens even for a Free-tier user who never enables cloud backup, because the identity is what carries the permanent-Plus promise made to beta installers. No ledger data travels with it: no transaction, no amount, no merchant, no counterparty, no notification text. Linking is optional, it is never a condition of using the app, and the app is fully functional without it. §2.3, §3.3 and §4 carry the detail.
 
 ---
 
@@ -32,6 +34,7 @@ PeraPlano is local-first by architecture, not by policy promise. Raw notificatio
 |---|---|---|
 | Notification ingest and on-device ledger | Consent, evidenced in-app before the Notification Access grant | Consent is specific to the purpose ("automatically record money movements from your notifications"), freely given (every permission is skippable; the app degrades to manual mode), and withdrawable (pause listening, revoke access, wipe). |
 | Cloud backup / multi-device sync (Plus) | Consent plus necessity for a service the user requested | Strictly opt-in; disabled by default; disabling it deletes server-side copies (§4). |
+| Google account linking, for identity and entitlement (added 2026-08-31) | Consent | Linked only on an explicit user action, never at install, never as a condition of use, and independent of cloud backup. The data is a verified Google email address, the Google subject id, and a device-attested install claim (first-install timestamp, its source, app version at install) used to decide the permanent beta-cohort entitlement. No ledger data accompanies it. Consent is withdrawable by unlinking, which deletes the identity and its attestations; that control is specified in §3.7 and is **not built yet**, and it has to ship in the same release as linking. |
 | Aggregate telemetry (parse success/failure counts, crash rates, listener uptime) | Legitimate interest | Content-free counters only: no notification text, no amounts, no merchants, no counterparties. User can opt out in settings without losing any feature. |
 | Support correspondence | Consent / contract necessity | Only what the user sends us; users are warned not to paste raw notification text into support messages. |
 | App's own alerts (limit thresholds, bill reminders, loan reminders, goal updates, the daily Review Queue digest, listener health, payday summary) | Necessity for the service the user configured | Delivered on-device; requires the POST_NOTIFICATIONS runtime permission on Android 13+ (§3.5). |
@@ -41,7 +44,7 @@ PeraPlano is local-first by architecture, not by policy promise. Raw notificatio
 One canonical privacy notice, layered:
 
 1. **Layer 1 — in-flow explainers.** Short, plain-language screens shown at the exact moment of each permission ask during onboarding (see [04-features/01-onboarding.md](04-features/01-onboarding.md)): what will be read, what is extracted, what is discarded, what never leaves the phone. Available in English; Filipino-language version is a fast-follow.
-2. **Layer 2 — full notice.** Accessible from onboarding and from More → Settings → Privacy at all times, containing everything RA 10173 and its IRR require: identity and contact details of the PIC, Data Protection Officer contact, description of data processed, purposes, lawful basis, scope and method of processing, retention periods (matching the lifecycle table in §4 exactly), recipients (none, except the backup infrastructure PIP for Plus users who opt in), existence of automated processing (parsing, categorization, recurring detection — with the note that every automated decision is user-correctable via the Review Queue), data subject rights and how to exercise them, and complaint route to the NPC.
+2. **Layer 2 — full notice.** Accessible from onboarding and from More → Settings → Privacy at all times, containing everything RA 10173 and its IRR require: identity and contact details of the PIC, Data Protection Officer contact, description of data processed, purposes, lawful basis, scope and method of processing, retention periods (matching the lifecycle table in §4 exactly), recipients (none, except the infrastructure PIP that hosts backups for Plus users who opt in and, from 2026-08-31, the linked identity and its install attestations for any user who links a Google account), existence of automated processing (parsing, categorization, recurring detection — with the note that every automated decision is user-correctable via the Review Queue), data subject rights and how to exercise them, and complaint route to the NPC.
 3. The in-app transparency screens (§7) are the notice made operational: the user can always see exactly what was captured and why.
 
 Rule: the notice must never claim more than the architecture delivers, and the architecture must never do more than the notice says. Any change to the lifecycle table (§4) requires a notice revision in the same release.
@@ -50,7 +53,7 @@ Rule: the notice must never claim more than the architecture delivers, and the a
 
 - A **Data Protection Officer is appointed before public launch** regardless of registration thresholds; the DPO's contact appears in the privacy notice and in Play listing support details.
 - NPC registration rules (per the NPC's registration circular in force) require registration when processing sensitive personal information of a large number of individuals, when headcount thresholds are met, or when processing is likely to pose risks to data subjects. Assessment against PeraPlano's actual server-side footprint:
-  - Free tier: no personal data reaches company systems beyond content-free telemetry and any support email the user initiates. Server-side processing is minimal.
+  - Free tier: no personal data reaches company systems beyond content-free telemetry and any support email the user initiates. Server-side processing is minimal. **Amended 2026-08-31:** a Free-tier user who links a Google account also sends an identity (verified email address, Google subject id) and an install attestation, per §1's carve-out. Still no financial data, but "no personal data" is no longer accurate for that user, and whether it moves the registration position below is an open question with counsel.
   - Plus with cloud backup: the company processes financial records (treated at the sensitive bar per §2.2) for what is intended to be well over one thousand users.
 - **Conclusion (planning position): register.** Appoint and register the DPO with the NPC and register the backup data processing system before cloud backup enforcement goes live, and no later than public launch. Final legal confirmation of which registration obligations attach, given the on-device-only Free tier, is with Philippine privacy counsel — tracked as an open question in [08-risks-and-open-questions.md](08-risks-and-open-questions.md).
 
@@ -109,13 +112,16 @@ The Data safety form describes data **collected** (transmitted off-device) and *
 | Form area | Declaration |
 |---|---|
 | Financial info → purchase history / other financial info | Collected **only when the user enables cloud backup (Plus)**: structured Transaction records and the user's configuration entities (Wallets, Limits, Goals, Loans, Bills, IncomeProfile, UserRules, RecurringPatterns). Optional (off by default). Purpose: app functionality (backup/sync). Encrypted in transit. User can request deletion (in-app wipe and backup disable). **Not shared** with third parties. |
-| Personal info → user IDs | The backup sign-in identity, only if backup is enabled. Optional. Purpose: app functionality. Deletable in-app and via web (§3.7). |
+| Personal info → user IDs | The sign-in identity: the Google subject id, plus the device-attested install claim recorded against it. **Amended 2026-08-31:** this used to read "only if backup is enabled," which stopped being true when Google account linking arrived. The identity is collected whenever the user links a Google account, which is optional and independent of backup. Purpose: account management and app functionality. **Not shared.** Deletable in-app and via web (§3.7). |
+| Personal info → email address (added 2026-08-31) | The verified Google email address returned by sign-in, collected only when the user links a Google account. Optional. Purpose: account management. **Not shared**, not used for marketing, no ads. Deleted with the identity (§3.7). |
 | Messages → other in-app messages / notifications | Raw notification content is processed **on-device only** and never transmitted; therefore not declared as collected. The prominent-disclosure and declaration flow (§3.1) — not the Data safety form — is where notification access is justified. |
 | App activity / App info and performance | Content-free diagnostics: crash data, parse success/failure counts, listener uptime. Purpose: analytics/app functionality. No content, amounts, merchants, or counterparties. Opt-out available. |
 | Data deletion | In-app: wipe everything; disable backup (deletes server copies); web deletion path for the sign-in identity. |
 | Sharing / selling | None. No ads. No data sold. No third-party advertising or marketing data recipients of any kind. |
 
 The form is regenerated from the lifecycle table (§4) at every release; a mismatch between the two is treated as a release blocker.
+
+**Pending declaration change, 2026-08-31.** The live Data safety form does not yet carry the two personal-info entries above. Google account linking adds **personal identifiers and an email address, collected for account management, optional, and not shared**. Updating the declaration in the Play Console is a gate on the release that ships linking, not a follow-up: shipping the feature against the current form is exactly the mismatch the rule above calls a blocker.
 
 ### 3.4 Play financial-app declarations
 
@@ -142,6 +148,8 @@ The app's *own* alerts — the canonical channel list in [06-information-archite
 
 If cloud backup ships with a sign-in identity, Play's account-deletion policy applies: the app must offer identity deletion **in-app and via a web link** shown in the store listing. Deletion removes the sign-in identity and all server-side backup data within 30 days; the on-device ledger survives unless the user also wipes it (their choice, stated clearly at deletion time).
 
+**Amended 2026-08-31.** The condition above has been overtaken: the sign-in identity now arrives with Google account linking, ahead of cloud backup and independent of it, so the obligation attaches to linking rather than to backup. Deletion must remove the `google_identities` row, its `install_attestations` rows, and any server-side backup data. Unlink and identity deletion are **not built yet** and are the immediate next piece of work; linking must not reach a public track without them.
+
 ---
 
 ## 4. Data lifecycle
@@ -156,12 +164,18 @@ If cloud backup ships with a sign-in identity, Play's account-deletion policy ap
 | 6 | Cloud backup snapshots (Plus, opt-in) | Encrypted sync of rows 2–3 | Company backup infrastructure (via PIP under contract) | Until the user disables backup, wipes, or deletes the sign-in identity; server copies removed within 30 days of any of those | Yes — this is the only path user financial data ever takes off the device, and it is opt-in. |
 | 7 | Export files (CSV) | Generated on demand by the user | Wherever the user saves or shares them | User-controlled | Only by the user's own action; the app warns that exports are unencrypted and outside its protection. |
 | 8 | Support correspondence | User-initiated | Company support mailbox | ≤ 24 months after case closure | Yes, by the user's own action; users are advised not to paste raw notification text. |
+| 9 | Google identity (`google_identities`): user id, Google subject id, verified email address, verified flag, linked-at and last-verified-at timestamps | Written when the user links a Google account (§2.3) | Company server database | While the account stays linked. Removed on unlink or identity deletion, with server copies gone within 30 days (§3.7). That control is not built yet. | Yes. Together with rows 10 and 11 this is the only data a Free-tier user's device ever sends, and only if they link. |
+| 10 | Install attestation (`install_attestations`): user id, Google subject id, package name, claim source, install-begin and first-install timestamps, app version at install, the Play Integrity licensing and recognition verdicts, and whether the beta-cohort grant was made | Install evidence read on-device by `expo-application` plus the Play Integrity verdict, posted on every verify call | Company server database | Kept as long as the entitlement it explains. A permanent Plus grant has to stay explainable years after it was made, so the row survives even when no grant followed. Deleted with the identity (row 9). | Yes. Facts about the install only: no transaction, amount, merchant, or notification text. |
+| 11 | Beta pregrant list (`beta_pregrants`): email address, operator note, created-at, claimed-at, claiming user id | Typed in by the operator before the person has an account. It exists because the automatic cohort rule requires Play Integrity to report `LICENSED`, meaning the account got the app from Google Play, and every tester who installed over `adb` can never satisfy that. | Company server database | Kept while the permanent-Plus promise stands; an unclaimed row can be deleted by the operator at any time. A claimed row is audit evidence for the grant and is kept with it. | Never on a device. The email addresses come from the operator, not from an install. |
 
 Lifecycle invariants (restating the domain invariants that bind this table):
 
 1. Raw notification text never syncs and is purged after 30 days.
 2. Every auto-committed Transaction keeps `rawNotificationRef` while raw text is retained, so the user can always see "why did the app record this?" After the 30-day purge, the structured record remains but the raw text view shows "original notification no longer retained."
 3. Wipe means wipe: on-device stores and, where backup was enabled, server copies.
+4. Rows 9 to 11 exist only for people who chose to link a Google account, and they carry identity and install facts, never ledger data. Linking a Google account does not enable cloud backup and does not upload a single transaction.
+
+**Amendment note, 2026-08-31.** Rows 9 to 11 arrive with Google account linking. §2.4's rule binds here: any change to this table requires a privacy-notice revision in the same release, and §3.3 adds the matching Data safety declaration. The notice, this table, and the Play declaration ship together with linking or linking does not ship. §2.5's NPC registration assessment also needs re-reading now that the Free tier touches a server for identity, which is an open question with privacy counsel.
 
 ---
 

@@ -2,7 +2,7 @@
 
 This document holds everything deliberately excluded from the MVP: for each item, what it is, why it was deferred, what must be true before it can be built, and where it will sit in the Free/Plus tier structure when it ships. The MVP scope is locked; nothing here re-enters scope without an explicit revision of the MVP scope doc. The backlog exists so that deferrals are decisions with reasons, not forgotten ideas — and so that MVP design choices (local-first, Entitlements flags, parser-as-data) keep the doors below open instead of welding them shut.
 
-**Status:** Draft v1 · 2026-08-02 · §2b build-scope deferrals added 2026-08-30
+**Status:** Draft v1 · 2026-08-02 · §2b build-scope deferrals added 2026-08-30 · §2.12's Play Console premise corrected 2026-08-31
 
 ---
 
@@ -220,23 +220,47 @@ the phone for the first time in the product's history.
 because it needs the server, which is second in the build order (mobile → server → web).
 
 It also has to carry a promise already made: everyone who installs during the testing period
-keeps Plus permanently. Nothing in the app records who those people are — the 2026-08-22 UI
+keeps Plus permanently. Nothing in the app recorded who those people are — the 2026-08-22 UI
 revamp deliberately chose not to persist `first_install_at`, `build_channel`, or a cohort id, and
 ships "Beta User" as a cosmetic label only
-(`docs/superpowers/specs/2026-08-22-mobile-ui-revamp-design.md` §6.2–§6.3). That choice cannot be
-undone after the fact: an install date cannot be reconstructed from the app once this ships. The
-only surviving evidence of who installed during beta will be Google Play Console's install
-records, and **nobody has verified that Play Console exposes per-account first-install dates in
-an exportable form** — there is no second chance to collect this once the beta window closes.
+(`docs/superpowers/specs/2026-08-22-mobile-ui-revamp-design.md` §6.2–§6.3).
+
+**Corrected 2026-08-31: the premise this item was built on was false.** The paragraph above used
+to end by saying that Google Play Console's install records would be the only surviving evidence
+of the beta cohort, and that nobody had checked whether Play Console exported per-account
+first-install dates. Checked now, against Google's own documentation
+([superpowers/specs/2026-08-31-google-account-linking-design.md](superpowers/specs/2026-08-31-google-account-linking-design.md)
+§3): **Play Console and the Play Developer API expose no per-account first-install date at all**,
+and the Play Integrity payload carries no install date either. There is nothing to export. The
+device is the only source, through `expo-application`'s `getInstallationTimeAsync()` (Android's
+`PackageManager.firstInstallTime`), and it is destroyed by an uninstall.
+
+That reverses the urgency rather than removing it. Capture on the device is now the whole
+mechanism, and it is implemented: `mobile/lib/onboarding/install_evidence.ts` reads the install
+facts at bootstrap on every launch and stores them write-once, so the evidence exists before a
+user has any reason to sign in. Whether it ships in time is the only remaining question.
+
+One consequence of the same research is worth recording here, because it decides who the cohort
+can reach automatically. The automatic rule requires Play Integrity to report `LICENSED`, which
+means the Google account acquired the app **from Google Play**. Every tester who installed over
+`adb` will fail it permanently, whatever their install date says, so the design carries an
+operator-seeded pregrant list keyed by email address for exactly those people.
 
 **Prerequisites.**
 1. The server exists.
 2. A decision on what a linked account is allowed to sync, cleared against the privacy bar in
-   [07-privacy-and-compliance.md](07-privacy-and-compliance.md) §1, which already locks a
-   no-account, local-first architecture for the Free tier — account linking is new surface area
-   against that promise, not a change to it.
-3. Verification that Google Play Console exposes exportable per-account first-install dates,
-   completed before the beta ends. It is the sole surviving source once it does.
+   [07-privacy-and-compliance.md](07-privacy-and-compliance.md) §1. Settled and written down on
+   2026-08-31: linking sends a verified email address, a Google subject id, and a device-attested
+   install claim, and no ledger data. §1's identity carve-out, §2.3's lawful-basis row, §3.3's
+   Data safety entries, and §4's lifecycle rows 9 to 11 are the record.
+3. ~~Verification that Google Play Console exposes exportable per-account first-install dates,
+   completed before the beta ends.~~ **Obsolete, 2026-08-31.** There is no such export to verify;
+   see the correction above. It is replaced by: ship the device-side install capture
+   (`mobile/lib/onboarding/install_evidence.ts`) in a mobile release before the beta window
+   closes, ahead of the server, because an uninstall destroys the only copy.
+4. Unlink and identity deletion, per [07-privacy-and-compliance.md](07-privacy-and-compliance.md)
+   §3.7. Not built yet, and Play's account-deletion obligation now attaches to the identity rather
+   than to cloud backup.
 
 **Tier placement when shipped.** Account linking itself is Free. What it unlocks — cloud backup,
 multi-device sync — is already Plus in the locked tier matrix and does not move.
