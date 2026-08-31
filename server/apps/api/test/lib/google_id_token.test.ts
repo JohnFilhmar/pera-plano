@@ -129,11 +129,15 @@ describe("verifyGoogleIdToken", () => {
 });
 
 describe("createGoogleJwksFetcher", () => {
+  function keySetResponse(): Response {
+    return new Response(JSON.stringify(jwks), { status: 200 });
+  }
+
   it("fetches once and serves the cached key set until the ttl expires", async () => {
     let calls = 0;
     const fetchImpl: typeof fetch = () => {
       calls += 1;
-      return Promise.resolve(new Response(JSON.stringify({ keys: [] }), { status: 200 }));
+      return Promise.resolve(keySetResponse());
     };
     const fetcher = createGoogleJwksFetcher({
       url: "https://example.test/certs",
@@ -149,5 +153,52 @@ describe("createGoogleJwksFetcher", () => {
     const fetchImpl: typeof fetch = () => Promise.resolve(new Response("nope", { status: 500 }));
     const fetcher = createGoogleJwksFetcher({ url: "https://example.test/certs", fetchImpl });
     await expect(fetcher()).rejects.toMatchObject({ code: "google_upstream_unavailable" });
+  });
+
+  it("refuses an empty key set instead of caching it for the whole ttl", async () => {
+    let calls = 0;
+    const fetchImpl: typeof fetch = () => {
+      calls += 1;
+      return Promise.resolve(new Response(JSON.stringify({ keys: [] }), { status: 200 }));
+    };
+    const fetcher = createGoogleJwksFetcher({
+      url: "https://example.test/certs",
+      ttlMs: 60_000,
+      fetchImpl,
+    });
+    await expect(fetcher()).rejects.toMatchObject({ code: "google_upstream_unavailable" });
+    await expect(fetcher()).rejects.toMatchObject({ code: "google_upstream_unavailable" });
+    // Nothing was cached, so the next caller still reaches Google and recovers
+    // the moment Google does.
+    expect(calls).toBe(2);
+  });
+
+  it("refuses a body with no keys array", async () => {
+    const fetchImpl: typeof fetch = () =>
+      Promise.resolve(new Response(JSON.stringify({ error: "nope" }), { status: 200 }));
+    const fetcher = createGoogleJwksFetcher({ url: "https://example.test/certs", fetchImpl });
+    await expect(fetcher()).rejects.toMatchObject({ code: "google_upstream_unavailable" });
+  });
+
+  it("refuses a body that is not JSON at all", async () => {
+    const fetchImpl: typeof fetch = () => Promise.resolve(new Response("<html>", { status: 200 }));
+    const fetcher = createGoogleJwksFetcher({ url: "https://example.test/certs", fetchImpl });
+    await expect(fetcher()).rejects.toMatchObject({ code: "google_upstream_unavailable" });
+  });
+
+  it("bypasses the cache when a caller forces a refresh", async () => {
+    let calls = 0;
+    const fetchImpl: typeof fetch = () => {
+      calls += 1;
+      return Promise.resolve(keySetResponse());
+    };
+    const fetcher = createGoogleJwksFetcher({
+      url: "https://example.test/certs",
+      ttlMs: 60_000,
+      fetchImpl,
+    });
+    await fetcher();
+    await fetcher(true);
+    expect(calls).toBe(2);
   });
 });

@@ -2,7 +2,15 @@ import { createPublicKey, createVerify, type JsonWebKey } from "node:crypto";
 import { ApiError } from "./errors.js";
 
 export type GoogleJwks = { keys: JsonWebKey[] };
-export type JwksFetcher = () => Promise<GoogleJwks>;
+
+/**
+ * `forceRefresh` exists so a caller that has just been handed a token signed by
+ * a key the cache has never seen can demand one fresh read. Callers must ask at
+ * most once per verification: the flag reaches Google, and an attacker who can
+ * put an arbitrary `kid` in a token must not be able to turn that into unbounded
+ * outbound traffic.
+ */
+export type JwksFetcher = (forceRefresh?: boolean) => Promise<GoogleJwks>;
 export type GoogleIdentityClaims = { googleSub: string; email: string };
 
 export type VerifyGoogleIdTokenInput = {
@@ -28,6 +36,30 @@ function decodeSegment(segment: string): Record<string, unknown> {
   } catch {
     throw invalid("ID token segment is not valid JSON");
   }
+}
+
+/**
+ * The `kid` a token claims, or null when the token is too malformed to have
+ * one. Nothing here is trusted: it exists so a caller can ask "does the key set
+ * I hold even contain this key" before deciding whether a refetch is worth one
+ * outbound request. `verifyGoogleIdToken` re-parses and re-validates everything.
+ */
+export function readIdTokenKid(idToken: string): string | null {
+  const [encodedHeader] = idToken.split(".");
+  if (encodedHeader === undefined || encodedHeader.length === 0) return null;
+  let header: unknown;
+  try {
+    header = JSON.parse(Buffer.from(encodedHeader, "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+  if (typeof header !== "object" || header === null) return null;
+  const kid = (header as Record<string, unknown>).kid;
+  return typeof kid === "string" ? kid : null;
+}
+
+export function jwksHasKid(jwks: GoogleJwks, kid: string): boolean {
+  return jwks.keys.some((key) => key.kid === kid);
 }
 
 export function verifyGoogleIdToken({
@@ -95,9 +127,9 @@ export function createGoogleJwksFetcher(options: {
   const doFetch = options.fetchImpl ?? fetch;
   let cached: { jwks: GoogleJwks; fetchedAtMs: number } | null = null;
 
-  return async () => {
+  return async (forceRefresh = false) => {
     const nowMs = Date.now();
-    if (cached && nowMs - cached.fetchedAtMs < ttlMs) return cached.jwks;
+    if (!forceRefresh && cached && nowMs - cached.fetchedAtMs < ttlMs) return cached.jwks;
     let response: Response;
     try {
       response = await doFetch(options.url);
@@ -111,7 +143,30 @@ export function createGoogleJwksFetcher(options: {
         "Google's key service returned an error",
       );
     }
-    const jwks = (await response.json()) as GoogleJwks;
+    // Validated BEFORE it is cached. Caching a malformed or empty key set turns
+    // one bad response from Google into a full TTL of invalid_google_token for
+    // every sign-in, with nothing in the logs naming the real cause. Refusing it
+    // leaves the cache empty, so the very next request retries, and the code the
+    // caller sees is truthful and retryable.
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      throw new ApiError(
+        503,
+        "google_upstream_unavailable",
+        "Google's key service returned a body that is not JSON",
+      );
+    }
+    const keys = (body as { keys?: unknown } | null)?.keys;
+    if (!Array.isArray(keys) || keys.length === 0) {
+      throw new ApiError(
+        503,
+        "google_upstream_unavailable",
+        "Google's key service returned no signing keys",
+      );
+    }
+    const jwks: GoogleJwks = { keys: keys as JsonWebKey[] };
     cached = { jwks, fetchedAtMs: nowMs };
     return jwks;
   };
