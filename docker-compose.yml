@@ -36,3 +36,21 @@ services:
       PORT: "3000"
       HOSTNAME: 0.0.0.0
     restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: peraplano
+      POSTGRES_PASSWORD: peraplano
+      POSTGRES_DB: peraplano
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U peraplano"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

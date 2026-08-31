@@ -1,0 +1,38 @@
+{
+  "name": "@peraplano/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:up": "docker compose -f ../../../docker-compose.yml -f ../../../docker-compose.override.yml up -d postgres",
+    "db:down": "docker compose -f ../../../docker-compose.yml -f ../../../docker-compose.override.yml stop postgres",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:generate": "prisma generate",
+    "db:seed": "tsx prisma/seed.ts"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
+  "dependencies": {
+    "@fastify/rate-limit": "^10.2.2",
+    "@prisma/client": "^6.8.2",
+    "fastify": "^5.3.2",
+    "fastify-plugin": "^5.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "prisma": "^6.8.2",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.11"
+  }
+}

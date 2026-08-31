@@ -19,6 +19,23 @@ jobs:
     defaults:
       run:
         working-directory: server
+    services:
+      # The api's integration tests run against a real Postgres, never a mock. Credentials
+      # match apps/api/.env.example so the CI DATABASE_URL and the local one are the same
+      # string; this database is disposable and the tests truncate it between cases.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: peraplano
+          POSTGRES_PASSWORD: peraplano
+          POSTGRES_DB: peraplano
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U peraplano"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -35,6 +52,15 @@ jobs:
       # the smoke setup still boots the real standalone server and asserts the pages serve
       # runtime compliance values rather than build-time markers.
       - run: SMOKE_SKIP_BUILD=1 npm run test:smoke
+      # `npm run build -w @peraplano/api` is the api's typecheck as well as its build: the
+      # root `typecheck` script names three tsconfigs explicitly and apps/api is not one of
+      # them. And the root `npm test` only globs apps/web/**/__tests__ and libs/**/__tests__,
+      # so the api's test/ directory needs its own step or it never runs in CI.
+      - run: npm run build -w @peraplano/api
+      - run: npm test -w @peraplano/api
+        env:
+          DATABASE_URL: postgresql://peraplano:peraplano@localhost:5432/peraplano
+          JWT_SECRET: ci_jwt_secret_not_a_real_secret
 
   secret-scan:
     runs-on: ubuntu-latest

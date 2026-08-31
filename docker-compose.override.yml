@@ -14,3 +14,10 @@ services:
       - ./server/.env.local
     ports:
       - "3000:3000"
+
+  # Published only here. `prisma migrate dev` and the api's integration tests run on the
+  # host, not in a container, so they need a host port; staging and production keep
+  # Postgres unreachable from outside the compose network.
+  postgres:
+    ports:
+      - "5432:5432"
