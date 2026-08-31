@@ -64,12 +64,17 @@ export type FilledState = Exclude<SafeToSpendState, "no_limit">;
 export const FILL_CLASS: Record<FilledState, string> = {
   healthy: "bg-brand dark:bg-brand-dark",
   tight: "bg-warn dark:bg-warn-dark",
+  // Same amber as `tight`, and that is the point: nothing spare today is a
+  // reason to be careful, not a reason to be told off. Sharing the token keeps
+  // it inside the contrast budget `tight` is already proven against.
+  committed: "bg-warn dark:bg-warn-dark",
   over: "bg-danger dark:bg-danger-dark",
 };
 
 const INK_CLASS: Record<FilledState, string> = {
   healthy: "text-on-brand dark:text-on-brand-dark",
   tight: "text-fg dark:text-on-brand-dark",
+  committed: "text-fg dark:text-on-brand-dark",
   over: "text-on-brand dark:text-on-brand-dark",
 };
 
@@ -106,12 +111,14 @@ const INK_CLASS: Record<FilledState, string> = {
 export const MUTED_INK_CLASS: Record<FilledState, string> = {
   healthy: "text-on-brand dark:text-on-brand-dark",
   tight: "text-fg dark:text-on-brand-dark",
+  committed: "text-fg dark:text-on-brand-dark",
   over: "text-on-brand dark:text-on-brand-dark",
 };
 
 const BAR_CLASS: Record<FilledState, string> = {
   healthy: "bg-on-brand/40 dark:bg-on-brand-dark/40",
   tight: "bg-fg/30 dark:bg-on-brand-dark/40",
+  committed: "bg-fg/30 dark:bg-on-brand-dark/40",
   over: "bg-on-brand/40 dark:bg-on-brand-dark/40",
 };
 

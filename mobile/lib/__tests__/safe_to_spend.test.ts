@@ -314,3 +314,106 @@ test("a limit already at zero value does not divide by zero or report NaN", () =
   expect(Number.isFinite(result.perDay)).toBe(true);
   expect(result.perDay).toBe(0);
 });
+
+// ---------------------------------------------------------------------------
+// `committed` — a FILTERED limit whose shortfall is commitments, not spending.
+//
+// Owner's 2026-08-31 report, second round. Home read "You're ₱2,220.00 over
+// for this period / from your 8 categories limit" while that very limit showed
+// "₱0.00 / ₱280.00 · ₱280.00 left". The arithmetic was right (rule 7), and the
+// disclosure line now explains it — but the SENTENCE was still false: the user
+// had not gone over an 8-categories limit. They had spent nothing in those 8
+// categories. A ₱2,500 payday transfer to savings did it, and a savings
+// transfer is never spend in ANY limit (invariant I2), least of all in a
+// category slice that does not contain it.
+//
+// SCOPED TO FILTERED LIMITS ON PURPOSE. Rule 3: a filtered limit "caps only a
+// slice of spending", and only drives the home number when nothing unfiltered
+// exists. An UNFILTERED limit does describe overall spendable money, so
+// commitments genuinely eat its headroom and the spec's Over semantics stand —
+// including the canonical worked example above, which is explicitly "no
+// filters" and must keep reporting "over by ₱3,499.00".
+// ---------------------------------------------------------------------------
+
+/** The reported device state: daily ₱280 cap, nothing spent, ₱2,500 to a goal. */
+function reportedScreen(): SafeToSpendInput {
+  return {
+    today: "2026-08-31",
+    limits: [
+      limit({
+        id: "lim-daily",
+        scope: "daily",
+        effectiveValue: 28_000,
+        spendInPeriod: 0,
+        filtered: true,
+        filterLabel: "8 categories",
+      }),
+    ],
+    unpaidBills: [],
+    plannedContributions: [{ goalId: "goal-1", amount: 250_000, date: "2026-08-31" }],
+    reviewQueueCount: 0,
+  };
+}
+
+test("A FILTERED LIMIT IS NOT 'OVER' WHEN ONLY COMMITMENTS EXCEED IT", () => {
+  const result = computeSafeToSpend(reportedScreen());
+
+  expect(result.state).toBe("committed");
+  // The money is still reserved — this is a change of ATTRIBUTION, not of
+  // arithmetic. Spending today would still eat the goal transfer.
+  expect(result.perDay).toBe(0);
+  expect(result.headroom).toBe(28_000);
+  expect(result.contributionsTerm).toBe(250_000);
+  // Nothing was overspent, so there is no "over by" figure to quote.
+  expect(result.overBy).toBe(0);
+});
+
+test("a FILTERED limit whose own spend really does exceed it is still over", () => {
+  // The distinction is the whole point: headroom below zero means the user
+  // genuinely spent past this limit, and softening that would hide a real
+  // overspend behind a savings transfer.
+  const input = reportedScreen();
+  input.limits[0].spendInPeriod = 30_000; // ₱300 spent against a ₱280 cap
+
+  const result = computeSafeToSpend(input);
+
+  expect(result.state).toBe("over");
+  expect(result.overBy).toBe(252_000); // |(28,000 − 30,000) − 250,000|
+});
+
+test("AN UNFILTERED LIMIT KEEPS THE SPEC'S OVER SEMANTICS UNDER THE SAME COMMITMENTS", () => {
+  // Same numbers, filter removed. An unfiltered limit measures overall
+  // spendable money, so a commitment really does exhaust it and rule 9's Over
+  // state is the honest answer.
+  const input = reportedScreen();
+  input.limits[0].filtered = false;
+  input.limits[0].filterLabel = null;
+
+  const result = computeSafeToSpend(input);
+
+  expect(result.state).toBe("over");
+  expect(result.overBy).toBe(222_000);
+});
+
+test("the spec's own over-variant is unfiltered, so it is untouched by this change", () => {
+  // Guards the change from creeping onto the canonical example: headroom
+  // ₱1,500, numerator −₱3,499, "over by ₱3,499.00 this period".
+  const input = workedExample();
+  input.limits[0].spendInPeriod = 1_350_000;
+
+  const result = computeSafeToSpend(input);
+
+  expect(input.limits[0].filtered).toBe(false);
+  expect(result.state).toBe("over");
+  expect(result.overBy).toBe(349_900);
+});
+
+test("committed requires headroom above zero — a filtered limit spent exactly to its cap is over", () => {
+  // headroom === 0 is not "money set aside", it is "allowance gone". Calling
+  // that `committed` would dress an exhausted limit up as a savings plan.
+  const input = reportedScreen();
+  input.limits[0].spendInPeriod = 28_000;
+  input.plannedContributions = [];
+
+  expect(computeSafeToSpend(input).state).toBe("over");
+});

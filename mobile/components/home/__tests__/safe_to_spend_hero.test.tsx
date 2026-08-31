@@ -215,7 +215,7 @@ function paintedInk(ink: ParsedToken, fillHex: string): string {
   return ink.alpha >= 1 ? inkHex : composite(inkHex, ink.alpha, fillHex);
 }
 
-test.each(["healthy", "tight", "over"] as const)(
+test.each(["healthy", "tight", "committed", "over"] as const)(
   "MUTED_INK_CLASS.%s, as actually exported by safe_to_spend_hero.tsx, clears AA in light and dark",
   (state) => {
     const fill = parseLightDark(FILL_CLASS[state], "bg");
@@ -264,31 +264,53 @@ test("over/light has almost no headroom — even a 95% opacity (a 5% reduction) 
 // the limits list beneath it with no way to resolve the contradiction.
 // ---------------------------------------------------------------------------
 
-test("REPORTED SCREEN: an overage driven purely by a goal contribution says so", () => {
+test("REPORTED SCREEN: a shortfall driven purely by a goal contribution explains itself", () => {
+  // Second round of the same report. The engine now classifies this as
+  // `committed` rather than `over`, because the driving limit is filtered and
+  // its own headroom was never exceeded — nothing was spent in those 8
+  // categories. The hero therefore drops the accusation and keeps the
+  // explanation.
   render(
     <SafeToSpendHero
       {...BASE}
       scopeLabel="daily"
       result={result({
-        state: "over",
+        state: "committed",
         perDay: 0,
         headroom: 28000,
         contributionsTerm: 250000,
         daysRemaining: 1,
-        overBy: 222000,
+        overBy: 0,
         drivingFilterLabel: "8 categories",
       })}
     />,
   );
 
-  // The overage line and the limit attribution are unchanged.
-  expect(screen.getByTestId("sts-over-by")).toHaveTextContent(/₱2,220.00 over/);
+  // No "You're ₱X over" — the user did not go over anything.
+  expect(screen.queryByTestId("sts-over-by")).toBeNull();
 
-  // The new line. Without it, ₱280.00 of headroom and ₱2,220.00 of overage sit
-  // on one screen with nothing connecting them.
+  // The line that does the explaining.
   expect(screen.getByTestId("sts-set-aside")).toHaveTextContent(
     "₱2,500.00 to goals is already set aside",
   );
+
+  // Amber, not the danger red an overspend gets.
+  expect(classesOf("sts-hero")).toContain("bg-warn");
+  expect(classesOf("sts-hero")).not.toContain("bg-danger");
+});
+
+test("a genuine overspend still gets the red fill and the over-by line", () => {
+  // The other side of the split: softening a real overspend would be worse
+  // than the bug this replaced.
+  render(
+    <SafeToSpendHero
+      {...BASE}
+      result={result({ state: "over", perDay: 0, overBy: 252000, headroom: -2000 })}
+    />,
+  );
+
+  expect(classesOf("sts-hero")).toContain("bg-danger");
+  expect(screen.getByTestId("sts-over-by")).toHaveTextContent(/₱2,520.00 over/);
 });
 
 test("bills and contributions are named separately when both are deducted", () => {

@@ -69,7 +69,22 @@ export type SafeToSpendInput = {
   reviewQueueCount: number;
 };
 
-export type SafeToSpendState = "healthy" | "tight" | "over" | "no_limit";
+/**
+ * `committed` is the shortfall that is NOT the user's spending.
+ *
+ * A filtered limit measures one slice of spending (rule 3). Bills and goal
+ * contributions are not that slice — a goal contribution is a transfer, which
+ * invariant I2 keeps out of every limit's spend — so when commitments alone
+ * take a filtered limit's headroom to zero, "you are over your Food & Dining
+ * limit" is a false sentence about a user who has not spent anything there.
+ * `committed` says the true one: the money is spoken for.
+ *
+ * It is deliberately NOT raised for an unfiltered limit, which does describe
+ * overall spendable money — there, commitments genuinely exhaust the
+ * allowance, and the spec's worked example (explicitly "no filters") keeps
+ * reporting "over by ₱3,499.00".
+ */
+export type SafeToSpendState = "healthy" | "tight" | "over" | "committed" | "no_limit";
 
 export type SafeToSpendResult = {
   state: SafeToSpendState;
@@ -199,15 +214,34 @@ export function computeSafeToSpend(input: SafeToSpendInput): SafeToSpendResult {
       ? (driving.limit.spendInPeriod / driving.limit.effectiveValue) * 100
       : 100;
 
+  // Rule 9 floors the number at zero either way; what differs is WHY it is
+  // zero, and therefore what the screen is entitled to say.
+  //
+  // `headroom > 0` is the test for "the user has not overspent this limit".
+  // Combined with `numerator <= 0` it means the shortfall came entirely from
+  // bills and contributions. On a FILTERED limit that is not an overspend at
+  // all — see `SafeToSpendState` — so it gets its own state and no "over by"
+  // figure. Zero headroom is excluded on purpose: an allowance spent exactly
+  // to its cap is exhausted, not set aside.
+  const shortfall = driving.numerator <= 0;
+  const commitmentDriven = shortfall && driving.limit.filtered && driving.headroom > 0;
+
   return {
-    state:
-      driving.numerator <= 0 ? "over" : spentPct >= TIGHT_THRESHOLD_PCT ? "tight" : "healthy",
+    state: commitmentDriven
+      ? "committed"
+      : shortfall
+        ? "over"
+        : spentPct >= TIGHT_THRESHOLD_PCT
+          ? "tight"
+          : "healthy",
     perDay: driving.perDay,
     headroom: driving.headroom,
     billsTerm: driving.billsTerm,
     contributionsTerm: driving.contributionsTerm,
     daysRemaining: driving.daysRemaining,
-    overBy: driving.numerator <= 0 ? Math.abs(driving.numerator) : 0,
+    // Only a real overspend has an "over by". `committed` reports zero, and the
+    // hero's set-aside line carries the figure that actually explains the day.
+    overBy: shortfall && !commitmentDriven ? Math.abs(driving.numerator) : 0,
     drivingLimitId: driving.limit.id,
     drivingFilterLabel: driving.limit.filtered ? driving.limit.filterLabel : null,
     periodEnd: driving.periodEnd,

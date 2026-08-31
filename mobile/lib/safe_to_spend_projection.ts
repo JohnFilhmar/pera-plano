@@ -45,17 +45,24 @@ export type ProjectionPoint = {
  * PURE: same inputs, same curve, no clock and no I/O — `today` comes from the
  * input and every other date is derived from it.
  *
- * Returns EMPTY for `no_limit` and `over` (plan rule 4). With no limit there is
- * nothing to project against; over the limit, every day's allowance is ₱0.00
- * and a flat line at zero would suggest the shortfall is somehow being worked
- * off. The Over state's own copy — "over by ₱3,499.00 this period" — says the
- * true thing instead.
+ * Returns EMPTY for `no_limit`, `over` and `committed` (plan rule 4). With no
+ * limit there is nothing to project against; over the limit, every day's
+ * allowance is ₱0.00 and a flat line at zero would suggest the shortfall is
+ * somehow being worked off. The Over state's own copy — "over by ₱3,499.00
+ * this period" — says the true thing instead.
+ *
+ * `committed` joins them for the arithmetic reason, not the editorial one: its
+ * numerator is also `<= 0`, and the loop below does NOT floor `perDay`, so
+ * projecting it would draw a curve of negative allowances. The hero's
+ * set-aside line explains that day; a descending line would not.
  */
 export function projectToPeriodEnd(
   input: SafeToSpendInput,
   result: SafeToSpendResult,
 ): ProjectionPoint[] {
-  if (result.state === "no_limit" || result.state === "over") return [];
+  if (result.state === "no_limit" || result.state === "over" || result.state === "committed") {
+    return [];
+  }
   if (result.periodEnd === null) return [];
 
   // The numerator the engine already computed. Taken from the result rather
