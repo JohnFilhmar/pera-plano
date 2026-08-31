@@ -322,7 +322,79 @@ unchanged and would have hidden the entire effect.
 
 ---
 
-## Question 4 (partial): peak memory, and the tier ceiling moves again
+## Question 7: does `Device.totalMemory` tell the truth? — **YES, exactly**
+
+| Source | Value |
+|---|---|
+| `Device.totalMemory` (expo-device) | 7,798,394,880 bytes |
+| `/proc/meminfo` `MemTotal` | 7,615,620 kB |
+| Both, in GiB | **7.263** |
+
+7,615,620 × 1024 = 7,798,394,880. **Byte-identical.** `Device.modelName` also reports `SM-A546E`
+correctly and `Device.isDevice` is true.
+
+This was a real question rather than a formality: `ActivityManager.MemoryInfo.totalMem` reports
+*usable* RAM rather than the physical chip, and a RAM gate written against an inflated figure would
+offer users tiers their phone cannot hold. It does not need a correction factor on this device.
+
+**Still unknown for the 6 GB A54 variant**, which no one has measured and which §6 risk 2 keeps open.
+Inference runs 6 GB → 8 GB only, never the reverse.
+
+---
+
+## Question 4: peak memory per tier, and survival across an app switch
+
+Both tiers measured in **one session, under identical conditions**, sampled from outside with
+`dumpsys meminfo` while the model was resident. Each was warmed with one generation first, because
+sampling straight after load understates PSS by whatever the KV cache is about to grow to — and an
+understated `minRamBytes` is exactly the bug that offers a phone a tier it will be killed for loading.
+
+| Tier | Model file | **TOTAL PSS** | Native heap | RSS | Ratio to file |
+|---|---|---|---|---|---|
+| 1 — `qwen3-0.6b-q4` | 378 MB | **1.25 GB** (1,310,471 kB) | 705 MB | 1.34 GB | 3.3x |
+| 2 — `qwen3-1.7b-q4` | 1.06 GB | **2.51 GB** (2,635,881 kB) | 1.37 GB | 2.59 GB | 2.4x |
+
+**Tier 2 replicates.** An earlier session in a different app state measured 2.55 GB; this one measured
+2.51 GB. Two independent readings within 2% make that figure trustworthy, and it is the figure that
+moved the tier ceiling.
+
+### `minRamBytes` cannot be a multiple of the file size
+
+The ratio **falls** as the model grows — 3.3x at tier 1, 2.4x at tier 2 — because most of what tier 1
+pays is fixed cost, not weights. Subtracting native heap leaves roughly **545 MB of app-and-runtime
+baseline at tier 1 and 1.16 GB at tier 2**, the difference being KV cache and allocator headroom.
+
+**So a "file size x constant" formula is wrong in both directions**: too generous at tier 1, too
+stingy at tier 2. §2.2's arithmetic has to be `baseline + weights + KV(contextTokens)` with the
+baseline **measured**, and §5.2's `minRamBytes > bytes` invariant is necessary but nowhere near
+sufficient.
+
+### Survival across an app switch — survives backgrounding, untested against a process kill
+
+`survived: true`. The app was backgrounded with HOME, held, foregrounded, and then generated **32
+tokens in 2,610 ms** with no reload. The context, the model and the KV cache all survived.
+
+**Read that narrowly.** It proves the app survives *being backgrounded*. It does **not** test §6 risk
+10's actual scenario, which is Android **killing the process** under memory pressure and the user
+returning to a dead app. That case is not survivable by definition, and its cost is the cold reload:
+measured at **1,639–2,541 ms for tier 1** and **2,583–5,662 ms for tier 2** across every load in this
+spike. So risk 10's copy requirement stands — a returning user can wait up to ~5.7 s on tier 2, and
+the surface must say "waking up" rather than appearing hung, with copy distinct from "no model yet".
+
+### The caveat that has not gone away
+
+**Both figures are from the debug dev-client build**, carrying dev-mode Hermes and a Metro-served
+bundle in memory. They are upper bounds by an unmeasured amount. The release build that would settle
+this exceeded the harness's 600 s command cap twice and was abandoned; it is the single largest piece
+of unfinished measurement in this document.
+
+**Against 2.66 GiB available on this phone, tier 2 at 2.51 GB is genuinely at the edge** — which is
+why the tier-3 ceiling question is still open rather than settled, and why the release-build number
+matters rather than being a nicety.
+
+---
+
+## Question 4 (superseded — earlier partial reading, kept for the tier-ceiling history)
 
 `dumpsys meminfo com.filldev.llamaprobe` with tier 2 resident at `n_ctx` 2048:
 
@@ -406,9 +478,9 @@ Three things cost time and are worth knowing in advance:
 | 1. Loads and streams | **Answered: yes**, tier 2, 12.90 tok/s mean |
 | 2. Per-request GBNF | **Answered: yes**, per request and 0/50 malformed — but §3.4's grammar design fails |
 | 3. Thinking suppression | **Answered: yes**, `enable_thinking: false` under jinja, 15x on wall clock |
-| 4. Peak RSS + app-switch survival | **partial**, one sample, debug build, no app-switch test |
+| 4. Peak RSS + app-switch survival | **Answered.** 1.25 GB / 2.51 GB PSS; survives backgrounding. Release build still owed |
 | 5. Strict tool-pick accuracy | **Answered, tiers 1 and 2.** Constrained: 78% and 97%. Tiers 3–5 unmeasured |
 | 6. APK delta | **partial**, floor of 75.4 MB, no baseline build |
-| 7. `Device.totalMemory` truthfulness | not started |
+| 7. `Device.totalMemory` truthfulness | **Answered: exact.** Byte-identical to `/proc/meminfo` |
 
 **All timing figures above were taken on charge and must be retaken on battery.**
