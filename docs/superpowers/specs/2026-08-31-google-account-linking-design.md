@@ -233,7 +233,7 @@ Auth: Bearer. Attaches a Google identity to the caller's existing account.
 Auth: Bearer. Unchanged shape, real values.
 
 ```jsonc
-{ "tier": "free" | "plus", "source": "stub" | "beta_cohort" | "play_billing" }
+{ "tier": "free" | "plus", "source": "stub" | "beta_cohort" | "manual_grant" | "play_billing" }
 ```
 
 ### Error codes
@@ -274,11 +274,35 @@ A grant writes `entitlements` with `tier = "plus"`, `source = "beta_cohort"`. **
 later verify call, integrity failure, or reinstall downgrades it. That is the promise, and the
 attestation row is the evidence.
 
+### 7.1 Pre-Play testers, and why the automatic rule cannot reach them
+
+`appLicensingVerdict: LICENSED` means the Google account acquired the app **from Google Play**. Today
+nothing does: `docs/build-variants-adb-install.md` describes three variants installed over USB with
+`adb`, plus EAS build profiles. Every existing tester is therefore `UNLICENSED` and would be refused
+by §7, which would break the permanent-Plus promise for exactly the people it was made to.
+
+Two mechanisms, decided by the owner on 2026-08-31:
+
+**A. The beta runs on a Play testing track.** Internal or closed testing. Everyone who installs from
+there is evaluated by §7 automatically, with no manual step.
+
+**B. A pregrant list covers the people who predate Play.** A `beta_pregrants` table keyed by email
+address. The operator seeds it through a CLI, never an HTTP endpoint: an admin route would need an
+admin authentication surface that does not exist, and inventing one for a handful of rows is a worse
+trade than running a command. When an email with an unclaimed pregrant first signs in, the server
+writes `entitlements` with `source = "manual_grant"` and stamps the pregrant claimed, recording which
+user claimed it and when.
+
+A pregrant is as permanent as a cohort grant and is never re-evaluated. Claiming is single-use: the
+unique constraint on the email plus the `claimedAt` stamp mean a second account cannot consume the
+same promise. The Play verdict is **not** consulted for a pregrant, which is the entire point, and is
+safe only because the list is a closed set the operator typed in by hand.
+
 ## 8. Entitlement resolution
 
 `services/entitlement_service.ts` is the only place tier is decided. Resolution order:
 
-1. An `entitlements` row with `source = "beta_cohort"` wins. Return `plus`.
+1. An `entitlements` row with `source = "beta_cohort"` or `source = "manual_grant"` wins. Return `plus`.
 2. `source = "play_billing"` is **reserved and not implemented in this pass.** No branch resolves it.
 3. Otherwise return `free`.
 

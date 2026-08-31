@@ -48,6 +48,12 @@ This plan's nine tasks, and where they sit against the functional core plan.
 | G4 | after G1 and G3 | Task 5 | Tasks 1, 2, 3, 4 |
 | G5 | after G4 | Task 6 | Task 5 |
 | G6 | after G5 and Task 7 | Task 8 | Tasks 6, 7 |
+| G7 | after G2 | Task 10 | Task 1 |
+
+**Two ways into the beta cohort, decided by the owner on 2026-08-31.** The automatic rule (§7 of the
+design) covers everyone who installs from a Play testing track. The pregrant list (§7.1) covers the
+people who tested before Play existed, who can never produce a `LICENSED` verdict because they got
+the app over `adb`. Task 10 builds the CLI that seeds that list.
 
 Tasks 2, 3, 7 and 9 have no dependency on the server schema and can start the moment this plan is approved, in parallel with core Tasks 1 to 10.
 
@@ -74,6 +80,7 @@ In `server/apps/api/test/prisma_schema.test.ts`, replace the expected table list
 ```ts
     expect(rows.map((r) => r.table_name)).toEqual([
       "backup_vaults",
+      "beta_pregrants",
       "entitlements",
       "google_identities",
       "install_attestations",
@@ -191,7 +198,22 @@ model InstallAttestation {
 
   @@map("install_attestations")
 }
+
+model BetaPregrant {
+  id            String  @id
+  email         String  @unique
+  note          String
+  createdAt     BigInt  @map("created_at")
+  claimedAt     BigInt? @map("claimed_at")
+  claimedByUserId String? @map("claimed_by_user_id")
+
+  @@map("beta_pregrants")
+}
 ```
+
+`beta_pregrants` deliberately has **no** foreign key to `users`: a pregrant is written before the
+person has an account, which is its whole reason to exist. `claimedByUserId` is a plain column
+recording who consumed it.
 
 Add the two back-relations to the existing `User` model, beside `refreshTokens`:
 
@@ -211,7 +233,7 @@ In `server/apps/api/test/helpers/db.ts`, extend the TRUNCATE to cover both new t
 
 ```ts
   await prisma.$executeRawUnsafe(
-    'TRUNCATE TABLE "users", "otp_requests", "refresh_tokens", "parser_rulesets", "telemetry_parse_stats", "backup_vaults", "entitlements", "google_identities", "install_attestations" CASCADE',
+    'TRUNCATE TABLE "users", "otp_requests", "refresh_tokens", "parser_rulesets", "telemetry_parse_stats", "backup_vaults", "entitlements", "google_identities", "install_attestations", "beta_pregrants" CASCADE',
   );
 ```
 
@@ -541,7 +563,8 @@ git commit -m "feat(api): verify google id tokens against the published key set"
   - `type IntegrityPayload = { requestDetails: { requestPackageName: string; requestHash?: string; timestampMillis: string }; appIntegrity: { appRecognitionVerdict: string }; accountDetails: { appLicensingVerdict: string } }`
   - `type PlayIntegrityDecoder = (integrityToken: string) => Promise<IntegrityPayload>`
   - `computeRequestHash(idToken: string, claim: InstallClaim): string`
-  - `assertIntegrity(input: AssertIntegrityInput): void` where `AssertIntegrityInput = { payload: IntegrityPayload; idToken: string; claim: InstallClaim; expectedPackageName: string; nowMs: number; maxSkewMs: number }`
+  - `assertRequestBinding(input: AssertIntegrityInput): void` where `AssertIntegrityInput = { payload: IntegrityPayload; idToken: string; claim: InstallClaim; expectedPackageName: string; nowMs: number; maxSkewMs: number }`
+  - `assertPlayLicensed(payload: IntegrityPayload): void`, split out because it is the one check a pregranted pre-Play tester may fail
   - `createPlayIntegrityDecoder(options: { packageName: string; serviceAccountJson: string; fetchImpl?: typeof fetch }): PlayIntegrityDecoder`
 
 **The request hash is a cross-boundary contract with the mobile client.** Both sides must serialize the claim identically or every request fails with `integrity_request_mismatch`. The canonical form is a JSON object with exactly these five keys in this alphabetical order and no whitespace:
@@ -560,7 +583,8 @@ Never rely on object insertion order to produce it. The implementation below bui
 import { describe, it, expect } from "vitest";
 import { createHash } from "node:crypto";
 import {
-  assertIntegrity,
+  assertPlayLicensed,
+  assertRequestBinding,
   computeRequestHash,
   type InstallClaim,
   type IntegrityPayload,
@@ -592,7 +616,7 @@ function payload(overrides: Partial<IntegrityPayload> = {}): IntegrityPayload {
 }
 
 function check(p: IntegrityPayload) {
-  assertIntegrity({
+  assertRequestBinding({
     payload: p,
     idToken: ID_TOKEN,
     claim: CLAIM,
@@ -600,6 +624,7 @@ function check(p: IntegrityPayload) {
     nowMs: NOW,
     maxSkewMs: 300_000,
   });
+  assertPlayLicensed(p);
 }
 
 describe("computeRequestHash", () => {
@@ -616,9 +641,25 @@ describe("computeRequestHash", () => {
   });
 });
 
-describe("assertIntegrity", () => {
+describe("assertRequestBinding and assertPlayLicensed", () => {
   it("passes a well-formed licensed payload", () => {
     expect(() => check(payload())).not.toThrow();
+  });
+
+  it("binding passes an unlicensed payload, so a pregrant can still proceed", () => {
+    const p = payload();
+    p.accountDetails.appLicensingVerdict = "UNLICENSED";
+    expect(() =>
+      assertRequestBinding({
+        payload: p,
+        idToken: ID_TOKEN,
+        claim: CLAIM,
+        expectedPackageName: PACKAGE,
+        nowMs: NOW,
+        maxSkewMs: 300_000,
+      }),
+    ).not.toThrow();
+    expect(() => assertPlayLicensed(p)).toThrow("app_not_play_licensed");
   });
 
   it("rejects a foreign package name", () => {
@@ -728,7 +769,12 @@ export function computeRequestHash(idToken: string, claim: InstallClaim): string
   return createHash("sha256").update(`${idToken}.${canonicalClaimJson(claim)}`).digest("base64url");
 }
 
-export function assertIntegrity({
+/**
+ * Binding checks: is this token about our app, bound to this exact request, and
+ * fresh. ALWAYS enforced, for every caller, pregrant or not. A pregrant excuses
+ * a missing Play licence; it never excuses an unbound or replayed token.
+ */
+export function assertRequestBinding({
   payload,
   idToken,
   claim,
@@ -749,7 +795,14 @@ export function assertIntegrity({
   if (!Number.isFinite(timestampMs) || Math.abs(nowMs - timestampMs) > maxSkewMs) {
     throw new ApiError(401, "integrity_stale", "Integrity token is outside the freshness window");
   }
+}
 
+/**
+ * Licensing check, kept separate because it is the ONE check a pregranted
+ * pre-Play tester is allowed to fail (design section 7.1). Callers that skip it
+ * must have found an unclaimed pregrant for the verified email first.
+ */
+export function assertPlayLicensed(payload: IntegrityPayload): void {
   if (payload.appIntegrity.appRecognitionVerdict !== "PLAY_RECOGNIZED") {
     throw new ApiError(403, "app_not_play_licensed", "This app build is not recognized by Google Play");
   }
@@ -1110,7 +1163,11 @@ import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import { randomUUID } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
 import { resetDb } from "../helpers/db.js";
-import { grantBetaCohort, resolveEntitlement } from "../../src/services/entitlement_service.js";
+import {
+  claimPregrantIfAny,
+  grantBetaCohort,
+  resolveEntitlement,
+} from "../../src/services/entitlement_service.js";
 
 const prisma = new PrismaClient();
 const NOW = 1_756_000_000_000;
@@ -1141,6 +1198,16 @@ describe("resolveEntitlement", () => {
     expect(await resolveEntitlement(prisma, userId)).toEqual({ tier: "plus", source: "beta_cohort" });
   });
 
+  it("returns plus/manual_grant for a claimed pregrant", async () => {
+    const userId = await makeUser();
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    await prisma.betaPregrant.create({
+      data: { id: randomUUID(), email: user.destination, note: "pre-play tester", createdAt: BigInt(NOW) },
+    });
+    expect(await claimPregrantIfAny(prisma, userId, user.destination, NOW)).toBe(true);
+    expect(await resolveEntitlement(prisma, userId)).toEqual({ tier: "plus", source: "manual_grant" });
+  });
+
   it("does not resolve a play_billing row in this pass", async () => {
     const userId = await makeUser();
     await prisma.entitlement.create({
@@ -1163,6 +1230,42 @@ describe("grantBetaCohort", () => {
   it("writes no row for a user who never qualified", async () => {
     await makeUser();
     expect(await prisma.entitlement.count()).toBe(0);
+  });
+});
+
+describe("claimPregrantIfAny", () => {
+  it("returns false when no pregrant exists and writes nothing", async () => {
+    const userId = await makeUser();
+    expect(await claimPregrantIfAny(prisma, userId, "nobody@example.com", NOW)).toBe(false);
+    expect(await prisma.entitlement.count()).toBe(0);
+  });
+
+  it("cannot be claimed twice", async () => {
+    const firstId = await makeUser();
+    const first = await prisma.user.findUniqueOrThrow({ where: { id: firstId } });
+    await prisma.betaPregrant.create({
+      data: { id: randomUUID(), email: first.destination, note: "tester", createdAt: BigInt(NOW) },
+    });
+    expect(await claimPregrantIfAny(prisma, firstId, first.destination, NOW)).toBe(true);
+
+    const secondId = await makeUser();
+    expect(await claimPregrantIfAny(prisma, secondId, first.destination, NOW + 1000)).toBe(false);
+    expect(await prisma.entitlement.count()).toBe(1);
+
+    const pregrant = await prisma.betaPregrant.findUniqueOrThrow({ where: { email: first.destination } });
+    expect(pregrant.claimedByUserId).toBe(firstId);
+    expect(pregrant.claimedAt).toBe(BigInt(NOW));
+  });
+
+  it("leaves an existing beta_cohort grant in place", async () => {
+    const userId = await makeUser();
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    await grantBetaCohort(prisma, userId, NOW);
+    await prisma.betaPregrant.create({
+      data: { id: randomUUID(), email: user.destination, note: "tester", createdAt: BigInt(NOW) },
+    });
+    await claimPregrantIfAny(prisma, userId, user.destination, NOW + 1000);
+    expect(await resolveEntitlement(prisma, userId)).toEqual({ tier: "plus", source: "beta_cohort" });
   });
 });
 ```
@@ -1191,7 +1294,38 @@ export async function resolveEntitlement(
 ): Promise<{ tier: Tier; source: EntitlementSource }> {
   const row = await prisma.entitlement.findUnique({ where: { userId } });
   if (row?.source === "beta_cohort") return { tier: "plus", source: "beta_cohort" };
+  if (row?.source === "manual_grant") return { tier: "plus", source: "manual_grant" };
   return { tier: "free", source: "stub" };
+}
+
+/**
+ * Covers the testers who predate Google Play (design section 7.1). The Play
+ * verdict is deliberately not consulted: a pregrant is a closed list the
+ * operator typed in by hand, which is what makes skipping the verdict safe.
+ * Single-use, by the unique email plus the claimedAt stamp.
+ */
+export async function claimPregrantIfAny(
+  prisma: PrismaClient,
+  userId: string,
+  email: string,
+  nowMs: number,
+): Promise<boolean> {
+  const pregrant = await prisma.betaPregrant.findUnique({ where: { email } });
+  if (!pregrant || pregrant.claimedAt !== null) return false;
+
+  await prisma.betaPregrant.update({
+    where: { email },
+    data: { claimedAt: BigInt(nowMs), claimedByUserId: userId },
+  });
+
+  const existing = await prisma.entitlement.findUnique({ where: { userId } });
+  if (existing?.source === "beta_cohort" || existing?.source === "manual_grant") return true;
+  await prisma.entitlement.upsert({
+    where: { userId },
+    create: { id: randomUUID(), userId, tier: "plus", source: "manual_grant", updatedAt: BigInt(nowMs) },
+    update: { tier: "plus", source: "manual_grant", updatedAt: BigInt(nowMs) },
+  });
+  return true;
 }
 
 /**
@@ -1477,6 +1611,77 @@ describe("verifyWithGoogle", () => {
     ).rejects.toThrow("app_not_play_licensed");
     expect(await prisma.user.count()).toBe(0);
   });
+
+  it("lets an unlicensed pre-Play tester in when a pregrant covers their email", async () => {
+    await prisma.betaPregrant.create({
+      data: {
+        id: randomUUID(),
+        email: "tester@example.com",
+        note: "adb tester, predates Play",
+        createdAt: BigInt(NOW - 100_000),
+      },
+    });
+    const idToken = makeIdToken("sub_8", "tester@example.com");
+    const result = await verifyWithGoogle(depsFor(idToken, OUT_OF_WINDOW, "UNLICENSED"), {
+      idToken,
+      integrityToken: "it",
+      claim: OUT_OF_WINDOW,
+      nowMs: NOW,
+    });
+
+    const entitlement = await prisma.entitlement.findUnique({ where: { userId: result.user.id } });
+    expect(entitlement?.source).toBe("manual_grant");
+    const pregrant = await prisma.betaPregrant.findUniqueOrThrow({ where: { email: "tester@example.com" } });
+    expect(pregrant.claimedByUserId).toBe(result.user.id);
+  });
+
+  it("still rejects an unlicensed account whose pregrant was already claimed", async () => {
+    await prisma.betaPregrant.create({
+      data: {
+        id: randomUUID(),
+        email: "spent@example.com",
+        note: "already used",
+        createdAt: BigInt(NOW - 100_000),
+        claimedAt: BigInt(NOW - 50_000),
+        claimedByUserId: randomUUID(),
+      },
+    });
+    const idToken = makeIdToken("sub_9", "spent@example.com");
+    await expect(
+      verifyWithGoogle(depsFor(idToken, IN_WINDOW, "UNLICENSED"), {
+        idToken,
+        integrityToken: "it",
+        claim: IN_WINDOW,
+        nowMs: NOW,
+      }),
+    ).rejects.toThrow("app_not_play_licensed");
+  });
+
+  it("still enforces request binding for a pregranted email", async () => {
+    await prisma.betaPregrant.create({
+      data: {
+        id: randomUUID(),
+        email: "bound@example.com",
+        note: "tester",
+        createdAt: BigInt(NOW - 100_000),
+      },
+    });
+    const idToken = makeIdToken("sub_10", "bound@example.com");
+    const deps = makeDeps({
+      decodeIntegrity: async () => ({
+        requestDetails: {
+          requestPackageName: PACKAGE,
+          requestHash: "wrong-hash",
+          timestampMillis: String(NOW),
+        },
+        appIntegrity: { appRecognitionVerdict: "PLAY_RECOGNIZED" },
+        accountDetails: { appLicensingVerdict: "UNLICENSED" },
+      }),
+    });
+    await expect(
+      verifyWithGoogle(deps, { idToken, integrityToken: "it", claim: IN_WINDOW, nowMs: NOW }),
+    ).rejects.toThrow("integrity_request_mismatch");
+  });
 });
 
 describe("linkGoogleToUser", () => {
@@ -1540,10 +1745,15 @@ import type { PrismaClient } from "@prisma/client";
 import { ApiError } from "../lib/errors.js";
 import { qualifiesForBetaCohort } from "../lib/beta_cohort.js";
 import { signAccessToken } from "../lib/jwt.js";
-import { assertIntegrity, type InstallClaim, type PlayIntegrityDecoder } from "../lib/play_integrity.js";
+import {
+  assertPlayLicensed,
+  assertRequestBinding,
+  type InstallClaim,
+  type PlayIntegrityDecoder,
+} from "../lib/play_integrity.js";
 import { verifyGoogleIdToken, type JwksFetcher } from "../lib/google_id_token.js";
 import { issueRefreshToken } from "./auth_service.js";
-import { grantBetaCohort } from "./entitlement_service.js";
+import { claimPregrantIfAny, grantBetaCohort } from "./entitlement_service.js";
 
 export type GoogleAuthDeps = {
   prisma: PrismaClient;
@@ -1587,7 +1797,10 @@ async function verifyRequest(deps: GoogleAuthDeps, input: GoogleAuthInput): Prom
   });
 
   const payload = await deps.decodeIntegrity(input.integrityToken);
-  assertIntegrity({
+
+  // Binding is enforced for everyone. A pregrant excuses a missing Play licence,
+  // never an unbound or replayed integrity token.
+  assertRequestBinding({
     payload,
     idToken: input.idToken,
     claim: input.claim,
@@ -1595,6 +1808,12 @@ async function verifyRequest(deps: GoogleAuthDeps, input: GoogleAuthInput): Prom
     nowMs: input.nowMs,
     maxSkewMs: deps.maxSkewMs,
   });
+
+  const pregrant = await deps.prisma.betaPregrant.findUnique({ where: { email: claims.email } });
+  const hasUnclaimedPregrant = pregrant !== null && pregrant.claimedAt === null;
+  if (!hasUnclaimedPregrant) {
+    assertPlayLicensed(payload);
+  }
 
   return {
     googleSub: claims.googleSub,
@@ -1636,7 +1855,12 @@ async function recordAttestation(
   });
   if (verified.qualifies) {
     await grantBetaCohort(deps.prisma, userId, input.nowMs);
+    return;
   }
+  // Pre-Play testers cannot produce a LICENSED verdict, so the pregrant list is
+  // their only route (design section 7.1). Checked only when the automatic rule
+  // did not already grant, so a Play install never consumes a pregrant.
+  await claimPregrantIfAny(deps.prisma, userId, verified.email, input.nowMs);
 }
 
 export async function verifyWithGoogle(
@@ -2648,6 +2872,161 @@ Record in §3 that the Data safety declaration gains "personal identifiers, emai
 ```bash
 git add docs/07-privacy-and-compliance.md docs/09-v2-backlog.md docs/superpowers/specs/2026-08-22-mobile-ui-revamp-design.md
 git commit -m "docs: record what google account linking changes for privacy"
+```
+
+---
+
+### Task 10: The pregrant CLI
+
+The list from design §7.1 has to get into the database somehow. A CLI, not an HTTP endpoint: an admin
+route would need an admin authentication surface that does not exist, and inventing one for a handful
+of rows is a worse trade than running a command on the box.
+
+**Files:**
+- Create: `server/apps/api/src/cli/pregrant.ts`
+- Modify: `server/apps/api/package.json` (add the `pregrant` script)
+- Test: `server/apps/api/test/cli/pregrant.test.ts`
+
+**Interfaces:**
+- Consumes: `prisma.betaPregrant` (Task 1).
+- Produces: `addPregrant(prisma: PrismaClient, email: string, note: string, nowMs: number): Promise<{ created: boolean }>` and `listPregrants(prisma: PrismaClient): Promise<Array<{ email: string; note: string; claimedAt: number | null }>>`.
+
+- [ ] **Step 1: Write the failing test**
+
+`server/apps/api/test/cli/pregrant.test.ts`:
+
+```ts
+import { describe, it, expect, beforeEach, afterAll } from "vitest";
+import { PrismaClient } from "@prisma/client";
+import { resetDb } from "../helpers/db.js";
+import { addPregrant, listPregrants } from "../../src/cli/pregrant.js";
+
+const prisma = new PrismaClient();
+const NOW = 1_756_000_000_000;
+
+beforeEach(async () => {
+  await resetDb(prisma);
+});
+
+afterAll(async () => {
+  await prisma.$disconnect();
+});
+
+describe("addPregrant", () => {
+  it("creates a pregrant and lowercases the email", async () => {
+    expect(await addPregrant(prisma, "Tester@Example.com", "adb tester", NOW)).toEqual({ created: true });
+    const rows = await listPregrants(prisma);
+    expect(rows).toEqual([{ email: "tester@example.com", note: "adb tester", claimedAt: null }]);
+  });
+
+  it("is idempotent for an email already on the list", async () => {
+    await addPregrant(prisma, "tester@example.com", "first", NOW);
+    expect(await addPregrant(prisma, "tester@example.com", "second", NOW + 1000)).toEqual({ created: false });
+    const rows = await listPregrants(prisma);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.note).toBe("first");
+  });
+
+  it("refuses an email that is not an address", async () => {
+    await expect(addPregrant(prisma, "not-an-email", "x", NOW)).rejects.toThrow("email");
+  });
+
+  it("refuses an empty note, because an unexplained permanent grant is unauditable", async () => {
+    await expect(addPregrant(prisma, "a@b.com", "  ", NOW)).rejects.toThrow("note");
+  });
+});
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `npx vitest run test/cli/pregrant.test.ts`
+Expected: FAIL, "Failed to load url ../../src/cli/pregrant.js".
+
+- [ ] **Step 3: Implement the CLI**
+
+`server/apps/api/src/cli/pregrant.ts`:
+
+```ts
+import { randomUUID } from "node:crypto";
+import { PrismaClient } from "@prisma/client";
+
+export async function addPregrant(
+  prisma: PrismaClient,
+  email: string,
+  note: string,
+  nowMs: number,
+): Promise<{ created: boolean }> {
+  const normalized = email.trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
+    throw new Error(`Not a valid email address: ${email}`);
+  }
+  const trimmedNote = note.trim();
+  if (trimmedNote.length === 0) {
+    throw new Error("A note is required: an unexplained permanent grant cannot be audited");
+  }
+
+  const existing = await prisma.betaPregrant.findUnique({ where: { email: normalized } });
+  if (existing) return { created: false };
+
+  await prisma.betaPregrant.create({
+    data: { id: randomUUID(), email: normalized, note: trimmedNote, createdAt: BigInt(nowMs) },
+  });
+  return { created: true };
+}
+
+export async function listPregrants(
+  prisma: PrismaClient,
+): Promise<Array<{ email: string; note: string; claimedAt: number | null }>> {
+  const rows = await prisma.betaPregrant.findMany({ orderBy: { email: "asc" } });
+  return rows.map((row) => ({
+    email: row.email,
+    note: row.note,
+    claimedAt: row.claimedAt === null ? null : Number(row.claimedAt),
+  }));
+}
+
+/** `npm run pregrant -- add <email> "<note>"` or `npm run pregrant -- list` */
+async function main(): Promise<void> {
+  const [command, email, note] = process.argv.slice(2);
+  const prisma = new PrismaClient();
+  try {
+    if (command === "add") {
+      if (!email || !note) throw new Error('Usage: pregrant add <email> "<note>"');
+      const { created } = await addPregrant(prisma, email, note, Date.now());
+      console.log(created ? `added ${email}` : `${email} was already on the list`);
+    } else if (command === "list") {
+      for (const row of await listPregrants(prisma)) {
+        console.log(`${row.claimedAt === null ? "unclaimed" : "claimed  "}  ${row.email}  ${row.note}`);
+      }
+    } else {
+      throw new Error('Usage: pregrant add <email> "<note>" | pregrant list');
+    }
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+if (process.argv[1]?.endsWith("pregrant.ts") || process.argv[1]?.endsWith("pregrant.js")) {
+  await main();
+}
+```
+
+The `main()` guard keeps the module importable by tests without executing the command.
+
+- [ ] **Step 4: Add the npm script**
+
+In `server/apps/api/package.json` scripts: `"pregrant": "tsx src/cli/pregrant.ts"`.
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `npx vitest run test/cli/pregrant.test.ts`
+Expected: PASS, 4 tests green.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/cli/pregrant.ts package.json test/cli/pregrant.test.ts
+git commit -m "feat(api): add the pregrant cli for pre-play testers"
 ```
 
 ---
