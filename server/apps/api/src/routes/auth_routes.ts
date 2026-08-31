@@ -1,5 +1,12 @@
 import type { FastifyInstance } from "fastify";
-import { requestOtp } from "../services/auth_service.js";
+import { randomUUID } from "node:crypto";
+import { ApiError } from "../lib/errors.js";
+import { signAccessToken } from "../lib/jwt.js";
+import {
+  requestOtp,
+  verifyOtp,
+  issueRefreshToken,
+} from "../services/auth_service.js";
 
 const EMAIL_PATTERN = "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$";
 
@@ -38,6 +45,66 @@ export function authRoutes(app: FastifyInstance): Promise<void> {
         "otp issued (dev delivery)",
       );
       return { requestId };
+    },
+  );
+
+  app.post(
+    "/auth/otp/verify",
+    {
+      schema: {
+        body: {
+          type: "object",
+          required: ["requestId", "code"],
+          additionalProperties: false,
+          properties: {
+            requestId: { type: "string", minLength: 1 },
+            code: { type: "string", pattern: "^\\d{6}$" },
+          },
+        },
+      },
+    },
+    async (request) => {
+      const { requestId, code } = request.body as {
+        requestId: string;
+        code: string;
+      };
+      const result = await verifyOtp(
+        app.prisma,
+        requestId,
+        code,
+        app.config.jwtSecret,
+      );
+      if (result.kind === "not_found") {
+        throw new ApiError(
+          404,
+          "otp_not_found",
+          "OTP request not found or already used",
+        );
+      }
+      if (result.kind === "expired") {
+        throw new ApiError(401, "otp_expired", "OTP code has expired");
+      }
+      if (result.kind === "too_many_attempts") {
+        throw new ApiError(
+          429,
+          "too_many_attempts",
+          "Too many incorrect attempts",
+        );
+      }
+      if (result.kind === "invalid_code") {
+        throw new ApiError(401, "invalid_code", "Incorrect OTP code");
+      }
+      const accessToken = signAccessToken(result.userId, app.config.jwtSecret);
+      const refreshToken = await issueRefreshToken(
+        app.prisma,
+        result.userId,
+        randomUUID(), // new token family per login
+      );
+      return {
+        accessToken,
+        refreshToken,
+        user: { id: result.userId, destination: result.destination },
+      };
     },
   );
   return Promise.resolve();
