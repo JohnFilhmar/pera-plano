@@ -1333,6 +1333,14 @@ git commit -m "feat(server): hs256 access tokens and opaque refresh token genera
 - Produces:
   - `requestOtp(prisma: PrismaClient, destination: string, otpSecret: string, nowMs?: number): Promise<{ requestId: string; code: string }>` from `src/services/auth_service.ts` — Tasks 8/9 tests call it directly to obtain the plaintext code (the route never returns the code).
 
+> **Known race, recorded 2026-08-31, deliberately not fixed here.** `prisma.user.upsert` on
+> `destination` is racy across *different* `requestId`s for the same email: two OTPs issued to one
+> address and verified concurrently can both miss the existing row and collide on the unique
+> constraint, surfacing as a 500 rather than a login. It is a reliability edge, not an auth bypass,
+> and it is unrelated to the same-request races closed in Task 8. The fix when someone picks it up is
+> to catch Prisma's `P2002` on that upsert and re-read the user, since the row is guaranteed to exist
+> by the time the constraint fires.
+
 > **Blocks production, recorded 2026-08-31.** This route writes the OTP to `request.log.info`, which
 > `backend-security-baseline` forbids: logs redact tokens, OTPs, and PII. It is acceptable only
 > because there is no delivery mechanism, so the endpoint cannot serve real users yet. **The task
