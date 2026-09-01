@@ -46,6 +46,7 @@ function prebuiltManifest(): AndroidManifest {
   return {
     manifest: {
       $: { "xmlns:android": "http://schemas.android.com/apk/res/android" },
+      queries: [],
       application: [
         {
           $: {
@@ -100,11 +101,14 @@ async function applyGradlePropertiesMod(
   const mod = config.mods?.android?.gradleProperties;
   if (!mod) throw new Error("the plugin registered no gradle properties mod");
 
+  // Typed off the mod itself rather than restated: `gradleProperties` works in
+  // expo's own `PropertiesItem`, and a hand-written stand-in for it would drift
+  // the first time expo changes the shape.
   const result = await mod({
     ...config,
     modResults: existing,
     modRequest: {},
-  } as unknown as ExportedConfigWithProps<GradleProperty[]>);
+  } as unknown as Parameters<typeof mod>[0]);
 
   return result.modResults as GradleProperty[];
 }
