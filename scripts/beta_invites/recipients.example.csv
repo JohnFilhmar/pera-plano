@@ -1,0 +1,4 @@
+submitted_at,google_email,first_name,device_model,consent_version,source,request_id,status,notes
+2026-08-31T09:14:02Z,juan.delacruz@example.test,Juan,Samsung A54 5G,2026-08-31,web,req_001,,
+2026-08-31T10:02:47Z,maria.santos@example.test,Maria,"Redmi Note 12, 5G",2026-08-31,web,req_002,,
+2026-09-01T01:20:11Z,ana.reyes@example.test,Ana,,2026-08-31,web,req_003,,

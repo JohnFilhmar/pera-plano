@@ -1,0 +1,6 @@
+node_modules/
+.env
+recipients.csv
+recipients.json
+sent_log.jsonl
+preview/
