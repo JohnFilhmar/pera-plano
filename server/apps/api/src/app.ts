@@ -12,6 +12,7 @@ import { backupRoutes } from "./routes/backup_routes.js";
 import { entitlementsRoutes } from "./routes/entitlements_routes.js";
 import { googleAuthRoutes } from "./routes/google_auth_routes.js";
 import { createGoogleJwksFetcher, type JwksFetcher } from "./lib/google_id_token.js";
+import { createMailer, type Mailer, type SendMail } from "./lib/mailer.js";
 import {
   createPlayIntegrityDecoder,
   type PlayIntegrityDecoder,
@@ -20,6 +21,7 @@ import {
 declare module "fastify" {
   interface FastifyInstance {
     config: AppConfig;
+    mailer: Mailer;
   }
 }
 
@@ -31,6 +33,8 @@ declare module "fastify" {
 export type BuildAppSeams = {
   fetchJwks?: JwksFetcher;
   decodeIntegrity?: PlayIntegrityDecoder;
+  /** Supplied by tests so no suite opens an SMTP connection or reads a password. */
+  sendMail?: SendMail;
 };
 
 export function buildApp(
@@ -46,6 +50,9 @@ export function buildApp(
     ajv: { customOptions: { removeAdditional: false } },
   });
   app.decorate("config", config);
+  // Built before ready() so a route can rely on `app.mailer` existing. The log
+  // transport is refused in production by loadConfig, not here.
+  app.decorate("mailer", createMailer(config.mail, app.log, seams.sendMail));
   app.setErrorHandler(errorHandler);
   app.setNotFoundHandler((request, reply) => {
     void reply.status(404).send({

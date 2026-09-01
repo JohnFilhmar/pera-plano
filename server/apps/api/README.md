@@ -78,7 +78,32 @@ The beta window has no default on purpose. An install stamped inside it earns
 
 Optional, with defaults: `PORT` (3000), `TELEMETRY_RATE_LIMIT_MAX` (60/min/IP),
 `AUTH_RATE_LIMIT_MAX` (10/min/IP), `GOOGLE_AUTH_RATE_LIMIT_MAX` (20/min/IP),
-`GOOGLE_JWKS_URL`, `INTEGRITY_MAX_SKEW_MS` (300000), `LOG_LEVEL` (`info`).
+`GOOGLE_JWKS_URL`, `INTEGRITY_MAX_SKEW_MS` (300000), `LOG_LEVEL` (`info`),
+`MAIL_TRANSPORT` (`log`).
+
+### Mail
+
+`MAIL_TRANSPORT` decides how the sign-in code leaves the process.
+
+- `log` writes the code to the server log and sends nothing. Local development
+  only. **`loadConfig` refuses to boot with `log` when `NODE_ENV=production`**, so a
+  misconfigured deploy fails loudly instead of quietly printing login codes.
+- `smtp` sends it for real, and then requires `SMTP_HOST`, `SMTP_USER`,
+  `SMTP_PASSWORD` and `MAIL_FROM_ADDRESS`. `SMTP_PORT` defaults to 587,
+  `SMTP_SECURE` to `false`, `MAIL_FROM_NAME` to `PeraPlano`.
+
+`SMTP_SECURE=true` means implicit TLS, which is port 465. Port 587 starts plaintext
+and upgrades through STARTTLS, so it stays `false` there.
+
+For Gmail, `SMTP_PASSWORD` is a 16-character App Password and the account needs
+2-Step Verification enabled. Gmail also rewrites `From` to the authenticated
+account unless a verified "send as" alias exists, so `MAIL_FROM_ADDRESS` normally
+has to equal `SMTP_USER`. Gmail caps a free account near 500 recipients a day, and
+mail from a personal address carries no SPF/DKIM for your own domain, so expect a
+domain-authenticated provider to be a launch prerequisite rather than an upgrade.
+
+If delivery fails the request returns `502 mail_delivery_failed` rather than a
+misleading `200`. The OTP row is left to expire on its own.
 
 The three rate-limit tiers are ordered by what an anonymous caller can spend:
 telemetry is cheap, OTP creates rows and will send mail, and the Google routes
@@ -97,9 +122,9 @@ npm start       # node dist/server.js
 
 Smoke check: `curl -s http://localhost:3000/health` returns `{"status":"ok"}`.
 
-In development the OTP code for `POST /v1/auth/otp/request` is written to the
-server log as `otp issued (dev delivery)`. Wire a real mail provider before
-production, and delete that log line when you do.
+Under `MAIL_TRANSPORT=log` the OTP code for `POST /v1/auth/otp/request` is written
+to the server log as `otp issued (log transport, not delivered)` and no mail is
+sent. Set `MAIL_TRANSPORT=smtp` to deliver it.
 
 ## Test
 
@@ -116,10 +141,13 @@ not point `DATABASE_URL` at a database holding anything you want to keep. Files 
 serially (`fileParallelism: false`) because they share that database. Re-run
 `npm run db:seed` afterwards if you want the dev ruleset back.
 
-Nothing in the suite talks to Google. `buildApp` takes seams for the two
-collaborators that would (`fetchJwks`, `decodeIntegrity`); when a test supplies
-them the real adapters are never constructed, so no suite parses a service-account
-key or opens a socket.
+Nothing in the suite talks to Google or an SMTP server. `buildApp` takes seams for
+the three collaborators that would (`fetchJwks`, `decodeIntegrity`, `sendMail`);
+when a test supplies them the real adapters are never constructed, so no suite
+parses a service-account key, reads a mail password, or opens a socket.
+
+The flip side is that the Google and SMTP contracts are never exercised by the
+tests. Green here is not evidence that either one works against the real service.
 
 ## The pregrant CLI
 
@@ -145,7 +173,7 @@ src/app.ts          buildApp(): plugins, routes and seams, no listen
 src/server.ts       entry point
 src/config.ts       typed env loading, throws on anything missing or invalid
 src/cli/            pregrant, the beta pregrant list
-src/lib/            errors, hashing, otp, jwt, google_id_token, play_integrity, beta_cohort
+src/lib/            errors, hashing, otp, jwt, mailer, google_id_token, play_integrity, beta_cohort
 src/plugins/        prisma (app.prisma), auth (app.authenticate, request.userId)
 src/routes/         one file per domain
 src/services/       auth_service, google_auth_service, entitlement_service

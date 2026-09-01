@@ -1,3 +1,21 @@
+/**
+ * A discriminated union rather than a flat set of optional strings: with
+ * `transport: "smtp"` the credentials are all present by construction, so no
+ * caller has to check whether a host it was handed is really there.
+ */
+export type MailConfig =
+  | { transport: "log" }
+  | {
+      transport: "smtp";
+      host: string;
+      port: number;
+      secure: boolean;
+      user: string;
+      password: string;
+      fromAddress: string;
+      fromName: string;
+    };
+
 export type AppConfig = {
   databaseUrl: string;
   jwtSecret: string;
@@ -12,7 +30,52 @@ export type AppConfig = {
   googleJwksUrl: string;
   integrityMaxSkewMs: number;
   googleAuthRateLimitMax: number;
+  mail: MailConfig;
 };
+
+function loadMailConfig(env: NodeJS.ProcessEnv): MailConfig {
+  const transport = env.MAIL_TRANSPORT ?? "log";
+  if (transport !== "log" && transport !== "smtp") {
+    throw new Error(`Invalid MAIL_TRANSPORT: ${transport}. Expected "log" or "smtp"`);
+  }
+  if (transport === "log") {
+    // The log transport writes the OTP code to the server log, which is the
+    // whole of authentication sitting in plaintext wherever logs are shipped.
+    // Acceptable on a developer's machine, never in production.
+    if (env.NODE_ENV === "production") {
+      throw new Error(
+        'Invalid MAIL_TRANSPORT: "log" writes OTP codes to the server log and is refused when NODE_ENV=production. Set MAIL_TRANSPORT=smtp',
+      );
+    }
+    return { transport: "log" };
+  }
+
+  const requireMailVar = (key: string): string => {
+    const value = env[key];
+    if (!value) {
+      throw new Error(`Missing required environment variable: ${key} (MAIL_TRANSPORT=smtp)`);
+    }
+    return value;
+  };
+
+  const port = env.SMTP_PORT === undefined ? 587 : Number(env.SMTP_PORT);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`Invalid SMTP_PORT: ${env.SMTP_PORT}`);
+  }
+
+  return {
+    transport: "smtp",
+    host: requireMailVar("SMTP_HOST"),
+    port,
+    // Implicit TLS, which Gmail uses on 465. On 587 the connection starts
+    // plaintext and upgrades through STARTTLS, so this stays false there.
+    secure: env.SMTP_SECURE === "true",
+    user: requireMailVar("SMTP_USER"),
+    password: requireMailVar("SMTP_PASSWORD"),
+    fromAddress: requireMailVar("MAIL_FROM_ADDRESS"),
+    fromName: env.MAIL_FROM_NAME ?? "PeraPlano",
+  };
+}
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const databaseUrl = env.DATABASE_URL;
@@ -112,5 +175,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     googleJwksUrl,
     integrityMaxSkewMs,
     googleAuthRateLimitMax,
+    mail: loadMailConfig(env),
   };
 }

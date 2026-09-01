@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import { ApiError } from "../lib/errors.js";
 import { signAccessToken } from "../lib/jwt.js";
+import { OTP_TTL_MS } from "../lib/otp.js";
 import {
   requestOtp,
   verifyOtp,
@@ -46,12 +47,23 @@ export function authRoutes(app: FastifyInstance): Promise<void> {
         destination,
         app.config.jwtSecret,
       );
-      // Dev-only delivery channel: the OTP goes to the log, never the response.
-      // Replace with a real mail provider before production traffic.
-      request.log.info(
-        { requestId, destination, otpCode: code },
-        "otp issued (dev delivery)",
-      );
+      // The code leaves the process here and nowhere else. Delivery failure is
+      // reported rather than swallowed: a caller told "ok" would sit waiting for
+      // a mail that was never sent. The OTP row is left to expire on its own.
+      try {
+        await app.mailer.sendOtp({
+          to: destination,
+          code,
+          expiresInMinutes: Math.round(OTP_TTL_MS / 60_000),
+        });
+      } catch (error) {
+        request.log.error({ err: error, requestId }, "otp mail delivery failed");
+        throw new ApiError(
+          502,
+          "mail_delivery_failed",
+          "Could not send the sign-in code. Try again shortly.",
+        );
+      }
       return { requestId };
     },
   );

@@ -34,6 +34,7 @@ describe("loadConfig", () => {
       googleJwksUrl: "https://www.googleapis.com/oauth2/v3/certs",
       integrityMaxSkewMs: 300000,
       googleAuthRateLimitMax: 20,
+      mail: { transport: "log" },
     });
   });
 
@@ -144,4 +145,78 @@ describe("loadConfig google and play settings", () => {
       expect(() => loadConfig({ ...VALID_ENV, [key]: "0" })).toThrow(key);
     },
   );
+});
+
+// Mail delivery. The OTP code is the whole of authentication, so how it leaves
+// the process is configuration the operator has to state, not a default.
+const SMTP_ENV = {
+  MAIL_TRANSPORT: "smtp",
+  SMTP_HOST: "smtp.gmail.com",
+  SMTP_USER: "sender@example.com",
+  SMTP_PASSWORD: "app-password",
+  MAIL_FROM_ADDRESS: "sender@example.com",
+} as NodeJS.ProcessEnv;
+
+describe("loadConfig mail settings", () => {
+  it("defaults to the log transport", () => {
+    expect(loadConfig(VALID_ENV).mail).toEqual({ transport: "log" });
+  });
+
+  it("refuses the log transport in production, so codes cannot reach a log", () => {
+    expect(() => loadConfig({ ...VALID_ENV, NODE_ENV: "production" })).toThrow(
+      "MAIL_TRANSPORT",
+    );
+  });
+
+  it("allows the smtp transport in production", () => {
+    expect(
+      loadConfig({ ...VALID_ENV, ...SMTP_ENV, NODE_ENV: "production" }).mail.transport,
+    ).toBe("smtp");
+  });
+
+  it("rejects a transport that is neither log nor smtp", () => {
+    expect(() => loadConfig({ ...VALID_ENV, MAIL_TRANSPORT: "carrier-pigeon" })).toThrow(
+      "MAIL_TRANSPORT",
+    );
+  });
+
+  it("loads smtp settings and applies their defaults", () => {
+    expect(loadConfig({ ...VALID_ENV, ...SMTP_ENV }).mail).toEqual({
+      transport: "smtp",
+      host: "smtp.gmail.com",
+      port: 587,
+      secure: false,
+      user: "sender@example.com",
+      password: "app-password",
+      fromAddress: "sender@example.com",
+      fromName: "PeraPlano",
+    });
+  });
+
+  it("reads an explicit port, secure flag and sender name", () => {
+    expect(
+      loadConfig({
+        ...VALID_ENV,
+        ...SMTP_ENV,
+        SMTP_PORT: "465",
+        SMTP_SECURE: "true",
+        MAIL_FROM_NAME: "PeraPlano Beta",
+      }).mail,
+    ).toMatchObject({ port: 465, secure: true, fromName: "PeraPlano Beta" });
+  });
+
+  it.each(["SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD", "MAIL_FROM_ADDRESS"])(
+    "throws when the smtp transport is missing %s",
+    (key) => {
+      const env = { ...VALID_ENV, ...SMTP_ENV };
+      delete env[key];
+      expect(() => loadConfig(env)).toThrow(key);
+    },
+  );
+
+  it("throws on a non-numeric SMTP_PORT", () => {
+    expect(() => loadConfig({ ...VALID_ENV, ...SMTP_ENV, SMTP_PORT: "soon" })).toThrow(
+      "SMTP_PORT",
+    );
+  });
 });
