@@ -214,6 +214,12 @@ class PeraPlanoNotificationListenerService : NotificationListenerService() {
         bigText = bigText,
         postedAt = sbn.postTime,
         capturedAt = nowMillis,
+        // The slot this arrived in, so JS can tell an EDIT of a notification
+        // it has already captured from a second, genuine transaction. Neither
+        // [id] nor the text can: [id] is per-delivery, and a repost carries
+        // the same text as its original. Not user content -- the key is
+        // `package|id|tag|user`, none of which is notification text.
+        notificationKey = sbn.key,
       )
     }
 

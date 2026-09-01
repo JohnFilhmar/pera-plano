@@ -92,6 +92,11 @@ function capture(overrides: Partial<RawCapture> & Pick<RawCapture, "id">): RawCa
     bigText: null,
     postedAt: NOW - MINUTE,
     capturedAt: NOW - MINUTE,
+    // Explicitly null rather than omitted, so a fixture compares equal to the
+    // same capture read back out of the database — `rowToRawCapture` always
+    // produces the field, and most notifications in these tests are not about
+    // redelivery at all (migration 018).
+    notificationKey: null,
     ...overrides,
   };
 }
@@ -646,6 +651,60 @@ test("the same RawCapture processed twice commits exactly one transaction", asyn
   expect(await listOpen()).toHaveLength(0);
 });
 
+// The owner's 2026-09-01 device report: one ₱1,000.00 withdrawal, several
+// identical cards. Android redelivers a notification every time its app edits
+// it, and `extractCapture` stamps each redelivery with a fresh UUID, so the
+// id-keyed guard above could not see them.
+test("a notification redelivered under a new id after an edit raises no second card", async () => {
+  const wallet = await createWallet({ name: "GCash" });
+  await addMatcher(wallet.id, GCASH);
+  const slot = `${GCASH}|0|null|0`;
+
+  // Same slot, same text, a new delivery id and a fresh postTime — exactly what
+  // the platform hands over when an app re-posts a notification it already
+  // posted.
+  const first = await processCapture(
+    gcashSend("cap-edit-1", { notificationKey: slot, postedAt: NOW - MINUTE }),
+  );
+  const second = await processCapture(
+    gcashSend("cap-edit-2", { notificationKey: slot, postedAt: NOW - MINUTE + 1_200 }),
+  );
+
+  expect(first.kind).toBe("committed");
+  expect(second).toEqual({ kind: "ignored", reason: "duplicate" });
+  expect(await ledger()).toHaveLength(1);
+  expect(await listOpen()).toHaveLength(0);
+});
+
+test("a slot re-used for genuinely new text is a new capture, not a replay", async () => {
+  const wallet = await createWallet({ name: "GCash" });
+  await addMatcher(wallet.id, GCASH);
+  const slot = `${GCASH}|7|null|0`;
+
+  // One tile that says "Processing" and then, seconds later, says what actually
+  // happened. Same slot, different facts — only the second is a transaction,
+  // and suppressing it would lose the money it describes.
+  await processCapture(
+    capture({ id: "cap-slot-1", text: "Processing your request...", notificationKey: slot }),
+  );
+  const second = await processCapture(
+    capture({
+      id: "cap-slot-2",
+      text: "You sent ₱500.00 to Juan Dela Cruz. Ref No. ABC123456.",
+      notificationKey: slot,
+      postedAt: NOW - MINUTE + 2_000,
+    }),
+  );
+
+  expect(second.kind).toBe("committed");
+  expect(await ledger()).toHaveLength(1);
+});
+
+// The keyless case — every capture buffered by a build older than migration
+// 018 — is covered by the test directly below: its two captures carry no
+// `notificationKey`, and it still requires the second to be QUEUED rather than
+// suppressed. `findReplayCapture`'s own null-key contract is pinned in
+// raw_notifications_repo.test.ts.
 test("two distinct captures with identical amount, channel and timing still reach the DedupeGate", async () => {
   const wallet = await createWallet({ name: "GCash" });
   await addMatcher(wallet.id, GCASH);

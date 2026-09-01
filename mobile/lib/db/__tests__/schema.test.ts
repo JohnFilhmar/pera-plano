@@ -78,8 +78,13 @@ test("review_queue_items and raw_notifications match contract §3 columns", asyn
     "id", "kind", "payload_json", "raw_notification_id", "created_at", "expires_at", "resolved_at",
   ]);
   const rn = await db.getAllAsync<{ name: string }>("PRAGMA table_info(raw_notifications)");
+  // `notification_key` is LAST because migration 018 added it with ALTER TABLE,
+  // and SQLite appends. It carries `StatusBarNotification.getKey()` — the
+  // notification slot — which is what lets `findReplayCapture` tell an edit of
+  // an already-captured notification apart from a second, genuine transaction.
   expect(rn.map((c) => c.name)).toEqual([
     "id", "package_name", "title", "text", "sub_text", "big_text", "posted_at", "captured_at", "expires_at",
+    "notification_key",
   ]);
 });
 

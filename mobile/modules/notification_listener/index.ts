@@ -267,6 +267,11 @@ function normalizeCapture(capture: NativeRawCapture): RawCapture {
     bigText: capture.bigText ?? null,
     postedAt: capture.postedAt,
     capturedAt: capture.capturedAt,
+    // Absent on every record the native buffer holds from a build older than
+    // this field. `null` is the honest reading — "this capture cannot say
+    // which notification slot it came from" — and `findReplayCapture` treats
+    // it as "cannot tell" and suppresses nothing.
+    notificationKey: capture.notificationKey ?? null,
   };
 }
 

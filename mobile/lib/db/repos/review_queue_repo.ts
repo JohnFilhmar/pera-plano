@@ -71,6 +71,41 @@ export async function enqueue(item: NewReviewItem): Promise<ReviewQueueItem> {
 }
 
 /**
+ * The OPEN item already raised for this capture, or `null`.
+ *
+ * ONE RAW NOTIFICATION MAY RAISE ONE OPEN CARD. The queue had no duplicate
+ * defence of any kind before this (2026-09-01): `dedupe_gate.checkDuplicate`
+ * compares a parsed event against COMMITTED TRANSACTIONS, so it is blind to an
+ * identical event sitting one card away in this table, unconfirmed. Anything
+ * that ran the stages over a stored capture twice therefore produced two
+ * identical cards — and confirming both puts the same ₱1,000 in the ledger
+ * twice, because the second confirm commits before the gate can compare it
+ * against the first.
+ *
+ * THE CAPTURE, AND ONLY THE CAPTURE, IS THE IDENTITY HERE. An earlier revision
+ * of this function also matched on the payload — same kind, amount, direction,
+ * merchant and wallet inside a window — and that is exactly the suppression
+ * `pipeline.test.ts` forbids on the commit path: two genuine ₱100.00 purchases
+ * can agree on every one of those fields, and collapsing them deletes a real
+ * transaction from the user's ledger. Two distinct captures are two distinct
+ * questions; the DedupeGate escalates them to a `possible-duplicate` card and
+ * lets the user judge, which is the right answer and not this function's job.
+ */
+export async function findOpenForRawNotification(
+  rawNotificationId: string,
+  now: number = Date.now(),
+): Promise<ReviewQueueItem | null> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<ReviewQueueItemRow>(
+    `SELECT * FROM review_queue_items
+     WHERE resolved_at IS NULL AND expires_at > ? AND raw_notification_id = ?
+     LIMIT 1`,
+    [now, rawNotificationId],
+  );
+  return row ? rowToReviewQueueItem(row) : null;
+}
+
+/**
  * Open items: unresolved AND unexpired, oldest first (rule 2) — the FIFO
  * order triage depends on so nothing rots at the bottom of the queue. An
  * item exactly at its `expires_at` boundary is treated as no longer open

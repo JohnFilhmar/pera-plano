@@ -25,7 +25,12 @@ import { emitAppEvent } from "@/lib/events/app_events";
 import { getActiveRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { recordParseResult } from "@/lib/diagnostics/parse_stats_repo";
 import { getSetting } from "@/lib/db/repos/app_settings_repo";
-import { getRawCapture, hasRawCapture, storeRawCapture } from "@/lib/db/repos/raw_notifications_repo";
+import {
+  findReplayCapture,
+  getRawCapture,
+  hasRawCapture,
+  storeRawCapture,
+} from "@/lib/db/repos/raw_notifications_repo";
 import {
   insertTransaction,
   listTransactions,
@@ -45,7 +50,7 @@ import {
 } from "@/lib/db/repos/wallet_traits_repo";
 import { classifyOwed, scoreBalanceMovement, scoreText } from "@/lib/wallets/classification";
 import type { OwedPrior, TraitEvidence } from "@/lib/wallets/classification";
-import { enqueue } from "@/lib/db/repos/review_queue_repo";
+import { enqueue, findOpenForRawNotification } from "@/lib/db/repos/review_queue_repo";
 import { routeCapture } from "@/lib/ingest/source_router";
 import { UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { addCaptureListener, drainPendingCaptures } from "@/modules/notification_listener";
@@ -204,6 +209,25 @@ async function queue(
   rawNotificationId: string,
   payload: Record<string, unknown>,
 ): Promise<PipelineOutcome> {
+  // ONE OPEN CARD PER CAPTURE — the second layer, not a replacement for
+  // `findReplayCapture`. That one stops a REDELIVERED notification from ever
+  // being stored twice, which is where the owner's duplicate cards came from.
+  // This one covers anything that reaches the stages twice over ONE stored
+  // capture: `processStored` running again after a crash mid-batch, or a future
+  // caller that reprocesses. Returning the existing card rather than a new one
+  // keeps `PipelineOutcome` honest — a card IS queued for this capture, and
+  // `reviewItemId` points at the one the user will actually see.
+  //
+  // NOTE WHAT THIS DELIBERATELY DOES NOT DO: it never compares two DIFFERENT
+  // captures' payloads. Two genuine ₱100.00 purchases agree on every parsed
+  // field, and suppressing the second would delete a real transaction — see
+  // `findOpenForRawNotification`'s own note and `pipeline.test.ts`'s
+  // "two distinct captures ... still reach the DedupeGate".
+  const existing = await findOpenForRawNotification(rawNotificationId);
+  if (existing !== null) {
+    return { kind: "queued", reviewItemId: existing.id };
+  }
+
   const item = await enqueue({ kind, rawNotificationId, payload });
   return { kind: "queued", reviewItemId: item.id };
 }
@@ -254,6 +278,16 @@ export async function processCapture(
   // parsed events and exists to protect two genuine ₱100 purchases minutes
   // apart from being merged.
   if (await hasRawCapture(capture.id)) {
+    return { kind: "ignored", reason: "duplicate" };
+  }
+
+  // ...AND THE SAME NOTIFICATION ARRIVING UNDER A NEW ID, which the check
+  // above structurally cannot see: `capture.id` is minted per delivery, and
+  // Android redelivers a notification every time the posting app edits it.
+  // See `findReplayCapture` for why the comparison is the notification's SLOT
+  // plus its text rather than the id, why the text alone will not do, and why
+  // it is bounded to the twin window.
+  if ((await findReplayCapture(capture, bundle.tunables.dedupeTwinWindowMs)) !== null) {
     return { kind: "ignored", reason: "duplicate" };
   }
 
@@ -806,9 +840,25 @@ export async function startIngest(): Promise<() => void> {
     // for the whole batch, so every capture drained together shares a TTL
     // anchor rather than drifting apart by however long the writes took.
     const storedAt = systemClock.now();
+
+    // ONE read for the whole batch, for the replay window below. A drain of up
+    // to 500 buffered captures must not fetch the ruleset 500 times, and
+    // nothing in this loop can change it. `null` means no ruleset is seeded
+    // yet, in which case the id check below stands alone — the same fallback
+    // `processStored` already makes when it finds no bundle.
+    const drainBundle = await getActiveRuleset();
+    const replayWindowMs = drainBundle?.tunables.dedupeTwinWindowMs ?? null;
+
     const fresh: RawCapture[] = [];
     for (const capture of ordered) {
       if (await hasRawCapture(capture.id)) continue;
+      // The buffered path needs this guard for the same reason the live one
+      // does, and needs it MORE: the buffer holds whatever accumulated while
+      // no JS was alive, so every edit an app made to a notification over
+      // those hours is sitting in it as a separate record with its own id.
+      if (replayWindowMs !== null && (await findReplayCapture(capture, replayWindowMs)) !== null) {
+        continue;
+      }
       await storeRawCapture(capture, storedAt);
       fresh.push(capture);
     }

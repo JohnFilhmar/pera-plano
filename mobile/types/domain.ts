@@ -661,4 +661,20 @@ export type RawCapture = {
   bigText: string | null;
   postedAt: EpochMs;
   capturedAt: EpochMs;
+  /**
+   * `StatusBarNotification.getKey()` — Android's own identity for the
+   * notification SLOT this arrived in (`package|id|tag|user`), stable across
+   * every edit the posting app makes to it.
+   *
+   * NOT `id`, WHICH IS THE OPPOSITE FACT. `id` is minted per DELIVERY, so an
+   * app that edits its notification produces several ids for one key; that is
+   * exactly the difference `findReplayCapture` needs to tell a redelivery
+   * apart from a second, genuine transaction (see migration 018).
+   *
+   * OPTIONAL because two real populations carry none: rows stored before
+   * migration 018, and records still sitting in the native capture buffer
+   * written by a build that predates it. Absent means "cannot tell", which
+   * suppresses nothing.
+   */
+  notificationKey?: string | null;
 };
