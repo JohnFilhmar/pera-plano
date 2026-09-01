@@ -109,8 +109,13 @@ export class VerificationError extends Error {}
 export class ContentLengthError extends Error {}
 export class RedirectError extends Error {}
 
-/** Decimal GB, because that is what a data plan is sold in. */
-function formatSize(bytes: number): string {
+/**
+ * Decimal GB, because that is what a data plan is sold in.
+ *
+ * Exported so the Privacy centre's "reclaim this space" copy and the download
+ * confirmation cannot drift into quoting the same file at two different sizes.
+ */
+export function formatSize(bytes: number): string {
   return `${(bytes / 1e9).toFixed(1)} GB`;
 }
 
