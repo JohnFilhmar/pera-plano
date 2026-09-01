@@ -117,10 +117,12 @@ happened. Never "OK" — the point of the exercise is the value, not the tick.
 | Log hygiene | no key, DEK, phrase, or notification text reachable from any log or exception message |
 | A54 5G RAM variant | `MemTotal` ≈ 7.3 GiB (`free -h` under Termux, 2026-08-21) → **8 GB retail variant**. Resolves AI spec §6 risk 2 and closes spike Task 1. **The 6 GB variant remains UNKNOWN and is never assumed fine** — every peak-RSS result carries the caveat "on 8 GB; 6 GB unmeasured" |
 | A54 idle memory pressure | 4.2 G used, **2.9 G available**, and **1.6 G of 8 G zram already in use at idle** — measured with Termux running and PeraPlano *not* (2026-08-21). Available, not total, is what weights compete for, and the app's own RN + Hermes + SQLCipher footprint still has to come out of that 2.9 G before a tier is sized |
-| Qwen3-0.6B Q4_K_M throughput | **138 t/s prompt (warm), 7.5–10.8 t/s generation** — llama.cpp CLI under Termux, `QuantFactory/Qwen3-0.6B-GGUF:Q4_K_M`, build b10553 (2026-08-21). The first-turn 8.4 t/s prompt reading is cold model load, not the steady rate. `/no_think` moved generation 7.5 → 10.8 |
+| Qwen3-0.6B Q4_K_M throughput | ~~**138 t/s prompt (warm), 7.5–10.8 t/s generation** — llama.cpp CLI under Termux, `QuantFactory/Qwen3-0.6B-GGUF:Q4_K_M`, build b10553 (2026-08-21)~~ → **RETRACTED 2026-08-31. The in-app figure is 32.54 tok/s**, measured on battery through `llama.rn`, three runs, 1.5% spread. See `docs/superpowers/specs/2026-08-31-llama-rn-spike-findings.md`. The Termux reading is roughly 3x pessimistic and also had the 0.6B running *slower* than the 1.7B, which cannot be true on one chip. Most likely cause: `llama.rn` ships fourteen CPU-dispatch variants and selects the dotprod path for this Cortex-A78, while build b10553 was generically compiled. **Do not carry the Termux number, or the "treat every tok/s cell as optimistic by 3x" amendment it produced, into any sizing decision.** |
 
-**The throughput row is a Termux CLI measurement, not an in-app one, and it does not close spike Task 4
-or Task 7.** `llama-cli` had the whole device; inside PeraPlano the model shares RAM with React Native,
+**The throughput row was a Termux CLI measurement, not an in-app one, which is exactly why it was
+wrong.** The spike has since closed the speed question in-app; what it did **not** close is memory
+behaviour under a real app switch, which is Session 3, Gate 4.
+`llama-cli` had the whole device; inside PeraPlano the model shares RAM with React Native,
 Hermes, op-sqlite and SQLCipher, and llama.cpp `mmap`s the GGUF as clean file-backed pages that Android
 evicts under pressure and re-reads from UFS. Nothing here says what happens when the user switches to
 Messenger and back — that is still unmeasured, and it is a low-memory-killer question rather than a
@@ -1412,3 +1414,231 @@ git commit --allow-empty -m "test(mobile): record W1 on-device verification resu
 
 Paste the recorded outcomes into that message. An empty commit whose message says nothing is worth
 nothing.
+
+---
+
+# Session 3 — The on-device assistant
+
+Assistant plan Tasks 26 and 27, against design spec §5.6. **Gate: everything in the assistant's
+CI phases must be green before any of this is attempted.** These are the ten things that can never
+be CI. They join this record rather than starting a parallel one.
+
+**Every gate below is NOT RUN.** None of the blanks has been filled by a device session.
+
+## What the spike already measured, and what it does not license
+
+The `llama.rn` spike (`docs/superpowers/specs/2026-08-31-llama-rn-spike-findings.md`, 2026-08-31)
+answered several of these questions **for a probe app**, `com.filldev.llamaprobe`, on a debug
+dev-client build. Session 3 re-answers them **for the shipped app**, with the real bridge
+(`mobile/modules/llama_bridge/index.ts`) and the real config plugin. A probe measurement is a
+prediction about the app, not a measurement of it, which is the same lesson the Termux CLI reading
+taught at a cost of one wrong amendment.
+
+The spike's authoritative numbers, which every gate below is checked against:
+
+| | Tier 1, `qwen3-0.6b-q4` | Tier 2, `qwen3-1.7b-q4` |
+|---|---|---|
+| Throughput, on battery | 32.54 tok/s median | 11.45 tok/s median |
+| TTFT median | 55 ms | 138 ms |
+| Model load | 2,174 ms | 5,258 ms |
+| TOTAL PSS, warmed | 1.25 GB | 2.51 GB |
+| Run-to-run spread | 1.5% | 10% |
+
+All of it on the **8 GB** A54 variant. The 6 GB variant remains UNKNOWN and is never assumed fine.
+
+## Gate 1 — Does `llama.rn` load a Qwen3 GGUF and stream tokens, in the shipped app?
+
+Everything else is downstream of this. The spike answered it for the probe; this re-answers it
+through `modules/llama_bridge/index.ts`, which is a different binding: `initLlama` with `n_ctx`
+2048 and `n_parallel` **1**, `completion()` driven by a `messages` array under `jinja: true`, and
+tokens re-published as an `AsyncIterable`.
+
+- Model loads, first token arrives, stream completes: `________`
+- Load time, tier 1 / tier 2: `________ ms` / `________ ms`
+- **A failure here stops the feature.** There is no fallback that keeps a chat surface; §7.4's
+  button-driven design is what ships instead, and the seven tool handlers are unchanged by it.
+
+## Gate 2 — Does llama.cpp accept the compiled GBNF, and does constrained decoding hold?
+
+**50 generations against one tool's grammar. Target: zero malformed outputs.** Phase 3 proves the
+grammar *string*, by snapshot. Only the real parser proves its *meaning*.
+
+Run it against a grammar produced by `lib/ai/tools/grammar.ts`, not a hand-written one. The spike
+measured 0 malformed in 50 against its own hand-written grammar, so a failure here is a defect in
+the generator, not in llama.cpp.
+
+- Malformed outputs, out of 50: `________`
+- **Non-zero is a blocker for tier 1 specifically.** The spike measured the grammar carrying tier 1
+  from 58% to 78% strict tool-pick; without it, tier 1 does not clear the bar and the menu loses
+  the tier that makes this feature free for everyone.
+
+## Gate 3 — Does `<think>` suppression work in the shipped app?
+
+Spec §5.6 words this as "tiers 1 to 3"; **the catalogue now ships two tiers**, so it is both of
+them. The lever is the chat template's own flag, `enable_thinking: false` under `jinja: true`, not
+a prompt hack and not the stream-level stripper.
+
+- `<think>` visible in output, tier 1 / tier 2: `________` / `________`
+- Median wall clock, suppressed / unsuppressed, tier 2: `________ ms` / `________ ms`
+- **Fail on an empty answer, not only on a visible tag.** The spike measured the stripper-only
+  configuration returning `"visible_text": ""` after 11 seconds, because the `<think>` block never
+  closed inside the token budget and stripping it removed the entire output. A gate written against
+  a visible tag would have passed that.
+- **Do not use TTFT as the discriminator.** It sat at 108 to 115 ms across all three spike
+  configurations, because prefill is identical no matter what the model does next. Only wall clock
+  separates them.
+
+## Gate 4 — Peak memory, and survival across an app switch
+
+**The gate most likely to reshape the menu, and no unit test can see it.** Load tier 2, background
+the app, open the camera, come back.
+
+Warm the model with one generation before sampling. Sampling straight after load understates PSS by
+whatever the KV cache is about to grow to, and an understated `minRamBytes` is exactly the bug that
+offers a phone a tier it will be killed for loading.
+
+- TOTAL PSS, tier 1 / tier 2, warmed, via `dumpsys meminfo`: `________` / `________`
+- Process survived the app switch: `________`
+- If it did not: what was resident, and what did Android kill: `________`
+- **This is a release-build measurement and the spike's was not.** 1.25 GB and 2.51 GB came from a
+  debug build and are upper bounds. `catalogue.ts` derives `minRamBytes` from them, 3.5 GiB for
+  tier 1 and 6.5 GiB for tier 2, and **that gate currently offers 6 GB phones tier 1 only.** A
+  release-build figure is the one thing that could relax tier 2, so record it even if the switch
+  survives.
+
+## Gate 5 — Thermal and battery behaviour across a sustained ten-minute eval
+
+The project holds itself to under 2% per day attribution for the notification listener. An
+assistant is a different profile and is not held to that number, but **a run that visibly heats the
+phone is a finding** and belongs in the box.
+
+- Battery at start / end of a ten-minute run: `________%` / `________%`
+- Temperature at start / end: `________ °C` / `________ °C`
+- Did throughput fall across the run: `________`
+- The spike's battery retake sat at 34.4 °C rising to 34.6 °C across a 128-token run, which is
+  short enough that it says nothing about ten minutes.
+
+## Gate 6 — A real download over a Philippine mobile network
+
+**A simulated `Range` request proves the code, not the network.** `downloader.ts` is tested against
+an injected fetch; this is the only thing that tests the network.
+
+Resume across three interruptions, each a different failure shape:
+
+- A tunnel, meaning signal lost and regained on the same cell: `________`
+- A handover between cells or between Wi-Fi and mobile data: `________`
+- A 30-minute pause with the app backgrounded: `________`
+- Bytes re-downloaded after each resume (should be zero): `________`
+- Metered-connection confirmation appeared, and named the size in the sentence: `________`
+- **A resume that silently restarts from zero is a data-cost incident**, not a slow download.
+
+## Gate 7 — SHA-256 of the model file on-device
+
+`downloader.ts` digests the bytes on disk with `@noble/hashes`, in JS.
+
+- Time to digest tier 2's 1.06 GB file: `________ s`
+- Did the UI block, or drop frames, while it ran: `________`
+- **This is spec §6 risk 8 and it has a named remedy.** If it blocks the UI, the digest moves to a
+  native helper and `llama_bridge` grows its first piece of Kotlin. Record the number even if it
+  passes, because it is what the decision is made on.
+
+## Gate 8 — Is decode genuinely off the JS thread?
+
+Scroll the chat while generating.
+
+- Chat scrolls smoothly during generation: `________`
+- Any dropped frames, and roughly how many: `________`
+- **`llama.rn` decodes on a native thread by design**, which is the reason `modules/llama_bridge`
+  is a boundary module rather than a second Kotlin module. A failure here means that claim is wrong
+  and the architecture argument in §1.1 needs re-opening.
+
+## Gate 9 — Does streaming read as alive? Eyeball only.
+
+**This one decides real copy, and it is a judgement rather than a measurement.** Is
+"Looking at your limits…" enough, or does the gap before the first token still read as frozen?
+
+- Tier 1, at 55 ms TTFT and 32.54 tok/s: `________`
+- Tier 2, at 138 ms TTFT and 11.45 tok/s: `________`
+- The tool-call line appeared before the first token: `________`
+- Copy that should change as a result: `________`
+- **§4.4 assumed this feature is slow, and for tier 1 that assumption is far too pessimistic.**
+  A sub-second answer may need different copy from the one written for dead air.
+
+## Gate 10 — Storage and backup
+
+- App footprint with two models present: `________`
+- `files/models/` is genuinely excluded from Android backup: `________`
+
+Verify the exclusion against the **generated** manifest and resources, the same way Part 7 verifies
+the blocked permissions, because `mobile/android/` is regenerated by every prebuild:
+
+```bash
+cd mobile
+npx expo prebuild --platform android --no-install
+grep -n "dataExtractionRules\|fullBackupContent" android/app/src/main/AndroidManifest.xml
+cat android/app/src/main/res/xml/backup_rules.xml
+cat android/app/src/main/res/xml/data_extraction_rules.xml
+grep -n "reactNativeArchitectures" android/gradle.properties
+```
+
+Expect `@xml/backup_rules` and `@xml/data_extraction_rules` on `<application>`, an
+`<exclude domain="file" path="models/" />` in both rule files (in `data_extraction_rules.xml` it
+must appear in **both** `<cloud-backup>` and `<device-transfer>`), and
+`reactNativeArchitectures=arm64-v8a`.
+
+- **A missing exclusion is not a cosmetic failure.** `app.json` sets no app-wide
+  `android:allowBackup="false"`, so Android's default is to try, and 3.3 GB of public weights into
+  a user's Google backup quota is both absurd and a support incident.
+- The unit tests in `modules/llama_bridge/__tests__/app_plugin.test.ts` prove the plugin transforms
+  a fixture correctly. They cannot prove the plugin is **registered and runs**. That is what the
+  prebuild above is for.
+
+---
+
+## The human judgement §5.4 requires. It is a judgement, not a test.
+
+Spec §5.4: *"A human reads all 30 answers once per tier and records a judgement in the tier-cut
+note. That is a judgement, not a test, and it is labelled as one."*
+
+**Prose quality is bounded below by the guardrails and above by nothing.** The eval's tool-pick
+number and grounding-rejection rate bound the failure modes that matter. Nothing bounds whether the
+answer reads well, and nothing cheap can.
+
+Read all 30 answers per tier, then write one paragraph per tier saying whether the prose is
+acceptable to ship, and what specifically was wrong with the answers that were not.
+
+- Tier 1 judgement: `________________`
+- Tier 2 judgement: `________________`
+- **Do not let this row acquire a number it has not earned.** A score here would be a measurement
+  of the reader, presented as a measurement of the model.
+
+---
+
+## The tier-cut note (assistant plan Task 27). NOT RUN.
+
+**Three runs per tier before any cut**, because without repeat runs there is no noise floor and
+"within noise" is a phrase rather than a test.
+
+- Tier 1, three strict tool-pick scores out of 30: `________` / `________` / `________`
+- Tier 2, three strict tool-pick scores out of 30: `________` / `________` / `________`
+- Observed run-to-run spread: `________`
+- Tier 1 / tier 2 p90 time-to-first-token: `________ ms` / `________ ms`
+
+**A tier survives only if it beats the tier below it by more than the run-to-run spread of a single
+tier.** Speed is the second criterion, applied after accuracy: a tier whose **p90 TTFT exceeds
+roughly 20 seconds** is not a real tier either, because an answer that slow will not be asked for
+twice. That 20 s is provisional but it is a number, not a blank.
+
+- Tiers removed, and why: `________________`
+- **A tier removed from `catalogue.ts` is not deleted from devices that already hold it.** Record
+  what happens to a user holding a cut tier's weights. The honest answer is that it keeps working
+  and stops being offered; anything else deletes a multi-gigabyte file the user paid mobile data
+  for.
+
+### Commit the results
+
+```bash
+git commit --allow-empty -m "test(mobile): record the assistant's on-device gate results"
+```
+
+Paste the recorded outcomes into that message.
