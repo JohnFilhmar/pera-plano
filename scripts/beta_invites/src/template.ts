@@ -113,7 +113,7 @@ export function render_invite(recipient: Recipient, config: MailerEnv): Rendered
   </head>
   <body style="margin:0;padding:0;background-color:${PAGE};">
     <div style="display:none;max-height:0;overflow:hidden;opacity:0;mso-hide:all;">
-      Accept the tester invite, install PeraPlano, and keep Plus for life.
+      Google approved the build a day after submission, so testing starts now. Accept the invite and keep Plus for life.
     </div>
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:${PAGE};">
       <tr>
@@ -130,6 +130,9 @@ export function render_invite(recipient: Recipient, config: MailerEnv): Rendered
                 <h1 style="margin:0 0 14px 0;font-family:Arial,Helvetica,sans-serif;font-size:24px;line-height:32px;color:${INK};">Hi ${name}, you are on the tester list.</h1>
                 <p style="margin:0 0 18px 0;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:26px;color:${MUTED};">
                   You signed up at <a href="${beta_url}" style="color:${BRAND_DARK};">peraplano</a> to help test PeraPlano before launch. The closed test is open, and this address is on the Google Play tester list.
+                </p>
+                <p style="margin:0 0 18px 0;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:26px;color:${MUTED};">
+                  Sooner than planned, too. Google review usually runs three to five days, and we told people to expect that. The build cleared within a day of submission, so you can start testing now rather than at the end of the week.
                 </p>
                 ${device_line}
               </td>
@@ -197,6 +200,8 @@ ${steps}
     `Hi ${greeting_name(recipient)}, you are on the PeraPlano tester list.`,
     "",
     `You signed up at ${config.BETA_PAGE_URL} to help test PeraPlano before launch. The closed test is open, and ${recipient.email} is on the Google Play tester list.`,
+    "",
+    "Sooner than planned, too. Google review usually runs three to five days, and we told people to expect that. The build cleared within a day of submission, so you can start testing now rather than at the end of the week.",
     "",
     "HOW TO GET IN",
     opt_in_url
