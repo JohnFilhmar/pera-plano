@@ -60,8 +60,13 @@ npm run db:seed             # loads parser ruleset v1
 `npm run db:up` starts the `postgres` service behind compose profile `api`, so a
 normal deploy does not bring it up. The container is named `peraplano-postgres-1`.
 
-The Prisma CLI reads `DATABASE_URL` from the environment and there is no committed
-`.env`, so if yours is not exported, prefix the command:
+`dev`, `start`, `db:seed` and `pregrant` pass `--env-file-if-exists=.env`, so a
+local `.env` is loaded into the process. "If exists" is deliberate: in staging and
+production the environment is supplied by the container, and a missing file must
+not stop the server from booting.
+
+The Prisma CLI (`db:migrate`, `db:generate`, `db:deploy`) loads `.env` on its own.
+If you have no `.env` at all, prefix the command instead:
 
 ```bash
 DATABASE_URL="postgresql://peraplano:peraplano@localhost:5432/peraplano" npm run db:generate
