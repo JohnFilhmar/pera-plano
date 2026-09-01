@@ -96,6 +96,7 @@
       "^@/(.*)$": "<rootDir>/$1",
       "^@op-engineering/op-sqlite$": "<rootDir>/test_support/sqlite_mock.ts",
       "^expo-image-picker$": "<rootDir>/test_support/image_picker_mock.ts",
+      "^llama\\.rn$": "<rootDir>/test_support/llama_rn_mock.ts",
       "^lucide-react-native$": "<rootDir>/node_modules/lucide-react-native/dist/cjs/lucide-react-native.js"
     },
     "transformIgnorePatterns": [
