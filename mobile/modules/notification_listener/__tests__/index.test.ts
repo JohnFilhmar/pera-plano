@@ -249,9 +249,10 @@ describe("drainPendingCaptures", () => {
     bigText: null,
     postedAt: 1754060400000,
     capturedAt: 1754060400500,
+    notificationKey: "com.globe.gcash.android|0|null|0",
   };
 
-  it("delegates with no arguments and resolves with typed RawCapture objects carrying exactly the eight contract §4 fields", async () => {
+  it("delegates with no arguments and resolves with typed RawCapture objects carrying exactly the nine contract §4 fields", async () => {
     mockNativeModule.drainPendingCaptures.mockResolvedValue([nativeCapture]);
 
     const result = await drainPendingCaptures();
@@ -259,7 +260,17 @@ describe("drainPendingCaptures", () => {
     expect(mockNativeModule.drainPendingCaptures).toHaveBeenCalledWith();
     expect(result).toEqual([nativeCapture]);
     expect(Object.keys(result[0]).sort()).toEqual(
-      ["bigText", "capturedAt", "id", "packageName", "postedAt", "subText", "text", "title"].sort(),
+      [
+        "bigText",
+        "capturedAt",
+        "id",
+        "notificationKey",
+        "packageName",
+        "postedAt",
+        "subText",
+        "text",
+        "title",
+      ].sort(),
     );
   });
 
@@ -488,11 +499,19 @@ describe("isKeyguardLocked", () => {
 // `openAccessSettings`, which is a bare `Function` and therefore `void`.
 // ===========================================================================
 
-/** The eight contract §4 field names, as `Object.keys(...)` should report them. */
+/**
+ * The nine contract §4 field names, as `Object.keys(...)` should report them.
+ *
+ * `notificationKey` joined them with migration 018: the notification SLOT a
+ * capture arrived in, which is what tells an EDIT of an already-captured
+ * notification apart from a second, genuine transaction. The delivery `id`
+ * cannot — it is a fresh UUID every time Android redelivers.
+ */
 const RAW_CAPTURE_FIELDS = [
   "bigText",
   "capturedAt",
   "id",
+  "notificationKey",
   "packageName",
   "postedAt",
   "subText",
@@ -501,7 +520,7 @@ const RAW_CAPTURE_FIELDS = [
 ].sort();
 
 /**
- * A capture with every one of the eight fields populated -- deliberately
+ * A capture with every one of the nine fields populated -- deliberately
  * including non-null `subText`/`bigText`, which the encryption-era
  * `drainPendingCaptures` test above leaves `null`. A normalizer that dropped
  * either field entirely would still pass that older test; it cannot pass this
@@ -516,6 +535,7 @@ const fullyPopulatedCapture: RawCapture = {
   bigText: "You have received PHP 1,250.00 from JUAN D. Ref. No. 9001234567.",
   postedAt: 1754060400000,
   capturedAt: 1754060400500,
+  notificationKey: "com.globe.gcash.android|0|null|0",
 };
 
 /**
@@ -713,12 +733,12 @@ describe("the contract §4 listener surface", () => {
   });
 
   // -------------------------------------------------------------------------
-  // drainPendingCaptures -- the eight fields, and the JS-side absent-value
+  // drainPendingCaptures -- the nine fields, and the JS-side absent-value
   // guarantee (plan Task 8 rule 3).
   // -------------------------------------------------------------------------
 
   describe("drainPendingCaptures", () => {
-    it("returns typed RawCapture objects carrying all eight fields intact, including non-null subText and bigText", async () => {
+    it("returns typed RawCapture objects carrying all nine fields intact, including non-null subText and bigText", async () => {
       mockNativeModule.drainPendingCaptures.mockResolvedValue([fullyPopulatedCapture]);
 
       const [capture] = await drainPendingCaptures();

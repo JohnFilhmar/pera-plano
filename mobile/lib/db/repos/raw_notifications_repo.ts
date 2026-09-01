@@ -39,6 +39,8 @@ type RawNotificationRow = {
   big_text: string | null;
   posted_at: number;
   captured_at: number;
+  /** Migration 018. NULL on every row stored before it — see `RawCapture.notificationKey`. */
+  notification_key: string | null;
 };
 
 function rowToRawCapture(row: RawNotificationRow): RawCapture {
@@ -51,6 +53,7 @@ function rowToRawCapture(row: RawNotificationRow): RawCapture {
     bigText: row.big_text,
     postedAt: row.posted_at,
     capturedAt: row.captured_at,
+    notificationKey: row.notification_key,
   };
 }
 
@@ -130,8 +133,9 @@ export async function storeRawCapture(capture: RawCapture, now: number): Promise
   const db = await getDatabase();
   await db.runAsync(
     `INSERT OR IGNORE INTO raw_notifications
-       (id, package_name, title, text, sub_text, big_text, posted_at, captured_at, expires_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, package_name, title, text, sub_text, big_text, posted_at, captured_at, expires_at,
+        notification_key)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       capture.id,
       capture.packageName,
@@ -142,6 +146,7 @@ export async function storeRawCapture(capture: RawCapture, now: number): Promise
       capture.postedAt,
       capture.capturedAt,
       now + RAW_CAPTURE_TTL_MS,
+      capture.notificationKey ?? null,
     ],
   );
   return capture.id;
@@ -209,6 +214,86 @@ export async function hasRawCapture(id: string): Promise<boolean> {
     [id],
   );
   return (row?.count ?? 0) > 0;
+}
+
+/**
+ * The id of an already-stored capture that is THE SAME NOTIFICATION as this
+ * one, redelivered — or `null` when this is genuinely new.
+ *
+ * WHY THIS EXISTS ALONGSIDE `hasRawCapture`, WHICH LOOKS LIKE THE SAME
+ * QUESTION. It is not. `capture.id` is a UUID minted per DELIVERY in
+ * `PeraPlanoNotificationListenerService.extractCapture`, so it answers "have I
+ * been handed this exact delivery before" — the right guard for the
+ * at-least-once native drain handing back a batch it already gave us, and the
+ * wrong one for everything else. Android calls `onNotificationPosted` AGAIN
+ * every time an app edits a notification it already posted, and each of those
+ * redeliveries arrives with a fresh UUID. The id check cannot see them, so one
+ * withdrawal notification its bank app edited twice became three stored
+ * captures, three pipeline runs and three identical Review Queue cards
+ * (owner's device report, 2026-09-01).
+ *
+ * THE SLOT KEY IS THE WHOLE ANSWER, AND TEXT ALONE IS NOT.
+ * `notificationKey` is `StatusBarNotification.getKey()` — `package|id|tag|user`
+ * — which the platform holds constant across an edit and differs between two
+ * separately-posted notifications. Matching on the text alone was the first
+ * attempt at this and it is WRONG: `pipeline.test.ts`'s "two distinct captures
+ * with identical amount, channel and timing still reach the DedupeGate" pins
+ * the project's decision that two genuine ₱100.00 purchases producing
+ * byte-identical text inside the twin window must be ESCALATED to the user as
+ * a `possible-duplicate` card, never suppressed. Suppressing there eats a real
+ * transaction, which is worse than the duplicate card it would fix. Requiring
+ * the key means two separately-posted notifications are never touched by this
+ * function at all, whatever their text says.
+ *
+ * A NULL KEY SUPPRESSES NOTHING, and that is the safe direction. Rows stored
+ * before migration 018, and records still in the native buffer written by a
+ * build that predates it, carry none — "cannot tell" must behave exactly like
+ * today rather than guess.
+ *
+ * THE TEXT IS STILL COMPARED, because a slot is reused for genuinely new
+ * content: a tile that goes "Processing" then "Sent ₱1,000" is one slot and
+ * two different facts, and only the second is the transaction. Identical text
+ * in the same slot is the redelivery; changed text in the same slot is a new
+ * capture that the DedupeGate then judges on its merits.
+ *
+ * `posted_at` is deliberately NOT compared, only the window it must fall in:
+ * the platform stamps a repost with a fresh `postTime`, so including it would
+ * differ on exactly the redeliveries this exists to catch.
+ *
+ * NULL-SAFE by `IS` rather than `=`: three of the four text fields are
+ * routinely NULL, and `NULL = NULL` is NULL in SQL, so `=` would never match
+ * the captures carrying the least text.
+ */
+export async function findReplayCapture(
+  capture: RawCapture,
+  windowMs: number,
+): Promise<string | null> {
+  const notificationKey = capture.notificationKey ?? null;
+  if (notificationKey === null) return null;
+
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ id: string }>(
+    `SELECT id FROM raw_notifications
+     WHERE package_name = ?
+       AND notification_key = ?
+       AND title IS ? AND text IS ? AND sub_text IS ? AND big_text IS ?
+       AND posted_at >= ? AND posted_at <= ?
+       AND id <> ?
+     ORDER BY posted_at DESC
+     LIMIT 1`,
+    [
+      capture.packageName,
+      notificationKey,
+      capture.title,
+      capture.text,
+      capture.subText,
+      capture.bigText,
+      capture.postedAt - windowMs,
+      capture.postedAt + windowMs,
+      capture.id,
+    ],
+  );
+  return row?.id ?? null;
 }
 
 /**

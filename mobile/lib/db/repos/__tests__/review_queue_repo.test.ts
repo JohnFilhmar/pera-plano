@@ -4,11 +4,13 @@ import {
   countOpen,
   countOpenByKind,
   enqueue,
+  findOpenForRawNotification,
   listOpen,
   listOpenPage,
   purgeExpired,
   resolve,
 } from "../review_queue_repo";
+import { storeRawCapture } from "../raw_notifications_repo";
 import { freshDb } from "@/test_support/db";
 import type { ReviewItemPayload, ReviewKind, ReviewQueueItem } from "@/types/domain";
 import type { SQLiteDatabase } from "@/lib/db/database";
@@ -483,5 +485,99 @@ describe("countOpenByKind", () => {
 
     expect(Object.values(counts).reduce((sum, count) => sum + count, 0)).toBe(total);
     expect(total).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// findOpenForRawNotification — one raw notification may raise one open card.
+// Before this the queue had no duplicate defence of any kind: `checkDuplicate`
+// compares against COMMITTED transactions, so two cards for one capture could
+// both be confirmed and commit the same money twice (2026-09-01).
+// ---------------------------------------------------------------------------
+
+describe("findOpenForRawNotification", () => {
+  /**
+   * `review_queue_items.raw_notification_id` is a foreign key, so a card can
+   * only ever point at a capture that really was stored — these tests store one
+   * for the same reason the pipeline does before it queues anything.
+   */
+  async function storeCapture(id: string): Promise<void> {
+    await storeRawCapture(
+      {
+        id,
+        packageName: "com.globe.gcash.android",
+        title: "GCash",
+        text: "You sent ₱1,000.00 to Juan Dela Cruz.",
+        subText: null,
+        bigText: null,
+        postedAt: 1_000,
+        capturedAt: 1_000,
+        notificationKey: null,
+      },
+      1_000,
+    );
+  }
+
+  test("finds the open card already raised for a capture", async () => {
+    await storeCapture("cap-1");
+    const item = await enqueue({
+      kind: "low-confidence",
+      payload: { amount: 100_000 },
+      rawNotificationId: "cap-1",
+    });
+
+    expect((await findOpenForRawNotification("cap-1"))?.id).toBe(item.id);
+  });
+
+  test("is null for a capture that has raised no card", async () => {
+    await storeCapture("cap-1");
+    await enqueue({ kind: "low-confidence", payload: {}, rawNotificationId: "cap-1" });
+
+    expect(await findOpenForRawNotification("cap-2")).toBe(null);
+  });
+
+  test("ignores a card the user has already triaged", async () => {
+    // A resolved card is not an open question, so the same capture reaching the
+    // stages again must be free to ask a new one rather than silently reusing a
+    // card the user has finished with.
+    await storeCapture("cap-1");
+    const item = await enqueue({
+      kind: "low-confidence",
+      payload: {},
+      rawNotificationId: "cap-1",
+    });
+    await resolve(item.id, "confirmed");
+
+    expect(await findOpenForRawNotification("cap-1")).toBe(null);
+  });
+
+  test("ignores an expired card", async () => {
+    // Same predicate as `listOpen`: an item past its 30-day TTL is no longer
+    // open, and treating it as one would suppress a card the user can never see.
+    await storeCapture("cap-1");
+    const dateSpy = jest.spyOn(Date, "now");
+    dateSpy.mockReturnValue(1_000);
+    await enqueue({
+      kind: "low-confidence",
+      payload: {},
+      rawNotificationId: "cap-1",
+      expiresAt: 2_000,
+    });
+    dateSpy.mockRestore();
+
+    expect(await findOpenForRawNotification("cap-1", 10_000)).toBe(null);
+  });
+
+  test("never matches a card that came from a different capture", async () => {
+    // Two distinct captures are two distinct questions, however alike their
+    // payloads read — suppressing the second would drop a real transaction.
+    await storeCapture("cap-1");
+    await enqueue({
+      kind: "low-confidence",
+      payload: { amount: 100_000, direction: "out", merchant: "Aling Nena" },
+      rawNotificationId: "cap-1",
+    });
+
+    expect(await findOpenForRawNotification("cap-2")).toBe(null);
   });
 });

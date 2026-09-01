@@ -1,0 +1,44 @@
+-- 018_raw_notification_key.sql — fixes the owner's 2026-09-01 device report,
+-- "multiple duplicates from a single notification".
+--
+-- WHAT THE BUG WAS. Android calls `onNotificationPosted` again every time the
+-- posting app EDITS a notification it has already posted — a bank tile that
+-- goes "Processing" then "Sent", or that appends the running balance a second
+-- later. Each of those redeliveries reaches
+-- `PeraPlanoNotificationListenerService.extractCapture`, which stamps every one
+-- with a fresh `UUID.randomUUID()`. So the pipeline's replay guard
+-- (`hasRawCapture`, rule 11) never matched: it keys on that per-DELIVERY id,
+-- and every redelivery is a new delivery by that definition. One withdrawal
+-- became three stored captures, three pipeline runs and three Review Queue
+-- cards asking the same question.
+--
+-- WHY NOT DEDUPE ON THE TEXT. That was the first attempt and it is wrong.
+-- `pipeline.test.ts`'s "two distinct captures with identical amount, channel
+-- and timing still reach the DedupeGate" pins the project's decision on this
+-- exact case: two genuine ₱100.00 purchases can produce byte-identical
+-- notification text inside the twin window, and the answer is to ESCALATE
+-- them to the user as a `possible-duplicate` card, never to suppress one.
+-- Suppressing on text alone silently eats the second purchase — losing a real
+-- transaction, which is far worse than the duplicate card it would fix.
+--
+-- WHAT THIS COLUMN IS. `StatusBarNotification.getKey()` — the platform's own
+-- identity for a notification SLOT (`package|id|tag|user`). It is stable
+-- across an edit and different between two separately-posted notifications,
+-- which is precisely the distinction the text cannot make. A redelivery is
+-- then "same slot AND same text, seconds apart"; two genuine purchases posted
+-- as two notifications have two different keys and are never touched.
+--
+-- NULLABLE, AND THAT IS LOAD-BEARING. Two populations legitimately carry no
+-- key: every row already stored by a build that predates this migration, and
+-- every record sitting in the native capture buffer written by that same
+-- build. `findReplayCapture` treats a null key as "cannot tell" and suppresses
+-- nothing, so the worst an old record does is behave exactly as it does today.
+ALTER TABLE raw_notifications ADD COLUMN notification_key TEXT;
+
+-- The replay lookup's whole predicate, in the order it constrains: one slot of
+-- one app, then the time window. Without it every capture would scan the table
+-- — small today, but this runs on the hot path of every single notification
+-- the device receives, which is the one place in the app that must not get
+-- slower as the user's history grows.
+CREATE INDEX IF NOT EXISTS idx_raw_notifications_replay
+  ON raw_notifications (package_name, notification_key, posted_at);

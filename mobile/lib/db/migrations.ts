@@ -15,6 +15,7 @@ import walletTraitsSql from "./migrations/013_wallet_traits.sql";
 import dropWalletTypeSql from "./migrations/014_drop_wallet_type.sql";
 import supportReportsSql from "./migrations/015_support_reports.sql";
 import goalSoftDeleteSql from "./migrations/016_goal_soft_delete.sql";
+import rawNotificationKeySql from "./migrations/018_raw_notification_key.sql";
 import transactionAdjustmentsSql from "./migrations/017_transaction_adjustments.sql";
 
 export type Migration = {
@@ -136,6 +137,8 @@ export const MIGRATIONS: Migration[] = [
   // Additive column plus a backfill of the rows two reconciliation hooks
   // already wrote. No rebuild, so no `disablesForeignKeys`.
   { version: 17, name: "transaction_adjustments", sql: transactionAdjustmentsSql },
+  // Additive column plus an index. No rebuild, so no `disablesForeignKeys`.
+  { version: 18, name: "raw_notification_key", sql: rawNotificationKeySql },
 ];
 
 /**

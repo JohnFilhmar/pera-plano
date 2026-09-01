@@ -9,6 +9,7 @@ import { closeDatabase } from "@/lib/db/database";
 import { createWallet } from "../wallets_repo";
 import { enqueue } from "../review_queue_repo";
 import {
+  findReplayCapture,
   getRawCapture,
   getRawCaptureExpiry,
   hasRawCapture,
@@ -38,6 +39,10 @@ function capture(overrides: Partial<RawCapture> = {}): RawCapture {
     bigText: "You sent ₱500.00 to Juan Dela Cruz. Ref No. ABC123456.",
     postedAt: NOW - 1_000,
     capturedAt: NOW,
+    // Present-and-null by default, for the same reason `title` is: a capture
+    // read back out of the database always carries the field (migration 018),
+    // so a fixture that omitted it would never compare equal to its round trip.
+    notificationKey: null,
     ...overrides,
   };
 }
@@ -255,4 +260,72 @@ test("listRawCaptures carries the STORED expiry, not a derived one", async () =>
 
 test("listRawCaptures is empty when nothing has been captured", async () => {
   expect(await listRawCaptures(NOW)).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------
+// findReplayCapture — migration 018, the owner's 2026-09-01 duplicate-cards
+// report. `hasRawCapture` cannot see a redelivery, because every delivery is
+// stamped with a fresh UUID; the notification SLOT can.
+// ---------------------------------------------------------------------------
+
+const WINDOW_MS = 180_000;
+const SLOT = "com.globe.gcash.android|0|null|0";
+
+test("findReplayCapture finds the same slot and text posted again seconds later", async () => {
+  await storeRawCapture(capture({ id: "cap-a", notificationKey: SLOT, postedAt: NOW - 1_000 }), NOW);
+
+  // What Android hands over when the posting app edits its own notification:
+  // new delivery id, new postTime, same slot, same text.
+  const redelivered = capture({ id: "cap-b", notificationKey: SLOT, postedAt: NOW + 2_000 });
+
+  expect(await findReplayCapture(redelivered, WINDOW_MS)).toBe("cap-a");
+});
+
+test("findReplayCapture ignores a capture with no slot key", async () => {
+  // Every row stored before migration 018, and every record still in the native
+  // buffer from a build that predates it. "Cannot tell" must suppress nothing —
+  // the DedupeGate judges those on their parsed fields instead.
+  await storeRawCapture(capture({ id: "cap-a", notificationKey: null }), NOW);
+
+  const other = capture({ id: "cap-b", notificationKey: null });
+  expect(await findReplayCapture(other, WINDOW_MS)).toBe(null);
+});
+
+test("findReplayCapture ignores identical text posted into a different slot", async () => {
+  // Two separately-posted notifications. They may read identically — the same
+  // ₱500.00 sent to the same person twice — and suppressing the second would
+  // delete a real transaction from the ledger.
+  await storeRawCapture(capture({ id: "cap-a", notificationKey: SLOT }), NOW);
+
+  const other = capture({ id: "cap-b", notificationKey: "com.globe.gcash.android|9|null|0" });
+  expect(await findReplayCapture(other, WINDOW_MS)).toBe(null);
+});
+
+test("findReplayCapture ignores the same slot carrying different text", async () => {
+  // One tile that says "Processing" and then says what actually happened. Same
+  // slot, two different facts, and only the second is the transaction.
+  await storeRawCapture(
+    capture({ id: "cap-a", notificationKey: SLOT, text: "Processing your request..." }),
+    NOW,
+  );
+
+  const settled = capture({ id: "cap-b", notificationKey: SLOT });
+  expect(await findReplayCapture(settled, WINDOW_MS)).toBe(null);
+});
+
+test("findReplayCapture ignores a repost that arrives past the window", async () => {
+  await storeRawCapture(capture({ id: "cap-a", notificationKey: SLOT, postedAt: NOW }), NOW);
+
+  const late = capture({ id: "cap-b", notificationKey: SLOT, postedAt: NOW + WINDOW_MS + 1 });
+  expect(await findReplayCapture(late, WINDOW_MS)).toBe(null);
+});
+
+test("findReplayCapture never matches a capture against itself", async () => {
+  // `storeRawCapture` is idempotent, so a caller may legitimately ask about a
+  // capture that is already stored. Matching itself would report every stored
+  // capture as its own replay.
+  const stored = capture({ id: "cap-a", notificationKey: SLOT });
+  await storeRawCapture(stored, NOW);
+
+  expect(await findReplayCapture(stored, WINDOW_MS)).toBe(null);
 });

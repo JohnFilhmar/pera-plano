@@ -70,6 +70,7 @@ import { useReviewKindCounts } from "@/hooks/queries/use_review_kind_counts";
 import { useReviewQueuePage } from "@/hooks/queries/use_review_queue_page";
 import { useRuleset } from "@/hooks/queries/use_ruleset";
 import { useWallets } from "@/hooks/queries/use_wallets";
+import { IncompleteReviewItemError } from "@/lib/review/resolve_actions";
 import type { ReviewKind, ReviewQueueItem } from "@/types/domain";
 
 const BackGlyph = registerIcon(ChevronLeft);
@@ -130,6 +131,45 @@ export function reviewFilteredEmptyBody(kind: ReviewKind): string {
 export const REVIEW_BACKLOG_THRESHOLD = 25;
 export const REVIEW_BACKLOG_BANNER =
   "That's a lot of unreviewed items — parsers may be out of date.";
+
+/**
+ * What a FAILED triage action says.
+ *
+ * THE BUG THIS EXISTS FOR: `useReviewAction` carried no `onError` and this
+ * screen never read `triage.error`, so every failure inside `correctItem` —
+ * which runs in a unit of work and rolls the whole thing back — reached the
+ * user as the biggest button on the card doing nothing at all. Reported from
+ * a device on 2026-09-01: a ₱1,000 withdrawal acknowledged, the card still
+ * sitting there, no message. `review_card.tsx`'s `missingLedgerField` closed
+ * the three inputs it could close by DISABLING the button; it could not close
+ * the class, because a wallet deleted after the card was queued, a category
+ * the row's foreign key no longer finds, or SQLite contention with the ingest
+ * pipeline all still throw from inside the same transaction.
+ *
+ * IT SAYS THE LEDGER IS UNCHANGED, and that sentence is the important half.
+ * The user just pressed a button about their own money and it did not take;
+ * without being told the write rolled back, the only safe thing they can
+ * assume is that it half-happened, and the reasonable next move is to go
+ * looking for a transaction that is not there.
+ */
+export function triageFailureMessage(error: unknown): string {
+  if (error instanceof IncompleteReviewItemError) {
+    return `This one still needs ${FAILURE_FIELD_LABEL[error.missing] ?? error.missing} before it can be saved. Open "Change the details" to fill it in. Nothing was saved.`;
+  }
+  return "That didn't go through, and nothing was saved — your balances are unchanged. Try again.";
+}
+
+/**
+ * The user's words for the field, matching `review_card.tsx`'s own
+ * `BLOCKED_FIELD_LABEL`. `IncompleteReviewItemError.missing` is a plain
+ * string, so an unrecognised value falls through to itself rather than
+ * rendering "undefined" on a card about someone's money.
+ */
+const FAILURE_FIELD_LABEL: Record<string, string> = {
+  amount: "the amount",
+  direction: "whether this was money in or out",
+  wallet: "the wallet",
+};
 
 /**
  * Oldest first (rule 2), sorted HERE rather than trusted from the caller.
@@ -465,6 +505,50 @@ export default function ReviewQueueScreen() {
           className="mx-4 mt-2 rounded-xl bg-chip px-4 py-3 dark:bg-chip-dark"
         >
           <Text className="text-body text-fg dark:text-fg-dark">{REVIEW_BACKLOG_BANNER}</Text>
+        </View>
+      ) : null}
+
+      {triage.isError ? (
+        // ABOVE THE LIST, NOT OVER IT. The card the user pressed is still on
+        // screen and still needs triaging, so a modal or a full-screen
+        // `ErrorState` would hide the very thing the message is about. Same
+        // `bg-chip` slab as the backlog banner for the reason given there —
+        // the app has no opaque danger-soft token — with the danger ink
+        // carrying the tone instead of the surface.
+        <View
+          testID="review-action-error"
+          accessibilityLiveRegion="polite"
+          className="mx-4 mt-2 rounded-xl bg-chip px-4 py-3 dark:bg-chip-dark"
+        >
+          <Text className="text-body text-danger dark:text-danger-dark">
+            {triageFailureMessage(triage.error)}
+          </Text>
+          <View className="mt-2 flex-row gap-4">
+            {/* `triage.variables` is the action that just failed — React
+                Query keeps it until the next mutate or `reset`, so a retry
+                needs no copy of it held in this component's own state, which
+                could drift from what was actually attempted. */}
+            {triage.variables === undefined ? null : (
+              <Pressable
+                testID="review-action-error-retry"
+                accessibilityRole="button"
+                onPress={() => {
+                  if (triage.variables !== undefined) triage.mutate(triage.variables);
+                }}
+                className="min-h-[44px] justify-center"
+              >
+                <Text className="text-body font-semibold text-fg dark:text-fg-dark">Try again</Text>
+              </Pressable>
+            )}
+            <Pressable
+              testID="review-action-error-dismiss"
+              accessibilityRole="button"
+              onPress={() => triage.reset()}
+              className="min-h-[44px] justify-center"
+            >
+              <Text className="text-body text-fg-2 dark:text-fg-2-dark">Dismiss</Text>
+            </Pressable>
+          </View>
         </View>
       ) : null}
 

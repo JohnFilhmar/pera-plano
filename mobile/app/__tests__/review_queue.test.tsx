@@ -311,6 +311,45 @@ describe("triaging from the queue", () => {
     await waitFor(() => expect(screen.queryByTestId(`review-card-${queued.id}`)).toBeNull());
   });
 
+  // The owner's 2026-09-01 device report: a ₱1,000 withdrawal acknowledged, the
+  // card still sitting there, nothing said. `useReviewAction` carried no
+  // `onError` and this screen never read `triage.error`, so every failure
+  // inside the unit of work reached the user as the biggest button on the card
+  // doing nothing at all.
+  test("a triage write that fails says so, and leaves the card in place", async () => {
+    // A wallet the card names but the ledger no longer has: the card's own
+    // guards pass (the payload carries a wallet id), and `insertTransaction`
+    // then fails the foreign key inside the unit of work, rolling the whole
+    // thing back. This is the residual failure class `missingLedgerField`
+    // cannot close by disabling the button.
+    const queued = await enqueueAt(NOW - HOUR, {
+      kind: "low-confidence",
+      payload: gatedPayload({ walletId: "wallet-deleted-since" }),
+    });
+
+    await renderScreen();
+    fireEvent.press(await screen.findByTestId(`review-primary-${queued.id}`));
+
+    await screen.findByTestId("review-action-error");
+    // Nothing committed, and the question is still on screen to answer.
+    expect(await listTransactions({})).toHaveLength(0);
+    expect(screen.getByTestId(`review-card-${queued.id}`)).toBeTruthy();
+    expect(await countOpen()).toBe(1);
+  });
+
+  test("dismissing the failure notice clears it", async () => {
+    const queued = await enqueueAt(NOW - HOUR, {
+      kind: "low-confidence",
+      payload: gatedPayload({ walletId: "wallet-deleted-since" }),
+    });
+
+    await renderScreen();
+    fireEvent.press(await screen.findByTestId(`review-primary-${queued.id}`));
+    fireEvent.press(await screen.findByTestId("review-action-error-dismiss"));
+
+    await waitFor(() => expect(screen.queryByTestId("review-action-error")).toBeNull());
+  });
+
   test("Correct opens the sheet, and saving a fix teaches the pipeline", async () => {
     const queued = await enqueueAt(NOW - HOUR, {
       kind: "low-confidence",

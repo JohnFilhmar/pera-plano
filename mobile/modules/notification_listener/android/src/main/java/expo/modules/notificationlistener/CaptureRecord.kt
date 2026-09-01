@@ -27,6 +27,23 @@ data class CaptureRecord(
   val bigText: String?,
   val postedAt: Long,
   val capturedAt: Long,
+  /**
+   * `StatusBarNotification.getKey()` -- the platform's identity for the
+   * notification SLOT (`package|id|tag|user`), held constant across every
+   * edit the posting app makes to it.
+   *
+   * NOT [id], WHICH IS THE OPPOSITE FACT. [id] is a fresh UUID per DELIVERY,
+   * and Android redelivers a notification each time its app edits it, so one
+   * withdrawal produced several ids and the pipeline's id-keyed replay guard
+   * could not see the repeats -- three identical Review Queue cards from one
+   * notification (owner's device report, 2026-09-01). The key is what tells
+   * a redelivery apart from a second, genuine transaction.
+   *
+   * NULLABLE WITH A DEFAULT so records already sitting in the disk buffer,
+   * written by a build that predates this field, still deserialize. JS reads
+   * a missing key as "cannot tell" and suppresses nothing.
+   */
+  val notificationKey: String? = null,
 ) {
 
   fun toJson(): JSONObject = JSONObject().apply {
@@ -38,6 +55,7 @@ data class CaptureRecord(
     put(KEY_BIG_TEXT, bigText ?: JSONObject.NULL)
     put(KEY_POSTED_AT, postedAt)
     put(KEY_CAPTURED_AT, capturedAt)
+    put(KEY_NOTIFICATION_KEY, notificationKey ?: JSONObject.NULL)
   }
 
   fun toMap(): Map<String, Any?> = mapOf(
@@ -49,6 +67,7 @@ data class CaptureRecord(
     KEY_BIG_TEXT to bigText,
     KEY_POSTED_AT to postedAt,
     KEY_CAPTURED_AT to capturedAt,
+    KEY_NOTIFICATION_KEY to notificationKey,
   )
 
   companion object {
@@ -60,6 +79,7 @@ data class CaptureRecord(
     const val KEY_BIG_TEXT = "bigText"
     const val KEY_POSTED_AT = "postedAt"
     const val KEY_CAPTURED_AT = "capturedAt"
+    const val KEY_NOTIFICATION_KEY = "notificationKey"
 
     fun fromJson(json: JSONObject): CaptureRecord = CaptureRecord(
       id = json.getString(KEY_ID),
@@ -70,6 +90,10 @@ data class CaptureRecord(
       bigText = json.nullableString(KEY_BIG_TEXT),
       postedAt = json.getLong(KEY_POSTED_AT),
       capturedAt = json.getLong(KEY_CAPTURED_AT),
+      // Absent on every record buffered by a build older than this field.
+      // `nullableString` already reads an absent key as null, so an old
+      // record deserializes rather than throwing.
+      notificationKey = json.nullableString(KEY_NOTIFICATION_KEY),
     )
   }
 }
