@@ -40,6 +40,35 @@ const path = require("path");
 const BACKUP_EXCLUDE_DOMAIN = "file";
 const BACKUP_EXCLUDE_PATH = "models/";
 
+/**
+ * THIS PLUGIN TAKES OWNERSHIP OF THE APP'S BACKUP RULES, AND THEREFORE INHERITS
+ * `expo-secure-store`'s.
+ *
+ * An Android app can name exactly ONE `fullBackupContent` and ONE
+ * `dataExtractionRules` resource. `expo-secure-store`'s plugin applies its own
+ * only while the attributes are unset or already point at its resources
+ * (`node_modules/expo-secure-store/plugin/build/withSecureStore.js`); the moment
+ * this plugin claims them it backs off with the warning
+ *
+ *   "Expo-secure-store tried to apply Android Auto Backup rules, but other
+ *    backup rules are already present."
+ *
+ * That warning is EXPECTED at prebuild and is not a fault — but it means the
+ * rules below are now the only ones the app has, so they have to carry what
+ * `secure_store_backup_rules.xml` carried, verbatim. Dropping them would put
+ * the SecureStore shared-preferences file, which holds this app's wrapped key
+ * material, into the user's Google backup.
+ *
+ * THE `<include>` IS LOAD-BEARING AND MUST NOT BE "TIDIED AWAY". Under Android's
+ * full-backup semantics, the presence of ANY `<include>` flips the file from
+ * "back up everything except..." to "back up ONLY these". So this one line is
+ * what keeps the SQLCipher database, the capture buffer and `files/` as a whole
+ * out of backup. Deleting it as redundant would silently opt the entire app
+ * data directory back IN.
+ */
+const SHAREDPREF_DOMAIN = "sharedpref";
+const SECURE_STORE_PREF = "SecureStore";
+
 /** Resource names, referenced from the manifest as `@xml/<name>`. */
 const BACKUP_RULES_RESOURCE = "backup_rules";
 const DATA_EXTRACTION_RULES_RESOURCE = "data_extraction_rules";
@@ -51,12 +80,17 @@ const ARCHITECTURES_PROPERTY = "reactNativeArchitectures";
 const ANDROID_ABI = "arm64-v8a";
 
 const EXCLUSION = `<exclude domain="${BACKUP_EXCLUDE_DOMAIN}" path="${BACKUP_EXCLUDE_PATH}" />`;
+const SHAREDPREF_INCLUDE = `<include domain="${SHAREDPREF_DOMAIN}" path="." />`;
+const SECURE_STORE_EXCLUSION = `<exclude domain="${SHAREDPREF_DOMAIN}" path="${SECURE_STORE_PREF}" />`;
+
+/** The three lines every rule section needs, in the order Android reads them. */
+const RULES = [SHAREDPREF_INCLUDE, SECURE_STORE_EXCLUSION, EXCLUSION];
 
 /** Read by every device below API 31. */
 function backupRulesXml() {
   return `<?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
-    ${EXCLUSION}
+    ${RULES.join("\n    ")}
 </full-backup-content>
 `;
 }
@@ -70,10 +104,10 @@ function dataExtractionRulesXml() {
   return `<?xml version="1.0" encoding="utf-8"?>
 <data-extraction-rules>
     <cloud-backup>
-        ${EXCLUSION}
+        ${RULES.join("\n        ")}
     </cloud-backup>
     <device-transfer>
-        ${EXCLUSION}
+        ${RULES.join("\n        ")}
     </device-transfer>
 </data-extraction-rules>
 `;
@@ -164,6 +198,8 @@ const withLlamaBridge = (config) => {
 module.exports = withLlamaBridge;
 module.exports.BACKUP_EXCLUDE_DOMAIN = BACKUP_EXCLUDE_DOMAIN;
 module.exports.BACKUP_EXCLUDE_PATH = BACKUP_EXCLUDE_PATH;
+module.exports.SHAREDPREF_DOMAIN = SHAREDPREF_DOMAIN;
+module.exports.SECURE_STORE_PREF = SECURE_STORE_PREF;
 module.exports.BACKUP_RULES_RESOURCE = BACKUP_RULES_RESOURCE;
 module.exports.DATA_EXTRACTION_RULES_RESOURCE = DATA_EXTRACTION_RULES_RESOURCE;
 module.exports.XML_RESOURCE_DIR = XML_RESOURCE_DIR;

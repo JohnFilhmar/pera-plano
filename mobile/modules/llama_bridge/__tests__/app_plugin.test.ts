@@ -29,8 +29,30 @@ import withLlamaBridge, {
   BACKUP_EXCLUDE_PATH,
   BACKUP_RULES_RESOURCE,
   DATA_EXTRACTION_RULES_RESOURCE,
+  SECURE_STORE_PREF,
+  SHAREDPREF_DOMAIN,
   XML_RESOURCE_DIR,
 } from "../app.plugin.js";
+
+/**
+ * Read straight out of `expo-secure-store`'s own shipped resource, so this
+ * suite fails if that library ever changes what it excludes. Retyping it would
+ * leave us pinning a rule the dependency no longer uses.
+ */
+const SECURE_STORE_RULES = join(
+  __dirname,
+  "..",
+  "..",
+  "..",
+  "node_modules",
+  "expo-secure-store",
+  "android",
+  "src",
+  "main",
+  "res",
+  "xml",
+  "secure_store_backup_rules.xml",
+);
 
 const MODULE_ROOT = join(__dirname, "..");
 const APP_JSON = join(MODULE_ROOT, "..", "..", "app.json");
@@ -204,6 +226,65 @@ describe("llama_bridge config plugin — the backup exclusion", () => {
 
       expect(cloud).toContain(exclusion);
       expect(transfer).toContain(exclusion);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("carries expo-secure-store's exclusion, because claiming the attributes took its rules away", async () => {
+    // `expo-secure-store` applies its own rules ONLY while the manifest
+    // attributes are unset or already point at its resources. This plugin
+    // claims them, so that library backs off with a warning at prebuild and its
+    // exclusion is simply gone. An app can name one backup resource, so ours
+    // has to carry it — and what it protects is the shared-preferences file
+    // holding this app's wrapped key material.
+    const { root, read } = await writeResourceFiles();
+    try {
+      const exclusion = `<exclude domain="${SHAREDPREF_DOMAIN}" path="${SECURE_STORE_PREF}" />`;
+      const extraction = read(`${DATA_EXTRACTION_RULES_RESOURCE}.xml`);
+
+      expect(read(`${BACKUP_RULES_RESOURCE}.xml`)).toContain(exclusion);
+      expect(
+        extraction.slice(extraction.indexOf("<cloud-backup>"), extraction.indexOf("</cloud-backup>")),
+      ).toContain(exclusion);
+      expect(
+        extraction.slice(
+          extraction.indexOf("<device-transfer>"),
+          extraction.indexOf("</device-transfer>"),
+        ),
+      ).toContain(exclusion);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("still excludes what expo-secure-store's own shipped resource excludes", () => {
+    // Re-derived from the dependency rather than retyped. If a future
+    // expo-secure-store starts excluding something else, this fails instead of
+    // leaving the app quietly backing it up.
+    const theirs = readFileSync(SECURE_STORE_RULES, "utf8");
+
+    expect(theirs).toContain(`domain="${SHAREDPREF_DOMAIN}"`);
+    expect(theirs).toContain(`path="${SECURE_STORE_PREF}"`);
+    // Their file excludes exactly one thing. A second exclusion appearing there
+    // is a signal to widen ours, not to update this number and move on.
+    expect(theirs.match(/<exclude /g) ?? []).toHaveLength(1);
+  });
+
+  it("keeps the sharedpref include, which is what holds everything else out of backup", async () => {
+    // NOT REDUNDANT, and the most dangerous line in the file to "tidy up".
+    // Under Android's full-backup semantics the presence of any `<include>`
+    // flips the rules from "back up everything except..." to "back up ONLY
+    // these". This one line is therefore what keeps the SQLCipher database, the
+    // capture buffer and the whole of `files/` out of a Google backup. Remove
+    // it and the app silently opts its entire data directory back in — while
+    // every `<exclude>` assertion above still passes.
+    const { root, read } = await writeResourceFiles();
+    try {
+      const include = `<include domain="${SHAREDPREF_DOMAIN}" path="." />`;
+
+      expect(read(`${BACKUP_RULES_RESOURCE}.xml`)).toContain(include);
+      expect(read(`${DATA_EXTRACTION_RULES_RESOURCE}.xml`)).toContain(include);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
