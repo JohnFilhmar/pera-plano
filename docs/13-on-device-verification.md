@@ -1423,7 +1423,36 @@ Assistant plan Tasks 26 and 27, against design spec §5.6. **Gate: everything in
 CI phases must be green before any of this is attempted.** These are the ten things that can never
 be CI. They join this record rather than starting a parallel one.
 
-**Every gate below is NOT RUN.** None of the blanks has been filled by a device session.
+**Partially run, 2026-09-02.** Gates 1, 4 and 10 are answered; gate 3 is answered in part. The rest
+are still NOT RUN and their blanks are still blanks.
+
+### Conditions for the 2026-09-02 run, and what they disqualify
+
+| | |
+|---|---|
+| Build | **Debug dev-client**, `com.filldev.peraplano.dev`, `APP_VARIANT=development` |
+| Power | **USB powered: true** — plugged in for adb the whole session |
+| Battery / temp | 79%, 31.4 °C at the end (29.6 °C at session start) |
+| Weights | Both tiers **side-loaded** from the spike app with `adb`, not downloaded |
+| Model resident | `qwen3-1.7b-q4` (tier 2), confirmed in `/proc/<pid>/maps` |
+
+**No throughput or TTFT figure was taken, deliberately.** The device was on USB power for the whole
+session, and the spike measured charging as roughly 11% faster. A tok/s number taken here would not
+be comparable with the spike's battery figures and would quietly corrupt the tier cut, which is
+decided on exactly that kind of margin. Task 27 needs the phone **off charge** — use wireless adb
+(`adb tcpip 5555`, `adb connect <ip>:5555`, then unplug) so the run is on battery.
+
+**The prebuild warning below is EXPECTED and is not a fault:**
+
+```
+Expo-secure-store tried to apply Android Auto Backup rules, but other backup rules are already present.
+```
+
+`modules/llama_bridge/app.plugin.js` deliberately claims `android:fullBackupContent` and
+`android:dataExtractionRules`, so `expo-secure-store` backs off. That is why our rules carry its
+`<include domain="sharedpref" path="."/>` and `<exclude domain="sharedpref" path="SecureStore"/>`
+verbatim. **If that warning ever stops appearing, check why** — it most likely means our plugin
+stopped running, and with it the models exclusion.
 
 ## What the spike already measured, and what it does not license
 
@@ -1453,10 +1482,38 @@ through `modules/llama_bridge/index.ts`, which is a different binding: `initLlam
 2048 and `n_parallel` **1**, `completion()` driven by a `messages` array under `jinja: true`, and
 tokens re-published as an `AsyncIterable`.
 
-- Model loads, first token arrives, stream completes: `________`
-- Load time, tier 1 / tier 2: `________ ms` / `________ ms`
+- Model loads, first token arrives, stream completes: **YES. PASS, 2026-09-02.**
+- Load time, tier 1 / tier 2: `NOT MEASURED` / `NOT MEASURED` — the screen loads a model on mount,
+  which happened before the log buffer was cleared. Re-take with a cleared buffer before mounting.
 - **A failure here stops the feature.** There is no fallback that keeps a chat surface; §7.4's
   button-driven design is what ships instead, and the seven tool handlers are unchanged by it.
+
+**What was actually observed.** More → Assistant, asked "How much did I spend this month" against an
+empty ledger. The answer rendered as prose:
+
+> The app shows that you spent ₱0.00 this month.
+
+That is a **grounded** answer, not just a generated one: the figure came back from the tool as a
+`display` string and the model reproduced `₱0.00` character for character, so `grounding.ts`
+accepted the prose instead of degrading to a card.
+
+`logcat -s RNLlama` shows the dispatch loop ran **two rounds** against the real decoder:
+
+```
+16:07:36.026 RNLlama: loadPrompt:580 [DEBUG] Input processed: n_past=0,   embd.size=422, num_prompt_tokens=422
+16:07:45.985 RNLlama: loadPrompt:580 [DEBUG] Input processed: n_past=413, embd.size=506, num_prompt_tokens=506
+```
+
+Round 1 produces a tool call, the handler runs, its result goes back through the delimited channel,
+and round 2 (reusing 413 tokens of KV cache) produces the answer. **Three things this proves at
+once**, none of which a unit test can:
+
+1. The bridge in `modules/llama_bridge/index.ts` binds `llama.rn` correctly and streams.
+2. The prompt tokens begin `151644 8948` — `<|im_start|>system` — so `jinja: true` applied the chat
+   template and the system prompt arrived as its **own message**. That is the design decision the
+   bridge rests on: `enable_thinking` is a chat-template argument and is silently ignored when a raw
+   `prompt` string is passed instead of `messages`.
+3. The whole tool → channel → answer loop works on device, not only against the fake bridge.
 
 ## Gate 2 — Does llama.cpp accept the compiled GBNF, and does constrained decoding hold?
 
@@ -1478,8 +1535,14 @@ Spec §5.6 words this as "tiers 1 to 3"; **the catalogue now ships two tiers**, 
 them. The lever is the chat template's own flag, `enable_thinking: false` under `jinja: true`, not
 a prompt hack and not the stream-level stripper.
 
-- `<think>` visible in output, tier 1 / tier 2: `________` / `________`
-- Median wall clock, suppressed / unsuppressed, tier 2: `________ ms` / `________ ms`
+- `<think>` visible in output, tier 1 / tier 2: `NOT RUN` / **no**, one generation, 2026-09-02
+- Median wall clock, suppressed / unsuppressed, tier 2: `NOT RUN` / `NOT RUN`
+
+**PARTIAL, and do not read it as a pass.** One tier-2 generation produced a single clean sentence
+with no `<think>` block and no empty answer, which is the shape suppression is supposed to give. But
+this gate is a *comparison*: it needs the suppressed and unsuppressed wall clocks side by side, three
+runs each, and it must fail on an empty answer rather than on a visible tag. One generation shows the
+happy path and cannot distinguish "suppression works" from "this prompt happened not to think".
 - **Fail on an empty answer, not only on a visible tag.** The spike measured the stripper-only
   configuration returning `"visible_text": ""` after 11 seconds, because the `<think>` block never
   closed inside the token budget and stripping it removed the entire output. A gate written against
@@ -1497,9 +1560,33 @@ Warm the model with one generation before sampling. Sampling straight after load
 whatever the KV cache is about to grow to, and an understated `minRamBytes` is exactly the bug that
 offers a phone a tier it will be killed for loading.
 
-- TOTAL PSS, tier 1 / tier 2, warmed, via `dumpsys meminfo`: `________` / `________`
-- Process survived the app switch: `________`
-- If it did not: what was resident, and what did Android kill: `________`
+- TOTAL PSS, tier 1 / tier 2, warmed, via `dumpsys meminfo`: `NOT MEASURED` / **1,821,797 kB
+  (1.82 GB)**, 2026-09-02, debug build, on charge, after one generation
+- Process survived the app switch: **YES. PASS.** PID 32420 before, during the camera, and after
+  returning. The model stayed mapped — `/proc/32420/maps` still showed `qwen3-1.7b-q4.gguf`, so it
+  did not have to be re-read from storage.
+- If it did not: what was resident, and what did Android kill: `n/a, it survived`
+
+**The full reading, and the part that matters more than PSS alone:**
+
+| | Foreground, warmed | After the app switch |
+|---|---|---|
+| TOTAL PSS | 1,821,797 kB | 1,820,468 kB |
+| TOTAL RSS | 1,402,670 kB | **472,126 kB** |
+| TOTAL SWAP PSS | 488,500 kB | **1,418,957 kB** |
+| Native heap | 895,700 kB | — |
+
+**Android compressed the model into zram rather than killing the process.** RSS fell by ~930 MB and
+swap rose by ~930 MB across the switch, and the app came back intact. That is the mechanism by which
+this survives, and it is a far better outcome than the gate feared.
+
+**Exactly one GGUF was mapped at any time**, which is the one-model-resident invariant holding
+against the real bridge rather than against `llama_bridge_mock.ts`.
+
+**Do not relax tier 2's RAM gate on this number yet.** Three reasons: it is a debug build, the phone
+was on charge, and it is a single reading on the **8 GB** variant. The spike's 2.51 GB and this
+1.82 GB + 0.49 GB swap (2.31 GB combined) are close enough that the honest conclusion is "consistent,
+not contradictory". The 6 GB variant remains UNKNOWN and is still never assumed fine.
 - **This is a release-build measurement and the spike's was not.** 1.25 GB and 2.51 GB came from a
   debug build and are upper bounds. `catalogue.ts` derives `minRamBytes` from them, 3.5 GiB for
   tier 1 and 6.5 GiB for tier 2, and **that gate currently offers 6 GB phones tier 1 only.** A
@@ -1536,8 +1623,19 @@ Resume across three interruptions, each a different failure shape:
 
 `downloader.ts` digests the bytes on disk with `@noble/hashes`, in JS.
 
-- Time to digest tier 2's 1.06 GB file: `________ s`
+- Time to digest tier 2's 1.06 GB file: `________ s` **in JS — still the open question**
 - Did the UI block, or drop frames, while it ran: `________`
+
+**A native floor, measured 2026-09-02: 3.3 s for BOTH files (1.46 GB) via toybox `sha256sum`**, and
+both digests matched `catalogue.ts` exactly —
+`ac2d9771…d524a` for tier 1 and `b139949c…81897` for tier 2. That independently confirms the
+catalogue's pinned literals against the real weights.
+
+**This is a floor, not the answer.** The gate asks about `@noble/hashes` running in Hermes over a
+file read through `expo-file-system`, which is a different machine entirely. Use the 3.3 s only to
+frame the JS result: if JS lands within a small multiple of it, the remedy in §6 risk 8 is
+unnecessary; if it is an order of magnitude worse and blocks the UI, that is the argument for the
+native helper.
 - **This is spec §6 risk 8 and it has a named remedy.** If it blocks the UI, the digest moves to a
   native helper and `llama_bridge` grows its first piece of Kotlin. Record the number even if it
   passes, because it is what the decision is made on.
@@ -1566,8 +1664,47 @@ Scroll the chat while generating.
 
 ## Gate 10 — Storage and backup
 
-- App footprint with two models present: `________`
-- `files/models/` is genuinely excluded from Android backup: `________`
+- App footprint with two models present: **1,470,312 kB of weights** (`qwen3-0.6b-q4.gguf`
+  396,705,472 B + `qwen3-1.7b-q4.gguf` 1,107,409,472 B), both byte-exact to `catalogue.ts`
+- `files/models/` is genuinely excluded from Android backup: **YES, verified in the generated
+  project. PASS, 2026-09-02.**
+
+**Verified against the real prebuild output**, not against a fixture:
+
+```
+android/app/src/main/AndroidManifest.xml
+  <application ... android:fullBackupContent="@xml/backup_rules"
+                   android:dataExtractionRules="@xml/data_extraction_rules">
+
+android/app/src/main/res/xml/backup_rules.xml
+  <include domain="sharedpref" path="." />
+  <exclude domain="sharedpref" path="SecureStore" />
+  <exclude domain="file" path="models/" />
+
+android/app/src/main/res/xml/data_extraction_rules.xml
+  the same three lines inside BOTH <cloud-backup> and <device-transfer>
+
+android/gradle.properties
+  reactNativeArchitectures=arm64-v8a
+```
+
+**The ABI filter is proven at the APK, not just in a property.** `app-debug.apk` contains
+`lib/arm64-v8a` and no other ABI directory at all, holding all fourteen of `llama.rn`'s
+CPU-dispatch variants (`librnllama_v8.so` through
+`librnllama_v8_2_dotprod_i8mm_hexagon_opencl.so`) plus `assets/ggml-hexagon/`.
+
+**A defect this gate caught that no unit test could.** The first prebuild produced a `backup_rules.xml`
+containing ONLY the `models/` exclusion. `expo-secure-store` had backed off (see the expected warning
+above) and its rules were gone — including
+`<include domain="sharedpref" path="."/>`. Under Android's semantics the presence of any `<include>`
+switches the file from "back up everything except" to "back up ONLY these", so that one line is what
+holds the SQLCipher database, the capture buffer and all of `files/` out of a Google backup, and its
+`<exclude ... path="SecureStore"/>` is what keeps this app's **wrapped key material** out. Fixed in
+`f4fe0a7`, with three regression tests, one of which re-derives the rule from `expo-secure-store`'s
+own shipped resource so it fails if that dependency ever changes what it protects.
+
+**Still open on this gate:** nobody has confirmed on a real Google backup/restore cycle that the
+exclusion is honoured end to end. The manifest and resources are right; the round trip is untested.
 
 Verify the exclusion against the **generated** manifest and resources, the same way Part 7 verifies
 the blocked permissions, because `mobile/android/` is regenerated by every prebuild:
