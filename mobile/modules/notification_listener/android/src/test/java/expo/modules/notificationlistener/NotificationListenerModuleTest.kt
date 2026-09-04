@@ -70,6 +70,7 @@ class NotificationListenerModuleTest {
   /** Interface contract §4 `RawCapture`, verbatim. Nothing else may appear. */
   private val contractKeys = setOf(
     "id", "packageName", "title", "text", "subText", "bigText", "postedAt", "capturedAt",
+    "notificationKey",
   )
 
   /** Interface contract §4 `getListenerHealth`, verbatim. */
@@ -303,7 +304,7 @@ class NotificationListenerModuleTest {
   }
 
   @Test
-  fun `drained maps carry exactly the eight contract field names`() {
+  fun `drained maps carry exactly the nine contract field names`() {
     KeyStoreBridge.ensureCaptureKeyPair()
     val file = CaptureBuffer.fileFor(context)
     CaptureBuffer.clear(file)
@@ -321,7 +322,7 @@ class NotificationListenerModuleTest {
     val drained = drainAsTheBridgeDoes()
 
     // The EXACT key set, not a containsKey sweep: a per-field containsKey
-    // check passes happily when a ninth key leaks in, and an extra key on
+    // check passes happily when a tenth key leaks in, and an extra key on
     // this map is how a native field escapes into JS's RawCapture.
     assertEquals(2, drained.size)
     for (map in drained) {

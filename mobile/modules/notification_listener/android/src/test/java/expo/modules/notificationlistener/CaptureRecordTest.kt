@@ -8,18 +8,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * CaptureRecord is the one shape a captured notification takes across three
- * hops: the disk buffer's JSON, the JS-bridge map, and (per contract) an
- * android.os.Bundle event payload. These tests focus on the property that
- * decides the task: null must survive every hop distinctly from empty
- * string, and the eight JS `RawCapture` key names (interface contract §4)
- * must be exact.
- *
- * toBundle() is implemented per the contract but is NOT unit-tested here.
- * android.os.Bundle has no real in-memory backing on the plain JVM test
- * classpath used by this module (no Robolectric, per Task 1/M1a decision) --
- * calling its instance methods throws "not mocked" at runtime. See the
- * companion report for the empirical probe that confirmed this.
+ * CaptureRecord is the one shape a captured notification takes across two
+ * hops: the disk buffer's JSON and the JS-bridge map. These tests focus on
+ * the property that decides the task: null must survive every hop distinctly
+ * from empty string, and the nine JS `RawCapture` key names (interface
+ * contract §4) must be exact.
  */
 class CaptureRecordTest {
 
@@ -100,7 +93,7 @@ class CaptureRecordTest {
   }
 
   @Test
-  fun `toJson emits exactly the eight contract keys, no more, no less`() {
+  fun `toJson emits exactly the nine contract keys, no more, no less`() {
     val json = sample().toJson()
     val keys = mutableSetOf<String>()
     json.keys().forEachRemaining { keys.add(it) }
