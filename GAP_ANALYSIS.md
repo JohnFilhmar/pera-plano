@@ -35,6 +35,11 @@ not been started. Each gap's detail entry in section 9 carries the same marker i
 
 | ID | Status | Commit | Branch | Verification | Date |
 |---|---|---|---|---|---|
+| GAP-088 | DONE | 50223eb | gap-wave-2 | same commit; test fails if a wire field gains no disclosure phrase | 2026-09-04 |
+| GAP-084 | DONE | 50223eb | gap-wave-2 | same commit; reseeds on a value-based proposal signature, proven to fail when reverted | 2026-09-04 |
+| GAP-081 | DONE | 50223eb | gap-wave-2 | jest components/bills+goals+support 5 suites 66 tests PASS; fails with sources reverted | 2026-09-04 |
+| GAP-012 | DONE | 8025365 + 718aff5 | gap-wave-2 | jest lib/ingest+review+db 38 suites 1221 tests PASS (baseline 1202, delta is exactly the 19 added); 8 tests fail with the mechanisms neutered | 2026-09-04 |
+| GAP-002 | DONE | 320f4d3 + 1ebb8a5 | gap-wave-2 | jest lib/crypto + contexts + query_client 8 suites 145 tests PASS; regression reproduces the zero-key blob end to end. Diff reviewed line by line; 1ebb8a5 clears the cache key on the wipe path too | 2026-09-04 |
 | GAP-099 | DONE | 3ed6f64 | worktree-gap-wave-1 | jest lib/privacy 2 suites 18 tests PASS plus privacy_screen 17; all three added tests fail with the implementation reverted. Rest of lib/privacy checked, no other occurrence | 2026-09-04 |
 | GAP-071 | DONE | 0f6895d | worktree-gap-wave-1 | jest lib/alerts 5 suites 181 tests PASS; both new tests fail with their source change reverted. Second regression test ships with the loans commit (shared file) | 2026-09-04 |
 | GAP-064 | DONE | fefece2 | worktree-gap-wave-1 | same commit; both halves proven to fail when reverted. outstandingBalance untouched so GAP-029 is not prejudged | 2026-09-04 |
@@ -50,7 +55,7 @@ not been started. Each gap's detail entry in section 9 carries the same marker i
 | GAP-060 | DONE | 769d66b | worktree-gap-wave-1 | jest manual_entry_form + transaction_new 49 passed (was 45); four added tests proven to fail without the guards | 2026-09-04 |
 | GAP-005 | DONE | 9a605da | worktree-gap-wave-1 | jest safe_to_spend_service 22 passed (was 21); new test proven to fail without the fix | 2026-09-04 |
 | GAP-062 | DONE | 8c1fccd | worktree-gap-wave-1 | key sets compared at nine across all four files; Gradle NOT RUN (no android/ in worktree) | 2026-09-04 |
-| GAP-001 | DONE | 8db6f2c | worktree-gap-wave-1 | jest modules/notification_listener 4 suites 64 tests PASS | 2026-09-04 |
+| GAP-001 | DONE | 8db6f2c + a84b0ca | master + gap-wave-2 | app.json survived the merge; the iOS build job was restored by the merge conflict resolution and re-stripped in a84b0ca | 2026-09-04 |
 
 ### Cross-cutting findings from remediation
 
@@ -153,6 +158,21 @@ Facts established while fixing entries, that later entries must not rediscover t
     `lib/bills`, the bills routes, or that test.
   - The other five of GAP-052's seven did not reproduce under `--runInBand`, which supports the
     theory that most of that set is parallel-contention timing rather than real breakage.
+
+- **Wave 2 suite result** (2026-09-04, branch `worktree-gap-wave-2` off master). Run in two
+  chunks with `--runInBand`: `lib` gave **111 suites / 2,416 tests, zero failures**, and
+  `hooks components app contexts services modules constants types` gave **139 of 140 suites /
+  1,972 of 1,973 tests**. Total **251 suites, 4,389 tests, 1 failure**, and that one is
+  `bills_screen`'s clock-dependent "next 30 days" total described above. It was confirmed
+  pre-existing a second way this wave: the agent that changed `bill_form.tsx` and
+  `due_rule_picker.tsx` reverted both to HEAD and reproduced the failure identically.
+  `review_queue` passed this run, which confirms that one is purely parallel-contention timing.
+- **A correct fix can open a hole elsewhere; check for it** (2026-09-04). This happened twice.
+  GAP-011's recovery sweep made merged-away duplicates resurrect, fixed in `9eede70`. GAP-002's
+  fix, which gives `query_client` its own copy of the DEK, meant `wipeKeys()` no longer scrubs
+  that copy as a side effect, so a full wipe left a live DEK in memory; fixed in `1ebb8a5`. In
+  both cases the defect was invisible until someone asked "what did this change stop being true".
+  Ask it explicitly for any fix that changes ownership, lifetime, or what counts as reachable.
 
 ## 1. Executive summary
 
@@ -622,8 +642,6 @@ Authority order used unless stated: verified on-device measurement, then current
 
 ### GAP-001 [OPS] Uncommitted app.json and EAS tooling changes duplicate permissions, add RECORD_AUDIO, and add an iOS build job
 
-> **REMEDIATION: DONE** (2026-09-04) - commit 8db6f2c + a84b0ca, branch master + worktree-gap-wave-2. Verification: app.json survived the merge; the iOS build job was restored by the merge conflict resolution and re-stripped in a84b0ca
-
 > **REMEDIATION: DONE** (2026-09-04) - commit 8db6f2c, branch worktree-gap-wave-1. Verification: jest modules/notification_listener 4 suites 64 tests PASS
 
 | Field | Value |
@@ -691,7 +709,7 @@ none
 
 ### GAP-002 [SEC] Persisted query cache can be encrypted under a zeroed key when a write is in flight at lock time
 
-> **REMEDIATION: DONE** (2026-09-04) - commit 320f4d3 + 1ebb8a5, branch worktree-gap-wave-2. Verification: jest lib/crypto + contexts + query_client 8 suites 145 tests PASS; regression reproduces the zero-key blob end to end against pre-fix source. Diff reviewed line by line; follow-up 1ebb8a5 clears the cache key on the wipe path
+> **REMEDIATION: DONE** (2026-09-04) - commit 320f4d3 + 1ebb8a5, branch gap-wave-2. Verification: jest lib/crypto + contexts + query_client 8 suites 145 tests PASS; regression reproduces the zero-key blob end to end. Diff reviewed line by line; 1ebb8a5 clears the cache key on the wipe path too
 
 | Field | Value |
 |---|---|
@@ -1344,7 +1362,7 @@ none
 
 ### GAP-012 [CODE] Push and SMS twin with the first leg still queued produces two cards and two commits
 
-> **REMEDIATION: IN-PROGRESS** (2026-09-04) - commit -, branch worktree-gap-wave-2. Verification: agent running
+> **REMEDIATION: DONE** (2026-09-04) - commit 8025365 + 718aff5, branch gap-wave-2. Verification: jest lib/ingest+review+db 38 suites 1221 tests PASS (baseline 1202, delta is exactly the 19 added); 8 tests fail with the mechanisms neutered
 
 | Field | Value |
 |---|---|
@@ -5501,7 +5519,7 @@ none
 
 ### GAP-081 [CODE] The due-rule picker shows an unclamped or empty value while the rule holds a clamped one, and an empty day saves as the first
 
-> **REMEDIATION: DONE** (2026-09-04) - commit 50223eb, branch worktree-gap-wave-2. Verification: jest components/bills+goals+support 5 suites 66 tests PASS; both tests fail with the sources reverted
+> **REMEDIATION: DONE** (2026-09-04) - commit 50223eb, branch gap-wave-2. Verification: jest components/bills+goals+support 5 suites 66 tests PASS; fails with sources reverted
 
 | Field | Value |
 |---|---|
@@ -5671,7 +5689,7 @@ none
 
 ### GAP-084 [CODE] The payday allocation sheet keeps per-goal state across paydays
 
-> **REMEDIATION: DONE** (2026-09-04) - commit 50223eb, branch worktree-gap-wave-2. Verification: same commit; reseeds on a value-based proposal signature, proven to fail when reverted
+> **REMEDIATION: DONE** (2026-09-04) - commit 50223eb, branch gap-wave-2. Verification: same commit; reseeds on a value-based proposal signature, proven to fail when reverted
 
 | Field | Value |
 |---|---|
@@ -5902,7 +5920,7 @@ none
 
 ### GAP-088 [CONTRA] The report-a-problem disclosure says nothing else is included, but the wire carries a report id, timestamps, an attempt count and four device headers
 
-> **REMEDIATION: DONE** (2026-09-04) - commit 50223eb, branch worktree-gap-wave-2. Verification: same commit; copy now names every wire field, and the test fails if a field is added without a disclosure phrase
+> **REMEDIATION: DONE** (2026-09-04) - commit 50223eb, branch gap-wave-2. Verification: same commit; test fails if a wire field gains no disclosure phrase
 
 | Field | Value |
 |---|---|
