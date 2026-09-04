@@ -427,6 +427,13 @@ export function LockProvider({ children }: { children: ReactNode }) {
     wipeInFlightRef.current = true;
     try {
       await performWipeAndStartOver();
+      // The wipe destroys key_manager's DEK, but this module's cache key is
+      // its OWN COPY of those bytes (lib/query_client.ts's setter) and
+      // wipeKeys() cannot reach it. Without this line a "start over" would
+      // leave a live DEK in memory after the wipe that was supposed to
+      // destroy every piece of key material. lockNow() above already does
+      // this on the ordinary lock path; the wipe path needs it too.
+      QueryCache.clearCacheEncryptionKey();
       setErrorMessage(null);
       setStatus("needs_onboarding");
     } finally {
