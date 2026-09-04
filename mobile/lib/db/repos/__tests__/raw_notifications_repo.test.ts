@@ -13,6 +13,7 @@ import {
   getRawCapture,
   getRawCaptureExpiry,
   hasRawCapture,
+  isRawCaptureUnreferenced,
   listRawCaptures,
   listUnprocessedRawCaptures,
   purgeExpiredRawCaptures,
@@ -336,6 +337,51 @@ test("listUnprocessedRawCaptures is oldest-captured first and stops at the limit
 
 test("listUnprocessedRawCaptures is empty when nothing has been captured", async () => {
   expect(await listUnprocessedRawCaptures(NOW, 10)).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------
+// isRawCaptureUnreferenced — the sweep's own predicate, asked about one id.
+// `mergeDuplicate` uses it to decide whether deleting a transaction is about to
+// strand the capture behind it, so the two must agree exactly.
+// ---------------------------------------------------------------------------
+
+test("isRawCaptureUnreferenced agrees with the sweep about a stored capture", async () => {
+  const wallet = await createWallet({ name: "GCash" });
+  await storeRawCapture(capture({ id: "cap-alone" }), NOW);
+  await storeRawCapture(capture({ id: "cap-in-ledger" }), NOW);
+  await storeRawCapture(capture({ id: "cap-on-card" }), NOW);
+
+  await insertTransaction({
+    walletId: wallet.id,
+    categoryId: CATEGORY_ID,
+    amount: 50000,
+    direction: "out",
+    occurredAt: NOW,
+    source: "notification",
+    confidence: 0.95,
+    rawNotificationId: "cap-in-ledger",
+  });
+  const item = await enqueue({
+    kind: "low-confidence",
+    payload: {},
+    rawNotificationId: "cap-on-card",
+  });
+
+  expect(await isRawCaptureUnreferenced("cap-alone")).toBe(true);
+  expect(await isRawCaptureUnreferenced("cap-in-ledger")).toBe(false);
+  expect(await isRawCaptureUnreferenced("cap-on-card")).toBe(false);
+
+  // A resolved card is still a reference — the same rule the sweep follows, and
+  // the whole reason a merge can leave one behind as a marker.
+  await db.runAsync("UPDATE review_queue_items SET resolved_at = ? WHERE id = ?", [NOW, item.id]);
+  expect(await isRawCaptureUnreferenced("cap-on-card")).toBe(false);
+
+  const stranded = await listUnprocessedRawCaptures(NOW, 10);
+  expect(stranded.map((row) => row.id)).toEqual(["cap-alone"]);
+});
+
+test("isRawCaptureUnreferenced is true for an id no capture was ever stored under", async () => {
+  expect(await isRawCaptureUnreferenced("never-stored")).toBe(true);
 });
 
 // ---------------------------------------------------------------------------

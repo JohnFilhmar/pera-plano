@@ -239,11 +239,17 @@ export async function hasRawCapture(id: string): Promise<boolean> {
  *     verdict is anchored on the event's own `occurredAt` rather than on when
  *     the stages run, so a later pass reaches the same answer. It is repeated
  *     work, not a wrong one.
- *   - A capture whose committed Transaction the user later DELETED looks
- *     unprocessed again, and a sweep will re-commit it.
+ *   - A capture whose committed Transaction is later DELETED looks unprocessed
+ *     again, and a sweep would re-commit it. `mergeDuplicate`
+ *     (lib/review/resolve_actions.ts) is the only caller of `deleteTransaction`
+ *     in the app, and it closes this itself: the merge leaves a resolved card
+ *     on the dropped capture, which the second `NOT EXISTS` below then reads.
+ *     `isRawCaptureUnreferenced` is the singular form of that same predicate,
+ *     so the merge decides whether to write the marker by asking the exact
+ *     question this sweep will ask later.
  *
- * Both want the column, and the column wants a migration, so both are recorded
- * here rather than left for the next reader to rediscover.
+ * The first wants the column, and the column wants a migration, so it is
+ * recorded here rather than left for the next reader to rediscover.
  *
  * BOUNDED BY `expires_at`, exactly as `listRawCaptures` is and for the same
  * reason: `purgeExpiredRawCaptures` only runs at bootstrap, so a long session
@@ -276,6 +282,35 @@ export async function listUnprocessedRawCaptures(
     [now, limit],
   );
   return rows.map(rowToRawCapture);
+}
+
+/**
+ * True when NOTHING points at this capture — no Transaction, no Review Queue
+ * card, resolved or not. `listUnprocessedRawCaptures`'s two `NOT EXISTS`
+ * clauses, asked about one id.
+ *
+ * WHAT IT IS FOR. A caller that is about to remove the last row referencing a
+ * capture has to know whether doing so strands it, because a stranded capture
+ * is one the next `startIngest` sweep re-runs through the stages — and for a
+ * capture whose Transaction was deleted DELIBERATELY, re-running it puts back
+ * the row the user removed. `mergeDuplicate` is that caller.
+ *
+ * NO `expires_at` BOUND, unlike the list above. The list is bounded because it
+ * is ACTED on and an expired capture's text is text the user was told is gone;
+ * this one is only asked whether a reference exists, and a caller writing a
+ * marker for a capture that is about to expire anyway costs one row that
+ * `purgeExpiredRawCaptures` will clear with the rest.
+ */
+export async function isRawCaptureUnreferenced(id: string): Promise<boolean> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ referenced: number }>(
+    `SELECT
+       EXISTS (SELECT 1 FROM transactions WHERE raw_notification_id = ?)
+       OR EXISTS (SELECT 1 FROM review_queue_items WHERE raw_notification_id = ?)
+       AS referenced`,
+    [id, id],
+  );
+  return (row?.referenced ?? 0) === 0;
 }
 
 /**

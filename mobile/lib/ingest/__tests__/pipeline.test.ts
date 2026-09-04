@@ -28,7 +28,7 @@ import {
   recordTraitEvidence,
   setWalletOwed,
 } from "@/lib/db/repos/wallet_traits_repo";
-import { answerWalletKind } from "@/lib/review/resolve_actions";
+import { answerWalletKind, mergeDuplicate } from "@/lib/review/resolve_actions";
 import { onAppEvent } from "@/lib/events/app_events";
 import { freshDb } from "@/test_support/db";
 import { getRawCapture, storeRawCapture } from "@/lib/db/repos/raw_notifications_repo";
@@ -1282,6 +1282,48 @@ test("a capture that throws on every attempt becomes a card instead of a silent 
   await __awaitIngestIdle();
   fourth();
   expect(await listOpenReviewItems()).toHaveLength(1);
+});
+
+test("a transaction the user merged away is not re-committed by the next sweep", async () => {
+  const wallet = await createWallet({ name: "GCash", openingBalance: 900000 });
+  await addMatcher(wallet.id, GCASH);
+
+  // The row the user keeps: typed in before the notification landed, which is
+  // exactly why the DedupeGate let the pair through. `describesSameMovement`
+  // refuses a row with no provider outright (dedupe_gate.ts's `providerKey:
+  // null` note), so a hand-entered twin is never suppressed automatically and
+  // the merge is the only thing that can settle it.
+  const kept = await insertTransaction({
+    walletId: wallet.id,
+    categoryId: UNCATEGORIZED_ID,
+    amount: 50000,
+    direction: "out",
+    occurredAt: NOW - MINUTE,
+    source: "manual",
+    confidence: 1,
+  });
+
+  expect((await processCapture(gcashSend("cap-merged"))).kind).toBe("committed");
+  const committed = (await ledger()).find((row) => row.rawNotificationId === "cap-merged");
+  expect(committed).toBeDefined();
+
+  // The ledger-side merge `mergeDuplicate`'s own docblock describes: a capture
+  // that auto-committed never raised a card, so there is no queue item to pass
+  // and nothing here resolves one.
+  await mergeDuplicate("no-card-was-ever-raised", kept.id, (committed as Transaction).id);
+  expect(await ledger()).toHaveLength(1);
+
+  mockDrain.mockResolvedValue([]);
+  const stop = await startIngest();
+  await __awaitIngestIdle();
+  stop();
+
+  // The user's answer has to survive a relaunch. Re-running the stages reaches
+  // the same verdict it reached the first time — the surviving twin is manual,
+  // so the gate still calls the capture unique — and committing again would put
+  // back the exact row they merged away, with a new id they cannot recognise.
+  expect(await ledger()).toHaveLength(1);
+  expect((await ledger())[0].id).toBe(kept.id);
 });
 
 // ---------------------------------------------------------------------------
