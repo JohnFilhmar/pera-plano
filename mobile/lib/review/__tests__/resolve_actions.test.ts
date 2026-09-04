@@ -34,9 +34,9 @@ jest.mock("@/lib/db/repos/review_queue_repo", () => {
   };
 });
 
-import { closeDatabase } from "@/lib/db/database";
+import { closeDatabase, getDatabase } from "@/lib/db/database";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
-import { storeRawCapture } from "@/lib/db/repos/raw_notifications_repo";
+import { isRawCaptureUnreferenced, storeRawCapture } from "@/lib/db/repos/raw_notifications_repo";
 import {
   countOpen,
   enqueue,
@@ -715,6 +715,116 @@ describe("mergeDuplicate leaves one row and undoes the double count", () => {
 
     expect(await listTransactions({})).toHaveLength(1);
     expect((await getWallet(gcashId))?.balance).toBe(100000 - 30000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The merge has to SURVIVE A RELAUNCH. `startIngest`'s recovery sweep re-runs
+// every stored capture that points at neither a Transaction nor a queue card
+// (`listUnprocessedRawCaptures`), so a merge that deletes the last row
+// referencing a capture hands that capture back to the pipeline, which commits
+// the duplicate again under an id the user has never seen. These pin the
+// reference the merge leaves behind.
+// ---------------------------------------------------------------------------
+
+describe("a merged-away capture is never handed back to the ingest sweep", () => {
+  async function countCardsFor(captureId: string): Promise<number> {
+    const db = await getDatabase();
+    const row = await db.getFirstAsync<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM review_queue_items WHERE raw_notification_id = ?",
+      [captureId],
+    );
+    return row?.count ?? 0;
+  }
+
+  async function seedCapturedTwins(): Promise<{ keep: string; drop: string }> {
+    await storeCapture("raw-keep");
+    await storeCapture("raw-drop");
+    const keep = await insertTransaction({
+      walletId: gcashId,
+      categoryId: FOOD,
+      amount: 30000,
+      direction: "out",
+      occurredAt: POSTED_AT,
+      merchant: "7-ELEVEN",
+      source: "notification",
+      confidence: 0.9,
+      rawNotificationId: "raw-keep",
+    });
+    const drop = await insertTransaction({
+      walletId: gcashId,
+      categoryId: FOOD,
+      amount: 30000,
+      direction: "out",
+      occurredAt: POSTED_AT + 4000,
+      source: "notification",
+      confidence: 0.8,
+      rawNotificationId: "raw-drop",
+    });
+    return { keep: keep.id, drop: drop.id };
+  }
+
+  test("the ledger-side merge leaves the dropped capture referenced", async () => {
+    const { keep, drop } = await seedCapturedTwins();
+
+    // NO QUEUE ITEM, which is the case the docblock describes and the dangerous
+    // one: both rows auto-committed, so neither ever raised a card, and nothing
+    // but this action's own marker can tell the sweep the question is settled.
+    await mergeDuplicate("no-card-was-ever-raised", keep, drop);
+
+    expect(await listTransactions({})).toHaveLength(1);
+    expect(await isRawCaptureUnreferenced("raw-drop")).toBe(false);
+    // And the marker is invisible: it is resolved in the same unit of work that
+    // creates it, so the user is never asked a question they already answered.
+    expect(await countOpen()).toBe(0);
+    expect(await listOpen()).toHaveLength(0);
+  });
+
+  test("a capture that already carries a card gets no second one", async () => {
+    const { keep, drop } = await seedCapturedTwins();
+    const item = await enqueue({
+      kind: "possible-duplicate",
+      rawNotificationId: "raw-drop",
+      payload: { duplicateOfTransactionId: keep },
+    });
+
+    await mergeDuplicate(item.id, keep, drop);
+
+    // One row, not two. A second marker would claim the user was asked about
+    // this capture twice.
+    expect(await countCardsFor("raw-drop")).toBe(1);
+    expect((await getReviewItem(item.id))?.resolvedAt).not.toBeNull();
+    expect(await isRawCaptureUnreferenced("raw-drop")).toBe(false);
+  });
+
+  test("a hand-typed row carries no capture, so the merge writes no marker", async () => {
+    await storeCapture("raw-keep");
+    const keep = await insertTransaction({
+      walletId: gcashId,
+      categoryId: FOOD,
+      amount: 30000,
+      direction: "out",
+      occurredAt: POSTED_AT,
+      merchant: "7-ELEVEN",
+      source: "notification",
+      confidence: 0.9,
+      rawNotificationId: "raw-keep",
+    });
+    const drop = await insertTransaction({
+      walletId: gcashId,
+      categoryId: FOOD,
+      amount: 30000,
+      direction: "out",
+      occurredAt: POSTED_AT + 4000,
+      source: "manual",
+      confidence: 1,
+    });
+
+    await mergeDuplicate("no-card-was-ever-raised", keep.id, drop.id);
+
+    // Nothing stored it, so no sweep can find it and there is nothing to mark.
+    expect(await countCardsFor("raw-keep")).toBe(0);
+    expect(await listTransactions({})).toHaveLength(1);
   });
 });
 

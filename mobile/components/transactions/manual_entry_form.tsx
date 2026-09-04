@@ -96,6 +96,24 @@ export type ManualEntryFormProps = {
    * exists because a submit already happened.
    */
   submitError?: string | null;
+  /**
+   * A write this form has already handed to the route and that has not settled
+   * yet. Save is inert and spinning for exactly that long.
+   *
+   * OWNED BY THE ROUTE, like `submitError` above and for the same reason: only
+   * whoever performed the write knows when it stops being in flight. The route
+   * keeps this screen open for the whole of it (app/transaction/new.tsx closes
+   * on the write landing, not on the tap), so Save is on screen and live while
+   * the write runs, and a second tap inside that window is a second
+   * INDEPENDENT write — two rows on the entry path, two legs and a link twice
+   * on the transfer path. Nothing underneath dedupes them: a manual entry is
+   * ground truth and two deliberate entries seconds apart are legitimate,
+   * which is that route's rule 4. So the double tap is refused at the button.
+   *
+   * Defaults to `false`, so a caller with no write behind it — this file's own
+   * component test — keeps today's behaviour.
+   */
+  submitting?: boolean;
   onCreateCashWallet: () => void;
   /**
    * The header's X (task-4b). OPTIONAL, and absent means no button rather
@@ -148,6 +166,7 @@ export function ManualEntryForm({
   onAmountChange,
   onSubmit,
   submitError = null,
+  submitting = false,
   onCreateCashWallet,
   onClose,
 }: ManualEntryFormProps) {
@@ -245,6 +264,12 @@ export function ManualEntryForm({
   const selectedWallet = wallets.find((wallet) => wallet.id === walletId);
 
   function handleSave(): void {
+    // Ahead of the amount check, because a write already in flight outranks
+    // every reason this form could otherwise have to accept another one.
+    // `Button` drops its own handler while `loading` (its header: "it must not
+    // fire twice"), so this is the belt to that braces — the refusal has to
+    // survive a press that gets past the responder.
+    if (submitting) return;
     if (!canSave) return;
 
     if (walletMissing || dateInvalid || toWalletMissing || feeExceedsAmount) {
@@ -315,10 +340,18 @@ export function ManualEntryForm({
           // form with no router above it to close to.
           <View className="h-11 w-11" />
         )}
+        {/* `loading` rather than a second term inside `disabled`: an in-flight
+            write is the one refusal on this screen with no field for the user
+            to go and fix, so it shows its reason as a spinner where the
+            others show theirs as text — still disabled WITH THE REASON, never
+            offered-then-refused. `Button` treats the two identically
+            otherwise (handler dropped, `accessibilityState.disabled` true)
+            and adds `busy` on top. */}
         <Button
           testID="manual-entry-save"
           title="Save"
           variant="ghost"
+          loading={submitting}
           disabled={!canSave}
           onPress={handleSave}
         />

@@ -21,7 +21,10 @@ afterEach(async () => {
   await closeDatabase();
 });
 
-test("ONBOARDING_STEPS is exactly the nine steps, in the documented order", () => {
+test("ONBOARDING_STEPS is exactly the ten steps, in the documented order", () => {
+  // "alerts" is the tenth, added by GAP-003: the POST_NOTIFICATIONS ask used
+  // to be folded into "access" and was never actually made, so no alert of
+  // any kind could be displayed on Android 13+.
   expect(ONBOARDING_STEPS).toEqual([
     "welcome",
     "how_it_works",
@@ -31,6 +34,7 @@ test("ONBOARDING_STEPS is exactly the nine steps, in the documented order", () =
     "wallets",
     "income",
     "first_limit",
+    "alerts",
     "done",
   ]);
 });
@@ -47,8 +51,11 @@ test("nextStep returns null once the flow has actually finished", () => {
 
 test("skipping the last real step still lands on done, not null -- rule 1's dead-end guard", () => {
   // The exact transition a Skip tap on the last content step takes. A wrong
-  // answer here strands the user on first_limit with no way forward.
-  expect(nextStep("first_limit")).toBe("done");
+  // answer here strands the user on alerts with no way forward.
+  expect(nextStep("alerts")).toBe("done");
+  // And the step that used to hold that position still hands off to the new
+  // one rather than jumping the ask entirely (GAP-003).
+  expect(nextStep("first_limit")).toBe("alerts");
 });
 
 test("isOnboardingComplete reads false before anything writes it", async () => {

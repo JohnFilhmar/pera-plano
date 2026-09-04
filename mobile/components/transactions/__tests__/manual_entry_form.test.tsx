@@ -18,7 +18,7 @@
 // (Global Constraints: no repository import inside a component), so what is
 // SUBMITTED is what is asserted here, and what is WRITTEN is asserted in
 // app/__tests__/transaction_new.test.tsx.
-import { fireEvent, render, screen } from "@testing-library/react-native";
+import { act, fireEvent, render, screen } from "@testing-library/react-native";
 import { useState } from "react";
 import type { ReactElement } from "react";
 
@@ -677,5 +677,93 @@ describe("the Transfer segment", () => {
 
     expect(onSubmit).not.toHaveBeenCalled();
     expect(screen.getByTestId("manual-entry-fee-error")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The double tap. The route closes this screen when the WRITE lands, not when
+// the tap happens, so Save sits under the finger for the whole write — and a
+// second tap in that window is a second, independent entry (a second pair of
+// legs and a second link on the transfer path). Nothing below dedupes it: two
+// deliberate saves seconds apart ARE two rows, which is app/transaction/
+// new.tsx's rule 4, so the only place this can be refused is the button.
+// ---------------------------------------------------------------------------
+
+/** Rejects the write `WritingHarness` is holding open. */
+let failWrite: (() => void) | null = null;
+
+/**
+ * The route's shape around a write, which the plain `Harness` above does not
+ * have: `onSubmit` fires, `submitting` goes true, THE SCREEN STAYS OPEN, and
+ * the flag clears only when the write settles — either way, matching the
+ * `.finally` app/transaction/new.tsx clears it in.
+ */
+function WritingHarness() {
+  const [amount, setAmount] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  return (
+    <ManualEntryForm
+      wallets={[POCKET, BPI]}
+      categories={CATEGORIES}
+      transactions={[]}
+      now={NOW}
+      amount={amount}
+      onAmountChange={setAmount}
+      onSubmit={(draft) => {
+        onSubmit(draft);
+        setSubmitting(true);
+        new Promise<void>((_resolve, reject) => {
+          failWrite = () => reject(new Error("write rejected"));
+        })
+          .catch(() => undefined)
+          .finally(() => setSubmitting(false));
+      }}
+      submitting={submitting}
+      onCreateCashWallet={onCreateCashWallet}
+    />
+  );
+}
+
+describe("a double tap on Save", () => {
+  beforeEach(() => {
+    failWrite = null;
+  });
+
+  test("two presses inside one write submit once", () => {
+    renderForm(<WritingHarness />);
+    typeAmount("manual-amount", "100");
+
+    save();
+    save();
+
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  test("Save says it is busy rather than going quietly dead", () => {
+    renderForm(<WritingHarness />);
+    typeAmount("manual-amount", "100");
+    save();
+
+    // Same no-dead-taps rule the Transfer segment follows: refused WITH THE
+    // REASON on it, here a spinner and `busy` instead of an inline sentence.
+    const button = screen.getByTestId("manual-entry-save");
+    expect(button.props.accessibilityState.disabled).toBe(true);
+    expect(button.props.accessibilityState.busy).toBe(true);
+  });
+
+  test("a write that fails gives Save back", async () => {
+    renderForm(<WritingHarness />);
+    typeAmount("manual-amount", "100");
+    save();
+
+    await act(async () => {
+      failWrite?.();
+    });
+
+    // A rejected transfer leaves this screen open telling the user nothing was
+    // recorded and to try again — so the retry it asks for has to be tappable.
+    expect(screen.getByTestId("manual-entry-save").props.accessibilityState.disabled).toBe(false);
+    save();
+    expect(onSubmit).toHaveBeenCalledTimes(2);
   });
 });

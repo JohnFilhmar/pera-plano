@@ -13,7 +13,9 @@ import {
   getRawCapture,
   getRawCaptureExpiry,
   hasRawCapture,
+  isRawCaptureUnreferenced,
   listRawCaptures,
+  listUnprocessedRawCaptures,
   purgeExpiredRawCaptures,
   RAW_CAPTURE_TTL_MS,
   storeRawCapture,
@@ -260,6 +262,126 @@ test("listRawCaptures carries the STORED expiry, not a derived one", async () =>
 
 test("listRawCaptures is empty when nothing has been captured", async () => {
   expect(await listRawCaptures(NOW)).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------
+// listUnprocessedRawCaptures — the pipeline's recovery sweep. A capture is
+// stored BEFORE the stages run, so a stage that throws leaves a durable row
+// that produced nothing and that `hasRawCapture` then treats as already seen
+// forever. This query is how those rows are found again.
+// ---------------------------------------------------------------------------
+
+test("listUnprocessedRawCaptures returns a stored capture nothing points at", async () => {
+  const stranded = capture({ id: "cap-stranded" });
+  await storeRawCapture(stranded, NOW);
+
+  // The whole capture, not just its id: the pipeline re-runs the stages over
+  // it, and the stages read every text field.
+  expect(await listUnprocessedRawCaptures(NOW, 10)).toEqual([stranded]);
+});
+
+test("listUnprocessedRawCaptures skips a capture a committed transaction points at", async () => {
+  const wallet = await createWallet({ name: "GCash" });
+  await storeRawCapture(capture({ id: "cap-committed" }), NOW);
+  await insertTransaction({
+    walletId: wallet.id,
+    categoryId: CATEGORY_ID,
+    amount: 50000,
+    direction: "out",
+    occurredAt: NOW,
+    source: "notification",
+    confidence: 0.95,
+    rawNotificationId: "cap-committed",
+  });
+
+  expect(await listUnprocessedRawCaptures(NOW, 10)).toEqual([]);
+});
+
+test("listUnprocessedRawCaptures skips a queued capture, resolved card or not", async () => {
+  await storeRawCapture(capture({ id: "cap-queued" }), NOW);
+  const item = await enqueue({ kind: "low-confidence", payload: {}, rawNotificationId: "cap-queued" });
+
+  expect(await listUnprocessedRawCaptures(NOW, 10)).toEqual([]);
+
+  // Resolving the card does not strand the capture again: `resolve` sets
+  // `resolved_at` and leaves the row, so the reference the sweep reads is
+  // still there. Answering a card must not make the pipeline re-run it.
+  await db.runAsync("UPDATE review_queue_items SET resolved_at = ? WHERE id = ?", [NOW, item.id]);
+  expect(await listUnprocessedRawCaptures(NOW, 10)).toEqual([]);
+});
+
+test("listUnprocessedRawCaptures never offers a capture past its expiry", async () => {
+  await storeRawCapture(capture({ id: "expired" }), NOW - THIRTY_DAYS_MS);
+  await storeRawCapture(capture({ id: "fresh" }), NOW);
+
+  // Same rule `listRawCaptures` follows and for a stronger reason: this list is
+  // acted ON, so reprocessing an expired row would be the app parsing text it
+  // told the user was already destroyed.
+  const rows = await listUnprocessedRawCaptures(NOW, 10);
+  expect(rows.map((row) => row.id)).toEqual(["fresh"]);
+});
+
+test("listUnprocessedRawCaptures is oldest-captured first and stops at the limit", async () => {
+  await storeRawCapture(capture({ id: "cap-old", capturedAt: NOW - 3_000 }), NOW);
+  await storeRawCapture(capture({ id: "cap-mid", capturedAt: NOW - 2_000 }), NOW);
+  await storeRawCapture(capture({ id: "cap-new", capturedAt: NOW - 1_000 }), NOW);
+
+  // Oldest first, the opposite of `listRawCaptures`: pipeline rule 8 says an
+  // older capture may never be committed after a newer one.
+  const all = await listUnprocessedRawCaptures(NOW, 10);
+  expect(all.map((row) => row.id)).toEqual(["cap-old", "cap-mid", "cap-new"]);
+
+  const capped = await listUnprocessedRawCaptures(NOW, 2);
+  expect(capped.map((row) => row.id)).toEqual(["cap-old", "cap-mid"]);
+});
+
+test("listUnprocessedRawCaptures is empty when nothing has been captured", async () => {
+  expect(await listUnprocessedRawCaptures(NOW, 10)).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------
+// isRawCaptureUnreferenced — the sweep's own predicate, asked about one id.
+// `mergeDuplicate` uses it to decide whether deleting a transaction is about to
+// strand the capture behind it, so the two must agree exactly.
+// ---------------------------------------------------------------------------
+
+test("isRawCaptureUnreferenced agrees with the sweep about a stored capture", async () => {
+  const wallet = await createWallet({ name: "GCash" });
+  await storeRawCapture(capture({ id: "cap-alone" }), NOW);
+  await storeRawCapture(capture({ id: "cap-in-ledger" }), NOW);
+  await storeRawCapture(capture({ id: "cap-on-card" }), NOW);
+
+  await insertTransaction({
+    walletId: wallet.id,
+    categoryId: CATEGORY_ID,
+    amount: 50000,
+    direction: "out",
+    occurredAt: NOW,
+    source: "notification",
+    confidence: 0.95,
+    rawNotificationId: "cap-in-ledger",
+  });
+  const item = await enqueue({
+    kind: "low-confidence",
+    payload: {},
+    rawNotificationId: "cap-on-card",
+  });
+
+  expect(await isRawCaptureUnreferenced("cap-alone")).toBe(true);
+  expect(await isRawCaptureUnreferenced("cap-in-ledger")).toBe(false);
+  expect(await isRawCaptureUnreferenced("cap-on-card")).toBe(false);
+
+  // A resolved card is still a reference — the same rule the sweep follows, and
+  // the whole reason a merge can leave one behind as a marker.
+  await db.runAsync("UPDATE review_queue_items SET resolved_at = ? WHERE id = ?", [NOW, item.id]);
+  expect(await isRawCaptureUnreferenced("cap-on-card")).toBe(false);
+
+  const stranded = await listUnprocessedRawCaptures(NOW, 10);
+  expect(stranded.map((row) => row.id)).toEqual(["cap-alone"]);
+});
+
+test("isRawCaptureUnreferenced is true for an id no capture was ever stored under", async () => {
+  expect(await isRawCaptureUnreferenced("never-stored")).toBe(true);
 });
 
 // ---------------------------------------------------------------------------

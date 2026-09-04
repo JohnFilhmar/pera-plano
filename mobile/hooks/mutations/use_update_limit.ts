@@ -40,6 +40,11 @@ export function useUpdateLimit() {
       await refreshLimitBase(id, now, await getMonthlyEquivalentIncome(now));
       return limit;
     },
-    onSuccess: () => invalidateKeys(queryClient, [queryKeys.limits.all]),
+    // The hero too, named here rather than left to `installSafeToSpendCascade`
+    // (lib/query_client.ts): a limit edit is rule 11's "recomputes
+    // Safe-to-Spend immediately", the one write whose whole point the user
+    // watches the headline number for.
+    onSuccess: () =>
+      invalidateKeys(queryClient, [queryKeys.limits.all, queryKeys.safeToSpend.all]),
   });
 }

@@ -29,8 +29,12 @@
 // Task 7 without Task 7 itself calling it from the app.
 import { createAsyncStoragePersister } from "@tanstack/query-async-storage-persister";
 import { QueryClient } from "@tanstack/react-query";
+import type { QueryKey } from "@tanstack/react-query";
 import type { PersistedClient } from "@tanstack/react-query-persist-client";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+
+import { queryKeys } from "@/constants/query_keys";
+
 import { createCacheCodec, CacheCipherKeyMissingError } from "./crypto/cache_cipher";
 
 const FIVE_MINUTES_MS = 5 * 60 * 1000;
@@ -52,6 +56,74 @@ export const queryClient = new QueryClient({
     },
   },
 });
+
+/**
+ * The families Safe-to-Spend is DERIVED FROM — docs/04-features/09-safe-to-spend.md
+ * rule 13's recompute triggers expressed as the roots those triggers actually
+ * invalidate. A ledger commit and a transfer link/unlink both land on
+ * `transactions`; a bill pay on `bills` and `transactions`; a review
+ * confirmation on `review_queue`.
+ *
+ * Local-midnight rollover is deliberately absent: no query is invalidated at
+ * midnight, so it is a clock concern rather than a cache one.
+ */
+const SAFE_TO_SPEND_SOURCE_ROOTS: readonly QueryKey[] = [
+  queryKeys.transactions.all,
+  queryKeys.reviewQueue.all,
+  queryKeys.bills.all,
+  queryKeys.goals.all,
+  queryKeys.limits.all,
+  queryKeys.income.all,
+];
+
+/**
+ * Makes the Safe-to-Spend root follow its sources, so the hero and the Plus
+ * projection curve under it cannot outlive the numbers they are computed from.
+ *
+ * ON THE CACHE, NOT IN EACH MUTATION. Safe-to-Spend reads limits, bills,
+ * goals, income, the review queue and the ledger, so "the mutations that move
+ * it" is every hook touching any of those — a list ~20 long today that the
+ * hook written next month silently drops off, and a stale headline is the
+ * single most visible bug this app can have. Subscribing to the cache states
+ * the derivation ONCE: invalidate a source, and what is derived from it is
+ * invalidated too, whoever did the invalidating (a mutation's
+ * `invalidateKeys`, the Home screen's `ledger:committed` handler, a future
+ * background drain).
+ *
+ * STILL AN EXPLICIT KEY LIST, not the blanket `invalidateQueries()` that
+ * hooks/mutations/invalidate_keys.ts exists to prevent: six named source roots
+ * in, one named key out. A settings toggle or a ruleset install moves neither.
+ *
+ * The `isInvalidated` guard is what keeps ONE `invalidateQueries` call over a
+ * family holding four cached entries from cancelling and restarting the hero's
+ * fetch four times over — the queries are already marked stale after the first
+ * cascade, and a refetch that lands clears the flag so the next source change
+ * cascades again.
+ *
+ * LIMIT WORTH KNOWING: this reacts to a query being invalidated, so a source
+ * family with nothing cached cascades nothing. Every rule 13 trigger is fired
+ * from a screen that has the family it invalidates on screen, and the ledger
+ * path is covered a second time by app/(tabs)/index.tsx's `ledger:committed`
+ * handler, which names `safeToSpend.all` directly.
+ */
+export function installSafeToSpendCascade(client: QueryClient): () => void {
+  return client.getQueryCache().subscribe((event) => {
+    if (event.type !== "updated" || event.action.type !== "invalidate") return;
+
+    const key = event.query.queryKey;
+    const fromSource = SAFE_TO_SPEND_SOURCE_ROOTS.some((root) =>
+      root.every((segment, index) => key[index] === segment),
+    );
+    if (!fromSource) return;
+
+    const derived = client.getQueryCache().findAll({ queryKey: queryKeys.safeToSpend.all });
+    if (derived.length === 0 || derived.every((query) => query.state.isInvalidated)) return;
+
+    void client.invalidateQueries({ queryKey: queryKeys.safeToSpend.all });
+  });
+}
+
+installSafeToSpendCascade(queryClient);
 
 /**
  * The key that encrypts the persisted cache — module-level, mirroring

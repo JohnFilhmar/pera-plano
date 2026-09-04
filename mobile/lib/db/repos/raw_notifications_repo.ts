@@ -217,6 +217,103 @@ export async function hasRawCapture(id: string): Promise<boolean> {
 }
 
 /**
+ * Captures that were stored and then produced nothing — no Transaction, no
+ * Review Queue card — oldest-captured first, at most `limit` of them.
+ *
+ * THE RECOVERY LIST THE PIPELINE NEVER HAD. `storeRawCapture` runs BEFORE the
+ * stages (pipeline rule 2), so a stage that throws — SQLite busy, a corrupt
+ * user rule, the process killed mid-batch — leaves a durable row nothing ever
+ * looks at again, while `hasRawCapture` calls every later delivery of that
+ * notification a replay. The money movement disappears with no row, no card
+ * and no error. This is the query `startIngest` sweeps to find those rows and
+ * put them back through the stages.
+ *
+ * TWO `NOT EXISTS` RATHER THAN A `processed_at` COLUMN, and the difference is
+ * not free. A column would record whether the stages RAN; this asks whether
+ * they left anything BEHIND, which is a different question and is wrong in two
+ * knowable ways:
+ *
+ *   - A capture the stages deliberately ignored — the DedupeGate's `duplicate`
+ *     verdict, the review floor's `unreadable` discard — points at neither
+ *     table, so it is swept again on every launch. Re-running it is SAFE: every
+ *     verdict is anchored on the event's own `occurredAt` rather than on when
+ *     the stages run, so a later pass reaches the same answer. It is repeated
+ *     work, not a wrong one.
+ *   - A capture whose committed Transaction is later DELETED looks unprocessed
+ *     again, and a sweep would re-commit it. `mergeDuplicate`
+ *     (lib/review/resolve_actions.ts) is the only caller of `deleteTransaction`
+ *     in the app, and it closes this itself: the merge leaves a resolved card
+ *     on the dropped capture, which the second `NOT EXISTS` below then reads.
+ *     `isRawCaptureUnreferenced` is the singular form of that same predicate,
+ *     so the merge decides whether to write the marker by asking the exact
+ *     question this sweep will ask later.
+ *
+ * The first wants the column, and the column wants a migration, so it is
+ * recorded here rather than left for the next reader to rediscover.
+ *
+ * BOUNDED BY `expires_at`, exactly as `listRawCaptures` is and for the same
+ * reason: `purgeExpiredRawCaptures` only runs at bootstrap, so a long session
+ * holds rows whose 30 days ran out hours ago. Reprocessing one would be the app
+ * acting on text it told the user was already destroyed.
+ *
+ * OLDEST-CAPTURED FIRST, the opposite of `listRawCaptures`'s newest-first: this
+ * list feeds pipeline rule 8, where an older capture must never be committed
+ * after a newer one. Capped so a device carrying hundreds of stranded rows does
+ * not spend its whole launch on them — whatever the cap leaves is picked up by
+ * the next sweep.
+ */
+export async function listUnprocessedRawCaptures(
+  now: EpochMs,
+  limit: number,
+): Promise<RawCapture[]> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<RawNotificationRow>(
+    `SELECT * FROM raw_notifications
+     WHERE expires_at > ?
+       AND NOT EXISTS (
+         SELECT 1 FROM transactions WHERE transactions.raw_notification_id = raw_notifications.id
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM review_queue_items
+         WHERE review_queue_items.raw_notification_id = raw_notifications.id
+       )
+     ORDER BY captured_at ASC
+     LIMIT ?`,
+    [now, limit],
+  );
+  return rows.map(rowToRawCapture);
+}
+
+/**
+ * True when NOTHING points at this capture — no Transaction, no Review Queue
+ * card, resolved or not. `listUnprocessedRawCaptures`'s two `NOT EXISTS`
+ * clauses, asked about one id.
+ *
+ * WHAT IT IS FOR. A caller that is about to remove the last row referencing a
+ * capture has to know whether doing so strands it, because a stranded capture
+ * is one the next `startIngest` sweep re-runs through the stages — and for a
+ * capture whose Transaction was deleted DELIBERATELY, re-running it puts back
+ * the row the user removed. `mergeDuplicate` is that caller.
+ *
+ * NO `expires_at` BOUND, unlike the list above. The list is bounded because it
+ * is ACTED on and an expired capture's text is text the user was told is gone;
+ * this one is only asked whether a reference exists, and a caller writing a
+ * marker for a capture that is about to expire anyway costs one row that
+ * `purgeExpiredRawCaptures` will clear with the rest.
+ */
+export async function isRawCaptureUnreferenced(id: string): Promise<boolean> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ referenced: number }>(
+    `SELECT
+       EXISTS (SELECT 1 FROM transactions WHERE raw_notification_id = ?)
+       OR EXISTS (SELECT 1 FROM review_queue_items WHERE raw_notification_id = ?)
+       AS referenced`,
+    [id, id],
+  );
+  return (row?.referenced ?? 0) === 0;
+}
+
+/**
  * The id of an already-stored capture that is THE SAME NOTIFICATION as this
  * one, redelivered — or `null` when this is genuinely new.
  *

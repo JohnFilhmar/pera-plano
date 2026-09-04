@@ -35,8 +35,8 @@
 // of its own.
 import { UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { getActiveRuleset } from "@/lib/db/repos/parser_rulesets_repo";
-import { getRawCapture } from "@/lib/db/repos/raw_notifications_repo";
-import { listOpen, resolve } from "@/lib/db/repos/review_queue_repo";
+import { getRawCapture, isRawCaptureUnreferenced } from "@/lib/db/repos/raw_notifications_repo";
+import { enqueue, listOpen, resolve } from "@/lib/db/repos/review_queue_repo";
 import { setWalletOwed } from "@/lib/db/repos/wallet_traits_repo";
 import {
   deleteTransaction,
@@ -54,6 +54,7 @@ import type {
   RawCapture,
   ReviewItemPayload,
   ReviewQueueItem,
+  Transaction,
   TxDirection,
   UserRuleMatcher,
 } from "@/types/domain";
@@ -515,6 +516,16 @@ export async function confirmAsTransfer(itemId: string): Promise<string | null> 
  * a dropped row that is already gone means the merge already happened, and this
  * is also the ledger-side merge that runs with no queue item.
  *
+ * AND IT LEAVES A MARKER ON THE DROPPED CAPTURE, which is not bookkeeping —
+ * without it this action undoes itself on the next launch. `startIngest`'s
+ * recovery sweep (`listUnprocessedRawCaptures`) re-runs every stored capture
+ * that points at neither a Transaction nor a queue card, and a capture that
+ * AUTO-COMMITTED never raised a card, so deleting its row here leaves it
+ * pointing at nothing and the sweep commits it again — the very duplicate the
+ * user merged away, back under an id they have never seen. `markCaptureMerged`
+ * is what stops that; see its own note for why the marker is a resolved card
+ * rather than a column.
+ *
  * A held (uncommitted) duplicate twin has no row here at all — the DedupeGate
  * queues it without committing — so "Same transaction" on such a card discards
  * the twin by resolving the item alone, and spec rule 10's "committed
@@ -530,11 +541,54 @@ export async function mergeDuplicate(
   }
 
   await withUnitOfWork(async () => {
-    if ((await getTransaction(dropTransactionId)) !== null) {
+    const dropped = await getTransaction(dropTransactionId);
+    if (dropped !== null) {
       await deleteTransaction(dropTransactionId);
+      await markCaptureMerged(dropped, keepTransactionId);
     }
     await resolve(itemId, "confirmed");
   });
+}
+
+/**
+ * Records that the dropped row's capture was answered, so the ingest pipeline
+ * stops treating it as work it never finished.
+ *
+ * A RESOLVED CARD, BECAUSE IT IS THE ONLY DURABLE MARKER THAT NEEDS NO
+ * MIGRATION — and because it is the truthful one. `review_queue_items` is
+ * already the record of "this capture raised a question and the question is
+ * closed"; the only unusual thing here is that the user answered it from the
+ * ledger rather than from the card. It is resolved in the same unit of work
+ * that creates it, so it is never open, never counted by `countOpen`, never
+ * listed by `listOpen`, and never shown to anyone — and `purgeExpired` deletes
+ * only UNRESOLVED rows, so it outlives the capture it protects.
+ *
+ * ONLY WHEN NOTHING ELSE POINTS AT THE CAPTURE. A card raised for this capture
+ * already says everything this marker would say, and a second row claiming the
+ * user was asked twice would be a lie about their triage history.
+ * `isRawCaptureUnreferenced` is the sweep's own predicate, asked here about the
+ * one id, so the marker is written exactly when its absence would cost a row.
+ *
+ * A MANUAL OR IMPORTED ROW HAS NO CAPTURE and needs no marker: nothing stored
+ * it, so no sweep can find it.
+ */
+async function markCaptureMerged(dropped: Transaction, keepTransactionId: string): Promise<void> {
+  const captureId = dropped.rawNotificationId;
+  if (captureId === null) return;
+  if (!(await isRawCaptureUnreferenced(captureId))) return;
+
+  const marker = await enqueue({
+    kind: "possible-duplicate",
+    rawNotificationId: captureId,
+    payload: {
+      amount: dropped.amount,
+      direction: dropped.direction,
+      merchant: dropped.merchant,
+      walletId: dropped.walletId,
+      duplicateOfTransactionId: keepTransactionId,
+    },
+  });
+  await resolve(marker.id, "confirmed");
 }
 
 /**

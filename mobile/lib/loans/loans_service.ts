@@ -51,6 +51,14 @@ export type LoanStatus = {
   nextDue: { dueDate: string; amount: Centavos } | null;
   overdue: boolean;
   paidCount: number;
+  /**
+   * What the recorded payments come to, which is NOT `principal - outstanding`:
+   * `outstandingBalance` also folds in balance adjustments and floors at zero,
+   * so the subtraction counts a late fee (rule 20) as money paid — negative
+   * before the first payment — and reports an overpayment as exactly the
+   * principal.
+   */
+  paidTotal: Centavos;
 };
 
 export type PaymentCandidate = {
@@ -255,6 +263,25 @@ function payingDirection(loan: Loan): "in" | "out" {
   return loan.direction === "i-owe" ? "out" : "in";
 }
 
+/**
+ * What a loan's payments add up to.
+ *
+ * THE AMOUNT IS ON THE TRANSACTION, NOT ON THE PAYMENT ROW — `loan_payments`
+ * has no amount column, which is why `listLoanHistory` and
+ * `outstandingBalance` both walk the same join — and a payment whose
+ * transaction has been deleted is skipped here exactly as it is there, so this
+ * total and the balance can never disagree about which rows count.
+ */
+async function paidTotalOf(payments: LoanPayment[]): Promise<Centavos> {
+  let total = 0;
+  for (const payment of payments) {
+    const transaction = await getTransaction(payment.transactionId);
+    if (transaction === null) continue;
+    total += transaction.amount;
+  }
+  return total;
+}
+
 /** Every loan with its balance, next installment and overdue state. */
 export async function listLoanStatuses(now: number): Promise<LoanStatus[]> {
   const loans = await listLoans();
@@ -263,11 +290,17 @@ export async function listLoanStatuses(now: number): Promise<LoanStatus[]> {
   for (const loan of loans) {
     const outstanding = await outstandingBalance(loan.id);
     const payments = await listPayments(loan.id);
+    const paidTotal = await paidTotalOf(payments);
     // What the schedule says is next, given how much has been paid against it.
     // A free-form loan has no schedule, so it falls back to whatever the user
     // set by hand (spec rule 1: "nextDueDate/nextDueAmount optional and
     // user-managed").
-    const scheduled = nextDue(loan, loan.principal - outstanding);
+    //
+    // THE PAYMENTS' TOTAL, NOT `principal - outstanding`. A balance adjustment
+    // moves `outstanding` with no money changing hands, so the subtraction
+    // walked this pointer BACKWARDS onto installments the user had already
+    // paid the moment the lender added a fee (rule 20).
+    const scheduled = nextDue(loan, paidTotal);
     const due =
       scheduled ??
       (loan.nextDueDate === null
@@ -286,6 +319,7 @@ export async function listLoanStatuses(now: number): Promise<LoanStatus[]> {
         outstanding > 0 &&
         startOfLocalDay(new Date(`${due.dueDate}T00:00:00`).getTime()) < startOfLocalDay(now),
       paidCount: payments.length,
+      paidTotal,
     });
   }
 

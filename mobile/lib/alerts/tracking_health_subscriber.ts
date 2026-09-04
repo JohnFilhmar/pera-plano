@@ -40,12 +40,21 @@ import { notifyTrackingInterrupted } from "./tracking_notifier";
  * Paused is not broken (the user's switch wins, exactly as in
  * `TrackingBanner`); granted-but-disconnected is, and it is the silent failure
  * this whole path exists for.
+ *
+ * NEITHER IS A FRESH INSTALL. `capture_enabled` defaults to true and a device
+ * that has never granted access reads `granted: false`, so without the
+ * onboarding gate the first thing a new user could see is a complaint that
+ * tracking stopped — posted during the flow that has not asked for either
+ * grant yet (onboarding's own "access" and "alerts" steps). Nothing was
+ * interrupted, because nothing had started.
  */
 async function isInterrupted(): Promise<boolean> {
-  const [health, captureEnabled] = await Promise.all([
+  const [health, captureEnabled, onboardingComplete] = await Promise.all([
     getListenerHealth(),
     getSetting("capture_enabled"),
+    getSetting("onboarding_complete"),
   ]);
+  if (!onboardingComplete) return false;
   if (!captureEnabled) return false;
   return !health.granted || !health.serviceConnected;
 }

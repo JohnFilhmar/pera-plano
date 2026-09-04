@@ -15,6 +15,7 @@ import { listCategories, listCategoryRefs } from "@/lib/db/repos/categories_repo
 import { listGoals } from "@/lib/db/repos/goals_repo";
 import { countOpen } from "@/lib/db/repos/review_queue_repo";
 import { addDaysIso, toDateIso } from "@/lib/dates";
+import { hasPaydayAutoAllocation } from "@/lib/entitlements";
 import {
   getIncomeSummary,
   listPayEventsBetween,
@@ -179,12 +180,23 @@ async function unresolvedBills(now: number, horizonDays: number): Promise<Upcomi
  * they happen." So a goal with no `contributionRule` contributes nothing, and
  * neither does one whose cadence the app cannot project — guessing a date would
  * reserve money on a day the user was never going to move it.
+ *
+ * PLUS ONLY, asked through `hasPaydayAutoAllocation` — the same question
+ * `proposePaydayAllocations` asks, so the forecast and the prompt cannot
+ * disagree about a tier.
  */
 async function forecastContributions(
   windowStart: IsoDate,
   today: IsoDate,
   income: IncomeSummary,
 ): Promise<PlannedContribution[]> {
+  // Payday auto-allocation is a Plus capability (docs/05-monetization.md §3.2):
+  // on free the `contributionRule` is RETAINED but no prompt ever fires, so
+  // nothing is ever allocated. Reserving against it anyway would hold money back
+  // for a transfer the user is never asked to make — docs/04-features/09 puts it
+  // as "the Goal-contributions term is effectively ₱0 for free users".
+  if (!hasPaydayAutoAllocation()) return [];
+
   // Achieved goals are excluded: the spec's Reached card offers Complete, Raise
   // target or Keep as-is, and none of those is "keep reserving money for it".
   const goals = (await listGoals({ includeAchieved: false })).filter(

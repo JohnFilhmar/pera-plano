@@ -170,6 +170,33 @@ function escapeField(value: string): string {
   return needsQuoting(value) ? `"${value.replace(/"/gu, '""')}"` : value;
 }
 
+// A cell whose FIRST character is one of these is evaluated as a formula by
+// Excel, LibreOffice and Google Sheets. Only the leading character counts —
+// the same characters later in a string are inert, so an ordinary note like
+// "Budget = tight" is left exactly as the user wrote it.
+const FORMULA_TRIGGER = /^[=+\-@\t\r]/u;
+
+/**
+ * `escapeField` for the free-text columns — the ones carrying strings this app
+ * did not author. `merchant` comes from third-party notification text and
+ * wallet / category / category_parent / counterparty / reference / note are
+ * whatever the user typed, so a leading `=`, `+`, `-`, `@`, tab or CR would
+ * turn the cell into a live formula the moment this file is opened in the
+ * spreadsheet it exists to be opened in (docs rule 12; the export's stated
+ * purpose is "share numbers with my spouse"). That is the OWASP CSV-injection
+ * class, and the attacker controls the input channel.
+ *
+ * The neutralisation is the standard one: prepend a single apostrophe — the
+ * spreadsheet's own "treat this cell as text" marker — and force RFC 4180
+ * quoting so the apostrophe can't be read as data by a plain-split reader.
+ * It changes the cell's bytes, so it is applied to text columns ONLY: `amount`,
+ * `date`, `time` and `confidence` must stay parseable as numbers and dates.
+ */
+function escapeTextField(value: string): string {
+  if (!FORMULA_TRIGGER.test(value)) return escapeField(value);
+  return `"'${value.replace(/"/gu, '""')}"`;
+}
+
 /**
  * Centavos → bare decimal pesos, e.g. `123456` → `"1234.56"`. See this
  * file's header, decision 1, for why this is not `formatCentavos`.
@@ -186,28 +213,34 @@ function formatConfidence(confidence: number): string {
   return confidence.toFixed(2);
 }
 
+// Each column picks its own escaper: `escapeTextField` for the free-text
+// columns an attacker or the user can write into, `escapeField` for the
+// machine-generated ones — ids, dates, the bare decimal amount, the fixed
+// vocabularies of `direction`/`wallet_type`/`source`/`is_transfer` — so no
+// numeric or date cell ever gains an apostrophe. `category_parent` is a
+// Category name like `category` is, and gets the same treatment.
 function rowToCsvLine(row: TransactionExportRow): string {
   const fields = [
-    row.id,
-    row.date,
-    row.time,
-    row.direction,
-    formatAmount(row.amount),
-    row.currency,
-    row.wallet,
-    row.walletType,
-    row.category,
-    row.categoryParent,
-    row.merchant,
-    row.counterparty,
-    row.reference,
-    row.source,
-    formatConfidence(row.confidence),
-    row.isTransfer ? "yes" : "no",
-    row.transferLinkId,
-    row.note,
+    escapeField(row.id),
+    escapeField(row.date),
+    escapeField(row.time),
+    escapeField(row.direction),
+    escapeField(formatAmount(row.amount)),
+    escapeField(row.currency),
+    escapeTextField(row.wallet),
+    escapeField(row.walletType),
+    escapeTextField(row.category),
+    escapeTextField(row.categoryParent),
+    escapeTextField(row.merchant),
+    escapeTextField(row.counterparty),
+    escapeTextField(row.reference),
+    escapeField(row.source),
+    escapeField(formatConfidence(row.confidence)),
+    escapeField(row.isTransfer ? "yes" : "no"),
+    escapeField(row.transferLinkId),
+    escapeTextField(row.note),
   ];
-  return fields.map(escapeField).join(",");
+  return fields.join(",");
 }
 
 /**
@@ -269,7 +302,10 @@ function toExportRow(
 /**
  * Writes the CSV for every committed Transaction in `range` (aggregate.ts's
  * inclusive `DateRange`) to the app's cache directory and hands it to the OS
- * share sheet, returning the written file's uri.
+ * share sheet, returning the uri it was written to. The file itself is deleted
+ * once the share resolves or fails — the uri names where it went, not
+ * something the caller can still read. Throws when the device has no share
+ * sheet at all.
  *
  * NO ENTITLEMENT CHECK HERE — the same call-site discipline
  * hooks/mutations/use_create_goal.ts documents for `canCreateGoal`: gating is
@@ -312,15 +348,30 @@ export async function exportTransactionsCsv(range: DateRange, today: string): Pr
   // location the app cannot clean up."
   const fileUri = `${cacheDirectory}peraplano-transactions-${today}.csv`;
 
+  // Asked BEFORE the write, not after: a device with no share target has no
+  // use for the file, and the cheapest plaintext ledger to protect is the one
+  // that was never written. Throwing is the point — resolving normally here
+  // would have the export button report a success that never happened.
+  if (!(await Sharing.isAvailableAsync())) {
+    throw new Error("csv_export: sharing is unavailable on this device");
+  }
+
   await FileSystem.writeAsStringAsync(fileUri, csv, {
     encoding: FileSystem.EncodingType.UTF8,
   });
 
-  if (await Sharing.isAvailableAsync()) {
+  // The file is transient. It is a full plaintext copy of the ledger —
+  // amounts, merchants, notes, references — sitting beside the encrypted
+  // database, so it lives only as long as the share sheet needs it. `finally`
+  // because a cancelled or failed share must not leave it behind either, and
+  // `idempotent` so a delete of an already-gone file is not itself an error.
+  try {
     await Sharing.shareAsync(fileUri, {
       mimeType: "text/csv",
       dialogTitle: "Export transactions",
     });
+  } finally {
+    await FileSystem.deleteAsync(fileUri, { idempotent: true });
   }
 
   return fileUri;

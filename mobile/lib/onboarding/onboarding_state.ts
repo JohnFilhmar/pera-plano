@@ -37,12 +37,28 @@
 import { getSetting, setSetting } from "@/lib/db/repos/app_settings_repo";
 
 /**
- * The M3c flow's own nine steps, in the order
- * docs/04-features/01-onboarding.md lays out (its steps 3 and 4 --
- * Notification Access and the Android 13+ POST_NOTIFICATIONS runtime
- * permission -- fold into "access" here; a device below Android 13 has
- * nothing to show for the second half, so one screen covering both keeps
- * this union exactly the nine members task-1-brief.md's interface specifies).
+ * The M3c flow's own steps, in the order
+ * docs/04-features/01-onboarding.md lays out.
+ *
+ * "alerts" IS THE TENTH, AND IT USED TO BE FOLDED INTO "access" (GAP-003).
+ * The comment this replaces said docs' steps 3 and 4 -- Notification Access
+ * and the Android 13+ POST_NOTIFICATIONS runtime permission -- were one
+ * screen here, "a device below Android 13 has nothing to show for the second
+ * half". What actually shipped was a screen that asks for the FIRST grant and
+ * nothing at all for the second: `requestAlertPermission`
+ * (lib/alerts/alerts_service.ts) had no caller anywhere in the app, and on
+ * Android 13+ POST_NOTIFICATIONS defaults to denied until something asks. So
+ * every notifier's `hasPermission()` check was false forever and no limit
+ * alert, bill reminder, loan reminder, payday summary or tracking-interrupted
+ * notice could be displayed at all.
+ *
+ * SEPARATE, AND LAST, rather than a second dialog on "access". Two system
+ * dialogs behind one value screen is exactly the cold ask docs' own
+ * "value screen first, system screen second" pairing forbids, and the
+ * POST_NOTIFICATIONS dialog is one-shot per install -- it is worth spending
+ * on a user who has just set a Limit and can be told what the alert will say,
+ * not on one who is still three screens from having anything to be alerted
+ * about.
  */
 export type OnboardingStep =
   | "welcome"
@@ -53,6 +69,7 @@ export type OnboardingStep =
   | "wallets"
   | "income"
   | "first_limit"
+  | "alerts"
   | "done";
 
 export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
@@ -64,16 +81,17 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
   "wallets",
   "income",
   "first_limit",
+  "alerts",
   "done",
 ];
 
 /**
  * The step after `current`, or `null` once `current` is the last one
  * ("done"). Rule 1's "skipping never dead-ends" depends on this returning a
- * real step for every one of the other eight -- including "first_limit",
- * whose successor is "done": that is the exact transition a Skip tap on the
- * LAST content step takes, and a wrong answer here strands the user on
- * first_limit with no way forward.
+ * real step for every one of the other nine -- including "alerts", whose
+ * successor is "done": that is the exact transition a Skip tap on the LAST
+ * content step takes, and a wrong answer here strands the user on alerts with
+ * no way forward.
  */
 export function nextStep(current: OnboardingStep): OnboardingStep | null {
   const index = ONBOARDING_STEPS.indexOf(current);

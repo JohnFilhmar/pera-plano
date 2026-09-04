@@ -13,6 +13,7 @@ import { enqueue } from "@/lib/db/repos/review_queue_repo";
 import { insertTransaction } from "@/lib/db/repos/transactions_repo";
 import { linkTransfer } from "@/lib/db/repos/transfer_links_repo";
 import { createWallet } from "@/lib/db/repos/wallets_repo";
+import { __setTierForTests } from "@/lib/entitlements";
 import { setManualIncome } from "@/lib/income/income_service";
 import { computeSafeToSpend } from "@/lib/safe_to_spend";
 import { buildSafeToSpendInput, getSafeToSpend } from "@/lib/safe_to_spend_service";
@@ -33,6 +34,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  __setTierForTests(null);
   await closeDatabase();
 });
 
@@ -389,6 +391,40 @@ test("A CONTRIBUTION EARLIER IN THE PERIOD IS STILL RESERVED", async () => {
   const input = await buildSafeToSpendInput("2026-08-20", new Date(2026, 7, 20, 10, 0).getTime());
 
   expect(input.plannedContributions.map((c) => c.date)).toContain("2026-08-15");
+});
+
+test("THE FREE TIER RESERVES NOTHING — PAYDAY AUTO-ALLOCATION IS PLUS", async () => {
+  // docs/04-features/09-safe-to-spend.md: "The Goal-contributions term is
+  // effectively ₱0 for free users (payday auto-allocate is Plus)". On free the
+  // rule is RETAINED and only the prompt stops firing (docs/05 §3.2), so money
+  // reserved here would be held against a transfer nobody is ever asked to
+  // make — every period, for as long as the rule exists.
+  __setTierForTests("free");
+  await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
+  await setManualIncome({ cadence: "kinsenas", averageAmount: 2_000_000, sourceWalletIds: [cash.id] }, NOW);
+  const savings = await createWallet({ name: "GSave" });
+  await createGoal({
+    name: "Emergency Fund",
+    targetAmount: 5_000_000,
+    linkedWalletId: savings.id,
+    contributionRule: { kind: "fixed", amount: 250_000 },
+  });
+  await payday(2_000_000, new Date(2026, 7, 10, 9, 0).getTime());
+
+  const free = await buildSafeToSpendInput(TODAY, NOW);
+
+  expect(free.plannedContributions).toEqual([]);
+  expect(computeSafeToSpend(free).contributionsTerm).toBe(0);
+
+  // The other half of the gate, over the SAME ledger: upgrading brings the
+  // reservation back, so this test cannot be satisfied by a term that is
+  // switched off for everyone.
+  __setTierForTests("plus");
+  const plus = await buildSafeToSpendInput(TODAY, NOW);
+
+  expect(plus.plannedContributions).toEqual([
+    { goalId: expect.any(String), amount: 250_000, date: "2026-08-10" },
+  ]);
 });
 
 // ---------------------------------------------------------------------------
