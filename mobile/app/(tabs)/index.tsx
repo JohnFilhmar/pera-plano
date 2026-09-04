@@ -63,7 +63,7 @@ export default function HomeScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
 
-  const { data: result, refetch: refetchSafeToSpend } = useSafeToSpend();
+  const { data: result } = useSafeToSpend();
   const { data: limits } = useLimitStatuses();
   const { data: bills } = useBills();
   const { data: health } = useListenerHealth();
@@ -150,12 +150,21 @@ export default function HomeScreen() {
     };
   }, [queryClient]);
 
+  // INVALIDATES THE ROOT rather than refetching the hero's own query. The Plus
+  // projection reads a SECOND query under that root (`useSafeToSpendInput`),
+  // and a bare `refetch()` on the hero leaves the curve drawn from limits and
+  // bills the number above it no longer agrees with.
+  const refreshSafeToSpend = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: queryKeys.safeToSpend.all }),
+    [queryClient],
+  );
+
   // ...and on focus, because a day can roll over while the app sits in the
   // background and the period would otherwise be yesterday's.
   useFocusEffect(
     useCallback(() => {
-      void refetchSafeToSpend();
-    }, [refetchSafeToSpend]),
+      void refreshSafeToSpend();
+    }, [refreshSafeToSpend]),
   );
 
   // Found once, read twice: the tile row's "Spent so far" below reads this
@@ -209,7 +218,7 @@ export default function HomeScreen() {
         className="flex-1"
         contentContainerClassName="gap-5 p-4"
         refreshControl={
-          <RefreshControl refreshing={false} onRefresh={() => void refetchSafeToSpend()} />
+          <RefreshControl refreshing={false} onRefresh={() => void refreshSafeToSpend()} />
         }
       >
         <TrackingBanner
