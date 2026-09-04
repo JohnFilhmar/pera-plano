@@ -996,7 +996,20 @@ export async function startIngest(): Promise<() => void> {
   let chain: Promise<void>;
 
   const unsubscribe = addCaptureListener((capture) => {
-    chain = chain.then(() => runGuarded(capture));
+    // BOTH handlers, and they are the same handler. `.then(onFulfilled)` on a
+    // REJECTED promise skips the callback and passes the rejection along, so a
+    // single link that rejected would mean every capture appended after it is
+    // never processed for the rest of the process -- the exact failure the
+    // comment above says this chain exists to prevent, reached the other way.
+    // Passing an onRejected as well keeps the chain alive: the rejection is
+    // logged once, here, and this capture still runs.
+    chain = chain.then(
+      () => runGuarded(capture),
+      (error: unknown) => {
+        console.error("ingest: the capture chain rejected; continuing", error);
+        return runGuarded(capture);
+      },
+    );
     inFlight = chain;
   });
 
@@ -1092,7 +1105,17 @@ export async function startIngest(): Promise<() => void> {
     for (const capture of fresh) {
       await processStored(capture, storedAt);
     }
-  })();
+  })().catch((error: unknown) => {
+    // The batch is atomic now, so one bad row fails the whole store rather
+    // than just its own capture -- which makes a rejected head of the chain
+    // both likelier and more costly. Swallowing it HERE, loudly, is what
+    // keeps `chain` settled fulfilled: the listener above can then append
+    // live captures normally, and `__awaitIngestIdle` does not reject for
+    // every caller that merely wanted to know the queue had drained. The
+    // batch itself is not lost, it was rolled back whole and the recovery
+    // sweep re-runs it on the next launch.
+    console.error("ingest: the buffered batch failed; live capture continues", error);
+  });
 
   inFlight = chain;
 

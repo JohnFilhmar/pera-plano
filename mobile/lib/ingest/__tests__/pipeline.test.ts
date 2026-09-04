@@ -1281,7 +1281,11 @@ test("a kill part-way through the batch store leaves no half-written batch", asy
     });
 
   const stop = await startIngest();
-  await expect(__awaitIngestIdle()).rejects.toThrow("killed mid-batch");
+  // RESOLVES, and that is deliberate: the batch's failure is swallowed at the
+  // head of the chain so a rejected head cannot silence every live capture
+  // appended after it. Idle means "the queue drained", not "the batch
+  // succeeded" -- the rollback assertions below are what say it failed.
+  await __awaitIngestIdle();
   stop();
 
   // Not one row of it. Two durable captures beside a third that vanished is the
@@ -1305,6 +1309,38 @@ test("a kill part-way through the batch store leaves no half-written batch", asy
   second();
 
   expect((await commitOrder()).map((row) => row.amount)).toEqual([10000, 20000, 30000]);
+});
+
+test("a failed batch does not silence every live capture for the rest of the process", async () => {
+  const wallet = await createWallet({ name: "GCash", openingBalance: 900000 });
+  await addMatcher(wallet.id, GCASH);
+  mockDrain.mockResolvedValue([
+    gcashSend("buf-1", { text: sendText("100.00", "REF0001"), postedAt: NOW - 5 * MINUTE }),
+  ]);
+
+  const realStore = rawNotificationsRepo.storeRawCapture;
+  jest.spyOn(rawNotificationsRepo, "storeRawCapture").mockImplementation(async (raw, at) => {
+    if (raw.id.startsWith("buf-")) throw new Error("killed mid-batch");
+    return realStore(raw, at);
+  });
+
+  const stop = await startIngest();
+  await __awaitIngestIdle();
+
+  // THE REGRESSION, and it is a quiet one. The head of the chain has now
+  // rejected. Live captures are appended with `chain.then(onFulfilled)`, and
+  // `.then` on a REJECTED promise skips its callback and passes the rejection
+  // on -- so every notification arriving from here to the end of the process
+  // was dropped without a trace, which is the exact outcome the chain was
+  // built to prevent. The user sees tracking simply stop working until they
+  // restart the app.
+  liveListener?.(
+    gcashSend("live-1", { text: sendText("500.00", "REF9999"), postedAt: NOW - MINUTE }),
+  );
+  await __awaitIngestIdle();
+  stop();
+
+  expect((await ledger()).map((row) => row.amount)).toEqual([50000]);
 });
 
 test("a stage throwing leaves the capture readable and reprocessable", async () => {
