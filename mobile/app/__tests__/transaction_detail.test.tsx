@@ -50,7 +50,7 @@ import {
 import { getTransaction, insertTransaction, sumSpend } from "@/lib/db/repos/transactions_repo";
 import { linkTransfer } from "@/lib/db/repos/transfer_links_repo";
 import { listUserRules } from "@/lib/db/repos/user_rules_repo";
-import { createWallet } from "@/lib/db/repos/wallets_repo";
+import { archiveWallet, createWallet } from "@/lib/db/repos/wallets_repo";
 import { formatDateTime } from "@/lib/datetime";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
@@ -678,6 +678,76 @@ describe("transfer links", () => {
     // Two links over one leg is the state `sumSpend` cannot express and the
     // user cannot undo in one action.
     expect(screen.queryByTestId("transfer-link-open")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ARCHIVING IS THE ONLY REMOVAL PATH (wallets_repo has no delete), so an
+// archived wallet's rows stay in the ledger for good. This screen used to call
+// `useWallets()` — active wallets only — and every one of those rows read
+// "Unknown wallet" on a wallet the app could name perfectly well. GAP-076.
+// ---------------------------------------------------------------------------
+
+describe("a row whose wallet has been archived", () => {
+  test("names the wallet and marks it archived, rather than claiming it is unknown", async () => {
+    const tx = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: FOOD,
+      amount: 50_000,
+      direction: "out",
+      occurredAt: NOW,
+      merchant: "Jollibee",
+      source: "notification",
+      confidence: 0.95,
+    });
+    await archiveWallet(gcash.id);
+
+    await renderDetail(tx.id);
+
+    // A regex, not the exact string the active-wallet assertion above uses:
+    // the row now carries the ARCHIVED chip alongside the name.
+    expect(screen.getByTestId("transaction-detail-wallet")).toHaveTextContent(/GCash/);
+    expect(screen.getByTestId("transaction-detail-wallet")).not.toHaveTextContent(
+      /Unknown wallet/,
+    );
+    expect(screen.getByTestId("transaction-detail-wallet")).toHaveTextContent(/ARCHIVED/);
+  });
+
+  test("a transfer candidate in an archived wallet still carries its wallet name", async () => {
+    const outLeg = await insertTransaction({
+      walletId: bpi.id,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 500_000,
+      direction: "out",
+      occurredAt: NOW - 2 * 60 * 60 * 1000,
+      merchant: "Transfer to GCash",
+      source: "notification",
+      confidence: 0.9,
+    });
+    const inLeg = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 500_000,
+      direction: "in",
+      occurredAt: NOW - 2 * 60 * 60 * 1000 + 30_000,
+      merchant: "Cash in from BPI",
+      source: "notification",
+      confidence: 0.9,
+    });
+    await archiveWallet(gcash.id);
+
+    await renderDetail(outLeg.id);
+
+    fireEvent.press(screen.getByTestId("transfer-link-open"));
+    await waitFor(() => expect(screen.getByTestId("transfer-candidate-picker")).toBeTruthy());
+
+    // The candidate is still offered — the counterpart of a transfer is by
+    // definition in another wallet, and an archived one is still a wallet the
+    // money really moved through. Only its NAME was missing.
+    expect(screen.getByTestId(`transfer-candidate-${inLeg.id}`)).toHaveTextContent(/GCash/);
+    expect(screen.getByTestId(`transfer-candidate-${inLeg.id}`)).not.toHaveTextContent(
+      /Unknown wallet/,
+    );
   });
 });
 

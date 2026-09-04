@@ -137,7 +137,13 @@ export default function TransactionDetailScreen() {
   const [note, setNote] = useState<string | null>(null);
 
   const { data: transaction, isPending } = useTransaction(transactionId);
-  const { data: wallets } = useWallets();
+  // ARCHIVED WALLETS INCLUDED, because this screen only ever RESOLVES A NAME —
+  // the Wallet row below and the transfer candidates' subtitles — and never
+  // offers a wallet to pick. Archiving is the only removal path in the app, so
+  // an archived wallet's rows stay in the ledger for good; the default
+  // active-only list cannot find their wallet and every one of them read
+  // "Unknown wallet".
+  const { data: wallets } = useWallets({ includeArchived: true });
   const { data: categories } = useCategories();
   const { data: ruleset } = useRuleset();
   // Every row, for the transfer-candidate list. Unfiltered on purpose: the
@@ -369,6 +375,12 @@ export default function TransactionDetailScreen() {
                     <ProviderBadge providerKey={walletProviderKey} size={28} />
                   ) : undefined
                 }
+                // Says the wallet is gone from the pickers WITHOUT taking its
+                // name away — the row is still money that moved through it. In
+                // the `right` slot rather than the title or a subtitle, so an
+                // ACTIVE wallet's row renders the bare name the exact-text
+                // assertion above depends on.
+                right={wallet?.isArchived ? <Chip label="ARCHIVED" /> : undefined}
               />
               {/* The one field that opens something. Rule 1 makes the category
                   editable; the picker owns the rule checkbox. */}

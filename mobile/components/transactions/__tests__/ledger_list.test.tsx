@@ -386,6 +386,23 @@ describe("a transaction row", () => {
     renderLedger([tx({ id: "t1", categoryId: "cat_not_loaded_yet" })]);
     expect(screen.getByTestId("transaction-category-t1")).toHaveTextContent("Uncategorized");
   });
+
+  test("shows the time it was told, and NEVER a time it was not (GAP-095)", () => {
+    // `occurredAtFor` lands a deliberately backdated manual entry at the start
+    // of the chosen local day, because the ledger groups by local day. The row
+    // used to render that as "12:00 AM" — a purchase a minute after midnight,
+    // which is a fact about the user's night the app was never given.
+    renderLedger([
+      tx({ id: "backdated", occurredAt: new Date(2026, 7, 11, 0, 0, 0, 0).getTime() }),
+      tx({ id: "captured", occurredAt: AUG_13_9AM }),
+    ]);
+
+    expect(screen.queryByText("12:00 AM")).toBeNull();
+    // The other direction of the rule: a stamp that DOES carry a time still
+    // shows it. A fix that dropped every time would hide the one thing that
+    // orders two rows inside the same day group.
+    expect(screen.getByTestId("transaction-time-captured")).toHaveTextContent("9:00 AM");
+  });
 });
 
 describe("a transfer leg — the single most important row state", () => {

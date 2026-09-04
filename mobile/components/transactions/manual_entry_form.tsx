@@ -178,7 +178,15 @@ export function ManualEntryForm({
   // what used to land under ▢ ◁.
   const insets = useSafeAreaInsets();
   const [direction, setDirection] = useState<TxDirection>("out");
-  const [day, setDay] = useState(() => localDayOf(now));
+  // `null` until the user picks a date, so the default keeps tracking the clock
+  // rather than being frozen at first render — the same shape `chosenWalletId`
+  // and `chosenCategoryId` below already use, and for a sharper reason. A
+  // `useState(() => localDayOf(now))` initialiser runs ONCE: a form opened at
+  // 23:58 and saved at 00:02 still held yesterday's day, and `occurredAtFor`
+  // stamped the entry at yesterday's MIDNIGHT — a purchase filed to the wrong
+  // day, in the wrong period, with a time the user never typed.
+  const [pickedDay, setPickedDay] = useState<string | null>(null);
+  const day = pickedDay ?? localDayOf(now);
   const [merchant, setMerchant] = useState("");
   const [note, setNote] = useState("");
   const [pickingCategory, setPickingCategory] = useState(false);
@@ -597,7 +605,10 @@ export function ManualEntryForm({
           label="Date"
           placeholder="Pick a date"
           value={day}
-          onChange={setDay}
+          // Picking a day is what pins it: from here on the field stops
+          // following the clock, because a date the user chose outranks a
+          // default however long the form stays open.
+          onChange={setPickedDay}
           // A manual transaction is something that already happened. `now`,
           // not the wall clock: every other date decision in this file
           // (localDayOf, occurredAtFor above) reads the injected clock, and

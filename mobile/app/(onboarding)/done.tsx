@@ -19,7 +19,10 @@
 //
 // COMPONENTS NEVER IMPORT A REPOSITORY (release-gate grep). This file does,
 // through hooks/queries/use_wallets.ts, use_income_summary.ts and
-// use_limit_statuses.ts only.
+// use_limit_statuses.ts only. `modules/notification_listener` is the one
+// non-hook read: the notification-access grant is not in the database at all
+// (it is a live native query — see `isAccessGranted`'s own doc), and this
+// screen may not claim automatic tracking without it.
 //
 // IT NAVIGATES ITSELF — see app/(onboarding)/wallets.tsx's header for the
 // whole story. This screen is where that defect bit hardest: with no caller to
@@ -38,6 +41,7 @@ import { useRouter } from "expo-router";
 import { Lock } from "lucide-react-native";
 import { Text, View } from "react-native";
 
+import { SCOPE_CHIP } from "@/components/onboarding/first_limit_form";
 import { OnboardingFrame } from "@/components/onboarding/onboarding_frame";
 import { AmountText } from "@/components/ui/amount_text";
 import { BrandMark } from "@/components/ui/brand_mark";
@@ -46,7 +50,9 @@ import { Card } from "@/components/ui/card";
 import { useIncomeSummary } from "@/hooks/queries/use_income_summary";
 import { useLimitStatuses } from "@/hooks/queries/use_limit_statuses";
 import { useWallets } from "@/hooks/queries/use_wallets";
+import type { LimitStatus } from "@/lib/limits/limit_service";
 import { completeOnboarding } from "@/lib/onboarding/onboarding_state";
+import { isAccessGranted } from "@/modules/notification_listener";
 
 const LockGlyph = registerIcon(Lock);
 
@@ -56,6 +62,58 @@ const CADENCE_LABEL: Record<string, string> = {
   monthly: "monthly",
   irregular: "no fixed schedule",
 };
+
+/**
+ * The wallets card's second line — or `null` while the grant is still unread.
+ *
+ * THE AUTO-PICKUP SENTENCE IS A CLAIM ABOUT A PERMISSION, not about wallets.
+ * Nothing on this screen read the grant, so a user who declined Notification
+ * Access — manual mode, a first-class outcome this flow supports (docs step 10)
+ * — was told on the last screen of setup that PeraPlano would track these
+ * wallets for them. It will not, and they find out by watching an empty ledger
+ * for a week.
+ *
+ * `null` while the answer is unknown, rather than the manual sentence: an
+ * unresolved native call is not a refusal, and a screen whose whole job is
+ * confirming what is true must not fill the gap with a guess in either
+ * direction.
+ */
+function walletsCardBody(walletCount: number, accessGranted: boolean | null): string | null {
+  if (walletCount === 0) return "Add one any time from the Wallets tab.";
+  if (accessGranted === null) return null;
+  return accessGranted
+    ? "PeraPlano will pick up transactions from these automatically."
+    : "PeraPlano isn't picking these up automatically yet — turn on notification access from Settings any time. Everything keeps working in manual mode until you do.";
+}
+
+/**
+ * The limit card's headline.
+ *
+ * A LIMIT WITH NO EFFECTIVE FIGURE IS NOT "ACTIVE". `getLimitStatuses` returns
+ * `effectiveLimit: null` for a limit it cannot resolve — a percent-of-income
+ * limit with no income yet (`paused`), or one that is switched off — and this
+ * card called every one of them active while the body underneath told the user
+ * to go and add a Limit. Two statements about the same limit, contradicting
+ * each other, on the last screen of setup.
+ */
+function limitCardTitle(status: LimitStatus | null): string {
+  if (status === null) return "No Limit set yet";
+  if (status.effectiveLimit !== null) return "Your first Limit is active";
+  if (!status.limit.isActive) return "Your first Limit is switched off";
+  return "Your first Limit is waiting on your income";
+}
+
+/** The line under it, for every state with no figure to show. */
+function limitCardBody(status: LimitStatus | null): string {
+  if (status === null) {
+    return "Add one any time from the Plan tab — Safe-to-Spend works better with one.";
+  }
+  if (!status.limit.isActive) return "Switch it back on any time from the Plan tab.";
+  // `paused` is `base === null`, and `baseFor` only returns null for a
+  // percent-of-income limit with no income — so this branch can name the one
+  // thing that is actually missing.
+  return "It's a share of your income, and PeraPlano doesn't know your income yet. Declare it in Plan and this Limit starts working.";
+}
 
 export default function DoneScreen({
   onDone,
@@ -80,9 +138,32 @@ export default function DoneScreen({
     setPlayToken((token) => token + 1);
   }, []);
 
+  // WHETHER THE AUTO-PICKUP SENTENCE IS TRUE, asked here rather than carried
+  // in from the access step: the grant is revocable from system settings at any
+  // moment with no callback to this app (`isAccessGranted`'s own doc), and the
+  // user has walked through several screens since answering it.
+  const [accessGranted, setAccessGranted] = useState<boolean | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    isAccessGranted()
+      .then((granted) => {
+        if (!cancelled) setAccessGranted(granted);
+      })
+      // A bridge that throws is not a grant. The copy below never claims the
+      // permission is off — only that nothing is being picked up yet — so this
+      // stays honest whether the answer was "no" or "could not ask".
+      .catch(() => {
+        if (!cancelled) setAccessGranted(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const walletCount = wallets?.length ?? 0;
   const incomeKnown = income !== undefined && income.cadence !== null;
   const firstLimit = limitStatuses?.[0] ?? null;
+  const walletsBody = walletsCardBody(walletCount, accessGranted);
 
   const finish = useCallback(async () => {
     if (finishing) return;
@@ -143,11 +224,14 @@ export default function DoneScreen({
               ? "1 wallet ready"
               : `${walletCount} wallets ready`}
         </Text>
-        <Text className="mt-1 text-secondary font-medium text-fg-2 dark:text-fg-2-dark">
-          {walletCount === 0
-            ? "Add one any time from the Wallets tab."
-            : "PeraPlano will pick up transactions from these automatically."}
-        </Text>
+        {walletsBody === null ? null : (
+          <Text
+            testID="done-wallets-mode"
+            className="mt-1 text-secondary font-medium text-fg-2 dark:text-fg-2-dark"
+          >
+            {walletsBody}
+          </Text>
+        )}
       </Card>
 
       <Card testID="done-income-summary">
@@ -163,18 +247,21 @@ export default function DoneScreen({
 
       <Card testID="done-limit-summary">
         <Text className="text-row font-bold text-fg dark:text-fg-dark">
-          {firstLimit ? "Your first Limit is active" : "No Limit set yet"}
+          {limitCardTitle(firstLimit)}
         </Text>
-        {firstLimit && firstLimit.effectiveLimit !== null ? (
+        {firstLimit !== null && firstLimit.effectiveLimit !== null ? (
           <View className="mt-1 flex-row items-center gap-1">
+            {/* THE SCOPE THE USER PICKED, not a hardcoded "Monthly". The first
+                Limit step has offered daily/weekly/monthly/annual since
+                2026-08-20; this line called every one of them monthly. */}
             <Text className="text-secondary font-medium text-fg-2 dark:text-fg-2-dark">
-              Monthly limit:
+              {`${SCOPE_CHIP[firstLimit.limit.scope]} limit:`}
             </Text>
             <AmountText amount={firstLimit.effectiveLimit} size="sm" showSign={false} />
           </View>
         ) : (
           <Text className="mt-1 text-secondary font-medium text-fg-2 dark:text-fg-2-dark">
-            Add one any time from the Plan tab — Safe-to-Spend works better with one.
+            {limitCardBody(firstLimit)}
           </Text>
         )}
       </Card>

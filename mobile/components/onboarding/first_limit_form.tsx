@@ -115,7 +115,13 @@ export type FirstLimitFormValues = {
 
 const SCOPES: readonly LimitScope[] = ["daily", "weekly", "monthly", "annual"];
 
-const SCOPE_CHIP: Record<LimitScope, string> = {
+/**
+ * Exported so the Done step can echo the cadence the user actually picked here
+ * ("Weekly limit: ₱2,000"), rather than the hardcoded "Monthly limit:" it used
+ * to print over every scope. One table, so the step that ASKS and the step that
+ * CONFIRMS cannot spell the same choice two different ways.
+ */
+export const SCOPE_CHIP: Record<LimitScope, string> = {
   daily: "Daily",
   weekly: "Weekly",
   monthly: "Monthly",

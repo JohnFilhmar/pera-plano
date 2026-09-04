@@ -71,6 +71,9 @@ const AUG_11_NOON = new Date(2026, 7, 11, 12, 0).getTime();
 const AUG_12_NOON = new Date(2026, 7, 12, 12, 0).getTime();
 /** The injected clock: 13 Aug 2026, 9:30pm. Nothing here reads `Date.now()`. */
 const NOW = new Date(2026, 7, 13, 21, 30).getTime();
+/** The two ends of a real local-midnight crossing, for the pair of tests below. */
+const BEFORE_MIDNIGHT = new Date(2026, 7, 13, 23, 58).getTime();
+const AFTER_MIDNIGHT = new Date(2026, 7, 14, 0, 2).getTime();
 
 const POCKET: Wallet = {
   id: "cash-pocket",
@@ -162,9 +165,12 @@ function tx(overrides: Partial<Transaction> = {}): Transaction {
 function Harness({
   wallets = [POCKET, BPI],
   transactions = [],
+  now = NOW,
 }: {
   wallets?: Wallet[];
   transactions?: Transaction[];
+  /** Movable, so a test can let real time pass while the form stays open. */
+  now?: number;
 }) {
   const [amount, setAmount] = useState("");
   return (
@@ -172,7 +178,7 @@ function Harness({
       wallets={wallets}
       categories={CATEGORIES}
       transactions={transactions}
-      now={NOW}
+      now={now}
       amount={amount}
       onAmountChange={setAmount}
       onSubmit={onSubmit}
@@ -183,13 +189,18 @@ function Harness({
 
 // NumericField throws without a KeypadProvider above it, and the panel it
 // opens has to be hosted somewhere — see test_support/keypad.ts's header.
-function renderForm(ui: ReactElement): void {
-  render(
+function formTree(ui: ReactElement): ReactElement {
+  return (
     <KeypadProvider>
       {ui}
       <KeypadHost />
-    </KeypadProvider>,
+    </KeypadProvider>
   );
+}
+
+/** Returns the render result now, so a test can `rerender` with a later clock. */
+function renderForm(ui: ReactElement): ReturnType<typeof render> {
+  return render(formTree(ui));
 }
 
 function save(): void {
@@ -501,6 +512,47 @@ describe("the secondary fields", () => {
 
     // Spec rule 24: the timestamp "may be backdated". Yesterday's forgotten
     // jeepney fare belongs on yesterday, or the day's total is wrong twice.
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ occurredAt: new Date(2026, 7, 11, 0, 0, 0, 0).getTime() }),
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // MIDNIGHT PASSES WHILE THE FORM IS OPEN (GAP-095). The day used to be a
+  // `useState` initialiser, which runs once: a purchase typed at 12:05am was
+  // filed to YESTERDAY, stamped at yesterday's midnight, in the previous
+  // period and the previous seven-day bar.
+  // -------------------------------------------------------------------------
+
+  test("an untouched date follows the clock across midnight", () => {
+    const view = renderForm(<Harness now={BEFORE_MIDNIGHT} />);
+    // Opened two minutes before midnight, with the day it would have frozen
+    // on visible on screen.
+    expect(screen.getByText("2026-08-13")).toBeTruthy();
+
+    typeAmount("manual-amount", "250");
+    // The date is never touched — the clock is what moves.
+    view.rerender(formTree(<Harness now={AFTER_MIDNIGHT} />));
+    save();
+
+    expect(screen.getByText("2026-08-14")).toBeTruthy();
+    // The 14th, and the SAVE INSTANT rather than a midnight — `occurredAtFor`
+    // keeps the real moment for a same-day entry.
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ occurredAt: AFTER_MIDNIGHT }),
+    );
+  });
+
+  test("a date the user PICKED does not follow the clock across midnight", () => {
+    const view = renderForm(<Harness now={BEFORE_MIDNIGHT} />);
+
+    typeAmount("manual-amount", "250");
+    pickDate("manual-entry-date", 2026, 8, 11);
+    view.rerender(formTree(<Harness now={AFTER_MIDNIGHT} />));
+    save();
+
+    // The other half of the rule. A default that chased the clock over a
+    // deliberate choice would silently re-date a backdated entry.
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({ occurredAt: new Date(2026, 7, 11, 0, 0, 0, 0).getTime() }),
     );

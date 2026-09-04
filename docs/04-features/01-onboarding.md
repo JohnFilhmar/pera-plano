@@ -102,6 +102,16 @@ One screen proposing a monthly spending Limit: `basis` fixed ₱ (with a suggest
 **Step 10 — Finish.**
 Lands on Home. In auto mode, a "listening — waiting for your first transaction" card appears until the first Ingest commit, with a gentle suggestion: make any small transaction on a mapped provider, or just wait for the next one. In manual mode, the card instead offers "Add your first transaction" and "Turn on auto-tracking."
 
+#### As shipped — 2026-09-05 (`app/(onboarding)/done.tsx`)
+
+The summary screen before Home stated three things it had never checked. Fixed as GAP-090.
+
+**Automatic pickup was promised to everyone.** "PeraPlano will pick up transactions from these automatically" rendered for any non-zero wallet count, and nothing on the screen read the notification-access grant — so the users in manual mode, the outcome the auto/manual split above exists to support, were told on their way out of setup that tracking they had declined was running. The screen now reads `isAccessGranted()` and shows the manual-mode line instead: nothing is being picked up yet, notification access can be turned on from Settings any time, everything keeps working until then. While the native answer is still pending it says neither.
+
+**Every Limit was labelled "Monthly limit".** The first-Limit step has offered daily, weekly, monthly and annual since 2026-08-20 (step 9's own note); the confirmation line kept the word "Monthly" hardcoded, so a user who deliberately chose weekly was shown their figure under the wrong cadence on the screen that exists to confirm it. It now uses the scope on the Limit itself, from the same table the picker's chips are drawn from.
+
+**An unresolvable Limit was called "active" while the body asked for one.** `getLimitStatuses` returns `effectiveLimit: null` for a Limit it cannot resolve — a percent-of-income Limit with no income declared, which is reachable directly from step 8 being skippable — and the card headlined it "Your first Limit is active" over a body reading "Add one any time from the Plan tab". The headline now says what is actually true of that Limit ("waiting on your income", or "switched off"), and the body names the one missing thing.
+
 ### Degrade-to-manual mode (canonical behavior)
 
 Manual mode is a first-class outcome, not an error: manual transaction entry, cash Wallets, Limits, Goals, Loans, Bills, reports, and Safe-to-Spend all work on manually entered data. The only things dormant are the Ingest pipeline and its dependents (auto-capture, dedupe, transfer detection on notification pairs, balance-after snapshots). A dismissible Home card and a permissions checklist in [Settings & Privacy](./11-settings-privacy.md) allow every skipped grant to be completed later, reusing the same value-screen → system-screen pairs.
