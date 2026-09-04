@@ -174,9 +174,25 @@ function keysFor(action: ReviewAction) {
   }
 }
 
+/**
+ * THE ONE HOOK IN THIS DIRECTORY THAT OPTS OUT OF THE GLOBAL FAILURE TOAST
+ * (lib/query_client.ts's `createMutationErrorCache`), and the only reason is
+ * that app/review/index.tsx already says something better in place: its
+ * `triageFailureMessage` names the missing field, points at the control that
+ * fills it in, and states outright that the balances are unchanged — a
+ * sentence that function's own doc explains it is entitled to and the global
+ * copy is not. A toast on top of it is the same news twice, in weaker words,
+ * over the card the user is still looking at.
+ *
+ * NOTHING ELSE HERE MAY COPY THIS. The flag is not "this hook handles its own
+ * errors" — it is "this hook's ONLY caller renders a specific failure inline,
+ * and always will". A hook that opts out without that is back to the silence
+ * GAP-013 exists to end.
+ */
 export function useReviewAction() {
   const queryClient = useQueryClient();
   return useMutation({
+    meta: { errorToast: false },
     mutationFn: (action: ReviewAction) => run(action),
     onSuccess: (_result, action) => invalidateKeys(queryClient, keysFor(action)),
   });

@@ -12,6 +12,13 @@
 // insert, a goal contribution, a loan payment). A silent auto-replay of any
 // of those double-writes real money data. Do not raise this above 0.
 //
+// FAILURE SURFACE: the client is built with a `MutationCache` whose `onError`
+// is the app's ONLY guarantee that a failed write is visible at all — see
+// `createMutationErrorCache` below, and the notice queue above it that
+// `components/ui/mutation_error_toast.tsx` renders. Anything constructing its
+// own QueryClient (screen suites do) must pass `createMutationErrorCache()`
+// to inherit it; a bare `new QueryClient()` is silent on failure again.
+//
 // ENCRYPTION (docs/12-encryption-and-app-lock.md §8): the persisted cache
 // holds transaction amounts, merchant names and wallet balances, so it is
 // encrypted with AES-256-GCM (lib/crypto/cache_cipher.ts) under the same key
@@ -28,7 +35,7 @@
 // comment), exactly as lib/db/database.ts's unlockDatabase(dek) was added by
 // Task 7 without Task 7 itself calling it from the app.
 import { createAsyncStoragePersister } from "@tanstack/query-async-storage-persister";
-import { QueryClient } from "@tanstack/react-query";
+import { MutationCache, QueryClient } from "@tanstack/react-query";
 import type { QueryKey } from "@tanstack/react-query";
 import type { PersistedClient } from "@tanstack/react-query-persist-client";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -40,7 +47,182 @@ import { createCacheCodec, CacheCipherKeyMissingError } from "./crypto/cache_cip
 const FIVE_MINUTES_MS = 5 * 60 * 1000;
 const THIRTY_MINUTES_MS = 30 * 60 * 1000;
 
+/**
+ * THE APP'S TRANSIENT NOTICE QUEUE — the store behind
+ * `components/ui/mutation_error_toast.tsx`.
+ *
+ * WHY IT LIVES IN THIS FILE AND NOT BESIDE THE COMPONENT. The producer that
+ * matters is the mutation cache two blocks below, and `lib/` must not import
+ * from `components/`: a React Native tree pulled into a module every hook and
+ * lib suite already imports is both a dependency inversion and a load-time
+ * cost for suites that render nothing. The component reads this store; nothing
+ * here reads the component.
+ *
+ * A QUEUE, NOT A SLOT. Two writes can fail inside one tick — a sheet chaining
+ * a second mutation in `onSuccess`, a screen firing three toggles — and a
+ * single slot silently drops all but the last, which is the same class of
+ * silence this whole mechanism exists to end. `dedupeKey` is what keeps a
+ * queue from becoming three identical stacked cards: a repeat REPLACES the
+ * entry already queued under that key, in place, so the notice refreshes
+ * without the stack growing or the card jumping. A different producer (a
+ * triage undo, a sheet naming its own field) passes its own key and gets its
+ * own line.
+ *
+ * NO TIMERS HERE. Expiry belongs to whatever is mounted: the host owns one
+ * `setTimeout` per visible card and clears it on unmount, so a headless
+ * process — a Jest suite, a background drain — never leaves a timer running,
+ * and this module stays synchronous end to end.
+ */
+export type AppToastTone = "failure" | "neutral";
+
+export type AppToast = {
+  readonly id: string;
+  readonly tone: AppToastTone;
+  /** One line, sentence case: the user's words for what happened. */
+  readonly title: string;
+  /** What it means for their data, and what to do next. */
+  readonly body: string;
+  /** Repeats under the same key replace rather than stack. */
+  readonly dedupeKey: string;
+  readonly durationMs: number;
+  /** Rendered as a second control only when both halves are present. */
+  readonly actionLabel?: string;
+  readonly onAction?: () => void;
+};
+
+export type AppToastInput = Omit<AppToast, "id" | "durationMs"> & { durationMs?: number };
+
+/** Long enough to read two short lines without pinning the top of the screen. */
+export const TOAST_DURATION_MS = 6000;
+
+/** Beyond this the oldest is dropped: the notice that has been on screen
+ * longest is the one the user has most likely already acted on, and a tower of
+ * cards hides the screen the message is about. */
+export const MAX_QUEUED_TOASTS = 3;
+
+let toasts: readonly AppToast[] = [];
+let nextToastId = 0;
+const toastListeners = new Set<() => void>();
+
+/** Iterated over a copy, so a listener unsubscribing from inside its own call
+ * cannot make the Set skip the next one — the same care
+ * lib/events/app_events.ts takes with its handler set. */
+function notifyToastListeners(): void {
+  for (const listener of [...toastListeners]) listener();
+}
+
+/** `useSyncExternalStore`'s subscribe half. */
+export function subscribeToToasts(listener: () => void): () => void {
+  toastListeners.add(listener);
+  return () => {
+    toastListeners.delete(listener);
+  };
+}
+
+/** `useSyncExternalStore`'s snapshot half — the SAME array reference until
+ * something actually changes, which is what keeps React from re-rendering the
+ * host on every unrelated store read. */
+export function getToasts(): readonly AppToast[] {
+  return toasts;
+}
+
+/** Queues one notice and returns its id, so a caller that owns the action on
+ * it (an undo whose window has closed) can take it back down. */
+export function publishToast(input: AppToastInput): string {
+  const toast: AppToast = {
+    ...input,
+    id: `toast-${(nextToastId += 1)}`,
+    durationMs: input.durationMs ?? TOAST_DURATION_MS,
+  };
+
+  const at = toasts.findIndex((queued) => queued.dedupeKey === toast.dedupeKey);
+  toasts =
+    at === -1
+      ? [...toasts, toast].slice(-MAX_QUEUED_TOASTS)
+      : toasts.map((queued, index) => (index === at ? toast : queued));
+
+  notifyToastListeners();
+  return toast.id;
+}
+
+/** Dismissing an id that is no longer queued is a no-op, so the host's expiry
+ * timer and the user's own tap can both fire without ordering rules. */
+export function dismissToast(id: string): void {
+  const remaining = toasts.filter((queued) => queued.id !== id);
+  if (remaining.length === toasts.length) return;
+  toasts = remaining;
+  notifyToastListeners();
+}
+
+/** For test teardown, and for a wipe: nothing about one session's failures
+ * should survive into the next. */
+export function clearToasts(): void {
+  if (toasts.length === 0) return;
+  toasts = [];
+  notifyToastListeners();
+}
+
+/**
+ * WHAT A FAILED WRITE SAYS. Human copy, and deliberately not the error.
+ *
+ * `error.message` here would be a SQLite constraint string, or a repository
+ * error carrying the merchant, wallet or amount that failed — ledger content,
+ * which docs/12 keeps off every surface that is not the ledger itself. The
+ * user cannot act on "UNIQUE constraint failed" anyway.
+ *
+ * IT DOES NOT PROMISE THE LEDGER IS UNTOUCHED, unlike app/review/index.tsx's
+ * `triageFailureMessage`, which can: that screen knows its writes run in one
+ * unit of work that rolls back whole. This handler fires for every hook in the
+ * app, including the two-step wallet save whose first half really can have
+ * landed, so it says only what is true of all of them — the change the user
+ * just made was not recorded — and sends them to look.
+ */
+export const MUTATION_FAILURE_TOAST = {
+  title: "That didn't save",
+  body: "The change wasn't recorded. Check the screen, then try again.",
+} as const;
+
+export const MUTATION_FAILURE_DEDUPE_KEY = "mutation:failure";
+
+/**
+ * ONE HANDLER FOR EVERY MUTATION IN THE APP, on the cache rather than in each
+ * hook — the same call `installSafeToSpendCascade` below makes, for the same
+ * reason. All 49 hooks under hooks/mutations/ shipped with no `onError`, so a
+ * failed write left the sheet closed, the row absent and the user told
+ * nothing; the list of hooks needing one is every hook there today plus every
+ * hook written after, and the one written next month is exactly the one that
+ * gets missed.
+ *
+ * ON THE CACHE, NOT `defaultOptions.mutations.onError`. A default is REPLACED
+ * by a hook that declares its own `onError`, so the day any hook adds one for
+ * its own reasons it silently opts out of the app's only failure surface. The
+ * cache handler runs for every mutation regardless.
+ *
+ * NOTHING IS SWALLOWED. This runs in addition to, never instead of, a
+ * mutation's own error handling: `state.error` is still set, `isError` is
+ * still true and `mutateAsync` still rejects, so a screen rendering its own
+ * inline failure (app/review/index.tsx) keeps doing it unchanged.
+ *
+ * `meta.errorToast: false` opts a hook out, for the one case where a second
+ * message is worse than one — see hooks/mutations/use_review_action.ts.
+ */
+export function createMutationErrorCache(): MutationCache {
+  return new MutationCache({
+    onError: (_error, _variables, _onMutateResult, mutation) => {
+      if (mutation.meta?.errorToast === false) return;
+
+      publishToast({
+        tone: "failure",
+        dedupeKey: MUTATION_FAILURE_DEDUPE_KEY,
+        title: MUTATION_FAILURE_TOAST.title,
+        body: MUTATION_FAILURE_TOAST.body,
+      });
+    },
+  });
+}
+
 export const queryClient = new QueryClient({
+  mutationCache: createMutationErrorCache(),
   defaultOptions: {
     queries: {
       staleTime: FIVE_MINUTES_MS,

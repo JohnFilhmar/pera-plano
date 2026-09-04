@@ -69,6 +69,7 @@ import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client
 import { AllocationSheet } from "@/components/goals/allocation_sheet";
 import { PaydayDetectedSheet } from "@/components/income/payday_detected_sheet";
 import { KeypadHost } from "@/components/ui/keypad_host";
+import { MutationErrorToast } from "@/components/ui/mutation_error_toast";
 import { palette } from "@/constants/colors";
 import { navThemeFor } from "@/constants/nav_theme";
 import { ThemeProvider, useTheme } from "@/contexts/theme_context";
@@ -418,6 +419,12 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
               components/ui/keypad_host.tsx explains why this one cannot serve
               a Modal. */}
           <KeypadHost />
+          {/* LAST OF THE OVERLAYS, so a failed write is legible over the
+              keypad panel as well as over the screen. It anchors the TOP
+              strip while the keypad takes the bottom band, so the two never
+              contend for the same pixels — see that component's header. It
+              renders nothing until something is queued. */}
+          <MutationErrorToast />
           <StatusBar style="auto" />
           <PaydaySheets />
         </NavigationThemeProvider>
