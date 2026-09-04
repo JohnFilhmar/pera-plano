@@ -273,6 +273,31 @@ describe("a manual entry never enters the pipeline", () => {
 });
 
 // ---------------------------------------------------------------------------
+// The other half of rule 4. Two saves seconds apart are two rows on purpose
+// (above); two presses inside ONE write are one row, because the second is a
+// finger landing again on a Save the screen has not closed yet — this route
+// closes on the write, not on the tap. Since nothing underneath a manual entry
+// dedupes anything, the refusal has to happen at the button, and what makes it
+// happen is the `submitting` flag this route hands the form.
+// ---------------------------------------------------------------------------
+
+describe("a double tap on Save", () => {
+  test("two presses inside one write leave ONE row", async () => {
+    await renderNew();
+    typeAmount("manual-amount", "100");
+
+    save();
+    save();
+
+    await waitFor(() => expect(mockBack).toHaveBeenCalled());
+    expect(await ledger(pocket.id)).toHaveLength(1);
+    // The balance is what a second row landing late would give away: one
+    // ₱100.00 off ₱1,000.00, not two.
+    expect((await getWallet(pocket.id))?.balance).toBe(90_000);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // The wallet the entry lands in
 // ---------------------------------------------------------------------------
 

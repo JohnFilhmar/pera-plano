@@ -80,6 +80,19 @@ export default function NewTransactionScreen() {
   // Query's own error state behind it; `recordTransfer` is a bare promise this
   // screen calls itself, so the screen has to hold what went wrong.
   const [transferError, setTransferError] = useState<string | null>(null);
+  // The in-flight flag Save is disabled by — see ManualEntryForm's `submitting`
+  // prop for why a second tap inside the write window is a second set of rows
+  // rather than a no-op.
+  //
+  // BOTH PATHS, AND SET SYNCHRONOUSLY, which is why `createTransaction.isPending`
+  // is not this flag on its own. React Query notifies its observers on a
+  // microtask, so two presses inside ONE JS tick both read `isPending: false`
+  // and both commit — the exact double tap this exists to stop. A `useState`
+  // set on the way into the write is the only thing the second press in that
+  // tick can actually observe. `isPending` is still ORed in below: it stays
+  // true through the invalidation `onSuccess` awaits, which is a window this
+  // flag has already been cleared in.
+  const [writeInFlight, setWriteInFlight] = useState(false);
   const { open } = useKeypad();
 
   // The amount is deliberately the first and only thing on screen (m1c rule
@@ -125,6 +138,7 @@ export default function NewTransactionScreen() {
       // Cleared on every attempt, so a message from the previous try cannot
       // sit under a Save that has just succeeded.
       setTransferError(null);
+      setWriteInFlight(true);
       recordTransfer(
         {
           fromWalletId: draft.fromWalletId,
@@ -154,15 +168,20 @@ export default function NewTransactionScreen() {
         // that neither closed nor complained, leaving the user with no way to
         // tell whether three rows landed or none did. This is the path that
         // writes THREE rows, so "did my money move?" is the one question the
-        // screen must never leave unanswered. Save is enabled off the typed
-        // amount alone, so it is already live for the retry.
-        .catch((error: unknown) => setTransferError(transferErrorMessage(error)));
+        // screen must never leave unanswered. The retry the message asks for
+        // is live again as soon as the `finally` below clears the flag.
+        .catch((error: unknown) => setTransferError(transferErrorMessage(error)))
+        // IN `finally`, NOT ON THE SUCCESS ARM. A rejected transfer leaves this
+        // screen open, and a flag cleared only where the write commits would
+        // leave the user reading "try again" under a Save that never comes back.
+        .finally(() => setWriteInFlight(false));
       // Closed only AFTER the write commits — same reasoning as the entry
       // path's onSuccess below: a `back()` fired before the two legs land
       // would leave a failed transfer with nobody on screen to be told.
       return;
     }
 
+    setWriteInFlight(true);
     createTransaction.mutate(
       {
         walletId: draft.walletId,
@@ -180,7 +199,11 @@ export default function NewTransactionScreen() {
       },
       // Closed only AFTER the write commits. A `back()` fired optimistically
       // would leave a failed write with nobody on screen to be told about it.
-      { onSuccess: () => router.back() },
+      //
+      // `onSettled`, not `onSuccess`, for the flag — the transfer path's
+      // `finally` for the same reason: a write that failed leaves this screen
+      // open, and Save has to come back for the retry.
+      { onSuccess: () => router.back(), onSettled: () => setWriteInFlight(false) },
     );
   }
 
@@ -196,6 +219,7 @@ export default function NewTransactionScreen() {
         onAmountChange={setAmount}
         onSubmit={handleSubmit}
         submitError={transferError}
+        submitting={createTransaction.isPending || writeInFlight}
         onCreateCashWallet={() => router.push("/wallet/new")}
         onClose={() => router.back()}
       />
