@@ -97,10 +97,12 @@ export async function buildDataExportBundle(now: number): Promise<DataExportBund
 
 /**
  * Writes the export bundle to the app's cache directory as JSON and hands it
- * to the OS share sheet, returning the written file's uri — the same
+ * to the OS share sheet, returning the uri it was written to — the same
  * cache-directory-then-share pattern `exportTransactionsCsv`
- * (lib/reports/csv_export.ts) uses, so both of this app's export flows leave
- * files in the one place the app can clean up.
+ * (lib/reports/csv_export.ts) uses, down to the file's lifetime: it is
+ * deleted once the share resolves or fails, so the uri names where the bundle
+ * went, not something the caller can still read. Throws when the device has
+ * no share sheet at all.
  *
  * `now` is a parameter, never `Date.now()` read internally — the global "no
  * bare Date.now() in testable paths" constraint, and the literal interface
@@ -122,15 +124,33 @@ export async function exportAllData(now: number): Promise<string> {
   const dateLabel = toDateIso(new Date(now));
   const fileUri = `${cacheDirectory}peraplano-export-${dateLabel}.json`;
 
+  // Asked BEFORE the write, not after: a device with no share target has no
+  // use for the file, and the cheapest plaintext copy of the whole database
+  // to protect is the one that was never written. Throwing is the point —
+  // resolving normally here would have the Privacy centre's export button
+  // report a success that never happened.
+  if (!(await Sharing.isAvailableAsync())) {
+    throw new Error("data_export: sharing is unavailable on this device");
+  }
+
   await FileSystem.writeAsStringAsync(fileUri, json, {
     encoding: FileSystem.EncodingType.UTF8,
   });
 
-  if (await Sharing.isAvailableAsync()) {
+  // The file is transient. It is every exportable table in plaintext — the
+  // whole ledger, wallets, loans, settings — sitting beside the ENCRYPTED
+  // database that docs/12-encryption-and-app-lock.md promises is the only
+  // copy at rest, so it lives only as long as the share sheet needs it.
+  // `finally` because a cancelled or failed share must not leave it behind
+  // either, and `idempotent` so a delete of an already-gone file is not
+  // itself an error.
+  try {
     await Sharing.shareAsync(fileUri, {
       mimeType: "application/json",
       dialogTitle: "Export your data",
     });
+  } finally {
+    await FileSystem.deleteAsync(fileUri, { idempotent: true });
   }
 
   return fileUri;

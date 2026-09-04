@@ -16,6 +16,7 @@
 jest.mock("expo-file-system/legacy", () => ({
   cacheDirectory: "file:///cache/",
   writeAsStringAsync: jest.fn().mockResolvedValue(undefined),
+  deleteAsync: jest.fn().mockResolvedValue(undefined),
   EncodingType: { UTF8: "utf8" },
 }));
 
@@ -25,6 +26,7 @@ jest.mock("expo-sharing", () => ({
 }));
 
 import * as FileSystem from "expo-file-system/legacy";
+import * as Sharing from "expo-sharing";
 
 import { closeDatabase } from "@/lib/db/database";
 import { createWallet } from "@/lib/db/repos/wallets_repo";
@@ -36,6 +38,7 @@ import { toDateIso } from "@/lib/dates";
 import { buildDataExportBundle, exportAllData } from "../data_export";
 
 const mockFileSystem = FileSystem as jest.Mocked<typeof FileSystem>;
+const mockSharing = Sharing as jest.Mocked<typeof Sharing>;
 
 const NOW = 1_786_000_000_000;
 const CATEGORY_ID = "cat_food_dining";
@@ -153,4 +156,40 @@ test("exportAllData writes the bundle to the cache directory and returns its uri
   );
   const written = mockFileSystem.writeAsStringAsync.mock.calls[0][1];
   expect(() => JSON.parse(written)).not.toThrow();
+});
+
+// The exported file is a plaintext copy of EVERY exportable table — wallets,
+// transactions, loans, settings — written next to the ENCRYPTED database
+// docs/12-encryption-and-app-lock.md promises is the only copy at rest.
+// Nothing else on the device deletes it, and the name is keyed on the date,
+// so before these tests a week of exports meant a week of full plaintext
+// databases waiting for Android to evict the cache. Mirrors the three
+// lifecycle tests lib/reports/__tests__/csv_export.test.ts pins on the CSV
+// path, so the two export flows cannot drift apart.
+test("the written file is deleted once the share sheet has been handed it", async () => {
+  const fileUri = await exportAllData(NOW);
+
+  expect(mockSharing.shareAsync).toHaveBeenCalledTimes(1);
+  expect(mockFileSystem.deleteAsync).toHaveBeenCalledWith(fileUri, { idempotent: true });
+});
+
+test("the written file is deleted even when the share itself fails", async () => {
+  mockSharing.shareAsync.mockRejectedValueOnce(new Error("no activity found to handle intent"));
+
+  await expect(exportAllData(NOW)).rejects.toThrow("no activity found to handle intent");
+
+  expect(mockFileSystem.deleteAsync).toHaveBeenCalledWith(
+    `file:///cache/peraplano-export-${toDateIso(new Date(NOW))}.json`,
+    { idempotent: true },
+  );
+});
+
+test("an unavailable share sheet raises instead of reporting a silent success", async () => {
+  mockSharing.isAvailableAsync.mockResolvedValueOnce(false);
+
+  await expect(exportAllData(NOW)).rejects.toThrow(/sharing is unavailable/u);
+
+  expect(mockSharing.shareAsync).not.toHaveBeenCalled();
+  // Asked before the write, so there is no plaintext copy to clean up either.
+  expect(mockFileSystem.writeAsStringAsync).not.toHaveBeenCalled();
 });
