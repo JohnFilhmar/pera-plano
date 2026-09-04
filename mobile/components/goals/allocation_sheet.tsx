@@ -33,6 +33,41 @@ export type AllocationSheetProps = {
 
 type RowState = { checked: boolean; text: string };
 
+/**
+ * Checked by default: the user set these rules themselves, so the sheet's job
+ * is to let them opt OUT of this payday, not to make them re-approve their own
+ * configuration.
+ *
+ * pesoInputFrom, NOT String(proposal.amount) — proposal.amount is CENTAVOS,
+ * and centavosFrom reads a seeded field as PESOS. String(200000) would seed
+ * "200000" and round-trip as ₱200,000.00, a 100x inflation baked into the
+ * default rather than typed by the user (numeric-input-system Task 11).
+ */
+function seedRows(proposals: AllocationProposal[]): Record<string, RowState> {
+  return Object.fromEntries(
+    proposals.map((proposal) => [
+      proposal.goalId,
+      { checked: true, text: pesoInputFrom(proposal.amount) },
+    ]),
+  );
+}
+
+/**
+ * What makes one sheetful of rows the WRONG rows for what is on screen now.
+ *
+ * Value-based, not the `proposals` array's identity: the parent re-renders for
+ * its own reasons and hands a fresh array every time, and reseeding on that
+ * would wipe the user's edits mid-edit. `visible` is in it because the sheet is
+ * mounted once for the app's lifetime (app/_layout.tsx) with only that prop
+ * toggling — reopening it IS the next payday, even in the case where the two
+ * paydays happen to propose identical figures.
+ */
+function seedKeyFor(visible: boolean, proposals: AllocationProposal[]): string {
+  return [visible, ...proposals.map((proposal) => `${proposal.goalId}:${proposal.amount}`)].join(
+    "|",
+  );
+}
+
 export function AllocationSheet({
   visible,
   proposals,
@@ -41,22 +76,25 @@ export function AllocationSheet({
   onConfirm,
   busy = false,
 }: AllocationSheetProps) {
-  // Keyed by goal id, seeded from the proposals. Checked by default: the user
-  // set these rules themselves, so the sheet's job is to let them opt OUT of
-  // this payday, not to make them re-approve their own configuration.
-  const [rows, setRows] = useState<Record<string, RowState>>(() =>
-    Object.fromEntries(
-      proposals.map((proposal) => [
-        proposal.goalId,
-        // pesoInputFrom, NOT String(proposal.amount) — proposal.amount is
-        // CENTAVOS, and centavosFrom below reads a seeded field as PESOS.
-        // String(200000) would seed "200000" and round-trip as ₱200,000.00,
-        // a 100x inflation baked into the default rather than typed by the
-        // user (numeric-input-system Task 11).
-        { checked: true, text: pesoInputFrom(proposal.amount) },
-      ]),
-    ),
-  );
+  // Keyed by goal id, seeded from the proposals.
+  const [rows, setRows] = useState<Record<string, RowState>>(() => seedRows(proposals));
+
+  // EVERY PAYDAY STARTS FROM ITS OWN PROPOSALS. The state above is keyed by
+  // goal id and the goals do not change between paydays, so a row unchecked or
+  // edited down on one payday used to come back that way on the next — the
+  // ledger then recording an amount the user chose for a different payday.
+  //
+  // Reseeded DURING RENDER — React's own "adjusting state when a prop changes"
+  // pattern, which discards this render's output and retries immediately. Not
+  // an effect, which would paint one frame of the previous payday's rows
+  // first; and not a `key` on the sheet, which would remount it and restart
+  // its entrance animation.
+  const [seededKey, setSeededKey] = useState(() => seedKeyFor(visible, proposals));
+  const seedKey = seedKeyFor(visible, proposals);
+  if (seedKey !== seededKey) {
+    setSeededKey(seedKey);
+    setRows(seedRows(proposals));
+  }
 
   const rowFor = (proposal: AllocationProposal): RowState =>
     rows[proposal.goalId] ?? { checked: true, text: pesoInputFrom(proposal.amount) };

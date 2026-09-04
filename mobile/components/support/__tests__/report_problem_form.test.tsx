@@ -6,6 +6,10 @@
 // validation and payload shape, and not about sending.
 import { fireEvent, render, screen } from "@testing-library/react-native";
 
+import { getDeviceHeaders } from "@/services/device_info";
+import { supportReportParts } from "@/services/support_reports";
+import type { SupportReport } from "@/types/support";
+
 import { ReportProblemForm } from "../report_problem_form";
 
 function fillValid(): void {
@@ -90,4 +94,82 @@ test("the form states what will be shared, before anything is sent", () => {
   expect(
     screen.getByText(/shares your title, description, topic and any files you attached/i),
   ).toBeTruthy();
+});
+
+// ---------------------------------------------------------------------------
+// The disclosure tells the truth about the wire — GAP-088. It used to name the
+// four things the user typed or picked and then claim "nothing else from the
+// app is included", while `supportReportParts` also carried a report id, the
+// time the report was written and the send-attempt count, and `apiClient`'s
+// request interceptor added four device headers on top. Harmless fields, a
+// false sentence, on the one screen where the user consents to sending data.
+//
+// THE WIRE IS THE SOURCE OF TRUTH HERE, not a copy of the sentence: the test
+// walks the real payload and the real headers, so a field added to either with
+// no matching phrase fails this rather than shipping undisclosed.
+// ---------------------------------------------------------------------------
+const DISCLOSED: Record<string, RegExp> = {
+  reportId: /a report id/i,
+  title: /your title/i,
+  description: /description/i,
+  topic: /topic/i,
+  createdAt: /when you wrote it/i,
+  attemptCount: /how many send attempts it took/i,
+  attachments: /any files you attached/i,
+  "X-App-Version": /the app version/i,
+  "X-Device-OS": /phone system/i,
+  "X-Device-OS-Version": /system version/i,
+  "X-Client-Type": /the mobile app/i,
+};
+
+const REPORT: SupportReport = {
+  id: "11111111-2222-3333-4444-555555555555",
+  title: "Transfers show up twice",
+  description: "Sent money from GCash to BPI and both legs landed as spending.",
+  topic: "wrong_amount_or_wallet",
+  status: "queued",
+  attemptCount: 2,
+  nextAttemptAt: 0,
+  lastError: null,
+  createdAt: 0,
+  updatedAt: 0,
+  sentAt: null,
+  ticketRef: null,
+  attachments: [
+    {
+      id: "a-1",
+      reportId: "11111111-2222-3333-4444-555555555555",
+      fileUri: "file:///documents/support/shot.png",
+      mimeType: "image/png",
+      byteSize: 1024,
+      createdAt: 0,
+    },
+  ],
+};
+
+test("the disclosure names EVERY field the report actually sends", async () => {
+  render(<ReportProblemForm onSubmit={jest.fn()} />);
+  const disclosure = String(screen.getByTestId("support-disclosure").props.children);
+
+  const onTheWire = [
+    ...new Set(supportReportParts(REPORT).map(([name]) => name)),
+    ...Object.keys(await getDeviceHeaders()),
+  ];
+
+  for (const field of onTheWire) {
+    const phrase = DISCLOSED[field];
+    // A field with no entry above is a field nobody wrote a sentence for.
+    expect(phrase).toBeDefined();
+    expect(disclosure).toMatch(phrase);
+  }
+});
+
+// The absolute claim is what made the old sentence false; it stays, and it is
+// now true.
+test("the disclosure still promises nothing else, and that nothing goes before Send", () => {
+  render(<ReportProblemForm onSubmit={jest.fn()} />);
+  const disclosure = String(screen.getByTestId("support-disclosure").props.children);
+
+  expect(disclosure).toMatch(/Nothing else from the app is included/i);
+  expect(disclosure).toMatch(/nothing is sent until you press Send/i);
 });

@@ -28,7 +28,7 @@
 import { useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 
-import { DueRulePicker } from "@/components/bills/due_rule_picker";
+import { DueRulePicker, isDueRuleComplete } from "@/components/bills/due_rule_picker";
 import { formatCentavos } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
 import { NumericField } from "@/components/ui/numeric_field";
@@ -136,7 +136,11 @@ export function BillForm({
   );
 
   const amount = centavosFrom(amountText);
-  const canSave = name.trim().length > 0 && amount > 0;
+  // The due rule counts too. A cleared day-of-month field used to sail past
+  // this check and save as "every month on the 1st" — a date the user never
+  // picked, and one that then drives reminders and the Safe-to-Spend bills
+  // term (due_rule_picker.tsx's `isDueRuleComplete`).
+  const canSave = name.trim().length > 0 && amount > 0 && isDueRuleComplete(dueRule);
 
   const toggleOffset = (offset: number) => {
     setOffsets((current) =>
