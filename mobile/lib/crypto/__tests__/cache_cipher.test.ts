@@ -6,10 +6,46 @@
 //
 // expo-crypto's getRandomBytesAsync is mocked globally in
 // test_support/jest_setup.ts with a real Node CSPRNG (require("crypto").
-// randomBytes) -- no local override needed here, unlike key_manager.test.ts,
-// since nothing in this file spies on the mock or needs a stateful fake.
+// randomBytes), and the override below keeps that CSPRNG while adding the
+// one thing the lock-race tests need: the ability to hold a single draw
+// suspended, which is the exact await encryptCacheValue parks on. Controls
+// live in the factory's own closure rather than behind jest.spyOn, for the
+// namespace-import reason key_manager.test.ts documents at length.
+jest.mock("expo-crypto", () => {
+  let parkNextDraw = false;
+  let releaseDraw: (() => void) | null = null;
+  let announceParked: (() => void) | null = null;
+  return {
+    getRandomBytesAsync: async (byteCount: number) => {
+      const bytes = new Uint8Array(require("crypto").randomBytes(byteCount));
+      if (parkNextDraw) {
+        parkNextDraw = false;
+        await new Promise<void>((resolve) => {
+          releaseDraw = resolve;
+          announceParked?.();
+          announceParked = null;
+        });
+      }
+      return bytes;
+    },
+    // Arms a one-shot park on the NEXT draw and resolves once that draw is
+    // actually suspended, so a test never has to guess a microtask count to
+    // know the write it started is genuinely mid-flight.
+    __parkNextNonceDraw: () =>
+      new Promise<void>((resolve) => {
+        parkNextDraw = true;
+        announceParked = resolve;
+      }),
+    __releaseParkedNonceDraw: () => {
+      releaseDraw?.();
+      releaseDraw = null;
+    },
+  };
+});
+
 import { gcm } from "@noble/ciphers/aes.js";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
+import * as Crypto from "expo-crypto";
 import {
   encryptCacheValue,
   decryptCacheValue,
@@ -22,6 +58,13 @@ import {
 
 const KEY = new Uint8Array(32).fill(7); // any fixed, non-secret 32-byte key
 const OTHER_KEY = new Uint8Array(32).fill(9);
+
+// The mock-only controls the factory above adds on top of expo-crypto's real
+// surface; the cast reaches them without widening the module's own types.
+const CryptoMock = Crypto as unknown as {
+  __parkNextNonceDraw: () => Promise<void>;
+  __releaseParkedNonceDraw: () => void;
+};
 
 // AES-GCM's authentication tag is a fixed, spec-mandated 16 bytes appended
 // after the ciphertext data -- not this module's private choice, so tests
@@ -64,7 +107,7 @@ describe("encryptCacheValue / decryptCacheValue round-trip", () => {
       metadata: { syncedAt: null, nested: { deeper: { still: [1, 2, 3] } } },
     };
 
-    const blob = await encryptCacheValue(KEY, value);
+    const blob = await encryptCacheValue(() => KEY, value);
     const result = decryptCacheValue(KEY, blob);
 
     expect(result).toEqual(value);
@@ -72,14 +115,14 @@ describe("encryptCacheValue / decryptCacheValue round-trip", () => {
 
   it("produces a DIFFERENT blob each time for the identical value, because the nonce is fresh per call", async () => {
     const value = { merchant: MERCHANT };
-    const blobOne = await encryptCacheValue(KEY, value);
-    const blobTwo = await encryptCacheValue(KEY, value);
+    const blobOne = await encryptCacheValue(() => KEY, value);
+    const blobTwo = await encryptCacheValue(() => KEY, value);
 
     expect(blobOne).not.toBe(blobTwo);
   });
 
   it("fails to decrypt under the wrong key rather than returning wrong-but-valid data", async () => {
-    const blob = await encryptCacheValue(KEY, { merchant: MERCHANT });
+    const blob = await encryptCacheValue(() => KEY, { merchant: MERCHANT });
     expect(() => decryptCacheValue(OTHER_KEY, blob)).toThrow(CacheDecryptionError);
   });
 });
@@ -90,7 +133,7 @@ describe("encryptCacheValue / decryptCacheValue round-trip", () => {
 // string this cached data holds.
 describe("ciphertext does not leak plaintext", () => {
   it("the encrypted blob's bytes do not contain the plaintext merchant string", async () => {
-    const blob = await encryptCacheValue(KEY, {
+    const blob = await encryptCacheValue(() => KEY, {
       merchant: MERCHANT,
       note: "some other unrelated text",
     });
@@ -115,7 +158,7 @@ describe("a tampered blob is rejected, not silently accepted", () => {
     // loudly here instead of the offset silently landing somewhere else.
     expect(plaintextJson.endsWith(`"${PROBE}"}`)).toBe(true);
 
-    const blob = await encryptCacheValue(KEY, value);
+    const blob = await encryptCacheValue(() => KEY, value);
     const blobBytes = hexToBytes(blob);
 
     // Target the LAST character of PROBE: plaintext ends "...AAAA"} --
@@ -137,7 +180,7 @@ describe("a tampered blob is rejected, not silently accepted", () => {
   });
 
   it("throws CacheDecryptionError for a truncated blob", async () => {
-    const blob = await encryptCacheValue(KEY, { merchant: MERCHANT });
+    const blob = await encryptCacheValue(() => KEY, { merchant: MERCHANT });
     const truncated = blob.slice(0, blob.length - 8);
 
     expect(() => decryptCacheValue(KEY, truncated)).toThrow(CacheDecryptionError);
@@ -149,7 +192,7 @@ describe("a tampered blob is rejected, not silently accepted", () => {
 
   it("sanity check: decrypting an UNMODIFIED blob succeeds -- proves the tamper above is what causes the throw, not some incidental bug", async () => {
     const value = { merchant: "irrelevant for this test", probe: "AAAA" };
-    const blob = await encryptCacheValue(KEY, value);
+    const blob = await encryptCacheValue(() => KEY, value);
 
     expect(decryptCacheValue(KEY, blob)).toEqual(value);
   });
@@ -157,11 +200,11 @@ describe("a tampered blob is rejected, not silently accepted", () => {
 
 describe("a missing key fails explicitly, distinctly from a corrupt blob", () => {
   it("encryptCacheValue rejects with CacheCipherKeyMissingError when key is null", async () => {
-    await expect(encryptCacheValue(null, { a: 1 })).rejects.toBeInstanceOf(CacheCipherKeyMissingError);
+    await expect(encryptCacheValue(() => null, { a: 1 })).rejects.toBeInstanceOf(CacheCipherKeyMissingError);
   });
 
   it("encryptCacheValue rejects with CacheCipherKeyMissingError when key is an empty Uint8Array", async () => {
-    await expect(encryptCacheValue(new Uint8Array(0), { a: 1 })).rejects.toBeInstanceOf(
+    await expect(encryptCacheValue(() => new Uint8Array(0), { a: 1 })).rejects.toBeInstanceOf(
       CacheCipherKeyMissingError,
     );
   });
@@ -178,9 +221,70 @@ describe("a missing key fails explicitly, distinctly from a corrupt blob", () =>
   });
 });
 
+// The write-side ordering guarantee in cache_cipher.ts's header. A cache
+// write is parked on its nonce draw for a real slice of time, and
+// KeyManager.lock() destroys the DEK by zeroing that exact buffer in place,
+// so an implementation that resolves the key BEFORE the draw resumes holding
+// 32 zero bytes and encrypts the whole dehydrated cache under a key every
+// attacker already has. Nothing else in this file can see that: such a blob
+// is well-formed, round-trips under its own key, and leaks no plaintext --
+// it just happens to be readable by anyone.
+describe("a lock landing mid-write cannot produce a blob under the zeroed key", () => {
+  it("rejects a write whose nonce draw was still pending when the key was cleared and zeroed", async () => {
+    const dek = new Uint8Array(32).fill(7);
+    let liveKey: Uint8Array | null = dek;
+
+    const parked = CryptoMock.__parkNextNonceDraw();
+    const write = createCacheCodec(() => liveKey).serialize({ merchant: MERCHANT });
+    await parked;
+
+    // lockNow()'s teardown, in its own order: drop the reference the codec
+    // reads, then zero the DEK buffer itself.
+    liveKey = null;
+    dek.fill(0);
+    CryptoMock.__releaseParkedNonceDraw();
+
+    await expect(write).rejects.toBeInstanceOf(CacheCipherKeyMissingError);
+  });
+
+  it("still rejects when only the bytes were zeroed and the reference survived", async () => {
+    const dek = new Uint8Array(32).fill(7);
+
+    const parked = CryptoMock.__parkNextNonceDraw();
+    const write = createCacheCodec(() => dek).serialize({ merchant: MERCHANT });
+    await parked;
+
+    // lib/security/wipe.ts's wipeKeys() zeroes the DEK without ever going
+    // through clearCacheEncryptionKey(), so "the reference is still there"
+    // must not be enough to make a write proceed.
+    dek.fill(0);
+    CryptoMock.__releaseParkedNonceDraw();
+
+    await expect(write).rejects.toBeInstanceOf(CacheCipherKeyMissingError);
+  });
+
+  it("completes normally under the live key when no lock intervenes -- the park itself is not what rejects", async () => {
+    const dek = new Uint8Array(32).fill(7);
+
+    const parked = CryptoMock.__parkNextNonceDraw();
+    const write = createCacheCodec(() => dek).serialize({ merchant: MERCHANT });
+    await parked;
+    CryptoMock.__releaseParkedNonceDraw();
+
+    expect(decryptCacheValue(dek, await write)).toEqual({ merchant: MERCHANT });
+  });
+
+  it("refuses an all-zero key outright -- it can only ever be a scrubbed DEK, never a real one", async () => {
+    await expect(encryptCacheValue(() => new Uint8Array(32), { merchant: MERCHANT })).rejects.toBeInstanceOf(
+      CacheCipherKeyMissingError,
+    );
+    expect(() => decryptCacheValue(new Uint8Array(32), "deadbeef")).toThrow(CacheCipherKeyMissingError);
+  });
+});
+
 describe("createCacheCodec", () => {
   it("serialize + deserialize round-trip a nested object through the exact functions query_client.ts wires up", async () => {
-    const codec = createCacheCodec(KEY);
+    const codec = createCacheCodec(() => KEY);
     const value = { buster: "v", timestamp: 1, clientState: { queries: [{ id: "q1", data: { merchant: MERCHANT } }] } };
 
     const cached = await codec.serialize(value);
@@ -188,7 +292,7 @@ describe("createCacheCodec", () => {
   });
 
   it("deserialize discards a tampered blob and returns undefined INSTEAD OF THROWING -- a corrupted cache is disposable, not fatal", async () => {
-    const codec = createCacheCodec(KEY);
+    const codec = createCacheCodec(() => KEY);
     const blob = await codec.serialize({ merchant: MERCHANT });
     const corrupted = blob.slice(0, blob.length - 10) + "0".repeat(10);
 
@@ -205,7 +309,7 @@ describe("createCacheCodec", () => {
   it("logs a COUNT on a discarded read, never the blob or any decrypted content", async () => {
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      const codec = createCacheCodec(KEY);
+      const codec = createCacheCodec(() => KEY);
       const blob = await codec.serialize({ merchant: MERCHANT });
       const corrupted = "00" + blob.slice(2);
 
@@ -222,13 +326,13 @@ describe("createCacheCodec", () => {
   });
 
   it("deserialize also returns undefined (never throws) when no key was ever set -- read-side failures are uniformly non-fatal", () => {
-    const codec = createCacheCodec(null);
+    const codec = createCacheCodec(() => null);
     expect(() => codec.deserialize("deadbeef")).not.toThrow();
     expect(codec.deserialize("deadbeef")).toBeUndefined();
   });
 
   it("serialize rejects (does not silently write plaintext) when no key was ever set", async () => {
-    const codec = createCacheCodec(null);
+    const codec = createCacheCodec(() => null);
     await expect(codec.serialize({ merchant: MERCHANT })).rejects.toBeInstanceOf(CacheCipherKeyMissingError);
   });
 });

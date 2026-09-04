@@ -74,6 +74,43 @@ jest.mock("@/lib/security/wipe", () => ({
   wipeAndStartOver: jest.fn(),
 }));
 
+// Keeps jest_setup.ts's real Node CSPRNG and adds a one-shot park, so the
+// last describe in this file can hold a persisted-cache write suspended on
+// the exact await it parks on for real (cache_cipher.ts's nonce draw) while
+// the background timeout tears the DEK down underneath it. Controls live in
+// the factory's own closure, not behind jest.spyOn -- see
+// lib/crypto/__tests__/key_manager.test.ts's note on the namespace-import
+// trap that makes a spy on a mocked module silently miss.
+jest.mock("expo-crypto", () => {
+  let parkNextDraw = false;
+  let releaseDraw: (() => void) | null = null;
+  let announceParked: (() => void) | null = null;
+  return {
+    randomUUID: () => require("crypto").randomUUID(),
+    getRandomBytesAsync: async (byteCount: number) => {
+      const bytes = new Uint8Array(require("crypto").randomBytes(byteCount));
+      if (parkNextDraw) {
+        parkNextDraw = false;
+        await new Promise<void>((resolve) => {
+          releaseDraw = resolve;
+          announceParked?.();
+          announceParked = null;
+        });
+      }
+      return bytes;
+    },
+    __parkNextNonceDraw: () =>
+      new Promise<void>((resolve) => {
+        parkNextDraw = true;
+        announceParked = resolve;
+      }),
+    __releaseParkedNonceDraw: () => {
+      releaseDraw?.();
+      releaseDraw = null;
+    },
+  };
+});
+
 // The real classes' shape (code/name), redeclared here rather than imported
 // from the real module -- @/modules/notification_listener's top-level
 // requireNativeModule() call throws under Jest with no native registration,
@@ -114,7 +151,12 @@ jest.mock("@/modules/notification_listener", () => {
 import { act, renderHook, waitFor } from "@testing-library/react-native";
 import type { ReactNode } from "react";
 import { AppState } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { gcm } from "@noble/ciphers/aes.js";
+import { hexToBytes } from "@noble/hashes/utils.js";
+import * as Crypto from "expo-crypto";
 import { authenticateAsync } from "expo-local-authentication";
+import type { PersistedClient } from "@tanstack/react-query-persist-client";
 import * as KeyManager from "@/lib/crypto/key_manager";
 import * as Database from "@/lib/db/database";
 import * as QueryCache from "@/lib/query_client";
@@ -1007,5 +1049,126 @@ describe("background timeout", () => {
     expect(mockCloseDatabase).not.toHaveBeenCalled();
     expect(mockKeyManagerLock).not.toHaveBeenCalled();
     nowSpy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GAP-002 -- the persisted cache and the lock, end to end
+// ---------------------------------------------------------------------------
+
+// The only block in this file that runs the REAL lib/query_client (via
+// requireActual, routed in through the two mocks lock_context.tsx already
+// calls) and the real cache cipher underneath it. Everything above asserts
+// that lockNow() calls the teardown steps in order; this asserts what those
+// steps mean for a write that was ALREADY RUNNING when they fired.
+//
+// The race, concretely: the persister's serialize awaits a nonce draw, and
+// during that await lock_context drops the cache key, closes the database
+// and calls KeyManager.lock(), whose real implementation zeroes the DEK
+// BUFFER in place -- the very buffer lock_context handed to
+// setCacheEncryptionKey. A serialize that resolved its key before that await
+// resumes holding 32 zero bytes and writes the whole dehydrated cache
+// (wallet balances, merchant names) to AsyncStorage under a key that is
+// public by definition. Nothing detects it: the blob simply fails to
+// authenticate on the next unlock and is discarded as corrupt.
+describe("a persisted-cache write in flight when the app re-locks", () => {
+  // query-async-storage-persister's documented default key, same as
+  // lib/__tests__/query_client.test.ts.
+  const STORAGE_KEY = "REACT_QUERY_OFFLINE_CACHE";
+  const GCM_NONCE_BYTES = 12;
+  const ZERO_KEY = new Uint8Array(32);
+  const MERCHANT = "Jollibee SM Megamall";
+
+  const realQueryCache = jest.requireActual<typeof import("@/lib/query_client")>("@/lib/query_client");
+
+  // The mock-only controls the expo-crypto factory at the top of this file
+  // adds; the cast reaches them without widening the module's own types.
+  const CryptoMock = Crypto as unknown as {
+    __parkNextNonceDraw: () => Promise<void>;
+    __releaseParkedNonceDraw: () => void;
+  };
+
+  // Deliberately does NOT go through cache_cipher.ts -- this is the attacker's
+  // side of the test, and it must not inherit any guard the module under test
+  // happens to have.
+  function decryptsUnderZeroKey(blob: string): boolean {
+    try {
+      const bytes = hexToBytes(blob);
+      gcm(ZERO_KEY, bytes.slice(0, GCM_NONCE_BYTES)).decrypt(bytes.slice(GCM_NONCE_BYTES));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function persistedClient(): PersistedClient {
+    return {
+      buster: realQueryCache.persistOptions.buster,
+      timestamp: 1_700_000_000_000,
+      clientState: { mutations: [], queries: [{ queryKey: ["wallets"], state: { data: { merchant: MERCHANT } } }] },
+    } as unknown as PersistedClient;
+  }
+
+  beforeEach(async () => {
+    mockSetCacheEncryptionKey.mockImplementation(realQueryCache.setCacheEncryptionKey);
+    mockClearCacheEncryptionKey.mockImplementation(realQueryCache.clearCacheEncryptionKey);
+    await AsyncStorage.clear();
+  });
+
+  afterEach(async () => {
+    realQueryCache.clearCacheEncryptionKey();
+    mockSetCacheEncryptionKey.mockReset();
+    mockClearCacheEncryptionKey.mockReset();
+    mockKeyManagerLock.mockReset();
+    await AsyncStorage.clear();
+  });
+
+  test("resumes after the lock without ever writing a blob readable under the zeroed DEK", async () => {
+    const dek = new Uint8Array(32).fill(0x42);
+    mockUnlockWithDeviceKey.mockResolvedValue(dek);
+    // key_manager.ts's real lock(): zero the bytes, THEN drop the reference.
+    mockKeyManagerLock.mockImplementation(() => {
+      dek.fill(0);
+    });
+
+    const { result } = renderHook(() => useLock(), { wrapper });
+    await waitFor(() => expect(result.current.status).toBe("locked"));
+    await act(async () => {
+      await result.current.unlock();
+    });
+    await waitFor(() => expect(result.current.status).toBe("unlocked"));
+
+    const parked = CryptoMock.__parkNextNonceDraw();
+    const write = realQueryCache.persistOptions.persister.persistClient(persistedClient());
+    // Resolves only once serialize is genuinely suspended inside the nonce
+    // draw -- this is the liveness proof that the write is in flight, not a
+    // write that never started.
+    await parked;
+
+    const nowSpy = jest.spyOn(Date, "now");
+    const t0 = 1_700_000_000_000;
+    nowSpy.mockReturnValue(t0);
+    act(() => emitAppState("background"));
+    nowSpy.mockReturnValue(t0 + 6 * 60 * 1000);
+    await act(async () => {
+      emitAppState("active");
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(result.current.status).toBe("locked"));
+    nowSpy.mockRestore();
+
+    expect(mockKeyManagerLock).toHaveBeenCalledTimes(1);
+    expect(Array.from(dek)).toEqual(Array.from(ZERO_KEY));
+
+    await act(async () => {
+      CryptoMock.__releaseParkedNonceDraw();
+      await Promise.resolve(write).catch(() => undefined);
+      await new Promise((resolve) => setImmediate(resolve));
+    });
+
+    const raw = await AsyncStorage.getItem(STORAGE_KEY);
+    if (raw !== null) expect(decryptsUnderZeroKey(raw)).toBe(false);
+    expect(raw).toBeNull();
   });
 });

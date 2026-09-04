@@ -135,6 +135,12 @@ installSafeToSpendCascade(queryClient);
  *
  * NEVER logged; NEVER exported directly — only through the setter below, so
  * every write site is grep-able.
+ *
+ * This buffer is this module's OWN COPY of the DEK, not the caller's. Sharing
+ * the caller's buffer aliased this variable to the exact array
+ * key_manager.ts's `lock()` zeroes in place, so a lock could mutate the key
+ * out from under a cache write that was already running — see the setter and
+ * cache_cipher.ts's ORDERING GUARANTEE header.
  */
 let cacheEncryptionKey: Uint8Array | null = null;
 
@@ -142,28 +148,37 @@ let cacheEncryptionKey: Uint8Array | null = null;
  * MUST be called with the unwrapped DEK once the app unlocks, and before
  * anything reads or writes the persisted query cache — see this file's
  * header comment. Calling it again (e.g. on every unlock) simply replaces
- * the key; there is no lifecycle beyond "set" here because — like
- * key_manager.ts's own `dek` — the value itself is owned and zeroed by
- * key_manager.ts's `lock()`, not by this module.
+ * the key.
+ *
+ * COPIES the bytes rather than retaining the caller's array. key_manager.ts
+ * owns the DEK and destroys it by zeroing the buffer in place, and
+ * lib/security/wipe.ts's wipeKeys() does that without going through
+ * clearCacheEncryptionKey() at all — with a shared buffer, that zeroing would
+ * silently turn this module's key into 32 zero bytes while it still looked
+ * present. Owning a copy makes this module's key live exactly as long as this
+ * module says it does, and clearCacheEncryptionKey() below is what ends it.
  */
 export function setCacheEncryptionKey(key: Uint8Array): void {
-  cacheEncryptionKey = key;
+  const previous = cacheEncryptionKey;
+  cacheEncryptionKey = new Uint8Array(key);
+  previous?.fill(0);
 }
 
 /** Companion to setCacheEncryptionKey, for the app's own lock action and for
- * test teardown — mirrors key_manager.ts's lock() clearing its DEK. Does NOT
- * zero the underlying bytes (this module never owned that buffer; see the
- * doc above), only drops this module's reference to it. */
+ * test teardown — mirrors key_manager.ts's lock(), zeroing the bytes before
+ * dropping the reference, because the buffer above is this module's own copy
+ * and nothing else will ever scrub it. */
 export function clearCacheEncryptionKey(): void {
+  cacheEncryptionKey?.fill(0);
   cacheEncryptionKey = null;
 }
 
 const persister = createAsyncStoragePersister({
   storage: AsyncStorage,
-  // A fresh codec per call, not one built once at module scope, so each
-  // call sees whatever `cacheEncryptionKey` currently holds — see the
-  // variable's own doc for why that must stay dynamic.
-  serialize: (client) => createCacheCodec(cacheEncryptionKey).serialize(client),
+  // A getter, not the key: the codec must read `cacheEncryptionKey` at the
+  // moment it encrypts, not at the moment the persister calls it — see the
+  // variable's own doc and cache_cipher.ts's ORDERING GUARANTEE header.
+  serialize: (client) => createCacheCodec(() => cacheEncryptionKey).serialize(client),
   // The real return value can genuinely be `undefined` (a discarded,
   // unreadable cache — cache_cipher.ts's createCacheCodec) even though the
   // library's own published type for `deserialize` doesn't admit that,
@@ -171,7 +186,7 @@ const persister = createAsyncStoragePersister({
   // it silently. persistQueryClientRestore (verified against its source)
   // treats a falsy result as "nothing to hydrate", which is exactly the
   // intended behavior here.
-  deserialize: (cached) => createCacheCodec(cacheEncryptionKey).deserialize(cached) as PersistedClient,
+  deserialize: (cached) => createCacheCodec(() => cacheEncryptionKey).deserialize(cached) as PersistedClient,
 });
 
 /** Bump on any change to the persisted cache's shape (query keys, dehydrated
