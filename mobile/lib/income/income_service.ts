@@ -227,8 +227,22 @@ function statusFor(
   return "unknown";
 }
 
-/** The profile a confirmed detection auto-applies (income flow 3). */
-async function applyDetectionToProfile(detection: Detection, now: number): Promise<void> {
+/**
+ * The profile a confirmed detection auto-applies (income flow 3).
+ *
+ * WRITES THE PROFILE AND NOTHING ELSE. Limits rule 11 applies automatic income
+ * drift "from the next period start" only, and `refreshLimitBase`'s own
+ * contract repeats it: re-snapshotting a base here would move the figure the
+ * user is being measured against halfway through the period they are being
+ * measured in, so a limit they were inside yesterday reads as over today with
+ * nothing on screen to explain it. `resolveState` already takes a fresh
+ * `baseFor(limit, M)` on every pass and adopts it at the period boundary, which
+ * is where drift belongs. The three USER-ACTION paths — `setManualIncome`,
+ * `clearManualIncome` and `confirmDetectedIncome` — call
+ * `recomputePercentLimits` themselves, which is rule 11's manual-edit
+ * exception.
+ */
+async function applyDetectionToProfile(detection: Detection): Promise<void> {
   if (detection.averageAmount === null) return;
   await saveIncomeProfile({
     cadence: detection.cadence,
@@ -236,7 +250,6 @@ async function applyDetectionToProfile(detection: Detection, now: number): Promi
     sourceWalletIds: [...new Set(detection.stream.map((event) => event.walletId))],
     isManualOverride: false,
   });
-  await recomputePercentLimits(now, monthlyEquivalent(detection.cadence, detection.averageAmount));
 }
 
 /**
@@ -283,7 +296,7 @@ export async function refreshIncomeDetection(now: number): Promise<IncomeSummary
 
   const profile = await getIncomeProfile();
   if (status === "confirmed" && profile?.isManualOverride !== true && !keepPrevious) {
-    await applyDetectionToProfile(detection, now);
+    await applyDetectionToProfile(detection);
   }
 
   return getIncomeSummary(now);
@@ -335,7 +348,10 @@ export async function confirmDetectedIncome(now: number): Promise<IncomeSummary>
   await setIncomeDetectionState({ ...state, status: "confirmed", missedWindows: 0 });
   // `isManualOverride` stays FALSE (income flow 2): accepting what detection
   // found is not the same as typing a figure, and automatic updates continue.
-  await applyDetectionToProfile(detection, now);
+  await applyDetectionToProfile(detection);
+  // A confirmation is a user action, so rule 11's immediate exception applies
+  // here where it does not on the automatic path.
+  await recomputePercentLimits(now, monthlyEquivalent(detection.cadence, detection.averageAmount));
   return getIncomeSummary(now);
 }
 
@@ -373,7 +389,9 @@ export async function clearManualIncome(now: number): Promise<IncomeSummary> {
   const detection = await detect(now);
 
   if (detection.confidence === CONFIRMED_CONFIDENCE && detection.averageAmount !== null) {
-    await applyDetectionToProfile(detection, now);
+    await applyDetectionToProfile(detection);
+    // Switching to automatic is a user action, same as `confirmDetectedIncome`.
+    await recomputePercentLimits(now, monthlyEquivalent(detection.cadence, detection.averageAmount));
     const state = await getIncomeDetectionState();
     await setIncomeDetectionState({ ...state, status: "confirmed", missedWindows: 0 });
     return getIncomeSummary(now);

@@ -15,6 +15,7 @@ import { insertTransaction } from "@/lib/db/repos/transactions_repo";
 import { createWallet } from "@/lib/db/repos/wallets_repo";
 import { onAppEvent } from "@/lib/events/app_events";
 import type { AppEventMap } from "@/lib/events/app_events";
+import { recomputeLimits } from "@/lib/limits/limit_service";
 import { freshDb } from "@/test_support/db";
 import type { Wallet } from "@/types/domain";
 
@@ -315,6 +316,106 @@ test("getMonthlyEquivalentIncome is the figure limits consume", async () => {
   await refreshIncomeDetection(NOW);
 
   expect(await getMonthlyEquivalentIncome(NOW)).toBe(3700000);
+});
+
+/** Sep 3 2026, noon — the trailing 90 days still reach back to Jun 5. */
+const SEP_3 = on(2026, 8, 3, 12);
+/** Sep 4 2026, noon — the same window now starts Jun 6 at noon. */
+const SEP_4 = on(2026, 8, 4, 12);
+/** Oct 1 2026, noon — the first day of the next monthly limit period. */
+const OCT_1 = on(2026, 9, 1, 12);
+
+/**
+ * Four same-sized credits on no rhythm at all.
+ *
+ * Deliberately none of the three regular cadences: no pair sits 28-33 days
+ * apart (monthly), none sits 6-8 (weekly), and none lands within 3 days of a
+ * 15th or a katapusan (kinsenas) — so rule 5's precedence falls through to
+ * `irregular`, whose rule 9 figure is the trailing 90 days summed and divided
+ * by three. That is the only cadence whose amount MOVES as the clock advances
+ * over a quiet ledger, which is what makes the drift observable at all.
+ *
+ * All four are the same amount so rule 4's ±30% band keeps them in one stream.
+ */
+async function seedIrregularStream(): Promise<void> {
+  await credit(2000000, on(2026, 5, 6));
+  await credit(2000000, on(2026, 6, 20));
+  await credit(2000000, on(2026, 7, 6));
+  await credit(2000000, on(2026, 7, 20));
+}
+
+/**
+ * The limits half of a ledger commit — `runLimitPass` without the notifier.
+ *
+ * Income does not write limit bases (limits rule 11), so this is what persists
+ * a period's base snapshot, exactly as `limit_ledger_subscriber.ts` does on the
+ * same `ledger:committed` event the income pass runs on.
+ */
+async function runLimitsPass(now: number): Promise<void> {
+  await recomputeLimits({ now, monthlyIncome: await getMonthlyEquivalentIncome(now) });
+}
+
+async function spend(amount: number, at: number): Promise<void> {
+  await insertTransaction({
+    walletId: payroll.id,
+    categoryId: UNCATEGORIZED_ID,
+    amount,
+    direction: "out",
+    occurredAt: at,
+    merchant: "JEEP FARE",
+    source: "manual",
+    confidence: 1,
+  });
+}
+
+test("AN AUTOMATIC MID-PERIOD DRIFT LEAVES THE CURRENT PERIOD'S BASE ALONE", async () => {
+  // Limits rule 11: automatic income drift applies from the NEXT period start,
+  // "so alerts never flap mid-period". On Sep 3 the trailing 90 days hold all
+  // four credits, M is ₱26,666.67 and a 30% monthly limit has a base of
+  // ₱8,000.00. A ₱120 fare commits on Sep 4, the window slides past Jun 6, and
+  // M drops to ₱20,000.00 — with no new spending, and nothing on screen to
+  // explain a limit the user was inside suddenly reading as over.
+  const percentLimit = await createLimit({
+    scope: "monthly",
+    basis: "percent-of-income",
+    value: 3000,
+  });
+  await seedIrregularStream();
+  await refreshIncomeDetection(SEP_3);
+  await runLimitsPass(SEP_3);
+
+  expect((await getLimitAlertState(percentLimit.id))?.base).toBe(800000);
+
+  await spend(12000, on(2026, 8, 4));
+  await refreshIncomeDetection(SEP_4);
+  await runLimitsPass(SEP_4);
+
+  // The profile DID drift — asserted so this test cannot pass because the
+  // fixture failed to move rather than because the base held.
+  expect(await getMonthlyEquivalentIncome(SEP_4)).toBe(2000000);
+  expect((await getLimitAlertState(percentLimit.id))?.base).toBe(800000);
+});
+
+test("the drifted income is adopted at the next period boundary", async () => {
+  const percentLimit = await createLimit({
+    scope: "monthly",
+    basis: "percent-of-income",
+    value: 3000,
+  });
+  await seedIrregularStream();
+  await refreshIncomeDetection(SEP_3);
+  await runLimitsPass(SEP_3);
+  await spend(12000, on(2026, 8, 4));
+  await refreshIncomeDetection(SEP_4);
+  await runLimitsPass(SEP_4);
+
+  await refreshIncomeDetection(OCT_1);
+  await runLimitsPass(OCT_1);
+
+  // October is a new period, so `resolveState` takes the base it was handed
+  // instead of the stored one: 30% of the ₱20,000.00 the trailing 90 days now
+  // support. Deferred, not lost.
+  expect((await getLimitAlertState(percentLimit.id))?.base).toBe(600000);
 });
 
 // ---------------------------------------------------------------------------
