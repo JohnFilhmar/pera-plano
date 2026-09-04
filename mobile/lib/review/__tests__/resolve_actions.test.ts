@@ -52,8 +52,10 @@ import {
 } from "@/lib/db/repos/transactions_repo";
 import { getTransferLink } from "@/lib/db/repos/transfer_links_repo";
 import { listUserRules } from "@/lib/db/repos/user_rules_repo";
+import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { createWallet, getWallet } from "@/lib/db/repos/wallets_repo";
 import { freshDb } from "@/test_support/db";
+import type { RulesetBundleInput } from "@/lib/ingest/ruleset_types";
 import type { RawCapture, ReviewKind, ReviewQueueItem } from "@/types/domain";
 
 import {
@@ -225,6 +227,182 @@ describe("confirmItem commits the proposal and closes the item", () => {
     const committed = await getTransaction((await confirmItem(item.id, NOW)) as string);
 
     expect(committed?.categoryId).toBe(UNCATEGORIZED_ID);
+  });
+
+  test("carries the notification's reference number onto the row", async () => {
+    const item = await queueParse({ referenceNo: "GC778899" });
+
+    const committed = await getTransaction((await confirmItem(item.id, NOW)) as string);
+
+    // §6 rule 1's strong key, and the only thing that can match this row to a
+    // late telling of the same movement. Dropped here (GAP-012), the same
+    // purchase's SMS relay outside the 180-second twin window reads as a second,
+    // genuine transaction and is committed beside it.
+    expect(committed?.referenceNo).toBe("GC778899");
+  });
+
+  test("dates the row from the event's own stamp when the payload carries one", async () => {
+    const item = await queueParse({ occurredAt: POSTED_AT - 90_000 });
+
+    const committed = await getTransaction((await confirmItem(item.id, NOW)) as string);
+
+    // The stages already worked this out; `capture.postedAt` is the fallback for
+    // cards raised before the payload carried it, not the better answer.
+    expect(committed?.occurredAt).toBe(POSTED_AT - 90_000);
+  });
+
+  test("does not snap the wallet to a balance the notification reported earlier", async () => {
+    const item = await queueParse({ balanceAfter: 999_999 });
+
+    await confirmItem(item.id, NOW);
+
+    // The payload carries `balanceAfter` for the audit trail, but the proposal
+    // deliberately does not: `insertTransaction` SETS the wallet's balance to a
+    // non-null one, and spec rule 9's "only if newer than the current snapshot"
+    // guard is not implemented — so a card triaged days later would re-anchor
+    // the wallet to a stale figure and discard every movement since.
+    expect((await getWallet(gcashId))?.balance).toBe(100000 - 125000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The DedupeGate on the CONFIRM path (GAP-012).
+//
+// `checkDuplicate` runs in the pipeline, over captures. A queue item skipped it
+// entirely: whatever the gate decided when the card was raised, the ledger has
+// moved since — the twin may have committed on the other channel, or the user
+// may have answered the twin's own card first — and confirming regardless is how
+// one payment becomes two rows with nothing on screen to explain it.
+// ---------------------------------------------------------------------------
+
+describe("confirming a card whose movement is already in the ledger", () => {
+  const SMS_PACKAGE = "com.google.android.apps.messaging";
+  const REFERENCE = "GC778899";
+
+  /**
+   * One provider reachable on two channels — the shape §6 rule 2 is written for,
+   * and the minimum this suite needs: without an installed ruleset there is no
+   * provider key and no channel for either side, and the confirm path correctly
+   * declines to judge at all.
+   */
+  const TWO_CHANNEL_BUNDLE: RulesetBundleInput = {
+    version: 2,
+    providers: [
+      {
+        providerKey: "gcash",
+        packageNames: [GCASH_PACKAGE],
+        version: 2,
+        channel: "push",
+        templates: [
+          {
+            id: "gcash_push_sent",
+            match: String.raw`\bsent (?<amount>(?:₱|PHP)\s?[\d,]+(?:\.\d{2})?)`,
+            direction: "out",
+            confidence: 1,
+          },
+        ],
+      },
+      {
+        providerKey: "gcash",
+        packageNames: [SMS_PACKAGE],
+        version: 2,
+        channel: "sms",
+        senderIds: ["GCASH"],
+        templates: [
+          {
+            id: "gcash_sms_sent",
+            match: String.raw`\bsent (?<amount>(?:₱|PHP)\s?[\d,]+(?:\.\d{2})?)`,
+            direction: "out",
+            confidence: 1,
+          },
+        ],
+      },
+    ],
+  };
+
+  /** The relay that already reached the ledger, on the other channel. */
+  async function commitSmsTwin(referenceNo: string | null): Promise<string> {
+    await storeCapture("raw-sms", { packageName: SMS_PACKAGE, title: "GCASH" });
+    const row = await insertTransaction({
+      walletId: gcashId,
+      categoryId: FOOD,
+      amount: 125000,
+      direction: "out",
+      occurredAt: POSTED_AT + 30_000,
+      referenceNo,
+      source: "notification",
+      confidence: 0.95,
+      rawNotificationId: "raw-sms",
+    });
+    return row.id;
+  }
+
+  beforeEach(async () => {
+    await upsertRuleset(TWO_CHANNEL_BUNDLE);
+  });
+
+  test("commits nothing, closes the card, and names the row that already holds it", async () => {
+    const committed = await commitSmsTwin(REFERENCE);
+    const item = await queueParse({
+      providerKey: "gcash",
+      channel: "push",
+      referenceNo: REFERENCE,
+      occurredAt: POSTED_AT,
+    });
+
+    const returned = await confirmItem(item.id, NOW);
+
+    // One row, and it is the one that was already there — not a second row and
+    // not a card left open for the user to try again.
+    expect(await listTransactions({})).toHaveLength(1);
+    expect(returned).toBe(committed);
+    expect((await getReviewItem(item.id))?.resolvedAt).not.toBeNull();
+    // The card keeps referencing its capture, so the ingest sweep sees a settled
+    // row: nothing was deleted here, so the merge's marker rule is not in play.
+    expect(await isRawCaptureUnreferenced("raw-1")).toBe(false);
+  });
+
+  test("references that disagree are two transactions, and both are recorded", async () => {
+    await commitSmsTwin("GC000111");
+    const item = await queueParse({
+      providerKey: "gcash",
+      channel: "push",
+      referenceNo: REFERENCE,
+      occurredAt: POSTED_AT,
+    });
+
+    await confirmItem(item.id, NOW);
+
+    // The provider's own statement that these are not the same thing. Folding
+    // them would delete a real transaction the user just vouched for.
+    expect(await listTransactions({})).toHaveLength(2);
+  });
+
+  test("a same-channel pair the user called real is still committed", async () => {
+    // §6 rule 4's undecidable pair, with no reference either way: pressing
+    // "Looks right" IS the answer to "are these two purchases or one?", and
+    // refusing it here would overrule the human decision the card asked for.
+    await commitSmsTwin(null);
+    const item = await queueParse({
+      providerKey: "gcash",
+      channel: "sms",
+      occurredAt: POSTED_AT,
+    });
+
+    await confirmItem(item.id, NOW);
+
+    expect(await listTransactions({})).toHaveLength(2);
+  });
+
+  test("a card raised before the payload carried a provider falls back to the capture", async () => {
+    const committed = await commitSmsTwin(REFERENCE);
+    // No `providerKey` and no `channel` — every card enqueued before GAP-012
+    // looks like this. The capture's package resolved through the installed
+    // ruleset is what stands in for them.
+    const item = await queueParse({ referenceNo: REFERENCE, occurredAt: POSTED_AT });
+
+    expect(await confirmItem(item.id, NOW)).toBe(committed);
+    expect(await listTransactions({})).toHaveLength(1);
   });
 });
 

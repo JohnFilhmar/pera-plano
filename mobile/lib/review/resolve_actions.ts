@@ -34,6 +34,7 @@
 // between hooks and repositories for work that spans aggregates; it holds no SQL
 // of its own.
 import { UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
+import { checkDuplicate } from "@/lib/ingest/dedupe_gate";
 import { getActiveRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { getRawCapture, isRawCaptureUnreferenced } from "@/lib/db/repos/raw_notifications_repo";
 import { enqueue, listOpen, resolve } from "@/lib/db/repos/review_queue_repo";
@@ -42,11 +43,15 @@ import {
   deleteTransaction,
   getTransaction,
   insertTransaction,
+  listTransactions,
 } from "@/lib/db/repos/transactions_repo";
 import { linkTransfer } from "@/lib/db/repos/transfer_links_repo";
 import { createUserRule } from "@/lib/db/repos/user_rules_repo";
 import { withUnitOfWork } from "@/lib/db/unit_of_work";
 import { attachCounterpartLeg } from "@/lib/transfers/transfer_service";
+import type { NormalizedEvent } from "@/lib/ingest/normalizer";
+import type { RecentEvent } from "@/lib/ingest/dedupe_gate";
+import type { RulesetBundle } from "@/lib/ingest/ruleset_types";
 import type {
   Centavos,
   EpochMs,
@@ -136,18 +141,23 @@ async function captureFor(item: ReviewQueueItem): Promise<RawCapture | null> {
 /**
  * When the money actually moved.
  *
- * `capture.postedAt`, the SAME source `parser.ts` uses on the auto-commit path
- * (spec §10, "never `capturedAt`"), because the queue payload does not carry
- * `occurredAt` at all — `pipeline.ts` writes the parsed fields and the gate's
- * reason, and the normalized event's timestamp is lost with it.
+ * THE NORMALIZED EVENT'S OWN STAMP FIRST (GAP-012). The payload carries
+ * `occurredAt` since that fix; before it, the card kept the parsed fields and
+ * the gate's reason and dropped the timestamp the stages had already worked out,
+ * so the two paths could file the same notification under two different
+ * instants. `capture.postedAt` remains the fallback and is the SAME source
+ * `parser.ts` uses on the auto-commit path (spec §10, "never `capturedAt`").
  *
  * Stamping the confirmation time instead would file a notification triaged two
  * days later under today: wrong day-group header, wrong daily total, wrong
  * report, on a row the user just told the app was correct. The item's own
- * `createdAt` is the fallback when the capture has been purged — it is when the
- * capture was stored, which is the closest surviving evidence.
+ * `createdAt` is the last fallback when the capture has been purged — it is when
+ * the capture was stored, which is the closest surviving evidence.
  */
 async function occurredAtFor(item: ReviewQueueItem): Promise<EpochMs> {
+  const stated = item.payload.occurredAt;
+  if (typeof stated === "number" && Number.isFinite(stated)) return stated;
+
   return (await captureFor(item))?.postedAt ?? item.createdAt;
 }
 
@@ -181,6 +191,23 @@ async function providerKeyFor(item: ReviewQueueItem): Promise<string | null> {
  * the first, and spec rule 8 pins the second — "a human decision outranks any
  * parser score". `rawNotificationId` rides along so "Why was this recorded?"
  * still answers afterwards.
+ *
+ * AND `referenceNo` RIDES ALONG TOO (GAP-012), which is not cosmetic. It is §6
+ * rule 1's strong key, the ONLY thing that can match this movement to a late
+ * telling of it hours later, and a row confirmed without one can never be
+ * matched to anything again: the same purchase's SMS relay arriving outside the
+ * 180-second twin window reads as a second, genuine transaction and is committed
+ * beside it. The user gets no card and no warning, only a doubled total.
+ *
+ * `balanceAfter` IS DELIBERATELY LEFT OUT, though the payload now carries it.
+ * `insertTransaction` SETS the wallet's balance to a non-null `balanceAfter`
+ * (wallets rule 1), and its own docblock records that spec rule 9's
+ * "snap only if newer than the current snapshot" guard is NOT implemented. A
+ * card triaged three days after its notification would therefore re-anchor the
+ * wallet to a three-day-old figure and silently discard every movement since.
+ * Auto-commit snaps because it runs seconds after the notification; a triage
+ * action has no such guarantee, and turning the snap on here is a wallets
+ * decision, not a dedupe one.
  */
 function proposalFrom(
   item: ReviewQueueItem,
@@ -205,10 +232,152 @@ function proposalFrom(
     direction,
     occurredAt,
     merchant: patch.merchant ?? readString(item.payload, "merchant"),
+    referenceNo: readString(item.payload, "referenceNo"),
     source: "notification",
     confidence: 1,
     rawNotificationId: item.rawNotificationId,
   };
+}
+
+/**
+ * The already-committed row this card describes, or `null` — the confirm path's
+ * own DedupeGate call (GAP-012).
+ *
+ * WHY A CARD NEEDS ONE AT ALL. `checkDuplicate` runs in the pipeline, over
+ * captures. A queue item skips it entirely: whatever the gate decided when the
+ * card was raised, the ledger has moved since — the twin may have auto-committed
+ * on the other channel a second later, or the user may have confirmed the twin's
+ * own card first. Committing regardless is how one payment becomes two rows with
+ * nothing on screen to explain it, and it is the last door the queue-side
+ * `findOpenTwin` guard does not close.
+ *
+ * ONLY A DEFINITE `duplicate` SUPPRESSES. `possible-duplicate` is §6 rule 4's
+ * undecidable pair, and a user pressing "Looks right" on that card is answering
+ * precisely that question — "yes, this is a second real purchase". Refusing them
+ * there would delete a transaction they just vouched for. `supersedes` is left
+ * alone too: overwriting a minted leg is the pipeline's own write, not something
+ * to reach into from a triage action.
+ *
+ * THE RULES ARE NOT RESTATED HERE — `checkDuplicate` is imported and called, so
+ * the confirm path and the ingest path cannot drift on what a duplicate is. Only
+ * the JOIN is rebuilt (`recentEventsFor` below), because the pipeline's copy is
+ * private to a module that imports the native notification bridge and cannot be
+ * pulled into the service layer.
+ */
+async function committedTwinOf(
+  item: ReviewQueueItem,
+  proposal: NewTransaction,
+): Promise<string | null> {
+  const bundle = await getActiveRuleset();
+  if (bundle === null) return null;
+
+  const source = await sourceFor(item, bundle);
+  if (source === null) return null;
+
+  const event: NormalizedEvent = {
+    providerKey: source.providerKey,
+    channel: source.channel,
+    walletId: proposal.walletId,
+    amount: proposal.amount,
+    direction: proposal.direction,
+    occurredAt: proposal.occurredAt,
+    referenceNo: proposal.referenceNo ?? undefined,
+    confidence: proposal.confidence,
+  };
+
+  const { dedupeStrongWindowMs, dedupeTwinWindowMs } = bundle.tunables;
+  const since = event.occurredAt - Math.max(dedupeStrongWindowMs, dedupeTwinWindowMs);
+  const recent = await recentEventsFor(await listTransactions({ from: since }), bundle);
+
+  const verdict = checkDuplicate(event, recent, bundle.tunables);
+  return verdict.kind === "duplicate" ? verdict.ofTransactionId : null;
+}
+
+/**
+ * The provider and channel behind a card.
+ *
+ * The payload first, because since GAP-012 the pipeline writes both onto every
+ * queued item and they are what the stages actually decided. The capture's
+ * package resolved through the installed ruleset is the fallback, which is what
+ * every card raised before that fix has — and it is also why this cannot simply
+ * reuse `providerKeyFor` above: that one falls back to the PACKAGE NAME when no
+ * provider claims it, which is the right answer for a `UserRule` matcher and the
+ * wrong one here, where an invented key would compare equal to nothing and a
+ * `null` channel would disable rule 2 outright.
+ */
+async function sourceFor(
+  item: ReviewQueueItem,
+  bundle: RulesetBundle,
+): Promise<{ providerKey: string; channel: "push" | "sms" } | null> {
+  const { providerKey, channel } = item.payload;
+  if (typeof providerKey === "string" && channel !== undefined) {
+    return { providerKey, channel };
+  }
+
+  const packageName = (await captureFor(item))?.packageName ?? null;
+  if (packageName === null) return null;
+
+  const provider = bundle.providers.find((candidate) =>
+    candidate.packageNames.includes(packageName),
+  );
+  return provider === undefined
+    ? null
+    : { providerKey: provider.providerKey, channel: provider.channel };
+}
+
+/**
+ * The `RecentEvent` join the DedupeGate cannot do for itself, for the confirm
+ * path.
+ *
+ * A SECOND COPY OF `pipeline.ts`'s `recentEventsFor`, and the duplication is
+ * deliberate rather than an oversight: that module calls `requireNativeModule`
+ * at import time through `@/modules/notification_listener`, so importing it here
+ * would make every screen and hook that reaches this service layer depend on the
+ * native notification bridge. The two must agree, and what keeps them agreeing
+ * is that neither decides anything — both only assemble the two facts
+ * (`providerKey`, `channel`) that `Transaction` does not carry, and hand them to
+ * the one `checkDuplicate` both call. See that file's copy for why a row with no
+ * notification behind it gets nulls and why nulls never match.
+ */
+async function recentEventsFor(
+  rows: Transaction[],
+  bundle: RulesetBundle,
+): Promise<RecentEvent[]> {
+  const events: RecentEvent[] = [];
+
+  for (const row of rows) {
+    let providerKey: string | null = null;
+    let channel: "push" | "sms" | null = null;
+
+    if (row.rawNotificationId !== null) {
+      const raw = await getRawCapture(row.rawNotificationId);
+      const provider =
+        raw === null
+          ? undefined
+          : bundle.providers.find((candidate) =>
+              candidate.packageNames.includes(raw.packageName),
+            );
+      if (provider !== undefined) {
+        providerKey = provider.providerKey;
+        channel = provider.channel;
+      }
+    }
+
+    events.push({
+      transactionId: row.id,
+      providerKey,
+      channel,
+      walletId: row.walletId,
+      amount: row.amount,
+      direction: row.direction,
+      referenceNo: row.referenceNo,
+      occurredAt: row.occurredAt,
+      mintedTransferLeg:
+        row.source === "manual" && row.transferLinkId !== null && row.rawNotificationId === null,
+    });
+  }
+
+  return events;
 }
 
 /**
@@ -321,6 +490,14 @@ async function teachFrom(
  * `now` stamps any rule this creates. Injectable per Global Constraints, and it
  * matters here specifically: `created_at` is part of `listUserRules`' evaluation
  * order, so a test that could not pin it could not pin conflict resolution.
+ *
+ * A CARD WHOSE MOVEMENT IS ALREADY IN THE LEDGER COMMITS NOTHING (GAP-012) and
+ * returns the id of the row that already holds it, so the caller still gets "the
+ * transaction this card became". The item is resolved either way: the question
+ * it asked has an answer now, and leaving it open would put it straight back in
+ * front of the user. Nothing is deleted on this branch, so the merge's
+ * capture-marker rule is not in play — the card itself keeps referencing its
+ * capture, and the ingest sweep sees a settled row.
  */
 export async function correctItem(
   itemId: string,
@@ -332,10 +509,17 @@ export async function correctItem(
     if (item === null) return null;
 
     const proposal = proposalFrom(item, patch, await occurredAtFor(item));
-    const committed = await insertTransaction(proposal);
+
+    // `null` on the ordinary path, so this reads as "the row this card became".
+    // A correction still TEACHES on either branch: the user's statement about
+    // what notifications like this mean is true whether or not this particular
+    // telling needed a row of its own.
+    const alreadyCommitted = await committedTwinOf(item, proposal);
+    const committed = alreadyCommitted ?? (await insertTransaction(proposal)).id;
+
     await teachFrom(item, patch, proposal, now);
     await resolve(itemId, "confirmed");
-    return committed.id;
+    return committed;
   });
 }
 

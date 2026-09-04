@@ -28,10 +28,14 @@ import {
   recordTraitEvidence,
   setWalletOwed,
 } from "@/lib/db/repos/wallet_traits_repo";
-import { answerWalletKind, mergeDuplicate } from "@/lib/review/resolve_actions";
+import { answerWalletKind, correctItem, mergeDuplicate } from "@/lib/review/resolve_actions";
 import { onAppEvent } from "@/lib/events/app_events";
 import { freshDb } from "@/test_support/db";
-import { getRawCapture, storeRawCapture } from "@/lib/db/repos/raw_notifications_repo";
+import {
+  getRawCapture,
+  isRawCaptureUnreferenced,
+  storeRawCapture,
+} from "@/lib/db/repos/raw_notifications_repo";
 import { getTransferLink } from "@/lib/db/repos/transfer_links_repo";
 import { insertTransaction, listTransactions, sumSpend } from "@/lib/db/repos/transactions_repo";
 import { listOpen } from "@/lib/db/repos/review_queue_repo";
@@ -758,6 +762,149 @@ test("a push and SMS twin commits once", async () => {
   // Rule 1's strong key: same provider, same reference, same amount, same
   // direction, inside 48 hours — regardless of channel. The channel is the
   // thing the RecentEvent join has to supply, and `Transaction` does not carry.
+  expect(sms).toEqual({ kind: "ignored", reason: "duplicate" });
+  expect(await ledger()).toHaveLength(1);
+  expect(await listOpen()).toHaveLength(0);
+});
+
+// ---------------------------------------------------------------------------
+// The twin whose FIRST leg never committed (GAP-012).
+//
+// `checkDuplicate` compares an event against COMMITTED TRANSACTIONS, so a
+// telling that hard-routed — unmapped wallet, a score under the floor — is
+// invisible to it. Its relay on the other channel therefore reads as unique and
+// is queued too: two cards for one movement, and "Looks right" on each puts the
+// payment in the ledger twice, because the second confirm has nothing to compare
+// against either.
+// ---------------------------------------------------------------------------
+
+/** The queued-twin fixture: one movement, two channels, neither auto-committable. */
+async function queuedTwinSetup(): Promise<string> {
+  const wallet = await createWallet({ name: "BPI", openingBalance: 900000 });
+  await upsertRuleset(TWIN_BUNDLE);
+  // NO wallet matcher for either package, deliberately: both tellings hard-route
+  // on an unresolved wallet, so neither is ever committed and the committed-row
+  // DedupeGate has nothing at all to look at.
+  return wallet.id;
+}
+
+function bpiPush(id: string, postedAt: number): RawCapture {
+  return capture({
+    id,
+    packageName: BPI,
+    text: "Your account was debited ₱750.00. Ref No. BPI556677.",
+    postedAt,
+  });
+}
+
+function bpiSms(id: string, postedAt: number): RawCapture {
+  return capture({
+    id,
+    packageName: MESSAGES,
+    title: "BPI",
+    text: "BPI: Your account was debited ₱750.00. Ref No. BPI556677.",
+    postedAt,
+  });
+}
+
+test("a queued push and its SMS twin raise ONE card, and confirming it commits once", async () => {
+  const walletId = await queuedTwinSetup();
+
+  const push = await processCapture(bpiPush("cap-queued-push", NOW - MINUTE));
+  const sms = await processCapture(bpiSms("cap-queued-sms", NOW - MINUTE + 30_000));
+
+  expect(push.kind).toBe("queued");
+  // Not `duplicate`: nothing is in the ledger yet, and a caller reading this
+  // outcome needs to be able to tell "already recorded" from "still waiting to
+  // be answered".
+  expect(sms).toEqual({ kind: "ignored", reason: "queued-twin" });
+
+  const open = await listOpen();
+  expect(open).toHaveLength(1);
+  expect(open[0].rawNotificationId).toBe("cap-queued-push");
+
+  // One card, one answer, one row. The wallet has to be supplied because the
+  // parse could not resolve it — that hard route is what put the card here.
+  await correctItem(open[0].id, { walletId });
+
+  const rows = await ledger();
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({
+    amount: 75000,
+    direction: "out",
+    // Carried through the card, which used to drop it. Without it, §6 rule 1
+    // can never match this row to a later telling of the same movement.
+    referenceNo: "BPI556677",
+  });
+  expect(await listOpen()).toHaveLength(0);
+});
+
+test("the suppressed twin's capture is never handed back to the recovery sweep", async () => {
+  await queuedTwinSetup();
+
+  await processCapture(bpiPush("cap-sweep-push", NOW - MINUTE));
+  await processCapture(bpiSms("cap-sweep-sms", NOW - MINUTE + 30_000));
+
+  // `listUnprocessedRawCaptures` calls a capture that points at neither a
+  // Transaction nor a queue card unprocessed work. The suppression produces
+  // neither, so it leaves the same already-resolved marker `mergeDuplicate`
+  // leaves — and the marker is invisible, so the queue still holds one card.
+  expect(await isRawCaptureUnreferenced("cap-sweep-sms")).toBe(false);
+  expect(await listOpen()).toHaveLength(1);
+
+  mockDrain.mockResolvedValue([]);
+  const stop = await startIngest();
+  await __awaitIngestIdle();
+  stop();
+
+  // A relaunch changes nothing. Without the marker the sweep would re-run the
+  // SMS capture on every launch for its whole 30-day life, and the moment the
+  // user dismissed the push card it would raise a fresh one for a notification
+  // they had already answered.
+  expect(await listOpen()).toHaveLength(1);
+  expect(await ledger()).toHaveLength(0);
+});
+
+test("a card whose twin auto-committed on the other channel commits nothing when confirmed", async () => {
+  const walletId = await queuedTwinSetup();
+  // The relay's package IS mapped and the push's is not, which is the everyday
+  // asymmetry: one telling resolves a wallet and sails through, the other
+  // hard-routes. The queue-side guard deliberately does not run on the
+  // auto-commit path, so this pair really does produce a row AND a card.
+  await addMatcher(walletId, MESSAGES);
+
+  const push = await processCapture(bpiPush("cap-mirror-push", NOW - MINUTE));
+  const sms = await processCapture(bpiSms("cap-mirror-sms", NOW - MINUTE + 30_000));
+
+  expect(push.kind).toBe("queued");
+  expect(sms.kind).toBe("committed");
+  expect(await ledger()).toHaveLength(1);
+
+  const [card] = await listOpen();
+  await correctItem(card.id, { walletId });
+
+  // Still one row. The confirm runs the same `checkDuplicate` the pipeline does,
+  // so the card resolves onto the row that already holds the movement instead of
+  // writing a second one nothing on screen would explain.
+  expect(await ledger()).toHaveLength(1);
+  expect(await listOpen()).toHaveLength(0);
+});
+
+test("a card confirmed at T is not committed again by its SMS relay two hours later", async () => {
+  const walletId = await queuedTwinSetup();
+
+  const push = await processCapture(bpiPush("cap-slow-push", NOW - 3 * 60 * MINUTE));
+  expect(push.kind).toBe("queued");
+
+  const [card] = await listOpen();
+  await correctItem(card.id, { walletId });
+  expect(await ledger()).toHaveLength(1);
+
+  // Two hours later: far outside the 180 s twin window, well inside the 48 h
+  // strong key. The reference number the card now carries is the ONLY thing
+  // that can still match this relay to the row the user confirmed.
+  const sms = await processCapture(bpiSms("cap-slow-sms", NOW - 60 * MINUTE));
+
   expect(sms).toEqual({ kind: "ignored", reason: "duplicate" });
   expect(await ledger()).toHaveLength(1);
   expect(await listOpen()).toHaveLength(0);

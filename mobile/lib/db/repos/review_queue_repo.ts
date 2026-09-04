@@ -23,7 +23,15 @@ import { REVIEW_KINDS } from "@/constants/review_kinds";
 import { getDatabase } from "@/lib/db/database";
 import { reviewQueueItemToRow, rowToReviewQueueItem, type ReviewQueueItemRow } from "@/lib/db/mappers";
 import { newId } from "@/lib/ids";
-import type { NewReviewItem, ReviewQueueItem, ReviewResolution } from "@/types/domain";
+import type {
+  Centavos,
+  EpochMs,
+  NewReviewItem,
+  ReviewItemPayload,
+  ReviewQueueItem,
+  ReviewResolution,
+  TxDirection,
+} from "@/types/domain";
 
 /**
  * Review Queue hygiene rule (docs/04-features/08-review-queue.md rules
@@ -103,6 +111,129 @@ export async function findOpenForRawNotification(
     [now, rawNotificationId],
   );
   return row ? rowToReviewQueueItem(row) : null;
+}
+
+/**
+ * The movement an open card is already waiting on, as §6 rule 2 states it.
+ *
+ * `channel` is REQUIRED and is not part of the ingest entry's sketched
+ * signature, which is the one place this deliberately says more than the gap
+ * entry did. Rule 2 suppresses a second telling only when the two channels are
+ * known and DIFFER — a push and its SMS relay are one movement; two same-channel
+ * notifications are §6 rule 4's undecidable pair, which the queue exists to ask
+ * about. Matching without the channel would collapse two genuine ₱100.00
+ * purchases three minutes apart into one card and delete a real transaction,
+ * the exact suppression `findOpenForRawNotification` above refuses for the same
+ * reason.
+ */
+export type OpenTwin = {
+  providerKey: string;
+  amount: Centavos;
+  direction: TxDirection;
+  channel: "push" | "sms";
+  occurredAt: EpochMs;
+  /**
+   * The incoming telling's reference number, when it carried one. Two
+   * references that DISAGREE are the provider's own statement that these are
+   * two transactions, and no coincidence of timing outranks it — the same
+   * exclusion `matchesTwinWindow` makes by requiring `"unavailable"`.
+   */
+  referenceNo?: string | null;
+  /** §6 rule 2's twin window — `dedupeTwinWindowMs`, passed in, never hardcoded here. */
+  windowMs: number;
+};
+
+/**
+ * The OPEN card already raised for THIS movement on the other channel, or
+ * `null`.
+ *
+ * THE HOLE `checkDuplicate` CANNOT SEE. That gate compares an event against
+ * COMMITTED TRANSACTIONS, so a capture that hard-routed — unmapped wallet, a
+ * score under the floor — is invisible to it: the push sits in the queue, its
+ * SMS relay arrives seconds later, finds nothing committed, and is queued too.
+ * The user is asked the same question twice and answering both puts one payment
+ * in the ledger twice, because neither confirm has anything to compare against
+ * either. This is the queue-side half of the same rule.
+ *
+ * NEAREST IN TIME WINS, matching `dedupe_gate.nearestInTime`: a twin arrives
+ * seconds later, not hours, so when several open cards satisfy the window the
+ * closest is the likeliest counterpart.
+ *
+ * THE PAYLOAD IS READ IN JS, NOT IN SQL. `payload_json` is stored verbatim
+ * (rule 1) and this repo does not interpret it in SQL — there is no column to
+ * index and no json1 dependency to take on. The row set it scans is one open
+ * queue, which the spec itself caps at a "Normal" 25 and calls a backlog beyond.
+ *
+ * A CARD RAISED BEFORE THIS FIELD SET EXISTED MATCHES NOTHING, by construction:
+ * its payload has no `providerKey` and no `channel`, and both are required. It
+ * ages out within its 30 days.
+ */
+export async function findOpenTwin(
+  twin: OpenTwin,
+  now: number = Date.now(),
+): Promise<ReviewQueueItem | null> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<ReviewQueueItemRow>(
+    `SELECT * FROM review_queue_items
+     WHERE resolved_at IS NULL AND expires_at > ? AND raw_notification_id IS NOT NULL
+     ORDER BY created_at ASC`,
+    [now],
+  );
+
+  let nearest: ReviewQueueItem | null = null;
+  let smallestDelta = Number.POSITIVE_INFINITY;
+
+  for (const row of rows) {
+    const item = rowToReviewQueueItem(row);
+    const occurredAt = item.payload.occurredAt;
+    if (typeof occurredAt !== "number") continue;
+    if (!describesSameMovement(item.payload, twin)) continue;
+
+    const delta = Math.abs(occurredAt - twin.occurredAt);
+    if (delta > twin.windowMs || delta >= smallestDelta) continue;
+
+    nearest = item;
+    smallestDelta = delta;
+  }
+
+  return nearest;
+}
+
+/**
+ * `dedupe_gate.describesSameMovement` plus rule 2's channel test, asked of a
+ * queued payload rather than of a committed row.
+ *
+ * The channel is checked for PRESENCE before it is compared, for the reason the
+ * gate spells out at its own `providerKey: null` clause: an absent field is not
+ * a wildcard. A payload whose channel was never recorded is no evidence that it
+ * is the OTHER one, and `undefined !== "push"` would read it as exactly that.
+ */
+function describesSameMovement(payload: ReviewItemPayload, twin: OpenTwin): boolean {
+  if (payload.providerKey !== twin.providerKey) return false;
+  if (payload.amount !== twin.amount) return false;
+  if (payload.direction !== twin.direction) return false;
+  if (conflictingReferences(payload.referenceNo, twin.referenceNo)) return false;
+
+  return payload.channel !== undefined && payload.channel !== twin.channel;
+}
+
+/**
+ * True only when BOTH references are usable and they differ — `dedupe_gate`'s
+ * `compareReferences` reduced to the one answer this needs.
+ *
+ * Blank is absent, and absent is not a mismatch: most notifications carry no
+ * reference at all, and reading a missing one as disagreement would disable the
+ * twin window for exactly the pairs it exists to catch. Case and surrounding
+ * whitespace are folded because a push template and an SMS template are written
+ * by different teams and one of them shouts; the interior is left alone, since
+ * stripping separators is how two genuinely different codes start colliding.
+ */
+function conflictingReferences(left: unknown, right: string | null | undefined): boolean {
+  const a = typeof left === "string" ? left.trim().toLowerCase() : "";
+  const b = right?.trim().toLowerCase() ?? "";
+  if (a === "" || b === "") return false;
+
+  return a !== b;
 }
 
 /**

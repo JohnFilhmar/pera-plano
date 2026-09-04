@@ -624,8 +624,31 @@ export type ReviewKind =
 /**
  * Parsed-candidate payload (amount, direction, merchant, wallet/category guesses…).
  * Stored opaquely by the foundation; the ingest plan (m1) owns and narrows the shape.
+ *
+ * STILL OPAQUE — the index signature is the type, and every reader keeps its own
+ * defensive `readString`/`readAmount` because a card enqueued by an older build
+ * carries whatever THAT build wrote. The five keys named below are the ones the
+ * DedupeGate needs back out again, and they are declared only so a writer cannot
+ * misspell `channel` or put a `"SMS"` where the gate compares `"sms"`.
+ *
+ * WHY THE GATE NEEDS THEM AT ALL. A capture that hard-routes sits in the queue
+ * carrying no reference number, no channel and no provider, so its SMS twin
+ * thirty seconds later has nothing to match against and raises a second card for
+ * one movement — and the row a later confirm commits carries no reference
+ * either, so §6 rule 1's strong key can never fire for it afterwards.
  */
-export type ReviewItemPayload = Record<string, unknown>;
+export type ReviewItemPayload = Record<string, unknown> & {
+  /** §6 rule 1's strong key. Absent means the notification carried none. */
+  referenceNo?: string | null;
+  /** The provider's own balance statement, when it made one. */
+  balanceAfter?: Centavos | null;
+  /** The normalized event's own timestamp — never when the card was raised. */
+  occurredAt?: EpochMs;
+  /** §6 rule 2 is only reachable when both channels are known and differ. */
+  channel?: "push" | "sms";
+  /** The ruleset's key, not the package name — what `describesSameMovement` compares. */
+  providerKey?: string;
+};
 
 export type ReviewQueueItem = {
   id: string;

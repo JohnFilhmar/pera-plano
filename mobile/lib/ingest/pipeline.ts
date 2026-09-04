@@ -29,6 +29,7 @@ import {
   findReplayCapture,
   getRawCapture,
   hasRawCapture,
+  isRawCaptureUnreferenced,
   listUnprocessedRawCaptures,
   storeRawCapture,
 } from "@/lib/db/repos/raw_notifications_repo";
@@ -51,16 +52,29 @@ import {
 } from "@/lib/db/repos/wallet_traits_repo";
 import { classifyOwed, scoreBalanceMovement, scoreText } from "@/lib/wallets/classification";
 import type { OwedPrior, TraitEvidence } from "@/lib/wallets/classification";
-import { enqueue, findOpenForRawNotification } from "@/lib/db/repos/review_queue_repo";
+import {
+  enqueue,
+  findOpenForRawNotification,
+  findOpenTwin,
+  resolve,
+} from "@/lib/db/repos/review_queue_repo";
 import { routeCapture } from "@/lib/ingest/source_router";
 import { UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
+import { withUnitOfWork } from "@/lib/db/unit_of_work";
 import { addCaptureListener, drainPendingCaptures } from "@/modules/notification_listener";
 
 import type { NormalizedEvent } from "@/lib/ingest/normalizer";
 import type { ProviderRuleset, RulesetBundle } from "@/lib/ingest/ruleset_types";
 import type { RecentEvent } from "@/lib/ingest/dedupe_gate";
 import type { MarkTransferRule } from "@/lib/ingest/transfer_detector";
-import type { Centavos, RawCapture, ReviewKind, Transaction, UserRule } from "@/types/domain";
+import type {
+  Centavos,
+  RawCapture,
+  ReviewKind,
+  ReviewQueueItem,
+  Transaction,
+  UserRule,
+} from "@/types/domain";
 
 /**
  * Contract §5 — do not reshape. `"unreadable"` ADDED 2026-08-20 (see
@@ -69,13 +83,26 @@ import type { Centavos, RawCapture, ReviewKind, Transaction, UserRule } from "@/
  * review floor now discards that case rather than filling the Review Queue
  * with a card carrying nothing to act on. Additive only — every existing
  * reason keeps its exact meaning.
+ *
+ * `"queued-twin"` ADDED for GAP-012, and kept distinct from `"duplicate"`
+ * because the two are suppressed against different evidence: `"duplicate"` means
+ * a COMMITTED row already holds this movement, `"queued-twin"` means an OPEN
+ * card is still waiting on it. Collapsing them would make the outcome unable to
+ * say whether the ledger has the money yet, which is the one thing a caller
+ * reading this would want to know.
  */
 export type PipelineOutcome =
   | { kind: "committed"; transactionId: string }
   | { kind: "queued"; reviewItemId: string }
   | {
       kind: "ignored";
-      reason: "not_financial" | "duplicate" | "unknown-provider" | "paused" | "unreadable";
+      reason:
+        | "not_financial"
+        | "duplicate"
+        | "queued-twin"
+        | "unknown-provider"
+        | "paused"
+        | "unreadable";
     }
   // The late-arriving bank notification for a leg the user already minted
   // (Task 15): the placeholder row was overwritten in place rather than a
@@ -231,6 +258,61 @@ async function queue(
 
   const item = await enqueue({ kind, rawNotificationId, payload });
   return { kind: "queued", reviewItemId: item.id };
+}
+
+/**
+ * Records that this capture was answered by the card already open for its twin,
+ * so the recovery sweep stops treating it as work nothing finished.
+ *
+ * THE MARKER `mergeDuplicate` WRITES, FOR THE SAME REASON AND BY THE SAME
+ * MECHANISM (see `markCaptureMerged` in lib/review/resolve_actions.ts).
+ * `listUnprocessedRawCaptures` calls a stored capture that points at neither a
+ * Transaction nor a queue card unprocessed work and re-runs the stages over it
+ * on every launch, and this path deliberately produces neither. Re-running is
+ * harmless only while the twin card stays OPEN; the moment the user dismisses
+ * that card the next sweep finds nothing to suppress against and raises a fresh
+ * card for a notification they already answered. A resolved row is the durable
+ * "settled" this table can record without a column and without a migration: it
+ * is never open, so `listOpen` and `countOpen` never show it, and `purgeExpired`
+ * deletes only UNRESOLVED rows, so it outlives the capture it protects.
+ *
+ * ONLY WHEN NOTHING ELSE POINTS AT THE CAPTURE, exactly as the merge decides it
+ * — `isRawCaptureUnreferenced` is the sweep's own predicate, so a second run
+ * over the same capture cannot leave a second marker claiming the user was asked
+ * twice.
+ *
+ * ONE UNIT OF WORK. The enqueue and the resolve are the same fact; a marker left
+ * open by a crash between them is a card about a suppressed twin that the user
+ * would be shown and could not usefully answer.
+ */
+async function markCaptureQueuedTwin(
+  capture: RawCapture,
+  event: NormalizedEvent,
+  twin: ReviewQueueItem,
+): Promise<void> {
+  if (!(await isRawCaptureUnreferenced(capture.id))) return;
+
+  await withUnitOfWork(async () => {
+    const marker = await enqueue({
+      kind: "possible-duplicate",
+      rawNotificationId: capture.id,
+      payload: {
+        amount: event.amount,
+        direction: event.direction,
+        merchant: event.merchant ?? null,
+        walletId: event.walletId,
+        referenceNo: event.referenceNo ?? null,
+        occurredAt: event.occurredAt,
+        channel: event.channel,
+        providerKey: event.providerKey,
+        // The open card this capture was folded into — the queue-side
+        // counterpart of `duplicateOfTransactionId`, which cannot be written
+        // here because no row has been committed for either telling yet.
+        duplicateOfReviewItemId: twin.id,
+      },
+    });
+    await resolve(marker.id, "confirmed");
+  });
 }
 
 /**
@@ -429,6 +511,41 @@ async function runStages(
   });
 
   if (decision.route !== "auto_commit") {
+    // THE HALF OF §6 RULE 2 THE GATE CANNOT REACH (GAP-012). `checkDuplicate`
+    // above compared this event against COMMITTED rows only, so a twin whose
+    // first leg is still sitting in the Review Queue — a push that hard-routed
+    // on an unmapped wallet or a score under the floor — reads as `unique`
+    // there. Left alone it raises a SECOND card for one movement, and "Looks
+    // right" on each puts the payment in the ledger twice, because neither
+    // confirm has a committed row to compare against either.
+    //
+    // ON THE QUEUE PATH ONLY, DELIBERATELY. An auto-commit is the high-score
+    // path and must not be blocked by an unanswered card, nor made to depend on
+    // a `review_queue_items` read it otherwise never needs — the queue is the
+    // one aggregate the commit path is free of, and "a queue fault never costs a
+    // commit" is a property this file already protects elsewhere. The mirror
+    // case (this telling auto-commits while its twin's card is still open) is
+    // caught where it actually costs a row: `correctItem`'s own `checkDuplicate`
+    // call in lib/review/resolve_actions.ts, when that card is confirmed.
+    //
+    // RUN FOR `possible-duplicate` TOO, not only for `unique`. That verdict is
+    // §6 rule 4's undecidable SAME-channel pair; an open card on the OTHER
+    // channel is rule 2 evidence, and rule 2 outranks rule 4 in the gate's own
+    // precedence.
+    const queuedTwin = await findOpenTwin({
+      providerKey: event.providerKey,
+      amount: event.amount,
+      direction: event.direction,
+      channel: event.channel,
+      occurredAt: event.occurredAt,
+      referenceNo: event.referenceNo ?? null,
+      windowMs: tunables.dedupeTwinWindowMs,
+    });
+    if (queuedTwin !== null) {
+      await markCaptureQueuedTwin(capture, event, queuedTwin);
+      return { kind: "ignored", reason: "queued-twin" };
+    }
+
     return queue(reviewKindFor(verdicts), capture.id, {
       amount: event.amount,
       direction: event.direction,
@@ -436,6 +553,29 @@ async function runStages(
       walletId: event.walletId,
       categoryId: category.categoryId,
       confidence,
+      // THE FOUR FACTS THE DEDUPEGATE NEEDS AND THE CARD USED TO LOSE
+      // (GAP-012). Everything above is what the card DISPLAYS; these are what
+      // the next capture — and the confirm that eventually commits this one —
+      // has to compare against:
+      //
+      //   `referenceNo` is §6 rule 1's strong key. Dropped here, the row a
+      //   confirm writes carries none, and the same movement's late SMS relay
+      //   two hours later cannot be matched to it at all.
+      //   `channel` and `providerKey` are what `findOpenTwin` compares; without
+      //   both, one movement raises a card on each channel.
+      //   `occurredAt` is the event's own timestamp. The card had nothing but
+      //   `capture.postedAt` and its own `createdAt` to fall back on, and a
+      //   window measured from when the card was RAISED is not §6's window.
+      //
+      // `balanceAfter` rides along as the provider's own statement, for the
+      // audit trail and for whatever later decides to re-anchor from it. It is
+      // deliberately NOT passed into the Transaction a confirm writes — see
+      // `proposalFrom` in lib/review/resolve_actions.ts.
+      referenceNo: event.referenceNo ?? null,
+      balanceAfter: event.balanceAfter ?? null,
+      occurredAt: event.occurredAt,
+      channel: event.channel,
+      providerKey: event.providerKey,
       // UNREACHABLE ON THIS PATH, HANDLED ANYWAY: `hasAmount` above is always
       // `true` (the parser refuses to return a `ParsedEvent` without an
       // amount), and `decideRoute` only ever chooses "discard" when
