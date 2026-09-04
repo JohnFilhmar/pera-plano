@@ -622,6 +622,8 @@ Authority order used unless stated: verified on-device measurement, then current
 
 ### GAP-001 [OPS] Uncommitted app.json and EAS tooling changes duplicate permissions, add RECORD_AUDIO, and add an iOS build job
 
+> **REMEDIATION: DONE** (2026-09-04) - commit 8db6f2c + a84b0ca, branch master + worktree-gap-wave-2. Verification: app.json survived the merge; the iOS build job was restored by the merge conflict resolution and re-stripped in a84b0ca
+
 > **REMEDIATION: DONE** (2026-09-04) - commit 8db6f2c, branch worktree-gap-wave-1. Verification: jest modules/notification_listener 4 suites 64 tests PASS
 
 | Field | Value |
@@ -688,6 +690,8 @@ Do not add `RECORD_AUDIO` to `blockedPermissions` as a workaround; removing it f
 none
 
 ### GAP-002 [SEC] Persisted query cache can be encrypted under a zeroed key when a write is in flight at lock time
+
+> **REMEDIATION: DONE** (2026-09-04) - commit 320f4d3 + 1ebb8a5, branch worktree-gap-wave-2. Verification: jest lib/crypto + contexts + query_client 8 suites 145 tests PASS; regression reproduces the zero-key blob end to end against pre-fix source. Diff reviewed line by line; follow-up 1ebb8a5 clears the cache key on the wipe path
 
 | Field | Value |
 |---|---|
@@ -1339,6 +1343,8 @@ Revert the commit. Existing unprocessed rows simply stay unprocessed as before.
 none
 
 ### GAP-012 [CODE] Push and SMS twin with the first leg still queued produces two cards and two commits
+
+> **REMEDIATION: IN-PROGRESS** (2026-09-04) - commit -, branch worktree-gap-wave-2. Verification: agent running
 
 | Field | Value |
 |---|---|
@@ -5495,6 +5501,8 @@ none
 
 ### GAP-081 [CODE] The due-rule picker shows an unclamped or empty value while the rule holds a clamped one, and an empty day saves as the first
 
+> **REMEDIATION: DONE** (2026-09-04) - commit 50223eb, branch worktree-gap-wave-2. Verification: jest components/bills+goals+support 5 suites 66 tests PASS; both tests fail with the sources reverted
+
 | Field | Value |
 |---|---|
 | Severity | S3 Moderate |
@@ -5662,6 +5670,8 @@ Revert.
 none
 
 ### GAP-084 [CODE] The payday allocation sheet keeps per-goal state across paydays
+
+> **REMEDIATION: DONE** (2026-09-04) - commit 50223eb, branch worktree-gap-wave-2. Verification: same commit; reseeds on a value-based proposal signature, proven to fail when reverted
 
 | Field | Value |
 |---|---|
@@ -5891,6 +5901,8 @@ Revert.
 none
 
 ### GAP-088 [CONTRA] The report-a-problem disclosure says nothing else is included, but the wire carries a report id, timestamps, an attempt count and four device headers
+
+> **REMEDIATION: DONE** (2026-09-04) - commit 50223eb, branch worktree-gap-wave-2. Verification: same commit; copy now names every wire field, and the test fails if a field is added without a disclosure phrase
 
 | Field | Value |
 |---|---|

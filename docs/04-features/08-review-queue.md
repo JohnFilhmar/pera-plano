@@ -92,6 +92,25 @@ These tools also work outside the queue, directly on committed transactions — 
 5. Held items (types 1 and 4) are **not** counted in wallet balances, Limits, reports, or Safe-to-Spend until confirmed — the accepted simplification stated in [09-safe-to-spend.md](09-safe-to-spend.md). Balance drift from long-held items is caught by cash reconciliation prompts ([02-wallets.md](02-wallets.md)).
 6. One real-world event produces at most one actionable item: an ambiguous parse that is also a suspected duplicate queues once, as the duplicate (the stricter question), resolving both on triage.
 
+**As shipped — 2026-09-04.** Rule 6 previously held only within a single telling. A bank that
+sends both a push and an SMS for one debit produced two cards, and confirming both wrote two
+ledger rows. Two mechanisms now enforce the rule across channels:
+
+- On the queue path, a capture carries its `channel`, `providerKey`, `referenceNo` and
+  `occurredAt` in the item payload, and `findOpenTwin` suppresses the second telling when an
+  open card already exists for the same movement on the **other** channel. Both channels must be
+  known and must differ: two genuine identical purchases minutes apart on the same channel stay
+  two cards, because collapsing them would lose a real transaction.
+- On the triage path, confirming a card runs the duplicate check before inserting, so a card
+  whose twin already auto-committed on the other channel resolves onto the existing row instead
+  of committing a second one.
+
+A suppressed capture produces neither a transaction nor a card, so it writes the same
+already-resolved marker the ledger-side merge writes. Without it the recovery sweep would raise
+a fresh card the moment the user dismissed the twin. `balanceAfter` is carried in the payload
+but deliberately not applied to the committed row: the wallet snap has no "only if newer" guard,
+so a card triaged days later would re-anchor the balance to a stale figure.
+
 ### Triage interaction contract
 
 7. Every item type has a primary action reachable in exactly **one tap** from the card, and every correction path completes in **two taps** (chip → picker). Anything needing more taps belongs in the item detail, not the card.
