@@ -50,7 +50,7 @@ import {
   listTransactions,
   sumSpend,
 } from "@/lib/db/repos/transactions_repo";
-import { getTransferLink } from "@/lib/db/repos/transfer_links_repo";
+import { getTransferLink, linkTransfer } from "@/lib/db/repos/transfer_links_repo";
 import { listUserRules } from "@/lib/db/repos/user_rules_repo";
 import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { createWallet, getWallet } from "@/lib/db/repos/wallets_repo";
@@ -115,6 +115,15 @@ async function queueParse(
       ...overrides,
     },
   });
+}
+
+/** Every `transfer_links` row, dissolved ones included — a refused pairing must leave none. */
+async function countTransferLinkRows(): Promise<number> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ count: number }>(
+    "SELECT COUNT(*) AS count FROM transfer_links",
+  );
+  return row?.count ?? 0;
 }
 
 beforeEach(async () => {
@@ -680,6 +689,41 @@ describe("linkAsTransfer pairs two committed legs", () => {
     await expect(linkAsTransfer(item.id, outId, "ghost")).rejects.toThrow();
     expect(await countOpen()).toBe(1);
   });
+
+  // A card can wait days for an answer, and the ledger moves underneath it. If
+  // a leg it names is paired with somebody else in the meantime, confirming
+  // used to re-stamp that leg onto a new link and leave the old row `active`
+  // with its surviving partner orphaned — a transfer the user already settled
+  // walking back into their spend total (GAP-031, domain §3.3 invariant 3).
+  test("an IN leg paired elsewhere while the card waited is not stolen back", async () => {
+    const item = await queueParse({}, "ambiguous-transfer");
+    const { outId, inId } = await seedLegs();
+    const rival = await insertTransaction({
+      walletId: gcashId,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 99000,
+      direction: "out",
+      occurredAt: POSTED_AT + 120000,
+      source: "manual",
+      confidence: 1,
+    });
+    const settled = await linkTransfer(rival.id, inId, 0);
+
+    const returned = await linkAsTransfer(item.id, outId, inId);
+
+    // Answered by the ledger, so the card closes rather than failing forever on
+    // a pairing that can no longer be made.
+    expect(returned).toBe(settled.id);
+    expect(await countOpen()).toBe(0);
+
+    // The settled pair is untouched, and there is exactly one of it.
+    expect(await countTransferLinkRows()).toBe(1);
+    expect((await getTransaction(inId))?.transferLinkId).toBe(settled.id);
+    expect((await getTransaction(rival.id))?.transferLinkId).toBe(settled.id);
+    // The out leg was never stamped, so it keeps counting — the honest answer
+    // when the app could not pair it, and one the user can still fix by hand.
+    expect((await getTransaction(outId))?.transferLinkId).toBeNull();
+  });
 });
 
 describe("confirmAsTransfer commits the queued leg and pairs it in one step", () => {
@@ -711,6 +755,52 @@ describe("confirmAsTransfer commits the queued leg and pairs it in one step", ()
     expect(
       await sumSpend({ from: POSTED_AT - 1000, to: POSTED_AT + 10 * 60 * 1000 }),
     ).toBe(0);
+  });
+
+  test("a counterpart already paired elsewhere closes the card and commits nothing", async () => {
+    const counterpart = await insertTransaction({
+      walletId: bpiId,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 125000,
+      direction: "in",
+      occurredAt: POSTED_AT + 30000,
+      source: "notification",
+      confidence: 0.9,
+    });
+    // The counterpart's real other half, linked from the transaction detail
+    // screen while this card was still open.
+    const rival = await insertTransaction({
+      walletId: gcashId,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 125000,
+      direction: "out",
+      occurredAt: POSTED_AT + 20000,
+      source: "manual",
+      confidence: 1,
+    });
+    const settled = await linkTransfer(rival.id, counterpart.id, 0);
+    const item = await queueParse(
+      { transferCounterpartTransactionId: counterpart.id },
+      "ambiguous-transfer",
+    );
+
+    const committedId = await confirmAsTransfer(item.id);
+
+    // GAP-031's acceptance criterion, read literally: one active link row, both
+    // of its legs still pointing at it.
+    expect(await countTransferLinkRows()).toBe(1);
+    expect((await getTransferLink(settled.id))?.status).toBe("active");
+    expect((await getTransaction(counterpart.id))?.transferLinkId).toBe(settled.id);
+    expect((await getTransaction(rival.id))?.transferLinkId).toBe(settled.id);
+
+    // NOTHING COMMITTED for the candidate. It has no ledger row of its own yet
+    // — the gate queued it rather than committing it — so writing one here
+    // would put an internal movement into the spend total on the very card
+    // where the user said it is not one, and the pairing still could not be
+    // made. `null` is how the caller learns that.
+    expect(committedId).toBeNull();
+    expect(await listTransactions({})).toHaveLength(2);
+    expect(await countOpen()).toBe(0);
   });
 });
 

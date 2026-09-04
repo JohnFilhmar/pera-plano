@@ -19,6 +19,7 @@ jest.mock("@/modules/notification_listener", () => ({
 import { closeDatabase } from "@/lib/db/database";
 import { addCaptureListener, drainPendingCaptures } from "@/modules/notification_listener";
 import * as parseStatsRepo from "@/lib/diagnostics/parse_stats_repo";
+import * as rawNotificationsRepo from "@/lib/db/repos/raw_notifications_repo";
 import * as transactionsRepo from "@/lib/db/repos/transactions_repo";
 import { createLoan, outstandingBalance } from "@/lib/db/repos/loans_repo";
 import { createUserRule } from "@/lib/db/repos/user_rules_repo";
@@ -1248,6 +1249,62 @@ test("a crash after drainPendingCaptures loses nothing", async () => {
   // And the failure was isolated: one bad row does not take the batch with it.
   expect((await ledger()).map((row) => row.amount).sort((a, b) => a - b)).toEqual([20000, 30000]);
   stop();
+});
+
+// ---------------------------------------------------------------------------
+// The batch store is ONE transaction. The native ack has already happened by
+// the time the first row is written, so the table is the only copy of the
+// drain — and a pass of autocommit inserts stopping half way leaves a state
+// nothing downstream can even detect, because a short `raw_notifications` and
+// a complete one look exactly alike (GAP-040).
+// ---------------------------------------------------------------------------
+
+test("a kill part-way through the batch store leaves no half-written batch", async () => {
+  const wallet = await createWallet({ name: "GCash", openingBalance: 900000 });
+  await addMatcher(wallet.id, GCASH);
+  const batch = [
+    gcashSend("buf-1", { text: sendText("100.00", "REF0001"), postedAt: NOW - 5 * MINUTE }),
+    gcashSend("buf-2", { text: sendText("200.00", "REF0002"), postedAt: NOW - 4 * MINUTE }),
+    gcashSend("buf-3", { text: sendText("300.00", "REF0003"), postedAt: NOW - 3 * MINUTE }),
+  ];
+  mockDrain.mockResolvedValue(batch);
+
+  // The cut lands on the THIRD write, with two already in hand. An OEM freeze
+  // cannot be scripted, but the durability question it asks is exactly this
+  // one: what does the table hold when the batch stops part way through?
+  const realStore = rawNotificationsRepo.storeRawCapture;
+  const store = jest
+    .spyOn(rawNotificationsRepo, "storeRawCapture")
+    .mockImplementation(async (raw, at) => {
+      if (raw.id === "buf-3") throw new Error("killed mid-batch");
+      return realStore(raw, at);
+    });
+
+  const stop = await startIngest();
+  await expect(__awaitIngestIdle()).rejects.toThrow("killed mid-batch");
+  stop();
+
+  // Not one row of it. Two durable captures beside a third that vanished is the
+  // undetectable state: `listUnprocessedRawCaptures` would hand the survivors
+  // back on the next launch looking like ordinary stranded work, and nothing
+  // anywhere would say the rest of the drain is gone.
+  for (const raw of batch) {
+    expect(await getRawCapture(raw.id)).toBeNull();
+  }
+  expect(await ledger()).toHaveLength(0);
+  expect(store).toHaveBeenCalledTimes(3);
+
+  // And "none of it" is what makes the loss recoverable at all: the batch the
+  // kill cost is the batch the next drain hands back (M1a Task 3 chose
+  // at-least-once deliberately), and it commits whole, once each, because the
+  // rollback left nothing for the replay guard to trip over.
+  store.mockRestore();
+  mockDrain.mockResolvedValue(batch);
+  const second = await startIngest();
+  await __awaitIngestIdle();
+  second();
+
+  expect((await commitOrder()).map((row) => row.amount)).toEqual([10000, 20000, 30000]);
 });
 
 test("a stage throwing leaves the capture readable and reprocessable", async () => {

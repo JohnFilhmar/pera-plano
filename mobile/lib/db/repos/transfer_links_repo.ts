@@ -48,6 +48,38 @@ function rowToTransferLink(row: TransferLinkRow): TransferLink {
 }
 
 /**
+ * Thrown when a leg handed to `linkTransfer` is already half of another link.
+ *
+ * DOMAIN §3.3 INVARIANT 3 — a Transaction belongs to at most one Transfer Link
+ * — AND UNTIL NOW IT WAS ENFORCED IN ONE PLACE ONLY, `transfer_detector.ts`'s
+ * candidate filter, which covers the auto path and nothing else. Every manual
+ * route reached the `UPDATE ... WHERE id IN (?, ?)` below, which happily
+ * re-stamped a leg that already carried a link id: the old `transfer_links` row
+ * stayed `active` with one leg still pointing at it and the other pointing
+ * somewhere new. That orphaned partner is not a bookkeeping smudge — every
+ * total in the app excludes a leg by testing `transfer_link_id IS NULL`, so the
+ * moment its twin is taken away it re-enters spend or income on its own, and
+ * the user watches a transfer they already settled turn back into a purchase.
+ *
+ * LOUD RATHER THAN SILENT, because there is no safe quiet answer. Dissolving
+ * the old link to make room would delete a pairing the user or the detector
+ * already committed to, and skipping the write would return a link id that
+ * describes a different pair. The callers that can actually reach this state
+ * are the ones that know what to do about it (`lib/review/resolve_actions.ts`
+ * treats it as a card that is already handled); a caller that has not thought
+ * about it should fail rather than corrupt totals.
+ */
+export class AlreadyLinkedError extends Error {
+  constructor(
+    public readonly transactionId: string,
+    public readonly transferLinkId: string,
+  ) {
+    super(`transaction ${transactionId} already belongs to transfer link ${transferLinkId}`);
+    this.name = "AlreadyLinkedError";
+  }
+}
+
+/**
  * How the pairing was arrived at. Absent means the user did it by hand, which
  * is both the schema's default (`001_core.sql:76`) and the honest reading of a
  * caller that said nothing about a detector.
@@ -77,11 +109,18 @@ export type TransferLinkOrigin = {
  * safe to record at all.
  *
  * Not validated here: that the legs really are one `in` and one `out`, in
- * different wallets, unlinked. Those are the TransferDetector's rule 1
- * conditions (spec §7) and the Review Queue's confirmation step; re-deciding
- * them in the repository would put the rules in two places, and a manual link
- * made from the transaction detail screen is deliberately exempt from the
- * detector's thresholds (domain §3.3 invariant 4).
+ * different wallets. Those are the TransferDetector's rule 1 conditions (spec
+ * §7) and the Review Queue's confirmation step; re-deciding them in the
+ * repository would put the rules in two places, and a manual link made from the
+ * transaction detail screen is deliberately exempt from the detector's
+ * thresholds (domain §3.3 invariant 4).
+ *
+ * THAT BOTH LEGS ARE UNLINKED *IS* VALIDATED HERE, and it is the exception to
+ * the paragraph above for the reason that paragraph gives. Those other rules
+ * are judgements a caller may legitimately overrule; invariant 3 is not, and
+ * this UPDATE is the only statement in the app that can break it. Checked
+ * inside the transaction, so nothing can slip a link onto either leg between
+ * the read and the stamp. See `AlreadyLinkedError`.
  */
 export async function linkTransfer(
   outTransactionId: string,
@@ -104,6 +143,23 @@ export async function linkTransfer(
   };
 
   await db.withTransactionAsync(async () => {
+    // A row per leg, or one row when a caller passed the same id twice — either
+    // way, any `transfer_link_id` here means this pairing cannot be made. A leg
+    // that is not in the ledger yields no row and is NOT rejected here: linking
+    // a phantom writes a link nothing points at, which is a different fault
+    // with its own owner (`resolve_actions.linkAsTransfer` refuses it before
+    // getting this far), and failing it here would be a second rule in a second
+    // place.
+    const legs = await db.getAllAsync<{ id: string; transfer_link_id: string | null }>(
+      "SELECT id, transfer_link_id FROM transactions WHERE id IN (?, ?)",
+      [outTransactionId, inTransactionId],
+    );
+    for (const leg of legs) {
+      if (leg.transfer_link_id !== null) {
+        throw new AlreadyLinkedError(leg.id, leg.transfer_link_id);
+      }
+    }
+
     await db.runAsync(
       `INSERT INTO transfer_links
          (id, out_transaction_id, in_transaction_id, fee_amount, status, detected_by,

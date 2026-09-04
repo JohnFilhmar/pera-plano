@@ -12,7 +12,9 @@
 //     on `Transaction`. Both are assembled here (see `recentEventsFor`).
 //   - DURABILITY. `drainPendingCaptures()` is destructive: the instant it
 //     returns, the native buffer is empty and a JavaScript array is the only
-//     copy of up to 500 captures. See `startIngest`.
+//     copy of up to 500 captures, so the batch is written to
+//     `raw_notifications` in ONE transaction before any of it is processed.
+//     See `startIngest`.
 //   - THE SCORE ARITHMETIC. The categorizer returns a penalty for this file to
 //     subtract, which makes this the one place float dust can push a clean
 //     auto-commit into the Review Queue. See `applyPenalty`.
@@ -945,10 +947,20 @@ export function __resetIngestFailures(): void {
  * RULE 10, AND IT IS THE REASON THIS FUNCTION IS SHAPED THIS WAY. The drain is
  * destructive: the moment it returns, the native buffer is empty and this
  * array is the only copy of up to 500 captures. So the whole batch is written
- * to `raw_notifications` in one pass BEFORE any of it is processed. After that
- * a crash costs nothing — every capture can be reprocessed from the table on
- * the next launch. Processing them one at a time straight from the array would
- * lose everything not yet reached, silently.
+ * to `raw_notifications` in ONE SQL TRANSACTION BEFORE any of it is processed.
+ * After that a crash costs nothing — every capture can be reprocessed from the
+ * table on the next launch. Processing them one at a time straight from the
+ * array would lose everything not yet reached, silently.
+ *
+ * ONE TRANSACTION AND NOT ONE PASS, WHICH IS NOT THE SAME PROMISE. A pass of
+ * autocommit inserts still leaves a kill mid-batch with the captures before the
+ * cut durable and every one after it gone — a half-written drain nothing can
+ * detect, because a short table and a complete one look identical. Wrapping the
+ * pass makes the batch atomic, so the answer is always "all of it" or "none of
+ * it". "None of it" is still a loss today: the native ack has already happened,
+ * so the window is at-most-once, and closing it means peeking the buffer and
+ * acking only after this transaction commits (GAP-051's change, on the native
+ * side, which needs a batch that is whole to redeliver against).
  *
  * RULE 8: buffered captures are processed in `postedAt` order and before live
  * ones, so an older buffered capture can never be committed after a newer live
@@ -1028,7 +1040,7 @@ export async function startIngest(): Promise<() => void> {
 
     const ordered = [...buffered].sort((a, b) => a.postedAt - b.postedAt);
 
-    // Rule 10: durable first, all of it, before any processing. One clock read
+    // Rule 10: durable first, ALL of it, before any processing. One clock read
     // for the whole batch, so every capture drained together shares a TTL
     // anchor rather than drifting apart by however long the writes took.
     const storedAt = systemClock.now();
@@ -1041,20 +1053,42 @@ export async function startIngest(): Promise<() => void> {
     const drainBundle = await getActiveRuleset();
     const replayWindowMs = drainBundle?.tunables.dedupeTwinWindowMs ?? null;
 
-    const fresh: RawCapture[] = [];
-    for (const capture of ordered) {
-      if (await hasRawCapture(capture.id)) continue;
-      // The buffered path needs this guard for the same reason the live one
-      // does, and needs it MORE: the buffer holds whatever accumulated while
-      // no JS was alive, so every edit an app made to a notification over
-      // those hours is sitting in it as a separate record with its own id.
-      if (replayWindowMs !== null && (await findReplayCapture(capture, replayWindowMs)) !== null) {
-        continue;
+    // ONE SQL TRANSACTION FOR THE WHOLE BATCH, not one autocommit per capture.
+    // The batch is a hundred-odd separate inserts and the native ack already
+    // happened, so a kill landing between two of them used to leave the drain
+    // half-written: the captures before the cut durable, every one after it
+    // gone with no row, no card and no error. All-or-nothing is what makes the
+    // outcome KNOWABLE — the rest of it is recoverable only by not acking the
+    // native buffer until this commits, which is GAP-051's change, and that
+    // redelivery only works against a batch that is whole. See `startIngest`'s
+    // rule 10 note.
+    //
+    // The reads stay inside it deliberately: `findReplayCapture` has to see the
+    // rows this same loop just wrote, or two edits of one notification sitting
+    // in the same drain both survive it.
+    const fresh = await withUnitOfWork(async () => {
+      const stored: RawCapture[] = [];
+      for (const capture of ordered) {
+        if (await hasRawCapture(capture.id)) continue;
+        // The buffered path needs this guard for the same reason the live one
+        // does, and needs it MORE: the buffer holds whatever accumulated while
+        // no JS was alive, so every edit an app made to a notification over
+        // those hours is sitting in it as a separate record with its own id.
+        if (replayWindowMs !== null && (await findReplayCapture(capture, replayWindowMs)) !== null) {
+          continue;
+        }
+        await storeRawCapture(capture, storedAt);
+        stored.push(capture);
       }
-      await storeRawCapture(capture, storedAt);
-      fresh.push(capture);
-    }
+      return stored;
+    });
 
+    // OUTSIDE the transaction, and that is the point of the split. The stages
+    // run several queries per capture and `processStored` swallows each
+    // capture's own failure so one bad row does not take the batch with it —
+    // holding the batch's write transaction open across all of that would both
+    // serialise the database for the length of the drain and undo that
+    // isolation, rolling the durable rows back on the first stage that threw.
     for (const capture of fresh) {
       await processStored(capture, storedAt);
     }

@@ -607,9 +607,23 @@ export async function linkAsTransfer(
       );
     }
 
-    if (outLeg.transferLinkId !== null) {
+    // EITHER LEG, not just the out one, and the in-leg half is the whole point.
+    // This card can sit in the queue for days while the ledger moves underneath
+    // it: the counterpart it names gets linked to something else from the
+    // transaction detail screen, and confirming afterwards used to re-stamp
+    // that leg onto a brand-new link and leave the old one `active` with its
+    // surviving partner orphaned — a settled transfer re-entering the user's
+    // spend total for no reason they can see (domain §3.3 invariant 3).
+    //
+    // RESOLVED, NOT THROWN. `linkTransfer` now refuses the write outright, so
+    // reaching it would leave the user tapping a button that fails forever on a
+    // card whose question the ledger has already answered. The pairing they
+    // asked for exists or has been superseded; either way there is nothing left
+    // here to decide.
+    const existing = outLeg.transferLinkId ?? inLeg.transferLinkId;
+    if (existing !== null) {
       await resolve(itemId, "confirmed");
-      return outLeg.transferLinkId;
+      return existing;
     }
 
     const link = await linkTransfer(outLeg.id, inLeg.id, outLeg.amount - inLeg.amount, {
@@ -651,6 +665,10 @@ export async function linkAsTransfer(
  * `mark-transfer` rule exists to prefill the NEXT notification for a side that
  * never posts one; there is no such gap here, and writing one would fire on
  * ordinary two-notification transfers this card was never asked about.
+ *
+ * `null` MEANS NOTHING WAS COMMITTED: a second tap on an item that is already
+ * resolved, or a counterpart the ledger has paired with someone else since the
+ * card was raised. Both are answered questions; see the guard inside.
  */
 export async function confirmAsTransfer(itemId: string): Promise<string | null> {
   return withUnitOfWork(async () => {
@@ -664,6 +682,28 @@ export async function confirmAsTransfer(itemId: string): Promise<string | null> 
     const counterpart = await getTransaction(counterpartId);
     if (counterpart === null) {
       throw new Error(`cannot link a transfer: ${counterpartId} is not in the ledger`);
+    }
+
+    // THE COUNTERPART WAS TAKEN WHILE THIS CARD WAITED, so there is no pairing
+    // left to make. Committing the candidate anyway and calling `linkTransfer`
+    // used to re-stamp the counterpart onto a new link and strand whatever it
+    // was already paired with, which puts a transfer the user had already
+    // settled back into their spend total (domain §3.3 invariant 3).
+    //
+    // NOTHING IS COMMITTED, which is the deliberate half of this. The candidate
+    // leg has no ledger row yet — the gate queued it rather than committing it
+    // — so writing it now would be committing an internal movement as a plain
+    // expense on the one card where the user has just said it is not one, and
+    // the card would still be unanswerable. Resolving with no row is the same
+    // outcome "Not a transaction" already produces, and it is reversible by
+    // hand; a wrong total is not.
+    //
+    // The capture keeps its reference through this resolved card, so the ingest
+    // recovery sweep does not read it as unfinished work and re-run the stages
+    // over it (`listUnprocessedRawCaptures` counts resolved items too).
+    if (counterpart.transferLinkId !== null) {
+      await resolve(itemId, "confirmed");
+      return null;
     }
 
     const proposal = proposalFrom(item, {}, await occurredAtFor(item));
