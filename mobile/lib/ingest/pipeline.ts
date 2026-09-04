@@ -29,6 +29,7 @@ import {
   findReplayCapture,
   getRawCapture,
   hasRawCapture,
+  listUnprocessedRawCaptures,
   storeRawCapture,
 } from "@/lib/db/repos/raw_notifications_repo";
 import {
@@ -756,9 +757,46 @@ async function linkAutoDetected(
  */
 let inFlight: Promise<void> = Promise.resolve();
 
+/**
+ * How many stranded captures one sweep will re-run before leaving the rest for
+ * the next launch.
+ *
+ * A cap, not a page: `recoverUnprocessed` runs the FULL stage set per capture —
+ * several queries each — ahead of the drain and ahead of every live capture, so
+ * an unbounded sweep on a device that accumulated failures would hold up live
+ * tracking at exactly the moment the user opened the app. The list is
+ * oldest-first, so what the cap leaves behind is what the next sweep takes
+ * first, and nothing is skipped permanently.
+ */
+const RECOVERY_SWEEP_LIMIT = 100;
+
+/**
+ * How many times one stored capture may throw before the user is shown a card
+ * about it instead of it being retried again.
+ */
+const MAX_STAGE_ATTEMPTS = 3;
+
+/**
+ * Failed stage attempts per capture id, FOR THIS PROCESS ONLY.
+ *
+ * The poison-pill guard, and the reason it is in memory rather than in a table:
+ * recording an attempt durably means a column, and a column means a migration.
+ * A counter that resets on every launch is the weaker guard — a capture that
+ * fails once per launch never reaches the ceiling — but it is the one that
+ * matters, because the failure this actually protects against is a capture the
+ * sweep re-runs and re-fails within a single session, which without a ceiling
+ * is an unbounded loop over a row nothing can ever process.
+ */
+const stageFailures = new Map<string, number>();
+
 /** Test-only: resolves once the current drain and every capture it produced is done. */
 export async function __awaitIngestIdle(): Promise<void> {
   await inFlight;
+}
+
+/** Test-only: forgets the per-process failure counts, which no `freshDb()` can reach. */
+export function __resetIngestFailures(): void {
+  stageFailures.clear();
 }
 
 /**
@@ -775,6 +813,12 @@ export async function __awaitIngestIdle(): Promise<void> {
  * RULE 8: buffered captures are processed in `postedAt` order and before live
  * ones, so an older buffered capture can never be committed after a newer live
  * one.
+ *
+ * AND BEFORE EITHER OF THEM, THE RECOVERY SWEEP. Rule 10 makes a capture
+ * durable before it is processed, which is only half a guarantee: something has
+ * to come back for the rows whose processing then failed. `recoverUnprocessed`
+ * is that half, and it runs first because those captures are older than
+ * anything either source is holding.
  *
  * The live subscription is installed even when the drain fails. The bridge
  * rejects when the app is outside the Keystore auth window; those captures are
@@ -805,6 +849,14 @@ export async function startIngest(): Promise<() => void> {
   });
 
   chain = (async () => {
+    // BEFORE THE DRAIN, and inside the chain rather than awaited by
+    // `startIngest` itself. These captures are older than anything the buffer
+    // is holding — they were stored in an earlier session — so rule 8's
+    // "older is processed first" puts them at the head, and putting them
+    // inside the chain is what keeps a live capture arriving mid-sweep behind
+    // them instead of racing them.
+    await recoverUnprocessed(systemClock.now());
+
     let buffered: RawCapture[] = [];
     try {
       buffered = await drainPendingCaptures();
@@ -876,6 +928,37 @@ export async function startIngest(): Promise<() => void> {
 }
 
 /**
+ * Puts stranded captures back through the stages.
+ *
+ * WHAT "STRANDED" MEANS AND WHY IT WAS UNREACHABLE. Rule 2 stores the raw row
+ * before any stage runs, so a stage that throws leaves a durable capture that
+ * produced nothing — and `hasRawCapture` then answers "seen it" to every later
+ * delivery of the same notification, so the native drain can never hand it back
+ * either. The comment on the catch below promised the capture "can be
+ * reprocessed later"; until this function existed, nothing ever did. A real
+ * transaction vanished with no ledger row, no card and no error, leaving only
+ * its text in the Privacy centre.
+ *
+ * SWALLOWS ITS OWN READ FAILURE. If the recovery query itself throws there is
+ * nothing to recover from, and taking the drain down with it would strand the
+ * whole native buffer to save rows that are already durable — the sweep is the
+ * repair pass, never a precondition for ingest.
+ */
+async function recoverUnprocessed(now: number): Promise<void> {
+  let stranded: RawCapture[] = [];
+  try {
+    stranded = await listUnprocessedRawCaptures(now, RECOVERY_SWEEP_LIMIT);
+  } catch (error) {
+    console.error("[ingest] could not read stranded captures; skipping the recovery sweep", error);
+    return;
+  }
+
+  for (const capture of stranded) {
+    await processStored(capture, now);
+  }
+}
+
+/**
  * Runs the stages for a capture already written to `raw_notifications`.
  *
  * Re-entering `processCapture` would see its own stored row and return
@@ -899,17 +982,64 @@ async function processStored(capture: RawCapture, now: number): Promise<void> {
     }
 
     await runStages(capture, routed.provider, bundle, now);
-  } catch {
+  } catch (error) {
     // One malformed capture must not take the rest of the batch with it. The
-    // raw row is already durable, so this one can be reprocessed later.
+    // raw row is already durable, and `recoverUnprocessed` is what actually
+    // comes back for it on the next `startIngest`.
+    await recordStageFailure(capture, error);
   }
 }
 
 async function runGuarded(capture: RawCapture): Promise<void> {
   try {
     await processCapture(capture);
-  } catch {
+  } catch (error) {
     // Same isolation for live captures. The raw row is written before any
     // stage runs, so the capture survives its own crash.
+    await recordStageFailure(capture, error);
+  }
+}
+
+/**
+ * Logs one failed attempt, and after `MAX_STAGE_ATTEMPTS` of them raises a card
+ * so the capture stops being invisible.
+ *
+ * THE LOG CARRIES THE ID AND NOTHING ELSE FROM THE CAPTURE. It is a
+ * development aid (`transform-remove-console` strips it from production
+ * bundles) and the id is enough to find the row; the capture's text is the
+ * user's notification content, which this module never writes anywhere except
+ * `raw_notifications`.
+ *
+ * THE CARD IS `unknown-provider`, DELIBERATELY. Nothing was parsed — the throw
+ * is why — so there is no amount, no direction and no merchant to put on a
+ * better-fitting kind, and `unknown-provider` is exactly the card whose payload
+ * is already "here is a package that moved money and the app could not read
+ * it". A capture the app provably cannot process is worth one card the user can
+ * act on; retrying it on every launch for thirty days is not.
+ *
+ * GUARDED AGAINST THE FOREIGN KEY. `runGuarded` reaches `processCapture` from
+ * its first line, so a throw there can predate `storeRawCapture` — and a card
+ * pointing at a row that does not exist is a constraint violation, not a
+ * warning. Nothing durable exists in that case anyway.
+ */
+async function recordStageFailure(capture: RawCapture, error: unknown): Promise<void> {
+  const attempts = (stageFailures.get(capture.id) ?? 0) + 1;
+  stageFailures.set(capture.id, attempts);
+  console.error(
+    `[ingest] capture ${capture.id} failed at stage; attempt ${attempts} of ${MAX_STAGE_ATTEMPTS}`,
+    error,
+  );
+
+  if (attempts < MAX_STAGE_ATTEMPTS) return;
+
+  try {
+    if (!(await hasRawCapture(capture.id))) return;
+    await queue("unknown-provider", capture.id, {
+      amount: null,
+      direction: null,
+      packageName: capture.packageName,
+    });
+  } catch (queueError) {
+    console.error(`[ingest] capture ${capture.id} could not be queued after failing`, queueError);
   }
 }

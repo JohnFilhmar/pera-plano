@@ -19,6 +19,7 @@ jest.mock("@/modules/notification_listener", () => ({
 import { closeDatabase } from "@/lib/db/database";
 import { addCaptureListener, drainPendingCaptures } from "@/modules/notification_listener";
 import * as parseStatsRepo from "@/lib/diagnostics/parse_stats_repo";
+import * as transactionsRepo from "@/lib/db/repos/transactions_repo";
 import { createLoan, outstandingBalance } from "@/lib/db/repos/loans_repo";
 import { createUserRule } from "@/lib/db/repos/user_rules_repo";
 import { createWallet, getBalanceDrift, getWallet } from "@/lib/db/repos/wallets_repo";
@@ -39,7 +40,7 @@ import { seedParserRules } from "@/lib/ingest/seed_rules";
 import { setSetting } from "@/lib/db/repos/app_settings_repo";
 import { attachCounterpartLeg } from "@/lib/transfers/transfer_service";
 import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
-import { __awaitIngestIdle, processCapture, startIngest } from "../pipeline";
+import { __awaitIngestIdle, __resetIngestFailures, processCapture, startIngest } from "../pipeline";
 import type { RawCapture, Transaction } from "@/types/domain";
 import type { RulesetBundleInput } from "@/lib/ingest/ruleset_types";
 import type { SQLiteDatabase } from "@/lib/db/database";
@@ -153,6 +154,10 @@ beforeEach(async () => {
   db = await freshDb();
   await seedDefaultCategories();
   await seedParserRules();
+  // The pipeline's poison-pill counter lives in the module, not the database,
+  // so a fresh schema does not clear it and one test's failures would count
+  // toward the next test's ceiling.
+  __resetIngestFailures();
 
   clockOffset = 0;
   liveListener = null;
@@ -1174,13 +1179,109 @@ test("an already-stored capture is not reprocessed from the buffer", async () =>
   await addMatcher(wallet.id, GCASH);
   const raw = gcashSend("buf-known");
   await storeRawCapture(raw, NOW);
+  // The row its first run committed, spelled out rather than implied. A stored
+  // capture with NOTHING behind it is no longer "already handled" — that is
+  // precisely the stranded state the recovery sweep exists to finish — so a
+  // capture that really did finish has to look finished.
+  await insertTransaction({
+    walletId: wallet.id,
+    categoryId: UNCATEGORIZED_ID,
+    amount: 50000,
+    direction: "out",
+    occurredAt: NOW - MINUTE,
+    source: "notification",
+    confidence: 0.95,
+    rawNotificationId: raw.id,
+  });
   mockDrain.mockResolvedValue([raw]);
 
   const stop = await startIngest();
   await __awaitIngestIdle();
 
-  expect(await ledger()).toHaveLength(0);
+  // Still the one row: neither the drain nor the sweep ran the stages again.
+  expect(await ledger()).toHaveLength(1);
   stop();
+});
+
+// ---------------------------------------------------------------------------
+// The recovery sweep — rule 2 stores the raw capture BEFORE the stages, so a
+// stage that throws leaves a durable row that produced nothing, and rule 11
+// then calls every later delivery of that notification a replay. Without a
+// pass that comes back for those rows, a real transaction is gone with no
+// ledger row, no card and no error.
+// ---------------------------------------------------------------------------
+
+test("a capture whose stages threw is committed by the next startIngest", async () => {
+  const wallet = await createWallet({ name: "GCash", openingBalance: 900000 });
+  await addMatcher(wallet.id, GCASH);
+  mockDrain.mockResolvedValue([gcashSend("buf-transient")]);
+  // One transient write failure, after the raw row is already durable — a busy
+  // database is the everyday version of this, and it is not the capture's fault.
+  const insert = jest
+    .spyOn(transactionsRepo, "insertTransaction")
+    .mockRejectedValueOnce(new Error("database is locked"));
+
+  const first = await startIngest();
+  await __awaitIngestIdle();
+  first();
+
+  expect(await ledger()).toHaveLength(0);
+  expect(await getRawCapture("buf-transient")).not.toBeNull();
+  expect(insert).toHaveBeenCalledTimes(1);
+
+  // The drain already emptied the native buffer, so nothing redelivers this
+  // capture: the stored row is the only copy, and the sweep is the only thing
+  // that can still reach it.
+  mockDrain.mockResolvedValue([]);
+  const second = await startIngest();
+  await __awaitIngestIdle();
+  second();
+
+  const rows = await ledger();
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({
+    amount: 50000,
+    direction: "out",
+    rawNotificationId: "buf-transient",
+  });
+});
+
+test("a capture that throws on every attempt becomes a card instead of a silent loop", async () => {
+  const wallet = await createWallet({ name: "GCash", openingBalance: 900000 });
+  await addMatcher(wallet.id, GCASH);
+  mockDrain.mockResolvedValue([gcashSend("buf-poison")]);
+  // Permanently unwritable, not transient: the sweep would otherwise re-run
+  // this row on every launch for its whole 30-day life and never tell anyone.
+  jest
+    .spyOn(transactionsRepo, "insertTransaction")
+    .mockRejectedValue(new Error("database is locked"));
+
+  const first = await startIngest();
+  await __awaitIngestIdle();
+  first();
+  const second = await startIngest();
+  await __awaitIngestIdle();
+  second();
+
+  // Two failures are not enough. A device that fails twice on a busy database
+  // and succeeds on the third try must not be handed a card about it.
+  expect(await listOpenReviewItems()).toHaveLength(0);
+
+  const third = await startIngest();
+  await __awaitIngestIdle();
+  third();
+
+  const open = await listOpenReviewItems();
+  expect(open).toHaveLength(1);
+  expect(open[0].kind).toBe("unknown-provider");
+  expect(open[0].rawNotificationId).toBe("buf-poison");
+  expect(await ledger()).toHaveLength(0);
+
+  // And the card is now what the sweep sees, so a fourth pass does nothing.
+  const fourth = await startIngest();
+  await __awaitIngestIdle();
+  fourth();
+  expect(await listOpenReviewItems()).toHaveLength(1);
 });
 
 // ---------------------------------------------------------------------------
