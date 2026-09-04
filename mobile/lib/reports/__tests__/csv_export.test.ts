@@ -18,6 +18,7 @@
 jest.mock("expo-file-system/legacy", () => ({
   cacheDirectory: "file:///cache/",
   writeAsStringAsync: jest.fn().mockResolvedValue(undefined),
+  deleteAsync: jest.fn().mockResolvedValue(undefined),
   EncodingType: { UTF8: "utf8" },
 }));
 
@@ -129,6 +130,47 @@ test("a note containing a newline is quoted", () => {
   expect(csv).toContain("\"Split the bill\nwith Ana\"");
 });
 
+// OWASP CSV injection. A cell whose first character is one of these executes
+// as a formula in Excel, LibreOffice or Sheets, and `merchant` is built from
+// third-party notification text — the attacker owns the input channel. RFC
+// 4180 quoting alone does nothing about it: `=cmd|...` contains no comma,
+// quote or newline, so the pre-fix escapeField emitted it bare.
+const FORMULA_TRIGGERS = ["=", "+", "-", "@", "\t", "\r"];
+
+test.each(FORMULA_TRIGGERS)(
+  "a free-text cell beginning with %j is apostrophe-prefixed and quoted",
+  (trigger) => {
+    const payload = `${trigger}cmd|'/C calc'!A0`;
+    const csv = buildTransactionsCsv([row({ note: payload })]);
+
+    expect(csv).toContain(`"'${payload}"`);
+  },
+);
+
+test("a merchant of =HYPERLINK(\"x\") exports as a text cell, not a formula", () => {
+  const csv = buildTransactionsCsv([row({ merchant: '=HYPERLINK("x")' })]);
+
+  // The leading comma pins that the neutralised cell starts at a field
+  // boundary — the whole cell is `"'=...`, not a bare `=` a spreadsheet runs.
+  expect(csv).toContain(',"\'=HYPERLINK(""x"")",');
+});
+
+test("a note that merely contains = later in the string is left untouched", () => {
+  const csv = buildTransactionsCsv([row({ note: "Budget = tight this month" })]);
+
+  // `note` is the last column, so the line ends with the raw value: no
+  // apostrophe, no quoting, nothing for a re-import to strip back out.
+  const [line] = csv.trim().split("\r\n").slice(1);
+  expect(line.endsWith(",Budget = tight this month")).toBe(true);
+});
+
+test("the amount column is never apostrophe-prefixed", () => {
+  const csv = buildTransactionsCsv([row({ amount: 12345, note: "=evil()" })]);
+
+  expect(csv).toContain(",123.45,");
+  expect(csv).not.toContain("'123.45");
+});
+
 test("transfer rows are included with yes, non-transfer rows with no", () => {
   const csv = buildTransactionsCsv([
     row({ merchant: "Own GCash top-up", isTransfer: true, transferLinkId: "link_1" }),
@@ -219,6 +261,47 @@ test("an empty range produces a header-only file", async () => {
   expect(writtenUri).toBe(uri);
   expect(writtenContent).toBe(buildTransactionsCsv([]));
   expect(mockSharing.shareAsync).toHaveBeenCalledTimes(1);
+});
+
+// The exported file is a full plaintext ledger — amounts, merchants, notes,
+// references — written next to the ENCRYPTED database. Nothing else on the
+// device deletes it, and the name is keyed on the date, so before these tests
+// a week of exports meant a week of plaintext copies waiting for Android to
+// evict the cache.
+test("the written file is deleted once the share sheet has been handed it", async () => {
+  await freshDb();
+
+  const uri = await exportTransactionsCsv({ from: "2026-08-01", to: "2026-08-31" }, "2026-08-31");
+
+  expect(mockSharing.shareAsync).toHaveBeenCalledTimes(1);
+  expect(mockFileSystem.deleteAsync).toHaveBeenCalledWith(uri, { idempotent: true });
+});
+
+test("the written file is deleted even when the share itself fails", async () => {
+  await freshDb();
+  mockSharing.shareAsync.mockRejectedValueOnce(new Error("no activity found to handle intent"));
+
+  await expect(
+    exportTransactionsCsv({ from: "2026-08-01", to: "2026-08-31" }, "2026-08-31"),
+  ).rejects.toThrow("no activity found to handle intent");
+
+  expect(mockFileSystem.deleteAsync).toHaveBeenCalledWith(
+    "file:///cache/peraplano-transactions-2026-08-31.csv",
+    { idempotent: true },
+  );
+});
+
+test("an unavailable share sheet raises instead of reporting a silent success", async () => {
+  await freshDb();
+  mockSharing.isAvailableAsync.mockResolvedValueOnce(false);
+
+  await expect(
+    exportTransactionsCsv({ from: "2026-08-01", to: "2026-08-31" }, "2026-08-31"),
+  ).rejects.toThrow(/sharing is unavailable/u);
+
+  expect(mockSharing.shareAsync).not.toHaveBeenCalled();
+  // Asked before the write, so there is no plaintext copy to clean up either.
+  expect(mockFileSystem.writeAsStringAsync).not.toHaveBeenCalled();
 });
 
 test("a peso sign in a note survives the round trip", () => {
