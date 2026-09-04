@@ -49,6 +49,7 @@ function statusOf(over: LoanStatusOverride = {}): LoanStatus {
     nextDue: { dueDate: "2026-09-15", amount: 100000 },
     overdue: false,
     paidCount: 0,
+    paidTotal: 0,
     ...over,
     // LAST, DELIBERATELY. `over.loan` is a PATCH merged into the defaults
     // above, not a full replacement — spreading `...over` first and `loan`

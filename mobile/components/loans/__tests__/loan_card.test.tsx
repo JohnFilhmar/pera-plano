@@ -32,6 +32,7 @@ function statusOf(over: LoanStatusOverride = {}): LoanStatus {
     nextDue: { dueDate: "2026-09-18", amount: 100000 },
     overdue: false,
     paidCount: 0,
+    paidTotal: 0,
     ...over,
     // LAST, DELIBERATELY (same footgun as lib/loans/__tests__/loan_reminders.test.ts's
     // statusOf). `over.loan` is a PATCH merged into the defaults above, not a

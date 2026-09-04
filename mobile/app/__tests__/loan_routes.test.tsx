@@ -32,7 +32,7 @@ jest.mock("@react-native-community/datetimepicker", () => ({
 }));
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
 import type { ReactNode } from "react";
 
 import { cancelScheduled } from "@/lib/alerts/alerts_service";
@@ -48,6 +48,7 @@ import {
   listLoans,
   listPayments,
   outstandingBalance,
+  recordAdjustment,
   recordPayment,
 } from "@/lib/db/repos/loans_repo";
 import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions_repo";
@@ -399,6 +400,43 @@ test("a loan that no longer exists says so", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// The schedule table — rule 4's Plus depth
+// ---------------------------------------------------------------------------
+test("THE SCHEDULE'S BALANCE COLUMN COUNTS DOWN INSTEAD OF READING ZERO ON EVERY ROW", async () => {
+  // Regression: the detail route mapped stored installments to schedule rows
+  // with a literal `balanceAfter: 0`, so every row of a saved loan read as
+  // fully cleared under the Balance header — false for all but the last, and
+  // on the one part of this screen rule 4 sells as Plus.
+  //
+  // THE PRINCIPAL PORTIONS ARE DELIBERATELY UNEQUAL. Three equal ones would
+  // let an index-times-a-constant guess produce the same three figures; only a
+  // fold over the remaining rows produces these.
+  const loan = await createLoan({
+    direction: "i-owe",
+    counterparty: "GLoan",
+    principal: 300000,
+    schedule: [
+      { dueDate: "2026-10-15", amountDue: 95000, principalPortion: 90000, interestPortion: 5000 },
+      { dueDate: "2026-11-15", amountDue: 103000, principalPortion: 100000, interestPortion: 3000 },
+      { dueDate: "2026-12-15", amountDue: 111000, principalPortion: 110000, interestPortion: 1000 },
+    ],
+  });
+  mockParams = { id: loan.id };
+
+  renderScreen(<LoanDetailScreen />);
+
+  const first = await screen.findByTestId("schedule-row-1");
+  // Read INSIDE the row, so the figure asserted is that row's own cell. Each
+  // one is unambiguous there: row 2 prints ₱1,030.00 due and ₱30.00 interest
+  // beside its ₱1,100.00 balance.
+  within(first).getByText("₱2,100.00");
+  within(screen.getByTestId("schedule-row-2")).getByText("₱1,100.00");
+  within(screen.getByTestId("schedule-row-3")).getByText("₱0.00");
+  // The defect's own signature: a settled-looking first row.
+  expect(within(first).queryByText("₱0.00")).toBeNull();
+});
+
+// ---------------------------------------------------------------------------
 // Recording a payment by hand — the spec's "Flow: manual payment recording"
 // ---------------------------------------------------------------------------
 //
@@ -542,4 +580,63 @@ test("AN ADJUSTMENT MOVES THE BALANCE AND SHOWS IN HISTORY MARKED AS AN ADJUSTME
   screen.getByText("Adjustment");
   screen.getByText("Late fee from GLoan");
   screen.getByText(/Adjustment, not a payment/);
+
+  // The CARD is waited on first, not "Paid so far" itself: both figures come
+  // off the same refetched status, and a wait on a figure whose correct value
+  // is also its pre-adjustment value would pass before the refetch had landed.
+  await waitFor(() =>
+    expect(screen.getByTestId("loan-detail-card-outstanding").props.children).toBe("₱5,150.00"),
+  );
+  // Nothing has been paid on this loan. `principal - outstanding` read the fee
+  // as ₱150 of negative payment and printed it here as money handed over.
+  expect(screen.getByTestId("loan-detail-paid").props.children).toBe("₱0.00");
+});
+
+test("AN ADJUSTMENT NEITHER REWRITES WHAT WAS PAID NOR WALKS THE SCHEDULE POINTER BACKWARDS", async () => {
+  // Rules 13 and 20: an adjustment is "reality the app cannot see", not a
+  // payment, and it may land on a loan that is already part paid. Both "Paid
+  // so far" and the next-installment pointer were derived as
+  // `principal - outstanding`, and `outstandingBalance` folds adjustments in —
+  // so a ₱500 fee erased ₱500 of a real ₱1,000 payment and moved the pointer
+  // back onto the installment that payment had already cleared.
+  const loan = await createLoan({
+    direction: "i-owe",
+    counterparty: "GLoan",
+    principal: 300000,
+    schedule: [
+      { dueDate: "2026-10-15", amountDue: 100000 },
+      { dueDate: "2026-11-15", amountDue: 100000 },
+      { dueDate: "2026-12-15", amountDue: 100000 },
+    ],
+  });
+  const paidTx = await insertTransaction({
+    walletId: cash.id,
+    categoryId: UNCATEGORIZED_ID,
+    amount: 100000,
+    direction: "out",
+    occurredAt: YESTERDAY,
+    merchant: "GLOAN PAYMENT",
+    source: "manual",
+    confidence: 1,
+  });
+  await recordPayment({ loanId: loan.id, transactionId: paidTx.id });
+  await recordAdjustment({
+    loanId: loan.id,
+    amount: 50000,
+    occurredAt: YESTERDAY,
+    note: "Late fee from GLoan",
+  });
+  mockParams = { id: loan.id };
+
+  renderScreen(<LoanDetailScreen />);
+
+  await screen.findByTestId("loan-detail-paid");
+  // ₱3,000 less the ₱1,000 paid, plus the ₱500 fee. Untouched by this fix —
+  // the fee belongs in the balance, and this is the only figure it belongs in.
+  expect(screen.getByTestId("loan-detail-card-outstanding").props.children).toBe("₱2,500.00");
+  // One ₱1,000 payment, and the fee is not a negative one.
+  expect(screen.getByTestId("loan-detail-paid").props.children).toBe("₱1,000.00");
+  // The SECOND installment, whole. The subtraction pointed back at the first
+  // one for the ₱500 the fee had appeared to un-pay.
+  screen.getByText("Next: ₱1,000.00");
 });
