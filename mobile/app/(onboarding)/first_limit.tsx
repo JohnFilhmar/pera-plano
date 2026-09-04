@@ -17,9 +17,8 @@
 // hooks/queries/use_income_summary.ts only.
 //
 // IT NAVIGATES ITSELF — see app/(onboarding)/wallets.tsx's header for the
-// whole story. Reached from income.tsx; advances to done.tsx, which is the
-// transition onboarding_state.ts's own `nextStep` doc singles out as the one
-// a wrong answer strands the user on.
+// whole story. Reached from income.tsx; advances to alerts.tsx (GAP-003 put
+// that step between this one and done.tsx).
 import { useCallback } from "react";
 import { useRouter } from "expo-router";
 
@@ -41,14 +40,17 @@ export default function FirstLimitScreen({
   // Read only to know which cadences already have a limit — see `submit`.
   const { data: statuses } = useLimitStatuses();
 
-  // nextStep("first_limit") === "done" (lib/onboarding/onboarding_state.ts),
+  // nextStep("first_limit") === "alerts" (lib/onboarding/onboarding_state.ts),
   // hardcoded so the literal matches a real file for expo-router to resolve.
+  // WAS "done" until GAP-003 put the POST_NOTIFICATIONS ask between the two:
+  // the alert this step's Limit will raise is the best possible reason to
+  // grant it, and it is the screen immediately after this one.
   const advance = useCallback(() => {
     if (onDone) {
       onDone();
       return;
     }
-    router.push("/(onboarding)/done");
+    router.push("/(onboarding)/alerts");
   }, [onDone, router]);
 
   const goBack = useCallback(() => {

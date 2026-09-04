@@ -22,6 +22,20 @@ jest.mock("expo-router", () => ({
   useRouter: () => ({ push: (...args: unknown[]) => mockPush(...args) }),
 }));
 
+// The hub's "Turn on alerts" row (GAP-003) reads the notification permission
+// on mount and calls `requestAlertPermission` on press. Both are native and
+// both are mocked here; the row itself is covered in
+// app/__tests__/more_hub.test.tsx, so the read is left PENDING for this file —
+// the row stays hidden and every test below renders the hub it always did,
+// with no state update landing outside `act`.
+jest.mock("expo-notifications", () => ({
+  getPermissionsAsync: jest.fn(() => new Promise(() => {})),
+}));
+
+jest.mock("@/lib/alerts/alerts_service", () => ({
+  requestAlertPermission: jest.fn(),
+}));
+
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";

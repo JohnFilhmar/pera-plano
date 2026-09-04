@@ -4,6 +4,21 @@ jest.mock("expo-router", () => ({
   useRouter: () => ({ push: (...args: unknown[]) => mockPush(...args) }),
 }));
 
+// This file mounts the More hub for its Subscriptions row, and that hub grew
+// a "Turn on alerts" row (GAP-003) which reads the notification permission and
+// calls `requestAlertPermission`. The service reaches the native
+// `NotificationListener` module, which cannot be required under Jest at all,
+// so it is stubbed the same way app/__tests__/bills_screen.test.tsx stubs it.
+// The permission read is left PENDING: the row stays hidden and every
+// assertion below sees the hub it always did.
+jest.mock("expo-notifications", () => ({
+  getPermissionsAsync: jest.fn(() => new Promise(() => {})),
+}));
+
+jest.mock("@/lib/alerts/alerts_service", () => ({
+  requestAlertPermission: jest.fn(),
+}));
+
 import { QueryClientProvider } from "@tanstack/react-query";
 import { QueryClient } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";

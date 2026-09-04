@@ -54,6 +54,18 @@ Explains the mechanism in plain language: PeraPlano listens to the notifications
 **Step 4 — The app's own alerts (Android 13+ POST_NOTIFICATIONS).**
 Value screen: limit alerts at 50/80/100%, bill reminders, the daily Review Queue digest. Then the standard runtime permission dialog. If declined, alerts still appear inside the app (Home alert area); only system notifications are lost. Skippable, no retry pressure.
 
+#### As shipped — 2026-09-04 (`app/(onboarding)/alerts.tsx`, `app/(tabs)/more/index.tsx`)
+
+This step did not exist. `lib/onboarding/onboarding_state.ts` folded it into `"access"`, and what shipped was a screen that asks for Notification Access and nothing at all for POST_NOTIFICATIONS: `requestAlertPermission` (`lib/alerts/alerts_service.ts`) had no caller anywhere in the app. On Android 13+ that permission defaults to denied until something asks, and every notifier — limit alerts, bill and loan reminders, the payday summary, the tracking-interrupted warning — reads the grant and returns silently when it is false. So no alert of any kind could be displayed on the test device (a Samsung A54 on Android 16). Fixed as GAP-003.
+
+**It is its own screen, and it is last.** `"alerts"` is now the tenth entry in `ONBOARDING_STEPS`, between `first_limit` and `done`, rather than a second dialog behind the Notification Access value screen. Two system dialogs behind one value screen is the cold ask this doc's own "value screen first, system screen second" pairing forbids, and the POST_NOTIFICATIONS dialog is one-shot per install — it is worth spending on a user who has just set a Limit and can be told what the alert will say.
+
+**A refusal routes to settings, never to a second request.** Android shows the dialog once; afterwards `requestPermissionsAsync` resolves from what the OS remembers, with no dialog and nothing to answer. So a refusal switches the step's primary action to the phone's own settings page and advances either way — there is no state the step can be left stuck in, matching "skippable, no retry pressure" above.
+
+**"Turn on alerts" in More is the recovery route.** A user who skipped or refused gets a row at the top of More's Tracking group, shown only while the app cannot post a notification. It raises the dialog while Android will still show one and opens this app's settings page once it will not, and disappears the moment the grant lands. The fuller setup checklist is still owed; this is the one row that closes the dead end.
+
+**Still unverified on hardware.** Everything above is covered by Jest only. That the system dialog actually appears once on a real Android 13+ device, and that an alert is displayed afterwards, is a device check — [`docs/13`](../13-on-device-verification.md).
+
 **Step 5 — Battery exemption & OEM guidance.**
 Value screen: "Android may put PeraPlano to sleep overnight; one switch keeps tracking alive." Then the battery-optimization exemption prompt. On devices from manufacturers with aggressive battery managers (Xiaomi/MIUI, Huawei, Oppo, Vivo — very common in the Philippines), an extra device-specific guidance screen shows the additional steps that manufacturer requires (e.g., autostart or "no restrictions" settings), with screenshots-style illustrations. Introduces the **listener health** indicator the user will later find in [Settings & Privacy](./11-settings-privacy.md). Skippable; skipping sets the at-risk state, not an error.
 

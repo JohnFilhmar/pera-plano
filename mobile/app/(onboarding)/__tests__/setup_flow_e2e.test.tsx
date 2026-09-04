@@ -32,6 +32,16 @@ jest.mock("@/modules/notification_listener", () => ({
   openAccessSettings: jest.fn(),
 }));
 
+// ONLY `requestAlertPermission` IS REPLACED (GAP-003). The alerts step raises
+// the Android 13+ POST_NOTIFICATIONS dialog, which no Jest environment can
+// answer; everything else in this module is left real because the limit the
+// first-limit step writes already reaches it through the notifier, and this
+// suite has always run against that.
+jest.mock("@/lib/alerts/alerts_service", () => ({
+  ...jest.requireActual("@/lib/alerts/alerts_service"),
+  requestAlertPermission: jest.fn(),
+}));
+
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, waitFor } from "@testing-library/react-native";
 import { renderRouter, screen } from "expo-router/testing-library";
@@ -41,6 +51,7 @@ import { AppState, Linking, Text, type AppStateStatus } from "react-native";
 import { KeypadHost } from "@/components/ui/keypad_host";
 import { KeypadProvider } from "@/contexts/keypad_context";
 import { typeAmount } from "@/test_support/keypad";
+import { requestAlertPermission } from "@/lib/alerts/alerts_service";
 import { closeDatabase } from "@/lib/db/database";
 import { getSetting } from "@/lib/db/repos/app_settings_repo";
 import { getIncomeProfile } from "@/lib/db/repos/income_repo";
@@ -64,11 +75,13 @@ import BatteryScreen from "../battery";
 import WalletsScreen from "../wallets";
 import IncomeScreen from "../income";
 import FirstLimitScreen from "../first_limit";
+import AlertsScreen from "../alerts";
 import DoneScreen from "../done";
 
 const mockIsAccessGranted = isAccessGranted as jest.Mock;
 const mockListObservedPackages = listObservedPackages as jest.Mock;
 const mockOpenAccessSettings = openAccessSettings as jest.Mock;
+const mockRequestAlertPermission = requestAlertPermission as jest.Mock;
 
 const GCASH = "com.globe.gcash.android";
 
@@ -119,6 +132,7 @@ function renderFlow() {
       "(onboarding)/wallets": WalletsScreen,
       "(onboarding)/income": IncomeScreen,
       "(onboarding)/first_limit": FirstLimitScreen,
+      "(onboarding)/alerts": AlertsScreen,
       "(onboarding)/done": DoneScreen,
       "(tabs)/index": HomeStub,
     },
@@ -177,6 +191,7 @@ beforeEach(async () => {
     { packageName: GCASH, count: 3, lastSeenAt: 1_755_000_000_000 } satisfies ObservedPackage,
   ]);
   mockIsAccessGranted.mockResolvedValue(true);
+  mockRequestAlertPermission.mockResolvedValue(true);
 
   // react-native's AppState/Linking are spied on the REAL module rather than
   // replaced with jest.mock("react-native", ...) — see
@@ -253,9 +268,19 @@ test("a user who taps through every step reaches the end, and onboarding actuall
   await waitFor(() => expect(screen.getByTestId("first-limit-form-intro")).toBeTruthy());
   expect((await getIncomeProfile())?.averageAmount).toBe(1_200_000);
 
-  // 7. first_limit -> 8. done, again through the write path.
+  // 7. first_limit -> 8. alerts, again through the write path.
   typeAmount("first-limit-amount", "10000"); // was "1000000" in centavos
   fireEvent.press(screen.getByTestId("first-limit-save"));
+  await waitFor(() => expect(screen.getByTestId("alerts-step-intro")).toBeTruthy());
+
+  // 8. alerts -> 9. done. THE SECOND DEFECT THIS FILE NOW GUARDS (GAP-003):
+  // nothing in the app ever called `requestAlertPermission`, so on Android
+  // 13+ POST_NOTIFICATIONS stayed denied and every notifier dropped its
+  // alert in silence. Mounting the step is not enough — the tap has to
+  // actually reach the OS.
+  expect(mockRequestAlertPermission).not.toHaveBeenCalled();
+  pressPrimary();
+  await waitFor(() => expect(mockRequestAlertPermission).toHaveBeenCalledTimes(1));
   await waitFor(() => expect(screen.getByTestId("done-step-intro")).toBeTruthy());
 
   // FOUR LIMITS FROM ONE ANSWER, not the one this used to expect
@@ -276,7 +301,7 @@ test("a user who taps through every step reaches the end, and onboarding actuall
   expect(entered[0].value).toBe(1_000_000);
   expect(limits.filter((limit) => limit.derivedFrom === entered[0].id)).toHaveLength(3);
 
-  // 8. done -> out of onboarding entirely.
+  // 9. done -> out of onboarding entirely.
   expect(await getSetting("onboarding_complete")).toBe(false);
   pressPrimary();
 
@@ -367,7 +392,15 @@ test("a user who skips everything skippable still reaches the end, and onboardin
   await waitFor(() => expect(screen.getByTestId("first-limit-form-intro")).toBeTruthy());
 
   pressSkip();
+  await waitFor(() => expect(screen.getByTestId("alerts-step-intro")).toBeTruthy());
+
+  pressSkip();
   await waitFor(() => expect(screen.getByTestId("done-step-intro")).toBeTruthy());
+
+  // Skipping the alerts step never spends the one-shot dialog — docs step 4's
+  // "skippable, no retry pressure". The More hub's "Turn on alerts" row is
+  // this user's way back (app/(tabs)/more/index.tsx).
+  expect(mockRequestAlertPermission).not.toHaveBeenCalled();
 
   // Skipping wrote nothing at all — and still has to end somewhere.
   expect(await listWallets()).toEqual([]);

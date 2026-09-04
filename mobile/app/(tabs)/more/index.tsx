@@ -94,10 +94,21 @@
 // shortest (28 characters) AND the one row with no right chevron at all (see
 // "ABOUT GETS NO CHEVRON" above), so it has more width than any other row
 // here, not less.
+//
+// "TURN ON ALERTS" IS THE ONE CONDITIONAL ROW (GAP-003). Every other row on
+// this hub always renders; this one appears only while the app cannot post a
+// notification, because for a user who granted the permission during
+// onboarding it would be a row that does nothing. It is also the only row
+// here that is not a destination at all — it either raises the Android 13+
+// POST_NOTIFICATIONS dialog or opens the phone's settings, and disappears
+// once the grant lands.
+import * as Notifications from "expo-notifications";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "expo-router";
 import {
   Activity,
   BarChart3,
+  Bell,
   ChevronRight,
   Info,
   LifeBuoy,
@@ -107,7 +118,7 @@ import {
   Users,
   Wrench,
 } from "lucide-react-native";
-import { Pressable, ScrollView, View } from "react-native";
+import { AppState, Linking, Pressable, ScrollView, View } from "react-native";
 
 import { PlusGate } from "@/components/gates/plus_gate";
 import { SoonGate } from "@/components/gates/soon_gate";
@@ -115,11 +126,13 @@ import { ProfileCard } from "@/components/more/profile_card";
 import { registerIcon, type IconComponent } from "@/components/ui/button";
 import { ListRow } from "@/components/ui/list_row";
 import { SectionHeader } from "@/components/ui/section_header";
+import { requestAlertPermission } from "@/lib/alerts/alerts_service";
 import { getTier } from "@/lib/entitlements";
 
 /** Mirrors app.json's `expo.version`. No installed screen reads it dynamically. */
 const APP_VERSION = "0.1.0";
 
+const AlertsGlyph = registerIcon(Bell);
 const ReportsGlyph = registerIcon(BarChart3);
 const SubscriptionsGlyph = registerIcon(Repeat);
 const SharedBudgetsGlyph = registerIcon(Users);
@@ -144,8 +157,90 @@ function RowChevron() {
   return <ChevronGlyph size={18} className="text-fg-2 dark:text-fg-2-dark" />;
 }
 
+/**
+ * What Android will currently let this app do about notifications.
+ * `canAskAgain` is the half that decides whether a tap can still raise the
+ * one-shot POST_NOTIFICATIONS dialog or has to send the user to the settings
+ * app instead. `null` while the first read is in flight, so the row never
+ * flashes in and back out on a device that already granted it.
+ */
+type AlertAccess = { granted: boolean; canAskAgain: boolean };
+
+/**
+ * `getPermissionsAsync` DIRECTLY, not through lib/alerts/alerts_service.ts.
+ * That module's own non-prompting read (`hasPermission`) is deliberately
+ * unexported — "every posting path goes through here" — and widening it for
+ * one row would invite a posting path to start asking. This is the read; the
+ * only mutation this file can cause is `requestAlertPermission`.
+ *
+ * `null` ON FAILURE, which the row treats as "say nothing". A read that threw
+ * tells us nothing about the grant, and hiding the row costs a user who is
+ * already in Settings one extra hop; showing it on a guess would offer a
+ * dialog that may never appear.
+ */
+async function readAlertAccess(): Promise<AlertAccess | null> {
+  try {
+    const status = await Notifications.getPermissionsAsync();
+    return { granted: status.granted, canAskAgain: status.canAskAgain };
+  } catch {
+    return null;
+  }
+}
+
 export default function MoreScreen() {
   const router = useRouter();
+  const [alertAccess, setAlertAccess] = useState<AlertAccess | null>(null);
+
+  // ON MOUNT AND ON EVERY FOREGROUND, the same shape
+  // app/(onboarding)/access.tsx uses for the other permission this app needs.
+  // AppState rather than `useFocusEffect`: the grant is changed in ANOTHER
+  // app — the system settings screen this row can open — and leaving
+  // PeraPlano never unfocuses the tab, so a focus effect would not fire on
+  // the one return that matters.
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => {
+      void readAlertAccess().then((access) => {
+        if (!cancelled) setAlertAccess(access);
+      });
+    };
+    refresh();
+    const subscription = AppState.addEventListener("change", (next) => {
+      if (next === "active") refresh();
+    });
+    return () => {
+      cancelled = true;
+      subscription.remove();
+    };
+  }, []);
+
+  const askable = alertAccess !== null && !alertAccess.granted;
+  const canAskAgain = alertAccess?.canAskAgain ?? false;
+
+  const turnOnAlerts = useCallback(() => {
+    // ONE SHOT, EVER. Android spends the POST_NOTIFICATIONS dialog on the
+    // first ask and answers every later request from what it remembers, with
+    // nothing shown — so once `canAskAgain` is false, re-requesting here
+    // would be a button that silently does nothing. Settings is the only
+    // route left.
+    if (!canAskAgain) {
+      void Linking.openSettings();
+      return;
+    }
+    requestAlertPermission()
+      .then(async (granted) => {
+        if (granted) {
+          setAlertAccess({ granted: true, canAskAgain: false });
+          return;
+        }
+        // The refusal just spent the dialog, so re-read rather than assume:
+        // the next tap has to go to settings instead of asking again.
+        setAlertAccess((await readAlertAccess()) ?? { granted: false, canAskAgain: false });
+      })
+      .catch((error: unknown) => {
+        console.warn("the alert permission could not be requested", error);
+      });
+  }, [canAskAgain]);
 
   return (
     <ScrollView
@@ -232,6 +327,36 @@ export default function MoreScreen() {
       </SoonGate>
 
       <SectionHeader title="Tracking" />
+
+      {/* THE RECOVERY ROUTE FOR A SKIPPED OR REFUSED ONBOARDING STEP
+          (GAP-003). Ungated and not a `push`: it raises the system dialog
+          while Android will still show one, and opens this app's settings
+          page once it will not. Hidden entirely while the grant is in place
+          — see this file's header and the `alertAccess` read above. First in
+          "Tracking" because an app that cannot notify is the one thing on
+          this hub the user most needs to know about. */}
+      {askable ? (
+        <Pressable
+          testID="more-turn-on-alerts"
+          onPress={turnOnAlerts}
+          accessibilityRole="button"
+          accessibilityLabel="Turn on alerts"
+        >
+          <ListRow
+            title="Turn on alerts"
+            subtitle={
+              canAskAgain
+                ? "Limit warnings and due-date reminders can't reach your phone until Android lets PeraPlano post notifications."
+                : "Android won't ask again — switch notifications on for PeraPlano in your phone's settings."
+            }
+            // 118 and 89 characters / 22 — same arithmetic as every row here
+            // (see header).
+            subtitleLines={6}
+            left={<RowIconDisc icon={AlertsGlyph} />}
+            right={<RowChevron />}
+          />
+        </Pressable>
+      ) : null}
 
       {/* `listener_health` is "shipped" as of m3b Task 8, and its screen
           (app/(tabs)/more/listener_health.tsx) now exists. */}
