@@ -2,7 +2,7 @@
 
 This document specifies PeraPlano's Ingest pipeline — the notification → ledger pipeline that delivers the core promise: *you never log a transaction; you only set the rules.* It defines every stage's inputs, outputs, rules, and failure modes; the Philippine provider catalogue the pipeline targets; the deduplication and transfer-detection rules; the parser-as-versioned-data model; the Android platform constraints the pipeline lives under; and the confidence scoring that decides what auto-commits and what routes to the Review Queue. The pipeline is the product's moat: everything else in the app is a view over the ledger this pipeline produces.
 
-**Status:** Draft v1 · 2026-08-02
+**Status:** Draft v1 · 2026-08-02 · MVP amendments 2026-09-05 (§5 rule 5, §6 rule 5, §11.2 rules 2 and 4)
 
 ---
 
@@ -132,6 +132,8 @@ Design principles that govern every stage:
 5. **Balance-after:** retained when present. It never overrides the ledger, but feeds reconciliation cross-checks ("provider reports ₱4,310.25; PeraPlano computes ₱4,510.25 — reconcile?").
 6. Timestamp is the notification post time (Stage 0, rule 5).
 
+> **MVP amendment (2026-09-05) — rule 5's cross-check is real, but it does not live in the pipeline.** The Normalizer only *retains* balance-after; no stage of the ingest pipeline compares it to anything, and no ingest path raises a "reconcile?" prompt. The comparison happens after commit, in the Wallets code: `insertTransaction` (`mobile/lib/db/repos/transactions_repo.ts`) captures the pre-snap computed figure and stores it on the row beside the reported one, and `getBalanceDrift` (`mobile/lib/db/repos/wallets_repo.ts`) compares that pair on the newest reporting row. The gap is surfaced by the balance-drift attention state and its drift explainer, specified in [04-features/02-wallets.md](04-features/02-wallets.md) §Flow: balance handling rules 1–3, with `tunables.balanceDriftToleranceCentavos` (§11.1) as the threshold. Cash Wallets never report a balance at all and are reconciled on a separate path (`mobile/lib/wallets/reconcile.ts`, spec'd in the same doc under §Flow: cash Wallet reconciliation). Read the prompt quoted above as an illustration of what the drift explainer asks, not as something Stage 3 does.
+
 **Failure modes:**
 
 | Failure | Effect | Mitigation |
@@ -149,7 +151,7 @@ Many PH transactions announce themselves twice: a provider push notification *an
 
 **Input:** a normalized event, plus the recent event/Transaction history.
 
-**Output:** either the event passes through as unique, or it is suppressed as a duplicate of an existing event or committed Transaction (surviving record enriched per rule 5).
+**Output:** either the event passes through as unique, or it is suppressed as a duplicate of an existing event or committed Transaction (surviving record enriched per rule 5 — but see the amendment under rule 5: the MVP suppresses the twin and enriches nothing).
 
 **Dedupe rules:**
 
@@ -164,6 +166,12 @@ Many PH transactions announce themselves twice: a provider push notification *an
    4. Missing fields on the survivor are filled from the suppressed twin (field union).
    5. The suppressed twin's raw text remains in the on-device raw store until its 30-day TTL; the surviving record's `rawNotificationRef` points at the survivor's raw text.
 6. All dedupe windows and keys ship as tunable values inside the versioned ruleset data (§11), so they can be adjusted remotely if real-world twin timing differs from these initial values.
+
+> **MVP amendment (2026-09-05) — rule 5 sub-rules 1–4 are not built; no merge happens today.** The DedupeGate (`mobile/lib/ingest/dedupe_gate.ts`) returns a verdict and nothing else, and the orchestrator (`mobile/lib/ingest/pipeline.ts`) answers a `duplicate` verdict by returning `ignored: "duplicate"` and writing nothing at all. **The first arrival wins** — whether or not it is the richer parse (sub-rule 1), whether or not it is the push (sub-rule 2), and the survivor keeps its own timestamp because it was never rewritten — which is not sub-rule 3's guarantee, since a delayed twin can carry the earlier post time. The twin's fields are discarded, not merged in (sub-rule 4). The cost is concrete and it falls on SMS-first twins: the thinner SMS parse survives and the push's reference number, balance-after and cleaner merchant are dropped with it. Field union is deferred as a follow-up code change, recorded with this example in [09-v2-backlog.md](09-v2-backlog.md) §2b.7.
+>
+> **Sub-rule 5 does hold.** The raw capture is stored before the gate ever runs, so a suppressed twin's text stays in the raw store to its own 30-day TTL, and the survivor's `rawNotificationRef` is its own by construction rather than by a copy step.
+>
+> **Two paths do overwrite an existing record, and neither is field union.** A `supersedes` verdict lets a provider's own notification overwrite a transfer leg the app had minted on the user's confirmation — the incoming event is authoritative there, so it replaces rather than enriches. A `queued-twin` outcome folds a second telling into the open Review Queue card already waiting on the first, suppressing it without enriching that card. The user-driven "Same transaction" merge does not union fields either: `mergeDuplicate` (`mobile/lib/review/resolve_actions.ts`) deletes the dropped row, reverses its balance effect, and never touches the kept one. So [04-features/08-review-queue.md](04-features/08-review-queue.md) §Flow: resolve a suspected duplicate rule 2 chooses *which record survives*; no path in the app fills a field on the survivor from the record it discards.
 
 **Failure modes:**
 
@@ -325,11 +333,19 @@ Parser rot is a top product risk: providers change notification wording silently
 ### 11.2 Versioning and update discipline
 
 1. Every ruleset carries a version. Every parse records the pack version that produced it (§4, rule 5), so a regression introduced by version N is traceable and reversible.
-2. Updates are fetched by the app, verified for integrity and authenticity before activation, and applied atomically — a device is always on exactly one coherent ruleset version.
+2. Updates are fetched by the app and applied atomically — a device is always on exactly one coherent ruleset version. Verification of a bundle's integrity and authenticity before activation is **intended, not yet built**; see the amendment below.
 3. Rulesets are data only. No update can deliver executable logic; the update channel can change *what patterns are matched*, never *what the app does*.
-4. Staged rollout: a new ruleset version reaches a small percentage of devices first; parse-success telemetry (aggregate counts only) gates wider rollout. A regression triggers rollback to the prior version.
+4. Staged rollout — **intended, not yet built**: a new ruleset version is to reach a small percentage of devices first, with parse-success telemetry (aggregate counts only) gating wider rollout and a regression triggering rollback to the prior version. See the amendment below.
 5. The app always embeds a known-good ruleset so it works fully offline and on first run; remote updates are an improvement channel, not a dependency.
 6. The Settings parser-diagnostics screen ([04-features/11-settings-privacy.md](04-features/11-settings-privacy.md)) shows the active ruleset version and per-provider parse health on the user's own device.
+
+> **MVP amendment (2026-09-05) — what rules 2 and 4 actually amount to today.** The update client is `mobile/services/parser_rules.ts`: a once-a-day `GET /v1/parser_rules?since_version=N`, a size cap applied to the raw body before `JSON.parse` ever sees it, and full schema validation (`mobile/lib/ingest/ruleset_schema.ts`) before anything is written, so an invalid bundle is discarded in memory and never stored. There is also no server behind that URL yet — `server/` is scheduled after the mobile MVP — so every request today answers as "nothing to install".
+>
+> **What that bounds is a bundle's shape, never its origin.** No signature is checked and no key ships with the app, so the only thing standing behind a bundle is TLS to a host the owner controls. Rule 2's integrity-and-authenticity clause is therefore unmet. Its atomicity clause does hold: `upsertRuleset` installs in one guarded INSERT that can never downgrade a device, and `getActiveRuleset` resolves exactly one version.
+>
+> **Rule 4 is absent outright.** There is no rollout bucket, no `rollout_percent` in the bundle schema, and no telemetry gate between a fetch and activation — the first device to ask gets the new version. The only rollback that exists is local and read-time: a stored payload that will not decode falls back to the previous good version (`mobile/lib/db/repos/parser_rulesets_repo.ts`), which covers a corrupt row rather than a bad ruleset that parses cleanly and matches wrongly.
+>
+> Closing both is tracked as **GAP-043** in `GAP_ANALYSIS.md`, which also owns rewriting this section once a mechanism is chosen and shipped. Until then, treat rules 2 and 4 as design intent.
 
 ### 11.3 Corpus discipline
 

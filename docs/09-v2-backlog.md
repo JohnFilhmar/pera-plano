@@ -2,7 +2,7 @@
 
 This document holds everything deliberately excluded from the MVP: for each item, what it is, why it was deferred, what must be true before it can be built, and where it will sit in the Free/Plus tier structure when it ships. The MVP scope is locked; nothing here re-enters scope without an explicit revision of the MVP scope doc. The backlog exists so that deferrals are decisions with reasons, not forgotten ideas — and so that MVP design choices (local-first, Entitlements flags, parser-as-data) keep the doors below open instead of welding them shut.
 
-**Status:** Draft v1 · 2026-08-02 · §2b build-scope deferrals added 2026-08-30
+**Status:** Draft v1 · 2026-08-02 · §2b build-scope deferrals added 2026-08-30 · §2b.7 added 2026-09-05
 
 ---
 
@@ -249,6 +249,8 @@ Six items cut from the mobile MVP by the owner on 2026-08-30. They differ in kin
 
 Two of them (2b.3 and 2b.4) had been written down only in a git-ignored working file. This is now their only home.
 
+2b.7 was added later, on 2026-09-05, and is a different kind of entry again: not an owner cut but a promise [03-ingest-pipeline.md](03-ingest-pipeline.md) made that the pipeline never implemented, moved here on the day that doc was corrected. Anything added to §2b from the documentation gap analysis says so in its provenance line.
+
 ### 2b.1 App PIN as a third DEK wrap (W4) — Band: Near
 
 **What it is.** A 6-digit app PIN as a *third* way to unwrap the database encryption key, alongside the device Keystore KEK and the recovery phrase. Specified as decision §0.1 of [superpowers/specs/2026-08-19-device-issues-triage-and-roadmap.md](superpowers/specs/2026-08-19-device-issues-triage-and-roadmap.md) and scheduled there as workstream W4.
@@ -361,6 +363,30 @@ Two of them (2b.3 and 2b.4) had been written down only in a git-ignored working 
 
 ---
 
+### 2b.7 DedupeGate field union on the surviving twin — Band: Near
+
+**What it is.** Sub-rule 4 of [03-ingest-pipeline.md](03-ingest-pipeline.md) §6 rule 5: "Missing fields on the survivor are filled from the suppressed twin (field union)." Sub-rules 1–3 of the same rule ride with it — the richer parse surviving, push winning over SMS-relay at equal richness, and the survivor keeping the earlier of the two timestamps.
+
+**Why deferred.** It was never built, and until 2026-09-05 the doc read as though it had been. The DedupeGate (`mobile/lib/ingest/dedupe_gate.ts`) returns a verdict and does no I/O by design; the orchestrator (`mobile/lib/ingest/pipeline.ts`) answers a `duplicate` verdict by returning `ignored: "duplicate"` and writing nothing. So the first arrival wins on arrival order alone and the twin is discarded whole.
+
+**The worked example, which is the reason this is worth keeping.** A bank SMS relay that beats its provider push through the twin window commits first, so the SMS parse becomes the ledger row. The push arrives 20 seconds later carrying the reference number, the balance-after and the cleaner merchant string, is judged a duplicate, and is dropped. The transaction is correct in amount and direction and permanently poorer in every other field — no reference number to search on, no balance-after to anchor the Wallet, and a merchant string the Categorizer had less to work with. Nothing on screen says a richer telling of the same movement was thrown away.
+
+**What revisiting takes, and the hazard to design around first.** Filling `balance_after` on an already-committed survivor is not a column write. `insertTransaction` (`mobile/lib/db/repos/transactions_repo.ts`) writes `balance_after` and the pre-snap `computed_balance` **as a pair**, and it is that pair `getBalanceDrift` (`mobile/lib/db/repos/wallets_repo.ts`) compares. A union that backfills `balance_after` alone leaves `computed_balance` null, and `getBalanceDrift` coalesces a null computed figure to the reported one — so the row reports **zero drift** rather than the drift it actually carries, and the wallet's balance was never snapped to the reported figure either. The drift badge would go quiet on exactly the rows that most need it. So the union needs the snap-and-anchor path re-entered for the filled field, not a bare `UPDATE`, and it has to respect the out-of-order suppression already in `insertTransaction` ([04-features/02-wallets.md](04-features/02-wallets.md) rule 9: a snapshot older than the wallet's newest does not re-anchor). The other three fields — reference number, merchant, and the earlier timestamp — carry no such coupling and could land first.
+
+**Prerequisites.**
+1. A survivor-selection step somewhere between the gate and the ledger. The gate itself is pure by contract (no I/O, no clock, no database), so richness comparison and the union belong to the orchestrator or to a new stage, not inside `dedupe_gate.ts`.
+2. A safe write path for a filled `balance_after` that re-enters the snap and drift bookkeeping rather than writing the column alone, per the hazard above.
+3. A decision for the twin that is held rather than committed: a `queued-twin` outcome folds the second telling into an open Review Queue card, and whether that card is enriched is the same question asked about a different row.
+4. Tests pinning the SMS-first case specifically, since the push-first case already looks correct for the wrong reason.
+
+**Related.** 2b.4 is the other deferred DedupeGate item and is independent of this one: it is about teaching a rule from a merge, this is about what the surviving row contains.
+
+**Tier placement when shipped.** None; it is ingest-correctness behavior, Free like the rest of the pipeline.
+
+**Provenance.** Added 2026-09-05 from the documentation gap analysis (GAP-016), not from the 2026-08-30 owner cut. It is recorded here because [03-ingest-pipeline.md](03-ingest-pipeline.md) §6 was amended the same day to stop claiming the behavior exists, and a promise removed from a spec with nowhere to land is a promise forgotten.
+
+---
+
 ### 2b summary
 
 | Item | Band | What unblocks it |
@@ -371,6 +397,7 @@ Two of them (2b.3 and 2b.4) had been written down only in a git-ignored working 
 | The unwritable dedupe-signature UserRule | Mid | A matcher-model change, not UI |
 | 119 raw Tailwind type-size classes | Near | A device, its own task, and a lint rule |
 | Non-destructive capture-buffer count | Near | A native read-only count, plus a device to verify it on |
+| DedupeGate field union on the surviving twin | Near | A survivor-selection step, plus a snap-safe write for `balance_after` |
 
 ---
 
