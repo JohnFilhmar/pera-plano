@@ -26,11 +26,37 @@
 // PRESENTATIONAL: wallets and categories arrive from the screen's hooks, and
 // this component writes nothing.
 //
-// THE `max-h-96` FOLD THIS SHEET USED TO OWN NOW LIVES IN `BottomSheet`, which
-// bounds every sheet's body against the window rather than at a fixed 384dp.
-// The blocked-Save defect that comment described is unchanged by the move: the
-// missing-field notice still sits at the top of the form, above Direction, and
-// Save still sits outside the scroll area where the panel cannot cover it.
+// DEVICE-TESTING FIX (2026-08-18, Task 1): a real notification landed here
+// and could not be saved — `canSave` needs a wallet, the wallet rows lived
+// below a `max-h-96` scroll fold, and the greyed Save gave no reason. Three
+// changes: (a) a text line above Save states whichever of amount/wallet is
+// still missing; (b) the wallet block now renders directly under the amount
+// field, ABOVE Direction — chosen over relaxing `max-h-96` because a taller
+// fixed cap is still a fold on some device, while reordering puts the picker
+// on-screen without any scrolling in the common single-wallet case; (c) the
+// sole wallet is preselected when `wallets.length === 1` (no ambiguity left
+// to ask about), and the section says so explicitly when `wallets.length ===
+// 0` instead of leaving a bare "WALLET" label over dead space.
+//
+// (b)'s CAP IS GONE, AND ITS OBJECTION IS ANSWERED RATHER THAN OVERRULED
+// (2026-09-05). This sheet no longer owns a scroll area at all: `BottomSheet`
+// bounds EVERY sheet's body now, at a share of the window minus whatever the
+// keypad panel and the navigation bar are occupying. What (b) rejected was a
+// TALLER FIXED CAP — one number, picked on one phone, still a fold on the
+// next. This is not that number. It is derived per render from the device's
+// own window and from the space actually taken, so there is no device it was
+// not measured on, which is the whole of what the original objection asked
+// for. The reordering (b) chose instead stands on its own merits and is
+// untouched; only the fold it was weighed against has changed shape.
+//
+// WHAT THAT MOVES: the whole body scrolls now, Save included. Save is reached
+// by scrolling to the end of the sheet, NOT by sitting outside a scroll area —
+// the sheet's bounded body is the only scroll container here, and the keypad
+// panel is cleared by the sheet's own bottom padding rather than by keeping
+// Save out of the scroll. (a) and (b) are otherwise as they were: the
+// missing-field line still sits directly above Save and the wallet block still
+// renders above Direction, so a single-wallet user still reaches both without
+// scrolling at all.
 //
 // THE PRESELECT IS A CONFIRMABLE DEFAULT, NOT A SUPPRESSED SIGNAL (fixed
 // 2026-08-18, post-review). A first version of (c) folded the preselected

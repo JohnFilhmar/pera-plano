@@ -36,13 +36,30 @@ import { KeypadHost } from "./keypad_host";
 const SHEET_BOTTOM_PADDING = 32;
 
 /**
- * How much of the screen a sheet's BODY may occupy before it starts scrolling.
+ * How much of the space a sheet actually HAS its BODY may occupy before it
+ * starts scrolling.
  *
  * A sheet is a decision, not a page, and one that covers the whole screen has
  * stopped being a sheet: the user loses the context they opened it from and the
  * scrim stops reading as "tap here to back out". Seven tenths leaves the scrim
  * legible above the tallest body while giving a loan with six possible payments
  * room to show four of them without moving.
+ *
+ * TAKEN OF `windowHeight - bottomBand`, NOT OF THE WHOLE WINDOW. The band under
+ * the body is not free space the body can be measured against: `paddingBottom`
+ * reserves it, so it is ADDED to whatever maxHeight allows rather than being
+ * carved out of it. Against the raw window a sheet's total height becomes body
+ * + chrome + padding floor + panel, and with the keypad panel open (~350dp,
+ * docs/13-on-device-verification.md:1379) that exceeds the screen: on the A54's
+ * 891dp window, `891 * 0.7` = 624dp of body plus ~72dp of chrome plus the 32dp
+ * floor plus 350dp of panel is ~1078dp, so ~190dp is pushed off the TOP — and
+ * off the top goes the scroll area's own viewport, which no gesture can bring
+ * back. That is the unreachable-rows defect this scroll area exists to fix,
+ * re-created on the one sheet tall enough to open a keypad. Subtracting the
+ * band first divides only the space the sheet can really use: panel open,
+ * `(891 - 350) * 0.7` is ~379dp of body and the whole sheet ~833dp; panel
+ * closed on gesture navigation, ~624dp of body and ~728dp of sheet. Both fit
+ * inside 891dp.
  *
  * It bounds the BODY only. The title, the grab handle and the sheet's own
  * bottom padding sit outside the scroll area, so the last row still clears the
@@ -177,21 +194,31 @@ export function BottomSheet({
               A sheet is bottom-aligned inside `flex-1 justify-end`, so an unbounded
               body grows UPWARD and its first rows leave the top of the screen. There is
               no gesture that brings them back, and the taller the list the more of it
-              is simply gone. docs/13-on-device-verification.md:1384 names this remedy
-              for the same clipping on the correction sheet: a maxHeight taken from
-              `useWindowDimensions()`.
+              is simply gone. docs/13-on-device-verification.md:1384 names the remedy
+              for the same clipping on the correction sheet, in two halves: a maxHeight
+              taken from `useWindowDimensions()`, and a scroll area that shrinks while a
+              panel is open. This line is both halves at once.
 
-              MEASURED AGAINST THE WINDOW, NOT A FIXED `max-h-96`. A 384dp cap is most
-              of a small phone's screen and a third of a tablet's. correct_sheet.tsx
-              carried exactly that private cap and now gives it up in favour of this
-              one, so there is one scroll container per sheet rather than two nested
-              ones fighting over the same drag.
+              MEASURED AGAINST THE SPACE LEFT, NOT THE WHOLE WINDOW. `bottomBand` comes
+              off before the ratio is applied, because that band is not free space: the
+              `paddingBottom` above reserves it, so it stacks ON TOP of this maxHeight
+              instead of fitting inside it. Ratio the raw window and a sheet with the
+              keypad panel open grows taller than the screen; a bottom-aligned sheet
+              overflows UPWARD, so what is lost is the top of the scroll viewport
+              itself, and rows above a viewport's top edge cannot be scrolled to at all.
+              See SHEET_MAX_BODY_RATIO for the arithmetic on the A54.
+
+              AND NOT A FIXED `max-h-96`. A 384dp cap is most of a small phone's screen
+              and a third of a tablet's. correct_sheet.tsx carried exactly that private
+              cap and now gives it up in favour of this one, so there is one scroll
+              container per sheet rather than two nested ones fighting over the same
+              drag.
 
               `keyboardShouldPersistTaps="handled"` so the first tap on a Confirm button
               presses it, rather than being spent dismissing an open keypad panel. */}
           <ScrollView
             testID="bottom-sheet-scroll"
-            style={{ maxHeight: windowHeight * SHEET_MAX_BODY_RATIO }}
+            style={{ maxHeight: (windowHeight - bottomBand) * SHEET_MAX_BODY_RATIO }}
             keyboardShouldPersistTaps="handled"
           >
             {children}
