@@ -26,17 +26,11 @@
 // PRESENTATIONAL: wallets and categories arrive from the screen's hooks, and
 // this component writes nothing.
 //
-// DEVICE-TESTING FIX (2026-08-18, Task 1): a real notification landed here
-// and could not be saved — `canSave` needs a wallet, the wallet rows lived
-// below a `max-h-96` scroll fold, and the greyed Save gave no reason. Three
-// changes: (a) a text line above Save states whichever of amount/wallet is
-// still missing; (b) the wallet block now renders directly under the amount
-// field, ABOVE Direction — chosen over relaxing `max-h-96` because a taller
-// fixed cap is still a fold on some device, while reordering puts the picker
-// on-screen without any scrolling in the common single-wallet case; (c) the
-// sole wallet is preselected when `wallets.length === 1` (no ambiguity left
-// to ask about), and the section says so explicitly when `wallets.length ===
-// 0` instead of leaving a bare "WALLET" label over dead space.
+// THE `max-h-96` FOLD THIS SHEET USED TO OWN NOW LIVES IN `BottomSheet`, which
+// bounds every sheet's body against the window rather than at a fixed 384dp.
+// The blocked-Save defect that comment described is unchanged by the move: the
+// missing-field notice still sits at the top of the form, above Direction, and
+// Save still sits outside the scroll area where the panel cannot cover it.
 //
 // THE PRESELECT IS A CONFIRMABLE DEFAULT, NOT A SUPPRESSED SIGNAL (fixed
 // 2026-08-18, post-review). A first version of (c) folded the preselected
@@ -55,7 +49,7 @@
 // rather than presumptuous, since there is only one wallet it could mean.
 import { Check } from "lucide-react-native";
 import { useEffect, useState } from "react";
-import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { Pressable, Text, TextInput, View } from "react-native";
 
 import { CategoryPicker } from "@/components/transactions/category_picker";
 import { BottomSheet } from "@/components/ui/bottom_sheet";
@@ -382,8 +376,7 @@ export function CorrectSheet({
   return (
     <BottomSheet visible={visible} onDismiss={onDismiss} title={CORRECT_SHEET_TITLE}>
       <View testID="correct-sheet" className="gap-4">
-        <ScrollView className="max-h-96">
-          <View className="gap-4">
+        <View className="gap-4">
             {/* THE NOTIFICATION ITSELF, ABOVE THE FORM. The user tapped "This
                 is a money notification" about a specific piece of text; making
                 them retype what it said — with the text no longer on screen —
@@ -545,7 +538,6 @@ export function CorrectSheet({
               />
             </View>
           </View>
-        </ScrollView>
 
         {ruleOffered ? (
           <Pressable

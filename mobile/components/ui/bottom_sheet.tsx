@@ -7,7 +7,14 @@
 // dismisses it (plan rule 5) without a hand-rolled BackHandler subscription
 // that has to be torn down correctly on every unmount.
 import type { ReactNode } from "react";
-import { Modal, Pressable, Text, View } from "react-native";
+import {
+  Modal,
+  Pressable,
+  ScrollView,
+  Text,
+  useWindowDimensions,
+  View,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useKeypadOptional } from "@/contexts/keypad_context";
@@ -27,6 +34,21 @@ import { KeypadHost } from "./keypad_host";
  * sheet is currently clearing.
  */
 const SHEET_BOTTOM_PADDING = 32;
+
+/**
+ * How much of the screen a sheet's BODY may occupy before it starts scrolling.
+ *
+ * A sheet is a decision, not a page, and one that covers the whole screen has
+ * stopped being a sheet: the user loses the context they opened it from and the
+ * scrim stops reading as "tap here to back out". Seven tenths leaves the scrim
+ * legible above the tallest body while giving a loan with six possible payments
+ * room to show four of them without moving.
+ *
+ * It bounds the BODY only. The title, the grab handle and the sheet's own
+ * bottom padding sit outside the scroll area, so the last row still clears the
+ * navigation bar and the keypad panel exactly as before.
+ */
+const SHEET_MAX_BODY_RATIO = 0.7;
 
 export type BottomSheetProps = {
   visible: boolean;
@@ -93,6 +115,10 @@ export function BottomSheet({
   // has always carried. Nothing that does not open a keypad can observe it.
   const bottomBand = Math.max(insets.bottom, keypad?.keypadHeight ?? 0);
 
+  // Read above the early return, same rule as `useKeypadOptional` above: the
+  // hook order must never change between a visible and a hidden render.
+  const { height: windowHeight } = useWindowDimensions();
+
   // Rendering nothing, not rendering offscreen: an offscreen sheet still
   // covers the screen with an invisible touch target and the app looks frozen.
   if (!visible) return null;
@@ -144,7 +170,32 @@ export function BottomSheet({
               {title}
             </Text>
           ) : null}
-          {children}
+          {/* THE BODY SCROLLS, THE CHROME DOES NOT (owner's 2026-09-05 report:
+              "possible payments can't be scrolled, a loan showing multiple possible
+              payments can't show all records").
+
+              A sheet is bottom-aligned inside `flex-1 justify-end`, so an unbounded
+              body grows UPWARD and its first rows leave the top of the screen. There is
+              no gesture that brings them back, and the taller the list the more of it
+              is simply gone. docs/13-on-device-verification.md:1384 names this remedy
+              for the same clipping on the correction sheet: a maxHeight taken from
+              `useWindowDimensions()`.
+
+              MEASURED AGAINST THE WINDOW, NOT A FIXED `max-h-96`. A 384dp cap is most
+              of a small phone's screen and a third of a tablet's. correct_sheet.tsx
+              carried exactly that private cap and now gives it up in favour of this
+              one, so there is one scroll container per sheet rather than two nested
+              ones fighting over the same drag.
+
+              `keyboardShouldPersistTaps="handled"` so the first tap on a Confirm button
+              presses it, rather than being spent dismissing an open keypad panel. */}
+          <ScrollView
+            testID="bottom-sheet-scroll"
+            style={{ maxHeight: windowHeight * SHEET_MAX_BODY_RATIO }}
+            keyboardShouldPersistTaps="handled"
+          >
+            {children}
+          </ScrollView>
         </View>
       </View>
       {/* A SECOND HOST, NOT A DUPLICATE. This Modal is its own native window, so
