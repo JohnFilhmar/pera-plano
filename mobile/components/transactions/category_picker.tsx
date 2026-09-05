@@ -29,7 +29,7 @@
 // PRESENTATIONAL: categories arrive from the screen's `useCategories()`.
 import { Check } from "lucide-react-native";
 import { useEffect, useState } from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 
 import { registerIcon } from "@/components/ui/button";
 import { Button } from "@/components/ui/button";
@@ -90,7 +90,14 @@ export function CategoryPicker({
   return (
     <BottomSheet visible={visible} onDismiss={onDismiss} title="Category">
       <View testID="category-picker" className="gap-3">
-        <ScrollView className="max-h-80">
+        {/* THE `max-h-80` FOLD THIS LIST USED TO OWN NOW LIVES IN `BottomSheet`,
+            which bounds and scrolls every sheet's body against the window
+            rather than at a fixed 320dp. It was left in place here too until
+            now, which meant two scroll containers on the same axis — this one
+            and the sheet's — both claiming the same drag; the inner one always
+            won it, so the sheet scrolled in a way the user could not predict.
+            Removed for the same reason `correct_sheet.tsx` gave up its own
+            `max-h-96` in the same change. */}
           {categories.map((category) => {
             const isPending = category.id === pending;
             return (
@@ -110,7 +117,6 @@ export function CategoryPicker({
               </Pressable>
             );
           })}
-        </ScrollView>
 
         {offersRule ? (
           <Pressable
