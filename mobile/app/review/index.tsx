@@ -70,6 +70,7 @@ import { useReviewKindCounts } from "@/hooks/queries/use_review_kind_counts";
 import { useReviewQueuePage } from "@/hooks/queries/use_review_queue_page";
 import { useRuleset } from "@/hooks/queries/use_ruleset";
 import { useWallets } from "@/hooks/queries/use_wallets";
+import { PaymentAlreadyMatchedError } from "@/lib/db/repos/loans_repo";
 import { IncompleteReviewItemError } from "@/lib/review/resolve_actions";
 import type { ReviewKind, ReviewQueueItem } from "@/types/domain";
 
@@ -155,6 +156,15 @@ export const REVIEW_BACKLOG_BANNER =
 export function triageFailureMessage(error: unknown): string {
   if (error instanceof IncompleteReviewItemError) {
     return `This one still needs ${FAILURE_FIELD_LABEL[error.missing] ?? error.missing} before it can be saved. Open "Change the details" to fill it in. Nothing was saved.`;
+  }
+  // The generic sentence below says "nothing was saved, your balances are
+  // unchanged, try again". For this error every clause is false: the payment IS
+  // recorded, the balance DID move, and trying again can never succeed because
+  // `loan_payments.transaction_id` is UNIQUE. Step 4 above should keep this
+  // unreachable from the card; it stays as the honest fallback for any path
+  // that still reaches `recordPayment` with a claimed transaction.
+  if (error instanceof PaymentAlreadyMatchedError) {
+    return "This payment is already recorded on one of your loans, so there was nothing to save.";
   }
   return "That didn't go through, and nothing was saved — your balances are unchanged. Try again.";
 }
@@ -288,7 +298,12 @@ function secondaryActionFor(item: ReviewQueueItem): ReviewAction | "correct" {
       // rejection count per merchant-loan pair that nothing stores yet, and
       // writing an `ignore` rule here instead would silence a real repayment
       // the user only meant to skip once.
-      return { kind: "dismiss", itemId: item.id };
+      //
+      // `dismiss-loan-match`, NOT the generic `dismiss`: it routes through
+      // `dismissLoanMatch` in the loans module, which is the named seam that
+      // rejection counter needs, rather than a bare `resolve` call the loans
+      // module never sees.
+      return { kind: "dismiss-loan-match", itemId: item.id };
     case "one-sided-transfer":
       // "Not a transfer" — commit the captured leg UNPAIRED, exactly what
       // `ambiguous-transfer`'s own secondary does above, and for the same

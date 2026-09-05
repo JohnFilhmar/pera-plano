@@ -503,6 +503,40 @@ export async function listPayments(loanId: string): Promise<LoanPayment[]> {
 }
 
 /**
+ * The payment that already claims this transaction, or `null`.
+ *
+ * `loan_payments.transaction_id` is `NOT NULL UNIQUE` (001_core.sql, invariant
+ * I12), so there is at most one and no ordering is needed. Exists so a caller
+ * can ASK before writing, rather than learning the answer as a thrown
+ * `PaymentAlreadyMatchedError` it then has to translate for the user.
+ */
+export async function getPaymentByTransaction(
+  transactionId: string,
+): Promise<LoanPayment | null> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{
+    id: string;
+    loan_id: string;
+    transaction_id: string;
+    created_at: number;
+    updated_at: number;
+  }>(
+    `SELECT id, loan_id, transaction_id, created_at, updated_at
+     FROM loan_payments WHERE transaction_id = ?`,
+    [transactionId],
+  );
+  return row === null
+    ? null
+    : {
+        id: row.id,
+        loanId: row.loan_id,
+        transactionId: row.transaction_id,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      };
+}
+
+/**
  * Un-matches a payment. Idempotent.
  *
  * NEVER DELETES THE TRANSACTION — the money moved, whatever the matcher thought

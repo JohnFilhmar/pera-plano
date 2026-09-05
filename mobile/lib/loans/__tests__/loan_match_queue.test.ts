@@ -37,6 +37,7 @@ import {
   raiseLoanMatchAfterCommit,
   raiseLoanMatchSuggestion,
   readLoanMatchPayload,
+  recordPaymentAndCloseCards,
 } from "../loan_match_queue";
 
 const NOW = new Date(2026, 8, 18, 12, 0).getTime(); // Sep 18 2026
@@ -80,6 +81,21 @@ async function utang(counterparty: string, principal: number, direction: "i-owe"
 /** Every open review item that is a loan-match card. */
 async function loanMatchItems() {
   return (await listOpen()).filter((item) => item.kind === LOAN_MATCH_KIND);
+}
+
+/**
+ * A loan and a transaction that plausibly pays it, with a SECOND loan from the
+ * same counterparty scoring exactly as well — the same shape as "TWO PLAUSIBLE
+ * LOANS PRODUCE ONE ITEM LISTING BOTH" above. The already-recorded-payment
+ * tests below need `otherLoan` to be a real candidate on the raised card,
+ * because `confirmLoanMatch` refuses a `loanId` that is not in its own
+ * payload.
+ */
+async function aLoanAndAPlausibleTransaction() {
+  const loan = await utang("Ben Santos", 200000, "owed-to-me");
+  const otherLoan = await utang("Ben Santos", 200000, "owed-to-me");
+  const transaction = await commit({ amount: 200000, merchant: "BEN SANTOS" });
+  return { loan, otherLoan, transaction };
 }
 
 beforeEach(async () => {
@@ -357,6 +373,53 @@ test("confirming a loan the card never offered records nothing", async () => {
 
   expect(await listPayments(unrelated.id)).toHaveLength(0);
   expect(await loanMatchItems()).toHaveLength(1);
+});
+
+// THE OWNER'S 2026-09-05 REPORT, IN ONE TEST. The notification raised a card;
+// the owner then confirmed the same transaction from the loan screen's match
+// sheet. The card survived, and pressing "Record this payment" on it threw
+// PaymentAlreadyMatchedError, which the review screen rendered as "That didn't
+// go through, and nothing was saved". Every word of that was false, and the
+// only button left that did anything said the payment was not a payment.
+test("recording a payment closes the open card for the same transaction", async () => {
+  const { loan, transaction } = await aLoanAndAPlausibleTransaction();
+  const itemId = (await raiseLoanMatchSuggestion(transaction)) as string;
+  expect(itemId).not.toBeNull();
+
+  await recordPaymentAndCloseCards(loan.id, transaction.id);
+
+  const open = await listOpen();
+  expect(open.map((item) => item.id)).not.toContain(itemId);
+});
+
+// The card that slipped through anyway: raised, then the payment recorded by
+// some other path. Confirming it must recognise the existing match and answer
+// the card's question, not throw at the user for doing what the app asked.
+test("confirming a card whose payment is already recorded resolves it", async () => {
+  const { loan, transaction } = await aLoanAndAPlausibleTransaction();
+  const itemId = (await raiseLoanMatchSuggestion(transaction)) as string;
+  await recordPayment({ loanId: loan.id, transactionId: transaction.id });
+
+  const payment = await confirmLoanMatch(itemId, loan.id);
+
+  expect(payment).not.toBeNull();
+  expect(payment?.transactionId).toBe(transaction.id);
+  const open = await listOpen();
+  expect(open.map((item) => item.id)).not.toContain(itemId);
+});
+
+// I12 STILL HOLDS: one transaction pays at most one loan. A card offering a
+// SECOND loan for a transaction the first loan already claimed must not record
+// anything, and must still close, because its question has an answer.
+test("a card is not a second claim on an already-paid transaction", async () => {
+  const { loan, otherLoan, transaction } = await aLoanAndAPlausibleTransaction();
+  const itemId = (await raiseLoanMatchSuggestion(transaction)) as string;
+  await recordPayment({ loanId: loan.id, transactionId: transaction.id });
+
+  await confirmLoanMatch(itemId, otherLoan.id);
+
+  const payments = await listPayments(otherLoan.id);
+  expect(payments).toHaveLength(0);
 });
 
 test("DISMISSING CLOSES THE ITEM AND WRITES NOTHING ELSE", async () => {

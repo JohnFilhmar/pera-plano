@@ -37,7 +37,7 @@
 import { listOpen, enqueue, resolve } from "@/lib/db/repos/review_queue_repo";
 import { withUnitOfWork } from "@/lib/db/unit_of_work";
 import { findLoanMatchesForTransaction } from "@/lib/loans/loans_service";
-import { recordPayment } from "@/lib/db/repos/loans_repo";
+import { getPaymentByTransaction, recordPayment } from "@/lib/db/repos/loans_repo";
 import type { LoanMatchCandidate } from "@/lib/loans/loans_service";
 import type { LoanPayment, ReviewItemPayload, ReviewQueueItem, Transaction } from "@/types/domain";
 
@@ -221,8 +221,83 @@ export async function confirmLoanMatch(
   if (!payload.candidates.some((candidate) => candidate.loanId === loanId)) return null;
 
   return withUnitOfWork(async () => {
+    // ALREADY RECORDED SOMEWHERE ELSE, AND THAT IS AN ANSWER, NOT A FAULT.
+    //
+    // Two surfaces can record this match and until now neither told the other:
+    // this card, and the loan detail screen's match sheet. Confirm the sheet
+    // first and the card survived; pressing it then reached `recordPayment`,
+    // which found the transaction claimed and threw
+    // `PaymentAlreadyMatchedError`, which app/review/index.tsx rendered as
+    // "That didn't go through, and nothing was saved". It HAD gone through, it
+    // WAS saved, and no amount of trying again could ever succeed. The only
+    // working button left was "Not a loan payment", so the app was asking the
+    // user to record the opposite of what happened. That is the owner's
+    // 2026-09-05 report.
+    //
+    // RESOLVES, WRITES NOTHING. The card asked "is this a payment on one of
+    // your loans?" and the ledger already says yes, so the question has an
+    // answer and the item closes as `confirmed`. Writing a second
+    // `loan_payments` row is not available even in principle: `transaction_id`
+    // is UNIQUE, which is invariant I12 in schema form.
+    //
+    // TRUE EVEN WHEN THE CLAIM IS ANOTHER LOAN'S. I12 gives a transaction one
+    // loan, so a card offering a second one has been overtaken by events. The
+    // existing payment is the honest return value, and leaving the item open to
+    // ask again would put an unanswerable question back in front of the user.
+    const existing = await getPaymentByTransaction(payload.transactionId);
+    if (existing !== null) {
+      await resolve(itemId, "confirmed");
+      return existing;
+    }
+
     const payment = await recordPayment({ loanId, transactionId: payload.transactionId });
     await resolve(itemId, "confirmed");
+    return payment;
+  });
+}
+
+/**
+ * Closes every OPEN loan-match card for a transaction, because it has one now.
+ *
+ * THE HALF OF THE RACE THAT NEVER REACHES THE CARD. `confirmLoanMatch` above
+ * handles a user who arrives at the card second. This handles the user who
+ * never goes back to it: they record the payment on the loan screen, and the
+ * card would otherwise sit in the queue asking a question that is already
+ * answered until it expires, offering an accept that can only fail.
+ *
+ * `confirmed`, not `dismissed`. The card asked "is this a payment on one of
+ * your loans", the answer turned out to be yes, and a queue that recorded it as
+ * a dismissal would be filing the user's own decision as a rejection.
+ */
+export async function closeLoanMatchesFor(transactionId: string): Promise<void> {
+  const open = await listOpen();
+  for (const item of open) {
+    if (readLoanMatchPayload(item)?.transactionId === transactionId) {
+      await resolve(item.id, "confirmed");
+    }
+  }
+}
+
+/**
+ * Record a payment from OUTSIDE the queue, and close whatever the queue was
+ * still asking about it.
+ *
+ * ONE UNIT OF WORK, for the same reason `confirmLoanMatch` is one: a recorded
+ * payment beside a surviving card is precisely the state this task exists to
+ * remove, and a half-applied write would recreate it.
+ *
+ * IT LIVES HERE AND NOT IN `loans_service.ts`. That module must not import the
+ * review queue. This one already imports both sides and is the only module
+ * allowed to; reversing that would make the two a cycle, which is how the Plan
+ * tab stopped rendering under Jest during m2 Task 8.
+ */
+export async function recordPaymentAndCloseCards(
+  loanId: string,
+  transactionId: string,
+): Promise<LoanPayment> {
+  return withUnitOfWork(async () => {
+    const payment = await recordPayment({ loanId, transactionId });
+    await closeLoanMatchesFor(transactionId);
     return payment;
   });
 }

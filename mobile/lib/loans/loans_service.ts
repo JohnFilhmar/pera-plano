@@ -626,6 +626,14 @@ export async function findLoanMatchesForTransaction(
  * cadence detection so that a borrower's regular repayments are never mistaken
  * for a payday." `income_repo.listLoanPaymentTransactionIds` reads the same
  * rows this writes, so the exclusion needs no second bookkeeping.
+ *
+ * THE UI GOES THROUGH `loan_match_queue.recordPaymentAndCloseCards`, NOT THIS
+ * FUNCTION DIRECTLY, because a plain `recordPayment` here leaves any open
+ * loan-match card for the same transaction sitting in the review queue asking
+ * an already-answered question. This function stays queue-blind on purpose —
+ * see that module's header on why it, not `loans_service.ts`, is allowed to
+ * import both sides — so the next screen wired to loan confirmation should
+ * reach for the queue-aware version, not this one.
  */
 export async function confirmPaymentMatch(
   loanId: string,
