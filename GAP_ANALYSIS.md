@@ -35,6 +35,12 @@ not been started. Each gap's detail entry in section 9 carries the same marker i
 
 | ID | Status | Commit | Branch | Verification | Date |
 |---|---|---|---|---|---|
+| GAP-095 | DONE | e046f84 | gap-wave-3 | same commit; test genuinely crosses midnight (23:58 mount, 00:02 save); GAP-060 submit guard untouched | 2026-09-04 |
+| GAP-090 | DONE | e046f84 | gap-wave-3 | same commit; all three false statements fixed, scope table now shared with the step that asks the cadence | 2026-09-04 |
+| GAP-076 | DONE | e046f84 | gap-wave-3 | jest 22 suites 342 tests PASS; all 20 useWallets call sites checked, no picker gained an archived wallet | 2026-09-04 |
+| GAP-031 | DONE | 4f8774a | gap-wave-3 | same commit; repo guard and both service guards each proven separately load-bearing. No migration; the real constraint needs a junction table, see GAP-057 | 2026-09-04 |
+| GAP-040 | DONE | 4f8774a + 7c0d255 | gap-wave-3 | jest lib/ingest+review+db 33 suites 925 tests PASS. Follow-up 7c0d255 fixes a pre-existing chain poisoning the atomic store made likelier | 2026-09-04 |
+| GAP-013 | DONE | 1baa4e6 | gap-wave-3 | jest query_client + components/ui + hooks + contexts 33 suites 430 tests PASS; one MutationCache onError covers all 49 hooks. Plan-screen mutateAsync try/catch still open | 2026-09-04 |
 | GAP-088 | DONE | 50223eb | gap-wave-2 | same commit; test fails if a wire field gains no disclosure phrase | 2026-09-04 |
 | GAP-084 | DONE | 50223eb | gap-wave-2 | same commit; reseeds on a value-based proposal signature, proven to fail when reverted | 2026-09-04 |
 | GAP-081 | DONE | 50223eb | gap-wave-2 | jest components/bills+goals+support 5 suites 66 tests PASS; fails with sources reverted | 2026-09-04 |
@@ -173,6 +179,33 @@ Facts established while fixing entries, that later entries must not rediscover t
   that copy as a side effect, so a full wipe left a live DEK in memory; fixed in `1ebb8a5`. In
   both cases the defect was invisible until someone asked "what did this change stop being true".
   Ask it explicitly for any fix that changes ownership, lifetime, or what counts as reachable.
+
+- **Concurrent jest runs race on the transform cache** (2026-09-05). With three agents running
+  `npx jest` in the same worktree, a suite can fail to LOAD with
+  `EPERM: operation not permitted, rename '...jest-transform-cache...'`, and unrelated suites can
+  blow the 30s default timeout under the CPU contention. Neither is a real failure. Give each
+  concurrent agent its own `--cacheDirectory` outside the repo, and re-run before believing a
+  failure that looks like a load error or a timeout.
+- **A latent chain-poisoning bug in `startIngest`, fixed 2026-09-05 in `7c0d255`.** The capture
+  chain was an un-caught IIFE and live captures append with `chain.then(onFulfilled)`, which on a
+  REJECTED promise skips the callback and passes the rejection on. One failed batch therefore
+  meant `runGuarded` was never called again and every notification for the rest of the process
+  was dropped silently, with tracking dead until app restart. This predates the remediation work;
+  GAP-040's atomic batch store only made it likelier to fire. The lesson for anything else built
+  on a promise chain here: a `.then` chain used as a QUEUE must never be allowed to reject, or it
+  stops being a queue.
+
+- **Wave 3 suite result** (2026-09-05, branch `worktree-gap-wave-3` off master). Two chunks,
+  `--runInBand`: `lib` **111 suites / 2,439 tests, zero failures**; the UI layer **140 of 141
+  suites / 1,992 of 1,993 tests**. Total **252 suites, 4,432 tests, 1 failure**, and it is the
+  same `bills_screen` clock-dependent total that failed in waves 1 and 2.
+- **That bills_screen failure has now failed three waves running and is a ONE-LINE fix.**
+  `app/__tests__/bills_screen.test.tsx:60` derives `TODAY` from `systemClock.now()` with no fake
+  timer, so its "next 30 days" assertion slides with the real calendar date. It is not
+  irreducible flakiness and it is not caused by any remediation commit: agents have twice
+  reverted their own changes and reproduced it identically. It belongs to GAP-052 and was left
+  alone to keep that entry whole, but it costs a red line on every verification run, which is
+  how a team learns to ignore red. Worth doing first when GAP-052 is picked up.
 
 ## 1. Executive summary
 
@@ -1434,6 +1467,8 @@ none
 
 ### GAP-013 [CODE] Mutation failures are silent on about thirty screens
 
+> **REMEDIATION: DONE** (2026-09-04) - commit 1baa4e6, branch gap-wave-3. Verification: jest query_client + components/ui + hooks + contexts 33 suites 430 tests PASS; one MutationCache onError covers all 49 hooks. Plan-screen mutateAsync try/catch still open
+
 | Field | Value |
 |---|---|
 | Severity | S2 Major |
@@ -2539,6 +2574,8 @@ none (AGENT-ASSISTED: a reviewer should confirm the timer does not fire during t
 
 ### GAP-031 [CODE] linkTransfer overwrites an existing link on either leg
 
+> **REMEDIATION: DONE** (2026-09-04) - commit 4f8774a, branch gap-wave-3. Verification: same commit; repo guard and both service guards each proven separately load-bearing. No migration; the real constraint needs a junction table, see GAP-057
+
 | Field | Value |
 |---|---|
 | Severity | S3 Moderate |
@@ -3066,6 +3103,8 @@ n/a
 1. Device time from the owner. HUMAN-FIRST.
 
 ### GAP-040 [CODE] The drain-to-store loop is not one transaction; a kill mid-loop loses the rest of the batch
+
+> **REMEDIATION: DONE** (2026-09-04) - commit 4f8774a + 7c0d255, branch gap-wave-3. Verification: jest lib/ingest+review+db 33 suites 925 tests PASS. Follow-up 7c0d255 fixes a pre-existing chain poisoning the atomic store made likelier
 
 | Field | Value |
 |---|---|
@@ -5228,6 +5267,8 @@ none
 
 ### GAP-076 [CODE] Rows in an archived wallet show "Unknown wallet" on detail and in the transfer candidate list
 
+> **REMEDIATION: DONE** (2026-09-04) - commit e046f84, branch gap-wave-3. Verification: jest 22 suites 342 tests PASS; all 20 useWallets call sites checked, no picker gained an archived wallet
+
 | Field | Value |
 |---|---|
 | Severity | S3 Moderate |
@@ -6036,6 +6077,8 @@ none
 
 ### GAP-090 [CONTRA] The onboarding Done screen overclaims automatic pickup, labels every scope "Monthly limit", and contradicts itself when the limit is null
 
+> **REMEDIATION: DONE** (2026-09-04) - commit e046f84, branch gap-wave-3. Verification: same commit; all three false statements fixed, scope table now shared with the step that asks the cadence
+
 | Field | Value |
 |---|---|
 | Severity | S3 Moderate |
@@ -6328,6 +6371,8 @@ Revert.
 none
 
 ### GAP-095 [CODE] Manual entry freezes the day at mount, so a save after midnight is stamped at the previous day's midnight
+
+> **REMEDIATION: DONE** (2026-09-04) - commit e046f84, branch gap-wave-3. Verification: same commit; test genuinely crosses midnight (23:58 mount, 00:02 save); GAP-060 submit guard untouched
 
 | Field | Value |
 |---|---|
