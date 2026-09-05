@@ -130,7 +130,22 @@ test("A FRESH APP SHOWS THE NO-LIMIT INVITATION, NOT A ZERO", async () => {
   await screen.findByText("Set a limit to see what's safe to spend");
 
   fireEvent.press(screen.getByTestId("sts-set-limit"));
-  expect(mockPush).toHaveBeenCalledWith("/plan/limits/new");
+  expect(mockPush).toHaveBeenCalledWith("/plan/limits/new", { withAnchor: true });
+});
+
+// A CROSS-TAB PUSH CARRIES ITS ANCHOR. Home lives in one tab and every one of
+// these targets lives in another tab's Stack. Without `withAnchor` the target
+// mounts as that stack's ONLY entry on a cold start, and the tab is stuck on
+// it: no back, and pressing the tab button returns to the same card. See
+// plan/_layout.tsx for the other half, which covers deep links rather than
+// in-app pushes.
+test("opening a limit from Home anchors the Plan tab's stack", async () => {
+  renderScreen(<HomeScreen />);
+  await screen.findByTestId("sts-set-limit");
+
+  fireEvent.press(screen.getByTestId("sts-set-limit"));
+
+  expect(mockPush).toHaveBeenCalledWith("/plan/limits/new", { withAnchor: true });
 });
 
 test("A LIMIT AND SOME SPEND PRODUCE A REAL NUMBER AND ITS CAPTION", async () => {
@@ -320,7 +335,28 @@ test("A DISCONNECTED LISTENER STATES THE GAP AND OFFERS A FIX", async () => {
   fireEvent.press(screen.getByTestId("tracking-fix"));
   // The listener-health screen (m3b Task 7) is the destination this action
   // always wanted — the detailed view behind this exact banner.
-  expect(mockPush).toHaveBeenCalledWith("/more/listener_health");
+  expect(mockPush).toHaveBeenCalledWith("/more/listener_health", { withAnchor: true });
+});
+
+// A CROSS-TAB PUSH CARRIES ITS ANCHOR. Home lives in one tab and every one of
+// these targets lives in another tab's Stack. Without `withAnchor` the target
+// mounts as that stack's ONLY entry on a cold start, and the tab is stuck on
+// it: no back, and pressing the tab button returns to the same card. See
+// plan/_layout.tsx for the other half, which covers deep links rather than
+// in-app pushes.
+test("opening listener health from Home anchors the More tab's stack", async () => {
+  mockHealth.mockResolvedValue({
+    granted: true,
+    serviceConnected: false,
+    lastCaptureAt: systemClock.now() - 2 * DAY_MS,
+  });
+
+  renderScreen(<HomeScreen />);
+  await screen.findByTestId("tracking-fix");
+
+  fireEvent.press(screen.getByTestId("tracking-fix"));
+
+  expect(mockPush).toHaveBeenCalledWith("/more/listener_health", { withAnchor: true });
 });
 
 test("PAUSED IS A NEUTRAL PILL, NOT A FAULT — THE USER CHOSE IT", async () => {
@@ -430,10 +466,13 @@ test("AN OVERDUE BILL RAISES AN ALERT AND OPENS ITS CYCLE", async () => {
 
   await screen.findByText("Meralco is overdue", {}, { timeout: 30_000 });
   fireEvent.press(screen.getByTestId(`home-alert-bill:${bill.id}:${yesterday}`));
-  expect(mockPush).toHaveBeenCalledWith({
-    pathname: "/plan/bills/[id]",
-    params: { id: bill.id, dueDate: yesterday },
-  });
+  expect(mockPush).toHaveBeenCalledWith(
+    {
+      pathname: "/plan/bills/[id]",
+      params: { id: bill.id, dueDate: yesterday },
+    },
+    { withAnchor: true },
+  );
 });
 
 test("A HEALTHY APP RAISES NO ALERTS — SILENCE IS THE GOOD STATE", async () => {

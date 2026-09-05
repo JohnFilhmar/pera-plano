@@ -11,6 +11,17 @@
 // than a hand-maintained list of things to hide.
 import { Stack } from "expo-router";
 
+/**
+ * The same anchor, for the same reason, as app/(tabs)/plan/_layout.tsx: a link
+ * straight to `more/listener_health` would otherwise mount this Stack with that
+ * screen as its only entry and strand the More tab on it. Home pushes here from
+ * its tracking banner. See that file for the full reasoning and for why the
+ * push sites carry `withAnchor` as well.
+ */
+export const unstable_settings = {
+  initialRouteName: "index",
+};
+
 export default function MoreLayout() {
   return <Stack screenOptions={{ headerShown: false }} />;
 }
