@@ -87,6 +87,7 @@ import { startPaydayNotificationSubscriber } from "@/lib/income/payday_notificat
 import { startLimitLedgerSubscriber } from "@/lib/limits/limit_ledger_subscriber";
 import { startTrackingHealthSubscriber } from "@/lib/alerts/tracking_health_subscriber";
 import { startRecurringLedgerSubscriber } from "@/lib/recurring/recurring_ledger_subscriber";
+import { startReconcilePromptSubscriber } from "@/lib/wallets/reconcile_scheduler";
 import { listBillStatuses } from "@/lib/bills/bills_service";
 import { postOverdueNotices, scheduleBillReminders } from "@/lib/bills/bill_reminders";
 import { listLoanStatuses } from "@/lib/loans/loans_service";
@@ -301,6 +302,19 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
   useEffect(() => {
     if (bootstrapState !== "ready") return;
     return startSubscriber("tracking health", startTrackingHealthSubscriber);
+  }, [bootstrapState]);
+
+  // Cash reconciliation prompts (docs/04-features/02-wallets.md §cash Wallet
+  // reconciliation; docs/06 §4.7's "periodic gentle prompt"). Cash sends no
+  // notifications, so a cash wallet is only ever as accurate as what the user
+  // remembered to enter — this is the only thing in the app that asks. Beside
+  // the tracking-health subscriber because it answers the same shape of
+  // question ("has this quietly stopped being true while nobody looked"), and
+  // it needs both wake-ups that subscriber's neighbours use: a launch pass for
+  // the calendar triggers and a ledger pass for the cash-out one.
+  useEffect(() => {
+    if (bootstrapState !== "ready") return;
+    return startSubscriber("cash reconcile prompts", startReconcilePromptSubscriber);
   }, [bootstrapState]);
 
   // Recurring-pattern detection re-runs on ledger commits, debounced (M3 Part

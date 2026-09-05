@@ -26,8 +26,61 @@ jest.mock("expo-router", () => ({
   }),
 }));
 
+// GAP-079 needs two things this suite's real database cannot give it: a
+// repository call that REFUSES, and a count of how many times a repository
+// call actually ran.
+//
+// PASSTHROUGH MOCKS, NOT STUBS. Everything else in both modules is the real
+// implementation — including `DuplicateNameError`, whose class identity the
+// routes' `instanceof` checks depend on — so every assertion in this file goes
+// on running against the real schema. Only the two writes under test change
+// behaviour, and only while a flag says so.
+//
+// The failures cannot be produced any other way at this level: `setMatchers`
+// and `archiveWallet` both succeed for any input these screens can construct,
+// and "the write failed" is precisely the state the routes were mishandling.
+let mockFailSetMatchers = false;
+let mockFailArchiveWallet = false;
+const mockRepoCalls = { createWallet: 0, updateWallet: 0, archiveWallet: 0 };
+
+jest.mock("@/lib/db/repos/wallet_matchers_repo", () => {
+  const actual = jest.requireActual<typeof import("@/lib/db/repos/wallet_matchers_repo")>(
+    "@/lib/db/repos/wallet_matchers_repo",
+  );
+  return {
+    ...actual,
+    setMatchers: (...args: Parameters<typeof actual.setMatchers>) =>
+      mockFailSetMatchers
+        ? Promise.reject(new Error("matchers could not be saved"))
+        : actual.setMatchers(...args),
+  };
+});
+
+jest.mock("@/lib/db/repos/wallets_repo", () => {
+  const actual = jest.requireActual<typeof import("@/lib/db/repos/wallets_repo")>(
+    "@/lib/db/repos/wallets_repo",
+  );
+  return {
+    ...actual,
+    createWallet: (...args: Parameters<typeof actual.createWallet>) => {
+      mockRepoCalls.createWallet += 1;
+      return actual.createWallet(...args);
+    },
+    updateWallet: (...args: Parameters<typeof actual.updateWallet>) => {
+      mockRepoCalls.updateWallet += 1;
+      return actual.updateWallet(...args);
+    },
+    archiveWallet: (...args: Parameters<typeof actual.archiveWallet>) => {
+      mockRepoCalls.archiveWallet += 1;
+      return mockFailArchiveWallet
+        ? Promise.reject(new Error("wallet could not be archived"))
+        : actual.archiveWallet(...args);
+    },
+  };
+});
+
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { ReactNode } from "react";
 import { ScrollView, StyleSheet } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -172,6 +225,11 @@ beforeEach(async () => {
   mockPush.mockClear();
   mockBack.mockClear();
   mockReplace.mockClear();
+  mockFailSetMatchers = false;
+  mockFailArchiveWallet = false;
+  mockRepoCalls.createWallet = 0;
+  mockRepoCalls.updateWallet = 0;
+  mockRepoCalls.archiveWallet = 0;
 });
 
 afterEach(async () => {
@@ -555,6 +613,169 @@ describe("the wallet detail actions", () => {
       pathname: "/wallet/[id]/edit",
       params: { id: gcash.id },
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GAP-079 — the half of a write these routes were not handling: the tap that
+// arrives while one is already running, and the write that comes back refused.
+//
+// THE MATCHER HALF IS THE EXPENSIVE ONE. Both form routes commit TWO writes in
+// order and chained the second inside the first's `onSuccess` with no
+// `onError` at all — so a wallet could be created (or renamed) while its
+// matchers silently were not, leaving a screen that looks unsaved over a
+// database that is half-saved. On `new` the obvious retry then hits
+// `DuplicateNameError` on the name the same form has just taken, which is why
+// its answer is a destination rather than a message.
+// ---------------------------------------------------------------------------
+
+describe("a write already in flight", () => {
+  test("a double tap on Add wallet runs ONE create", async () => {
+    await renderNew();
+
+    fireEvent.changeText(screen.getByTestId("wallet-form-name"), "BPI");
+    // BOTH PRESSES INSIDE ONE `act` — a double tap is two touches in one JS
+    // tick, and `fireEvent`'s own per-press `act` would otherwise flush enough
+    // React work between them to make the second press a second TAP.
+    act(() => {
+      fireEvent.press(screen.getByTestId("wallet-form-submit"));
+      fireEvent.press(screen.getByTestId("wallet-form-submit"));
+    });
+
+    await waitFor(() => expect(mockBack).toHaveBeenCalled());
+    // `WalletForm` has short-circuited on `submitting` since it was written;
+    // what it was GIVEN was `isPending` alone, which is not yet true inside
+    // that tick — and neither is a `useState` the first press has just set.
+    expect(mockRepoCalls.createWallet).toBe(1);
+    expect(await listWallets()).toHaveLength(1);
+  });
+
+  test("a double tap on Save wallet runs ONE rename", async () => {
+    const gcash = await createWallet({ name: "GCash" });
+    await renderEdit(gcash.id);
+
+    fireEvent.changeText(screen.getByTestId("wallet-form-name"), "GCash Main");
+    act(() => {
+      fireEvent.press(screen.getByTestId("wallet-form-submit"));
+      fireEvent.press(screen.getByTestId("wallet-form-submit"));
+    });
+
+    await waitFor(() => expect(mockBack).toHaveBeenCalled());
+    // A second rename is harmless; the second `setMatchers` chained behind it
+    // is not — that call MOVES a provider pair off whichever wallet holds it.
+    expect(mockRepoCalls.updateWallet).toBe(1);
+  });
+
+  test("a double tap on Delete wallet runs ONE archive", async () => {
+    const gcash = await createWallet({ name: "GCash", openingBalance: 100_000 });
+    const bpi = await createWallet({ name: "BPI" });
+    await insertTransaction({
+      walletId: gcash.id,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 10_000,
+      direction: "out",
+      occurredAt: 1_786_000_000_000,
+      source: "manual",
+      confidence: 1,
+    });
+    await renderDetail(gcash.id);
+
+    fireEvent.press(screen.getByTestId("wallet-detail-archive"));
+    fireEvent.press(screen.getByTestId("archive-move-transactions"));
+    fireEvent.press(screen.getByTestId(`archive-target-${bpi.id}`));
+    act(() => {
+      fireEvent.press(screen.getByTestId("archive-confirm"));
+      fireEvent.press(screen.getByTestId("archive-confirm"));
+    });
+
+    await waitFor(async () => expect((await getWallet(gcash.id))?.isArchived).toBe(true));
+    // The sheet's `busy` prop cannot refuse the second press on its own — a
+    // prop is still the previous render's value inside one tick — so the
+    // screen's ref is what stops a second `reassignWalletTransactions` running
+    // over a ledger the first one is still moving.
+    expect(mockRepoCalls.archiveWallet).toBe(1);
+    expect((await getWallet(bpi.id))?.balance).toBe(-10_000);
+  });
+});
+
+describe("a matcher save that fails", () => {
+  test("on `new`, hands the user the created wallet's edit screen", async () => {
+    mockFailSetMatchers = true;
+    await renderNew();
+
+    fireEvent.changeText(screen.getByTestId("wallet-form-name"), "GCash");
+    await waitFor(() => expect(screen.getByTestId("matcher-provider-gcash")).toBeTruthy());
+    fireEvent.press(screen.getByTestId("matcher-provider-gcash"));
+    fireEvent.press(screen.getByTestId("wallet-form-submit"));
+
+    await waitFor(() => expect(mockReplace).toHaveBeenCalled());
+
+    // The wallet IS created, which is exactly what makes coming back to this
+    // form a trap: its only button would retry the name it has just taken and
+    // be refused for it. The edit screen holds the same matcher picker and the
+    // save that failed.
+    const [created] = await listWallets();
+    expect(created.name).toBe("GCash");
+    expect(await listMatchers()).toHaveLength(0);
+    expect(mockReplace).toHaveBeenCalledWith({
+      pathname: "/wallet/[id]/edit",
+      params: { id: created.id },
+    });
+    // `replace`, not `back` — the form has done its job and is not somewhere
+    // to return to.
+    expect(mockBack).not.toHaveBeenCalled();
+  });
+
+  test("on `edit`, says which half landed and stays put", async () => {
+    const gcash = await createWallet({ name: "GCash" });
+    mockFailSetMatchers = true;
+    await renderEdit(gcash.id);
+
+    fireEvent.changeText(screen.getByTestId("wallet-form-name"), "GCash Main");
+    fireEvent.press(screen.getByTestId("wallet-form-submit"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("wallet-form-error")).toHaveTextContent(/name was saved/i),
+    );
+    // The rename committed and the matchers did not, so a screen that closed
+    // — or said nothing — would leave the user to discover the difference a
+    // week later, when a GCash notification lands in the Review Queue.
+    expect((await getWallet(gcash.id))?.name).toBe("GCash Main");
+    expect(mockBack).not.toHaveBeenCalled();
+  });
+});
+
+describe("an archive that fails", () => {
+  test("leaves the sheet open, saying nothing was retired", async () => {
+    const gcash = await createWallet({ name: "GCash", openingBalance: 100_000 });
+    await renderDetail(gcash.id);
+    mockFailArchiveWallet = true;
+
+    fireEvent.press(screen.getByTestId("wallet-detail-archive"));
+    fireEvent.press(screen.getByTestId("archive-confirm"));
+
+    await waitFor(() => expect(screen.getByTestId("archive-error")).toBeTruthy());
+    // Open, the wallet still live, and the confirm back for the retry the
+    // message asks for. Before this, the sheet stayed open with nothing said
+    // at all: identical to not having pressed the button.
+    expect(screen.getByTestId("archive-wallet-sheet")).toBeTruthy();
+    expect((await getWallet(gcash.id))?.isArchived).toBe(false);
+    expect(screen.getByTestId("archive-confirm").props.accessibilityState.disabled).toBe(false);
+  });
+
+  test("does not greet the user again the next time they open the sheet", async () => {
+    const gcash = await createWallet({ name: "GCash", openingBalance: 100_000 });
+    await renderDetail(gcash.id);
+    mockFailArchiveWallet = true;
+
+    fireEvent.press(screen.getByTestId("wallet-detail-archive"));
+    fireEvent.press(screen.getByTestId("archive-confirm"));
+    await waitFor(() => expect(screen.getByTestId("archive-error")).toBeTruthy());
+
+    fireEvent.press(screen.getByTestId("archive-cancel"));
+    fireEvent.press(screen.getByTestId("wallet-detail-archive"));
+
+    expect(screen.queryByTestId("archive-error")).toBeNull();
   });
 });
 

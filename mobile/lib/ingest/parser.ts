@@ -19,6 +19,7 @@
 // Pure: no I/O, no clock, no database. `occurredAt` comes from the capture's
 // own `postedAt`, so the whole stage is a function of its two arguments.
 import { countAmountTokens, parseAmountToCentavos } from "@/lib/ingest/amount";
+import { MAX_PATTERN_CHARS } from "@/lib/ingest/ruleset_schema";
 import { DEFAULT_TUNABLES, type PipelineTunables } from "@/lib/ingest/ruleset_types";
 
 import type { ProviderRuleset, ProviderTemplate } from "@/lib/ingest/ruleset_types";
@@ -133,12 +134,22 @@ const toScaled = (value: number): number => Math.round(value * SCORE_SCALE);
  * A pattern that throws is SKIPPED SILENTLY (spec §4 rule 4). Doing it here,
  * once, rather than inside the search loops also means a malformed row costs
  * one failed compile per parse instead of one per text field.
+ *
+ * PATTERNS ARE ALREADY VALIDATED BY THE TIME THEY REACH HERE — every remote
+ * bundle goes through `ruleset_schema.ts` before it is stored — so the checks
+ * below are the second line, not the first. They stay because rows written
+ * before that validation existed are still on disk and are read by exactly
+ * this function, and a stored row is the one input nobody re-checks.
  */
 function compileTemplates(rules: ProviderRuleset[]): CompiledTemplate[] {
   const compiled: CompiledTemplate[] = [];
 
   for (const provider of rules) {
     for (const template of provider.templates) {
+      // Length alone proves nothing about cost, but it is the one bound that
+      // is free here: the structural and timing checks belong at the
+      // installation boundary, where they run once instead of per parse.
+      if (template.match.length > MAX_PATTERN_CHARS) continue;
       try {
         compiled.push({ provider, template, regex: new RegExp(template.match) });
       } catch {

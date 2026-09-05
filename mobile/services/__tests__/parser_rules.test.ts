@@ -13,6 +13,7 @@ import {
   getActiveVersion,
   upsertRuleset,
 } from "@/lib/db/repos/parser_rulesets_repo";
+import { MAX_RESPONSE_CHARS } from "@/lib/ingest/ruleset_schema";
 import type { ProviderRuleset, ProviderTemplate } from "@/lib/ingest/ruleset_types";
 import { freshDb } from "@/test_support/db";
 import type { SQLiteDatabase } from "@/lib/db/database";
@@ -58,9 +59,19 @@ function provider(overrides: Partial<ProviderRuleset> = {}): ProviderRuleset {
   };
 }
 
-/** Resolves every request with the given status/body — never opens a socket. */
+/**
+ * Resolves every request with the given status/body — never opens a socket.
+ *
+ * The body is SERIALIZED, matching what the transport really hands back:
+ * `checkForRulesetUpdate` asks for text with axios's JSON transform off so it
+ * can cap the body before anything parses it, so an adapter that resolved with
+ * a ready-made object would be testing a code path the device never takes. A
+ * string is passed straight through, which is how the malformed-JSON and
+ * oversized cases below are written.
+ */
 function respondWith(status: number, data: unknown): AxiosAdapter {
-  return async (config) => ({ data, status, statusText: "", headers: {}, config });
+  const body = typeof data === "string" ? data : JSON.stringify(data);
+  return async (config) => ({ data: body, status, statusText: "", headers: {}, config });
 }
 
 /** Fails the way a real connection failure does: rejects with no `.response` at all. */
@@ -77,6 +88,44 @@ async function rowCount(): Promise<number> {
   return row?.count ?? 0;
 }
 
+/** The newest stored payload, exactly as it sits on disk. */
+async function storedPayload(): Promise<Record<string, unknown>> {
+  const row = await db.getFirstAsync<{ payload_json: string }>(
+    "SELECT payload_json FROM parser_rulesets ORDER BY version DESC LIMIT 1",
+  );
+  return JSON.parse(row!.payload_json) as Record<string, unknown>;
+}
+
+/**
+ * Installs version 1, answers the next request with `body`, and asserts the
+ * device is exactly where it started: same version, same providers, no extra
+ * row, and a warning so a rejected bundle is not silent.
+ *
+ * FAILING CLOSED IS THE ASSERTION. Rejecting a hostile bundle is only half of
+ * it — the device has to keep parsing with the ruleset it already had, never
+ * fall back to no rules and never to a half-applied one.
+ */
+async function expectDiscarded(body: unknown): Promise<void> {
+  await upsertRuleset({ version: 1, providers: [provider({ providerKey: "installed" })] });
+  apiClient.defaults.adapter = respondWith(200, body);
+
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    const result = await checkForRulesetUpdate(1_000);
+
+    expect(result).toEqual({ updated: false, version: 1 });
+    expect(await getActiveVersion()).toBe(1);
+    const active = await getActiveRuleset();
+    expect(active!.version).toBe(1);
+    expect(active!.providers).toHaveLength(1);
+    expect(active!.providers[0].providerKey).toBe("installed");
+    expect(await rowCount()).toBe(1);
+    expect(warn).toHaveBeenCalled();
+  } finally {
+    warn.mockRestore();
+  }
+}
+
 // ---------------------------------------------------------------------------
 // The eight named tests from the plan (Task 5, Step 1).
 // ---------------------------------------------------------------------------
@@ -87,7 +136,8 @@ test("the request carries the current version as since_version", async () => {
   const captured: { params?: unknown } = {};
   apiClient.defaults.adapter = async (config) => {
     captured.params = config.params;
-    return { data: { version: 5, providers: [] }, status: 200, statusText: "OK", headers: {}, config };
+    const data = JSON.stringify({ version: 5, providers: [] });
+    return { data, status: 200, statusText: "OK", headers: {}, config };
   };
 
   await checkForRulesetUpdate(1_000);
@@ -192,7 +242,8 @@ test("a check inside the interval does not re-request", async () => {
   let callCount = 0;
   apiClient.defaults.adapter = async (config) => {
     callCount += 1;
-    return { data: { version: 1, providers: [] }, status: 200, statusText: "OK", headers: {}, config };
+    const data = JSON.stringify({ version: 1, providers: [] });
+    return { data, status: 200, statusText: "OK", headers: {}, config };
   };
 
   const first = await checkForRulesetUpdate(1_000);
@@ -203,4 +254,131 @@ test("a check inside the interval does not re-request", async () => {
   expect(callCount).toBe(1);
   expect(first).toEqual({ updated: false, version: 1 });
   expect(second).toEqual({ updated: false, version: 1 });
+});
+
+// ---------------------------------------------------------------------------
+// Hostile bundles (GAP-014).
+//
+// The host behind `/v1/parser_rules` does not exist yet, so whoever eventually
+// stands it up — or anyone who can intercept TLS to it — is the attacker here.
+// Every payload below was ACCEPTED AND STORED by the pre-schema check, because
+// that check only asked whether each `match` compiled. Each one now has to be
+// discarded with the previous ruleset still in place; `expectDiscarded` asserts
+// both halves.
+// ---------------------------------------------------------------------------
+
+test("a bundle whose providers are the wrong shape is discarded", async () => {
+  // Every `match` here compiles, which is all the old check ever asked.
+  await expectDiscarded({
+    version: 2,
+    providers: [
+      {
+        providerKey: 42,
+        packageNames: "com.example.evil",
+        version: "one",
+        channel: "carrier_pigeon",
+        templates: [{ id: null, match: "paid", confidence: "high" }],
+      },
+    ],
+  });
+});
+
+test("a bundle that lowers autoCommitThreshold to 0 is discarded", async () => {
+  // The one that matters most: 0 is a well-typed number and it books every
+  // capture, however badly parsed, without the user ever seeing it.
+  await expectDiscarded({
+    version: 2,
+    providers: [provider({ providerKey: "evil" })],
+    tunables: { autoCommitThreshold: 0 },
+  });
+});
+
+test("a bundle with thresholds out of order is discarded", async () => {
+  await expectDiscarded({
+    version: 2,
+    providers: [provider({ providerKey: "evil" })],
+    tunables: { prefilledThreshold: 0.95, autoCommitThreshold: 0.91 },
+  });
+});
+
+test("a bundle with a NaN penalty is discarded", async () => {
+  // JSON has no NaN literal, so this is how it actually arrives on the wire:
+  // a string the old code never looked at, which `confidence_gate` would have
+  // turned into NaN and compared against forever.
+  await expectDiscarded({
+    version: 2,
+    providers: [provider({ providerKey: "evil" })],
+    tunables: { penalties: { smsChannel: "not a number" } },
+  });
+});
+
+test("a bundle carrying a catastrophic regex is discarded", async () => {
+  await expectDiscarded({
+    version: 2,
+    providers: [
+      provider({ providerKey: "evil", templates: [template({ match: "^(a+)+$" })] }),
+    ],
+  });
+});
+
+test("a response body over the size cap is discarded before it is parsed", async () => {
+  // A bundle that would otherwise install cleanly, padded past the cap. Only
+  // the size check can reject it, so this test is about the cap and nothing
+  // else.
+  const oversized = JSON.stringify({
+    version: 2,
+    providers: [provider({ providerKey: "evil" })],
+    padding: "x".repeat(MAX_RESPONSE_CHARS),
+  });
+  expect(oversized.length).toBeGreaterThan(MAX_RESPONSE_CHARS);
+
+  const parse = jest.spyOn(JSON, "parse");
+  try {
+    await expectDiscarded(oversized);
+
+    // The cap has to run BEFORE the parse or it is not a cap: a body this size
+    // must never have reached JSON.parse at all.
+    const parsedAnythingOversized = parse.mock.calls.some(
+      ([text]) => typeof text === "string" && text.length > MAX_RESPONSE_CHARS,
+    );
+    expect(parsedAnythingOversized).toBe(false);
+  } finally {
+    parse.mockRestore();
+  }
+});
+
+test("a body that is not JSON at all is discarded", async () => {
+  await expectDiscarded("<html>504 Gateway Timeout</html>");
+});
+
+test("unknown top-level keys are stripped rather than stored verbatim", async () => {
+  await upsertRuleset({ version: 1, providers: [provider({ providerKey: "installed" })] });
+  apiClient.defaults.adapter = respondWith(200, {
+    version: 2,
+    providers: [provider({ providerKey: "new" })],
+    payload: "x".repeat(2_000),
+  });
+
+  const result = await checkForRulesetUpdate(1_000);
+
+  expect(result).toEqual({ updated: true, version: 2 });
+  expect(Object.keys(await storedPayload()).sort()).toEqual(["providers", "version"]);
+});
+
+test("a bundle that only retunes thresholds inside their ranges still installs", async () => {
+  await upsertRuleset({ version: 1, providers: [provider({ providerKey: "installed" })] });
+  apiClient.defaults.adapter = respondWith(200, {
+    version: 2,
+    providers: [provider({ providerKey: "new" })],
+    tunables: { autoCommitThreshold: 0.95, prefilledThreshold: 0.7 },
+  });
+
+  const result = await checkForRulesetUpdate(1_000);
+
+  expect(result).toEqual({ updated: true, version: 2 });
+  const active = await getActiveRuleset();
+  expect(active!.tunables.autoCommitThreshold).toBe(0.95);
+  expect(active!.tunables.prefilledThreshold).toBe(0.7);
+  // Untouched keys still come from DEFAULT_TUNABLES.
+  expect(active!.tunables.reviewFloorThreshold).toBe(0.5);
 });

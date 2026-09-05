@@ -19,7 +19,7 @@
 // they just did — while quietly leaving money in a pocket they had already
 // emptied.
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "expo-router";
 
 import { ManualEntryForm } from "@/components/transactions/manual_entry_form";
@@ -84,15 +84,36 @@ export default function NewTransactionScreen() {
   // prop for why a second tap inside the write window is a second set of rows
   // rather than a no-op.
   //
-  // BOTH PATHS, AND SET SYNCHRONOUSLY, which is why `createTransaction.isPending`
-  // is not this flag on its own. React Query notifies its observers on a
-  // microtask, so two presses inside ONE JS tick both read `isPending: false`
-  // and both commit — the exact double tap this exists to stop. A `useState`
-  // set on the way into the write is the only thing the second press in that
-  // tick can actually observe. `isPending` is still ORed in below: it stays
-  // true through the invalidation `onSuccess` awaits, which is a window this
-  // flag has already been cleared in.
+  // BOTH PATHS, AND A REF, which is the part that actually stops a same-tick
+  // double tap. `createTransaction.isPending` cannot do it alone: React Query
+  // notifies its observers on a microtask, so two presses inside ONE JS tick
+  // both read `isPending: false` and both commit.
+  //
+  // A `useState` flag cannot do it either, which is what this comment used to
+  // claim. Calling the setter does not change the value the CURRENT render's
+  // closure is holding, so the second press in that tick reads the same stale
+  // `false` the first one did. GAP-079 proved it on the loan sheet: the state
+  // flag was in place and one collector visit still wrote two payments. Only a
+  // ref mutates in time for a handler already running in this tick.
+  //
+  // The state below exists purely to re-render the button into its spinner;
+  // the ref is the guard. `isPending` is still ORed in for the button, because
+  // it stays true through the invalidation `onSuccess` awaits, a window the
+  // ref has already been cleared in.
+  const writeInFlightRef = useRef(false);
   const [writeInFlight, setWriteInFlight] = useState(false);
+
+  function beginWrite(): boolean {
+    if (writeInFlightRef.current) return false;
+    writeInFlightRef.current = true;
+    setWriteInFlight(true);
+    return true;
+  }
+
+  function endWrite(): void {
+    writeInFlightRef.current = false;
+    setWriteInFlight(false);
+  }
   const { open } = useKeypad();
 
   // The amount is deliberately the first and only thing on screen (m1c rule
@@ -138,7 +159,7 @@ export default function NewTransactionScreen() {
       // Cleared on every attempt, so a message from the previous try cannot
       // sit under a Save that has just succeeded.
       setTransferError(null);
-      setWriteInFlight(true);
+      if (!beginWrite()) return;
       recordTransfer(
         {
           fromWalletId: draft.fromWalletId,
@@ -174,14 +195,14 @@ export default function NewTransactionScreen() {
         // IN `finally`, NOT ON THE SUCCESS ARM. A rejected transfer leaves this
         // screen open, and a flag cleared only where the write commits would
         // leave the user reading "try again" under a Save that never comes back.
-        .finally(() => setWriteInFlight(false));
+        .finally(endWrite);
       // Closed only AFTER the write commits — same reasoning as the entry
       // path's onSuccess below: a `back()` fired before the two legs land
       // would leave a failed transfer with nobody on screen to be told.
       return;
     }
 
-    setWriteInFlight(true);
+    if (!beginWrite()) return;
     createTransaction.mutate(
       {
         walletId: draft.walletId,
@@ -203,7 +224,7 @@ export default function NewTransactionScreen() {
       // `onSettled`, not `onSuccess`, for the flag — the transfer path's
       // `finally` for the same reason: a write that failed leaves this screen
       // open, and Save has to come back for the retry.
-      { onSuccess: () => router.back(), onSettled: () => setWriteInFlight(false) },
+      { onSuccess: () => router.back(), onSettled: endWrite },
     );
   }
 

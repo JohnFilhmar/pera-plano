@@ -17,7 +17,7 @@
 // reported balance-after; a typed adjustment there would fight the next snap
 // and lose, leaving a transaction explaining a balance change that never
 // happened.
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Text, View } from "react-native";
 
 import { AmountText, formatCentavos } from "@/components/ui/amount_text";
@@ -61,8 +61,48 @@ export function CashReconcileSheet({
   const [text, setText] = useState("");
   const [showError, setShowError] = useState(false);
   const [result, setResult] = useState<Transaction | null | undefined>(undefined);
+  // The write this sheet has already started, in TWO forms, because one flag
+  // cannot do both jobs.
+  //
+  // THE REF IS THE GUARD, and it is a ref rather than state precisely because
+  // `confirm` has to read its own write back in the SAME JS tick. A state
+  // setter does not change the value the current render's closure is holding,
+  // so two presses inside one tick both read `false` off a `useState` and both
+  // commit — components/loans/__tests__/record_payment_sheet.test.tsx pins
+  // that with two loan payments for one collector visit. `isPending` is later
+  // still: React Query notifies its observers on a timer.
+  //
+  // THE STATE IS THE RENDER. A ref changing re-renders nothing, so the button
+  // needs a value React can see before it will show a spinner.
+  const writeInFlight = useRef(false);
+  const [writing, setWriting] = useState(false);
 
   const reconcile = useReconcileCash();
+
+  // EVERY OPENING STARTS BLANK (GAP-079). This sheet is never unmounted: the
+  // detail screen keeps it in the tree and toggles `visible`, and only the
+  // `BottomSheet` inside it stops rendering — so the count, the refusal, the
+  // "Recorded." line and the mutation's own `isError` all survive a close and
+  // were still on screen the next time the user opened it. A sheet that opens
+  // holding last week's ₱500 is one mis-tap from confirming it.
+  //
+  // The same effect shape correct_sheet.tsx already uses for the same reason.
+  useEffect(() => {
+    if (!visible) return;
+    setText("");
+    setShowError(false);
+    setResult(undefined);
+    writeInFlight.current = false;
+    setWriting(false);
+    // The mutation's own state is part of the opening too — its `isError` is
+    // rendered below, and a failure the user walked away from must not be the
+    // first thing they see when they come back.
+    reconcile.reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `reconcile.reset`
+    // is a bound method on the observer, stable for this component's whole
+    // life; listing the mutation object itself would re-run this reset on
+    // every state change it makes, wiping the field mid-write.
+  }, [visible]);
 
   // Rule 6, enforced here as well as at the detail screen's action. Two guards
   // for one rule is cheap; a reconciliation adjustment landing in a wallet a
@@ -78,17 +118,39 @@ export function CashReconcileSheet({
   const preview = cashAdjustment(wallet.balance, physical);
 
   function confirm(): void {
+    // AHEAD OF THE EMPTY-FIELD CHECK, because a write already in flight
+    // outranks every other reason this sheet could have to accept or refuse a
+    // tap.
+    //
+    // A SYNCHRONOUS FLAG, NOT `reconcile.isPending` ALONE (GAP-060). React
+    // Query notifies its observers on a timer, so two presses inside ONE JS
+    // tick both read `isPending: false` and both commit — and both read the
+    // recorded balance before either adjustment lands, so the second writes
+    // the same difference a second time and leaves the wallet ₱300 under the
+    // figure the user typed. `isPending` is still ORed in below: it stays true
+    // across the invalidation `onSuccess` awaits, which is a window the ref has
+    // already been cleared in.
+    if (writeInFlight.current || reconcile.isPending) return;
     if (text === "") {
       setShowError(true);
       return;
     }
     setShowError(false);
+    writeInFlight.current = true;
+    setWriting(true);
     reconcile.mutate(
       { walletId: wallet.id, physicalBalance: physical },
       {
         onSuccess: (written) => {
           setResult(written);
           onDone?.(written);
+        },
+        // `onSettled`, NOT the success arm. A rejected count leaves this sheet
+        // open with what the user typed still in it, and the retry the message
+        // below asks for needs Save back.
+        onSettled: () => {
+          writeInFlight.current = false;
+          setWriting(false);
         },
       },
     );
@@ -217,6 +279,19 @@ export function CashReconcileSheet({
           </Text>
         )}
 
+        {/* IN PLACE, UNDER THE FIGURE IT IS ABOUT (GAP-079). The app's global
+            failure toast (GAP-013) already says that SOMETHING failed; what it
+            cannot say, from above the header on a screen it knows nothing
+            about, is that this wallet is untouched and the count in the field
+            is still there to send again. The sheet stays open for exactly that
+            reason, so the sentence belongs on it. */}
+        {reconcile.isError ? (
+          <Text testID="reconcile-error" className="text-sm text-danger dark:text-danger-dark">
+            That count could not be saved. Nothing was recorded and this wallet is unchanged — try
+            Save count again.
+          </Text>
+        ) : null}
+
         {result !== undefined ? (
           <Text testID="reconcile-result" className="text-sm text-brand dark:text-brand-dark">
             {result === null
@@ -234,7 +309,7 @@ export function CashReconcileSheet({
               testID="reconcile-confirm"
               title="Save count"
               onPress={confirm}
-              loading={reconcile.isPending}
+              loading={reconcile.isPending || writing}
             />
           </View>
         </View>

@@ -42,7 +42,7 @@ jest.mock("@react-native-community/datetimepicker", () => ({
 }));
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { ReactElement, ReactNode } from "react";
 
 import { KeypadHost } from "@/components/ui/keypad_host";
@@ -293,6 +293,28 @@ describe("a double tap on Save", () => {
     expect(await ledger(pocket.id)).toHaveLength(1);
     // The balance is what a second row landing late would give away: one
     // ₱100.00 off ₱1,000.00, not two.
+    expect((await getWallet(pocket.id))?.balance).toBe(90_000);
+  });
+
+  test("TWO PRESSES IN ONE TICK leave ONE row", async () => {
+    await renderNew();
+    typeAmount("manual-amount", "100");
+
+    // The test above presses twice in two separate `act()`s, which flushes
+    // enough React work between them that `isPending` alone catches the
+    // second. This one is the real double tap: both presses land inside ONE
+    // act, so no state update from the first can be observed by the second.
+    // A `useState` guard cannot stop this — the setter does not change the
+    // value the running handler's closure already read — which is why the
+    // flag here is a ref. GAP-079 found the same hole on the loan sheet,
+    // where it wrote two payments for one collector visit.
+    await act(async () => {
+      save();
+      save();
+    });
+
+    await waitFor(() => expect(mockBack).toHaveBeenCalled());
+    expect(await ledger(pocket.id)).toHaveLength(1);
     expect((await getWallet(pocket.id))?.balance).toBe(90_000);
   });
 });

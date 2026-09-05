@@ -1228,3 +1228,103 @@ describe("the wallet-kind card", () => {
     expect(screen.queryByTestId(`review-confidence-${queued.id}`)).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// `busy` — a triage write already in flight for THIS card (GAP-079)
+// ---------------------------------------------------------------------------
+//
+// Every `disabled` rule above answers "can this outcome be chosen at all?".
+// This one answers "has it already been chosen?", and it is a different
+// question with a different owner: `useReviewAction` is ONE mutation shared by
+// the whole queue, so only the screen can join `isPending` to the item being
+// written, and only the screen learns when the write settles. A card-local
+// latch could do neither — the queue keeps a FAILED card on screen, so a latch
+// with nothing to clear it would strand the user on the card they were trying
+// to resolve.
+//
+// Nothing under the hook dedupes a second outcome for one item, and `confirm`
+// and `dismiss` are not the same write, so the refusal has to happen at the
+// buttons.
+
+describe("a triage write already in flight for this card", () => {
+  test("disables the pair, and gives them back when it settles", async () => {
+    const queued = itemOfKind("low-confidence");
+    const card = (busy: boolean) => (
+      <ReviewCard
+        item={queued}
+        wallets={[gcash, bpi]}
+        onPrimary={jest.fn()}
+        onSecondary={jest.fn()}
+        busy={busy}
+      />
+    );
+    const view = render(card(true), { wrapper: Wrapper });
+
+    const primary = await screen.findByTestId(`review-primary-${queued.id}`);
+    expect(primary.props.accessibilityState.disabled).toBe(true);
+    // Refused WITH THE REASON on it, the same no-dead-taps rule the rest of
+    // this card keeps — a spinner where the others show a sentence.
+    expect(primary.props.accessibilityState.busy).toBe(true);
+    expect(
+      screen.getByTestId(`review-secondary-${queued.id}`).props.accessibilityState.disabled,
+    ).toBe(true);
+
+    view.rerender(card(false));
+
+    // A failed triage leaves this card exactly where it was — the screen
+    // renders the failure and offers a retry — so both buttons have to return.
+    expect(
+      screen.getByTestId(`review-primary-${queued.id}`).props.accessibilityState.disabled,
+    ).toBe(false);
+    expect(
+      screen.getByTestId(`review-secondary-${queued.id}`).props.accessibilityState.disabled,
+    ).toBe(false);
+  });
+
+  test("a second press on the primary does not reach the screen", async () => {
+    const onPrimary = jest.fn();
+    const queued = itemOfKind("low-confidence");
+    render(
+      <ReviewCard
+        item={queued}
+        wallets={[gcash, bpi]}
+        onPrimary={onPrimary}
+        onSecondary={jest.fn()}
+        busy
+      />,
+      { wrapper: Wrapper },
+    );
+
+    fireEvent.press(await screen.findByTestId(`review-primary-${queued.id}`));
+
+    expect(onPrimary).not.toHaveBeenCalled();
+  });
+
+  test("the per-loan buttons go with it", async () => {
+    const queued = itemOfKind("loan-match", {
+      id: "r-loan",
+      payload: {
+        candidates: [
+          { loanId: "l-nena", counterparty: "Aling Nena" },
+          { loanId: "l-ben", counterparty: "Kuya Ben" },
+        ],
+      },
+    });
+    render(
+      <ReviewCard item={queued} wallets={[gcash, bpi]} onChooseLoan={jest.fn()} busy />,
+      { wrapper: Wrapper },
+    );
+
+    // With two or more candidates the screen supplies NO primary (loans rule
+    // 9), so these are the card's confirm buttons and the only place a second
+    // tap can be refused.
+    expect(
+      (await screen.findByTestId(`review-loan-choice-${queued.id}-l-nena`)).props
+        .accessibilityState.disabled,
+    ).toBe(true);
+    expect(
+      screen.getByTestId(`review-loan-choice-${queued.id}-l-ben`).props.accessibilityState
+        .disabled,
+    ).toBe(true);
+  });
+});
