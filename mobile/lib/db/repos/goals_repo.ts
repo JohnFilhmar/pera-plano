@@ -283,6 +283,38 @@ export async function archiveGoal(id: string): Promise<void> {
 }
 
 /**
+ * Retires a goal the user has FINISHED with — the spec's "Complete", which the
+ * states table offers on the Reached card and, as "Complete anyway", on the
+ * Past due one (docs/04-features/05-goals-savings.md §States, §complete or edit
+ * flow step 3). `goal_card.tsx` has promised this in copy since it shipped
+ * ("Move the date, lower the target, or complete it anyway") with nothing
+ * behind it, so a reached goal sat in the live list until the user deleted it.
+ *
+ * IT IS THE SAME WRITE `archiveGoal` MAKES, and that is the honest state of the
+ * schema rather than a shortcut: `goals` has ONE retirement column,
+ * `archived_at` (migration 016), and no `completed_at`. Completing and deleting
+ * therefore land a goal in exactly the same place — out of the live list,
+ * restorable, wallet and transactions untouched (rule 3) — and the difference
+ * between them is not recorded. Adding a column is out of scope here and
+ * belongs with GAP-055, which owns the goal schema; until it lands, an archived
+ * goal reads as completed only where the app can DERIVE it, which is the
+ * balance-versus-target test rule 10 already calls Reached.
+ *
+ * It exists as its own name anyway, rather than the screen calling
+ * `archiveGoal`, because the two are different requests from the user and only
+ * one place then has to change when the column arrives.
+ *
+ * Idempotent on an unknown or already-retired id, like every archive here.
+ */
+export async function completeGoal(id: string, now: number = Date.now()): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync(
+    "UPDATE goals SET archived_at = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL",
+    [now, now, id],
+  );
+}
+
+/**
  * Restores a deleted goal. The exact inverse of `archiveGoal`.
  *
  * THE WALLET IS THE ONE THING THIS CAN FAIL ON. Deleting a goal frees its

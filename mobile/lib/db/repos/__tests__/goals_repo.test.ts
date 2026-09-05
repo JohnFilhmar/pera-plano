@@ -15,6 +15,7 @@ import type { Wallet } from "@/types/domain";
 
 import {
   countGoals,
+  completeGoal,
   createGoal,
   archiveGoal,
   unarchiveGoal,
@@ -371,6 +372,63 @@ test("the deleted list is opt-in and holds exactly what was deleted", async () =
   expect((await listGoals({ includeArchived: true })).map((row) => row.id).sort()).toEqual(
     [kept.id, gone.id].sort(),
   );
+});
+
+// ---------------------------------------------------------------------------
+// Complete — the spec's third lifecycle verb, which had no implementation at
+// all until now ("card offers Complete, Raise target, or Keep as-is"). A
+// reached goal could only be DELETED, so the live list filled with goals the
+// user had already finished.
+// ---------------------------------------------------------------------------
+test("COMPLETING A REACHED GOAL RETIRES IT AND LEAVES THE SAVINGS ALONE", async () => {
+  // Rule 3 holds for completing exactly as it does for deleting: the goal is a
+  // lens over the account, and finishing the plan must not touch the money.
+  const goal = await createGoal({
+    name: "Travel",
+    targetAmount: 3000000,
+    linkedWalletId: savings.id,
+  });
+  await fundWallet(savings.id, 3000000);
+
+  await completeGoal(goal.id);
+
+  expect(await listGoals()).toEqual([]);
+  expect((await getGoal(goal.id))?.archivedAt).toEqual(expect.any(Number));
+  expect((await getWallet(savings.id))?.balance).toBe(3000000);
+});
+
+test("a completed goal is restorable, and frees its account meanwhile", async () => {
+  // Completing is a retirement, not a destruction — the same contract deleting
+  // has since migration 016, and the reason `completeGoal` reuses `archived_at`
+  // rather than inventing a second lifecycle.
+  const goal = await createGoal({
+    name: "Travel",
+    targetAmount: 3000000,
+    targetDate: "2027-01-01",
+    linkedWalletId: savings.id,
+  });
+
+  await completeGoal(goal.id);
+
+  expect(await countGoals()).toBe(0);
+  expect((await listGoals({ includeArchived: true })).map((row) => row.id)).toEqual([goal.id]);
+
+  await unarchiveGoal(goal.id);
+  const restored = await getGoal(goal.id);
+  expect(restored?.archivedAt).toBeNull();
+  expect(restored?.createdAt).toBe(goal.createdAt);
+  expect(restored?.targetDate).toBe("2027-01-01");
+});
+
+test("completing is idempotent and never re-stamps a goal that is already retired", async () => {
+  const goal = await createGoal({ name: "Travel", targetAmount: 3000000, linkedWalletId: savings.id });
+  await completeGoal(goal.id, 1000);
+
+  await completeGoal(goal.id, 2000);
+  await archiveGoal(goal.id);
+
+  expect((await getGoal(goal.id))?.archivedAt).toBe(1000);
+  await expect(completeGoal("no-such-goal")).resolves.toBeUndefined();
 });
 
 // ---------------------------------------------------------------------------
