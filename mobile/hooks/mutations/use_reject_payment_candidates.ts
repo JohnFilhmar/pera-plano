@@ -4,6 +4,8 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/constants/query_keys";
 import { rejectCandidates } from "@/lib/db/repos/loans_repo";
 
+import { invalidateKeys } from "./invalidate_keys";
+
 /**
  * "None of these" (019_loan_match_rejections).
  *
@@ -18,6 +20,6 @@ export function useRejectPaymentCandidates() {
   return useMutation({
     mutationFn: ({ loanId, transactionIds }: { loanId: string; transactionIds: string[] }) =>
       rejectCandidates(loanId, transactionIds),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.loans.all }),
+    onSuccess: () => invalidateKeys(queryClient, [queryKeys.loans.all]),
   });
 }

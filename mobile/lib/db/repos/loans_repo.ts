@@ -560,9 +560,14 @@ export async function deletePayment(id: string): Promise<void> {
  * `INSERT OR IGNORE` against the pair's UNIQUE constraint is the whole
  * mechanism.
  *
- * TAKES THE WHOLE LIST, not one id at a time. The button rejects everything the
- * sheet was showing, and one statement per row inside one transaction is what
- * keeps a half-applied rejection from surviving a crash mid-loop.
+ * TAKES THE WHOLE LIST, not one id at a time, AS ONE STATEMENT WITH ONE
+ * `VALUES` TUPLE PER ROW — not a loop of single-row inserts. The button
+ * rejects everything the sheet was showing, and a single INSERT is atomic by
+ * definition, which is what actually keeps a half-applied rejection from
+ * surviving a crash mid-write; a bare loop of awaited calls promises no such
+ * thing without a transaction wrapped around it. The candidate list is at
+ * most a handful of rows, so the statement never comes close to SQLite's
+ * bound-variable limit.
  */
 export async function rejectCandidates(
   loanId: string,
@@ -572,13 +577,19 @@ export async function rejectCandidates(
   if (transactionIds.length === 0) return;
   const db = await getDatabase();
 
-  for (const transactionId of transactionIds) {
-    await db.runAsync(
-      `INSERT OR IGNORE INTO loan_match_rejections (id, loan_id, transaction_id, created_at)
-       VALUES (?, ?, ?, ?)`,
-      [newId(), loanId, transactionId, now],
-    );
-  }
+  const valuesTuples = transactionIds.map(() => "(?, ?, ?, ?)").join(", ");
+  const params = transactionIds.flatMap((transactionId) => [
+    newId(),
+    loanId,
+    transactionId,
+    now,
+  ]);
+
+  await db.runAsync(
+    `INSERT OR IGNORE INTO loan_match_rejections (id, loan_id, transaction_id, created_at)
+     VALUES ${valuesTuples}`,
+    params,
+  );
 }
 
 /** The transactions this loan has been told are not its payments. */
