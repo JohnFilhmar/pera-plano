@@ -35,6 +35,12 @@ not been started. Each gap's detail entry in section 9 carries the same marker i
 
 | ID | Status | Commit | Branch | Verification | Date |
 |---|---|---|---|---|---|
+| GAP-007 | DONE | 669d00c | gap-wave-6 | docs only, no suite. Acceptance grep returns 0. Every claim the rewrite adds was re-verified: f985c7f is the 2026-08-28 merge, server/ is on master, no staging branch exists. `cd server && npm run lint` NOT RUN - server/node_modules does not exist in a worktree and installing is barred | 2026-09-05 |
+| GAP-008 | DONE | 46412d1 | gap-wave-6 | jest lib/recurring 3 suites 53 tests PASS; reverting the source fails exactly "a fortnightly acknowledged pattern silent for 11 days is KEPT". The second new test passes with the fix removed too and is an over-correction guard, NOT a witness - do not credit it. Found an adjacent defect, see the monthlyLockedIn note in section 0 | 2026-09-05 |
+| GAP-009 | DONE | 438ebff | gap-wave-6 | jest components/loans + lib/loans 8 suites 128 tests PASS; the new test fails with the source reverted. THE ENTRY BELOW WAS FACTUALLY WRONG and was not implemented as written - see its corrected What is wrong, and the Cross-cutting findings in section 0 | 2026-09-05 |
+| GAP-015 | DONE | 3c6d278 | gap-wave-6 | docs only. Both acceptance greps PASS: "unit-tested in Kotlin" 0 hits, key_manager.test.ts named twice. Every doc claim was checked against code before being changed. Found a user-facing overclaim in onboarding COPY, see the Cross-cutting findings in section 0 | 2026-09-05 |
+| GAP-016 | DONE | e65b6e8 | gap-wave-6 | docs only. Acceptance PASS: section 6 now says the first arrival wins, section 11.2 rule 2 says integrity and authenticity verification is intended, not yet built. Checked against the CURRENT code including what waves 3-5 changed here; the balance-after cross-check turned out to be built but downstream in Wallets, not in ingest | 2026-09-05 |
+| GAP-094 | DONE | cbe7b5e | gap-wave-6 | jest modules 4 suites 64 tests PASS (JS consumers only; they mock the native module). KOTLIN NOT COMPILED AND NOT RUN - no Gradle project exists in a worktree. The 5 new Kotlin tests are verified by reading only. Narrower than the entry proposed: the skip is gated on isOngoing, because applying it to ordinary posts would collapse two genuine notifications seconds apart and break an existing 60s-interval test | 2026-09-05 |
 | GAP-086 | DONE | 9d5b6f2 | gap-wave-5 | jest bills_screen + components/bills + lib/bills 7 suites 130 tests PASS; reverting the two source lines fails all three new tests. Also fixes the four-wave bills_screen header failure | 2026-09-05 |
 | GAP-018 | DONE | 2de9b02 | gap-wave-5 | jest more_hub + more_tab + permissions_screen + components/onboarding 19 suites 215 tests PASS. ON-DEVICE VERIFICATION REQUIRED: battery intent resolution on One UI, truthful grant reads after a settings round trip, canAskAgain honesty, and whether the exemption survives at all | 2026-09-05 |
 | GAP-038 | DONE | a0f90a1 | gap-wave-5 | same suites PASS; five new tests fail when neutered. No migration: goals has one retirement column, so a completed goal is indistinguishable from a deleted one without completed_at (GAP-055) | 2026-09-05 |
@@ -270,6 +276,58 @@ Facts established while fixing entries, that later entries must not rediscover t
   load, and the suite would NOT catch it because the tests mock the package. The guard also
   does nothing on device until the next NATIVE REBUILD, since the module is absent from the
   installed dev and preview builds.
+- **Wave 6 suite result** (2026-09-05, branch `worktree-gap-wave-6` off the merged master).
+  **259 suites, 4,565 tests, ZERO failures**; typecheck unchanged, still only the pre-existing
+  `components/gates/__tests__/gates.test.tsx(91,29)` TS2339. The test delta over wave 5 is
+  exactly +3, the three tests this wave added. One run of the `app` chunk showed a single
+  failure in `app/__tests__/review_queue.test.tsx` that did NOT reproduce: the suite passes
+  30/30 alone and 38/38 on a clean re-run, and no wave 6 commit is on its runtime path. It was
+  load flakiness, on a machine that took 766 s for a chunk that took 439 s in wave 5.
+- **AN ENTRY IN THIS FILE CAN BE FLATLY WRONG, and implementing one as written can CREATE the
+  bug it describes.** GAP-009 claimed the loan rate field was unlabelled and silently monthly.
+  Both halves were false - the code is explicitly per-annum and the field already said
+  "Annual rate" - and the proposed fix would have labelled it "per month" while the maths kept
+  dividing by 12. See GAP-009's corrected "What is wrong". The lesson generalises: a `C2`
+  confidence flag means the audit did NOT execute or read the thing it is describing, so any
+  C2 entry's central claim must be re-verified in the current code BEFORE it is implemented,
+  and an agent that finds the claim false must report it rather than build to it.
+- **Line cites in this file drift, and now demonstrably so.** Wave 6 found the duplicate branch
+  at `pipeline.ts:463-465` where the entry said `:378-380`, `docs/03`'s section 11.2 rules at
+  `:335-340` not `:325-331`, and GAP-007's stale paragraph spanning four lines not three.
+  Re-read every cited location before acting on it.
+- **`server/` cannot be verified from a worktree.** Several entries name `cd server && npm run
+  lint` as their verification command. `server/node_modules` does not exist in a worktree -
+  only `mobile/` is junctioned - so that command cannot run, and installing is barred. Any
+  future entry whose proof lives under `server/` (GAP-019's security headers is the next one)
+  needs a `server/node_modules` junction created first, or it cannot be verified at all.
+
+**Three defects found by wave 6 that are NOT in the 99 and need entries of their own.**
+
+- **Onboarding promises new-device recovery that cannot work. Data-loss grade, and the most
+  serious thing found in six waves.** `mobile/components/onboarding/phrase_display.tsx:104`
+  tells the user: "If you ever get a new phone, or turn off and reset your fingerprint or PIN,
+  these 12 recovery words are the only way back to your data." The second half is TRUE - same
+  device, SecureStore intact, the phrase unwraps the DEK. The first half is FALSE:
+  `unwrapWithRecoveryPhrase` (`mobile/lib/crypto/key_manager.ts:171`) reads `recoveryWrap` and
+  `recoverySalt` from THAT DEVICE's SecureStore, a new phone has neither, and it throws
+  "recovery wrap not present" before deriving anything. Nothing exports those values and there
+  is no cloud backup (GAP-054: described as built, no code exists). A user who trusts that
+  sentence and switches phones loses everything, irreversibly, having been told they would not.
+  GAP-015 correctly did not touch it - that entry is docs-only and this is code.
+- **`monthlyLockedIn` counts a fortnightly subscription at double its cost.**
+  `recurring_service.ts:287` scales by `MONTHLY_FACTOR[pattern.period]`, keyed on the same
+  three-value bucket enum that caused GAP-008: a 14-day charge buckets as `weekly` and is
+  counted 52 times a year instead of 26. That total is the headline "locked in" figure and
+  feeds Safe-to-Spend, so overstating it makes Safe-to-Spend understate the money the user
+  actually has. GAP-008 deliberately did not touch it; its test pins the doubling and is
+  commented as pinning known-wrong behaviour, not the intended conversion.
+- **Two sibling doc overclaims, each outside the entry that found it.**
+  `docs/02-domain-model.md:453` still calls the loan `interestRate` "Optional, informational",
+  which `438ebff` corrected in `types/domain.ts` but not here, and it now contradicts both the
+  code and `docs/04-features/06-loans.md` rules 1 and 3.
+  `docs/04-features/08-review-queue.md:58` repeats the unbuilt field-union promise GAP-016
+  removed from `docs/03`, in different words ("default keep: the record with more parsed
+  fields").
 
 ## 1. Executive summary
 
@@ -1140,6 +1198,8 @@ none
 
 ### GAP-007 [DOC] docs/DEPLOYMENT.md still says master has no server directory
 
+> **REMEDIATION: DONE** (2026-09-05) - commit 669d00c, branch gap-wave-6. Verification: docs only, no suite. Acceptance grep returns 0. Every claim the rewrite adds was re-verified: f985c7f is the 2026-08-28 merge, server/ is on master, no staging branch exists. `cd server && npm run lint` NOT RUN - server/node_modules does not exist in a worktree and installing is barred
+
 | Field | Value |
 |---|---|
 | Severity | S3 Moderate |
@@ -1196,6 +1256,8 @@ Revert the commit.
 none
 
 ### GAP-008 [CODE] Fortnightly recurring patterns are forgotten before their next charge is due
+
+> **REMEDIATION: DONE** (2026-09-05) - commit 46412d1, branch gap-wave-6. Verification: jest lib/recurring 3 suites 53 tests PASS; reverting the source fails exactly "a fortnightly acknowledged pattern silent for 11 days is KEPT". The second new test passes with the fix removed too and is an over-correction guard, NOT a witness - do not credit it. Found an adjacent defect, see the monthlyLockedIn note in section 0
 
 | Field | Value |
 |---|---|
@@ -1259,6 +1321,8 @@ none
 
 ### GAP-009 [CODE] Loan interest rate field has no unit label and is silently monthly
 
+> **REMEDIATION: DONE** (2026-09-05) - commit 438ebff, branch gap-wave-6. Verification: jest components/loans + lib/loans 8 suites 128 tests PASS; the new test fails with the source reverted. THE ENTRY BELOW WAS FACTUALLY WRONG and was not implemented as written - see its corrected What is wrong, and the Cross-cutting findings in section 0
+
 | Field | Value |
 |---|---|
 | Severity | S3 Moderate |
@@ -1282,13 +1346,41 @@ none
 `domain.ts:349`: `/** Percent 0..100, informational only (domain §3.8). */ interestRate: number | null;` while `loan_form.tsx:236-237` calls `monthlyPayment(principal, rate, term)`; a grep for "annum" or "per year" in the form finds only a comment at line 234 ("cost per month"). Doc rule 3: the rate is "entered with an explicit per-month or per-annum unit".
 
 **What is wrong**
-The field is unlabeled and treated as a monthly rate. A user typing an annual rate (the way a bank quotes it) gets an amortized installment about twelve times too high. C2 because the rendered label text was not read in full.
+> **CORRECTED 2026-09-05 while fixing this entry. The paragraph below was WRONG on both
+> counts and is kept only so nobody re-derives it.** ~~The field is unlabeled and treated as
+> a monthly rate. A user typing an annual rate (the way a bank quotes it) gets an amortized
+> installment about twelve times too high. C2 because the rendered label text was not read in
+> full.~~
+>
+> What is actually true, verified in the code: the rate is ANNUAL, explicitly and correctly.
+> `mobile/lib/loans/loan_math.ts:52,57` takes a parameter literally named
+> `annualRatePercent` and computes `monthlyRate = annualRatePercent / 100 / 12`, and the
+> pre-existing test pins PHP 50,000 at 12 over 12 months to PHP 4,442.44 a month, which is
+> the per-annum figure (a monthly reading gives about PHP 8,072). The field was not unlabeled
+> either: it already carried `label="Annual rate"` and `placeholder="Annual rate %, e.g. 12"`.
+> The C2 flag was right to distrust the claim, but the entry's grep looked for "annum" and
+> "per year" and missed the word "Annual".
+>
+> **Implementing this entry as written would have caused the bug it describes** - labelling an
+> annual rate "per month" while `loan_math.ts` kept dividing by 12.
+>
+> The real defect is narrower and is what `438ebff` fixed. `NumericField` renders `label`
+> only into `accessibilityLabel` and the keypad panel header, never as visible text
+> (`mobile/components/ui/numeric_field.tsx:178,216,220`), and the visible string is the
+> placeholder ONLY while the field is empty. So the unit was on screen right up until the
+> user typed a digit, after which a sighted user read "12%" under a section headed "Rate and
+> term" with nothing saying per what. PH lenders quote per month, so the failure mode is
+> real, just reached a different way.
 
 **Why it matters**
-A GLoan or credit-card loan entered at "24 percent" produces an absurd schedule and a wrong outstanding balance on the Plan tab.
+A GLoan or credit-card loan entered as "24" meaning per month produces a schedule twelvefold
+too heavy and a wrong outstanding balance on the Plan tab. The direction of the error is the
+opposite of what this entry originally claimed: the risk is a user entering a MONTHLY figure
+into a field that means ANNUAL.
 
 **Intended behavior**
-docs/04-features/06-loans.md:90: an explicit unit. At minimum the field says "per month".
+docs/04-features/06-loans.md:90: an explicit unit. The code's choice of per-annum is
+legitimate under that rule, which allows either; what it owes is that the unit stays visible.
 
 **Proposed fix**
 Label the field "Monthly interest rate (%)" and add helper text "Banks usually quote per year; divide by 12." Fix the type comment. A per-annum toggle is the fuller fix and is a product call; ship the label now.
@@ -1670,6 +1762,8 @@ none
 
 ### GAP-015 [DOC] docs/12 overclaims new-device recovery and Kotlin recovery tests
 
+> **REMEDIATION: DONE** (2026-09-05) - commit 3c6d278, branch gap-wave-6. Verification: docs only. Both acceptance greps PASS: "unit-tested in Kotlin" 0 hits, key_manager.test.ts named twice. Every doc claim was checked against code before being changed. Found a user-facing overclaim in onboarding COPY, see the Cross-cutting findings in section 0
+
 | Field | Value |
 |---|---|
 | Severity | S3 Moderate |
@@ -1730,6 +1824,8 @@ Revert the commit.
 none
 
 ### GAP-016 [DOC] docs/03 promises a survivor field union and balance-after cross-check that are not built
+
+> **REMEDIATION: DONE** (2026-09-05) - commit e65b6e8, branch gap-wave-6. Verification: docs only. Acceptance PASS: section 6 now says the first arrival wins, section 11.2 rule 2 says integrity and authenticity verification is intended, not yet built. Checked against the CURRENT code including what waves 3-5 changed here; the balance-after cross-check turned out to be built but downstream in Wallets, not in ingest
 
 | Field | Value |
 |---|---|
@@ -6395,6 +6491,8 @@ Revert.
 - Disable backup or document it as an encrypted restore path? (Wave 0.)
 
 ### GAP-094 [CODE] The listener re-seals and syncs the prefs file on every re-post of an ongoing notification, on the main thread, and inflates the seen count
+
+> **REMEDIATION: DONE** (2026-09-05) - commit cbe7b5e, branch gap-wave-6. Verification: jest modules 4 suites 64 tests PASS (JS consumers only; they mock the native module). KOTLIN NOT COMPILED AND NOT RUN - no Gradle project exists in a worktree. The 5 new Kotlin tests are verified by reading only. Narrower than the entry proposed: the skip is gated on isOngoing, because applying it to ordinary posts would collapse two genuine notifications seconds apart and break an existing 60s-interval test
 
 | Field | Value |
 |---|---|
