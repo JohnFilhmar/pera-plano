@@ -38,7 +38,10 @@ import java.util.UUID
  * (provider-selection plan Task 3). It is not an exception to the mirror rule
  * but its complement: the rule is about notification CONTENT, and an
  * unselected package is exactly what the onboarding picker exists to offer.
- * See the comment on the call itself.
+ * It is told whether the delivery is ongoing so it can record a package's
+ * first sighting while ignoring the re-posts that follow -- an ongoing tile
+ * arrives about once a second, and a prefs write per arrival is main-thread
+ * I/O with no end to it. See the comment on the call itself.
  *
  * TESTABILITY: [extractCapture] is a pure companion function and [handlePosted]
  * takes its [CapturePrefs] and its buffer `File` as parameters, so the whole
@@ -245,6 +248,10 @@ class PeraPlanoNotificationListenerService : NotificationListenerService() {
       nowMillis: Long,
     ) {
       try {
+        // Read once and passed to both users below, so the recording and the
+        // drop can never disagree about what this delivery is.
+        val isOngoing = sbn.isOngoing
+
         // BEFORE EVERY DROP BELOW, and that placement is the whole point
         // (provider-selection plan Task 3 rule 1). Not one of the fifteen
         // package names in the parser seed has been checked against a device
@@ -266,13 +273,24 @@ class PeraPlanoNotificationListenerService : NotificationListenerService() {
         // -- it never throws, which is what keeps this first line from
         // reaching the catch below and losing the notification it was only
         // supposed to make a note of.
-        prefs.recordObservedPackage(sbn.packageName, nowMillis)
+        //
+        // [isOngoing] IS PASSED THROUGH RATHER THAN CHECKED HERE. The tiles
+        // dropped on the next line re-post about once a second for as long as
+        // the download, the track or the route lasts, and a package's FIRST
+        // sighting still has to be recorded even when it arrives that way --
+        // a bank's foreground-service tile can be the only thing it posts
+        // before the user reaches the picker. Only `recordObservedPackage`
+        // knows whether this package is already on the list, so only it can
+        // tell a first sighting from the thousandth re-post; a check here
+        // could only choose between recording every one of them and recording
+        // none, and both are wrong.
+        prefs.recordObservedPackage(sbn.packageName, nowMillis, isOngoing = isOngoing)
 
         // Plan rule 5. Ongoing notifications are the persistent "app is
         // running" / "download in progress" tiles -- never transactions, and
         // they re-post constantly, so capturing them would churn the bounded
         // buffer and evict real captures.
-        if (sbn.isOngoing) return
+        if (isOngoing) return
 
         val record = extractCapture(sbn, nowMillis) ?: return
 

@@ -465,6 +465,14 @@ can stand in for the other.
 > thread, all day. Not a latency problem — notifications arrive at human rates — but a flash-write
 > and battery one, and this listener never stops.
 >
+> **Ongoing tiles are the exception, and they are already short-circuited.** A media player, a
+> download and a navigation session re-post the same ongoing notification at roughly 1 Hz, which is
+> not a human rate. `recordObservedPackage` now takes the delivery's `isOngoing` flag: a first
+> sighting is stored either way, but a re-post of a package already at the front of the list writes
+> nothing until `OBSERVED_REPOST_WINDOW_MILLIS` (60 s) has passed, and never raises the count. So
+> the number to watch on a device is commits per *distinct* notification, not per delivery: a
+> playing track should add no writes at all after the first.
+>
 > If the device number lands near the JVM's rather than well below it, the lever is `apply()`
 > instead of `commit()` **for this one value**: losing the last observed-package write is harmless
 > bookkeeping that the next notification rewrites, which is emphatically not true of the provider

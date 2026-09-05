@@ -189,6 +189,10 @@ class CapturePrefs(context: Context) {
    * milliseconds, interface contract §1), incrementing its count and moving
    * it to the front of [listObservedPackages].
    *
+   * [isOngoing] is `sbn.isOngoing` for this delivery, and it is what keeps a
+   * re-posting tile from turning bookkeeping into a treadmill -- see
+   * ONGOING RE-POSTS COST NOTHING below.
+   *
    * WHY THIS EXISTS. **NOT ONE of the fifteen package names in the parser
    * `seed.json` has been checked against a device or a Play listing** --
    * `lib/ingest/seed_rules.ts`'s own header says so outright. Seven are
@@ -210,6 +214,31 @@ class CapturePrefs(context: Context) {
    * apps they already chose, which makes the picker useless for its own job.
    * See `PeraPlanoNotificationListenerService.handlePosted`, where this is
    * the first line inside the try for exactly that reason.
+   *
+   * ONGOING RE-POSTS COST NOTHING, and that is the difference between "every
+   * notification" and "every notification worth a write". A media player, a
+   * download and a navigation session each re-post the SAME ongoing tile
+   * roughly once a second for as long as they run. Recording every one of
+   * those the way a real post is recorded charged the measured 3.8 ms below
+   * -- a whole-file re-seal plus an fsync, on the binder thread the listener
+   * has to stay responsive on -- to learn a fact the list already held, once
+   * a second, indefinitely. So an [isOngoing] delivery of a package that is
+   * ALREADY at the front and was seen within [OBSERVED_REPOST_WINDOW_MILLIS]
+   * returns without writing at all: neither the count, nor the order, nor
+   * `lastSeenAt` to within a minute, would come out any different.
+   *
+   * FIRST SIGHT IS NOT A RE-POST. A package this device has never seen is
+   * stored even when the notification is ongoing, because a bank app's
+   * foreground-service tile can easily be the only thing it ever posts before
+   * the user reaches the picker -- which is the one case the picker exists
+   * for. The short-circuit needs a previous entry to short-circuit against.
+   *
+   * THE COUNT MEANS DISTINCT POSTS, so an [isOngoing] re-post never raises
+   * it. It was meant to separate a bank the user actually banks with from a
+   * one-off, and a signal dominated by whichever app re-posts its tile most
+   * ranks the music player above the bank. A re-post that DOES write -- the
+   * package was displaced from the front, or the window has run out -- still
+   * refreshes `lastSeenAt` and still leaves the count alone.
    *
    * PACKAGE NAMES, A COUNT AND A TIMESTAMP. Never a title, never body text.
    * This list is already sensitive enough to be sealed; adding content would
@@ -245,32 +274,58 @@ class CapturePrefs(context: Context) {
    * `commit()` and not `apply()`), and this function is flat across a
    * 12-entry and a 100-entry list, which is what rules the list size out.
    *
-   * What this task genuinely adds is therefore not encryption overhead but
-   * (a) one commit on the DROPPED path, which previously wrote nothing at
-   * all, and (b) ~5.5 KB of sealed base64 to a file that every other write
-   * rewrites in full -- which is why `recordCapture` above measures 2,366 us
-   * once this list is at its cap.
+   * What observing packages genuinely adds is therefore not encryption
+   * overhead but (a) one commit on the DROPPED path, which previously wrote
+   * nothing at all, and (b) ~5.5 KB of sealed base64 to a file that every
+   * other write rewrites in full -- which is why `recordCapture` above
+   * measures 2,366 us once this list is at its cap.
    *
-   * Acceptable, deliberately: notifications arrive at human rates on a
-   * background binder thread, so 4 ms is nowhere near user-visible. It is a
-   * flash-write and battery cost, not a latency one. TREAT THESE AS A
+   * Acceptable, deliberately, but ONLY at human rates: notifications arrive
+   * on a background binder thread and 4 ms is nowhere near user-visible. It
+   * is a flash-write and battery cost, not a latency one. Ongoing tiles are
+   * the one thing that does not arrive at human rates, which is exactly why
+   * they are short-circuited above -- 3.8 ms and an fsync once a second, for
+   * hours, is a different cost entirely. TREAT THESE AS A
    * CEILING rather than a floor -- unlike the Keystore numbers in
    * [shouldCapture], a Robolectric `commit()` is real host file I/O on a
    * developer's NTFS volume, and a device writing app-private storage on
    * ext4/f2fs should be cheaper. docs/13-on-device-verification.md carries
    * the on-device confirmation.
    */
-  fun recordObservedPackage(packageName: String, atMillis: Long) {
+  fun recordObservedPackage(packageName: String, atMillis: Long, isOngoing: Boolean = false) {
     if (packageName.isEmpty()) return
 
     val existing = listObservedPackages()
     val previous = existing.firstOrNull { it.packageName == packageName }
+
+    // NOTHING NEW TO LEARN, so nothing to pay for: an ongoing tile re-posting
+    // once a second, already at the front, seen moments ago. `existing.first()`
+    // is safe -- a non-null `previous` came out of that same list.
+    //
+    // The `isOngoing` conjunct is deliberate and is what keeps this from
+    // eating real posts. Two GENUINE notifications from the same bank seconds
+    // apart (a transfer confirmation, then the balance that follows it) are
+    // two distinct posts and must count as two; only a re-post of a
+    // persistent tile is the same fact arriving again.
+    if (isOngoing && previous != null && existing.first().packageName == packageName) {
+      val sinceLastSeen = atMillis - previous.lastSeenAt
+      // A negative delta means the clock moved backwards between deliveries.
+      // That is not "recent", it is unknown, so it falls through and writes.
+      if (sinceLastSeen in 0L until OBSERVED_REPOST_WINDOW_MILLIS) return
+    }
+
     val updated = ObservedPackage(
       packageName = packageName,
-      // ACCUMULATES. Overwriting with 1 would make "seen 12 times" -- the
-      // signal that separates a bank the user actually uses from a one-off
-      // -- permanently useless to the picker.
-      count = (previous?.count ?: 0) + 1,
+      // ACCUMULATES, ONE PER DISTINCT POST. Overwriting with 1 would make
+      // "seen 12 times" -- the signal that separates a bank the user actually
+      // uses from a one-off -- permanently useless to the picker; counting an
+      // ongoing re-post would ruin it the other way, by handing the top of
+      // the list to whichever app re-posts its tile most often.
+      count = when {
+        previous == null -> 1
+        isOngoing -> previous.count
+        else -> previous.count + 1
+      },
       lastSeenAt = atMillis,
     )
 
@@ -633,6 +688,22 @@ class CapturePrefs(context: Context) {
      * never displaced by one chatty game.
      */
     internal const val MAX_OBSERVED_PACKAGES = 100
+
+    /**
+     * How stale the front entry's `lastSeenAt` may get before an ONGOING
+     * re-post is allowed to rewrite it (see [recordObservedPackage]).
+     *
+     * A WRITE BOUND, not a precision setting. Ongoing tiles re-post at about
+     * 1 Hz, so this caps one of them at a single re-seal-and-fsync a minute
+     * instead of sixty, and it does so per package -- three of them running
+     * at once cost three writes a minute, not three a second.
+     *
+     * A minute of staleness cannot be seen anywhere it is used. The picker
+     * ranks by recency across apps whose notifications are hours apart, and
+     * a package pinned at the front of the list by its own re-posts is the
+     * last thing the 100-entry cap would ever evict.
+     */
+    internal const val OBSERVED_REPOST_WINDOW_MILLIS = 60_000L
 
     private const val DEFAULT_CAPTURE_ENABLED = true
     private const val DEFAULT_LISTENER_CONNECTED = false

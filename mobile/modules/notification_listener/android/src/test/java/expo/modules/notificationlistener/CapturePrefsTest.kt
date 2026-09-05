@@ -655,6 +655,102 @@ class CapturePrefsTest {
     )
   }
 
+  // ---------------------------------------------------------------------
+  // ONGOING RE-POSTS.
+  //
+  // A media player, a download and a navigation session each re-post the SAME
+  // persistent tile roughly once a second for as long as they run. Recording
+  // one of those the way a real post is recorded costs a whole-file re-seal
+  // plus an fsync -- the 3.8 ms `recordObservedPackage`'s own doc measured --
+  // on the thread the listener has to stay responsive on, once a second, for
+  // hours.
+  // It also hands the top of the "seen N times" ranking to whichever app
+  // re-posts most, which is never the bank.
+  // ---------------------------------------------------------------------
+
+  @Test
+  fun `an ongoing re-post of the front package neither writes nor raises the count`() {
+    // FIRST SIGHT IS STILL RECORDED, ongoing or not: a bank's
+    // foreground-service tile can be the only notification it ever posts
+    // before the user reaches the picker.
+    prefs.recordObservedPackage(gcash, seenAt, isOngoing = true)
+    val afterFirstSight = rawPrefs().getString(sealedKeyObservedPackages, null)
+    assertNotNull("a package seen for the first time must be stored, ongoing or not", afterFirstSight)
+
+    // Nine more arrivals of the same tile, one second apart, exactly as a
+    // download's progress notification arrives.
+    for (index in 1..9) {
+      prefs.recordObservedPackage(gcash, seenAt + index * 1_000L, isOngoing = true)
+    }
+
+    // BYTE-IDENTICAL, which is what makes this an assertion about WRITES
+    // rather than about the value. Every seal mints a fresh random IV
+    // (KeyStoreBridge.sealPrefsValue), so a re-seal could not reproduce the
+    // same string even for identical plaintext -- an unchanged blob is proof
+    // that no commit happened at all.
+    assertEquals(
+      "ten arrivals of one ongoing tile must cost exactly one prefs write",
+      afterFirstSight,
+      rawPrefs().getString(sealedKeyObservedPackages, null),
+    )
+
+    val observed = CapturePrefs(context).listObservedPackages().single()
+    // The count is the picker's "is this a bank or a one-off" signal, so it
+    // has to mean distinct posts. Ten re-posts of one tile is one post.
+    assertEquals("an ongoing tile re-posting must not inflate the count", 1, observed.count)
+    assertEquals(seenAt, observed.lastSeenAt)
+  }
+
+  @Test
+  fun `a real post still counts however soon after an ongoing one it arrives`() {
+    prefs.recordObservedPackage(gcash, seenAt, isOngoing = true)
+
+    // One second later, and NOT ongoing -- a genuine second notification, not
+    // the same tile arriving again. A short-circuit that keyed on recency
+    // alone would swallow this, and with it the transfer confirmation that
+    // follows a balance alert seconds later.
+    prefs.recordObservedPackage(gcash, seenAt + 1_000)
+
+    val observed = CapturePrefs(context).listObservedPackages().single()
+    assertEquals("a distinct post must count, whatever preceded it", 2, observed.count)
+    assertEquals(seenAt + 1_000, observed.lastSeenAt)
+  }
+
+  @Test
+  fun `an ongoing tile still refreshes lastSeenAt once the window has run out`() {
+    prefs.recordObservedPackage(gcash, seenAt, isOngoing = true)
+
+    // The window is a WRITE bound, not a permanent silence: a navigation
+    // session running for an hour must not leave the picker believing the
+    // app was last seen when the route started.
+    val later = seenAt + CapturePrefs.OBSERVED_REPOST_WINDOW_MILLIS
+    prefs.recordObservedPackage(gcash, later, isOngoing = true)
+
+    val observed = CapturePrefs(context).listObservedPackages().single()
+    assertEquals(later, observed.lastSeenAt)
+    assertEquals("a re-post never raises the count, even when it writes", 1, observed.count)
+  }
+
+  @Test
+  fun `an ongoing re-post of a displaced package moves it back to the front`() {
+    prefs.recordObservedPackage(gcash, seenAt, isOngoing = true)
+    prefs.recordObservedPackage(maya, seenAt + 1_000)
+    assertEquals(
+      listOf(maya, gcash),
+      CapturePrefs(context).listObservedPackages().map { it.packageName },
+    )
+
+    // gcash is no longer the front entry, so the ORDER is a fact this
+    // delivery would change -- the short-circuit must not apply, however
+    // recently gcash was seen.
+    prefs.recordObservedPackage(gcash, seenAt + 2_000, isOngoing = true)
+
+    val observed = CapturePrefs(context).listObservedPackages()
+    assertEquals(listOf(gcash, maya), observed.map { it.packageName })
+    assertEquals("...and it still is not a distinct post", 1, observed.first().count)
+    assertEquals(seenAt + 2_000, observed.first().lastSeenAt)
+  }
+
   @Test
   fun `recording an observed package never throws, whatever state the stored value is in`() {
     // A device with no prefs KEK at all -- the Keystore refused, or the app
