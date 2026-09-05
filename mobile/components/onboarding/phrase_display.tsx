@@ -23,14 +23,43 @@
 // someone who has never seen these words before (contrast
 // recovery_unlock_form.tsx's copy, written for the DIFFERENT moment of
 // recovering after a settings change).
-import { Pressable, ScrollView, Text, View } from "react-native";
+//
+// NOTHING ON THIS SCREEN MOVES THE WORDS OFF IT (GAP-017). The twelve words
+// are the second unwrap path for the entire ledger (docs §5), so every
+// affordance that copies them somewhere is a leak of the whole thing. The
+// "Copy or share" control that used to sit below the list handed them to the
+// OS share sheet -- that is, to whatever third-party app the user picked,
+// plus Android's share history and usually a clipboard on the way. The words
+// are no longer `selectable` for the same reason: long-press selection is a
+// one-tap route to the system clipboard. Writing them down by hand is the
+// only way off this screen, which is exactly what the confirm step checks.
+//
+// SCREENSHOTS ARE BLOCKED WHILE THIS COMPONENT IS MOUNTED, AND ONLY WHILE.
+// usePreventScreenCapture sets Android's FLAG_SECURE on mount and clears it
+// on unmount, so the rest of the app -- including the support flow that
+// deliberately attaches screenshots -- is untouched. The key is this screen's
+// own because the package ref-counts prevent/allow BY KEY: two surfaces
+// sharing the default key would have the first unmount release the flag while
+// the second is still showing a phrase.
+//
+// THAT IS ANDROID-EFFECTIVE, NOT A GUARANTEE. FLAG_SECURE stops the system
+// screenshot, the Recents thumbnail and screen recording; it cannot stop a
+// second phone's camera, and some OEM builds honour it incompletely. The
+// warning copy below is written to survive that -- write them on paper, do
+// not photograph them -- rather than promising the words cannot escape.
+import { ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { usePreventScreenCapture } from "expo-screen-capture";
 
 import { Button } from "@/components/ui/button";
 
 /** The `py-8` this screen used to carry, kept as the floor its system-bar
  * insets are added to (see the root View below). */
 const SCREEN_PADDING = 32;
+
+/** This surface's own prevent/allow key -- see the header for why the three
+ * phrase surfaces must not share one. */
+const CAPTURE_GUARD_KEY = "recovery-phrase-display";
 
 // RESTYLE (mobile-ui-revamp Part 3 Task 6) — TOKENS ONLY, NOT THE FRAME. See
 // device_lock_explainer.tsx's own header for the full reasoning: this screen
@@ -45,12 +74,12 @@ const SCREEN_PADDING = 32;
 export function PhraseDisplay({
   words,
   onContinue,
-  onShare,
 }: {
   words: string[];
   onContinue: () => void;
-  onShare: () => void;
 }) {
+  usePreventScreenCapture(CAPTURE_GUARD_KEY);
+
   // First-run: app/lock.tsx renders this whole flow OUTSIDE the router's Stack,
   // so no navigator above it clears the system bars, and app.json's
   // `edgeToEdgeEnabled` runs the column edge to edge — leaving "I've written
@@ -91,7 +120,6 @@ export function PhraseDisplay({
                 {index + 1}
               </Text>
               <Text
-                selectable
                 testID={`phrase-word-${index}`}
                 className="text-row font-semibold text-fg dark:text-fg-dark"
               >
@@ -103,19 +131,10 @@ export function PhraseDisplay({
       </ScrollView>
 
       <Text className="mt-4 text-center text-secondary font-medium text-warn dark:text-warn-dark">
-        A screenshot saves these words to your phone's photo library, where other apps may be
-        able to read them. Write them down somewhere private instead.
+        Screenshots are turned off on this screen, so these words cannot reach your photo
+        library. Write them on paper and keep it somewhere private -- don't photograph them
+        either.
       </Text>
-
-      <Pressable
-        testID="phrase-share-button"
-        onPress={onShare}
-        accessibilityRole="button"
-        accessibilityLabel="Copy or share your recovery words"
-        className="mt-4 min-h-[44px] items-center justify-center rounded-full border-2 border-brand py-3 dark:border-brand-dark"
-      >
-        <Text className="text-body font-semibold text-brand dark:text-brand-dark">Copy or share</Text>
-      </Pressable>
 
       <View className="mt-3">
         <Button

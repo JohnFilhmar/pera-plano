@@ -1,5 +1,5 @@
 import { closeDatabase, getDatabase, unlockDatabase } from "../database";
-import { MIGRATIONS, runMigrations, type Migration } from "../migrations";
+import { MIGRATIONS, runMigrations, SchemaTooNewError, type Migration } from "../migrations";
 import { freshDb, TEST_DEK } from "@/test_support/db";
 
 const TEST_MIGRATIONS: Migration[] = [
@@ -49,6 +49,73 @@ test("applies only migrations newer than the recorded ones", async () => {
   await runMigrations(db, [TEST_MIGRATIONS[0]]);
   const applied = await runMigrations(db, TEST_MIGRATIONS);
   expect(applied).toEqual([2]);
+});
+
+// ---------------------------------------------------------------------------
+// An older build opening a newer database (GAP-044)
+//
+// Reachable because OTA is configured: app.json carries `runtimeVersion` and
+// `updates.url`, so a JS bundle can be rolled back onto a device whose database
+// has already migrated forward. There are no down migrations, so the only safe
+// answer is to refuse to open.
+// ---------------------------------------------------------------------------
+
+describe("a database newer than this build's registry", () => {
+  test("REFUSES TO OPEN, and applies nothing", async () => {
+    const db = await getDatabase();
+    // The device is at 2, having run a build that knew about both.
+    await runMigrations(db, TEST_MIGRATIONS);
+
+    // The OTA rollback: a bundle whose registry stops at 1.
+    await expect(runMigrations(db, [TEST_MIGRATIONS[0]])).rejects.toThrow(SchemaTooNewError);
+
+    // Nothing was touched on the way to the refusal. Before the guard, this
+    // path applied nothing and returned normally, and the caller then read a
+    // schema it did not understand.
+    const recorded = await db.getAllAsync<{ version: number }>(
+      "SELECT version FROM schema_migrations ORDER BY version",
+    );
+    expect(recorded.map((r) => r.version)).toEqual([1, 2]);
+  });
+
+  test("names both versions, so the log says which build is behind", async () => {
+    const db = await getDatabase();
+    await runMigrations(db, TEST_MIGRATIONS);
+
+    await expect(runMigrations(db, [TEST_MIGRATIONS[0]])).rejects.toMatchObject({
+      name: "SchemaTooNewError",
+      appliedVersion: 2,
+      registryVersion: 1,
+    });
+  });
+
+  test("A FRESH INSTALL IS NOT REFUSED — an empty database is not a newer one", async () => {
+    const db = await getDatabase();
+    // No schema_migrations rows at all. Math.max() of nothing is -Infinity,
+    // which would compare as "not newer" by accident; this pins that the empty
+    // case is handled on purpose and a first launch still migrates.
+    const applied = await runMigrations(db, TEST_MIGRATIONS);
+    expect(applied).toEqual([1, 2]);
+  });
+
+  test("an equal version still opens — this is not an off-by-one refusal", async () => {
+    const db = await getDatabase();
+    await runMigrations(db, TEST_MIGRATIONS);
+    await expect(runMigrations(db, TEST_MIGRATIONS)).resolves.toEqual([]);
+  });
+
+  test("a gap in the applied versions is caught on the MAXIMUM, not the count", async () => {
+    const db = await getDatabase();
+    await runMigrations(db, TEST_MIGRATIONS);
+    // Two applied, and a registry that also holds two — but a DIFFERENT two,
+    // reaching only version 1. Counting rows would call this even; only the
+    // maximum shows the database is ahead.
+    const sidewaysRegistry: Migration[] = [
+      { version: 1, name: "one", sql: "SELECT 1;" },
+      { version: 0, name: "zero", sql: "SELECT 1;" },
+    ];
+    await expect(runMigrations(db, sidewaysRegistry)).rejects.toThrow(SchemaTooNewError);
+  });
 });
 
 test("a failing migration rolls back and records nothing for it", async () => {

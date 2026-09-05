@@ -64,6 +64,36 @@ export class MigrationIntegrityError extends Error {
 }
 
 /**
+ * The database was written by a NEWER build than the one now opening it.
+ *
+ * There are no down migrations, which is the right call for SQLite, so this is
+ * not recoverable by running anything: the only fix is to put the newer build
+ * back. What makes it reachable is OTA. `app.json` carries `runtimeVersion`
+ * and `updates.url`, so a JS bundle can be rolled back on a device whose
+ * database has already migrated forward, and an older bundle's repositories
+ * then read a schema that no longer matches. Migration 014 dropped
+ * `wallets.type`; a build whose registry ends before it selects that column
+ * and crashes on the first wallet query. The additive migrations are worse in
+ * their way, because they do not crash: they silently read a table missing the
+ * columns the newer build wrote.
+ *
+ * Refusing to open is therefore the SAFE outcome, not a harsh one. The
+ * alternative is a beta tester's real ledger being half-read by a build that
+ * cannot see all of it.
+ */
+export class SchemaTooNewError extends Error {
+  constructor(
+    readonly appliedVersion: number,
+    readonly registryVersion: number,
+  ) {
+    super(
+      `Database is at schema version ${appliedVersion} but this build only knows ${registryVersion}; refusing to open.`,
+    );
+    this.name = "SchemaTooNewError";
+  }
+}
+
+/**
  * Registry of numbered migrations, ascending. Task 7 registers 001_core;
  * m1c Task 3b registers 002_balance_after; 003_drift_dismissal lands with
  * wallets rule 3's dismissal flow; 004_limit_alert_state lands with m2 Task 3's
@@ -160,6 +190,27 @@ export async function runMigrations(
     "SELECT version FROM schema_migrations",
   );
   const done = new Set(rows.map((r) => r.version));
+
+  // BEFORE ANY MIGRATION RUNS, and before the pending list is even built. A
+  // database further ahead than this build's registry is not something to
+  // catch up with -- there is nothing to apply, `pending` comes out empty, and
+  // the old code sailed straight past into repositories that read columns a
+  // later migration had already dropped.
+  //
+  // A FRESH INSTALL MUST NOT TRIP THIS. `rows` is empty there, and
+  // `Math.max()` of nothing is -Infinity, which would compare as "not newer"
+  // by luck rather than by intent -- so the empty case is stated explicitly
+  // instead. A registry that is somehow empty is left alone too: that is a
+  // programming error in the registry, not a too-new database, and reporting
+  // it as one would send the user to the app store over a bug they cannot fix.
+  if (rows.length > 0 && migrations.length > 0) {
+    const maxApplied = Math.max(...rows.map((r) => r.version));
+    const registryMax = Math.max(...migrations.map((m) => m.version));
+    if (maxApplied > registryMax) {
+      throw new SchemaTooNewError(maxApplied, registryMax);
+    }
+  }
+
   const pending = [...migrations]
     .sort((a, b) => a.version - b.version)
     .filter((m) => !done.has(m.version));

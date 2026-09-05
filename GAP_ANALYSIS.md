@@ -35,7 +35,12 @@ not been started. Each gap's detail entry in section 9 carries the same marker i
 
 | ID | Status | Commit | Branch | Verification | Date |
 |---|---|---|---|---|---|
-| GAP-017 | BLOCKED | - | - | needs expo-screen-capture installed; not present in node_modules or package.json | 2026-09-05 |
+| GAP-086 | DONE | 9d5b6f2 | gap-wave-5 | jest bills_screen + components/bills + lib/bills 7 suites 130 tests PASS; reverting the two source lines fails all three new tests. Also fixes the four-wave bills_screen header failure | 2026-09-05 |
+| GAP-018 | DONE | 2de9b02 | gap-wave-5 | jest more_hub + more_tab + permissions_screen + components/onboarding 19 suites 215 tests PASS. ON-DEVICE VERIFICATION REQUIRED: battery intent resolution on One UI, truthful grant reads after a settings round trip, canAskAgain honesty, and whether the exemption survives at all | 2026-09-05 |
+| GAP-038 | DONE | a0f90a1 | gap-wave-5 | same suites PASS; five new tests fail when neutered. No migration: goals has one retirement column, so a completed goal is indistinguishable from a deleted one without completed_at (GAP-055) | 2026-09-05 |
+| GAP-032 | DONE | 2f67fdc | gap-wave-5 | jest 24 suites 574 tests PASS plus downstream 26 suites 700 tests; neutering the guard gives 300000 where 700000 is expected. Also closes the balanceAfter hazard GAP-012 flagged, with one residual noted | 2026-09-05 |
+| GAP-044 | DONE | acd1204 | gap-wave-5 | jest lib/db/migrations 34 tests PASS; removing the guard fails exactly the 3 refusal tests while the fresh-install and equal-version guards pass either way. Reviewer points confirmed: fresh install not refused, recovery screen offers no futile retry | 2026-09-05 |
+| GAP-017 | DONE | 83b1253 | gap-wave-5 | jest components/onboarding + components/lock + 3 layout suites, 21 suites 229 tests PASS; all 8 new assertions fail pre-fix. expo-screen-capture corrected to ~8.0.10 (57.x would have crashed onboarding and lock at module load). NATIVE REBUILD REQUIRED before the guard does anything on device | 2026-09-05 |
 | GAP-079 | DONE | e97a640 + 8654b88 | gap-wave-4 | jest components/wallets+loans+review+wallet_routes 14 suites 335 tests PASS; reverting the 7 sources fails exactly the 23 new tests. Found that a useState guard does not stop a same-tick double tap | 2026-09-05 |
 | GAP-010 | DONE | eee8028 | gap-wave-4 | jest lib/wallets + lib/db/repos + components/wallets 30 suites 697 tests PASS; each guard reverted individually fails only its own test. Weekly cadence taken from docs/02-wallets.md:70. Snooze, Home card and due chip deliberately not built | 2026-09-05 |
 | GAP-095 | DONE | e046f84 | gap-wave-3 | same commit; test genuinely crosses midnight (23:58 mount, 00:02 save); GAP-060 submit guard untouched | 2026-09-04 |
@@ -207,30 +212,64 @@ Facts established while fixing entries, that later entries must not rediscover t
   `--runInBand`: `lib` **111 suites / 2,439 tests, zero failures**; the UI layer **140 of 141
   suites / 1,992 of 1,993 tests**. Total **252 suites, 4,432 tests, 1 failure**, and it is the
   same `bills_screen` clock-dependent total that failed in waves 1 and 2.
-- **That bills_screen failure has now failed three waves running and is a ONE-LINE fix.**
-  `app/__tests__/bills_screen.test.tsx:60` derives `TODAY` from `systemClock.now()` with no fake
-  timer, so its "next 30 days" assertion slides with the real calendar date. It is not
-  irreducible flakiness and it is not caused by any remediation commit: agents have twice
-  reverted their own changes and reproduced it identically. It belongs to GAP-052 and was left
-  alone to keep that entry whole, but it costs a red line on every verification run, which is
-  how a team learns to ignore red. Worth doing first when GAP-052 is picked up.
-
+- **The bills_screen header failure, diagnosed properly** (fixed 2026-09-05 in `9d5b6f2`).
+  An earlier note here called it a plain wall-clock read and a one-line fix. That was
+  incomplete. The mechanism is the INCLUSIVE far edge: `bills_panel.tsx` computes
+  `windowEnd = addDaysIso(today, 30)` and filters `dueDate <= windowEnd`, while each
+  fixture bill's next monthly cycle is one calendar month out. In any month of 30 days or
+  fewer that next cycle lands exactly ON the edge and the header counts the same bill
+  twice. It therefore passes in the seven 31-day months and fails in the other five, which
+  is why four waves of agents read it as an unrelated regression rather than a calendar
+  artefact. Pinning also had to spy on `Date.now`, not `systemClock.now`, because
+  `createBill` stamps `createdAt` from `Date.now` and the service floors cycle enumeration
+  at it; pinning only the clock the screen reads leaves the bills created in the future.
+  Fake timers are wrong here too, since they stop the `setTimeout` React Query batches
+  notifications through.
+- **A regression test can be VACUOUS without looking it** (found fixing GAP-086, 2026-09-05).
+  The double-tap test for the skip guard asserted the cycle table held one row. It passed
+  with the ref swapped for state AND with the guard deleted outright, because
+  `006_bill_cycles.sql` already carries `UNIQUE (bill_id, due_date)` -- the schema, not the
+  guard, was preventing the second row. What the guard actually prevents is the LOSING
+  write, whose rejection surfaces as a GAP-013 failure toast about a skip that in fact
+  succeeded. Deleting the fix and re-running is the only way to learn this; a test that
+  still passes with the fix removed is measuring something else, however plausible its
+  assertion reads.
 - **Wave 4 suite result** (2026-09-05, branch `worktree-gap-wave-4` off master). Two chunks,
   `--runInBand`: `lib` **114 suites / 2,487 tests, zero failures**; the UI layer **141 of 142
   suites / 2,025 of 2,026 tests**. Total **256 suites, 4,513 tests, 1 failure**, still the
   `bills_screen` clock-dependent total.
-- **The remaining work changed shape after wave 4.** Every S1 and eleven of seventeen S2s are
-  closed, and **not one of the six remaining S2s is AGENT-READY** - all are AGENT-ASSISTED or
-  HUMAN-FIRST (GAP-028, 029, 043, 044, 059, 061). Autonomous agents have cleared what they can
+- **Wave 5 suite result** (2026-09-05, branch `worktree-gap-wave-5` stacked on wave 4). **259
+  suites, 4,562 tests, ZERO failures** - the first fully green sweep of the campaign. `lib`
+  **114 suites / 2,500 tests**; the UI layer **145 suites / 2,062 tests**. The four-wave
+  `bills_screen` failure is gone, fixed in `9d5b6f2` under GAP-086. Typecheck still reports
+  only the one pre-existing `components/gates/__tests__/gates.test.tsx(91,29)` TS2339.
+- **The two-chunk sweep recipe is not reliable on this machine and was replaced by six.**
+  The UI chunk was killed twice for low memory, once after 110 suites and once before its
+  first suite, while an unrelated 6.5 GB process was resident. Two further facts, both learned
+  the hard way: a killed background run LEAKS its jest processes (three survived, holding
+  1.5 GB, and they must be killed by PID before retrying), and the low-memory supervisor
+  applies to BACKGROUND commands - the same chunk run in the foreground completed untouched.
+  Working split, each its own process: `lib`; `app`; `components/ui + __tests__ + gates`;
+  `components/onboarding + wallets + transactions + review`; the thirteen remaining
+  `components` subdirectories; then `hooks contexts services modules constants types`.
+  Slowest chunks are `lib` (797 s) and `app` (439 s); the rest are all under three minutes.
+- **The remaining work changed shape after wave 5.** Every S1 and twelve of seventeen S2s are
+  closed, and **not one of the five remaining S2s is AGENT-READY** - all are AGENT-ASSISTED or
+  HUMAN-FIRST (GAP-028, 029, 043, 059, 061). Autonomous agents have cleared what they can
   clear at high severity; the rest needs owner decisions, hardware, or close review.
-- **GAP-044 is more urgent than its score says.** "Migrations are forward-only with no guard for
-  an older build opening a newer database" was theoretical when the audit was written. It is not
-  now: GAP-001 deliberately kept `runtimeVersion` and `updates.url`, so OTA is live, and an OTA
-  rollback is exactly the event that puts an older build in front of a newer schema. It carries
-  the highest risk rating in the file (R4).
-- **GAP-017 is blocked on a dependency, like GAP-014 was.** It needs `expo-screen-capture`, which
-  is not installed. Until it is, recovery words can still go to the OS share sheet and the phrase
-  screens can still be screenshotted.
+- **GAP-044 was more urgent than its score said, and is now closed** (`acd1204`, wave 5).
+  "Migrations are forward-only with no guard for an older build opening a newer database" was
+  theoretical when the audit was written. It was not by wave 5: GAP-001 deliberately kept
+  `runtimeVersion` and `updates.url`, so OTA is live, and an OTA rollback is exactly the event
+  that puts an older build in front of a newer schema. It carried the highest risk rating in
+  the file (R4).
+- **GAP-017 was blocked on a dependency, like GAP-014 was, and is now closed** (`83b1253`,
+  wave 5). `expo-screen-capture` is installed at `~8.0.10`. **That pin is load-bearing**: 57.0.2
+  imports `createPermissionHook` from `expo`, which SDK 54 does not export - it lives in
+  `expo-modules-core` - so the newer major would crash onboarding and the lock screen at module
+  load, and the suite would NOT catch it because the tests mock the package. The guard also
+  does nothing on device until the next NATIVE REBUILD, since the module is absent from the
+  installed dev and preview builds.
 
 ## 1. Executive summary
 
@@ -1752,7 +1791,7 @@ none
 
 ### GAP-017 [SEC] Recovery words go to the OS share sheet and the phrase screens allow screenshots
 
-> **REMEDIATION: BLOCKED** (2026-09-05) - commit -, branch -. Verification: needs expo-screen-capture installed; not present in node_modules or package.json
+> **REMEDIATION: DONE** (2026-09-05) - commit 83b1253, branch gap-wave-5. Verification: jest components/onboarding + components/lock + 3 layout suites, 21 suites 229 tests PASS; all 8 new assertions fail pre-fix. expo-screen-capture corrected to ~8.0.10 (57.x would have crashed onboarding and lock at module load). NATIVE REBUILD REQUIRED before the guard does anything on device
 
 | Field | Value |
 |---|---|
@@ -1822,6 +1861,8 @@ Revert the commit. Requires a native rebuild because a module is added.
 none
 
 ### GAP-018 [FEAT] Skipped onboarding grants cannot be completed later from Settings
+
+> **REMEDIATION: DONE** (2026-09-05) - commit 2de9b02, branch gap-wave-5. Verification: jest more_hub + more_tab + permissions_screen + components/onboarding 19 suites 215 tests PASS. ON-DEVICE VERIFICATION REQUIRED: battery intent resolution on One UI, truthful grant reads after a settings round trip, canAskAgain honesty, and whether the exemption survives at all
 
 | Field | Value |
 |---|---|
@@ -2665,6 +2706,8 @@ none
 
 ### GAP-032 [FEAT] Out-of-order balance-after notifications re-anchor the wallet
 
+> **REMEDIATION: DONE** (2026-09-05) - commit 2f67fdc, branch gap-wave-5. Verification: jest 24 suites 574 tests PASS plus downstream 26 suites 700 tests; neutering the guard gives 300000 where 700000 is expected. Also closes the balanceAfter hazard GAP-012 flagged, with one residual noted
+
 | Field | Value |
 |---|---|
 | Severity | S3 Moderate |
@@ -3012,6 +3055,8 @@ Revert.
 none
 
 ### GAP-038 [FEAT] Goals have no Complete action; the card copy promises one
+
+> **REMEDIATION: DONE** (2026-09-05) - commit a0f90a1, branch gap-wave-5. Verification: same suites PASS; five new tests fail when neutered. No migration: goals has one retirement column, so a completed goal is indistinguishable from a deleted one without completed_at (GAP-055)
 
 | Field | Value |
 |---|---|
@@ -3364,6 +3409,8 @@ Revert; older clients ignore the signature field.
 1. Signature scheme and key custody. RESOLUTION: HUMAN REQUIRED.
 
 ### GAP-044 [OPS] Migrations are forward-only with no guard for an older build opening a newer database
+
+> **REMEDIATION: DONE** (2026-09-05) - commit acd1204, branch gap-wave-5. Verification: jest lib/db/migrations 34 tests PASS; removing the guard fails exactly the 3 refusal tests while the fresh-install and equal-version guards pass either way. Reviewer points confirmed: fresh install not refused, recovery screen offers no futile retry
 
 | Field | Value |
 |---|---|
@@ -5875,6 +5922,8 @@ Revert.
 none
 
 ### GAP-086 [CODE] "Skip this cycle" is one tap with no confirmation or undo, and it moves Safe-to-Spend
+
+> **REMEDIATION: DONE** (2026-09-05) - commit 9d5b6f2, branch gap-wave-5. Verification: jest bills_screen + components/bills + lib/bills 7 suites 130 tests PASS; reverting the two source lines fails all three new tests. Also fixes the four-wave bills_screen header failure
 
 | Field | Value |
 |---|---|

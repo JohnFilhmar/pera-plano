@@ -44,6 +44,16 @@ jest.mock("@/modules/notification_listener", () => ({
   openSecuritySettings: jest.fn(),
 }));
 
+// ../_layout pulls in ./lock, which composes
+// components/lock/recovery_unlock_form.tsx and its GAP-017 screen capture
+// guard. expo-screen-capture is another requireNativeModule module with
+// nothing to bind to under Jest; nothing here is about the guard, so it is
+// inert. components/lock/__tests__/recovery_unlock_form.test.tsx owns the
+// assertions on its mount/unmount behaviour.
+jest.mock("expo-screen-capture", () => ({
+  usePreventScreenCapture: jest.fn(),
+}));
+
 import path from "path";
 import { getMockConfig, renderRouter, screen } from "expo-router/testing-library";
 import { waitFor } from "@testing-library/react-native";

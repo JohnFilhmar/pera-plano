@@ -1130,6 +1130,104 @@ describe("a reported balance-after SETS the wallet balance instead of moving it"
   });
 });
 
+// ---------------------------------------------------------------------------
+// Spec rule 9's second half — "out-of-order arrivals snap only if the
+// notification timestamp is newer than the current snapshot's".
+//
+// THE ARRIVAL ORDER AND THE TIMESTAMP ORDER ARE DELIBERATELY OPPOSITE in every
+// test below: the OLDER notification is inserted LAST, which is the only shape
+// the bug has. A fixture that committed them in timestamp order passes against
+// an implementation with no guard at all.
+// ---------------------------------------------------------------------------
+
+describe("a balance-after older than the current snapshot does not re-anchor the wallet", () => {
+  test("the wallet keeps the NEWER reported figure when a stale notification lands after it", async () => {
+    // Thursday's notification arrives first and anchors the wallet at ₱7,000.00.
+    // Tuesday's — delayed by a dead radio — arrives second saying ₱3,000.00.
+    // Snapping to it would rewind the wallet two days and throw away every
+    // movement the bank had already counted into the ₱7,000.00.
+    await insertTransaction({
+      walletId, categoryId: CATEGORY_ID, amount: 10000, direction: "out",
+      occurredAt: 9000, source: "notification", confidence: 0.95, balanceAfter: 700000,
+    });
+    await insertTransaction({
+      walletId, categoryId: CATEGORY_ID, amount: 20000, direction: "out",
+      occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 300000,
+    });
+
+    expect(await balanceOf(walletId)).toBe(700000);
+    // The two numbers a broken implementation lands on: the stale snap itself,
+    // and the fallback increment that would book the movement a second time.
+    expect(await balanceOf(walletId)).not.toBe(300000);
+    expect(await balanceOf(walletId)).not.toBe(700000 - 20000);
+  });
+
+  test("the suppressed row is still committed, with its reported figure intact", async () => {
+    // Suppression is about the WALLET, not the ledger. The movement happened and
+    // the provider did say ₱3,000.00 at that moment; dropping either would lose
+    // history the reconciliation work will need.
+    await insertTransaction({
+      walletId, categoryId: CATEGORY_ID, amount: 10000, direction: "out",
+      occurredAt: 9000, source: "notification", confidence: 0.95, balanceAfter: 700000,
+    });
+    const stale = await insertTransaction({
+      walletId, categoryId: CATEGORY_ID, amount: 20000, direction: "out",
+      occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 300000,
+    });
+
+    const read = await getTransaction(stale.id);
+    expect(read?.balanceAfter).toBe(300000);
+    expect(read?.amount).toBe(20000);
+  });
+
+  test("a report at the SAME instant as the snapshot still snaps — a twin is not out of order", async () => {
+    // A push and its SMS relay carry one `occurred_at`. Rule 9 suppresses what
+    // is OLDER; treating "not newer" as out of order would freeze the wallet on
+    // whichever telling happened to reach the pipeline first.
+    await insertTransaction({
+      walletId, categoryId: CATEGORY_ID, amount: 10000, direction: "out",
+      occurredAt: 5000, source: "notification", confidence: 0.95, balanceAfter: 700000,
+    });
+    await insertTransaction({
+      walletId, categoryId: CATEGORY_ID, amount: 10000, direction: "out",
+      occurredAt: 5000, source: "notification", confidence: 0.95, balanceAfter: 690000,
+    });
+
+    expect(await balanceOf(walletId)).toBe(690000);
+  });
+
+  test("suppression is per wallet — a sibling's newer snapshot never blocks a snap", async () => {
+    const other = await createWallet({ name: "Maya", openingBalance: 50000 });
+    await insertTransaction({
+      walletId: other.id, categoryId: CATEGORY_ID, amount: 10000, direction: "out",
+      occurredAt: 9000, source: "notification", confidence: 0.95, balanceAfter: 700000,
+    });
+    await insertTransaction({
+      walletId, categoryId: CATEGORY_ID, amount: 20000, direction: "out",
+      occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 300000,
+    });
+
+    expect(await balanceOf(walletId)).toBe(300000);
+    expect(await balanceOf(other.id)).toBe(700000);
+  });
+
+  test("a non-reporting backdated transaction still moves the balance", async () => {
+    // The guard is about a stale ANCHOR, not about backdating. Rule 25 keeps a
+    // backdated manual entry affecting the balance, and it carries no reported
+    // figure to be out of order with.
+    await insertTransaction({
+      walletId, categoryId: CATEGORY_ID, amount: 10000, direction: "out",
+      occurredAt: 9000, source: "notification", confidence: 0.95, balanceAfter: 700000,
+    });
+    await insertTransaction({
+      walletId, categoryId: CATEGORY_ID, amount: 25000, direction: "out",
+      occurredAt: 1000, source: "manual", confidence: 1,
+    });
+
+    expect(await balanceOf(walletId)).toBe(675000);
+  });
+});
+
 describe("the ordinary computed path is untouched when no balance is reported", () => {
   test("an omitted balanceAfter still increments, exactly as before", async () => {
     await insertTransaction({

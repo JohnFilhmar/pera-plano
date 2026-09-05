@@ -33,9 +33,18 @@
 // freshly minted phrase would walk away holding a line of words that opens
 // nothing -- the same failure shape the caller's two-error-stages split
 // exists to prevent, arriving through the user instead of through an error.
+//
+// THIS STEP IS A PHRASE SURFACE TOO (GAP-017), even though it only ever shows
+// three of the twelve words: the user is holding the paper copy while they
+// type, and what they type is the phrase. So it carries the same
+// usePreventScreenCapture guard phrase_display.tsx documents -- scoped to the
+// mount, on its own key, Android-effective rather than absolute -- and the
+// inputs are marked `importantForAutofill="no"` so the OS autofill service
+// never offers to remember a recovery word.
 import { useMemo, useState } from "react";
 import { Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { usePreventScreenCapture } from "expo-screen-capture";
 
 import { Button } from "@/components/ui/button";
 import { usePlaceholderColor } from "@/lib/ui/placeholder";
@@ -45,6 +54,10 @@ const CHALLENGE_COUNT = 3;
 /** The `py-8` this screen used to carry, kept as the floor its system-bar
  * insets are added to (see the root View below). */
 const SCREEN_PADDING = 32;
+
+/** This surface's own prevent/allow key -- see phrase_display.tsx's header
+ * for why the three phrase surfaces must not share one. */
+const CAPTURE_GUARD_KEY = "recovery-phrase-confirm";
 
 /**
  * Picks CHALLENGE_COUNT distinct positions out of `wordCount`, ascending.
@@ -77,6 +90,8 @@ export function PhraseConfirm({
    * dead control that goes nowhere. */
   onBack?: () => void;
 }) {
+  usePreventScreenCapture(CAPTURE_GUARD_KEY);
+
   const placeholderColor = usePlaceholderColor();
   const positions = useMemo(() => pickPositions(words.length, CHALLENGE_COUNT), [words.length]);
   const [answers, setAnswers] = useState<string[]>(() => positions.map(() => ""));
@@ -141,6 +156,7 @@ export function PhraseConfirm({
             onChangeText={(value) => handleChange(i, value)}
             autoCapitalize="none"
             autoCorrect={false}
+            importantForAutofill="no"
             editable={!confirmed}
             accessibilityLabel={`Word ${position + 1}`}
             className="rounded-xl border border-line p-3 text-body font-medium text-fg dark:border-line-dark dark:text-fg-dark"

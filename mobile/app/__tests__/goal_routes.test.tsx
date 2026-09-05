@@ -52,15 +52,16 @@ import { KeypadProvider } from "@/contexts/keypad_context";
 import { ThemeProvider } from "@/contexts/theme_context";
 import { closeDatabase } from "@/lib/db/database";
 import { seedDefaultCategories } from "@/lib/db/repos/categories_repo";
-import { createGoal, listGoals } from "@/lib/db/repos/goals_repo";
+import { createGoal, getGoal, listGoals } from "@/lib/db/repos/goals_repo";
 import { setWalletOwed } from "@/lib/db/repos/wallet_traits_repo";
-import { createWallet } from "@/lib/db/repos/wallets_repo";
+import { createWallet, getWallet } from "@/lib/db/repos/wallets_repo";
 import { __setTierForTests } from "@/lib/entitlements";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
 import { typeAmount } from "@/test_support/keypad";
 import type { Wallet } from "@/types/domain";
 
+import GoalDetailScreen from "../(tabs)/plan/goals/[id]";
 import GoalsScreen from "../(tabs)/plan/goals";
 import NewGoalScreen from "../(tabs)/plan/goals/new";
 
@@ -390,4 +391,73 @@ test("a picked deadline is saved as the goal's target date", async () => {
 
   await waitFor(async () => expect((await listGoals()).length).toBe(1));
   expect((await listGoals())[0].targetDate).toBe("2027-06-01");
+});
+
+// ---------------------------------------------------------------------------
+// Goal detail: Complete
+//
+// `GoalCard` has printed "Move the date, lower the target, or complete it
+// anyway" on every past-due goal since it shipped, and the detail screen behind
+// it offered Edit and Delete only. A user who reached a goal had no way to
+// finish it, so the live list filled with goals that were already done and the
+// card's own sentence pointed at an action that did not exist.
+// ---------------------------------------------------------------------------
+test("A REACHED GOAL OFFERS MARK COMPLETE, AND IT RETIRES THE GOAL", async () => {
+  const funded = await createWallet({ name: "GSave Full", openingBalance: 5000000 });
+  const goal = await createGoal({
+    name: "Emergency Fund",
+    targetAmount: 5000000,
+    linkedWalletId: funded.id,
+  });
+  mockParams = { id: goal.id };
+
+  renderScreen(<GoalDetailScreen />);
+
+  fireEvent.press(await screen.findByTestId("goal-complete"));
+
+  await waitFor(async () => expect(await listGoals()).toEqual([]));
+  // Retired, not destroyed — and the savings are untouched (rule 3).
+  const retired = await getGoal(goal.id);
+  expect(retired?.archivedAt).toEqual(expect.any(Number));
+  expect(retired?.targetAmount).toBe(5000000);
+  expect((await getWallet(funded.id))?.balance).toBe(5000000);
+  expect(mockBack).toHaveBeenCalled();
+});
+
+test("a past due goal can be completed anyway, exactly as its card says", async () => {
+  // The other state the spec's table offers Complete on, and the one the card
+  // copy names. Short of target, deadline gone — the plan is over either way.
+  const short = await createWallet({ name: "GSave Short", openingBalance: 100000 });
+  const goal = await createGoal({
+    name: "Tuition",
+    targetAmount: 5000000,
+    targetDate: "2020-06-01",
+    linkedWalletId: short.id,
+  });
+  mockParams = { id: goal.id };
+
+  renderScreen(<GoalDetailScreen />);
+
+  fireEvent.press(await screen.findByTestId("goal-complete"));
+
+  await waitFor(async () => expect(await listGoals()).toEqual([]));
+  expect((await getGoal(goal.id))?.archivedAt).toEqual(expect.any(Number));
+});
+
+test("a goal still in progress is NOT offered Mark complete", async () => {
+  // Finishing is for a plan that is over. Offering it beside a live goal would
+  // compete with the plan the user is still following, and the spec's states
+  // table puts Complete only on Reached and Past due.
+  const goal = await createGoal({
+    name: "Emergency Fund",
+    targetAmount: 5000000,
+    targetDate: "2099-06-01",
+    linkedWalletId: gsave.id,
+  });
+  mockParams = { id: goal.id };
+
+  renderScreen(<GoalDetailScreen />);
+
+  await screen.findByTestId("goal-delete");
+  expect(screen.queryByTestId("goal-complete")).toBeNull();
 });

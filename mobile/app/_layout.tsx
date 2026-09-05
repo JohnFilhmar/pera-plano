@@ -78,6 +78,7 @@ import { LockProvider, useLock } from "@/contexts/lock_context";
 import { systemClock } from "@/lib/clock";
 import { applyGlobalFont } from "@/lib/fonts";
 import { bootstrapApp, startNetworkSyncSubscriber } from "@/lib/bootstrap";
+import { SchemaTooNewError } from "@/lib/db/migrations";
 import { startSupportOutboxSubscriber } from "@/lib/support/outbox_runner";
 import { useApplyAllocations } from "@/hooks/mutations/use_apply_allocations";
 import { usePaydayAllocations } from "@/hooks/use_payday_allocations";
@@ -100,7 +101,10 @@ import LockScreen from "./lock";
 // the system font (lib/fonts.ts).
 applyGlobalFont();
 
-type BootstrapState = "pending" | "ready" | "error";
+// "outdated-build" is its own state, not a flavour of "error", because the
+// two want opposite affordances: an ordinary bootstrap failure is worth
+// retrying, and a database written by a newer build never is.
+type BootstrapState = "pending" | "ready" | "error" | "outdated-build";
 
 /**
  * Starts one process-wide subscriber from inside an effect without letting it
@@ -146,6 +150,39 @@ function BootstrapErrorScreen({ onRetry }: { onRetry: () => void }) {
       >
         <Text className="font-semibold text-surface dark:text-surface-dark">Try again</Text>
       </Pressable>
+    </View>
+  );
+}
+
+/**
+ * The database is newer than this build (lib/db/migrations.ts's
+ * SchemaTooNewError), which on this app means an OTA bundle was rolled back
+ * under a database that had already migrated forward.
+ *
+ * DELIBERATELY NO RETRY. `BootstrapErrorScreen` offers one because most
+ * bootstrap failures are transient; this one never is. There are no down
+ * migrations, so running again reaches the same refusal, and a button that
+ * cannot work teaches the user their data is gone when it is not. The copy
+ * therefore says the one true thing: their records are safe and untouched, and
+ * the newer app can read them again.
+ *
+ * No "check for updates" action either. Calling into expo-updates from here
+ * would be this app's first Updates call and OTA policy belongs to GAP-028;
+ * until that is settled, pointing at the store is honest and costs nothing.
+ */
+function OutdatedBuildScreen() {
+  return (
+    <View
+      testID="bootstrap-outdated-build"
+      className="flex-1 items-center justify-center gap-4 bg-bg px-6 dark:bg-bg-dark"
+    >
+      <Text className="text-center text-lg font-semibold text-fg dark:text-fg-dark">
+        This version is out of date
+      </Text>
+      <Text className="text-center text-fg-2 dark:text-fg-2-dark">
+        Your records were saved by a newer version of PeraPlano, so this one can't open them
+        safely. Nothing has been lost. Update PeraPlano and everything will be here.
+      </Text>
     </View>
   );
 }
@@ -206,7 +243,7 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
       .then(() => setBootstrapState("ready"))
       .catch((error: unknown) => {
         console.error("bootstrapApp failed to start the app", error);
-        setBootstrapState("error");
+        setBootstrapState(error instanceof SchemaTooNewError ? "outdated-build" : "error");
       });
   }, []);
 
@@ -409,7 +446,9 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
   const bg = resolved === "dark" ? palette["bg-dark"] : palette.bg;
   return (
     <PersistQueryClientProvider client={queryClient} persistOptions={persistOptions}>
-      {bootstrapState === "pending" ? null : bootstrapState === "error" ? (
+      {bootstrapState === "pending" ? null : bootstrapState === "outdated-build" ? (
+        <OutdatedBuildScreen />
+      ) : bootstrapState === "error" ? (
         <BootstrapErrorScreen onRetry={runBootstrap} />
       ) : (
         // EVERY NAVIGATOR IN THE APP READS ITS COLOURS HERE. Without it they

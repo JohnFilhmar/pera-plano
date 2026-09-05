@@ -62,6 +62,18 @@ jest.mock("expo-local-authentication", () => ({
   authenticateAsync: jest.fn(),
 }));
 
+// The REAL app/lock.tsx is imported below, and it composes
+// components/lock/recovery_unlock_form.tsx, which holds a GAP-017 screen
+// capture guard. expo-screen-capture is another requireNativeModule module
+// with nothing to bind to under Jest; this suite only needs it to load, so
+// the hook is inert here. The suites that assert on the guard's behaviour
+// (components/lock/__tests__/recovery_unlock_form.test.tsx,
+// components/onboarding/__tests__/recovery_phrase.test.tsx) mock it with the
+// package's real mount/unmount semantics instead.
+jest.mock("expo-screen-capture", () => ({
+  usePreventScreenCapture: jest.fn(),
+}));
+
 jest.mock("@/lib/crypto/key_manager", () => {
   class RecoveryUnlockFailedError extends Error {
     constructor() {
