@@ -21,6 +21,7 @@ import { EmptyState } from "@/components/ui/empty_state";
 import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { SectionHeader } from "@/components/ui/section_header";
 import { useConfirmPaymentMatch } from "@/hooks/mutations/use_confirm_payment_match";
+import { useRejectPaymentCandidates } from "@/hooks/mutations/use_reject_payment_candidates";
 import { useLoanHistory } from "@/hooks/queries/use_loan_history";
 import { useLoans } from "@/hooks/queries/use_loans";
 import { useArchiveLoan } from "@/hooks/mutations/use_archive_loan";
@@ -35,6 +36,7 @@ export default function LoanDetailScreen() {
   const { data: statuses } = useLoans();
   const { data: candidates } = usePaymentCandidates(id);
   const confirm = useConfirmPaymentMatch();
+  const reject = useRejectPaymentCandidates();
   const [sheetOpen, setSheetOpen] = useState(false);
   // The unfiltered list is fetched ONLY once the user asks for it — it drops
   // the score floor and reads up to 50 transactions, which is not work to do
@@ -292,6 +294,9 @@ export default function LoanDetailScreen() {
         showingAll={browsingAll}
         onShowAll={() => setBrowsingAll(true)}
         busy={confirm.isPending}
+        onReject={(transactionIds) =>
+          reject.mutate({ loanId: status.loan.id, transactionIds })
+        }
         onDismiss={() => {
           setSheetOpen(false);
           setBrowsingAll(false);
