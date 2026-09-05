@@ -644,6 +644,15 @@ export default function ReviewQueueScreen() {
                   wallets={wallets}
                   categories={categories}
                   providers={ruleset?.providers}
+                  // ONLY THE CARD BEING WRITTEN. `useReviewAction` is one
+                  // mutation shared by the whole queue, so a card-local latch
+                  // could not tell "a write for me" from "a write for the card
+                  // above", and would have nothing to clear it: a failed triage
+                  // leaves its card on screen, so a latch set on press would
+                  // strand the user. Matching on `variables.itemId` is the only
+                  // read that distinguishes them, and it settles with the
+                  // mutation.
+                  busy={triage.isPending && triage.variables?.itemId === entry.id}
                   // Supplying the handlers is what lights the pair up:
                   // without them the card renders DISABLED rather than
                   // live-but-inert — see review_card.tsx's header on why a
