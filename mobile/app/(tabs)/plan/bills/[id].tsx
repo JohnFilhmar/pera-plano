@@ -5,7 +5,7 @@
 // so a screen that showed "the bill" without saying which occurrence would have
 // to guess which one the user tapped.
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 
 import { BillMatchSheet } from "@/components/bills/bill_match_sheet";
@@ -35,6 +35,19 @@ export default function BillDetailScreen() {
   const { data: statuses } = useBills();
   const [sheetOpen, setSheetOpen] = useState(false);
   const [confirmingArchive, setConfirmingArchive] = useState(false);
+  const [confirmingSkip, setConfirmingSkip] = useState(false);
+  // THE REF IS THE GUARD on the skip, not `confirmingSkip` and not
+  // `skip.isPending` (GAP-079, GAP-060): a setter does not change the value the
+  // handler closure running in this tick already read, and React Query notifies
+  // its observers on a timer, so two confirms inside ONE tick both see `false`
+  // and both write. The cycle itself survives that — migration 006 is UNIQUE on
+  // (bill_id, due_date), so the loser's INSERT is simply rejected — but a
+  // rejected mutation is a failure toast (GAP-013) about a skip that in fact
+  // went through, which is the same "the app is lying about my money" the
+  // confirmation below exists to prevent. The state beside the ref exists only
+  // to re-render the button, which a ref never does.
+  const skipInFlight = useRef(false);
+  const [skipBusy, setSkipBusy] = useState(false);
   const archive = useArchiveBill();
 
   const record = useRecordBillPayment();
@@ -113,15 +126,51 @@ export default function BillDetailScreen() {
         />
       ) : null}
 
+      {/* ASKS FIRST (GAP-086). Skipping is a one-way write on a Safe-to-Spend
+          input — the cycle leaves the term, its reminders are cancelled, and
+          `resolveCycle` refuses to reopen it — so a single tap that did it
+          silently moved the headline number with nothing to reverse. Delete,
+          two buttons down and no less recoverable, has always confirmed. */}
       {unresolved ? (
         <Button
           title="Skip this cycle"
           variant="secondary"
           testID="bill-skip-cycle"
-          disabled={skip.isPending}
-          onPress={() => skip.mutate({ billId: status.bill.id, dueDate: status.dueDate })}
+          disabled={skip.isPending || skipBusy}
+          onPress={() => setConfirmingSkip(true)}
         />
       ) : null}
+
+      <ConfirmDialog
+        visible={confirmingSkip}
+        title="Skip this cycle?"
+        // Names the cycle, because this screen is scoped to ONE occurrence and
+        // a bill can have two open at once (rule 25) — "skip this cycle" alone
+        // does not say which one is about to go.
+        body={`Nothing will be recorded as paid for ${formatDate(
+          parseDateIso(status.dueDate).getTime(),
+        )}. It stops counting against your Safe-to-Spend and its remaining reminders are cancelled. You cannot undo this.`}
+        confirmLabel="Skip this cycle"
+        onCancel={() => setConfirmingSkip(false)}
+        onConfirm={() => {
+          if (skipInFlight.current || skip.isPending) return;
+          skipInFlight.current = true;
+          setSkipBusy(true);
+          setConfirmingSkip(false);
+          skip.mutate(
+            { billId: status.bill.id, dueDate: status.dueDate },
+            {
+              // `onSettled`, not the success arm: a refused skip leaves the
+              // button on screen (the cycle is still unresolved) and the retry
+              // it needs has to be tappable again.
+              onSettled: () => {
+                skipInFlight.current = false;
+                setSkipBusy(false);
+              },
+            },
+          );
+        }}
+      />
 
       {/* THE TWO ACTIONS ON THE BILL ITSELF, as opposed to on this cycle
           (owner: bills are "unarchivable ... should also be modifable").
