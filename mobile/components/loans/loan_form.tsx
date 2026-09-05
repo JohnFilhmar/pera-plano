@@ -194,6 +194,13 @@ function seedPeso(amount: number | undefined): string {
   return amount === undefined ? "" : pesoInputFrom(amount);
 }
 
+/**
+ * The rate's unit, spelled out under the field (spec rule 3). Named rather
+ * than inlined so loan_form.test.tsx can assert the exact string a user reads
+ * rather than a paraphrase of it.
+ */
+const RATE_UNIT_HINT = "The rate is per year. A lender quoting 2% a month means 24% here.";
+
 /** A count/term/rate -> its text, or "" — these are plain numbers, not money. */
 function seedNumber(value: number | null | undefined): string {
   return value === undefined || value === null ? "" : String(value);
@@ -325,7 +332,7 @@ export function LoanForm({
 
         {kind === "amortized" ? (
           <View testID="loan-amortized-fields" className="gap-1">
-            <FieldLabel>Rate and term</FieldLabel>
+            <FieldLabel>Annual rate and term</FieldLabel>
             <NumericField
               testID="loan-rate"
               label="Annual rate"
@@ -334,6 +341,19 @@ export function LoanForm({
               value={rateText}
               onChangeText={setRateText}
             />
+            {/* THE UNIT IS STATED WHERE IT CANNOT DISAPPEAR (spec rule 3: the
+                rate "is entered with an explicit per-month or per-annum
+                unit"). "Annual rate" already rides on this field's
+                accessibilityLabel, on the keypad panel's header, and on the
+                placeholder — but NumericField swaps the placeholder for the
+                value the moment a digit is typed, so the only thing left for
+                a sighted user to read is "12%", carrying no unit at all. The
+                arithmetic is per annum (loan_math.ts divides by 12) while PH
+                lenders quote per month, so what this line prevents is a
+                schedule twelve times too heavy. */}
+            <Text testID="loan-rate-unit" className="text-fg-2 dark:text-fg-2-dark">
+              {RATE_UNIT_HINT}
+            </Text>
             <NumericField
               testID="loan-term"
               label="Months"

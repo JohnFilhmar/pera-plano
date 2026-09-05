@@ -346,7 +346,13 @@ export type Loan = {
   direction: LoanDirection;
   counterparty: string;
   principal: Centavos;
-  /** Percent 0..100, informational only (domain §3.8). */
+  /**
+   * ANNUAL percent 0..100, and NOT informational: `lib/loans/loan_math.ts`
+   * reads it per annum (`rate / 100 / 12` a month) to build every amortized
+   * schedule and its installment, so a monthly figure stored here inflates
+   * the whole schedule roughly twelvefold. `null` for flat and free-form,
+   * which carry no rate at all (loans rule 4).
+   */
   interestRate: number | null;
   schedule: Installment[] | null;
   linkedWalletId: string | null;

@@ -96,6 +96,29 @@ test("RATE AND TERM APPEAR ONLY FOR AMORTIZED", () => {
   expect(screen.queryByTestId("loan-rate")).toBeNull();
 });
 
+test("THE RATE FIELD STATES ITS UNIT, and keeps stating it once a rate is typed", () => {
+  // Spec rule 3: the rate "is entered with an explicit per-month or per-annum
+  // unit — ... a silently misread unit would corrupt every number
+  // downstream". loan_math.ts reads it per annum (`rate / 100 / 12`), so the
+  // copy has to say per year, and it has to keep saying it AFTER a value is
+  // entered: NumericField shows the placeholder only while the field is
+  // empty, so a unit that lives only there is gone exactly when the user is
+  // reviewing what they typed.
+  renderForm();
+
+  fireEvent.press(screen.getByTestId("loan-kind-amortized"));
+  screen.getByText("Annual rate and term");
+  screen.getByText("The rate is per year. A lender quoting 2% a month means 24% here.");
+
+  typeAmount("loan-rate", "12");
+
+  // The placeholder is gone, as designed — the unit must not have gone with it.
+  expect(screen.queryByText("Annual rate %, e.g. 12")).toBeNull();
+  screen.getByText("The rate is per year. A lender quoting 2% a month means 24% here.");
+  // And the unit a screen reader hears is the same one, not a bare "12%".
+  expect(screen.getByTestId("loan-rate").props.accessibilityLabel).toBe("Annual rate, 12%");
+});
+
 test("A FLAT LOAN IS NEVER ASKED FOR A RATE", () => {
   // Spec rule 4: 5-6 "is modeled as flat or free-form only. The app never
   // derives or displays an interest rate for it." A rate field on this branch
