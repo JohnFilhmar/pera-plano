@@ -503,6 +503,40 @@ export async function listPayments(loanId: string): Promise<LoanPayment[]> {
 }
 
 /**
+ * The payment that already claims this transaction, or `null`.
+ *
+ * `loan_payments.transaction_id` is `NOT NULL UNIQUE` (001_core.sql, invariant
+ * I12), so there is at most one and no ordering is needed. Exists so a caller
+ * can ASK before writing, rather than learning the answer as a thrown
+ * `PaymentAlreadyMatchedError` it then has to translate for the user.
+ */
+export async function getPaymentByTransaction(
+  transactionId: string,
+): Promise<LoanPayment | null> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{
+    id: string;
+    loan_id: string;
+    transaction_id: string;
+    created_at: number;
+    updated_at: number;
+  }>(
+    `SELECT id, loan_id, transaction_id, created_at, updated_at
+     FROM loan_payments WHERE transaction_id = ?`,
+    [transactionId],
+  );
+  return row === null
+    ? null
+    : {
+        id: row.id,
+        loanId: row.loan_id,
+        transactionId: row.transaction_id,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      };
+}
+
+/**
  * Un-matches a payment. Idempotent.
  *
  * NEVER DELETES THE TRANSACTION — the money moved, whatever the matcher thought
@@ -512,6 +546,60 @@ export async function listPayments(loanId: string): Promise<LoanPayment[]> {
 export async function deletePayment(id: string): Promise<void> {
   const db = await getDatabase();
   await db.runAsync("DELETE FROM loan_payments WHERE id = ?", [id]);
+}
+
+// ---------------------------------------------------------------------------
+// Rejected match suggestions
+// ---------------------------------------------------------------------------
+
+/**
+ * The user said none of these rows pays this loan (019_loan_match_rejections).
+ *
+ * IDEMPOTENT, because the same sheet can be opened and rejected twice and a
+ * second "None of these" is not an error the user should ever hear about.
+ * `INSERT OR IGNORE` against the pair's UNIQUE constraint is the whole
+ * mechanism.
+ *
+ * TAKES THE WHOLE LIST, not one id at a time, AS ONE STATEMENT WITH ONE
+ * `VALUES` TUPLE PER ROW — not a loop of single-row inserts. The button
+ * rejects everything the sheet was showing, and a single INSERT is atomic by
+ * definition, which is what actually keeps a half-applied rejection from
+ * surviving a crash mid-write; a bare loop of awaited calls promises no such
+ * thing without a transaction wrapped around it. The candidate list is at
+ * most a handful of rows, so the statement never comes close to SQLite's
+ * bound-variable limit.
+ */
+export async function rejectCandidates(
+  loanId: string,
+  transactionIds: readonly string[],
+  now: number = Date.now(),
+): Promise<void> {
+  if (transactionIds.length === 0) return;
+  const db = await getDatabase();
+
+  const valuesTuples = transactionIds.map(() => "(?, ?, ?, ?)").join(", ");
+  const params = transactionIds.flatMap((transactionId) => [
+    newId(),
+    loanId,
+    transactionId,
+    now,
+  ]);
+
+  await db.runAsync(
+    `INSERT OR IGNORE INTO loan_match_rejections (id, loan_id, transaction_id, created_at)
+     VALUES ${valuesTuples}`,
+    params,
+  );
+}
+
+/** The transactions this loan has been told are not its payments. */
+export async function listRejectedTransactionIds(loanId: string): Promise<string[]> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<{ transaction_id: string }>(
+    "SELECT transaction_id FROM loan_match_rejections WHERE loan_id = ?",
+    [loanId],
+  );
+  return rows.map((row) => row.transaction_id);
 }
 
 // ---------------------------------------------------------------------------

@@ -233,7 +233,13 @@ export default function HomeScreen() {
           onResume={() => setCaptureEnabled.mutate(true)}
           // The listener-health screen (m3b Task 7) is the destination this
           // action always wanted — the detailed view behind this exact banner.
-          onFix={() => router.push("/more/listener_health")}
+          // `withAnchor` ON EVERY PUSH THAT LEAVES THIS TAB. Home is in one tab and each
+          // of these targets is a screen inside another tab's Stack. Pushed without an
+          // anchor on a cold start, the target becomes that stack's only entry: no Back,
+          // and the tab button returns to the same screen. `unstable_settings` in the
+          // two nested layouts covers the deep-link case; this covers the in-app tap,
+          // which is the one the owner hit.
+          onFix={() => router.push("/more/listener_health", { withAnchor: true })}
         />
 
         {/* IA §5's "Home" row, reached ONLY when the listener is healthy — a
@@ -268,7 +274,7 @@ export default function HomeScreen() {
           paused={paused}
           amountsHidden={amountsHidden}
           onToggleAmounts={() => setAmountsHidden((hidden) => !hidden)}
-          onSetLimit={() => router.push("/plan/limits/new")}
+          onSetLimit={() => router.push("/plan/limits/new", { withAnchor: true })}
           onOpenReviewQueue={() => router.push("/review")}
         />
 
@@ -316,12 +322,18 @@ export default function HomeScreen() {
           alerts={alerts}
           onOpen={(alert) => {
             if (alert.target.kind === "bill") {
-              router.push({
-                pathname: "/plan/bills/[id]",
-                params: { id: alert.target.billId, dueDate: alert.target.dueDate },
-              });
+              router.push(
+                {
+                  pathname: "/plan/bills/[id]",
+                  params: { id: alert.target.billId, dueDate: alert.target.dueDate },
+                },
+                { withAnchor: true },
+              );
             } else {
-              router.push({ pathname: "/plan/limits/[id]", params: { id: alert.target.limitId } });
+              router.push(
+                { pathname: "/plan/limits/[id]", params: { id: alert.target.limitId } },
+                { withAnchor: true },
+              );
             }
           }}
         />
@@ -329,7 +341,10 @@ export default function HomeScreen() {
         <UpcomingBillsStrip
           statuses={bills}
           onOpen={(billId, dueDate) =>
-            router.push({ pathname: "/plan/bills/[id]", params: { id: billId, dueDate } })
+            router.push(
+              { pathname: "/plan/bills/[id]", params: { id: billId, dueDate } },
+              { withAnchor: true },
+            )
           }
         />
 
@@ -343,14 +358,18 @@ export default function HomeScreen() {
           // `todayIndex` above follows, and what lets a "due in 3d" countdown
           // be an ordinary fixture in a test.
           now={systemClock.now()}
-          onOpen={(loanId) => router.push({ pathname: "/plan/loans/[id]", params: { id: loanId } })}
-          onSeeAll={() => router.push("/plan/loans")}
+          onOpen={(loanId) =>
+            router.push({ pathname: "/plan/loans/[id]", params: { id: loanId } }, { withAnchor: true })
+          }
+          onSeeAll={() => router.push("/plan/loans", { withAnchor: true })}
         />
 
         <LimitProgressList
           statuses={limits}
           categoryNames={categoryNames}
-          onOpen={(limitId) => router.push({ pathname: "/plan/limits/[id]", params: { id: limitId } })}
+          onOpen={(limitId) =>
+            router.push({ pathname: "/plan/limits/[id]", params: { id: limitId } }, { withAnchor: true })
+          }
         />
 
         {/* Clears the tab bar above AND the floating add button below it. */}

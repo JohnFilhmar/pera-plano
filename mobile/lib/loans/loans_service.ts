@@ -21,6 +21,7 @@ import {
   listAdjustments,
   listLoans,
   listPayments,
+  listRejectedTransactionIds,
   LoanNotFoundError,
   outstandingBalance,
   recordPayment,
@@ -495,8 +496,17 @@ export async function findPaymentCandidates(
     ).flatMap((payments) => payments.map((payment) => payment.transactionId)),
   );
 
+  // WHAT THE USER ALREADY SAID NO TO (019_loan_match_rejections). Suggestions
+  // only: `includeBelowFloor` is the "Show every transaction" SEARCH, and a
+  // search that hides rows because of an earlier tap is a search the user
+  // cannot use to correct that tap. Rejecting is meant to be undoable, so the
+  // one list that exists to find a specific transaction never consults this.
+  const rejected = includeBelowFloor
+    ? new Set<string>()
+    : new Set(await listRejectedTransactionIds(loanId));
+
   return transactions
-    .filter((transaction) => !claimed.has(transaction.id))
+    .filter((transaction) => !claimed.has(transaction.id) && !rejected.has(transaction.id))
     .map((transaction) => ({
       transactionId: transaction.id,
       amount: transaction.amount,
@@ -616,6 +626,14 @@ export async function findLoanMatchesForTransaction(
  * cadence detection so that a borrower's regular repayments are never mistaken
  * for a payday." `income_repo.listLoanPaymentTransactionIds` reads the same
  * rows this writes, so the exclusion needs no second bookkeeping.
+ *
+ * THE UI GOES THROUGH `loan_match_queue.recordPaymentAndCloseCards`, NOT THIS
+ * FUNCTION DIRECTLY, because a plain `recordPayment` here leaves any open
+ * loan-match card for the same transaction sitting in the review queue asking
+ * an already-answered question. This function stays queue-blind on purpose —
+ * see that module's header on why it, not `loans_service.ts`, is allowed to
+ * import both sides — so the next screen wired to loan confirmation should
+ * reach for the queue-aware version, not this one.
  */
 export async function confirmPaymentMatch(
   loanId: string,

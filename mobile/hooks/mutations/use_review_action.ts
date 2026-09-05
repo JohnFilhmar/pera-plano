@@ -21,7 +21,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { queryKeys } from "@/constants/query_keys";
 import { resolve } from "@/lib/db/repos/review_queue_repo";
-import { confirmLoanMatch } from "@/lib/loans/loan_match_queue";
+import { confirmLoanMatch, dismissLoanMatch } from "@/lib/loans/loan_match_queue";
 import {
   answerWalletKind,
   confirmAsTransfer,
@@ -62,6 +62,15 @@ export type ReviewAction =
   | { kind: "confirm-loan-match"; itemId: string; loanId: string }
   | { kind: "correct"; itemId: string; patch: CorrectionPatch }
   | { kind: "dismiss"; itemId: string }
+  /**
+   * "Not a loan payment" (loans rule 10). NOT a bare `dismiss`: the rule's
+   * follow-up counter ("repeated rejections for the same merchant surface a
+   * one-time prompt") needs a named seam to be added at, and a switch case
+   * that reaches past the loans module gives it nowhere to live.
+   * `dismissLoanMatch` is a pass-through today and exists for exactly that
+   * reason.
+   */
+  | { kind: "dismiss-loan-match"; itemId: string }
   | { kind: "confirm-transfer"; itemId: string }
   /**
    * The user named the wallet the other half of a transfer moved to or from.
@@ -109,6 +118,14 @@ async function run(action: ReviewAction): Promise<void> {
       // atomic with it, and `resolve` is already idempotent on a double tap.
       await resolve(action.itemId, "dismissed");
       return;
+    case "dismiss-loan-match":
+      // Not a bare `resolve`: loans rule 10's rejection COUNTER ("repeated
+      // rejections for the same merchant surface a one-time prompt") needs a
+      // named seam to be added at, and a switch case that reaches past the
+      // loans module gives it nowhere to live. `dismissLoanMatch` is a
+      // pass-through today and exists for exactly that reason.
+      await dismissLoanMatch(action.itemId);
+      return;
     case "confirm-transfer":
       await confirmAsTransfer(action.itemId);
       return;
@@ -140,6 +157,7 @@ function keysFor(action: ReviewAction) {
   const queue = [queryKeys.reviewQueue.all];
   switch (action.kind) {
     case "dismiss":
+    case "dismiss-loan-match":
       return queue;
     case "confirm-loan-match":
       // The LOANS keys, not the ledger's. No Transaction was created, edited or
