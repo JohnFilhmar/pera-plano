@@ -17,10 +17,18 @@
 // prevent, so validation runs BEFORE `parser_rulesets_repo.upsertRuleset` —
 // never after. A bundle that fails any check is thrown away in memory with
 // no write to the database at all.
+//
+// WHOEVER ANSWERS THAT URL IS NOT TRUSTED, and neither is anyone who can sit
+// between the device and it. The bundle they send decides whether money is
+// booked without the user ever seeing it, and supplies the regexes every
+// notification is run through, so `lib/ingest/ruleset_schema.ts` bounds its
+// shape, its numbers and its patterns; this file bounds its SIZE, before
+// anything here parses it. Authenticity is a separate problem that neither
+// solves.
 import { apiClient } from "@/services/api";
 import { getSetting, setSetting } from "@/lib/db/repos/app_settings_repo";
 import { getActiveVersion, upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
-import type { RulesetBundleInput } from "@/lib/ingest/ruleset_types";
+import { MAX_RESPONSE_CHARS, parseRulesetBundle } from "@/lib/ingest/ruleset_schema";
 
 /**
  * How often `checkForRulesetUpdate` is allowed to make a network request.
@@ -36,50 +44,38 @@ import type { RulesetBundleInput } from "@/lib/ingest/ruleset_types";
  */
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
-type RawTemplate = { match?: unknown };
-type RawProvider = { templates?: unknown };
-type RawBundle = { version?: unknown; providers?: unknown };
+type RawBundle = { providers?: unknown };
 
 /**
- * Rule 3, exactly and no further: a higher version than what's installed, a
- * non-empty `providers` array, and every template's `match` compiles as a
- * regex. Nothing beyond that — a stricter check here (requiring
- * `packageNames`, a fixed `direction`, a `channel`, whatever) risks rejecting
- * a legitimate server bundle that the bundled seed's own shape
- * (assets/parser_rules/seed.json, validated by
- * lib/ingest/__tests__/seed_rules.test.ts) would accept without issue.
+ * Reads the raw response body, refusing anything too large to be a ruleset
+ * BEFORE `JSON.parse` ever sees it.
  *
- * Compilation is checked by actually constructing the `RegExp` — a string
- * check for a marker substring would pass happily on a source with an
- * unbalanced paren, which is precisely the pattern that throws here and would
- * otherwise reach `upsertRuleset` and take down every parse on the device
- * that uses it.
+ * THE ORDER IS THE CONTROL. A cap applied after parsing is not a cap: by then
+ * a multi-megabyte body has already been walked, allocated and turned into an
+ * object graph on a phone, which is the denial of service the cap exists to
+ * prevent. That is also why the request below asks for text with axios's JSON
+ * transform switched off — left on, axios would have parsed a hostile body
+ * before this function was ever reached.
+ *
+ * What this does NOT do is stop the download. React Native's XHR transport
+ * offers no way to abort mid-body, so a hostile server can still make a device
+ * pull bytes until the client's 30-second timeout (services/api.ts). The cap
+ * bounds what is parsed and what is stored, not what is received.
  */
-function isValidBundle(data: unknown, currentVersion: number): data is RulesetBundleInput {
-  if (data === null || typeof data !== "object") return false;
-  const { version, providers } = data as RawBundle;
-
-  if (typeof version !== "number" || version <= currentVersion) return false;
-  if (!Array.isArray(providers) || providers.length === 0) return false;
-
-  for (const provider of providers as RawProvider[]) {
-    if (provider === null || typeof provider !== "object") return false;
-    const { templates } = provider;
-    if (!Array.isArray(templates)) return false;
-
-    for (const template of templates as RawTemplate[]) {
-      if (template === null || typeof template !== "object") return false;
-      const { match } = template;
-      if (typeof match !== "string") return false;
-      try {
-        new RegExp(match);
-      } catch {
-        return false;
-      }
-    }
+function decodeBody(data: unknown): { ok: true; value: unknown } | { ok: false; reason: string } {
+  if (typeof data !== "string") return { ok: false, reason: "response body was not text" };
+  if (data.length > MAX_RESPONSE_CHARS) {
+    return {
+      ok: false,
+      reason: `response body is ${data.length} characters, over the ${MAX_RESPONSE_CHARS} cap`,
+    };
   }
 
-  return true;
+  try {
+    return { ok: true, value: JSON.parse(data) as unknown };
+  } catch {
+    return { ok: false, reason: "response body is not JSON" };
+  }
 }
 
 /**
@@ -108,6 +104,11 @@ export async function checkForRulesetUpdate(
   try {
     const response = await apiClient.get<unknown>("/v1/parser_rules", {
       params: { since_version: currentVersion },
+      // The body arrives as TEXT, untouched: `decodeBody` has to see the raw
+      // string to cap it, and axios's default JSON transform would have
+      // parsed a hostile body before this file got a look at its size.
+      responseType: "text",
+      transformResponse: [],
     });
     status = response.status;
     data = response.data;
@@ -132,7 +133,15 @@ export async function checkForRulesetUpdate(
     return { updated: false, version: currentVersion };
   }
 
-  const providers = (data as RawBundle | null)?.providers;
+  const body = decodeBody(data);
+  if (!body.ok) {
+    console.warn(
+      `[parser_rules] discarding invalid ruleset bundle from server (${body.reason}) — keeping the current version`,
+    );
+    return { updated: false, version: currentVersion };
+  }
+
+  const providers = (body.value as RawBundle | null)?.providers;
   if (!Array.isArray(providers) || providers.length === 0) {
     // Rule 2: an empty (or absent/malformed) providers array means the
     // device is current. Not a failure, so no warning — this is the normal,
@@ -140,16 +149,27 @@ export async function checkForRulesetUpdate(
     return { updated: false, version: currentVersion };
   }
 
-  if (!isValidBundle(data, currentVersion)) {
-    // Non-empty providers that still fails validation (stale version, or a
-    // template whose regex won't compile) is the case rule 3 exists for:
-    // discard in memory, never store.
+  const parsed = parseRulesetBundle(body.value);
+  if (!parsed.ok) {
+    // Non-empty providers that still fails validation — an unrecognised
+    // shape, a tunable outside its range, or a pattern too long, too tangled
+    // or too slow — is the case rule 3 exists for: discard in memory, never
+    // store.
     console.warn(
-      "[parser_rules] discarding invalid ruleset bundle from server — keeping the current version",
+      `[parser_rules] discarding invalid ruleset bundle from server (${parsed.reason}) — keeping the current version`,
     );
     return { updated: false, version: currentVersion };
   }
 
-  await upsertRuleset(data);
+  if (parsed.bundle.version <= currentVersion) {
+    console.warn(
+      "[parser_rules] discarding invalid ruleset bundle from server (not newer than the installed version) — keeping the current version",
+    );
+    return { updated: false, version: currentVersion };
+  }
+
+  // The PARSED bundle, not the raw body: the schema strips keys it does not
+  // know, so nothing an attacker chose to append is stored verbatim.
+  await upsertRuleset(parsed.bundle);
   return { updated: true, version: await getActiveVersion() };
 }
