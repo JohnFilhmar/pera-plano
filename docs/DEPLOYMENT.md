@@ -25,10 +25,9 @@ runner can hold multiple labels).
 `staging` branch. The workflow's "Guard branch/environment pairing" step enforces this —
 a mismatched dispatch fails before touching the box.
 
-**This currently blocks every production dispatch**: `master` is 400+ commits behind
-`feat/mvp-implementation` and doesn't have `server/` at all yet. Nothing will deploy to
-production until `feat/mvp-implementation` (or wherever `apps/web` lives) merges to
-`master`. Fine for now while you're only exercising the pipeline itself.
+`master` has carried `server/` since `feat/mvp-implementation` merged on 2026-08-28
+(`f985c7f`), so a production dispatch now clears the guard; `staging` does not exist as
+a branch yet, so a staging dispatch still fails it.
 
 ## Setting up the runner
 
@@ -143,15 +142,15 @@ workspace loses nothing.
 
 ## What's still missing
 
-- **`master` doesn't have `apps/web` yet** — the branch guard blocks every production
-  dispatch until `feat/mvp-implementation` (or equivalent) merges to `master`.
 - **PIC/DPO/NPC are placeholder values** (`TBA`) in the `production` Environment — see
   "Compliance config" above. Deploying today publishes those placeholders live.
 - **Staging is deferred**: no domain/nginx vhost (reachable directly at
   `http://<box-ip>:3004` once used), no `staging` branch yet (the branch guard rejects a
   staging dispatch until one exists), and its compliance env file doesn't exist on the
   box yet.
-- **The runner itself isn't registered/running yet** — see "Setting up the runner" above.
+- **The runner's registration state is unverified from the repo** — confirm it shows as
+  *Idle* with both labels under Settings → Actions → Runners (or `./svc.sh status` on the
+  box) before the first dispatch; see "Setting up the runner" above.
 - **GitHub Environment protection rules** aren't configured. Add a required reviewer on
   `production` in Settings → Environments if you want a manual approval gate in front of
   the deploy job itself (on top of the `workflow_dispatch` trigger).
