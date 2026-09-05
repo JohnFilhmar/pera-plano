@@ -6,7 +6,12 @@
 import { closeDatabase } from "@/lib/db/database";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { listLoanPaymentTransactionIds } from "@/lib/db/repos/income_repo";
-import { createLoan, outstandingBalance, recordPayment } from "@/lib/db/repos/loans_repo";
+import {
+  createLoan,
+  outstandingBalance,
+  recordPayment,
+  rejectCandidates,
+} from "@/lib/db/repos/loans_repo";
 import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions_repo";
 import { createWallet } from "@/lib/db/repos/wallets_repo";
 import { selectCandidates } from "@/lib/income/candidates";
@@ -282,6 +287,73 @@ test("candidates are capped and returned best first", async () => {
 
 test("an unknown loan yields no candidates rather than throwing", async () => {
   expect(await findPaymentCandidates("no-such-loan", NOW)).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------
+// Rejections — "None of these" (019_loan_match_rejections)
+// ---------------------------------------------------------------------------
+
+/** A loan with one transaction that plausibly pays it, and a second loan sharing its counterparty. */
+async function aLoanWithOnePlausiblePayment() {
+  const loan = await gloan();
+  const otherLoanSameCounterparty = await createLoan({
+    direction: "i-owe",
+    counterparty: "GLoan",
+    principal: 5000000,
+    nextDueDate: "2026-09-15",
+    nextDueAmount: 444244,
+  });
+  const paying = await insertTransaction({
+    walletId: cash.id,
+    categoryId: UNCATEGORIZED_ID,
+    amount: 444244,
+    direction: "out",
+    occurredAt: new Date(2026, 8, 15).getTime(),
+    merchant: "GLOAN PAYMENT",
+    source: "manual",
+    confidence: 1,
+  });
+  return { loan, paying, otherLoanSameCounterparty };
+}
+
+// "NONE OF THESE" HAS TO SURVIVE THE SHEET CLOSING. Before this, the button
+// called `onDismiss` and nothing else, so the same rows were re-scored on the
+// next visit and the loan kept advertising "2 possible payments". The owner
+// reported it as the button having "no actual wired function".
+test("a rejected transaction stops being suggested for that loan", async () => {
+  const { loan, paying } = await aLoanWithOnePlausiblePayment();
+
+  const before = await findPaymentCandidates(loan.id, NOW);
+  expect(before.map((candidate) => candidate.transactionId)).toContain(paying.id);
+
+  await rejectCandidates(loan.id, [paying.id]);
+
+  const after = await findPaymentCandidates(loan.id, NOW);
+  expect(after.map((candidate) => candidate.transactionId)).not.toContain(paying.id);
+});
+
+// THE REJECTION IS A UI MEMORY, NOT A NEGATIVE RULE (loans rule 10). "Show
+// every transaction" is a SEARCH, and a user who rejected a row and then
+// realised it was the payment must still be able to find it and confirm it.
+test("the browse-everything list still offers a rejected transaction", async () => {
+  const { loan, paying } = await aLoanWithOnePlausiblePayment();
+  await rejectCandidates(loan.id, [paying.id]);
+
+  const all = await findPaymentCandidates(loan.id, NOW, 50, true);
+
+  expect(all.map((candidate) => candidate.transactionId)).toContain(paying.id);
+});
+
+// Rule 10 again, from the other side: a rejection names ONE pair. It says
+// nothing about the counterparty, and a second loan with the same person must
+// still be offered the same row.
+test("a rejection on one loan does not silence the row on another", async () => {
+  const { loan, paying, otherLoanSameCounterparty } = await aLoanWithOnePlausiblePayment();
+  await rejectCandidates(loan.id, [paying.id]);
+
+  const other = await findPaymentCandidates(otherLoanSameCounterparty.id, NOW);
+
+  expect(other.map((candidate) => candidate.transactionId)).toContain(paying.id);
 });
 
 // ---------------------------------------------------------------------------

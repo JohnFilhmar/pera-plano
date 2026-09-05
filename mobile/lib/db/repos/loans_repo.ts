@@ -515,6 +515,49 @@ export async function deletePayment(id: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Rejected match suggestions
+// ---------------------------------------------------------------------------
+
+/**
+ * The user said none of these rows pays this loan (019_loan_match_rejections).
+ *
+ * IDEMPOTENT, because the same sheet can be opened and rejected twice and a
+ * second "None of these" is not an error the user should ever hear about.
+ * `INSERT OR IGNORE` against the pair's UNIQUE constraint is the whole
+ * mechanism.
+ *
+ * TAKES THE WHOLE LIST, not one id at a time. The button rejects everything the
+ * sheet was showing, and one statement per row inside one transaction is what
+ * keeps a half-applied rejection from surviving a crash mid-loop.
+ */
+export async function rejectCandidates(
+  loanId: string,
+  transactionIds: readonly string[],
+  now: number = Date.now(),
+): Promise<void> {
+  if (transactionIds.length === 0) return;
+  const db = await getDatabase();
+
+  for (const transactionId of transactionIds) {
+    await db.runAsync(
+      `INSERT OR IGNORE INTO loan_match_rejections (id, loan_id, transaction_id, created_at)
+       VALUES (?, ?, ?, ?)`,
+      [newId(), loanId, transactionId, now],
+    );
+  }
+}
+
+/** The transactions this loan has been told are not its payments. */
+export async function listRejectedTransactionIds(loanId: string): Promise<string[]> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<{ transaction_id: string }>(
+    "SELECT transaction_id FROM loan_match_rejections WHERE loan_id = ?",
+    [loanId],
+  );
+  return rows.map((row) => row.transaction_id);
+}
+
+// ---------------------------------------------------------------------------
 // Balance adjustments — spec rule 13
 // ---------------------------------------------------------------------------
 

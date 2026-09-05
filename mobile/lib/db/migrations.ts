@@ -17,6 +17,7 @@ import supportReportsSql from "./migrations/015_support_reports.sql";
 import goalSoftDeleteSql from "./migrations/016_goal_soft_delete.sql";
 import rawNotificationKeySql from "./migrations/018_raw_notification_key.sql";
 import transactionAdjustmentsSql from "./migrations/017_transaction_adjustments.sql";
+import loanMatchRejectionsSql from "./migrations/019_loan_match_rejections.sql";
 
 export type Migration = {
   version: number;
@@ -169,6 +170,8 @@ export const MIGRATIONS: Migration[] = [
   { version: 17, name: "transaction_adjustments", sql: transactionAdjustmentsSql },
   // Additive column plus an index. No rebuild, so no `disablesForeignKeys`.
   { version: 18, name: "raw_notification_key", sql: rawNotificationKeySql },
+  // A new table and its index. No rebuild, so no `disablesForeignKeys`.
+  { version: 19, name: "loan_match_rejections", sql: loanMatchRejectionsSql },
 ];
 
 /**

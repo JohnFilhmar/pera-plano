@@ -21,6 +21,7 @@ import {
   listAdjustments,
   listLoans,
   listPayments,
+  listRejectedTransactionIds,
   LoanNotFoundError,
   outstandingBalance,
   recordPayment,
@@ -495,8 +496,17 @@ export async function findPaymentCandidates(
     ).flatMap((payments) => payments.map((payment) => payment.transactionId)),
   );
 
+  // WHAT THE USER ALREADY SAID NO TO (019_loan_match_rejections). Suggestions
+  // only: `includeBelowFloor` is the "Show every transaction" SEARCH, and a
+  // search that hides rows because of an earlier tap is a search the user
+  // cannot use to correct that tap. Rejecting is meant to be undoable, so the
+  // one list that exists to find a specific transaction never consults this.
+  const rejected = includeBelowFloor
+    ? new Set<string>()
+    : new Set(await listRejectedTransactionIds(loanId));
+
   return transactions
-    .filter((transaction) => !claimed.has(transaction.id))
+    .filter((transaction) => !claimed.has(transaction.id) && !rejected.has(transaction.id))
     .map((transaction) => ({
       transactionId: transaction.id,
       amount: transaction.amount,
