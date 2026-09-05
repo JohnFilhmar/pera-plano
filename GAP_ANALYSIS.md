@@ -345,6 +345,8 @@ The rest of the queue is mostly medium and small. Money arithmetic is integer ce
 
 **Pass 2 (2026-09-04).** A second read-only pass covered the mobile areas the first coverage report listed as unread: every screen and component body under `mobile/app/` and `mobile/components/`, the Safe-to-Spend engine state table, `reports/aggregate.ts` and `csv_export.ts`, the alerts policy and subscribers, `lib/support/` and `lib/diagnostics/`, and the four Kotlin files the first pass read only by signature. It adds GAP-058 to GAP-097: four S2 (Safe-to-Spend never invalidated by mutations, capture keypair never regenerated after keystore invalidation, manual-entry double tap writes twice, transaction detail cannot edit or delete while docs/07 promises rectification) and thirty-six S3. Twenty-two S4 findings went to section 10. A residue sweep the same day (limit, goal and loan services, keypad context, plugin and manifest, instrumented tests, and a pattern scan of all 250 test files plus full reads of the money and calendar suites) added GAP-098 and two deferrals; a 20,000-case probe of `loan_math.ts` found no rounding or termination defect. Server, web and scripts were out of scope for pass 2 by the owner's instruction. Seven audit agents ran one or two at a time; two were cut off by the session limit and re-run.
 
+**Wave 6 additions (2026-09-06).** GAP-100 to GAP-102 were not found by an audit pass. They were found while REMEDIATING other entries, which is why they carry C1 rather than C2: each was read in the code before it was written up. GAP-100 is the first S1 raised since GAP-002 and at 8.0 is now the highest-priority row in the file -- onboarding tells the user, in writing, that twelve recovery words bring their data back on a new phone, and the unwrap reads key material that exists only on the old device. GAP-101 is the arithmetic half of the bucketing defect GAP-008 fixed the decay half of. GAP-102 collects two sibling doc claims corrected everywhere except where they still sit.
+
 ## 2. Assumptions and unknowns
 
 - The prompt's repository map was checked. Counts differ slightly: `git ls-files` shows 669 mobile TypeScript files (prompt says about 671), 250 mobile test files plus 22 server test files (prompt says about 272 combined), 86 server TypeScript files (matches). Kotlin: 9 main sources, 12 JVM tests, 2 instrumented tests (matches).
@@ -504,6 +506,9 @@ Priority = (severity weight x confidence weight) / complexity weight, with S1=8,
 | GAP-080 | CODE | Archiving a wallet with "move transactions" relocates transfer legs and provider balance anchors into the destination wallet | S3 | M | D2 | R3 | C2 | 0.4 | AGENT-READY |
 | GAP-091 | CONTRA | The provider picker and wallet proposals run before notification access exists, so "Apps we've seen" is empty on every fresh install | S3 | M | D2 | R2 | C2 | 0.4 | AGENT-ASSISTED |
 | GAP-099 | SEC | The full-database export writes a plaintext JSON dump to the cache directory, never deletes it, and reports success when sharing is unavailable | S2 | XS | D1 | R1 | C1 | 5.0 | AGENT-READY |
+| GAP-100 | CONTRA | Onboarding tells the user the recovery phrase brings their data back on a new phone; it cannot | S1 | XS | D2 | R2 | C1 | 8.0 | AGENT-READY |
+| GAP-101 | CODE | The locked-in total counts a fortnightly subscription at twice its cost | S2 | XS | D2 | R2 | C1 | 5.0 | AGENT-READY |
+| GAP-102 | DOC | Two sibling docs still carry claims that were corrected everywhere else | S3 | XS | D1 | R1 | C1 | 2.0 | AGENT-READY |
 
 Pass-2 rows (GAP-058 to GAP-097) are appended below the pass-1 rows in their own priority order rather than merged, so the pass-1 ordering stays stable for agents already assigned.
 
@@ -540,6 +545,8 @@ FEAT (3): 069 (1), 075 (0.5), 085 (0.5).
 
 Residue sweep: CODE 098 (0.8).
 
+Wave 6 findings (2026-09-06), found while remediating, not by an audit pass: CONTRA 100 (8.0). CODE 101 (5.0). DOC 102 (2.0).
+
 ## 6. Index by complexity
 
 XS (9): 001, 005, 006, 007, 008, 009, 025, 026, 027.
@@ -561,6 +568,8 @@ XL (0): none.
 Pass-2 quick wins (XS or S, AGENT-READY, no open questions): 058, 060, 062, 063, 071, 073, 074, 076, 081, 084, 086, 088, 090, 095, 094, 064, 065, 069, 070, 077, 078, 079, 082, 083, 087, 089, 092, 096, 097, 066.
 
 Residue sweep: S: 098.
+
+Wave 6 findings: XS: 100, 101, 102. All three are AGENT-READY with no open questions.
 
 ## 7. Recommended execution order
 
@@ -692,6 +701,11 @@ Wave P6 (specialist, one at a time)
 
 Wave P7 (after the P0 decisions)
 - GAP-061, GAP-067 then GAP-091, GAP-068, GAP-072, GAP-075 (needs GAP-013), GAP-093
+
+Wave P8 (the wave 6 findings; 3 agents, no shared files)
+- GAP-100: `mobile/components/onboarding/phrase_display.tsx` and `recovery_phrase.test.tsx`. Take this FIRST -- it is the highest-priority row in the file and the fix is one paragraph of copy.
+- GAP-101: `mobile/lib/recurring/recurring_service.ts` and its test. Must land AFTER GAP-008 (already merged), whose test comment it removes.
+- GAP-102: `docs/02-domain-model.md`, `docs/04-features/08-review-queue.md`
 
 ## 8. Contradiction register
 
@@ -6880,6 +6894,225 @@ Revert. No data impact.
 none
 
 
+### GAP-100 [CONTRA] Onboarding tells the user the recovery phrase brings their data back on a new phone; it cannot
+
+| Field | Value |
+|---|---|
+| Severity | S1 Critical |
+| Complexity | XS |
+| Difficulty | D2 Standard |
+| Risk | R2 |
+| Confidence | C1 Verified |
+| Priority score | 8.0 |
+| Agent suitability | AGENT-READY |
+| Depends on | none |
+| Blocks | none |
+| Est. agent turns | 1-2 |
+
+**Location**
+- `mobile/components/onboarding/phrase_display.tsx:104-106` (the copy; primary)
+- `mobile/lib/crypto/key_manager.ts:171` (`unwrapWithRecoveryPhrase`), `:174-175` (the two SecureStore reads), `:178` (`throw new Error("recovery wrap not present")`)
+- `mobile/lib/privacy/data_export.ts` (the export carries no key material)
+- `docs/12-encryption-and-app-lock.md` §5 (the same overclaim in prose, corrected 2026-09-05 under GAP-015; the in-app copy was not)
+
+**Evidence**
+`phrase_display.tsx:104-106`:
+```
+If you ever get a new phone, or turn off and reset your fingerprint or PIN, these 12
+recovery words are the only way back to your data -- PeraPlano cannot recover them for
+you.
+```
+`key_manager.ts:171-178`:
+```
+async function unwrapWithRecoveryPhrase(phrase: string[]): Promise<Uint8Array> {
+  try {
+    const [wrapHex, saltHex] = await Promise.all([
+      SecureStore.getItemAsync(STORAGE_KEYS.recoveryWrap),
+      SecureStore.getItemAsync(STORAGE_KEYS.recoverySalt),
+    ]);
+    if (!wrapHex || !saltHex) {
+      throw new Error("recovery wrap not present");
+```
+
+**What is wrong**
+The sentence joins two claims and only one of them is true. Reset the fingerprint or PIN on the SAME device and the phrase does exactly what the copy says: SecureStore still holds `recoveryWrap` and `recoverySalt`, and the phrase unwraps the DEK. Move to a NEW phone and there is nothing to unwrap. SecureStore is per-device, both values are absent, and the function throws at `:178` before deriving anything at all. Nothing exports either value: `data_export.ts` writes ledger rows and never key material, and there is no backup or upload path anywhere in `mobile/lib`, `mobile/app` or `mobile/services` (GAP-054 records that cloud backup is described as built with no code behind it). The database is local too, so even a phrase that could travel would arrive with nothing to open.
+
+**Why it matters**
+This is the app's central trust promise, made at the exact moment the user is deciding how seriously to take the twelve words, and it is false in the direction that destroys data. A user who believes it and later switches phones — the ordinary, planned, entirely non-emergency case — loses every wallet, transaction, bill, goal and loan permanently, having been told in writing that twelve words would bring all of it back. The true half of the sentence is what makes the false half credible. It is also the last surviving instance of a claim this campaign has already corrected twice in prose: GAP-045 flagged the docs, GAP-015 fixed `docs/12`, and the copy the user actually reads was left saying it.
+
+**Intended behavior**
+Onboarding states what the phrase does — unlock THIS device's data after a biometric or PIN reset — and does not imply the data itself can move. If new-device recovery is ever built (GAP-054), the copy changes with it, not before it.
+
+**Proposed fix**
+Rewrite the paragraph so the promise is scoped to this device. Keep the "PeraPlano cannot recover them for you" clause, which is true and is the whole point of a local-only design.
+
+**Implementation checklist**
+- [ ] In `mobile/components/onboarding/phrase_display.tsx`, replace the `:104-106` paragraph with copy stating that the words unlock this phone's data after a fingerprint or PIN reset, and that they cannot move data to a new phone.
+- [ ] Grep `mobile/app` and `mobile/components` for the same promise in other copy (`new phone`, `new device`, `another phone`) and correct any other instance, or record in the commit that there is none.
+- [ ] In `mobile/components/onboarding/__tests__/recovery_phrase.test.tsx`, add a test asserting the screen does not tell the user the phrase restores data on a new phone.
+
+**Acceptance criteria**
+- [ ] No copy under `mobile/app` or `mobile/components` promises data restoration on a new device.
+- [ ] The new test fails if the old sentence is restored.
+- [ ] `docs/12-encryption-and-app-lock.md` §5 and the in-app copy now say the same thing.
+
+**Verification commands**
+```bash
+cd mobile && npx jest --ci --runInBand components/onboarding
+cd mobile && npm run typecheck
+```
+
+**Do not**
+Do not build export, backup or new-device recovery here; that is GAP-054's scope and an owner decision. Do not weaken or delete the "PeraPlano cannot recover them for you" clause. Do not touch `key_manager.ts`: the code is correct and the copy is not. Do not add a new claim about backups existing. Whether onboarding should ALSO state plainly that no backup exists today is a separate product and tone decision that this entry deliberately does not make and does not wait on. Do not rename files or symbols to match the naming convention as part of this fix.
+
+**Rollback**
+Revert the commit. The copy returns to its false state and nothing else changes.
+
+**Open questions**
+none
+
+### GAP-101 [CODE] The locked-in total counts a fortnightly subscription at twice its cost
+
+| Field | Value |
+|---|---|
+| Severity | S2 Major |
+| Complexity | XS |
+| Difficulty | D2 Standard |
+| Risk | R2 |
+| Confidence | C1 Verified |
+| Priority score | 5.0 |
+| Agent suitability | AGENT-READY |
+| Depends on | none |
+| Blocks | none |
+| Est. agent turns | 1-2 |
+
+**Location**
+- `mobile/lib/recurring/recurring_service.ts:66-70` (`MONTHLY_FACTOR`), `:284-289` (`monthlyLockedIn`)
+- `mobile/lib/db/repos/recurring_patterns_repo.ts:68` (`WEEKLY_MONTHLY_BOUNDARY_DAYS`, about 14.6 days)
+- `mobile/lib/recurring/__tests__/recurring_service.test.ts` (the assertion GAP-008 added, commented as pinning this defect rather than endorsing it)
+
+**Evidence**
+`recurring_service.ts:66-70`:
+```
+const MONTHLY_FACTOR: Record<RecurringPeriod, number> = {
+  weekly: 52 / 12,
+  monthly: 1,
+  annual: 1 / 12,
+};
+```
+`:287`:
+```
+.reduce((sum, pattern) => sum + pattern.amount * MONTHLY_FACTOR[pattern.period], 0);
+```
+
+**What is wrong**
+The same three-value bucket enum behind GAP-008, in a second place. `periodFor` buckets any cadence at or under about 14.6 days as `weekly`, so a charge every 14 days is multiplied by `52 / 12` (4.333 payments a month) when its real rate is roughly 2.17 — it is counted 52 times a year instead of 26. The error is almost exactly a factor of two, and it applies to every fortnightly pattern the detector finds, silently, with no signal that the bucket and the stored `periodDays` disagree.
+
+**Why it matters**
+`monthlyLockedIn` is the headline "locked in" figure of recurring rule 17 and it feeds Safe-to-Spend. Overstating committed money understates Safe-to-Spend, so the app's single most important number tells the user they have less to spend than they do, and it does so for exactly the cadence PH payroll runs on. GAP-008 fixed the decay half of this bucketing problem and deliberately left the arithmetic half alone so it could be scored on its own.
+
+**Intended behavior**
+The monthly conversion uses the pattern's own cadence when it has one, falling back to the bucket nominal only for a row with no stored `periodDays`.
+
+**Proposed fix**
+Derive the factor from the real cadence: `DAYS_PER_MONTH / cadenceDays`, where `cadenceDays` is `pattern.periodDays ?? PERIOD_NOMINAL_DAYS[pattern.period]` and `DAYS_PER_MONTH` is the 30.44 mean month the repo already uses at `recurring_patterns_repo.ts:68`. Note deliberately: this also moves the three nominal cadences slightly, because `52 / 12` (4.333) assumes a 364-day year while `30.44 / 7` is 4.349. The shift is under 0.4 percent for weekly and about 1.5 percent for monthly, it is in the direction of being more correct, and the pinned totals in the suite must be recomputed rather than worked around.
+
+**Implementation checklist**
+- [ ] In `mobile/lib/recurring/recurring_service.ts`, replace the `MONTHLY_FACTOR[pattern.period]` lookup in `monthlyLockedIn` with the cadence-derived factor above. Keep `MONTHLY_FACTOR` for the no-`periodDays` fallback.
+- [ ] Update the `MONTHLY_FACTOR` doc comment to say it is now a fallback, not the primary conversion.
+- [ ] In `mobile/lib/recurring/__tests__/recurring_service.test.ts`, add a fortnightly case asserting the locked-in total is about half what the bucket would give, and replace the "PINS A KNOWN DEFECT" comment GAP-008 left on the existing assertion.
+- [ ] Recompute every pinned locked-in total in the suite that moves, and say in the commit which ones moved and by how much.
+
+**Acceptance criteria**
+- [ ] A 14-day pattern at PHP 320 contributes about PHP 693 a month, not about PHP 1,387.
+- [ ] The new test fails with the source change reverted.
+- [ ] Every other recurring test passes, with any changed pinned total explained in the commit.
+
+**Verification commands**
+```bash
+cd mobile && npx jest --ci --runInBand lib/recurring
+cd mobile && npx jest --ci --runInBand lib/safe_to_spend_service.test.ts lib/__tests__
+cd mobile && npm run typecheck
+```
+
+**Do not**
+Do not change `WEEKLY_MONTHLY_BOUNDARY_DAYS` or the bucketing itself; a fortnightly pattern legitimately buckets as `weekly` for identity purposes and GAP-008's decay fix depends on that staying put. Do not change the decay threshold GAP-008 established. Do not rename files or symbols to match the naming convention as part of this fix.
+
+**Rollback**
+Revert the commit. Fortnightly patterns go back to being double-counted in the locked-in total.
+
+**Open questions**
+none
+
+### GAP-102 [DOC] Two sibling docs still carry claims that were corrected everywhere else
+
+| Field | Value |
+|---|---|
+| Severity | S3 Moderate |
+| Complexity | XS |
+| Difficulty | D1 Mechanical |
+| Risk | R1 |
+| Confidence | C1 Verified |
+| Priority score | 2.0 |
+| Agent suitability | AGENT-READY |
+| Depends on | none |
+| Blocks | none |
+| Est. agent turns | 1 |
+
+**Location**
+- `docs/02-domain-model.md:453` (the loan `interestRate` row)
+- `docs/04-features/08-review-queue.md:58` (rule 2, "default keep")
+
+**Evidence**
+`docs/02-domain-model.md:453`:
+```
+| `interestRate?` | `percent` | Optional, informational. The `schedule` carries the actual amounts due; the rate is context (e.g., 5-6 = 20% flat). |
+```
+`docs/04-features/08-review-queue.md:58`:
+```
+2. **Same transaction** -> the held twin is discarded; the kept record survives (default keep: the record with more parsed fields, e.g., the push with balance-after over the SMS-relay text).
+```
+
+**What is wrong**
+Two independent stale claims, each the sibling of a claim already corrected somewhere else, which is what makes them worth one entry rather than two.
+
+The domain model still calls the loan rate "informational". Commit `438ebff` corrected exactly that wording in `mobile/types/domain.ts` under GAP-009, because `mobile/lib/loans/loan_math.ts:52,57` reads the rate per annum and drives every amortized schedule and installment from it. The doc now contradicts both the code and `docs/04-features/06-loans.md` rules 1 and 3.
+
+The review-queue doc still promises the survivor is "the record with more parsed fields". That is the richer-parse behaviour GAP-016 removed from `docs/03` as unbuilt, restated in different words in a different file. `dedupe_gate.ts` returns a verdict and nothing else, and `pipeline.ts` answers a `duplicate` verdict by writing nothing, so the first arrival wins on arrival order regardless of which parse is richer.
+
+**Why it matters**
+Drift that has been corrected in one file and left in another is worse than uniform drift. A reader who checks two documents gets two answers and has no way to tell which one is current, and the corrected file gives the stale one false credibility.
+
+**Intended behavior**
+Both lines say what the code does, and point at the file that describes the real behaviour.
+
+**Proposed fix**
+Correct both lines in place, each with a pointer to where the true behaviour now lives.
+
+**Implementation checklist**
+- [ ] In `docs/02-domain-model.md:453`, replace "Optional, informational" with a statement that the rate is an ANNUAL percent that drives the amortized schedule, citing `lib/loans/loan_math.ts`, and keep the flat-loan case (`null`, no rate) accurate.
+- [ ] In `docs/04-features/08-review-queue.md:58`, replace the "default keep" parenthetical with the current behaviour (first arrival wins, nothing is merged) and point at `docs/03-ingest-pipeline.md` §6 and `docs/09-v2-backlog.md` §2b.7 where the deferral is recorded.
+- [ ] Re-read both surrounding rules and correct any adjacent sentence the change makes inconsistent.
+
+**Acceptance criteria**
+- [ ] Neither file claims the loan rate is informational, nor that the richer parse survives.
+- [ ] Both point at the file that carries the real behaviour.
+
+**Verification commands**
+```bash
+grep -rn "informational" docs/02-domain-model.md
+grep -rn "more parsed fields" docs/
+```
+
+**Do not**
+Do not implement field union or change any ingest behaviour; this is a documentation entry and the feature is deferred to `docs/09-v2-backlog.md` §2b.7. Do not restate the loan rate as monthly: it is per annum, and GAP-009's corrected entry records why that mistake is easy to make. Do not rename files or symbols to match the naming convention as part of this fix.
+
+**Rollback**
+Revert the commit.
+
+**Open questions**
+none
+
 ## 10. Deferred and rejected
 
 Considered and not listed, with the reason.
@@ -7023,7 +7256,10 @@ Pass-2 deferrals (S4; each has a citation in the analyst's pass-2 notes and can 
 {"id":"GAP-097","category":"TEST","title":"Screen tests use fixtures that cannot distinguish the defect from the fix","severity":"S3","complexity":"S","difficulty":"D2","risk":"R1","confidence":"C1","priority":1,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/app/__tests__/bills_screen.test.tsx","mobile/app/__tests__/loan_routes.test.tsx","mobile/app/__tests__/limit_routes.test.tsx","mobile/components/transactions/__tests__/ledger_list.test.tsx","mobile/components/review/__tests__/review_card.test.tsx","mobile/components/reports/__tests__/charts.test.tsx","mobile/lib/__tests__/safe_to_spend_service.test.ts","mobile/lib/__tests__/safe_to_spend.test.ts","mobile/components/onboarding/__tests__/access_step.test.tsx","mobile/components/loans/__tests__/loan_form.test.tsx","mobile/app/(onboarding)/__tests__/setup_flow_e2e.test.tsx"]},
 {"id":"GAP-098","category":"CODE","title":"Limit alert state is read-modify-write with no serialisation, so a mute or base refresh can be overwritten by a concurrent ledger pass","severity":"S3","complexity":"S","difficulty":"D2","risk":"R2","confidence":"C2","priority":0.8,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/lib/limits/limit_service.ts","mobile/lib/limits/limit_ledger_subscriber.ts","docs/04-features/03-limits.md","mobile/lib/limits/__tests__/limit_service.test.ts"]}
 ,
-{"id":"GAP-099","category":"SEC","title":"The full-database export writes a plaintext JSON dump to the cache directory, never deletes it, and reports success when sharing is unavailable","severity":"S2","complexity":"XS","difficulty":"D1","risk":"R1","confidence":"C1","priority":5.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/lib/privacy/data_export.ts","mobile/lib/privacy/__tests__/data_export.test.ts"]}
+{"id":"GAP-099","category":"SEC","title":"The full-database export writes a plaintext JSON dump to the cache directory, never deletes it, and reports success when sharing is unavailable","severity":"S2","complexity":"XS","difficulty":"D1","risk":"R1","confidence":"C1","priority":5.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/lib/privacy/data_export.ts","mobile/lib/privacy/__tests__/data_export.test.ts"]},
+{"id":"GAP-100","category":"CONTRA","title":"Onboarding tells the user the recovery phrase brings their data back on a new phone; it cannot","severity":"S1","complexity":"XS","difficulty":"D2","risk":"R2","confidence":"C1","priority":8.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/components/onboarding/phrase_display.tsx","mobile/components/onboarding/__tests__/recovery_phrase.test.tsx"]},
+{"id":"GAP-101","category":"CODE","title":"The locked-in total counts a fortnightly subscription at twice its cost","severity":"S2","complexity":"XS","difficulty":"D2","risk":"R2","confidence":"C1","priority":5.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/lib/recurring/recurring_service.ts","mobile/lib/recurring/__tests__/recurring_service.test.ts"]},
+{"id":"GAP-102","category":"DOC","title":"Two sibling docs still carry claims that were corrected everywhere else","severity":"S3","complexity":"XS","difficulty":"D1","risk":"R1","confidence":"C1","priority":2.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["docs/02-domain-model.md","docs/04-features/08-review-queue.md"]}
 ]
 ```
 
@@ -7043,6 +7279,8 @@ Checked against the quality bar before returning:
 - Counts in the front matter (57; S1 1, S2 12, S3 36, S4 8; CODE 17, FEAT 11, TEST 2, SEC 5, OPS 4, DOC 4, PROJ 2, CONTRA 12) were recounted from the master index.
 
 Revisions during self-audit: 9 entries revised, 6 dropped or merged.
+
+The counts above are a PASS-1 snapshot (57 entries) and were not rewritten as the file grew; the master index and the JSON appendix are the current authority, at 102 entries. GAP-100 to GAP-102 were added on 2026-09-06 and were checked against the same bar: unique IDs, every score present, priority recomputed from the stated weights (8.0, 5.0, 2.0), every checklist item naming a file, zero open questions on all three since all three are AGENT-READY, and appendix objects whose `files` lists match their checklists. GAP-100 is a CONTRA entry whose two positions are the in-app copy and `key_manager.ts`; the authority call is the code, and the blast radius is every user who switches phones.
 
 - Dropped to Deferred: the plan-screen query-error state (folded into the GAP-013 follow-up), the cash-leg auto-link contradiction (C2, S4), the bills conflict and auto-acknowledge pair (C2, S4), the reports interaction set, the `Date.parse` template seam, and the dead `data_wipe.ts` module. Each had a real citation but would have been a formatting-grade row above real defects because of how the formula treats XS work.
 - Merged: five wall-clock window seams into GAP-047 (one root cause); ten doc-drift pairs into GAP-045; the money glossary, katapusan wording and stale backlog note into the same entry; the docs/12 recovery overclaim and the testing-section overclaim into GAP-015.
