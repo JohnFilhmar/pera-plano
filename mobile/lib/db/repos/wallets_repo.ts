@@ -268,12 +268,16 @@ export async function unarchiveWallet(id: string): Promise<void> {
  * no basis for making. A Wallet whose figures genuinely match returns
  * `drift: 0`, and those two states must stay distinguishable.
  *
- * WHY COMMIT ORDER RATHER THAN `occurred_at`. This describes the CURRENT
- * balance, and the current balance is whatever the last snap to run set it to.
- * Rule 12 makes the snap unconditional, and rule 9's out-of-order suppression is
- * not implemented (see `insertTransaction`), so a late-arriving older
- * notification does re-anchor the Wallet — and the explainer must describe the
- * figure the Wallet actually holds, not a newer one that no longer governs it.
+ * WHY `occurred_at` ORDER, WITH COMMIT ORDER ONLY AS THE TIE-BREAK. This
+ * describes the CURRENT balance, so it has to name the row that actually set
+ * it. `insertTransaction` now implements rule 9's out-of-order suppression: a
+ * snap runs only when its notification is no older than the wallet's current
+ * snapshot, which makes the governing row the balance-carrying Transaction with
+ * the LATEST `occurred_at`. A late-arriving older notification keeps its
+ * `balance_after` as provenance but re-anchors nothing, and reading it here —
+ * as plain commit order would — would explain a figure the Wallet does not
+ * hold. Same-instant tellings (a push and its SMS relay) still resolve by
+ * commit order, matching which of them the snap honoured.
  *
  * Both figures are read off the transaction row rather than recomputed: the snap
  * overwrote the computed balance the instant it happened, and re-deriving it
@@ -310,7 +314,7 @@ export async function getBalanceDrift(walletId: string): Promise<{
        FROM transactions t
        JOIN wallets w ON w.id = t.wallet_id
       WHERE t.wallet_id = ? AND t.balance_after IS NOT NULL
-      ORDER BY t.created_at DESC, t.rowid DESC
+      ORDER BY t.occurred_at DESC, t.created_at DESC, t.rowid DESC
       LIMIT 1`,
     [walletId],
   );

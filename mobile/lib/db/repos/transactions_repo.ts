@@ -75,6 +75,31 @@ async function currentBalance(
 }
 
 /**
+ * When the wallet's current balance snapshot was reported, or `null` when no
+ * transaction has ever carried one — rule 9's "the current snapshot's"
+ * timestamp.
+ *
+ * MAX(`occurred_at`), NOT THE LAST COMMITTED ROW. Every snap that actually ran
+ * was newer than the one before it, so the maximum IS the snapshot governing
+ * the balance; a suppressed row keeps its `balance_after` for provenance and is
+ * older than the governing one by construction, so including it changes
+ * nothing. `getBalanceDrift` picks the same row by the same ordering.
+ */
+async function currentSnapshotAt(
+  db: Awaited<ReturnType<typeof getDatabase>>,
+  walletId: string,
+): Promise<EpochMs | null> {
+  const row = await db.getFirstAsync<{ occurred_at: number }>(
+    `SELECT occurred_at FROM transactions
+      WHERE wallet_id = ? AND balance_after IS NOT NULL
+      ORDER BY occurred_at DESC
+      LIMIT 1`,
+    [walletId],
+  );
+  return row?.occurred_at ?? null;
+}
+
+/**
  * Commits a Transaction and settles its Wallet's balance in the same SQL
  * transaction. Callers must not re-apply the delta.
  *
@@ -100,12 +125,27 @@ async function currentBalance(
  * applied outside it would survive a rejected insert — a wallet claiming a
  * balance with nothing in the ledger to explain it.
  *
- * NOT IMPLEMENTED HERE: spec rule 9's second half, "out-of-order arrivals snap
- * only if the notification timestamp is newer than the current snapshot's". A
- * late-arriving older notification therefore re-anchors the wallet to its own
- * (stale) figure. The data to fix it now exists — `balance_after` alongside
- * `occurred_at` — but suppressing a snap is a routing decision that belongs
- * with the reconciliation work, not with persisting the value.
+ * OUT-OF-ORDER ARRIVALS ARE SUPPRESSED (spec rule 9's second half: "out-of-order
+ * arrivals snap only if the notification timestamp is newer than the current
+ * snapshot's"). A notification delayed by a dead radio still describes the
+ * moment it was sent, so a figure from Tuesday landing after Thursday's is not
+ * a correction — it is a rewind, and letting it snap discards every movement in
+ * between and leaves the drift explainer describing a balance the bank has not
+ * held for two days.
+ *
+ * SUPPRESSED MEANS THE BALANCE IS NOT TOUCHED AT ALL, not that it falls back to
+ * the increment. The governing snapshot is NEWER than this transaction, so the
+ * provider's own figure already counts this movement (rule 2: balance = last
+ * anchor + the signed sum SINCE it); adding the amount again would book it
+ * twice. The row is still committed in full — `balance_after` and
+ * `computed_balance` included — because it is a real movement and the ledger
+ * records what the provider said, whether or not it re-anchored anything.
+ *
+ * STRICTLY OLDER, NOT "NOT NEWER". Two tellings of the same movement carry the
+ * same `occurred_at` (a push and its SMS relay), and the later-committed one is
+ * the one to trust; only a timestamp genuinely behind the snapshot is
+ * out-of-order. Rule 12 is untouched by any of this: a snap that DOES run never
+ * blocks on drift.
  */
 export async function insertTransaction(tx: NewTransaction): Promise<Transaction> {
   const db = await getDatabase();
@@ -117,8 +157,11 @@ export async function insertTransaction(tx: NewTransaction): Promise<Transaction
 
   await db.withTransactionAsync(async () => {
     // Read inside the transaction, so nothing can move the balance between the
-    // figure we record as "computed" and the snap that replaces it.
+    // figure we record as "computed" and the snap that replaces it. Both reads
+    // run BEFORE the insert, so this row is never compared against itself.
     const before = balanceAfter === null ? null : await currentBalance(db, tx.walletId);
+    const snapshotAt = balanceAfter === null ? null : await currentSnapshotAt(db, tx.walletId);
+    const snaps = balanceAfter !== null && (snapshotAt === null || tx.occurredAt >= snapshotAt);
 
     const committed: Transaction = {
       id,
@@ -180,7 +223,7 @@ export async function insertTransaction(tx: NewTransaction): Promise<Transaction
         now,
         committed.walletId,
       ]);
-    } else {
+    } else if (snaps) {
       // SET, not `balance + ?`. Compared against `balanceAfter === null` rather
       // than truthiness on purpose: a reported ₱0.00 is a drained wallet, and
       // `if (balanceAfter)` would quietly fall through to the increment for it.
@@ -190,6 +233,10 @@ export async function insertTransaction(tx: NewTransaction): Promise<Transaction
         committed.walletId,
       ]);
     }
+    // The remaining case — a reported balance older than the wallet's current
+    // snapshot — writes NOTHING to the wallet. See this function's header: the
+    // newer snapshot already counts this movement, so both a snap and an
+    // increment would misstate the balance.
 
     record = committed;
   });
