@@ -465,9 +465,11 @@ describe("refreshPatterns honours an existing suppress-recurring UserRule", () =
 // §3.10's "automatic removal when confidence decays below the floor after
 // repeated missed periods"). The owner's rule: "1.5 missed payments, scaled
 // to the pattern's own cadence" — recurring_forget_multiplier (default 1.5)
-// times PERIOD_NOMINAL_DAYS[period], measured from the pattern's stored
-// lastSeenAt. NOT periodDays (recurring_patterns_repo.ts's header explains
-// why that wobbles pass to pass), and NOT a flat day count (a flat 45 days
+// times max(periodDays, PERIOD_NOMINAL_DAYS[period]), measured from the
+// pattern's stored lastSeenAt. The bucket nominal leads because periodDays
+// wobbles pass to pass (recurring_patterns_repo.ts's header explains why),
+// but it can never pull the threshold BELOW the pattern's own cadence — the
+// fortnightly case below. And NOT a flat day count either (a flat 45 days
 // would forget an annual subscription six weeks after it charged).
 // ---------------------------------------------------------------------------
 describe("refreshPatterns removes patterns that have gone silent past the forget threshold", () => {
@@ -545,6 +547,64 @@ describe("refreshPatterns removes patterns that have gone silent past the forget
 
     expect(result.some((p) => p.id === created.id)).toBe(false);
     expect(await getPattern(created.id)).toBeNull();
+  });
+
+  // A FORTNIGHTLY charge is the case the bucket nominal alone gets wrong: 14
+  // days is under the repo's ~14.6-day weekly/monthly boundary, so `period`
+  // is "weekly" and a threshold of 1.5 x 7 = 10.5 days would forget the
+  // pattern three days before its next charge was even due. The threshold is
+  // scaled by max(periodDays, nominal), so the real one here is 1.5 x 14 = 21.
+  test("a fortnightly acknowledged pattern silent for 11 days is KEPT — its own cadence is not up yet", async () => {
+    const created = await upsertPattern({
+      merchant: "HERBALIFE CLUB",
+      amount: 32_000,
+      periodDays: 14,
+      occurrences: 5,
+      confidence: 0.85,
+      firstSeenAt: NOW - 70 * DAY_MS,
+      lastSeenAt: NOW - 11 * DAY_MS,
+      nextExpectedAt: NOW + 3 * DAY_MS,
+      transactionIds: [],
+    });
+    // The premise: it really does land in the weekly bucket, cadence intact.
+    expect(created.period).toBe("weekly");
+    expect(created.periodDays).toBe(14);
+    await acknowledgePattern(created.id);
+
+    const result = await refreshPatterns(NOW);
+
+    expect(result.some((p) => p.id === created.id)).toBe(true);
+    const stillThere = await getPattern(created.id);
+    expect(stillThere).not.toBeNull();
+    expect(stillThere?.acknowledged).toBe(true);
+    // PINS A KNOWN DEFECT, not correct behaviour. `monthlyLockedIn` scales by
+    // MONTHLY_FACTOR[period], and this pattern buckets as `weekly`, so a
+    // 14-day charge is counted 52 times a year instead of 26 — double its
+    // real monthly cost. The decay fix above deliberately does not touch it;
+    // the conversion is its own defect and its own entry. What this line is
+    // here to assert is that the pattern is still IN the total at all.
+    expect(monthlyLockedIn(result)).toBe(Math.round(32_000 * (52 / 12)));
+  });
+
+  test("a fortnightly pattern silent for 22 days IS forgotten (1.5 x 14 = 21-day threshold)", async () => {
+    const created = await upsertPattern({
+      merchant: "HERBALIFE CLUB",
+      amount: 32_000,
+      periodDays: 14,
+      occurrences: 5,
+      confidence: 0.85,
+      firstSeenAt: NOW - 70 * DAY_MS,
+      lastSeenAt: NOW - 22 * DAY_MS,
+      nextExpectedAt: NOW - 8 * DAY_MS,
+      transactionIds: [],
+    });
+    await acknowledgePattern(created.id);
+
+    const result = await refreshPatterns(NOW);
+
+    expect(result.some((p) => p.id === created.id)).toBe(false);
+    expect(await getPattern(created.id)).toBeNull();
+    expect(monthlyLockedIn(result)).toBe(0);
   });
 
   test("changing the multiplier changes the threshold: 3x survives what 1.5x would have forgotten", async () => {

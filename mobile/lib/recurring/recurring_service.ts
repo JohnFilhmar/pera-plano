@@ -52,8 +52,9 @@ const LEDGER_WINDOW_DAYS = 800;
  *   `promotePatternToBill`, for the rare row that predates migration 007 and
  *   so has no `periodDays` of its own to promote from.
  *
- *   `decayStalePatterns`, which scales the forget threshold by this rather
- *   than by `periodDays` on purpose — see that function's own doc.
+ *   `decayStalePatterns`, which scales the forget threshold by the LARGER of
+ *   this and `periodDays` — see that function's own doc for why neither
+ *   number is safe on its own.
  */
 const PERIOD_NOMINAL_DAYS: Record<RecurringPeriod, number> = {
   weekly: 7,
@@ -151,23 +152,38 @@ export async function refreshPatterns(now: number): Promise<RecurringPattern[]> 
  * `recurring_forget_multiplier` × the pattern's OWN cadence, measured from its
  * stored `lastSeenAt`.
  *
- * SCALED BY `period`, THE STABLE ENUM — NOT `periodDays`. Same reasoning
+ * SCALED BY THE LONGER OF `PERIOD_NOMINAL_DAYS[period]` AND `periodDays`.
+ * Neither number is safe alone.
+ *
+ * The bucket nominal is the STABLE one, for the same reason
  * `recurring_patterns_repo.ts`'s own file header gives for keeping
  * `periodDays` out of pattern IDENTITY: it is `Math.round(meanGap)` over a
  * sliding window and legitimately wobbles pass to pass for one real,
  * unchanged subscription (31 -> 30, that file's own worked example). A
- * silence THRESHOLD built on a wobbling number would make a pattern's forget
- * date jitter with no material change in the user's actual behaviour — the
- * exact defect the identity key was fixed to avoid, avoided here too by using
- * the same stable `PERIOD_NOMINAL_DAYS[period]` this file already defines for
- * `promotePatternToBill`'s fallback. A FIXED day count (the owner's own first
- * draft, explicitly rejected) fails for a related reason: flat 45 days is 1.5
- * missed cycles for a monthly subscription but would delete an ANNUAL one six
- * weeks after it charged, then re-detect it the next time it actually
- * charged — flickering in and out of the locked-in total all year. The
- * multiplier framing is what keeps "1.5" meaning "one and a half missed
- * payments" regardless of cadence: monthly -> 45 days, weekly -> ~10 days,
- * annual -> ~18 months, all from the same stored `1.5`.
+ * silence THRESHOLD built on a wobbling number alone would make a pattern's
+ * forget date jitter with no material change in the user's actual behaviour,
+ * the exact defect the identity key was fixed to avoid.
+ *
+ * But the bucket nominal alone runs SHORT at the top of a bucket, because
+ * `period` is a three-value enum and every real cadence has to land in one of
+ * the three. A fortnightly charge buckets as `weekly` (the repo's
+ * weekly/monthly boundary sits at about 14.6 days), so 1.5 x 7 = 10.5 days
+ * would forget it three days BEFORE its next charge was even due — every
+ * cycle, with the next charge re-detecting it as a fresh, unacknowledged
+ * suggestion and the acknowledgement lost each time. A forget threshold
+ * shorter than the pattern's own cadence is never what "1.5 missed payments"
+ * means. `Math.max` keeps both properties: the threshold can never fall below
+ * the pattern's own cadence, and for the ordinary pattern sitting at or under
+ * its bucket nominal the stable number is still the one that decides.
+ *
+ * A FIXED day count (the owner's own first draft, explicitly rejected) fails
+ * for a related reason: flat 45 days is 1.5 missed cycles for a monthly
+ * subscription but would delete an ANNUAL one six weeks after it charged,
+ * then re-detect it the next time it actually charged — flickering in and out
+ * of the locked-in total all year. The multiplier framing is what keeps "1.5"
+ * meaning "one and a half missed payments" regardless of cadence: monthly ->
+ * 45 days, weekly -> ~10 days, fortnightly -> 21 days, annual -> ~18 months,
+ * all from the same stored `1.5`.
  *
  * ACKNOWLEDGED PATTERNS DECAY ON THE SAME TERMS AS UNACKNOWLEDGED ONES. Rule
  * 17's headline "locked in" figure counts only ACKNOWLEDGED, not-bill-linked
@@ -211,7 +227,8 @@ async function decayStalePatterns(now: number): Promise<void> {
     // No confirmed sighting to measure silence from — nothing to decay yet.
     if (pattern.lastSeenAt === null) continue;
 
-    const thresholdDays = multiplier * PERIOD_NOMINAL_DAYS[pattern.period];
+    const cadenceDays = Math.max(pattern.periodDays ?? 0, PERIOD_NOMINAL_DAYS[pattern.period]);
+    const thresholdDays = multiplier * cadenceDays;
     const silentDays = (now - pattern.lastSeenAt) / DAY_MS;
     if (silentDays > thresholdDays) {
       await deletePattern(pattern.id);
