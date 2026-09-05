@@ -1013,12 +1013,13 @@ git commit -m "fix(loans): close a loan-match card once its payment is recorded 
 
 ### Task 5: Verify the whole change
 
-- [ ] **Step 1: Typecheck and lint**
+- [ ] **Step 1: Typecheck**
 
-Run: `cd mobile && npx tsc --noEmit`
-Then: `cd mobile && npm run lint`
+Run: `cd mobile && npm run typecheck` (which is `tsc --noEmit`).
 
-Expected: PASS with no new errors. If something looks pre-existing, check it out on `master` and confirm before writing it off.
+Expected: exactly one error, `components/gates/__tests__/gates.test.tsx(91,29): error TS2339`, which is pre-existing and in a file no commit on this branch touches. Confirm that for yourself with `git log <merge-base>..HEAD -- mobile/components/gates/`, which should be empty, rather than taking this line's word for it.
+
+There is NO lint step, and that is a fact about the project rather than an omission here: `mobile/package.json` declares only `start`, `android`, `ios`, `test` and `typecheck`, and there is no eslint or prettier config anywhere under `mobile/`. Nothing enforces formatting in this repo, which is also why the leftover indentation left behind by the two removed `ScrollView` wrappers is not worth a reindent commit.
 
 - [ ] **Step 2: Run the full suite once**
 
@@ -1046,6 +1047,7 @@ Record each verbatim outcome. These go in the PR body.
 3. Plan, Utang, a loan with three or more possible payments. The sheet's list scrolls, every candidate is reachable, and the confirm button on the last one is not under the navigation bar.
 4. In that sheet, tap "None of these". Reopen the loan: those rows are no longer offered and the button has dropped its count or reads "Match a payment". Open "Show every transaction": the rejected rows are still listed and still confirmable.
 5. With a loan-match card waiting in the Review Queue, confirm the same transaction from the loan screen's match sheet. Return to the Review Queue: the card is gone. If one is still there, press "Record this payment": it closes without an error and without adding a second payment to the loan.
+6. **The tallest sheet in the app, with the keypad up.** Open the Review Queue, tap "Change the details" on a low-confidence card, then tap the amount field so the numeric panel appears. The sheet's grab handle and its "Fix what's wrong" title must both stay on screen, and Save must stay reachable by scrolling. This is the case the whole-branch review caught: the body's height cap is taken from the window MINUS the bottom band, because the panel and the navigation bar are not free space. Get it wrong and the top of the sheet is off-screen, where no gesture can bring it back. `docs/13-on-device-verification.md:1379-1385` describes the older behaviour and the remedy it recommended; it now describes a sheet this branch has changed, so correct that passage once this check has been run on a device and the real outcome is known.
 
 - [ ] **Step 5: Commit the device results**
 
@@ -1069,3 +1071,5 @@ Base `master`. Body: the four defects, their root causes, and the device results
 
 1. **Manual payment plus notification is still a double count.** The manual "Record payment" sheet creates a new `source: manual` transaction. A notification for the same money commits a second row, and both can be recorded against the loan. `committedTwinOf` in `resolve_actions.ts` cannot catch it: it joins on `providerKey` and `channel`, and a manual row has neither, so a manual transaction is never a twin of a detected one. Fixing it means either matching manual rows against later notifications, or giving the manual sheet an "I already have the notification" path. Real defect, different fix, not what was reported.
 2. **The rejection counter loans rule 10 describes.** `loan_match_rejections` stores the pair, not a per-merchant tally, and `dismissLoanMatch` still writes no count. The "stop suggesting this merchant for this loan?" prompt needs both, plus a product decision about the threshold.
+3. **A rejection is invisible to the Review Queue.** `findLoanMatchesForTransaction` in `mobile/lib/loans/loans_service.ts` never consults `loan_match_rejections`, so after the user taps "None of these" on the loan screen, an open `loan-match` card can still ask about the same transaction and loan. The reported defect (the sheet re-offering the same rows) is fixed; the queue is the surviving surface of "the app forgot my answer". Honouring it needs care, because one card can name several loans and a rejection is scoped to one pair, so a card should lose a candidate rather than be suppressed outright.
+4. **The already-claimed-by-another-loan branch is silent.** In `mobile/lib/loans/loan_match_queue.ts`, if the user presses "Record this payment" naming loan B while the ledger says loan A owns that transaction, the card resolves as confirmed, nothing is recorded on B, and the screen says nothing. That is correct under invariant I12 and it is what this plan specified, but this branch's whole premise is not telling the user something false, and saying nothing at all sits close to that line. A one-line inline notice would close it.
