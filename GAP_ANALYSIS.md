@@ -35,6 +35,9 @@ not been started. Each gap's detail entry in section 9 carries the same marker i
 
 | ID | Status | Commit | Branch | Verification | Date |
 |---|---|---|---|---|---|
+| GAP-017 | BLOCKED | - | - | needs expo-screen-capture installed; not present in node_modules or package.json | 2026-09-05 |
+| GAP-079 | DONE | e97a640 + 8654b88 | gap-wave-4 | jest components/wallets+loans+review+wallet_routes 14 suites 335 tests PASS; reverting the 7 sources fails exactly the 23 new tests. Found that a useState guard does not stop a same-tick double tap | 2026-09-05 |
+| GAP-010 | DONE | eee8028 | gap-wave-4 | jest lib/wallets + lib/db/repos + components/wallets 30 suites 697 tests PASS; each guard reverted individually fails only its own test. Weekly cadence taken from docs/02-wallets.md:70. Snooze, Home card and due chip deliberately not built | 2026-09-05 |
 | GAP-095 | DONE | e046f84 | gap-wave-3 | same commit; test genuinely crosses midnight (23:58 mount, 00:02 save); GAP-060 submit guard untouched | 2026-09-04 |
 | GAP-090 | DONE | e046f84 | gap-wave-3 | same commit; all three false statements fixed, scope table now shared with the step that asks the cadence | 2026-09-04 |
 | GAP-076 | DONE | e046f84 | gap-wave-3 | jest 22 suites 342 tests PASS; all 20 useWallets call sites checked, no picker gained an archived wallet | 2026-09-04 |
@@ -57,8 +60,8 @@ not been started. Each gap's detail entry in section 9 carries the same marker i
 | GAP-003 | DONE | 7fc19ce | worktree-gap-wave-1 | jest onboarding tree 22 suites 207 tests PASS plus more_hub/more_tab 32; 5 of 7 new tests fail when the OS request is stubbed. ON-DEVICE VERIFICATION STILL REQUIRED on the A54 (7 items listed in the commit) | 2026-09-04 |
 | GAP-058 | DONE | 46edbd3 | worktree-gap-wave-1 | jest hooks 87 passed and home_screen 23 passed; three added tests fail with the source-root list emptied. DEVIATION: fixed by a cascade in query_client, so acceptance criterion 1 (12+ mutation hooks naming the key) is NOT met by design | 2026-09-04 |
 | GAP-011 | DONE | b732372 + 9eede70 | worktree-gap-wave-1 | jest lib/ingest + lib/review + raw_notifications_repo 15 suites 466 tests PASS. Follow-up 9eede70 fixes a merged-away-duplicate resurrection the sweep introduced (was reproduced first) | 2026-09-04 |
-| GAP-014 | DEFERRED | - | - | needs an npm install of zod; held for a serial slot so the shared lockfile is not mutated | 2026-09-04 |
-| GAP-060 | DONE | 769d66b | worktree-gap-wave-1 | jest manual_entry_form + transaction_new 49 passed (was 45); four added tests proven to fail without the guards | 2026-09-04 |
+| GAP-014 | DONE | 66d549a | gap-wave-4 | jest services + lib/ingest 18 suites 472 tests PASS; HEAD's validator accepted all 6 attack payloads and the accepted regex never terminated. ReDoS reduced not solved; authenticity still GAP-043 | 2026-09-05 |
+| GAP-060 | DONE | 769d66b + bf32446 | gap-wave-1 + gap-wave-4 | CORRECTED: the original useState guard did not stop a same-tick double tap and wrote two rows; bf32446 makes it a ref. jest transaction_new 15 tests PASS | 2026-09-05 |
 | GAP-005 | DONE | 9a605da | worktree-gap-wave-1 | jest safe_to_spend_service 22 passed (was 21); new test proven to fail without the fix | 2026-09-04 |
 | GAP-062 | DONE | 8c1fccd | worktree-gap-wave-1 | key sets compared at nine across all four files; Gradle NOT RUN (no android/ in worktree) | 2026-09-04 |
 | GAP-001 | DONE | 8db6f2c + a84b0ca | master + gap-wave-2 | app.json survived the merge; the iOS build job was restored by the merge conflict resolution and re-stripped in a84b0ca | 2026-09-04 |
@@ -67,13 +70,18 @@ not been started. Each gap's detail entry in section 9 carries the same marker i
 
 Facts established while fixing entries, that later entries must not rediscover the hard way.
 
-- **An `isPending` flag alone does not guard a double tap** (found fixing GAP-060, 2026-09-04).
+- **A double-tap guard must be a REF. Neither `isPending` nor `useState` is enough.**
+  (found fixing GAP-060 on 2026-09-04, CORRECTED while fixing GAP-079 on 2026-09-05.)
   React Query notifies observers on a microtask, so two presses inside one JS tick both read
-  `isPending: false` and both submit. A route-level test reproduced this and wrote two rows.
-  The guard has to be a synchronous `useState` set before the call, with `isPending` ORed in
-  only to cover the invalidation that `onSuccess` awaits. This applies directly to GAP-079
-  (sheet confirm buttons stay tappable while pending) and to any in-flight guard GAP-013 adds.
-
+  `isPending: false` and both submit. That much was right. The original note then said to use
+  a synchronous `useState` set before the call, and that is WRONG: calling the setter does not
+  change the value the running handler's closure already read, so the second press in that tick
+  sees the same stale `false`. GAP-079 implemented the note literally and still wrote two
+  `loan_payments` rows for one collector visit; the manual-entry path shipped in `769d66b` had
+  the same hole and was corrected in `bf32446`. Use a `useRef` as the guard, keep a `useState`
+  only to drive the button's spinner, and OR `isPending` in for the invalidation window.
+  A test only catches this if BOTH presses fire inside one `act()` -- two bare presses are two
+  ticks, which `isPending` already refuses, so a test written that way passes without the fix.
 - **The GAP-011 sweep introduced a new invariant** (2026-09-04). A row in `raw_notifications`
   referenced by neither `transactions` nor `review_queue_items` is now a WORK ITEM that
   `startIngest` re-runs, not an inert row. Anything that stores a capture and deliberately
@@ -206,6 +214,23 @@ Facts established while fixing entries, that later entries must not rediscover t
   reverted their own changes and reproduced it identically. It belongs to GAP-052 and was left
   alone to keep that entry whole, but it costs a red line on every verification run, which is
   how a team learns to ignore red. Worth doing first when GAP-052 is picked up.
+
+- **Wave 4 suite result** (2026-09-05, branch `worktree-gap-wave-4` off master). Two chunks,
+  `--runInBand`: `lib` **114 suites / 2,487 tests, zero failures**; the UI layer **141 of 142
+  suites / 2,025 of 2,026 tests**. Total **256 suites, 4,513 tests, 1 failure**, still the
+  `bills_screen` clock-dependent total.
+- **The remaining work changed shape after wave 4.** Every S1 and eleven of seventeen S2s are
+  closed, and **not one of the six remaining S2s is AGENT-READY** - all are AGENT-ASSISTED or
+  HUMAN-FIRST (GAP-028, 029, 043, 044, 059, 061). Autonomous agents have cleared what they can
+  clear at high severity; the rest needs owner decisions, hardware, or close review.
+- **GAP-044 is more urgent than its score says.** "Migrations are forward-only with no guard for
+  an older build opening a newer database" was theoretical when the audit was written. It is not
+  now: GAP-001 deliberately kept `runtimeVersion` and `updates.url`, so OTA is live, and an OTA
+  rollback is exactly the event that puts an older build in front of a newer schema. It carries
+  the highest risk rating in the file (R4).
+- **GAP-017 is blocked on a dependency, like GAP-014 was.** It needs `expo-screen-capture`, which
+  is not installed. Until it is, recovery words can still go to the OS share sheet and the phrase
+  screens can still be screenshotted.
 
 ## 1. Executive summary
 
@@ -1255,6 +1280,8 @@ none for the label. Whether per-annum entry is required is an owner call and wou
 
 ### GAP-010 [FEAT] Cash reconciliation prompts are never scheduled
 
+> **REMEDIATION: DONE** (2026-09-05) - commit eee8028, branch gap-wave-4. Verification: jest lib/wallets + lib/db/repos + components/wallets 30 suites 697 tests PASS; each guard reverted individually fails only its own test. Weekly cadence taken from docs/02-wallets.md:70. Snooze, Home card and due chip deliberately not built
+
 | Field | Value |
 |---|---|
 | Severity | S2 Major |
@@ -1536,7 +1563,7 @@ none
 
 ### GAP-014 [SEC] Remote parser ruleset is accepted without schema, size, tunable-range or regex bounds
 
-> **REMEDIATION: DEFERRED** (2026-09-04) - commit -, branch -. Verification: needs an npm install of zod; held for a serial slot so the shared lockfile is not mutated
+> **REMEDIATION: DONE** (2026-09-05) - commit 66d549a, branch gap-wave-4. Verification: jest services + lib/ingest 18 suites 472 tests PASS; HEAD's validator accepted all 6 attack payloads and the accepted regex never terminated. ReDoS reduced not solved; authenticity still GAP-043
 
 | Field | Value |
 |---|---|
@@ -1724,6 +1751,8 @@ Revert the commit.
 none
 
 ### GAP-017 [SEC] Recovery words go to the OS share sheet and the phrase screens allow screenshots
+
+> **REMEDIATION: BLOCKED** (2026-09-05) - commit -, branch -. Verification: needs expo-screen-capture installed; not present in node_modules or package.json
 
 | Field | Value |
 |---|---|
@@ -4314,7 +4343,7 @@ Revert the commit. Devices that already lost captures cannot recover them.
 
 ### GAP-060 [CODE] Manual entry Save has no in-flight guard, so a double tap writes two entries
 
-> **REMEDIATION: DONE** (2026-09-04) - commit 769d66b, branch worktree-gap-wave-1. Verification: jest manual_entry_form + transaction_new 49 passed (was 45); four added tests proven to fail without the guards
+> **REMEDIATION: DONE** (2026-09-05) - commit 769d66b + bf32446, branch gap-wave-1 + gap-wave-4. Verification: CORRECTED: the original useState guard did not stop a same-tick double tap and wrote two rows; bf32446 makes it a ref. jest transaction_new 15 tests PASS
 
 | Field | Value |
 |---|---|
@@ -5441,6 +5470,8 @@ Revert.
 none
 
 ### GAP-079 [CODE] Sheets keep stale state and stay open after a failed write, and their confirm buttons stay tappable while pending
+
+> **REMEDIATION: DONE** (2026-09-05) - commit e97a640 + 8654b88, branch gap-wave-4. Verification: jest components/wallets+loans+review+wallet_routes 14 suites 335 tests PASS; reverting the 7 sources fails exactly the 23 new tests. Found that a useState guard does not stop a same-tick double tap
 
 | Field | Value |
 |---|---|
