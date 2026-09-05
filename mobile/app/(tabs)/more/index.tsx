@@ -102,6 +102,16 @@
 // here that is not a destination at all — it either raises the Android 13+
 // POST_NOTIFICATIONS dialog or opens the phone's settings, and disappears
 // once the grant lands.
+//
+// "PERMISSIONS" IS THE ROW BESIDE IT, NOT A REPLACEMENT FOR IT (GAP-018).
+// The two answer different questions and the second cannot do the first's
+// job. "Turn on alerts" is a one-tap fix that appears unprompted, for the one
+// grant this hub can actually read; the Permissions row is a plain
+// destination (app/(tabs)/more/permissions.tsx) that always renders, because
+// the grant it exists for — the battery exemption — cannot be read at all, so
+// a row conditional on its state is not a thing that can be built. Making
+// this row conditional on the other two would also hide the checklist from
+// exactly the user who came looking for it after tracking stopped.
 import * as Notifications from "expo-notifications";
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "expo-router";
@@ -111,6 +121,7 @@ import {
   Bell,
   ChevronRight,
   Info,
+  KeyRound,
   LifeBuoy,
   Repeat,
   Settings as SettingsIcon,
@@ -137,6 +148,7 @@ const ReportsGlyph = registerIcon(BarChart3);
 const SubscriptionsGlyph = registerIcon(Repeat);
 const SharedBudgetsGlyph = registerIcon(Users);
 const SettingsGlyph = registerIcon(SettingsIcon);
+const PermissionsGlyph = registerIcon(KeyRound);
 const ListenerGlyph = registerIcon(Activity);
 const ParserGlyph = registerIcon(Wrench);
 const PrivacyGlyph = registerIcon(ShieldCheck);
@@ -357,6 +369,28 @@ export default function MoreScreen() {
           />
         </Pressable>
       ) : null}
+
+      {/* THE CHECKLIST BEHIND EVERY SKIPPED ONBOARDING GRANT (GAP-018).
+          Ungated and always rendered — see this file's header for why it is
+          not conditional the way the alerts row above is. Placed before
+          Listener health on purpose: that screen diagnoses, this one is where
+          the fix lives, and a user who has just read "tracking was
+          interrupted" needs the fix next, not another reading. */}
+      <Pressable
+        testID="more-permissions"
+        onPress={() => router.push("/more/permissions")}
+        accessibilityRole="button"
+        accessibilityLabel="Permissions"
+      >
+        <ListRow
+          title="Permissions"
+          subtitle="Notification access, alerts and the battery exemption — turn on anything you skipped during setup."
+          // 98 chars / 22 — same arithmetic as every row here (see header).
+          subtitleLines={5}
+          left={<RowIconDisc icon={PermissionsGlyph} />}
+          right={<RowChevron />}
+        />
+      </Pressable>
 
       {/* `listener_health` is "shipped" as of m3b Task 8, and its screen
           (app/(tabs)/more/listener_health.tsx) now exists. */}

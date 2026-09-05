@@ -42,25 +42,19 @@
 // "unverifiable, so don't pretend to verify it" call docs rule 17 already
 // makes: a skipped or incomplete battery exemption sets the at-risk state
 // elsewhere (Home's listener-health surface), never a hard stop here.
+//
+// THE INTENT ITSELF NOW LIVES IN lib/onboarding/battery_settings.ts (GAP-018),
+// not here. This step is no longer its only caller: skipping it used to be
+// permanent, so app/(tabs)/more/permissions.tsx now offers the same action
+// from Settings, and both fire one shared `openBatterySettings()` rather than
+// two copies of an intent string nothing type-checks.
 import { useCallback } from "react";
 import { useRouter } from "expo-router";
-import { Linking } from "react-native";
 
 import { BatteryExplainer } from "@/components/onboarding/battery_explainer";
 import { OnboardingFrame } from "@/components/onboarding/onboarding_frame";
 import { OemGuidance } from "@/components/privacy/oem_guidance";
-
-/**
- * `Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS` — the app-list
- * screen where the user finds PeraPlano and sets it to "Not optimized"/
- * "Allow". Deliberately NOT `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`
- * (the direct per-app system dialog): that one needs the
- * `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` manifest permission declared and
- * justified at Play review, the same category of cost this app already
- * avoided once for `QUERY_ALL_PACKAGES` (docs/04-features/01-onboarding.md
- * open question 2). The list screen needs no new permission at all.
- */
-const BATTERY_SETTINGS_INTENT = "android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS";
+import { openBatterySettings } from "@/lib/onboarding/battery_settings";
 
 export default function BatteryScreen({ brand }: { brand?: string | null } = {}) {
   const router = useRouter();
@@ -74,10 +68,10 @@ export default function BatteryScreen({ brand }: { brand?: string | null } = {})
   }, [router]);
 
   const handlePrimary = useCallback(() => {
-    Linking.sendIntent(BATTERY_SETTINGS_INTENT).catch(() => {
-      // Best-effort only (see this file's header) — nothing to recover from,
-      // and no way to verify the outcome regardless.
-    });
+    // Best-effort only (see this file's header and `openBatterySettings`'s own
+    // doc) — nothing to recover from, and no way to verify the outcome
+    // regardless, so this advances rather than waiting on an answer.
+    openBatterySettings();
     advance();
   }, [advance]);
 

@@ -25,11 +25,26 @@ PeraPlano asks for the scariest permission on Android — Notification Access �
 
 | Section | Contents |
 |---|---|
-| Tracking | Master listening switch · per-provider switches · listener health indicator · parser diagnostics · battery-exemption and OEM guidance shortcuts |
+| Tracking | Master listening switch · per-provider switches · listener health indicator · parser diagnostics · **Permissions** (the checklist screen, `app/(tabs)/more/permissions.tsx`), which carries the battery-exemption and OEM guidance shortcuts |
 | Alerts | The app's own notifications — per-type toggles mirroring the canonical channel list in [../06-information-architecture.md](../06-information-architecture.md) §6.1: Limit threshold alerts (50/80/100%), Bill reminders, Loan reminders, Goal updates, the daily Review Queue digest, Listener health, Payday summary (requires the POST_NOTIFICATIONS runtime permission on Android 13+) |
 | Data & privacy | "What PeraPlano can see" explainer · transparency access ("why was this recorded" lives on each transaction; this section explains and links) · Export everything · Wipe everything · anonymous parse-success sharing toggle |
 | Backup (Plus) | Cloud backup toggle · last-backup time · delete-cloud-copy action |
 | About | Privacy policy · terms · version · licenses |
+
+### Permissions checklist
+
+Every grant PeraPlano needs is offered exactly once, during onboarding, and every one of them is skippable on purpose ([01-onboarding.md](01-onboarding.md)). **Permissions** (More → Permissions) is where a skipped grant is completed afterwards; without it the only way back is a reinstall.
+
+| Row | State shown | Action |
+|---|---|---|
+| Notification access | On / Off, read live via `isAccessGranted()` | Opens the system Notification Access list; hidden once the grant is held |
+| Alerts (POST_NOTIFICATIONS) | On / Off, read live via `getPermissionsAsync()` | Raises the one-shot Android 13+ dialog while `canAskAgain` is true, and opens the phone's app settings afterwards; hidden once the grant is held |
+| Battery exemption | "Can't tell" — Android reports nothing back | Fires `BATTERY_SETTINGS_INTENT`, the same intent the onboarding step fires, and the screen shows the matching OEM guidance beneath it. Always offered, because there is no state to hide it on |
+
+Two rules this screen holds to:
+
+- **A failed read is never rendered as "Off".** A read that threw says nothing about the grant, so it shows "Can't tell" and keeps its action. Turning an unknown into a claim teaches the user to distrust the rows that are accurate.
+- **A refused permission is never silently re-requested.** Android spends the POST_NOTIFICATIONS dialog on the first ask and answers later requests from memory with nothing shown, so once it is spent the screen routes to system settings instead of offering a button that does nothing.
 
 ### Listener health indicator
 
