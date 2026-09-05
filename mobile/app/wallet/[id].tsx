@@ -61,7 +61,7 @@
 // Transactions, the schema's NO ACTION foreign key blocks the DELETE outright,
 // and `wallets_repo` exports no `deleteWallet` to call.
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -219,6 +219,24 @@ export default function WalletDetailScreen() {
   const [reconciling, setReconciling] = useState(false);
   const [correcting, setCorrecting] = useState(false);
   const [archiving, setArchiving] = useState(false);
+  // The two writes this screen owns, each held as a REF plus a piece of state
+  // (GAP-060, GAP-079).
+  //
+  // THE REFS ARE THE GUARDS. `isPending` alone cannot be one — React Query
+  // notifies its observers on a timer, so two presses inside ONE JS tick both
+  // read `false`, and on the archive path that is a second
+  // `reassignWalletTransactions` over a ledger the first is still moving. Nor
+  // can a `useState` be one: a setter does not change the value the CURRENT
+  // render's handler closure is holding, so both presses in that tick still
+  // read `false`. Only a ref is written and read back inside one tick.
+  //
+  // THE STATE IS THE RENDER — a ref changing re-renders nothing, and both
+  // buttons have a busy state to show. `isPending` is ORed in with it, because
+  // it stays true across the invalidation `onSuccess` awaits.
+  const archiveInFlight = useRef(false);
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  const dismissInFlight = useRef(false);
+  const [dismissBusy, setDismissBusy] = useState(false);
 
   const { data: wallet, isPending } = useWallet(walletId);
   const { data: drift } = useBalanceDrift(walletId);
@@ -490,17 +508,31 @@ export default function WalletDetailScreen() {
                     testID="wallet-detail-dismiss-drift"
                     title="Dismiss"
                     variant="secondary"
-                    loading={dismissDrift.isPending}
+                    loading={dismissDrift.isPending || dismissBusy}
                     // The id from the drift ON SCREEN, never a fresh read: this
                     // records what the user actually looked at and accepted. A
                     // report that lands between this render and the tap keeps its
                     // own drift, and the badge comes back for it.
-                    onPress={() =>
-                      dismissDrift.mutate({
-                        walletId: wallet.id,
-                        transactionId: dismissibleDrift.reportingTransactionId,
-                      })
-                    }
+                    onPress={() => {
+                      if (dismissInFlight.current || dismissDrift.isPending) return;
+                      dismissInFlight.current = true;
+                      setDismissBusy(true);
+                      dismissDrift.mutate(
+                        {
+                          walletId: wallet.id,
+                          transactionId: dismissibleDrift.reportingTransactionId,
+                        },
+                        // `onSettled`: a refused dismissal leaves the badge and
+                        // this button exactly where they were, so the retry the
+                        // failure toast asks for has to be tappable.
+                        {
+                          onSettled: () => {
+                            dismissInFlight.current = false;
+                            setDismissBusy(false);
+                          },
+                        },
+                      );
+                    }}
                   />
                 </View>
               ) : null}
@@ -514,7 +546,13 @@ export default function WalletDetailScreen() {
                   testID="wallet-detail-archive"
                   title="Delete wallet"
                   variant="secondary"
-                  onPress={() => setArchiving(true)}
+                  // The mutation is reset ON THE WAY IN, not on the way out: a
+                  // refusal the user backed away from must not be the first
+                  // thing the sheet says the next time it opens (GAP-079).
+                  onPress={() => {
+                    archiveWallet.reset();
+                    setArchiving(true);
+                  }}
                 />
               </View>
             </View>
@@ -589,10 +627,35 @@ export default function WalletDetailScreen() {
             onDismiss={() => setArchiving(false)}
             otherWallets={wallets ?? []}
             transactionCount={(transactions ?? []).length}
+            busy={archiveWallet.isPending || archiveBusy}
+            // The sheet stays open on a failure — `setArchiving(false)` is on
+            // the success arm and stays there — so it is the one surface that
+            // can say what is still true: the wallet is live, its transactions
+            // have not moved, and the choice above is still what will be sent.
+            errorMessage={
+              archiveWallet.isError
+                ? "This wallet could not be deleted. Nothing was moved and nothing was retired — try again."
+                : null
+            }
             onArchive={(moveTransactionsTo) => {
+              // The sheet's own `busy` guard is a prop, so within one JS tick
+              // it is still the previous render's value — this ref is what a
+              // second confirm in that tick actually meets.
+              if (archiveInFlight.current || archiveWallet.isPending) return;
+              archiveInFlight.current = true;
+              setArchiveBusy(true);
               archiveWallet.mutate(
                 { id: wallet.id, moveTransactionsTo },
-                { onSuccess: () => setArchiving(false) },
+                {
+                  onSuccess: () => setArchiving(false),
+                  // `onSettled`, not the success arm: a refused archive leaves
+                  // the sheet open, and the retry it asks for needs the confirm
+                  // button back.
+                  onSettled: () => {
+                    archiveInFlight.current = false;
+                    setArchiveBusy(false);
+                  },
+                },
               );
             }}
           />

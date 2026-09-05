@@ -17,7 +17,7 @@
 // It also states the two consequences a user cannot see coming — the matchers
 // stop catching, and the balance leaves the wallets total — because both are
 // things they would otherwise discover as a mystery a week later.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Text, View } from "react-native";
 
 import { BottomSheet } from "@/components/ui/bottom_sheet";
@@ -37,6 +37,27 @@ export type ArchiveWalletSheetProps = {
   transactionCount: number;
   /** `null` means "leave them attached to the archived wallet" — the default. */
   onArchive: (moveTransactionsTo: string | null) => void;
+  /**
+   * An archive this sheet has already handed to the screen and that has not
+   * settled yet. Confirm is inert and spinning for exactly that long.
+   *
+   * OWNED BY THE SCREEN (`app/wallet/[id].tsx`), like `errorMessage` below and
+   * for the same reason: the write lives there, so only it knows when the
+   * write stops being in flight. That screen keeps this sheet open for the
+   * whole of it — it closes on the archive landing, not on the tap — so a
+   * second tap inside that window is a SECOND archive, re-running
+   * `reassignWalletTransactions` over a ledger the first one is still moving.
+   * Same prop `payment_match_sheet.tsx` already takes for the same job.
+   *
+   * Defaults to `false`, so a caller with no write behind it keeps today's
+   * behaviour.
+   */
+  busy?: boolean;
+  /**
+   * What went wrong with the archive the screen just ran, rendered under the
+   * choices. Also owned by the screen, and `null` whenever nothing has failed.
+   */
+  errorMessage?: string | null;
   testID?: string;
 };
 
@@ -49,11 +70,25 @@ export function ArchiveWalletSheet({
   otherWallets,
   transactionCount,
   onArchive,
+  busy = false,
+  errorMessage = null,
   testID = "archive-wallet-sheet",
 }: ArchiveWalletSheetProps) {
   const [choice, setChoice] = useState<Choice>("keep");
   const [target, setTarget] = useState<string | null>(null);
   const [showError, setShowError] = useState(false);
+
+  // EVERY OPENING ASKS THE QUESTION AGAIN (GAP-079). The detail screen keeps
+  // this sheet in the tree and toggles `visible`, so a "Move them to BPI" the
+  // user backed out of last time was still selected — and still one confirm
+  // tap from relocating years of history — the next time the sheet opened.
+  // The default that changes nothing is only a default if it is restored.
+  useEffect(() => {
+    if (!visible) return;
+    setChoice("keep");
+    setTarget(null);
+    setShowError(false);
+  }, [visible]);
 
   const hasTransactions = transactionCount > 0;
   const destinations = otherWallets.filter(
@@ -69,6 +104,11 @@ export function ArchiveWalletSheet({
   }
 
   function confirm(): void {
+    // Ahead of the destination check, because an archive already in flight
+    // outranks every other reason to accept or refuse this tap. `Button` drops
+    // its own handler while `loading`, so this is the belt to that braces —
+    // the refusal has to survive a press that gets past the responder.
+    if (busy) return;
     if (choice === "move" && target === null) {
       // "Move them" with no destination is not an instruction. Quietly falling
       // back to "keep" would be smoother and would tell the user their move
@@ -153,6 +193,16 @@ export function ArchiveWalletSheet({
           </View>
         ) : null}
 
+        {/* IN PLACE, OVER THE BUTTON THAT FAILED (GAP-079). The global failure
+            toast (GAP-013) says something failed; only this sheet can say that
+            the wallet is still live, that nothing moved, and that the choice
+            above is still the one that will be sent. */}
+        {errorMessage ? (
+          <Text testID="archive-error" className="text-sm text-danger dark:text-danger-dark">
+            {errorMessage}
+          </Text>
+        ) : null}
+
         {/* Cancel + confirm side by side, the same rhythm the other two
             sheets in this task now use. `outline-destructive` (task-5b):
             surface fill, danger border and ink — a destructive action the
@@ -168,6 +218,7 @@ export function ArchiveWalletSheet({
               testID="archive-confirm"
               title="Delete wallet"
               variant="outline-destructive"
+              loading={busy}
               onPress={confirm}
             />
           </View>

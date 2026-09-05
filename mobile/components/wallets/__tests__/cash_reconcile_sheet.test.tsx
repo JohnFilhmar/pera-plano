@@ -24,7 +24,7 @@
 //   being something a user can check — so the existing rows are captured before
 //   and compared field-for-field after.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
 import { Modal } from "react-native";
 import type { ReactNode } from "react";
 
@@ -61,7 +61,12 @@ function makeTestClient(): QueryClient {
 // than merely being the only one present: the context gives the panel to the
 // highest live token and effects flush in completion order, so the host
 // declared FIRST registers the LOWER token and the Modal's host outranks it.
-function renderSheet(wallet: Wallet): void {
+//
+// RETURNS THE RENDER RESULT (GAP-079), so a test can toggle `visible` the way
+// the detail screen does. The sheet is never unmounted there — it sits in that
+// screen's tree with a boolean prop — which is the whole reason its state can
+// leak from one opening into the next.
+function renderSheet(wallet: Wallet) {
   const client = makeTestClient();
   function Wrapper({ children }: { children: ReactNode }) {
     return (
@@ -73,7 +78,7 @@ function renderSheet(wallet: Wallet): void {
       </QueryClientProvider>
     );
   }
-  render(<CashReconcileSheet wallet={wallet} visible onDismiss={jest.fn()} />, {
+  return render(<CashReconcileSheet wallet={wallet} visible onDismiss={jest.fn()} />, {
     wrapper: Wrapper,
   });
 }
@@ -321,4 +326,110 @@ test("confirming with nothing typed is refused rather than writing the wallet to
   // recorded balance on a mis-tap.
   expect(await ledger()).toEqual(before);
   expect(screen.getByTestId("reconcile-amount-error")).toBeTruthy();
+});
+
+// ---------------------------------------------------------------------------
+// GAP-079 — what the SHEET does around the write, rather than what the write
+// does. Three faults, none of them reachable by the assertions above, because
+// every one of those renders a fresh sheet, presses once, and never asks what
+// happens next:
+//
+//   IT KEPT THE LAST OPENING'S STATE. The detail screen keeps this sheet
+//   mounted and toggles `visible`, so the previous count, its "Recorded." line
+//   and a failure the user walked away from were all still on screen the next
+//   time it opened — and a pre-filled count on a sheet whose Save writes the
+//   DIFFERENCE is one mis-tap from committing a figure nobody typed.
+//
+//   IT STAYED OPEN AFTER A FAILURE AS THOUGH IT HAD WORKED. `isError` was
+//   never read, so a refused write left the sheet sitting there with no result
+//   line and nothing said: indistinguishable from not having pressed Save.
+//
+//   ITS CONFIRM STAYED TAPPABLE. `loading={reconcile.isPending}` alone is not
+//   a guard — React Query notifies its observers on a microtask, so two
+//   presses in one tick both read `isPending: false`, both read the SAME
+//   recorded balance, and both write the same difference.
+// ---------------------------------------------------------------------------
+
+/** A wallet this sheet accepts and `useReconcileCash`'s own read cannot find. */
+function missingWallet(): Wallet {
+  return { ...cash, id: "w-not-in-the-database" };
+}
+
+describe("a double tap on Save count", () => {
+  test("two presses inside one write record ONE adjustment", async () => {
+    renderSheet(cash);
+
+    typeAmount("reconcile-amount", "500");
+
+    // BOTH PRESSES INSIDE ONE `act`, which is what makes this a double tap
+    // rather than two taps. `fireEvent` wraps each press in an `act` of its
+    // own, and that flush is enough for `loading={isPending}` to catch a
+    // second press arriving a frame later. A real double tap is two touches in
+    // ONE JS tick, before any observer has been notified and before any state
+    // set by the first press is visible to the closure the second one runs —
+    // which is the window the ref in this sheet exists for (GAP-060).
+    act(() => {
+      fireEvent.press(screen.getByTestId("reconcile-confirm"));
+      fireEvent.press(screen.getByTestId("reconcile-confirm"));
+    });
+
+    await waitFor(() => expect(screen.getByTestId("reconcile-result")).toBeTruthy());
+
+    // The seeded row plus ONE adjustment. A second write reads the same
+    // recorded ₱800.00 — neither has landed yet — and takes another ₱300.00
+    // out, so the wallet ends on ₱200.00: the user is ₱300.00 poorer than the
+    // figure they just counted and confirmed.
+    expect(await listTransactions({ walletId: cash.id })).toHaveLength(2);
+    expect((await getWallet(cash.id))?.balance).toBe(50_000);
+  });
+});
+
+describe("a write that is refused", () => {
+  test("leaves the sheet open, the count still typed, and Save back", async () => {
+    renderSheet(missingWallet());
+
+    typeAmount("reconcile-amount", "500");
+    fireEvent.press(screen.getByTestId("reconcile-confirm"));
+
+    await waitFor(() => expect(screen.getByTestId("reconcile-error")).toBeTruthy());
+
+    // Open, with the count intact, and NOT claiming anything was recorded.
+    expect(screen.getByTestId("cash-reconcile-sheet")).toBeTruthy();
+    expect(screen.getByTestId("reconcile-preview")).toHaveTextContent("₱500.00");
+    expect(screen.queryByTestId("reconcile-result")).toBeNull();
+    // The message says to try again, so the retry it asks for has to be
+    // tappable — a button left spinning over a write that already failed is
+    // the state this guards against.
+    expect(screen.getByTestId("reconcile-confirm").props.accessibilityState.disabled).toBe(false);
+  });
+
+  test("the refusal does not follow the sheet into its next opening", async () => {
+    const wallet = missingWallet();
+    const view = renderSheet(wallet);
+
+    typeAmount("reconcile-amount", "500");
+    fireEvent.press(screen.getByTestId("reconcile-confirm"));
+    await waitFor(() => expect(screen.getByTestId("reconcile-error")).toBeTruthy());
+
+    view.rerender(<CashReconcileSheet wallet={wallet} visible={false} onDismiss={jest.fn()} />);
+    view.rerender(<CashReconcileSheet wallet={wallet} visible onDismiss={jest.fn()} />);
+
+    expect(screen.queryByTestId("reconcile-error")).toBeNull();
+  });
+});
+
+test("reopening shows an empty field, not the last count and its result", async () => {
+  const view = renderSheet(cash);
+
+  await reconcile("500");
+  await waitFor(() => expect(screen.getByTestId("reconcile-result")).toBeTruthy());
+
+  view.rerender(<CashReconcileSheet wallet={cash} visible={false} onDismiss={jest.fn()} />);
+  view.rerender(<CashReconcileSheet wallet={cash} visible onDismiss={jest.fn()} />);
+
+  // The entry's acceptance criterion verbatim: "reopening shows an empty
+  // field". An empty one previews ₱0.00; one still holding ₱500.00 is a typed
+  // answer the user did not give this time, one tap from being confirmed.
+  expect(screen.getByTestId("reconcile-preview")).toHaveTextContent("₱0.00");
+  expect(screen.queryByTestId("reconcile-result")).toBeNull();
 });
