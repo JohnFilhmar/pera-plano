@@ -4,9 +4,53 @@
 // deriveRecoveryKey, which this component never calls directly), used here
 // purely as a fixture generator for a phrase that genuinely passes
 // validatePhrase's BIP-39 membership + checksum check.
+//
+// expo-screen-capture is a native module with nothing to bind to under Jest,
+// so it is mocked here the same way and for the same reason
+// components/onboarding/__tests__/recovery_phrase.test.tsx mocks it: the
+// factory reimplements the package's own usePreventScreenCapture body
+// (prevent on mount, allow on unmount, keyed) so this suite can discriminate
+// "the guard is held for exactly as long as the form is mounted" from "the
+// hook was called once and never let go".
+jest.mock("expo-screen-capture", () => {
+  const { useEffect } = require("react");
+  const preventScreenCaptureAsync = jest.fn(async (_key: string) => undefined);
+  const allowScreenCaptureAsync = jest.fn(async (_key: string) => undefined);
+  return {
+    preventScreenCaptureAsync,
+    allowScreenCaptureAsync,
+    usePreventScreenCapture: (key: string) => {
+      useEffect(() => {
+        void preventScreenCaptureAsync(key);
+        return () => {
+          void allowScreenCaptureAsync(key);
+        };
+      }, [key]);
+    },
+  };
+});
+
 import { act, fireEvent, render, screen } from "@testing-library/react-native";
+import { allowScreenCaptureAsync, preventScreenCaptureAsync } from "expo-screen-capture";
 import { generatePhrase } from "@/lib/crypto/recovery_phrase";
 import { RecoveryUnlockForm } from "../recovery_unlock_form";
+
+const mockPreventScreenCapture = preventScreenCaptureAsync as jest.Mock;
+const mockAllowScreenCapture = allowScreenCaptureAsync as jest.Mock;
+
+/** The key recovery_unlock_form.tsx passes to the guard -- its own, never
+ * shared with the onboarding phrase screens, because the package ref-counts
+ * prevent/allow by key. */
+const UNLOCK_CAPTURE_KEY = "recovery-phrase-unlock";
+
+// This file has no global jest.clearAllMocks(), and RNTL's auto-cleanup
+// unmounts the form after every test -- so the guard's allow() call from the
+// PREVIOUS test would otherwise still be sitting in the mock when the next
+// one asserts it has not fired yet.
+beforeEach(() => {
+  mockPreventScreenCapture.mockClear();
+  mockAllowScreenCapture.mockClear();
+});
 
 async function validPhraseText(): Promise<{ words: string[]; text: string }> {
   const words = await generatePhrase();
@@ -90,6 +134,32 @@ test("the forgot-phrase link is announced to TalkBack as a button with a spoken 
   const link = screen.getByTestId("forgot-phrase-link");
   expect(link.props.accessibilityRole).toBe("button");
   expect(link.props.accessibilityLabel).toBe("Forgot your recovery words?");
+});
+
+// ---------------------------------------------------------------------------
+// GAP-017: this form receives the phrase rather than displaying it, which
+// leaks exactly as much once the field is filled in.
+// ---------------------------------------------------------------------------
+
+test("blocks screen capture while the form is mounted, and releases it when it unmounts", async () => {
+  renderForm();
+
+  expect(mockPreventScreenCapture).toHaveBeenCalledWith(UNLOCK_CAPTURE_KEY);
+  expect(mockAllowScreenCapture).not.toHaveBeenCalled();
+
+  // RELEASED, not left on: the guard is scoped to this screen precisely so
+  // the rest of the app keeps its screenshots.
+  await act(async () => {
+    screen.unmount();
+  });
+
+  expect(mockAllowScreenCapture).toHaveBeenCalledWith(UNLOCK_CAPTURE_KEY);
+});
+
+test("the phrase field opts out of the OS autofill service", () => {
+  renderForm();
+
+  expect(screen.getByTestId("recovery-phrase-input").props.importantForAutofill).toBe("no");
 });
 
 describe("wipe and start over -- the §11a escape hatch", () => {

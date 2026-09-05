@@ -42,6 +42,17 @@ jest.mock("@/modules/notification_listener", () => ({
   openSecuritySettings: jest.fn(),
 }));
 
+// The REAL LockScreen is required below, and it composes
+// components/lock/recovery_unlock_form.tsx, which holds a GAP-017 screen
+// capture guard. expo-screen-capture is another requireNativeModule module
+// with nothing to bind to under Jest, and this suite is about the GATE, not
+// the guard -- so the hook is inert here. The suite that actually asserts on
+// the guard's mount/unmount behaviour is
+// components/lock/__tests__/recovery_unlock_form.test.tsx.
+jest.mock("expo-screen-capture", () => ({
+  usePreventScreenCapture: jest.fn(),
+}));
+
 // A SPY that still calls through to the real implementation (not a stub) —
 // every other test in this file relies on the real LockScreen actually
 // rendering UnlockPrompt/RecoveryUnlockForm. Wrapping it in jest.fn() only

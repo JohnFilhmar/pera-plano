@@ -57,6 +57,37 @@ jest.mock("@/modules/notification_listener", () => {
   return { NotAuthenticatedError };
 });
 
+// expo-screen-capture is a native module (its default export is a
+// requireNativeModule call), so it has nothing to bind to under Jest — the
+// same reason @/modules/notification_listener is mocked above.
+//
+// The factory REIMPLEMENTS the package's own usePreventScreenCapture body
+// rather than stubbing it with a bare jest.fn(): prevent on mount, allow on
+// unmount, keyed. "The guard is engaged while a phrase is on screen and
+// released when that screen goes away" is the exact claim GAP-017's fix has
+// to make, and a stubbed hook could only ever prove the hook was called at
+// all — never that it lets go. The two jest.fn()s live INSIDE the factory and
+// are read back off the imported module below, because a factory is hoisted
+// above this file's own const declarations (mockShareModule gets away with an
+// outer reference only because its Proxy dereferences lazily).
+jest.mock("expo-screen-capture", () => {
+  const { useEffect } = require("react");
+  const preventScreenCaptureAsync = jest.fn(async (_key: string) => undefined);
+  const allowScreenCaptureAsync = jest.fn(async (_key: string) => undefined);
+  return {
+    preventScreenCaptureAsync,
+    allowScreenCaptureAsync,
+    usePreventScreenCapture: (key: string) => {
+      useEffect(() => {
+        void preventScreenCaptureAsync(key);
+        return () => {
+          void allowScreenCaptureAsync(key);
+        };
+      }, [key]);
+    },
+  };
+});
+
 // A Proxy over jest.requireActual, not a plain `{...actual}` spread — the
 // same reasoning components/onboarding/__tests__/device_lock.test.tsx and
 // contexts/__tests__/lock_context.test.tsx document: spreading eagerly
@@ -77,6 +108,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-
 import { BackHandler, Share, StyleSheet } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { authenticateAsync } from "expo-local-authentication";
+import { allowScreenCaptureAsync, preventScreenCaptureAsync } from "expo-screen-capture";
 import { initializeKeys } from "@/lib/crypto/key_manager";
 import { generatePhrase } from "@/lib/crypto/recovery_phrase";
 import { NotAuthenticatedError } from "@/modules/notification_listener";
@@ -86,9 +118,18 @@ const mockInitializeKeys = initializeKeys as jest.Mock;
 const mockGeneratePhrase = generatePhrase as jest.Mock;
 const mockAuthenticateAsync = authenticateAsync as jest.Mock;
 const mockShare = Share.share as jest.Mock;
+const mockPreventScreenCapture = preventScreenCaptureAsync as jest.Mock;
+const mockAllowScreenCapture = allowScreenCaptureAsync as jest.Mock;
 
 const WORD_COUNT = 12;
 const CHALLENGE_COUNT = 3;
+
+/** The keys phrase_display.tsx and phrase_confirm.tsx pass to the guard.
+ * Pinned here because they are not decorative: the package ref-counts
+ * prevent/allow BY KEY, so two phrase surfaces sharing one would have the
+ * first unmount clear the flag out from under the second. */
+const DISPLAY_CAPTURE_KEY = "recovery-phrase-display";
+const CONFIRM_CAPTURE_KEY = "recovery-phrase-confirm";
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -352,20 +393,96 @@ test("states the stakes in plain language, and never uses crypto-wallet vocabula
 });
 
 // ---------------------------------------------------------------------------
-// Rule 5: offer a copy/share action, and warn about screenshots.
+// GAP-017: the words leave this screen on paper or not at all. Rule 5 used to
+// ask for a copy/share action here; that action put the ledger's second
+// unwrap path on the OS share sheet, so the assertions below are its
+// inversion -- the affordance is gone, the clipboard route with it, and the
+// screens that show or accept the phrase hold a screen-capture guard for
+// exactly as long as they are mounted.
 // ---------------------------------------------------------------------------
 
-test("offers a copy/share action wired to the platform share sheet, and warns about screenshots", async () => {
+test("offers no share or copy affordance, and never reaches the platform share sheet", async () => {
+  await renderScreenAndWaitForWords();
+
+  expect(screen.queryByTestId("phrase-share-button")).toBeNull();
+
+  const tree = JSON.stringify(screen.toJSON()).toLowerCase();
+  expect(tree).not.toMatch(/share/);
+  expect(tree).not.toMatch(/copy/);
+
+  // Not just "no button": nothing on the display step reaches Share at all.
+  expect(mockShare).not.toHaveBeenCalled();
+});
+
+test("the displayed words are not selectable -- no long-press route to the clipboard", async () => {
+  await renderScreenAndWaitForWords();
+
+  for (let i = 0; i < WORD_COUNT; i++) {
+    expect(screen.getByTestId(`phrase-word-${i}`).props.selectable).toBeFalsy();
+  }
+});
+
+test("warns that screenshots are off here, and still says to write the words on paper", async () => {
   await renderScreenAndWaitForWords();
 
   const tree = JSON.stringify(screen.toJSON()).toLowerCase();
-  expect(tree).toMatch(/screenshot/);
+  expect(tree).toMatch(/screenshots are turned off/);
+  // The guard is Android-effective, not absolute -- a camera still works, so
+  // the copy must not stop at "you're safe here".
+  expect(tree).toMatch(/on paper/);
+  expect(tree).toMatch(/photograph/);
+});
 
-  const words = getDisplayedWords();
-  fireEvent.press(screen.getByTestId("phrase-share-button"));
+test("blocks screen capture while the words are displayed, and releases it on unmount", async () => {
+  await renderScreenAndWaitForWords();
 
-  expect(mockShare).toHaveBeenCalledTimes(1);
-  expect(mockShare).toHaveBeenCalledWith({ message: words.join(" ") });
+  // AWAITED, not asserted straight off the render. The guard runs from an
+  // effect, and the words appearing only proves the component rendered, not
+  // that React has flushed its effects yet. Asserting immediately passes on an
+  // idle machine and fails when the whole suite is running, which is the
+  // difference between a test that measures the guard and one that measures
+  // the scheduler.
+  await waitFor(() => {
+    expect(mockPreventScreenCapture).toHaveBeenCalledWith(DISPLAY_CAPTURE_KEY);
+  });
+  expect(mockAllowScreenCapture).not.toHaveBeenCalledWith(DISPLAY_CAPTURE_KEY);
+
+  // RELEASED, not left on: a guard that never lets go would silently disable
+  // screenshots everywhere else in the app, including the support flow that
+  // deliberately attaches them.
+  await act(async () => {
+    screen.unmount();
+  });
+
+  expect(mockAllowScreenCapture).toHaveBeenCalledWith(DISPLAY_CAPTURE_KEY);
+});
+
+test("the confirm step holds its own guard, and the display step's is released as it leaves", async () => {
+  await proceedToConfirm();
+
+  // Awaited for the same reason as the display guard above: the swap runs
+  // through two effects (the leaving screen's cleanup and the arriving
+  // screen's setup), and neither is guaranteed to have flushed the moment the
+  // confirm step's markup appears.
+  await waitFor(() => {
+    expect(mockPreventScreenCapture).toHaveBeenCalledWith(CONFIRM_CAPTURE_KEY);
+    expect(mockAllowScreenCapture).toHaveBeenCalledWith(DISPLAY_CAPTURE_KEY);
+  });
+  expect(mockAllowScreenCapture).not.toHaveBeenCalledWith(CONFIRM_CAPTURE_KEY);
+
+  await act(async () => {
+    screen.unmount();
+  });
+
+  expect(mockAllowScreenCapture).toHaveBeenCalledWith(CONFIRM_CAPTURE_KEY);
+});
+
+test("the confirm inputs opt out of the OS autofill service", async () => {
+  await proceedToConfirm();
+
+  for (let i = 0; i < CHALLENGE_COUNT; i++) {
+    expect(screen.getByTestId(`confirm-input-${i}`).props.importantForAutofill).toBe("no");
+  }
 });
 
 // ---------------------------------------------------------------------------

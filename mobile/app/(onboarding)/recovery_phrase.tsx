@@ -100,8 +100,16 @@
 // user might be holding opens anything. Once initializeKeys() is in flight
 // the route back is gone -- see the `stage === "confirm"` guards below.
 //
+// THERE IS NO SHARE ACTION ON THIS ROUTE ANY MORE (GAP-017). This screen used
+// to own a handleShare that put `words.join(" ")` on the OS share sheet, and
+// PhraseDisplay rendered the button for it. That handed the ledger's second
+// unwrap path to whichever third-party app the user tapped -- and, on
+// Android, to share history and usually a clipboard on the way there. The
+// words now leave this screen only on paper, which is what the confirm step
+// was always there to verify; phrase_display.tsx's header carries the rest of
+// the reasoning, including the screenshot guard that replaced the warning.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { BackHandler, Share, Text, View } from "react-native";
+import { BackHandler, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as LocalAuthentication from "expo-local-authentication";
 import { generatePhrase } from "@/lib/crypto/recovery_phrase";
@@ -188,11 +196,6 @@ export default function RecoveryPhraseScreen({ onDone }: { onDone?: () => void }
       cancelled = true;
     };
   }, [retryKey]);
-
-  const handleShare = useCallback(() => {
-    if (!words) return;
-    void Share.share({ message: words.join(" ") });
-  }, [words]);
 
   /** Hands the confirm step back to the user with the phrase they already
    * wrote down still intact -- the ONLY response to an incomplete
@@ -343,9 +346,7 @@ export default function RecoveryPhraseScreen({ onDone }: { onDone?: () => void }
   }
 
   if (stage === "display") {
-    return (
-      <PhraseDisplay words={words} onContinue={() => setStage("confirm")} onShare={handleShare} />
-    );
+    return <PhraseDisplay words={words} onContinue={() => setStage("confirm")} />;
   }
 
   if (stage === "confirm" || stage === "initializing") {

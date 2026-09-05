@@ -18,13 +18,28 @@
 // always going to fail. onSubmitPhrase (wired to
 // lock_context.tsx's submitRecoveryPhrase) is only ever called with a
 // phrase that already passes this check.
+//
+// THE SAME CAPTURE GUARD THE ONBOARDING PHRASE SCREENS CARRY (GAP-017). This
+// form does not display the phrase, it receives it -- but a screenshot of a
+// filled-in field leaks exactly as much as a screenshot of the word list, and
+// this is the screen a user reaches with their paper copy in hand. So:
+// usePreventScreenCapture on its own key, scoped to the mount and released on
+// unmount (see phrase_display.tsx's header for why the key must not be
+// shared, and for why FLAG_SECURE is Android-effective rather than a
+// guarantee), plus `importantForAutofill="no"` so the OS autofill service is
+// never offered twelve recovery words to remember.
 import { useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { usePreventScreenCapture } from "expo-screen-capture";
 import { normalizePhrase, validatePhrase } from "@/lib/crypto/recovery_phrase";
 import { usePlaceholderColor } from "@/lib/ui/placeholder";
 
 type WipeStep = "hidden" | "confirm1" | "confirm2";
+
+/** This surface's own prevent/allow key -- see phrase_display.tsx's header
+ * for why the three phrase surfaces must not share one. */
+const CAPTURE_GUARD_KEY = "recovery-phrase-unlock";
 
 /**
  * Touch target (design F1 sweep). "Forgot your recovery words?" and both
@@ -53,6 +68,8 @@ export function RecoveryUnlockForm({
   onSubmitPhrase: (phrase: string[]) => void | Promise<void>;
   onWipe: () => void | Promise<void>;
 }) {
+  usePreventScreenCapture(CAPTURE_GUARD_KEY);
+
   const placeholderColor = usePlaceholderColor();
   const [rawInput, setRawInput] = useState("");
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -100,6 +117,7 @@ export function RecoveryUnlockForm({
         multiline
         autoCapitalize="none"
         autoCorrect={false}
+        importantForAutofill="no"
         placeholder="your 12 recovery words, separated by spaces"
         accessibilityLabel="Recovery words"
         className="w-full rounded-lg border border-fg-2 p-3 text-fg dark:border-fg-2-dark dark:text-fg-dark"
