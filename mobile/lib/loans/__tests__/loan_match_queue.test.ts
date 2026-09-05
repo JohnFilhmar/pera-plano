@@ -420,6 +420,7 @@ test("a card is not a second claim on an already-paid transaction", async () => 
 
   const payments = await listPayments(otherLoan.id);
   expect(payments).toHaveLength(0);
+  expect((await listOpen()).map((item) => item.id)).not.toContain(itemId);
 });
 
 test("DISMISSING CLOSES THE ITEM AND WRITES NOTHING ELSE", async () => {

@@ -8,6 +8,7 @@ import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categori
 import { listLoanPaymentTransactionIds } from "@/lib/db/repos/income_repo";
 import {
   createLoan,
+  listRejectedTransactionIds,
   outstandingBalance,
   recordPayment,
   rejectCandidates,
@@ -354,6 +355,56 @@ test("a rejection on one loan does not silence the row on another", async () => 
   const other = await findPaymentCandidates(otherLoanSameCounterparty.id, NOW);
 
   expect(other.map((candidate) => candidate.transactionId)).toContain(paying.id);
+});
+
+// THE MULTI-ROW SHAPE, WHICH IS THE ONLY ONE THE BUTTON EVER PRODUCES. "None
+// of these" rejects EVERY candidate the sheet was showing, and the sheet is
+// only worth opening when a loan advertises more than one — so two ids in one
+// call is the reported case rather than an edge of it. `rejectCandidates`
+// builds one `VALUES` tuple per id into a single statement, and every
+// rejection test above passes a one-element array, which never assembles a
+// multi-tuple statement at all: a bug in that string would ship green.
+//
+// The second half pins the idempotency the repo documents. The same sheet can
+// be opened and rejected twice, and `INSERT OR IGNORE` against
+// UNIQUE(loan_id, transaction_id) is the whole mechanism that keeps the second
+// press silent instead of a constraint error the user would be shown.
+test("rejecting a whole candidate list silences all of it, and re-rejecting changes nothing", async () => {
+  const { loan, paying } = await aLoanWithOnePlausiblePayment();
+  const alsoPaying = await insertTransaction({
+    walletId: cash.id,
+    categoryId: UNCATEGORIZED_ID,
+    amount: 444244,
+    direction: "out",
+    occurredAt: new Date(2026, 8, 14).getTime(),
+    merchant: "GLOAN AUTOPAY",
+    source: "manual",
+    confidence: 1,
+  });
+
+  const before = await findPaymentCandidates(loan.id, NOW);
+  expect(before.map((candidate) => candidate.transactionId)).toEqual(
+    expect.arrayContaining([paying.id, alsoPaying.id]),
+  );
+
+  await rejectCandidates(loan.id, [paying.id, alsoPaying.id]);
+
+  const after = await findPaymentCandidates(loan.id, NOW);
+  expect(after.map((candidate) => candidate.transactionId)).not.toContain(paying.id);
+  expect(after.map((candidate) => candidate.transactionId)).not.toContain(alsoPaying.id);
+  expect((await listRejectedTransactionIds(loan.id)).sort()).toEqual(
+    [paying.id, alsoPaying.id].sort(),
+  );
+
+  await expect(rejectCandidates(loan.id, [paying.id])).resolves.toBeUndefined();
+
+  expect((await listRejectedTransactionIds(loan.id)).sort()).toEqual(
+    [paying.id, alsoPaying.id].sort(),
+  );
+  const afterRepeat = await findPaymentCandidates(loan.id, NOW);
+  expect(afterRepeat.map((candidate) => candidate.transactionId)).toEqual(
+    after.map((candidate) => candidate.transactionId),
+  );
 });
 
 // ---------------------------------------------------------------------------
