@@ -45,6 +45,28 @@ export type AppSettings = {
   onboarding_complete: boolean;
   capture_enabled: boolean;
   telemetry_enabled: boolean;
+  /**
+   * The earliest instant `lib/wallets/reconcile_scheduler.ts` may show the next
+   * cash reconciliation prompt (docs/04-features/02-wallets.md §cash Wallet
+   * reconciliation). `null` means never asked — the fresh-install default,
+   * which never blocks a prompt.
+   *
+   * A GATE ON THE NEXT PROMPT, NOT A RECORD OF THE LAST ONE, which is why it is
+   * spelled `_prompt_at` rather than `_last_prompted_at` like the tracking
+   * notice's key below. The scheduler writes `now + RECONCILE_CADENCE_MS` the
+   * moment a prompt actually lands, so being asked once pushes the next ask a
+   * full week out whether the user answers, snoozes or ignores it.
+   *
+   * WRITTEN ONLY WHEN THE OS ACCEPTED THE NOTICE, exactly as
+   * `tracking_interrupted_last_notified_at` is: `postAlert` returns `null` when
+   * notification permission is missing, and stamping this for a prompt nobody
+   * saw would silence the following week's real one.
+   *
+   * GLOBAL, NOT PER WALLET. Rule 15's per-Wallet snooze and "don't ask for this
+   * Wallet again" need a control to set them, and both live in the reconcile
+   * sheet / wallet settings; a key with no writer is the `theme_preference` trap
+   * this file's header describes, so it is deliberately not added ahead of them.
+   */
   cash_reconcile_prompt_at: number | null;
   /**
    * When `services/parser_rules.ts`'s `checkForRulesetUpdate` last actually
