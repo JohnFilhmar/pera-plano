@@ -384,12 +384,61 @@ test("states the stakes in plain language, and never uses crypto-wallet vocabula
   await renderScreenAndWaitForWords();
 
   const tree = JSON.stringify(screen.toJSON()).toLowerCase();
-  expect(tree).toMatch(/new phone/);
+  // Was /new phone/ until GAP-100 -- that half of the sentence was the false
+  // one. The trigger the words genuinely cover is the screen-lock reset.
+  expect(tree).toMatch(/fingerprint or pin/);
   expect(tree).toMatch(/only way back/);
   expect(tree).toMatch(/recovery words/);
   expect(tree).not.toMatch(/seed phrase/);
   expect(tree).not.toMatch(/wallet/);
   expect(tree).not.toMatch(/mnemonic/);
+});
+
+// ---------------------------------------------------------------------------
+// GAP-100: the promise is scoped to THIS phone, and the scope is the point.
+// `recoveryWrap` and `recoverySalt` live in this device's SecureStore, nothing
+// copies them off it (lib/privacy/data_export.ts carries ledger rows and no
+// key material), and unwrapWithRecoveryPhrase throws "recovery wrap not
+// present" the moment they are absent (lib/crypto/key_manager.ts:171-178). So
+// the words open this phone's data after a screen-lock reset and open nothing
+// at all on a new handset. The copy this screen shipped with promised both --
+// the true half is exactly what made the false half credible -- and it was
+// false in the direction that silently loses every wallet, bill, goal and
+// loan the user has.
+//
+// These assertions pin the SCOPE, not one sentence: they fail if the old
+// wording returns, and they still pass for any rewrite that keeps the promise
+// device-bound. The last block is the general form -- a screen may mention a
+// new phone only to deny, never to promise.
+// ---------------------------------------------------------------------------
+
+test("scopes the recovery promise to this phone, and never promises data back on a new one", async () => {
+  await renderScreenAndWaitForWords();
+
+  const tree = JSON.stringify(screen.toJSON()).toLowerCase();
+
+  // The true half survives intact: a screen-lock reset is what the words are
+  // for, and nobody can hand them back if they are lost.
+  expect(tree).toMatch(/fingerprint or pin/);
+  expect(tree).toMatch(/peraplano cannot recover them for you/);
+
+  // ...and the scope that makes it true -- the data is ALREADY here.
+  expect(tree).toMatch(/already on this phone/);
+
+  // The false half is gone, in the exact shape it shipped in.
+  expect(tree).not.toMatch(/if you ever get a new phone/);
+
+  // ...and in any other shape. Every sentence that mentions a new phone or
+  // device has to deny: "they don't move it to a new one" passes, "the only
+  // way back" sitting in the same sentence as "new phone" does not.
+  const newDeviceSentences = tree
+    .split(".")
+    .filter((sentence) => /new (phone|device|one)\b/.test(sentence));
+  expect(newDeviceSentences.length).toBeGreaterThan(0);
+  for (const sentence of newDeviceSentences) {
+    expect(sentence).toMatch(/\b(don't|do not|cannot|can't|won't|never|not)\b/);
+    expect(sentence).not.toMatch(/only way back|bring .*back|restore/);
+  }
 });
 
 // ---------------------------------------------------------------------------

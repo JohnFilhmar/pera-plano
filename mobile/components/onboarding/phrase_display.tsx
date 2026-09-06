@@ -34,6 +34,23 @@
 // one-tap route to the system clipboard. Writing them down by hand is the
 // only way off this screen, which is exactly what the confirm step checks.
 //
+// THE PROMISE IS SCOPED TO THIS PHONE, DELIBERATELY (GAP-100). The copy below
+// used to open with "If you ever get a new phone" -- half of a sentence whose
+// other half was true, which is what made it credible. Reset the fingerprint
+// or PIN on THIS device and the words do exactly what they say: SecureStore
+// still holds `recoveryWrap` and `recoverySalt`, and KEK-recovery unwraps the
+// DEK. Move to a NEW handset and there is nothing to unwrap -- SecureStore is
+// per-device, both values are absent, and unwrapWithRecoveryPhrase throws
+// "recovery wrap not present" (lib/crypto/key_manager.ts:171-178) before it
+// derives anything. Nothing copies that blob off the phone either:
+// lib/privacy/data_export.ts carries ledger rows and no key material, and the
+// database is local. So this paragraph says what the words open and what they
+// do not, and it stops there -- whether onboarding should ALSO announce that
+// no backup exists today is a separate product decision (GAP-054), not this
+// screen's to make by implication. If new-device recovery ever ships, the
+// copy changes with it, not before it. docs/12-encryption-and-app-lock.md §5
+// carries the same correction in prose.
+//
 // SCREENSHOTS ARE BLOCKED WHILE THIS COMPONENT IS MOUNTED, AND ONLY WHILE.
 // usePreventScreenCapture sets Android's FLAG_SECURE on mount and clears it
 // on unmount, so the rest of the app -- including the support flow that
@@ -101,9 +118,9 @@ export function PhraseDisplay({
         Write down your recovery words
       </Text>
       <Text className="mt-2 text-center text-body font-medium text-fg-2 dark:text-fg-2-dark">
-        If you ever get a new phone, or turn off and reset your fingerprint or PIN, these 12
-        recovery words are the only way back to your data -- PeraPlano cannot recover them for
-        you.
+        If you ever turn off and reset your fingerprint or PIN, these 12 recovery words are the
+        only way back to your data, and PeraPlano cannot recover them for you. They unlock the
+        data already on this phone, and they don't move it to a new one.
       </Text>
 
       <ScrollView
