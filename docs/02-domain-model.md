@@ -450,7 +450,7 @@ Dashed lines are derived or pipeline relationships (no stored foreign key on bot
 | `direction` | `enum: i-owe \| owed-to-me` | Which way the debt runs. |
 | `counterparty` | `text` | The person or institution on the other side. |
 | `principal` | `money` | The original amount borrowed/lent. |
-| `interestRate?` | `percent` | Optional, informational. The `schedule` carries the actual amounts due; the rate is context (e.g., 5-6 = 20% flat). |
+| `interestRate?` | `percent` | **ANNUAL percent, and not informational.** It is what an amortized `schedule` is computed from: `lib/loans/loan_math.ts` reads it per annum (`rate / 100 / 12` for the monthly rate) to derive the level installment and each row's principal/interest split, so a monthly figure stored here inflates the whole schedule roughly twelvefold. Used only by the amortized type ([04-features/06-loans.md](./04-features/06-loans.md) rules 1 and 3). `null` for flat and free-form, which carry no rate at all: 5-6 is modeled as one of those two, and loans rule 4 forbids the app from deriving or displaying a rate for it. |
 | `schedule?` | `list<installment>` | Optional amortization schedule; each installment: `{ dueDate, amountDue, principalPortion?, interestPortion? }`. Informal utang often has none. Full schedule view is Plus (§6). |
 | `linkedWalletId?` | `ref<Wallet>` | Optional Wallet where payments flow (a `credit` Wallet for cards, an e-wallet for GLoan). Helps payment matching. |
 | `paymentHistory[]` | `list<ref<Transaction>>` | Ledger Transactions matched as payments — automatically (merchant/amount/date-window rules) with user confirmation for ambiguous matches, or manually attached from the loan detail. |
