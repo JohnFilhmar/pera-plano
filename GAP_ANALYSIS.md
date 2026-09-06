@@ -35,6 +35,9 @@ not been started. Each gap's detail entry in section 9 carries the same marker i
 
 | ID | Status | Commit | Branch | Verification | Date |
 |---|---|---|---|---|---|
+| GAP-100 | DONE | 759fe85 | gap-wave-7 | jest recovery_phrase.test.tsx 35 tests PASS; reverting the copy fails the new test. A PRE-EXISTING TEST WAS PINNING THE FALSE PROMISE - it asserted toMatch(/new phone/), so removing the dangerous sentence would have failed the suite - and had to be retargeted. A second guard pins the scope in GENERAL form (a screen may mention a new phone only to deny) and was proven to reject the old copy independently of the literal wording. The full components/onboarding suite was NOT run: it exceeded the 600s foreground limit, and recovery_phrase.test.tsx is the only file in the repo that renders phrase_display | 2026-09-06 |
+| GAP-101 | DONE | 0733775 | gap-wave-7 | jest lib/recurring + components/recurring 4 suites 65 tests PASS; reverting the source fails 5 tests including the new fortnightly one. Four pinned totals recomputed (three of them the accuracy gain, one the defect). THIS ENTRY'S "feeds Safe-to-Spend" CLAIM WAS FALSE and the entry was re-scored S2 to S3 - see its corrected Why it matters. Also fixed a latent hole in the test factory: the weekly and annual cases overrode period without periodDays, so they were 30-day cadences wearing other names | 2026-09-06 |
+| GAP-102 | DONE | 83d75bf | gap-wave-7 | docs only. Acceptance PASS: "more parsed fields" now returns 0 across docs/. The orchestrator additionally corrected a trailing sentence the agent verified false but left in place - no dedupe signature UserRule is created, UserRuleAction has six kinds and none is one, and the dismiss path is a bare resolve with no teachFrom | 2026-09-06 |
 | GAP-007 | DONE | 669d00c | gap-wave-6 | docs only, no suite. Acceptance grep returns 0. Every claim the rewrite adds was re-verified: f985c7f is the 2026-08-28 merge, server/ is on master, no staging branch exists. `cd server && npm run lint` NOT RUN - server/node_modules does not exist in a worktree and installing is barred | 2026-09-05 |
 | GAP-008 | DONE | 46412d1 | gap-wave-6 | jest lib/recurring 3 suites 53 tests PASS; reverting the source fails exactly "a fortnightly acknowledged pattern silent for 11 days is KEPT". The second new test passes with the fix removed too and is an over-correction guard, NOT a witness - do not credit it. Found an adjacent defect, see the monthlyLockedIn note in section 0 | 2026-09-05 |
 | GAP-009 | DONE | 438ebff | gap-wave-6 | jest components/loans + lib/loans 8 suites 128 tests PASS; the new test fails with the source reverted. THE ENTRY BELOW WAS FACTUALLY WRONG and was not implemented as written - see its corrected What is wrong, and the Cross-cutting findings in section 0 | 2026-09-05 |
@@ -317,10 +320,12 @@ Facts established while fixing entries, that later entries must not rediscover t
 - **`monthlyLockedIn` counts a fortnightly subscription at double its cost.**
   `recurring_service.ts:287` scales by `MONTHLY_FACTOR[pattern.period]`, keyed on the same
   three-value bucket enum that caused GAP-008: a 14-day charge buckets as `weekly` and is
-  counted 52 times a year instead of 26. That total is the headline "locked in" figure and
-  feeds Safe-to-Spend, so overstating it makes Safe-to-Spend understate the money the user
-  actually has. GAP-008 deliberately did not touch it; its test pins the doubling and is
-  commented as pinning known-wrong behaviour, not the intended conversion.
+  counted 52 times a year instead of 26. That total is the headline "locked in" figure on the
+  subscriptions screen. **This note originally said it feeds Safe-to-Spend; that was wrong,
+  corrected 2026-09-06** - `monthlyLockedIn` has one consumer, `subscriptions.tsx:138`, and
+  `safe_to_spend_service.ts` does not import `lib/recurring`. GAP-101 was re-scored S2 to S3
+  on that basis. GAP-008 deliberately did not touch the arithmetic; its test pinned the
+  doubling and was commented as pinning known-wrong behaviour, not the intended conversion.
 - **Two sibling doc overclaims, each outside the entry that found it.**
   `docs/02-domain-model.md:453` still calls the loan `interestRate` "Optional, informational",
   which `438ebff` corrected in `types/domain.ts` but not here, and it now contradicts both the
@@ -328,6 +333,72 @@ Facts established while fixing entries, that later entries must not rediscover t
   `docs/04-features/08-review-queue.md:58` repeats the unbuilt field-union promise GAP-016
   removed from `docs/03`, in different words ("default keep: the record with more parsed
   fields").
+
+**Wave 7 findings (2026-09-06).**
+
+- **Wave 7 suite result.** **261 suites, 4,582 tests, ZERO failures**, run in seven chunks;
+  typecheck unchanged, still only `gates.test.tsx(91,29)`. The baseline moved: master gained
+  `3db0766 fix(mobile): four defects from the 2026-09-05 device report` between the wave 6
+  merge and this branch, so this is +2 suites and +13 tests of the owner's work on top of wave
+  6's 259/4,565, plus 4 tests from this wave.
+- **THE FIRST DEVICE SESSION HAPPENED, and it invalidates two standing notes.** `3db0766`
+  fixes four defects found on hardware on 2026-09-05: the Plan tab being captured by a card
+  opened from Home (both nested stacks were bare with no anchor), "None of these" remembering
+  nothing, an unscrollable possible-payments sheet, and a fourth. So (a) "nothing in N waves
+  touched hardware" is no longer true, and (b) **"no migrations were added in any wave" is
+  dead** - `019_loan_match_rejections.sql` exists. That is the first schema change since the
+  audit was written, and it matters to GAP-044 (whose guard compares against the registry max,
+  now 19) and to GAP-057 (which was collecting deferred schema work on the assumption none had
+  landed).
+- **A MIGRATION MUST UPDATE TWO HAND-WRITTEN TABLE LISTS, and nothing at the migration site
+  says so.** Migration 019 turned master red in two suites, and neither failure was a product
+  defect. `lib/privacy/data_wipe.ts` reads the live table list from `sqlite_master` on purpose
+  - its own header argues at length against hand-written lists - but `data_wipe.test.ts`
+  carries a hand-written `seeded[]` array and a `seedOneRowPerTable()` helper, and
+  `lib/db/__tests__/schema.test.ts` carries `MIGRATED_TABLES`. Both went stale the moment 019
+  shipped. The wipe itself was always correct and no user data was ever left behind. Fixed in
+  `337b6f1` and `93e5595`. Adding the table to `MIGRATED_TABLES` also enrolls it in the
+  parameterised "every valid template row actually inserts" suite, which needs a template row
+  of its own - so the full cost of a new table is THREE edits, not one. Worth a checklist at
+  the migration site; it is the same "a list a later change silently outgrows" shape as
+  GAP-008, GAP-101 and the `MONTHLY_FACTOR` bucket enum.
+
+- **A TEST CAN ENFORCE A FALSEHOOD, not merely fail to catch one.** Fixing GAP-100 meant
+  deleting a sentence that promised data recovery on a new phone. `recovery_phrase.test.tsx`
+  asserted `expect(tree).toMatch(/new phone/)`. The suite did not just miss the most dangerous
+  claim in the app - it REQUIRED it, and any honest fix would have shown up as a broken test.
+  The campaign already knew a test can be vacuous (GAP-086). This is the sharper version: when
+  the defect is user-facing copy, check whether a test pins the wrong wording BEFORE assuming
+  a red suite means your fix is wrong. GAP-100's replacement pins the SCOPE in general form -
+  a screen may mention a new phone only to deny, never to promise - so a later rewrite cannot
+  reintroduce the promise by dropping one literal phrase.
+- **An entry's claim about who CONSUMES a value must be grepped, not assumed.** GAP-101 was
+  raised saying the locked-in total feeds Safe-to-Spend. It does not: one consumer,
+  `subscriptions.tsx:138`, and `safe_to_spend_service.ts` never imports `lib/recurring`. The
+  claim inflated the severity and would have inflated the next reader's sense of urgency. It
+  was written by the same process that writes these notes, which is the point - re-scored S3,
+  and recorded rather than quietly corrected.
+- **The CRLF warning in earlier handoffs is real but was being verified wrongly.**
+  `core.autocrlf` is `true` here, so git stores LF and restores CRLF on checkout; a tool that
+  rewrites this file as LF produces a clean minimal diff, not whole-file churn. What actually
+  bites is a script that reads, splits and rewrites without normalising, which mangles content
+  or silently no-ops. Note also that `grep -c $'\r' FILE` is NOT a valid line-ending check -
+  it returns false positives and was reported as proof in waves 5 and 6. Count bytes instead:
+  a newline preceded by 0x0D is CRLF, otherwise it is bare LF.
+- **Four more siblings of already-fixed defects, none of them in the 102.** Each was found by
+  an agent working an adjacent entry and correctly left alone.
+  `mobile/lib/db/repos/loans_repo.ts:58` still says "Percent, informational only" - a third
+  instance of the GAP-009 wording, this one in code.
+  `mobile/lib/db/repos/recurring_patterns_repo.ts:242` orders patterns by monthly cost in raw
+  SQL with `WHEN 'weekly' THEN amount * 52.0 / 12`, so GAP-101's doubling survives in list
+  ORDERING even though the displayed figure is now right.
+  `docs/04-features/08-review-queue.md:79` repeats both of the falsehoods GAP-102 corrected at
+  `:58`, in the Merge section - and that whole flow looks unwired: `{ kind: "merge" }` has no
+  caller outside its own switch statement, which would be a documented user-facing flow with
+  no entry point.
+  `mobile/lib/crypto/recovery_phrase.ts:8` calls the phrase "the only key material that can
+  travel to a new phone for cloud restore", describing the same unbuilt design as GAP-054; it
+  is a design comment rather than user-facing copy, so GAP-100 deliberately did not touch it.
 
 ## 1. Executive summary
 
@@ -507,7 +578,7 @@ Priority = (severity weight x confidence weight) / complexity weight, with S1=8,
 | GAP-091 | CONTRA | The provider picker and wallet proposals run before notification access exists, so "Apps we've seen" is empty on every fresh install | S3 | M | D2 | R2 | C2 | 0.4 | AGENT-ASSISTED |
 | GAP-099 | SEC | The full-database export writes a plaintext JSON dump to the cache directory, never deletes it, and reports success when sharing is unavailable | S2 | XS | D1 | R1 | C1 | 5.0 | AGENT-READY |
 | GAP-100 | CONTRA | Onboarding tells the user the recovery phrase brings their data back on a new phone; it cannot | S1 | XS | D2 | R2 | C1 | 8.0 | AGENT-READY |
-| GAP-101 | CODE | The locked-in total counts a fortnightly subscription at twice its cost | S2 | XS | D2 | R2 | C1 | 5.0 | AGENT-READY |
+| GAP-101 | CODE | The locked-in total counts a fortnightly subscription at twice its cost | S3 | XS | D2 | R2 | C1 | 2.0 | AGENT-READY |
 | GAP-102 | DOC | Two sibling docs still carry claims that were corrected everywhere else | S3 | XS | D1 | R1 | C1 | 2.0 | AGENT-READY |
 
 Pass-2 rows (GAP-058 to GAP-097) are appended below the pass-1 rows in their own priority order rather than merged, so the pass-1 ordering stays stable for agents already assigned.
@@ -545,7 +616,7 @@ FEAT (3): 069 (1), 075 (0.5), 085 (0.5).
 
 Residue sweep: CODE 098 (0.8).
 
-Wave 6 findings (2026-09-06), found while remediating, not by an audit pass: CONTRA 100 (8.0). CODE 101 (5.0). DOC 102 (2.0).
+Wave 6 findings (2026-09-06), found while remediating, not by an audit pass: CONTRA 100 (8.0). CODE 101 (2.0, re-scored from S2/5.0 on 2026-09-06). DOC 102 (2.0).
 
 ## 6. Index by complexity
 
@@ -6920,6 +6991,8 @@ none
 
 ### GAP-100 [CONTRA] Onboarding tells the user the recovery phrase brings their data back on a new phone; it cannot
 
+> **REMEDIATION: DONE** (2026-09-06) - commit 759fe85, branch gap-wave-7. Verification: jest recovery_phrase.test.tsx 35 tests PASS; reverting the copy fails the new test. A PRE-EXISTING TEST WAS PINNING THE FALSE PROMISE - it asserted toMatch(/new phone/), so removing the dangerous sentence would have failed the suite - and had to be retargeted. A second guard pins the scope in GENERAL form (a screen may mention a new phone only to deny) and was proven to reject the old copy independently of the literal wording. The full components/onboarding suite was NOT run: it exceeded the 600s foreground limit, and recovery_phrase.test.tsx is the only file in the repo that renders phrase_display
+
 | Field | Value |
 |---|---|
 | Severity | S1 Critical |
@@ -6997,14 +7070,16 @@ none
 
 ### GAP-101 [CODE] The locked-in total counts a fortnightly subscription at twice its cost
 
+> **REMEDIATION: DONE** (2026-09-06) - commit 0733775, branch gap-wave-7. Verification: jest lib/recurring + components/recurring 4 suites 65 tests PASS; reverting the source fails 5 tests including the new fortnightly one. Four pinned totals recomputed (three of them the accuracy gain, one the defect). THIS ENTRY'S "feeds Safe-to-Spend" CLAIM WAS FALSE and the entry was re-scored S2 to S3 - see its corrected Why it matters. Also fixed a latent hole in the test factory: the weekly and annual cases overrode period without periodDays, so they were 30-day cadences wearing other names
+
 | Field | Value |
 |---|---|
-| Severity | S2 Major |
+| Severity | S3 Moderate |
 | Complexity | XS |
 | Difficulty | D2 Standard |
 | Risk | R2 |
 | Confidence | C1 Verified |
-| Priority score | 5.0 |
+| Priority score | 2.0 (re-scored from S2/5.0 on 2026-09-06; see Why it matters) |
 | Agent suitability | AGENT-READY |
 | Depends on | none |
 | Blocks | none |
@@ -7033,7 +7108,18 @@ const MONTHLY_FACTOR: Record<RecurringPeriod, number> = {
 The same three-value bucket enum behind GAP-008, in a second place. `periodFor` buckets any cadence at or under about 14.6 days as `weekly`, so a charge every 14 days is multiplied by `52 / 12` (4.333 payments a month) when its real rate is roughly 2.17 — it is counted 52 times a year instead of 26. The error is almost exactly a factor of two, and it applies to every fortnightly pattern the detector finds, silently, with no signal that the bucket and the stored `periodDays` disagree.
 
 **Why it matters**
-`monthlyLockedIn` is the headline "locked in" figure of recurring rule 17 and it feeds Safe-to-Spend. Overstating committed money understates Safe-to-Spend, so the app's single most important number tells the user they have less to spend than they do, and it does so for exactly the cadence PH payroll runs on. GAP-008 fixed the decay half of this bucketing problem and deliberately left the arithmetic half alone so it could be scored on its own.
+> **CORRECTED 2026-09-06 while fixing this entry.** The paragraph below claimed the figure
+> feeds Safe-to-Spend. **It does not.** `monthlyLockedIn` has exactly one consumer in the
+> tree, `mobile/app/(tabs)/more/subscriptions.tsx:138`, which hands it to the presentational
+> `LockedInHeader`; `mobile/lib/safe_to_spend_service.ts` does not import `lib/recurring` at
+> all. The wrong money was still wrong, but the blast radius is the subscriptions screen, not
+> the app's headline number. **Re-scored S2 to S3 on that basis**, in the same spirit as
+> GAP-006 (S2 to S3) and GAP-044 (S1 to S2) earlier in this file. Priority moves 5.0 to 2.0.
+> The error was mine, written into this entry when it was raised, and it is recorded rather
+> than quietly edited because an unexamined "it feeds Safe-to-Spend" is exactly the kind of
+> claim a later wave would inherit and act on.
+
+`monthlyLockedIn` is the headline "locked in" figure of recurring rule 17, shown on the subscriptions screen. A fortnightly subscription is displayed at roughly twice what it actually costs, for exactly the cadence PH payroll runs on, and nothing in the UI hints that the number is derived from a bucket rather than the real cadence. GAP-008 fixed the decay half of this bucketing problem and deliberately left the arithmetic half alone so it could be scored on its own.
 
 **Intended behavior**
 The monthly conversion uses the pattern's own cadence when it has one, falling back to the bucket nominal only for a row with no stored `periodDays`.
@@ -7069,6 +7155,8 @@ Revert the commit. Fortnightly patterns go back to being double-counted in the l
 none
 
 ### GAP-102 [DOC] Two sibling docs still carry claims that were corrected everywhere else
+
+> **REMEDIATION: DONE** (2026-09-06) - commit 83d75bf, branch gap-wave-7. Verification: docs only. Acceptance PASS: "more parsed fields" now returns 0 across docs/. The orchestrator additionally corrected a trailing sentence the agent verified false but left in place - no dedupe signature UserRule is created, UserRuleAction has six kinds and none is one, and the dismiss path is a bare resolve with no teachFrom
 
 | Field | Value |
 |---|---|
@@ -7282,7 +7370,7 @@ Pass-2 deferrals (S4; each has a citation in the analyst's pass-2 notes and can 
 ,
 {"id":"GAP-099","category":"SEC","title":"The full-database export writes a plaintext JSON dump to the cache directory, never deletes it, and reports success when sharing is unavailable","severity":"S2","complexity":"XS","difficulty":"D1","risk":"R1","confidence":"C1","priority":5.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/lib/privacy/data_export.ts","mobile/lib/privacy/__tests__/data_export.test.ts"]},
 {"id":"GAP-100","category":"CONTRA","title":"Onboarding tells the user the recovery phrase brings their data back on a new phone; it cannot","severity":"S1","complexity":"XS","difficulty":"D2","risk":"R2","confidence":"C1","priority":8.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/components/onboarding/phrase_display.tsx","mobile/components/onboarding/__tests__/recovery_phrase.test.tsx"]},
-{"id":"GAP-101","category":"CODE","title":"The locked-in total counts a fortnightly subscription at twice its cost","severity":"S2","complexity":"XS","difficulty":"D2","risk":"R2","confidence":"C1","priority":5.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/lib/recurring/recurring_service.ts","mobile/lib/recurring/__tests__/recurring_service.test.ts"]},
+{"id":"GAP-101","category":"CODE","title":"The locked-in total counts a fortnightly subscription at twice its cost","severity":"S3","complexity":"XS","difficulty":"D2","risk":"R2","confidence":"C1","priority":2.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/lib/recurring/recurring_service.ts","mobile/lib/recurring/__tests__/recurring_service.test.ts"]},
 {"id":"GAP-102","category":"DOC","title":"Two sibling docs still carry claims that were corrected everywhere else","severity":"S3","complexity":"XS","difficulty":"D1","risk":"R1","confidence":"C1","priority":2.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["docs/02-domain-model.md","docs/04-features/08-review-queue.md"]}
 ]
 ```
