@@ -4027,7 +4027,31 @@ Revert; native rebuild.
 - `mobile/package.json:86-89` (no `TZ` pinned)
 
 **Evidence**
-From the 2026-09-01 handoff, which ran the full suite twice against `ef4c578` and the fix branch: all seven are load-sensitive `waitFor` tests that pass in isolation. Not re-run in this session (C2).
+From the 2026-09-01 handoff, which ran the full suite twice against `ef4c578` and the fix branch: all seven are load-sensitive `waitFor` tests that pass in isolation. Not re-run in that session (C2).
+
+> **REPRODUCED AND PINNED 2026-09-06, on master at `7a42793`.** One of these is no longer
+> second-hand. `review_queue.test.tsx` failed twice under memory pressure and passed twice on
+> an idle machine, in both wave 6's sweep and the master sweep. The exact failure, which no
+> earlier wave had captured:
+> ```
+> ● the queue is filterable by kind › EMPTYING A FILTER IS NOT 'All caught up.'
+>   at app/__tests__/review_queue.test.tsx:738
+>   expect(received).toHaveLength(expected)
+>   Expected length: 1
+>   Received length: 2
+> ```
+> Line 738 presses `review-filter-chip-unknown-provider` and then waits up to 10,000 ms for
+> exactly one `review-card-`. Under load it still sees two after the full timeout, so this is
+> NOT a plain "needs a longer timeout" flake -- ten seconds is already generous and the count
+> never converges. Either the chip press is not being applied before the assertion window
+> closes, or an earlier `waitFor` in the same test returns while the list is still settling and
+> leaves two cards mounted. Whoever takes this should start by asserting on the FILTER's own
+> applied state before asserting on the card count, rather than raising the timeout again.
+>
+> Two other things this entry says are now stale: the `bills_screen` header failure it counts
+> was fixed under GAP-086 (`9d5b6f2`, wave 5), so "seven" is an overcount; and the
+> `gates.test.tsx:91` typecheck error is confirmed still present on master as of 2026-09-06,
+> unchanged, the only error `npx tsc --noEmit` reports.
 
 **What is wrong**
 A suite that is red on clean master trains everyone to re-run, which is how a real failure gets waved through (the root `HANDOFF.md` said the same on 2026-08-18). The typecheck error makes `npm run typecheck` a non-gate.
