@@ -47,7 +47,7 @@ const DAY_MS = 86_400_000;
 const LEDGER_WINDOW_DAYS = 800;
 
 /**
- * Nominal length of each `period` bucket. Two callers:
+ * Nominal length of each `period` bucket. Three callers:
  *
  *   `promotePatternToBill`, for the rare row that predates migration 007 and
  *   so has no `periodDays` of its own to promote from.
@@ -55,6 +55,10 @@ const LEDGER_WINDOW_DAYS = 800;
  *   `decayStalePatterns`, which scales the forget threshold by the LARGER of
  *   this and `periodDays` — see that function's own doc for why neither
  *   number is safe on its own.
+ *
+ *   `MONTHLY_FACTOR` below, which is these same lengths expressed as
+ *   payments-per-month, and is what `monthlyLockedIn` falls back to for that
+ *   same pre-007 row.
  */
 const PERIOD_NOMINAL_DAYS: Record<RecurringPeriod, number> = {
   weekly: 7,
@@ -62,7 +66,20 @@ const PERIOD_NOMINAL_DAYS: Record<RecurringPeriod, number> = {
   annual: 365,
 };
 
-/** Reports rule 17, verbatim: weekly ×52÷12, monthly ×1, annual ÷12. */
+/**
+ * Mean calendar month — the same 30.44 `recurring_patterns_repo.ts` builds its
+ * bucket boundaries from. `monthlyRate` divides a pattern's exact cadence into
+ * this to get how many times a month that pattern charges.
+ */
+const DAYS_PER_MONTH = 30.44;
+
+/**
+ * FALLBACK ONLY — no longer the primary conversion. Reports rule 17 writes its
+ * formula in `period` terms (weekly ×52÷12, monthly ×1, annual ÷12), and that
+ * reading is exactly right for a row whose only cadence information IS its
+ * bucket: one written before migration 007, with no `periodDays`. Every row
+ * that carries a real cadence is converted from that instead — `monthlyRate`.
+ */
 const MONTHLY_FACTOR: Record<RecurringPeriod, number> = {
   weekly: 52 / 12,
   monthly: 1,
@@ -275,16 +292,41 @@ export async function dismissPattern(patternId: string, now: number): Promise<vo
 }
 
 /**
- * Reports rule 17's headline figure, exactly: acknowledged patterns not
- * linked to a Bill, normalized to a monthly equivalent BY `period` — the
- * spec's own formula names the three-bucket enum, not the exact day count —
- * and summed. Rounded once at the end, not per pattern, so several fractional
- * weekly conversions do not each shave off a centavo before they are added.
+ * How many times a month a pattern charges.
+ *
+ * THE EXACT CADENCE WINS OVER THE BUCKET. `period` is a three-value enum and
+ * `periodFor` buckets any cadence up to about 14.6 days as `weekly`, so a
+ * fortnightly charge scaled by the weekly factor gets counted 52 times a year
+ * instead of 26 — very nearly double its real cost, on exactly the cadence PH
+ * payroll runs on. The bucket is the right identity for a pattern and the
+ * wrong divisor for its money; `periodDays` is the row's own measured cadence
+ * and has no such collision.
+ *
+ * Only a row with no usable cadence falls back to `MONTHLY_FACTOR`: `null` on
+ * a pre-migration-007 row, and `<= 0` defensively, since dividing by that
+ * would return `Infinity` and poison the whole sum rather than one row of it.
+ */
+function monthlyRate(pattern: RecurringPattern): number {
+  const cadenceDays = pattern.periodDays;
+  if (cadenceDays === null || cadenceDays <= 0) return MONTHLY_FACTOR[pattern.period];
+  return DAYS_PER_MONTH / cadenceDays;
+}
+
+/**
+ * Reports rule 17's headline figure: acknowledged patterns not linked to a
+ * Bill, normalized to a monthly equivalent and summed. Rounded once at the
+ * end, not per pattern, so several fractional conversions do not each shave
+ * off a centavo before they are added.
+ *
+ * The rule writes its formula in `period` terms; `monthlyRate` reads that same
+ * formula off the pattern's exact `periodDays` instead, because the enum
+ * cannot tell a weekly charge from a fortnightly one and this is the one place
+ * where that difference doubles the number the user reads.
  */
 export function monthlyLockedIn(patterns: RecurringPattern[]): Centavos {
   const total = patterns
     .filter((pattern) => pattern.acknowledged && pattern.billId === null)
-    .reduce((sum, pattern) => sum + pattern.amount * MONTHLY_FACTOR[pattern.period], 0);
+    .reduce((sum, pattern) => sum + pattern.amount * monthlyRate(pattern), 0);
   return Math.round(total);
 }
 

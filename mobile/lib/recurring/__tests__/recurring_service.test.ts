@@ -105,18 +105,46 @@ describe("monthlyLockedIn", () => {
     };
   }
 
-  test("normalizes weekly (x52/12) and monthly (x1) and sums them", () => {
-    // 20,000 x 52 / 12 = 86,666.67; + 50,000 = 136,666.67, rounded once.
-    const weekly = locked({ id: "w1", period: "weekly", amount: 20_000 });
-    const monthly = locked({ id: "m1", period: "monthly", amount: 50_000 });
+  test("normalizes a 7-day and a 30-day pattern by their own cadence and sums them", () => {
+    // Converted from the row's own periodDays against a 30.44-day mean month,
+    // not from the three-value bucket: 20,000 x 30.44 / 7 = 86,971.43, plus
+    // 50,000 x 30.44 / 30 = 50,733.33, giving 137,704.76 rounded once.
+    const weekly = locked({ id: "w1", period: "weekly", periodDays: 7, amount: 20_000 });
+    const monthly = locked({ id: "m1", period: "monthly", periodDays: 30, amount: 50_000 });
 
     const total = monthlyLockedIn([weekly, monthly]);
-    expect(total).toBe(136_667);
+    expect(total).toBe(137_705);
   });
 
-  test("annual normalizes by /12", () => {
-    const annual = locked({ id: "a1", period: "annual", amount: 120_000 });
-    expect(monthlyLockedIn([annual])).toBe(10_000);
+  test("a fortnightly pattern counts about HALF what its weekly bucket would give", () => {
+    // The whole point of converting from periodDays. A 14-day charge buckets
+    // as `weekly` (periodFor's boundary is about 14.6 days) and MUST NOT be
+    // scaled as if it were weekly: ₱320 every 14 days is 32,000 x 30.44 / 14
+    // = 69,577 centavos a month, ₱695.77 — not the ₱1,386.67 the bucket gives.
+    const fortnightly = locked({ id: "f1", period: "weekly", periodDays: 14, amount: 32_000 });
+
+    const total = monthlyLockedIn([fortnightly]);
+
+    expect(total).toBe(69_577);
+    // Stated the other way round, so the assertion still means something if
+    // the mean-month constant is ever retuned: it is half the bucket figure.
+    const bucketFigure = Math.round(32_000 * (52 / 12));
+    expect(total).toBeGreaterThan(bucketFigure * 0.45);
+    expect(total).toBeLessThan(bucketFigure * 0.55);
+  });
+
+  test("annual normalizes by its own 365-day cadence", () => {
+    // 120,000 x 30.44 / 365 = 10,007.67.
+    const annual = locked({ id: "a1", period: "annual", periodDays: 365, amount: 120_000 });
+    expect(monthlyLockedIn([annual])).toBe(10_008);
+  });
+
+  test("a pre-migration-007 row with no periodDays falls back to the bucket factor", () => {
+    // `periodDays` is null only on a row written before migration 007. There
+    // is no exact cadence to divide by, so the bucket nominal is the only
+    // cadence there is: annual /12 exactly, 120,000 / 12 = 10,000.
+    const legacy = locked({ id: "l1", period: "annual", periodDays: null, amount: 120_000 });
+    expect(monthlyLockedIn([legacy])).toBe(10_000);
   });
 
   test("excludes unacknowledged (suggested) patterns", () => {
@@ -577,13 +605,12 @@ describe("refreshPatterns removes patterns that have gone silent past the forget
     const stillThere = await getPattern(created.id);
     expect(stillThere).not.toBeNull();
     expect(stillThere?.acknowledged).toBe(true);
-    // PINS A KNOWN DEFECT, not correct behaviour. `monthlyLockedIn` scales by
-    // MONTHLY_FACTOR[period], and this pattern buckets as `weekly`, so a
-    // 14-day charge is counted 52 times a year instead of 26 — double its
-    // real monthly cost. The decay fix above deliberately does not touch it;
-    // the conversion is its own defect and its own entry. What this line is
-    // here to assert is that the pattern is still IN the total at all.
-    expect(monthlyLockedIn(result)).toBe(Math.round(32_000 * (52 / 12)));
+    // Still IN the total, and in it at its REAL cost: `monthlyLockedIn`
+    // converts from the row's own 14-day cadence (32,000 x 30.44 / 14 =
+    // 69,577), not from the `weekly` bucket it shares with a 7-day charge.
+    // The bucket stays weekly on purpose — that is what the decay threshold
+    // above is asserting — and the money math no longer follows it there.
+    expect(monthlyLockedIn(result)).toBe(69_577);
   });
 
   test("a fortnightly pattern silent for 22 days IS forgotten (1.5 x 14 = 21-day threshold)", async () => {
@@ -691,7 +718,8 @@ describe("refreshPatterns removes patterns that have gone silent past the forget
     await acknowledgePattern(created.id);
 
     const before = await refreshPatterns(NOW);
-    expect(monthlyLockedIn(before)).toBe(54_900);
+    // 54,900 every 30 days against a 30.44-day mean month: 55,705.
+    expect(monthlyLockedIn(before)).toBe(55_705);
 
     // 16 days later, still no new charge: 46 days of total silence, past the
     // 45-day monthly threshold.
