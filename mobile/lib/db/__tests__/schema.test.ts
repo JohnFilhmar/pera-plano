@@ -33,6 +33,10 @@ const MIGRATED_TABLES = [
   // the user typed for someone else to read.
   "support_reports",
   "support_report_attachments",
+  // 019_loan_match_rejections records that the user answered "none of these"
+  // to a specific transaction against a specific loan, so the same rows are
+  // not re-scored on the next visit.
+  "loan_match_rejections",
 ];
 
 const EXPECTED_TABLES = [...CORE_TABLES, ...MIGRATED_TABLES].sort();
@@ -373,6 +377,13 @@ function buildValidRows(ids: SeedIds, now: number): Record<string, Row> {
       id: "row_support_report_attachments", report_id: ids.supportReportId,
       file_uri: "file:///docs/support_attachments/a.png", mime_type: "image/png",
       byte_size: 1024, created_at: now,
+    },
+    // 019. UNIQUE (loan_id, transaction_id), so the pair here is the row's
+    // whole identity — the same loan and transaction `loan_payments` uses,
+    // which is a different table and so cannot collide with it.
+    loan_match_rejections: {
+      id: "row_loan_match_rejections", loan_id: ids.loanId,
+      transaction_id: ids.freeTxId, created_at: now,
     },
   };
 }
