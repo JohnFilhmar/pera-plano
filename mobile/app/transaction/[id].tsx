@@ -19,10 +19,13 @@
 //   than `capturedAt + TTL`, which differs on every replayed or late-drained
 //   capture.
 //
-//   FIRING THE CATEGORY EDIT AND THE RULE AS TWO SEPARATE WRITES. That is the
-//   checkbox: unchecking it fires exactly one of them. A single combined
-//   mutation would make "changed this row" and "changed every future row from
-//   this merchant" indistinguishable at the call site.
+//   FIRING THE CATEGORY EDIT AND THE RULE AS TWO SEPARATE WRITES, IN THAT
+//   ORDER. Separate, because that is the checkbox: unchecking it fires exactly
+//   one of them, and a single combined mutation would make "changed this row"
+//   and "changed every future row from this merchant" indistinguishable at the
+//   call site. ORDERED, because the second is only true if the first landed —
+//   the rule is chained in the edit's `onSuccess` (GAP-077), never fired
+//   beside it. See `commitCategory`.
 //
 // Global Constraints: hooks only, no repository import, no SQL. The one
 // deliberate exception to "thin screen" is the small amount of orchestration
@@ -237,28 +240,68 @@ export default function TransactionDetailScreen() {
 
   function commitCategory(choice: { categoryId: string; createRule: boolean }): void {
     if (!transaction) return;
+    // Captured up front, and NOT named `id` — the route param above already
+    // owns that name. Read here rather than inside the callback so the rule
+    // describes the row this correction was made on, whatever the query has
+    // refetched by the time the edit settles.
+    const { id: rowId, merchant } = transaction;
     setChoosingCategory(false);
     if (choice.categoryId !== transaction.categoryId) {
-      updateTransaction.mutate({ id: transaction.id, patch: { categoryId: choice.categoryId } });
+      updateTransaction.mutate(
+        { id: rowId, patch: { categoryId: choice.categoryId } },
+        {
+          // THE RULE IS CHAINED, NOT FIRED ALONGSIDE (GAP-077). These are two
+          // writes against two aggregates, and the order between them is the
+          // correctness story: the rule says "every future row from this
+          // merchant is Transport", and it is only true because THIS row was
+          // moved to Transport. Fired side by side, a rejected row write —
+          // silent but for the global failure toast, GAP-013, with the picker
+          // already closed — left the rule standing over a row that never
+          // moved, so every future row from that merchant followed a
+          // correction the user can still see missing on the one they were
+          // looking at.
+          //
+          // ORDERING, NOT A UNIT OF WORK. `withUnitOfWork` is what
+          // lib/review/resolve_actions.ts reaches for, and it is right there
+          // because a partial landing is destructive in BOTH directions: a
+          // committed Transaction beside an unresolved queue item puts the
+          // same card back in front of the user and the ledger ends up holding
+          // one purchase twice. Here the halves are not symmetric. A row moved
+          // without its rule is exactly what unchecking the box asks for and
+          // costs one more correction next month; a rule without its row
+          // rewrites transactions nobody looked at. Doing the write that can
+          // fail first, and the one that only teaches second, removes the
+          // damaging half — and a transaction cannot span a screen callback
+          // anyway without dragging both writes behind one repository door.
+          onSuccess: () => {
+            // RULE 6, AND THE CHECKBOX IS THE WHOLE CONDITION. A user who
+            // unchecked it said "this row, not this merchant" — making the rule
+            // anyway would recategorize transactions they never looked at.
+            //
+            // The SHIPPED UserRule shape: a matcher/action pair. There is no
+            // "kind: merchant_category" in this codebase, and `merchantPattern`
+            // is a case-insensitive SUBSTRING (lib/ingest/categorizer.ts),
+            // never a regex — so the merchant string goes in verbatim,
+            // unescaped and unanchored.
+            if (choice.createRule && merchant) {
+              createUserRule.mutate({
+                matcher: { merchantPattern: merchant },
+                action: { kind: "set-category", categoryId: choice.categoryId },
+                // Invariant I15 / §3.11 invariant 1: every rule is traceable to
+                // what created it, so the settings screen can say where it came
+                // from.
+                createdFrom: rowId,
+              });
+            }
+          },
+        },
+      );
     }
-
-    // RULE 6, AND THE CHECKBOX IS THE WHOLE CONDITION. A user who unchecked it
-    // said "this row, not this merchant" — making the rule anyway would
-    // recategorize transactions they never looked at.
-    //
-    // The SHIPPED UserRule shape: a matcher/action pair. There is no
-    // "kind: merchant_category" in this codebase, and `merchantPattern` is a
-    // case-insensitive SUBSTRING (lib/ingest/categorizer.ts), never a regex —
-    // so the merchant string goes in verbatim, unescaped and unanchored.
-    if (choice.createRule && transaction.merchant) {
-      createUserRule.mutate({
-        matcher: { merchantPattern: transaction.merchant },
-        action: { kind: "set-category", categoryId: choice.categoryId },
-        // Invariant I15 / §3.11 invariant 1: every rule is traceable to what
-        // created it, so the settings screen can say where it came from.
-        createdFrom: transaction.id,
-      });
-    }
+    // NOTHING RUNS OUTSIDE THAT BRANCH, and no case is lost by that:
+    // `CategoryPicker` offers the checkbox only while the category is actually
+    // changing (`offersRule` requires `changed`), so `createRule` cannot arrive
+    // true on a category that stayed put. docs/07 §2.8 ties a rule to a
+    // correction that happened; with no correction there is nothing to teach.
   }
 
   function link(counterpart: Transaction): void {

@@ -19,6 +19,11 @@
 //   stamped is money the user can see in the ledger and cannot find in any
 //   total — the ledger and the totals disagreeing, with nothing on screen
 //   admitting it.
+//
+//   A ROW WRITE THAT FAILS MUST TEACH NOTHING. The correction and the rule are
+//   two writes against two aggregates, and only one order between them is safe:
+//   the rule is only true because the row moved. See the flag and the call
+//   counter below.
 jest.mock("expo-router", () => ({
   useLocalSearchParams: () => mockParams,
   useRouter: () => ({
@@ -28,8 +33,58 @@ jest.mock("expo-router", () => ({
   }),
 }));
 
+// A repository call that REFUSES, and a count of how many times a repository
+// call actually ran — the same passthrough-mock shape
+// app/__tests__/wallet_routes.test.tsx uses for the wallet form's paired
+// writes.
+//
+// PASSTHROUGH MOCKS, NOT STUBS. Everything else in both modules is the real
+// implementation, so every other assertion in this file goes on running
+// against the real schema. Only `updateTransaction` changes behaviour, and
+// only while the flag says so.
+//
+// THE FAILURE CANNOT BE PRODUCED ANY OTHER WAY at this level: every category
+// the picker can offer is a valid `category_id`, so `updateTransaction`
+// succeeds for anything this screen can construct — and "the row write failed"
+// is precisely the state the screen was mishandling.
+//
+// THE CALL COUNT IS NOT DECORATION. Before the fix both mutations were fired
+// in the SAME tick, so a test that only checked `user_rules` could outrun the
+// INSERT and pass over the very bug it exists to catch. `createUserRule` never
+// being CALLED is the assertion that cannot pass by timing.
+let mockFailUpdateTransaction = false;
+const mockRepoCalls = { updateTransaction: 0, createUserRule: 0 };
+
+jest.mock("@/lib/db/repos/transactions_repo", () => {
+  const actual = jest.requireActual<typeof import("@/lib/db/repos/transactions_repo")>(
+    "@/lib/db/repos/transactions_repo",
+  );
+  return {
+    ...actual,
+    updateTransaction: (...args: Parameters<typeof actual.updateTransaction>) => {
+      mockRepoCalls.updateTransaction += 1;
+      return mockFailUpdateTransaction
+        ? Promise.reject(new Error("the category could not be saved"))
+        : actual.updateTransaction(...args);
+    },
+  };
+});
+
+jest.mock("@/lib/db/repos/user_rules_repo", () => {
+  const actual = jest.requireActual<typeof import("@/lib/db/repos/user_rules_repo")>(
+    "@/lib/db/repos/user_rules_repo",
+  );
+  return {
+    ...actual,
+    createUserRule: (...args: Parameters<typeof actual.createUserRule>) => {
+      mockRepoCalls.createUserRule += 1;
+      return actual.createUserRule(...args);
+    },
+  };
+});
+
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { ReactNode } from "react";
 import { ScrollView, StyleSheet } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -152,6 +207,9 @@ let bpi: Wallet;
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  mockFailUpdateTransaction = false;
+  mockRepoCalls.updateTransaction = 0;
+  mockRepoCalls.createUserRule = 0;
   await freshDb();
   await seedDefaultCategories();
   await upsertRuleset({
@@ -510,6 +568,41 @@ describe("changing the category", () => {
     // the state that decides whether next month's Jollibee rows move on their
     // own.
     expect(await listUserRules()).toEqual([]);
+  });
+
+  test("a row write that FAILS teaches nothing — no rule, not even attempted", async () => {
+    const tx = await jollibee();
+    await openPicker(tx);
+
+    fireEvent.press(screen.getByTestId(`category-option-${TRANSPORT}`));
+    // Checked by default, so this is the ordinary "yes, always" path — the one
+    // that used to write the rule whatever happened to the row.
+    expect(screen.getByTestId("category-rule-checkbox").props.accessibilityState?.checked).toBe(
+      true,
+    );
+
+    mockFailUpdateTransaction = true;
+    fireEvent.press(screen.getByTestId("category-picker-save"));
+
+    await waitFor(() => expect(mockRepoCalls.updateTransaction).toBe(1));
+
+    // The row is still Food & Dining: the correction the user made did not
+    // land, and the global failure toast (GAP-013) is what says so.
+    expect((await getTransaction(tx.id))?.categoryId).toBe(FOOD);
+    // So NOTHING may claim it did. The rule write must never have been
+    // attempted — the assertion that cannot pass by timing, because the two
+    // mutations were previously fired in the same tick.
+    expect(mockRepoCalls.createUserRule).toBe(0);
+
+    // And the table, which is the state that decides whether next month's
+    // Jollibee rows move on their own. Given time for an INSERT to land first,
+    // so "no row" means the write never happened rather than that this line
+    // outran it.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(await listUserRules()).toEqual([]);
+    expect(mockRepoCalls.createUserRule).toBe(0);
   });
 
   test("a transaction with no merchant is offered no rule at all", async () => {
