@@ -35,6 +35,12 @@ not been started. Each gap's detail entry in section 9 carries the same marker i
 
 | ID | Status | Commit | Branch | Verification | Date |
 |---|---|---|---|---|---|
+| GAP-020 | DONE | 5fafb87 | gap-wave-8 | jest components/goals 3 suites 35 tests PASS; reverting the source fails the 3 percent tests while the fixed-rule regression test still passes. TWO defects, not one: the form also DESTROYED an existing percent rule, because ruleText seeded only for kind=fixed and submit always sent fixed-or-null, which goals_repo merges on !== undefined. Unreachable before this wave (the UI was the only way to make a rule and could not make a percent one), so shipping creation WITHOUT the seed fix is what would have made it live data loss. Both halves land together | 2026-09-07 |
+| GAP-065 | DONE | dbe73df | gap-wave-8 | jest components/bills + lib/bills + bills_screen 7 suites 132 tests PASS; both new tests fail with the source reverted. The DATE was wrong too, which the entry did not mention: the row rendered payment.createdAt, when the match was confirmed, not when the money moved. BillPayment left unchanged - it is a strict row mirror and two files say in prose it carries no amount on purpose - so BillStatus.payment is a new MatchedBillPayment sibling. Every cite in the entry had drifted; all claims held | 2026-09-07 |
+| GAP-092 | DONE | dd16ee2 | gap-wave-8 | jest lib/__tests__/bootstrap 24 tests PASS plus modules 64, tabs_layout 3, privacy_screen 17; removing the call or either guard fails exactly the tests naming them. THE ENTRY'S CHECKLIST WOULD HAVE CAUSED THE BUG: pushing an empty allowlist for an empty paused row would have wiped the onboarding selection at launch, because (onboarding)/providers.tsx writes to the bridge and never writes paused_provider_packages. The re-sync therefore only ever NARROWS. Kotlin comment-only, NOT COMPILED AND NOT RUN | 2026-09-07 |
+| GAP-070 | DONE | c08b4bd | gap-wave-8 | jest safe_to_spend_service 23 tests PASS; reverting the source fails both new tests for the right reasons (100000 where 130000 expected; two entries where one was expected). Pairs with GAP-020 - that made percent rules creatable, this makes them correct, and shipped apart the wave would have handed users a control that reserves the wrong number. One pinned total moved 100,000 to 130,000 because the old fixture made both readings agree and so proved nothing. The entry's rule-16 average fallback was deliberately NOT added: it is unreachable here | 2026-09-07 |
+| GAP-077 | DONE | c1254ed | gap-wave-8 | jest transaction_detail 22 tests PASS; reverting the source fails the new test at the call-count assertion, Expected 0 Received 1. Ordering, not a transaction, because the two halves are asymmetric and withUnitOfWork exists for failures destructive in BOTH directions. Nesting is safe only because createRule cannot be true without a category change - verified in category_picker, not assumed. The test asserts the rule write was never ATTEMPTED, since asserting an empty table would prove nothing when both writes fired in one tick | 2026-09-07 |
+| GAP-069 | DONE | fe342a4 | gap-wave-8 | jest alert_navigation 3 tests PASS plus lock_gate/root_layout/subscribers/alert_audit, 5 suites 58 tests; reverting the source fails all 3. THE ENTRY'S CHECKLIST WOULD HAVE RE-CREATED 3db0766: a bare push strands the tab, because a notification tap is not a deep link and initialRouteName does not apply - it needs withAnchor. Removing ONLY withAnchor fails the back-navigation test while the others pass, so the mechanism is pinned, not just the destination. Uses getLastNotificationResponse, not the deprecated Async variant the entry named | 2026-09-07 |
 | GAP-100 | DONE | 759fe85 | gap-wave-7 | jest recovery_phrase.test.tsx 35 tests PASS; reverting the copy fails the new test. A PRE-EXISTING TEST WAS PINNING THE FALSE PROMISE - it asserted toMatch(/new phone/), so removing the dangerous sentence would have failed the suite - and had to be retargeted. A second guard pins the scope in GENERAL form (a screen may mention a new phone only to deny) and was proven to reject the old copy independently of the literal wording. The full components/onboarding suite was NOT run: it exceeded the 600s foreground limit, and recovery_phrase.test.tsx is the only file in the repo that renders phrase_display | 2026-09-06 |
 | GAP-101 | DONE | 0733775 | gap-wave-7 | jest lib/recurring + components/recurring 4 suites 65 tests PASS; reverting the source fails 5 tests including the new fortnightly one. Four pinned totals recomputed (three of them the accuracy gain, one the defect). THIS ENTRY'S "feeds Safe-to-Spend" CLAIM WAS FALSE and the entry was re-scored S2 to S3 - see its corrected Why it matters. Also fixed a latent hole in the test factory: the weekly and annual cases overrode period without periodDays, so they were 30-day cadences wearing other names | 2026-09-06 |
 | GAP-102 | DONE | 83d75bf | gap-wave-7 | docs only. Acceptance PASS: "more parsed fields" now returns 0 across docs/. The orchestrator additionally corrected a trailing sentence the agent verified false but left in place - no dedupe signature UserRule is created, UserRuleAction has six kinds and none is one, and the dismiss path is a bare resolve with no teachFrom | 2026-09-06 |
@@ -399,6 +405,73 @@ Facts established while fixing entries, that later entries must not rediscover t
   `mobile/lib/crypto/recovery_phrase.ts:8` calls the phrase "the only key material that can
   travel to a new phone for cloud restore", describing the same unbuilt design as GAP-054; it
   is a design comment rather than user-facing copy, so GAP-100 deliberately did not touch it.
+
+**Wave 8 findings (2026-09-07).**
+
+- **Wave 8 suite result, and A CORRECTION TO EVERY EARLIER WAVE'S NUMBERS.** **261 suites,
+  4,511 tests, ZERO failures**; typecheck unchanged, still only `gates.test.tsx(91,29)`. 261 is
+  now verified against `npx jest --listTests`, which is the authority. Two defects in the chunk
+  recipe used since wave 5 came out when the totals refused to reconcile:
+  - **`test_support` (3 suites) was in NO chunk, in ANY wave.** The recipe was `lib`, then
+    `hooks components app contexts services modules constants types` - `test_support` appears
+    in neither. It has never been swept before today. It passes.
+  - **`app` DOUBLE-COUNTED.** A bare `app` is a regex over the whole path, so it also matched
+    `lib/db/repos/__tests__/app_settings_repo.test.ts` and its siblings, which the `lib` and
+    `components` chunks had already run. Wave 7's reported 38 `app` suites are really 34; the
+    surplus was counted twice. Use `app/` with the trailing slash.
+  So earlier waves' totals were inflated by the double count and short by `test_support`, and
+  the two errors partly cancelled, which is why nothing looked wrong. The correct chunking is
+  `lib`; `hooks contexts services modules constants types components`; `app/`; `test_support` -
+  and the sum must equal `--listTests`. Check that every wave.
+
+- **THIS FILE'S DIAGNOSES ARE RELIABLE. ITS PROPOSED FIXES ARE NOT. Read every "Proposed fix"
+  and "Implementation checklist" as a hypothesis to be checked against the code, never as an
+  instruction to execute.** Across waves 7 and 8 this has now happened FIVE times, and in every
+  case following the entry literally would have INTRODUCED a defect:
+  - GAP-009 called the loan rate monthly when the code is per-annum. The fix as written would
+    have labelled an annual rate "per month" and caused the twelvefold error the entry warned
+    about.
+  - GAP-101 said the locked-in total feeds Safe-to-Spend. It has one consumer and that is not
+    it; the claim inflated the severity by two bands.
+  - GAP-092 said to push an empty allowlist when the paused row is empty. Onboarding writes its
+    selection straight to the bridge and never writes that row, so this would have wiped the
+    user's provider choice at the next launch - the exact fail-open the entry exists to close.
+  - GAP-077's checklist nests the rule write inside the row write's success. That is only safe
+    because `createRule` cannot be true without a category change (`category_picker.tsx`'s
+    `offersRule` includes `changed`). Had it not been, the fix would have silently stopped
+    writing rules for merchant-only submits.
+  - GAP-069 said to "push `resolveAlertRoute(data)`". A bare push re-creates the tab-stranding
+    defect the owner fixed on device in `3db0766`: a notification tap is NOT a deep link, so
+    `unstable_settings.initialRouteName` does not apply and the push needs `withAnchor`.
+  The audit was a read-only pass. It saw what was broken accurately and guessed at remedies
+  without executing them, and a guessed remedy in a codebase this interlocked is a coin flip.
+  Brief every agent with this, and require it to justify the MECHANISM, not just the diagnosis.
+- **A fixed contribution rule double-reserves when one payday arrives as two credits.**
+  `forecastContributions` iterates pay events and pushes a fixed rule's full amount once per
+  credit, so a salary split across two deposits on the same date reserves twice what the rule
+  says. Pre-existing, not introduced by GAP-070, which deliberately left fixed-rule behaviour
+  byte-identical because its entry forbade changing it. Grouping fixed rules by date fixes it
+  and breaks no existing test. Needs an entry.
+- **Pausing EVERY provider fails open to allow-all.** `use_set_provider_pause.ts:66` computes
+  `allowed = allPackageNames.filter(not paused)`, which is `[]` when everything is paused, and
+  an empty allowlist means allow-all natively - the same fail-open as GAP-092 through a
+  different door, reachable from the Privacy screen today. The most restrictive action the user
+  can take produces no restriction at all. GAP-092's launch re-sync deliberately refuses to
+  replicate it. Needs an entry, and it is the most serious of these three.
+- **`server/` CANNOT be verified from a worktree, and junctioning it is NOT safe.** GAP-019 was
+  pulled from this wave for it. `vitest` is not installed in `server/node_modules` in the
+  worktree OR in the owner's checkout, so its tests cannot run anywhere without an install the
+  agents are barred from. Worse, junctioning `server/node_modules` the way `mobile/` is
+  junctioned is actively harmful: vitest writes a `.vite-temp` directory INTO `node_modules`,
+  which through a junction lands in the owner's real checkout. Jest does not do this, which is
+  why the mobile junction has been safe for eight waves. Do not create a server junction; the
+  owner must install server dev dependencies before GAP-019 can be attempted.
+- **Two more siblings, both left alone deliberately.** `docs/06-information-architecture.md`
+  §6.1 lists "Goal updates" and "Review Queue digest" deep-link rows for which `AlertRouteData`
+  has no `kind`; no notifier emits them, so it is documentation ahead of code rather than a
+  live defect. And the Privacy switch list shows nothing paused after an onboarding subset
+  selection, because onboarding never writes `paused_provider_packages` - the same root cause
+  as the GAP-092 hazard above.
 
 ## 1. Executive summary
 
@@ -2169,6 +2242,8 @@ Revert the commit and redeploy; HSTS max-age should start at one day for the fir
 none
 
 ### GAP-020 [FEAT] Percent-of-payday goal contribution rules cannot be created in the UI
+
+> **REMEDIATION: DONE** (2026-09-07) - commit 5fafb87, branch gap-wave-8. Verification: jest components/goals 3 suites 35 tests PASS; reverting the source fails the 3 percent tests while the fixed-rule regression test still passes. TWO defects, not one: the form also DESTROYED an existing percent rule, because ruleText seeded only for kind=fixed and submit always sent fixed-or-null, which goals_repo merges on !== undefined. Unreachable before this wave (the UI was the only way to make a rule and could not make a percent one), so shipping creation WITHOUT the seed fix is what would have made it live data loss. Both halves land together
 
 | Field | Value |
 |---|---|
@@ -4899,6 +4974,8 @@ none
 
 ### GAP-065 [CODE] Bill payment history prints the current estimate on every row instead of the matched transaction amount
 
+> **REMEDIATION: DONE** (2026-09-07) - commit dbe73df, branch gap-wave-8. Verification: jest components/bills + lib/bills + bills_screen 7 suites 132 tests PASS; both new tests fail with the source reverted. The DATE was wrong too, which the entry did not mention: the row rendered payment.createdAt, when the match was confirmed, not when the money moved. BillPayment left unchanged - it is a strict row mirror and two files say in prose it carries no amount on purpose - so BillStatus.payment is a new MatchedBillPayment sibling. Every cite in the entry had drifted; all claims held
+
 | Field | Value |
 |---|---|
 | Severity | S3 Moderate |
@@ -5138,6 +5215,8 @@ Revert.
 
 ### GAP-069 [FEAT] Tapping any app notification never navigates; the alert route resolver has no caller
 
+> **REMEDIATION: DONE** (2026-09-07) - commit fe342a4, branch gap-wave-8. Verification: jest alert_navigation 3 tests PASS plus lock_gate/root_layout/subscribers/alert_audit, 5 suites 58 tests; reverting the source fails all 3. THE ENTRY'S CHECKLIST WOULD HAVE RE-CREATED 3db0766: a bare push strands the tab, because a notification tap is not a deep link and initialRouteName does not apply - it needs withAnchor. Removing ONLY withAnchor fails the back-navigation test while the others pass, so the mechanism is pinned, not just the destination. Uses getLastNotificationResponse, not the deprecated Async variant the entry named
+
 | Field | Value |
 |---|---|
 | Severity | S3 Moderate |
@@ -5193,6 +5272,8 @@ Revert.
 none
 
 ### GAP-070 [CODE] Percent contribution rules reserve a share of the income profile average, not the pay that landed
+
+> **REMEDIATION: DONE** (2026-09-07) - commit c08b4bd, branch gap-wave-8. Verification: jest safe_to_spend_service 23 tests PASS; reverting the source fails both new tests for the right reasons (100000 where 130000 expected; two entries where one was expected). Pairs with GAP-020 - that made percent rules creatable, this makes them correct, and shipped apart the wave would have handed users a control that reserves the wrong number. One pinned total moved 100,000 to 130,000 because the old fixture made both readings agree and so proved nothing. The entry's rule-16 average fallback was deliberately NOT added: it is unreachable here
 
 | Field | Value |
 |---|---|
@@ -5606,6 +5687,8 @@ Revert.
 none
 
 ### GAP-077 [CODE] Category correction and rule creation are two independent writes; a failed recategorise still creates the rule
+
+> **REMEDIATION: DONE** (2026-09-07) - commit c1254ed, branch gap-wave-8. Verification: jest transaction_detail 22 tests PASS; reverting the source fails the new test at the call-count assertion, Expected 0 Received 1. Ordering, not a transaction, because the two halves are asymmetric and withUnitOfWork exists for failures destructive in BOTH directions. Nesting is safe only because createRule cannot be true without a category change - verified in category_picker, not assumed. The test asserts the rule write was never ATTEMPTED, since asserting an empty table would prove nothing when both writes fired in one tick
 
 | Field | Value |
 |---|---|
@@ -6481,6 +6564,8 @@ Revert.
 - Confirm the target order with the owner before moving the step.
 
 ### GAP-092 [CODE] The native provider filter has no getter and no launch re-sync, so an unopenable sealed filter silently becomes allow-all
+
+> **REMEDIATION: DONE** (2026-09-07) - commit dd16ee2, branch gap-wave-8. Verification: jest lib/__tests__/bootstrap 24 tests PASS plus modules 64, tabs_layout 3, privacy_screen 17; removing the call or either guard fails exactly the tests naming them. THE ENTRY'S CHECKLIST WOULD HAVE CAUSED THE BUG: pushing an empty allowlist for an empty paused row would have wiped the onboarding selection at launch, because (onboarding)/providers.tsx writes to the bridge and never writes paused_provider_packages. The re-sync therefore only ever NARROWS. Kotlin comment-only, NOT COMPILED AND NOT RUN
 
 | Field | Value |
 |---|---|
