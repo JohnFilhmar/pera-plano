@@ -35,6 +35,12 @@ not been started. Each gap's detail entry in section 9 carries the same marker i
 
 | ID | Status | Commit | Branch | Verification | Date |
 |---|---|---|---|---|---|
+| GAP-019 | DONE | 5730243 | gap-wave-9 | server vitest 22 files 162 tests PASS, smoke 19 PASS, typecheck and lint clean; reverting next.config.ts fails all 8 header tests and both smoke assertions. THE ENTRY'S CSP WOULD HAVE BROKEN THE SITE: it blamed motion and ogl, but the real need is inline script (layout.tsx theme bootstrap plus Next's RSC payload), so a literal default-src self would have served the site UNHYDRATED and passed a header-only test. Verified in a real browser under the live policy: zero console errors, bootstrap ran, WebGL live. HSTS is max-age=86400 not a year - the entry says both, and nothing has been served over TLS yet. script-src carries unsafe-inline; a nonce cannot work while / is prerendered. Acceptance criterion "smoke with SMOKE_SKIP_BUILD unset" CANNOT BE MET in a worktree (Turbopack rejects the junction) and needs checking in the main checkout | 2026-09-07 |
+| GAP-078 | DONE | 5fa4d3a | gap-wave-9 | jest wipe + lock_context + transaction_new + done_step 78 tests PASS, lock_screen 8 PASS, 86 combined; reverting fails exactly the 7 new tests. Worst live defect was not the headline: a rejected getKeyState() left onboarding at step "checking", which renders null, so a first install could dead-end on a permanently blank screen. THE ENTRY'S EVIDENCE WAS WRONG that mutateAsync escapes the central toast - MutationCache.onError is cache-level - so an isError branch would have double-reported. New WipeIncompleteError separates a pre-database failure from a post-database one, without which the acceptance criterion is unsatisfiable. The lock notice had to be RENDERED: setting errorMessage passed a test while the user saw a blank screen | 2026-09-07 |
+| GAP-083 | DONE | 46725f4 | gap-wave-9 | jest components/loans + components/goals 8 suites 82 tests PASS; reverting fails exactly the 4 new tests. THE ENTRY CONTRADICTED ITSELF - checklist said condition the floor on mode, Intended behavior says create allows a past first-due, and an in-progress bank loan is CREATED. The real damage was not "cannot pick a past date": date_field passes minimumDate to the native dialog, which opens CLAMPED, so tapping the field on an in-progress loan and confirming rewrote firstDue to today and the save rebuilt every installment. A name-only edit re-dated the whole schedule. Goal floor is min(today, stored), derived from initial not the live field, so a mis-tap cannot ratchet it | 2026-09-07 |
+| GAP-087 | DONE | f3ffabf | gap-wave-9 | jest reports_screen 8 tests PASS, charts 10, entitlements 11; reverting only the gating decision fails the new Free test and dumps the defect. THE ENTRY'S FIX WAS SATISFIABLE WITHOUT FIXING ANYTHING: Free gets one data point by design, so wrapping TrendLine in PlusGate leaves "Not enough periods yet to show a trend." on screen with a lock badge under it, and both the acceptance criterion and the checklist item would have passed over the lie. Free now gets a labelled sample frame per two doc lines the entry did not cite (reports states table "no data shown"; monetization rule 2 "empty/sample frame clearly labeled"). TrendLine is byte-for-byte unchanged so a Plus window with one point still gets the honest copy | 2026-09-07 |
+| GAP-089 | DONE | a9dc588 | gap-wave-9 | jest privacy_screen 22 tests PASS; reverting fails 3 of the 5 new tests. Precedence is paused, then checking, then no access, then disconnected, then active - the entry covered only the middle two, which would have left the loading state asserting the active claim and shown a fault prompt to someone who paused on purpose. Foreground invalidation is load-bearing: nothing wires focusManager, so without it the row keeps saying access is off after the user grants it and returns. The entry names a component test file that does not exist; screen tests were used instead because a component test passing props by hand could pass while the screen never passed health at all. Two of the five tests pass in both directions and are regression guards, not proof - flagged rather than counted | 2026-09-07 |
+| GAP-096 | DONE | 92ee66c | gap-wave-9 | jest modules 4 suites 67 tests PASS, up from 64; the three JS tests were DEMONSTRATED by breaking the source and restoring byte-identical. KOTLIN NOT COMPILED AND NOT RUN - no Gradle project in a worktree. One production change makes the bridge testable at all: drainPendingCaptures extracted from the AsyncFunction body, which the class doc already required to be a one-liner, because the old test retyped CaptureBuffer.drain by hand and never reached mapKeyErrors. REFUSED the entry's try/catch around startActivity, which would make "Grant access" silently do nothing. The dead-key test is a labelled defect tripwire, since the entry's criterion is unsatisfiable while GAP-059 is open. Found one cite wrong by ~68 lines, drift caused by wave 8's own comment additions | 2026-09-07 |
 | GAP-020 | DONE | 5fafb87 | gap-wave-8 | jest components/goals 3 suites 35 tests PASS; reverting the source fails the 3 percent tests while the fixed-rule regression test still passes. TWO defects, not one: the form also DESTROYED an existing percent rule, because ruleText seeded only for kind=fixed and submit always sent fixed-or-null, which goals_repo merges on !== undefined. Unreachable before this wave (the UI was the only way to make a rule and could not make a percent one), so shipping creation WITHOUT the seed fix is what would have made it live data loss. Both halves land together | 2026-09-07 |
 | GAP-065 | DONE | dbe73df | gap-wave-8 | jest components/bills + lib/bills + bills_screen 7 suites 132 tests PASS; both new tests fail with the source reverted. The DATE was wrong too, which the entry did not mention: the row rendered payment.createdAt, when the match was confirmed, not when the money moved. BillPayment left unchanged - it is a strict row mirror and two files say in prose it carries no amount on purpose - so BillStatus.payment is a new MatchedBillPayment sibling. Every cite in the entry had drifted; all claims held | 2026-09-07 |
 | GAP-092 | DONE | dd16ee2 | gap-wave-8 | jest lib/__tests__/bootstrap 24 tests PASS plus modules 64, tabs_layout 3, privacy_screen 17; removing the call or either guard fails exactly the tests naming them. THE ENTRY'S CHECKLIST WOULD HAVE CAUSED THE BUG: pushing an empty allowlist for an empty paused row would have wiped the onboarding selection at launch, because (onboarding)/providers.tsx writes to the bridge and never writes paused_provider_packages. The re-sync therefore only ever NARROWS. Kotlin comment-only, NOT COMPILED AND NOT RUN | 2026-09-07 |
@@ -472,6 +478,75 @@ Facts established while fixing entries, that later entries must not rediscover t
   live defect. And the Privacy switch list shows nothing paused after an onboarding subset
   selection, because onboarding never writes `paused_provider_packages` - the same root cause
   as the GAP-092 hazard above.
+
+**Wave 9 findings (2026-09-07).**
+
+- **Wave 9 suite result, and the FIRST wave to verify the server side.** Mobile **261 suites,
+  4,534 tests, ZERO failures**, with the chunk sum reconciled against `npx jest --listTests`
+  (261 = 261) using wave 8's corrected recipe: `lib test_support`;
+  `hooks contexts services modules constants types components`; `app/`. Server **22 files, 162
+  tests** plus **19 smoke**, runnable at last because the owner installed `server/node_modules`
+  on 2026-09-07 - every earlier wave's "server NOT RUN" line was a real blind spot, now closed
+  for the unit and smoke suites though not for a production build. Typecheck unchanged, still
+  only `gates.test.tsx(91,29)`.
+
+- **THE FIX-UNRELIABILITY COUNT IS NOW ELEVEN, and wave 9 alone contributed five.** The
+  standing warning in the wave 8 block is not an exaggeration and is getting worse, not better,
+  as the easy entries are consumed. Wave 9's five, each caught only because the agent was told
+  to justify the mechanism:
+  - GAP-019's CSP named `motion` and `ogl` as what needs allowances. Neither does. What does is
+    inline script: `layout.tsx` ships a theme bootstrap via `dangerouslySetInnerHTML`, and every
+    App Router response carries Next's RSC payload as inline `<script>`. A literal
+    `default-src 'self'` would have served the site UNHYDRATED with the theme bootstrap dead,
+    and would have passed a header-only test while doing it.
+  - GAP-078's Evidence claimed the allocation path escapes the central error toast because it
+    calls `mutateAsync`. `MutationCache.onError` is cache-level and fires for `mutateAsync` too;
+    following it would have double-reported and fought the single-handler pattern.
+  - GAP-083's checklist contradicted its own Intended behavior: it said to condition the date
+    floor on create-versus-edit, while Intended behavior says create must allow a past
+    first-due. An in-progress bank loan is CREATED, so the checklist would have blocked the
+    headline case.
+  - GAP-087's proposed fix was satisfiable WITHOUT FIXING ANYTHING. Wrapping `TrendLine` in
+    `PlusGate` leaves the false "Not enough periods yet" copy on screen with a lock badge under
+    it, because Free gets one data point by design and `TrendLine`'s own guard prints that
+    sentence. Both the acceptance criterion and the checklist's "assert the lock" item would
+    have gone green over the lie.
+  - GAP-089's checklist covered only revoked and disconnected, leaving the loading state still
+    asserting the active claim - the defect its own Evidence names - and would have shown a
+    fault prompt to a user who paused on purpose.
+  - GAP-096 wanted `try/catch` around two `startActivity` calls, which would make "Grant
+    access" silently do nothing with no UI alive to report it, and its dead-key acceptance
+    criterion is unsatisfiable while GAP-059 is open.
+- **A THIRD VACUOUS-TEST VARIANT: an acceptance criterion satisfiable while the user sees
+  nothing.** GAP-078's criterion was met by setting `errorMessage` in the lock context, but the
+  `needs_onboarding` branch renders `OnboardingIndexScreen`, which never read it. A test
+  asserting the context value passes while the user stares at a blank screen after a failed
+  wipe. Added to the catalogue beside "passes with the fix deleted" (GAP-086), "actively
+  enforces the falsehood" (GAP-100), and "mocks the very module whose contract it verifies"
+  (found in GAP-078's own `lock_context` suite and in GAP-096's bridge test).
+- **OUR OWN REMEDIATION IS NOW THE SOURCE OF CITE DRIFT.** GAP-096 found one of its cites wrong
+  by ~68 lines, pointing at `recordListenerConnected` rather than the migration commit - drift
+  caused by the comments WAVE 8 added to `CapturePrefs.kt` under GAP-092. Later waves inherit
+  the line numbers earlier waves move. Re-read before acting; never trust a cite in this file.
+- **Two more worktree limits, both about `server/`.** `npm run build` CANNOT run in a worktree:
+  Turbopack rejects the `server/node_modules` junction outright
+  (`Symlink [project]/node_modules is invalid, it points out of the filesystem root`), and it
+  fails identically on a pristine tree, so it is environmental. GAP-019's acceptance criterion
+  "smoke passes with `SMOKE_SKIP_BUILD` unset" therefore CANNOT BE MET in a worktree and must
+  be checked in the main checkout. Workaround for building at all:
+  `npx next build apps/web --webpack`. Separately, `vitest` writes a `.vite-temp` directory
+  into `node_modules`, which through the junction lands in the owner's real checkout - harmless
+  and gitignored, but clear it after a wave.
+- **Three defects found and deliberately left, none in the 102.** `privacy.tsx` tells the user
+  "Your data was erased, but PeraPlano could not finish resetting" for EVERY wipe failure,
+  which is now demonstrably false when `wipeDatabase()` itself fails; wave 9's new
+  `WipeIncompleteError` makes that a one-line fix. `app/(tabs)/index.tsx:409` carries a comment
+  claiming `PlusGate` "returns the upgrade prompt instead of its children on free", which is
+  false - the free branch renders children inside `pointerEvents="none"`, and a comment that
+  misdescribes a gating component is how the next leak gets written. And if the listener bridge
+  throws, `useListenerHealth` does not retry, so the Privacy row now reads "checking"
+  indefinitely rather than showing an error: true, better than the confident falsehood it
+  replaced, but not a bridge-error state.
 
 ## 1. Executive summary
 
@@ -2180,6 +2255,8 @@ Revert the commit.
 none
 
 ### GAP-019 [SEC] Web site sends no security headers
+
+> **REMEDIATION: DONE** (2026-09-07) - commit 5730243, branch gap-wave-9. Verification: server vitest 22 files 162 tests PASS, smoke 19 PASS, typecheck and lint clean; reverting next.config.ts fails all 8 header tests and both smoke assertions. THE ENTRY'S CSP WOULD HAVE BROKEN THE SITE: it blamed motion and ogl, but the real need is inline script (layout.tsx theme bootstrap plus Next's RSC payload), so a literal default-src self would have served the site UNHYDRATED and passed a header-only test. Verified in a real browser under the live policy: zero console errors, bootstrap ran, WebGL live. HSTS is max-age=86400 not a year - the entry says both, and nothing has been served over TLS yet. script-src carries unsafe-inline; a nonce cannot work while / is prerendered. Acceptance criterion "smoke with SMOKE_SKIP_BUILD unset" CANNOT BE MET in a worktree (Turbopack rejects the junction) and needs checking in the main checkout
 
 | Field | Value |
 |---|---|
@@ -5744,6 +5821,8 @@ none
 
 ### GAP-078 [CODE] Bare-promise writes outside mutation hooks swallow failures into dead or misleading screens
 
+> **REMEDIATION: DONE** (2026-09-07) - commit 5fa4d3a, branch gap-wave-9. Verification: jest wipe + lock_context + transaction_new + done_step 78 tests PASS, lock_screen 8 PASS, 86 combined; reverting fails exactly the 7 new tests. Worst live defect was not the headline: a rejected getKeyState() left onboarding at step "checking", which renders null, so a first install could dead-end on a permanently blank screen. THE ENTRY'S EVIDENCE WAS WRONG that mutateAsync escapes the central toast - MutationCache.onError is cache-level - so an isError branch would have double-reported. New WipeIncompleteError separates a pre-database failure from a post-database one, without which the acceptance criterion is unsatisfiable. The lock notice had to be RENDERED: setting errorMessage passed a test while the user saw a blank screen
+
 | Field | Value |
 |---|---|
 | Severity | S3 Moderate |
@@ -6039,6 +6118,8 @@ none
 
 ### GAP-083 [CODE] Loan first-due and goal deadline pickers floor at today, so an in-progress loan cannot be entered and an edit re-dates the whole schedule
 
+> **REMEDIATION: DONE** (2026-09-07) - commit 46725f4, branch gap-wave-9. Verification: jest components/loans + components/goals 8 suites 82 tests PASS; reverting fails exactly the 4 new tests. THE ENTRY CONTRADICTED ITSELF - checklist said condition the floor on mode, Intended behavior says create allows a past first-due, and an in-progress bank loan is CREATED. The real damage was not "cannot pick a past date": date_field passes minimumDate to the native dialog, which opens CLAMPED, so tapping the field on an in-progress loan and confirming rewrote firstDue to today and the save rebuilt every installment. A name-only edit re-dated the whole schedule. Goal floor is min(today, stored), derived from initial not the live field, so a mis-tap cannot ratchet it
+
 | Field | Value |
 |---|---|
 | Severity | S3 Moderate |
@@ -6268,6 +6349,8 @@ none
 
 ### GAP-087 [CONTRA] Free tier sees a permanent "Not enough periods yet to show a trend" card instead of the Plus-locked preview the doc specifies
 
+> **REMEDIATION: DONE** (2026-09-07) - commit f3ffabf, branch gap-wave-9. Verification: jest reports_screen 8 tests PASS, charts 10, entitlements 11; reverting only the gating decision fails the new Free test and dumps the defect. THE ENTRY'S FIX WAS SATISFIABLE WITHOUT FIXING ANYTHING: Free gets one data point by design, so wrapping TrendLine in PlusGate leaves "Not enough periods yet to show a trend." on screen with a lock badge under it, and both the acceptance criterion and the checklist item would have passed over the lie. Free now gets a labelled sample frame per two doc lines the entry did not cite (reports states table "no data shown"; monetization rule 2 "empty/sample frame clearly labeled"). TrendLine is byte-for-byte unchanged so a Plus window with one point still gets the honest copy
+
 | Field | Value |
 |---|---|
 | Severity | S3 Moderate |
@@ -6386,6 +6469,8 @@ Revert.
 none
 
 ### GAP-089 [CONTRA] The Privacy centre says notifications are being read whenever the switch is on, with no access check and no fix prompt
+
+> **REMEDIATION: DONE** (2026-09-07) - commit a9dc588, branch gap-wave-9. Verification: jest privacy_screen 22 tests PASS; reverting fails 3 of the 5 new tests. Precedence is paused, then checking, then no access, then disconnected, then active - the entry covered only the middle two, which would have left the loading state asserting the active claim and shown a fault prompt to someone who paused on purpose. Foreground invalidation is load-bearing: nothing wires focusManager, so without it the row keeps saying access is off after the user grants it and returns. The entry names a component test file that does not exist; screen tests were used instead because a component test passing props by hand could pass while the screen never passed health at all. Two of the five tests pass in both directions and are regression guards, not proof - flagged rather than counted
 
 | Field | Value |
 |---|---|
@@ -6802,6 +6887,8 @@ Revert.
 none
 
 ### GAP-096 [TEST] Listener module tests do not discriminate the failure modes the code documents
+
+> **REMEDIATION: DONE** (2026-09-07) - commit 92ee66c, branch gap-wave-9. Verification: jest modules 4 suites 67 tests PASS, up from 64; the three JS tests were DEMONSTRATED by breaking the source and restoring byte-identical. KOTLIN NOT COMPILED AND NOT RUN - no Gradle project in a worktree. One production change makes the bridge testable at all: drainPendingCaptures extracted from the AsyncFunction body, which the class doc already required to be a one-liner, because the old test retyped CaptureBuffer.drain by hand and never reached mapKeyErrors. REFUSED the entry's try/catch around startActivity, which would make "Grant access" silently do nothing. The dead-key test is a labelled defect tripwire, since the entry's criterion is unsatisfiable while GAP-059 is open. Found one cite wrong by ~68 lines, drift caused by wave 8's own comment additions
 
 | Field | Value |
 |---|---|
