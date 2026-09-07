@@ -14,12 +14,14 @@ import { getSetting } from "@/lib/db/repos/app_settings_repo";
 import { seedDefaultCategories } from "@/lib/db/repos/categories_repo";
 import { purgeExpired } from "@/lib/db/repos/review_queue_repo";
 import { purgeExpiredRawCaptures } from "@/lib/db/repos/raw_notifications_repo";
+import { getActiveRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { runIncomePass } from "@/lib/income/income_ledger_subscriber";
 import { seedParserRules } from "@/lib/ingest/seed_rules";
 import { purgeOldSupportReports } from "@/lib/support/outbox_runner";
 import { runRecurringPass } from "@/lib/recurring/recurring_ledger_subscriber";
 import { checkForRulesetUpdate } from "@/services/parser_rules";
 import { sendParseStats } from "@/services/telemetry";
+import { setProviderFilter } from "@/modules/notification_listener";
 
 export type BootstrapResult = { onboardingComplete: boolean };
 
@@ -53,6 +55,13 @@ export async function bootstrapApp(): Promise<BootstrapResult> {
   await runMigrations(db);
   await seedDefaultCategories();
   await seedParserRules();
+  // The per-provider pause list, pushed back across the bridge (GAP-092).
+  // AFTER the ruleset seed, because the allowlist it builds is "every package
+  // the installed ruleset knows about, minus the paused ones" and there is no
+  // package universe to subtract from until the seed has run. Awaited, unlike
+  // the network calls below, because it is one settings read and one
+  // SharedPreferences write, not a request that can hang on mobile data.
+  await resyncProviderFilter();
   // The two server calls (M3c Task 7 rule 1). Fired here — after migrations
   // and seeding, so `getActiveVersion()` and `getParseStats()` have a
   // migrated, seeded schema to read — but DELIBERATELY NOT AWAITED, unlike
@@ -124,6 +133,76 @@ async function runRetention(now: number): Promise<void> {
   // raw-capture purge that threw could skip it silently, and this is the pass
   // that unlinks the largest files this app writes.
   await purgeOldSupportReports(now);
+}
+
+/**
+ * Re-asserts the native provider allowlist from `paused_provider_packages`,
+ * once per launch (GAP-092).
+ *
+ * WHY A LAUNCH RE-SYNC EXISTS AT ALL. `setProviderFilter` is a write-only
+ * bridge call — `CapturePrefs.getProviderFilter()` is never wired to an
+ * `AsyncFunction`, so nothing in JS can ask the listener what filter it is
+ * actually applying. The filter is stored SEALED, and a sealed value that
+ * cannot be OPENED (the Keystore was reset, the app was restored onto another
+ * device, the preferences file came from a foreign build) falls back to the
+ * empty set, which the listener reads as ALLOW EVERY PACKAGE. Without this
+ * pass, that failure is silent and permanent: the Privacy switches keep
+ * showing providers paused, read from the row below, while the listener
+ * captures all of them until the user happens to toggle a switch. Pushing the
+ * settings row back down on every launch bounds that window to a single
+ * start-up.
+ *
+ * IT ONLY EVER NARROWS. An EMPTY `paused_provider_packages` is NOT pushed as
+ * `setProviderFilter([])`, even though that is what the Privacy centre writes
+ * when the last switch goes back on. The empty row is ambiguous — it is also
+ * the fresh-install default, AND the state left behind by
+ * `app/(onboarding)/providers.tsx`, which writes the user's chosen packages
+ * straight to the bridge and never records them here. Pushing allow-all on an
+ * empty row would therefore wipe an onboarding selection on the very next
+ * launch: the exact fail-open this function exists to close, dressed up as a
+ * re-sync. Nothing known means nothing pushed.
+ *
+ * AN EMPTY ALLOWLIST IS NEVER PUSHED EITHER, for the same reason: if every
+ * package the ruleset knows about is paused, `[]` would mean "allow all" on
+ * the Kotlin side rather than "allow none" — an allowlist cannot express deny
+ * everything, `setCaptureEnabled(false)` is what that state is for. Leaving
+ * the listener with whatever it already holds is the smaller error.
+ *
+ * FAILURES ARE SWALLOWED, like `runRetention`'s and for the same reason: a
+ * launch that cannot reach the bridge is still a usable app, and the recovery
+ * screen protects nobody's privacy. Logged, because unlike a skipped purge
+ * this one leaves a setting the user can see disagreeing with what the
+ * listener does.
+ */
+async function resyncProviderFilter(): Promise<void> {
+  try {
+    const paused = await getSetting("paused_provider_packages");
+    if (paused.length === 0) return;
+
+    const pausedSet = new Set(paused);
+    const bundle = await getActiveRuleset();
+    // The same allowlist arithmetic as `hooks/mutations/use_set_provider_pause.ts`,
+    // over the same universe the Privacy switch list builds its rows from
+    // (`app/(tabs)/more/privacy.tsx`): every package in the active ruleset,
+    // minus the paused ones. The two have to agree, so neither may invent its
+    // own idea of what "every package" means.
+    const allowed = (bundle?.providers ?? [])
+      .flatMap((provider) => provider.packageNames)
+      .filter((packageName) => !pausedSet.has(packageName));
+    if (allowed.length === 0) {
+      console.warn(
+        "provider filter re-sync skipped: no package is left allowed, and an empty allowlist means allow-all natively",
+      );
+      return;
+    }
+
+    await setProviderFilter(allowed);
+  } catch (error) {
+    console.error(
+      "provider filter re-sync failed; the listener keeps whatever filter it already had",
+      error,
+    );
+  }
 }
 
 /**

@@ -35,6 +35,16 @@ jest.mock("react-native", () => {
   });
 });
 
+// The native listener module, whose value side calls `requireNativeModule` at
+// import time — there is nothing to bind to under Jest, so without this every
+// test in this file would die at module load now that `bootstrapApp()` pushes
+// the provider filter back across the bridge (GAP-092). Only the one function
+// bootstrap actually imports is defined here: an over-complete mock would let
+// a future import of a second bridge call pass silently.
+jest.mock("@/modules/notification_listener", () => ({
+  setProviderFilter: jest.fn(async () => undefined),
+}));
+
 import { AppState } from "react-native";
 import { closeDatabase, getDatabase, unlockDatabase } from "@/lib/db/database";
 import {
@@ -44,6 +54,7 @@ import {
   startNetworkSyncSubscriber,
 } from "@/lib/bootstrap";
 import { setSetting } from "@/lib/db/repos/app_settings_repo";
+import { setProviderFilter } from "@/modules/notification_listener";
 import { getActiveRuleset, getActiveVersion } from "@/lib/db/repos/parser_rulesets_repo";
 import { TEST_DEK } from "@/test_support/db";
 import { enqueue, listOpen } from "@/lib/db/repos/review_queue_repo";
@@ -466,5 +477,103 @@ describe("ruleset check and telemetry send fire off the startup path", () => {
 
     stop();
     nowSpy.mockRestore();
+  });
+});
+
+// The provider allowlist is re-pushed on every launch (GAP-092). The native
+// filter is stored sealed and has no getter, so a blob that cannot be opened
+// — Keystore reset, restore onto another device, a foreign build — reads back
+// as the empty set, which the listener treats as ALLOW EVERY PACKAGE while the
+// Privacy switches keep showing providers paused. `bootstrapApp()` closes that
+// by pushing `paused_provider_packages` back down after unlock; these tests
+// pin BOTH halves of the rule, because the dangerous half is the second one:
+// the re-sync must never widen the filter it is supposed to be restoring.
+describe("provider filter re-sync", () => {
+  const mockSetProviderFilter = setProviderFilter as jest.Mock;
+  // Two real package names out of assets/parser_rules/seed.json — the seed
+  // bootstrapApp() installs is what the allowlist is subtracted from.
+  const GCASH = "com.globe.gcash.android";
+  const MAYA = "com.paymaya";
+
+  beforeEach(() => {
+    mockSetProviderFilter.mockClear();
+    mockSetProviderFilter.mockResolvedValue(undefined);
+  });
+
+  /** Every package name in the ruleset a completed bootstrapApp() has seeded. */
+  async function seededPackages(): Promise<string[]> {
+    const bundle = await getActiveRuleset();
+    return (bundle?.providers ?? []).flatMap((provider) => provider.packageNames);
+  }
+
+  test("a paused provider is pushed back to the listener as an allowlist without it", async () => {
+    // First launch: migrate and seed, so there is a package universe to
+    // subtract from. Nothing is paused yet, so nothing is pushed.
+    await bootstrapApp();
+    const everyPackage = await seededPackages();
+    // If the seed ever stops carrying these packages the rest of the test
+    // would pass while proving nothing, so they are checked, not assumed.
+    expect(everyPackage).toContain(MAYA);
+    expect(everyPackage).toContain(GCASH);
+
+    await setSetting("paused_provider_packages", [MAYA]);
+    mockSetProviderFilter.mockClear();
+
+    await bootstrapApp();
+
+    expect(mockSetProviderFilter).toHaveBeenCalledTimes(1);
+    const allowed = mockSetProviderFilter.mock.calls[0][0] as string[];
+    expect(allowed).not.toContain(MAYA);
+    expect(allowed).toContain(GCASH);
+    // The exact complement, not merely "a list that omits Maya": a re-sync
+    // that quietly dropped other providers would be the same privacy setting
+    // failing in the opposite direction.
+    expect([...allowed].sort()).toEqual(
+      everyPackage.filter((packageName) => packageName !== MAYA).sort(),
+    );
+  });
+
+  test("nothing is pushed when the pause list is empty — `[]` would mean allow-all natively", async () => {
+    // An empty row is NOT "the user wants everything captured". It is also the
+    // fresh-install default and the state app/(onboarding)/providers.tsx
+    // leaves behind, which writes the user's chosen packages straight to the
+    // bridge and never records them here — so pushing `[]` on an empty row
+    // would wipe an onboarding selection on the next launch.
+    await bootstrapApp();
+
+    expect(mockSetProviderFilter).not.toHaveBeenCalled();
+  });
+
+  test("pausing every known provider pushes nothing rather than an empty, allow-all list", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    await bootstrapApp();
+    await setSetting("paused_provider_packages", await seededPackages());
+    mockSetProviderFilter.mockClear();
+
+    await bootstrapApp();
+
+    // An allowlist cannot express "deny everything"; `[]` is allow-all on the
+    // Kotlin side. Leaving the listener with whatever it holds is the smaller
+    // error, and the skip is announced rather than silent.
+    expect(mockSetProviderFilter).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("provider filter re-sync skipped"));
+
+    warnSpy.mockRestore();
+  });
+
+  test("a rejected bridge call is logged and does not fail the launch", async () => {
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => undefined);
+    await bootstrapApp();
+    await setSetting("paused_provider_packages", [MAYA]);
+    mockSetProviderFilter.mockRejectedValueOnce(new Error("bridge unavailable"));
+
+    await expect(bootstrapApp()).resolves.toEqual({ onboardingComplete: false });
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("provider filter re-sync failed"),
+      expect.any(Error),
+    );
+
+    errorSpy.mockRestore();
   });
 });

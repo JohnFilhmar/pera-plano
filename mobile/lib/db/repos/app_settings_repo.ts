@@ -162,8 +162,25 @@ export type AppSettings = {
    * Without a row to read back, the switch list would have no way to know
    * which providers are currently paused after a cold start; this key is
    * that readable copy, and every write to it is paired with the matching
-   * `setProviderFilter` call so the two can never disagree about which
-   * packages capture.
+   * `setProviderFilter` call.
+   *
+   * PAIRED WRITES ARE NOT ENOUGH, THOUGH, and this doc used to claim they were
+   * ("so the two can never disagree"). They can. The native copy is stored
+   * SEALED, and a sealed value that cannot be OPENED — Keystore reset, restore
+   * onto another device, a preferences file from a foreign build — falls back
+   * to the empty set, which the listener reads as ALLOW EVERY PACKAGE
+   * (`CapturePrefs.getProviderFilter`). Nothing on this side can detect that,
+   * precisely because there is no getter. What closes it is
+   * `resyncProviderFilter()` in `lib/bootstrap.ts`: it pushes this row back
+   * across the bridge on every launch, so a filter that went allow-all behind
+   * the app's back is restored at the next start rather than never.
+   *
+   * That re-sync only ever NARROWS, so an empty array here is left alone
+   * rather than pushed as `setProviderFilter([])`. An empty row does not mean
+   * "the user wants allow-all" — it is also the fresh-install default and the
+   * state `app/(onboarding)/providers.tsx` leaves behind, since that screen
+   * writes the chosen packages straight to the bridge and never records them
+   * here. See that function for the full reasoning.
    */
   paused_provider_packages: string[];
   /**

@@ -64,6 +64,19 @@ import android.content.SharedPreferences
  * escapes into `handlePosted`, whose catch would turn it into one silently
  * dropped capture per notification.
  *
+ * ALLOW-ALL IS A FALLBACK, NOT A RESTING STATE, and nothing on this side can
+ * tell the difference -- there is no getter across the bridge, so JS cannot
+ * ask what filter is in force. The JS side compensates by PUSHING instead of
+ * reading: `resyncProviderFilter()` in `mobile/lib/bootstrap.ts` re-sends the
+ * user's allowlist on every launch, rebuilt from the `paused_provider_packages`
+ * setting -- whenever that setting records a paused provider at all, since an
+ * empty one cannot be told apart from a user who never narrowed anything. A
+ * filter that fell back to allow-all here, on a device whose owner did pause
+ * something, is therefore re-sealed at the next app start. The window is real,
+ * though, and it is not always short: the listener runs in its own process and
+ * can capture for days with the app never opened (see the `onListenerConnected`
+ * note above), so nothing here may treat "the app will fix it" as immediate.
+ *
  * Writes use `commit()`, not `apply()`. `apply()` only guarantees its
  * background flush completes when the process shuts down through the normal
  * Android lifecycle, and the process hosting a notification listener is a
