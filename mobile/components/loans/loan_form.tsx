@@ -56,6 +56,7 @@ import { FormScreen } from "@/components/ui/form_screen";
 import { NumericField } from "@/components/ui/numeric_field";
 import { SegmentedControl } from "@/components/ui/segmented_control";
 import { DEFAULT_LOAN_REMINDER_OFFSETS } from "@/constants/loans";
+import { toDateIso } from "@/lib/dates";
 import { buildAmortizationSchedule, buildFlatSchedule, monthlyPayment } from "@/lib/loans/loan_math";
 import { centavosFrom, pesoInputFrom } from "@/lib/money/peso_input";
 import type { Installment, Loan, LoanDirection } from "@/types/domain";
@@ -244,6 +245,35 @@ export function LoanForm({
       ? monthlyPayment(principal, rate, term)
       : null;
 
+  // HOW MANY PAYMENTS THE SCHEDULE HAS ALREADY MISSED.
+  //
+  // A loan reaches this form MID-LIFE. A bank loan taken out in March and
+  // entered in September has its real first due date in the past, and so does
+  // every loan opened on the edit screen once a payment or two has come round
+  // — so a past first due is ordinary data here, not a mistake to refuse. It
+  // is still worth saying out loud, because the same date entered by accident
+  // produces a schedule that is overdue the moment it is saved. The count is
+  // the honest version of the floor this field used to carry.
+  //
+  // COUNTED BY BUILDING THE SCHEDULE rather than by stepping the calendar
+  // here: `loan_math.ts` owns the month-end clamp and the interval arithmetic,
+  // and a second copy of that stepping is how this hint would end up naming a
+  // different number from the rows the save below actually stores.
+  const todayIso = toDateIso(new Date());
+  const firstDueIso = firstDue.trim();
+  // Every input the relevant builder needs, so a half-filled form never counts
+  // against a degenerate schedule (a flat loan with no interval yet would stack
+  // every installment on one day and report them all due).
+  const scheduleReady =
+    kind === "amortized" ? term > 0 : kind === "flat" ? count > 0 && interval > 0 : false;
+  const alreadyDue =
+    !scheduleReady || firstDueIso === "" || firstDueIso > todayIso
+      ? 0
+      : (kind === "amortized"
+          ? buildAmortizationSchedule(principal, rate, term, firstDueIso)
+          : buildFlatSchedule(installment, count, firstDueIso, interval)
+        ).filter((row) => row.dueDate <= todayIso).length;
+
   const canSave =
     counterparty.trim() !== "" &&
     principal > 0 &&
@@ -408,16 +438,28 @@ export function LoanForm({
         {kind === "free-form" ? null : (
           <View className="gap-1">
             <FieldLabel>First payment due</FieldLabel>
+            {/* NO `minimumDate` HERE, deliberately. "A first payment is
+                always in the future" only ever described a loan created on
+                the day it was taken out; it is false for an existing loan
+                being recorded, and false for almost every loan reopened on
+                the edit screen. A floor at today does not merely refuse those
+                dates — the OS dialog opens CLAMPED to the floor, so a user
+                who taps this field on an in-progress loan and confirms what
+                the picker shows re-dates every installment the save below
+                rebuilds, having asked for nothing. The already-due count is
+                the guard against a mistyped past date instead. */}
             <DateField
               testID="loan-first-due"
               label="First payment due"
               placeholder="Pick a date"
               value={firstDue}
               onChange={setFirstDue}
-              // A first payment is always in the future — LoanForm has no
-              // injected clock (no `now` prop), so `new Date()` is the read.
-              minimumDate={new Date()}
             />
+            {alreadyDue > 0 ? (
+              <Text testID="loan-already-due" className="mt-2 text-fg-2 dark:text-fg-2-dark">
+                {`${alreadyDue} payment${alreadyDue === 1 ? " is" : "s are"} already due.`}
+              </Text>
+            ) : null}
           </View>
         )}
 

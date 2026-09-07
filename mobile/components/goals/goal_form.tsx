@@ -26,6 +26,7 @@ import { Chip } from "@/components/ui/chip";
 import { DateField } from "@/components/ui/date_field";
 import { NumericField } from "@/components/ui/numeric_field";
 import { SegmentedControl } from "@/components/ui/segmented_control";
+import { parseDateIso } from "@/lib/dates";
 import { centavosFrom, pesoInputFrom } from "@/lib/money/peso_input";
 import type { ContributionRule, IsoDate, Wallet } from "@/types/domain";
 import { usePlaceholderColor } from "@/lib/ui/placeholder";
@@ -61,6 +62,28 @@ export type GoalFormValues = {
   linkedWalletId: string;
   contributionRule: ContributionRule | null;
 };
+
+/**
+ * The earliest date the deadline picker will offer.
+ *
+ * A DEADLINE THAT HAS ALREADY PASSED IS THE ONE THE USER CAME HERE TO KEEP.
+ * Flooring this picker at today is harmless on a create form, where there is
+ * no date yet — but on the edit screen for a goal whose target date has
+ * slipped (`GoalCard` prints "Move the date, lower the target, or complete it
+ * anyway" on exactly those), the OS dialog opens CLAMPED to the floor, so
+ * tapping the field and confirming what it shows moves the deadline, and the
+ * pace chip with it, without the user asking for either.
+ *
+ * DERIVED FROM THE STORED DATE, NOT FROM THE LIVE FIELD. Reading the live
+ * value would ratchet the floor upward on every pick, so one mis-tap inside
+ * the picker would lock the user out of the deadline they started with.
+ */
+function deadlineFloorFrom(stored: IsoDate | null | undefined): Date {
+  const today = new Date();
+  if (stored === null || stored === undefined || stored === "") return today;
+  const storedDay = parseDateIso(stored);
+  return storedDay.getTime() < today.getTime() ? storedDay : today;
+}
 
 export type GoalFormProps = {
   /**
@@ -196,9 +219,10 @@ export function GoalForm({
           placeholder="Pick a date"
           value={targetDate}
           onChange={setTargetDate}
-          // A goal deadline is always in the future — GoalForm has no
-          // injected clock (no `now` prop), so `new Date()` is the read.
-          minimumDate={new Date()}
+          // Today on a new goal; the goal's own date once that date has
+          // passed, so an edit cannot silently drag a missed deadline
+          // forward. See `deadlineFloorFrom`.
+          minimumDate={deadlineFloorFrom(initial?.targetDate)}
         />
       </View>
 

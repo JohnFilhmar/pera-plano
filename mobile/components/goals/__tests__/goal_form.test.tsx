@@ -15,6 +15,7 @@ import { fireEvent, render, screen } from "@testing-library/react-native";
 
 import { KeypadHost } from "@/components/ui/keypad_host";
 import { KeypadProvider } from "@/contexts/keypad_context";
+import { addDaysIso, parseDateIso, toDateIso } from "@/lib/dates";
 import { __setTierForTests } from "@/lib/entitlements";
 import { typeAmount } from "@/test_support/keypad";
 import type { Wallet } from "@/types/domain";
@@ -24,19 +25,33 @@ import type { GoalFormValues } from "../goal_form";
 
 // DateField (the optional deadline) imports the native picker at module load
 // whether or not a test ever opens it — the same mock loan_form.test.tsx and
-// goal_routes.test.tsx both carry.
+// goal_routes.test.tsx both carry, down to capturing the `minimumDate` the
+// real picker would have received so the deadline floor can be asserted at
+// all. `mock`-prefixed so babel-plugin-jest-hoist allows the factory to close
+// over it.
+let mockReceivedMinimumDate: Date | undefined;
+
 jest.mock("@react-native-community/datetimepicker", () => {
   const { Pressable, Text } = require("react-native");
   return {
     __esModule: true,
-    default: ({ onChange }: { onChange: (event: { type: string }, date?: Date) => void }) => (
-      <Pressable
-        testID="date-picker-pick"
-        onPress={() => onChange({ type: "set" }, new Date(2026, 7, 13))}
-      >
-        <Text>pick</Text>
-      </Pressable>
-    ),
+    default: ({
+      onChange,
+      minimumDate,
+    }: {
+      onChange: (event: { type: string }, date?: Date) => void;
+      minimumDate?: Date;
+    }) => {
+      mockReceivedMinimumDate = minimumDate;
+      return (
+        <Pressable
+          testID="date-picker-pick"
+          onPress={() => onChange({ type: "set" }, new Date(2026, 7, 13))}
+        >
+          <Text>pick</Text>
+        </Pressable>
+      );
+    },
   };
 });
 
@@ -137,6 +152,53 @@ test("EDITING A PERCENT GOAL PRESERVES IT — the form must not rewrite the kind
   fireEvent.press(screen.getByTestId("goal-save"));
 
   expect(submitted(onSubmit).contributionRule).toEqual({ kind: "percent", percent: 10 });
+});
+
+// ---------------------------------------------------------------------------
+// The deadline floor.
+//
+// `GoalCard` has printed "Move the date, lower the target, or complete it
+// anyway" on every past-due goal since it shipped — so a goal whose deadline
+// has passed is an ordinary thing to open this form with. Flooring the picker
+// at today made the OS dialog open CLAMPED to today for exactly those goals,
+// which moved the deadline (and the pace chip with it) on a tap that asked for
+// nothing.
+// ---------------------------------------------------------------------------
+test("A GOAL WHOSE DEADLINE HAS PASSED KEEPS IT — the picker is not floored at today", () => {
+  // Derived rather than hard-coded: GoalForm reads `new Date()` with no
+  // injected clock, so "sixty days ago" has to be measured from the same
+  // clock the component reads.
+  const missed = addDaysIso(toDateIso(new Date()), -60);
+  const { onSubmit } = renderForm({
+    name: "Emergency Fund",
+    targetAmount: 5000000,
+    targetDate: missed,
+    linkedWalletId: gsave.id,
+    contributionRule: null,
+  });
+
+  fireEvent.press(screen.getByTestId("goal-target-date"));
+
+  expect(mockReceivedMinimumDate).toEqual(parseDateIso(missed));
+
+  fireEvent.press(screen.getByTestId("goal-save"));
+  expect(submitted(onSubmit).targetDate).toBe(missed);
+});
+
+test("a NEW goal's deadline still cannot be set in the past", () => {
+  // The floor is not gone, it is pinned to whichever is earlier of today and
+  // the date the goal already holds. With no goal, that is today.
+  jest.useFakeTimers();
+  jest.setSystemTime(new Date(2026, 7, 19, 9, 0));
+  try {
+    renderForm();
+
+    fireEvent.press(screen.getByTestId("goal-target-date"));
+
+    expect(mockReceivedMinimumDate).toEqual(new Date(2026, 7, 19, 9, 0));
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 test("a percent over 100 blocks the save rather than being dropped", () => {

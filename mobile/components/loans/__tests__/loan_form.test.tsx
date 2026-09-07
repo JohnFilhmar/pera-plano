@@ -12,10 +12,12 @@ import { fireEvent, render, screen } from "@testing-library/react-native";
 
 import { KeypadHost } from "@/components/ui/keypad_host";
 import { KeypadProvider } from "@/contexts/keypad_context";
+import { addMonthsClampedIso, toDateIso } from "@/lib/dates";
 import { clearAmount, typeAmount } from "@/test_support/keypad";
+import type { Loan } from "@/types/domain";
 
-import { LoanForm } from "../loan_form";
-import type { LoanFormValues } from "../loan_form";
+import { LoanForm, loanFormInitialFrom } from "../loan_form";
+import type { LoanFormInitial, LoanFormValues } from "../loan_form";
 
 // DateField (inside the amortized/flat branches) imports the native picker at
 // module load regardless of which branch a test ever renders, matching
@@ -54,11 +56,11 @@ jest.mock("@react-native-community/datetimepicker", () => {
 
 // NumericField throws without a KeypadProvider above it, and the panel it
 // opens has to be hosted somewhere — see test_support/keypad.ts's header.
-function renderForm() {
+function renderForm(initial?: LoanFormInitial) {
   const onSubmit = jest.fn();
   render(
     <KeypadProvider>
-      <LoanForm onSubmit={onSubmit} />
+      <LoanForm onSubmit={onSubmit} initial={initial} />
       <KeypadHost />
     </KeypadProvider>,
   );
@@ -73,6 +75,50 @@ function pickDate(testID: string, year: number, month: number, day: number): voi
   fireEvent.press(screen.getByTestId(testID));
   fireEvent.press(screen.getByTestId("date-picker-pick"));
 }
+
+/**
+ * A twelve-month bank loan whose first payment fell on 2026-03-15 — the shape
+ * the EDIT screen hands this form through `loanFormInitialFrom`.
+ *
+ * The due dates are SPELLED OUT rather than generated, so the round-trip test
+ * below asserts against dates this file states rather than against whatever
+ * `buildAmortizationSchedule` happens to produce for the same inputs.
+ */
+const STORED_DUE_DATES = [
+  "2026-03-15",
+  "2026-04-15",
+  "2026-05-15",
+  "2026-06-15",
+  "2026-07-15",
+  "2026-08-15",
+  "2026-09-15",
+  "2026-10-15",
+  "2026-11-15",
+  "2026-12-15",
+  "2027-01-15",
+  "2027-02-15",
+];
+
+const inProgressLoan: Loan = {
+  id: "loan-1",
+  direction: "i-owe",
+  counterparty: "GLoan",
+  principal: 5_000_000,
+  interestRate: 12,
+  schedule: STORED_DUE_DATES.map((dueDate) => ({
+    dueDate,
+    amountDue: 444_244,
+    principalPortion: 394_244,
+    interestPortion: 50_000,
+  })),
+  linkedWalletId: null,
+  nextDueDate: "2026-03-15",
+  nextDueAmount: 444_244,
+  reminderOffsets: [-3, 0, 3],
+  archivedAt: null,
+  createdAt: 1_000,
+  updatedAt: 1_000,
+};
 
 test("THE FORM DEFAULTS TO FREE-FORM, and free-form asks for nothing extra", () => {
   // Rule 3: free-form "asks for nothing beyond principal and counterparty".
@@ -326,19 +372,91 @@ test("a scheduled loan cannot be saved without a first due date", () => {
   expect(onSubmit).not.toHaveBeenCalled();
 });
 
-test("the first-due picker's floor is today, so a past date cannot be picked", () => {
-  // LoanForm has no injected clock (no `now` prop, unlike ManualEntryForm) —
-  // it reads `new Date()` directly for minimumDate. Freeze the wall clock so
-  // this assertion is not flaky against whatever instant the suite runs at.
+// ---------------------------------------------------------------------------
+// A loan that started before it was entered.
+//
+// The first-due field used to carry `minimumDate={new Date()}`, on the theory
+// that "a first payment is always in the future". It is not: a bank loan taken
+// out in March and entered in September has its real first due in the past,
+// and so does almost every loan reopened on the EDIT screen. The floor did not
+// merely refuse those dates — the OS dialog opens CLAMPED to the floor, so
+// tapping the field and confirming what it shows re-dated every installment
+// the save rebuilds from it.
+// ---------------------------------------------------------------------------
+test("THE FIRST-DUE PICKER IMPOSES NO FLOOR, so a loan that already started can be entered", () => {
+  renderForm();
+  fireEvent.press(screen.getByTestId("loan-kind-amortized"));
+
+  // A sentinel rather than a bare `toBeUndefined()`, so this asserts the
+  // picker really rendered and wrote its bound back, not merely that nothing
+  // in this file ever set the variable.
+  mockReceivedMinimumDate = new Date(2000, 0, 1);
+  fireEvent.press(screen.getByTestId("loan-first-due"));
+
+  expect(mockReceivedMinimumDate).toBeUndefined();
+});
+
+test("A LOAN SIX MONTHS OLD SAVES ITS REAL FIRST DUE, and the form counts what is already due", () => {
+  // Derived from the wall clock rather than hard-coded: this form reads
+  // `new Date()` with no injected clock, and the count below is a claim about
+  // "six months ago" that a literal date would stop making next year.
+  const started = addMonthsClampedIso(toDateIso(new Date()), -6);
+  const [year, month, day] = started.split("-").map(Number);
+
+  const { onSubmit } = renderForm();
+
+  fireEvent.press(screen.getByTestId("loan-kind-amortized"));
+  fireEvent.changeText(screen.getByTestId("loan-counterparty"), "GLoan");
+  typeAmount("loan-principal", "50000");
+  typeAmount("loan-rate", "12");
+  typeAmount("loan-term", "12");
+  pickDate("loan-first-due", year, month, day);
+
+  // Installments 1 through 7 — six months back, up to and including the one
+  // falling this month — have come round. The eighth is a month out.
+  screen.getByText("7 payments are already due.");
+
+  fireEvent.press(screen.getByTestId("loan-save"));
+
+  const values = submitted(onSubmit);
+  expect(values.schedule).toHaveLength(12);
+  expect(values.schedule?.[0].dueDate).toBe(started);
+  expect(values.nextDueDate).toBe(started);
+});
+
+test("EDITING AN IN-PROGRESS LOAN LEAVES EVERY INSTALLMENT DATE AS STORED", () => {
+  // The half of this that silently corrupts data. The edit screen seeds
+  // `firstDue` from `schedule[0].dueDate` and the save REBUILDS the schedule
+  // from it, so anything that moves that one date re-dates the whole repayment
+  // plan — for someone who opened the screen to fix a typo in the lender's
+  // name. Freeze the clock so "in progress" is a fact of the fixture rather
+  // than of the day this suite happens to run.
   jest.useFakeTimers();
-  jest.setSystemTime(new Date(2026, 7, 19, 9, 0));
+  jest.setSystemTime(new Date(2026, 8, 7, 9, 0));
   try {
-    renderForm();
-    fireEvent.press(screen.getByTestId("loan-kind-amortized"));
+    const { onSubmit } = renderForm(loanFormInitialFrom(inProgressLoan));
 
+    // Seeded with the stored date, and the picker is offered no floor above
+    // it — a floor at today is what would clamp this to 2026-09-07 the moment
+    // the user opened the dialog.
+    expect(screen.getByTestId("loan-first-due").props.accessibilityLabel).toBe(
+      "First payment due, 2026-03-15",
+    );
+    mockReceivedMinimumDate = new Date(2000, 0, 1);
     fireEvent.press(screen.getByTestId("loan-first-due"));
+    expect(mockReceivedMinimumDate).toBeUndefined();
+    // March through August fell before 2026-09-07; the September 15th one has not.
+    screen.getByText("6 payments are already due.");
 
-    expect(mockReceivedMinimumDate).toEqual(new Date(2026, 7, 19, 9, 0));
+    // The whole edit: a typo in the lender's name.
+    fireEvent.changeText(screen.getByTestId("loan-counterparty"), "GLoan PH");
+    fireEvent.press(screen.getByTestId("loan-save"));
+
+    const values = submitted(onSubmit);
+    expect(values.counterparty).toBe("GLoan PH");
+    expect(values.schedule?.map((row) => row.dueDate)).toEqual(STORED_DUE_DATES);
+    expect(values.nextDueDate).toBe("2026-03-15");
+    expect(values.interestRate).toBe(12);
   } finally {
     jest.useRealTimers();
   }
