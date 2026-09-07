@@ -55,6 +55,14 @@ const BAR_ROW_HEIGHT = 96;
  * zero, since a truly invisible bar and a missing period read identically. */
 const MIN_BAR_HEIGHT = 4;
 
+/**
+ * The six neutral bars the Free frame draws. FIXED FRACTIONS OF THE ROW, NOT
+ * DATA — docs/05-monetization.md §5 rule 2: "a locked preview never renders
+ * the user's real gated data behind a blur or teaser; it renders an
+ * empty/sample frame clearly labeled as a preview."
+ */
+const PREVIEW_BAR_FRACTIONS = [0.45, 0.7, 0.35, 0.85, 0.55, 0.95];
+
 export function TrendLine({ points, testID }: TrendLineProps) {
   // One point cannot describe a trend — the same guard the line chart this
   // replaces applied, carried over unchanged.
@@ -114,6 +122,57 @@ export function TrendLine({ points, testID }: TrendLineProps) {
           </View>
         ))}
       </View>
+    </Card>
+  );
+}
+
+export type TrendLinePreviewProps = {
+  testID?: string;
+};
+
+/**
+ * What a Free user sees where the trend card would be: the SHAPE of the chart,
+ * labeled as a sample, carrying no figure of their own.
+ *
+ * WHY THIS EXISTS, rather than a lock badge on `TrendLine` itself. On Free,
+ * `lib/reports/reports_service.ts`'s rule 3 collapses the trend window to the
+ * single current month, so `points` arrives with exactly one entry and the
+ * guard in `TrendLine` above renders "Not enough periods yet to show a
+ * trend." That sentence is a claim about the USER'S DATA, and on Free it is
+ * false — the periods exist; the VIEW is gated. Badging that card would leave
+ * the false sentence on screen with a lock beside it, so the Free path renders
+ * this frame instead and the single-point copy above stays for the Plus
+ * windows that genuinely have one point.
+ *
+ * NOT SELF-GATING, the same discipline components/home/projection_sparkline.tsx
+ * states for itself: the `PlusGate` wrapper, and the upgrade sheet it carries,
+ * belong at the composition edge (app/(tabs)/more/reports.tsx), not in here.
+ */
+export function TrendLinePreview({ testID }: TrendLinePreviewProps) {
+  return (
+    <Card testID={testID ?? "trend-line-preview"}>
+      <Text className="text-body font-bold text-fg dark:text-fg-dark">Last 6 periods</Text>
+
+      <View className="mt-4 flex-row items-end gap-2" style={{ height: BAR_ROW_HEIGHT }}>
+        {PREVIEW_BAR_FRACTIONS.map((fraction) => (
+          <View
+            key={`preview-bar-${fraction}`}
+            testID={`trend-preview-bar-${fraction}`}
+            className="w-full flex-1 rounded-md bg-chip dark:bg-chip-dark"
+            style={{ height: Math.max(MIN_BAR_HEIGHT, fraction * BAR_ROW_HEIGHT) }}
+          />
+        ))}
+      </View>
+
+      {/* The label rule 2 asks for, in the user's own terms and on the card
+          itself. A lock badge alone says "paid" — it does not say "these bars
+          are not yours", and this frame must never read as a measurement. */}
+      <Text
+        testID="trend-preview-caption"
+        className="mt-3 border-t border-line pt-3 text-fg-2 dark:border-line-dark dark:text-fg-2-dark"
+      >
+        Sample bars, not your spending. Plus charts how the last 6 periods compare.
+      </Text>
     </Card>
   );
 }
