@@ -55,9 +55,10 @@ import {
   Inter_800ExtraBold,
 } from "@expo-google-fonts/inter";
 import { useFonts } from "expo-font";
-import { Stack } from "expo-router";
+import * as Notifications from "expo-notifications";
+import { router, Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 // Aliased: this file already imports a ThemeProvider — ours, from
@@ -77,7 +78,7 @@ import { KeypadProvider } from "@/contexts/keypad_context";
 import { LockProvider, useLock } from "@/contexts/lock_context";
 import { systemClock } from "@/lib/clock";
 import { applyGlobalFont } from "@/lib/fonts";
-import { bootstrapApp, startNetworkSyncSubscriber } from "@/lib/bootstrap";
+import { bootstrapApp, getLastBootstrapResult, startNetworkSyncSubscriber } from "@/lib/bootstrap";
 import { SchemaTooNewError } from "@/lib/db/migrations";
 import { startSupportOutboxSubscriber } from "@/lib/support/outbox_runner";
 import { useApplyAllocations } from "@/hooks/mutations/use_apply_allocations";
@@ -86,6 +87,7 @@ import { BILL_HORIZON_DAYS } from "@/hooks/queries/use_bills";
 import { startIncomeLedgerSubscriber } from "@/lib/income/income_ledger_subscriber";
 import { startPaydayNotificationSubscriber } from "@/lib/income/payday_notification_subscriber";
 import { startLimitLedgerSubscriber } from "@/lib/limits/limit_ledger_subscriber";
+import { resolveAlertRoute } from "@/lib/alerts/alert_routes";
 import { startTrackingHealthSubscriber } from "@/lib/alerts/tracking_health_subscriber";
 import { startRecurringLedgerSubscriber } from "@/lib/recurring/recurring_ledger_subscriber";
 import { startReconcilePromptSubscriber } from "@/lib/wallets/reconcile_scheduler";
@@ -229,6 +231,86 @@ function PaydaySheets() {
   );
 }
 
+/**
+ * A tapped notification reduced to the only two things routing needs: the
+ * request identifier (to tell one tap from the same tap arriving twice) and
+ * the routing `data` the notifier attached.
+ */
+type TappedAlert = { id: string; data: unknown };
+
+/**
+ * Sends a tapped notification to the screen it names (docs/06 §6.1's deep-link
+ * table). `lib/alerts/alert_routes.ts` decides WHICH screen; this is the caller
+ * that file was written for and shipped without — every alert in the app
+ * carried routing `data` that nothing read, so "Tap to fix tracking" opened the
+ * app wherever it happened to be.
+ *
+ * ITS OWN COMPONENT BECAUSE OF WHERE IT IS MOUNTED, the same reasoning as
+ * <PaydaySheets /> above. It is rendered only inside AppShell's ready branch
+ * and only AFTER <Stack />, which makes two rules structural rather than
+ * conditions a later edit can quietly drop:
+ *
+ *   NEVER NAVIGATE INTO A LOCKED APP. That branch is reached only when the
+ *   lock reports "unlocked" and bootstrap has resolved, so there is no state
+ *   in which this component exists and the user has not authenticated. A tap
+ *   that lands on the lock screen is held by AppShell instead (see the
+ *   listener effect there) and delivered here the moment this mounts.
+ *
+ *   NEVER NAVIGATE BEFORE THERE IS A NAVIGATOR. `router.push` throws
+ *   "Attempted to navigate before mounting the Root Layout component" if the
+ *   root navigator has not mounted, and this app's Stack does not mount until
+ *   that same ready branch. Being a LATER SIBLING of <Stack /> means React has
+ *   already run the Stack's mount effects by the time this one runs.
+ *
+ * `withAnchor: true`, NOT `unstable_settings.initialRouteName` ALONE. The
+ * anchors on app/(tabs)/plan/_layout.tsx and app/(tabs)/more/_layout.tsx cover
+ * URL deep linking only — expo-router's own documentation is explicit that
+ * `initialRouteName` "only applies during deep linking". A notification tap
+ * arrives as JS: the OS hands this app a response object and we call
+ * `router.push` ourselves, which is an ordinary in-app push as far as the
+ * router is concerned. Without the anchor a tapped bill reminder mounts
+ * `plan/bills/[id]` as the Plan stack's only entry and strands the tab on it —
+ * the exact 2026-09-05 device defect the cross-tab pushes in
+ * app/(tabs)/index.tsx carry `withAnchor` for.
+ */
+function AlertTapNavigation({
+  tapped,
+  onHandled,
+}: {
+  tapped: TappedAlert | null;
+  onHandled: () => void;
+}) {
+  useEffect(() => {
+    if (!tapped) return;
+    // Cleared BEFORE the push, so a route that somehow fails cannot be retried
+    // on every subsequent render of this effect.
+    onHandled();
+    // ONBOARDING OUTRANKS THE TAP. Every destination in the deep-link table
+    // lives under `(tabs)`, and app/index.tsx sends a user who has not
+    // finished setup to `(onboarding)` instead — pushing a bill detail on top
+    // of that would drop someone into the middle of an app they have not set
+    // up yet, past a flow that is not optional. The tap is dropped rather than
+    // held: `onboarding_complete` is read once per bootstrap, so a queue kept
+    // here would not notice the flow finishing anyway.
+    //
+    // `getLastBootstrapResult()` is never null here — this component mounts
+    // only inside the branch bootstrapApp() has already resolved — but its own
+    // doc asks callers to treat the null defensively, and "unknown" failing
+    // toward onboarding matches app/index.tsx's own choice.
+    if (getLastBootstrapResult()?.onboardingComplete !== true) return;
+    try {
+      router.push(resolveAlertRoute(tapped.data), { withAnchor: true });
+    } catch (error) {
+      // The same rule as every subscriber in this shell (plan Task 11 rule 3):
+      // a notification that will not route is a lost tap, and a lost tap is
+      // never worth taking the app down for.
+      console.warn(`a tapped notification (${tapped.id}) could not be routed`, error);
+    }
+  }, [tapped, onHandled]);
+
+  return null;
+}
+
 /** Mounted unconditionally inside ThemeProvider/LockProvider so bootstrapApp()
  * starts as soon as (and only once) the lock reports "unlocked" — see this
  * file's header comment for why bootstrap cannot run any earlier. */
@@ -236,6 +318,14 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
   const { resolved, isReady: themeReady } = useTheme();
   const { status: lockStatus } = useLock();
   const [bootstrapState, setBootstrapState] = useState<BootstrapState>("pending");
+  const [tappedAlert, setTappedAlert] = useState<TappedAlert | null>(null);
+  // The last tap this shell has already accepted. A cold start delivers the
+  // SAME response twice — once from `getLastNotificationResponse()`, once from
+  // the listener the line below registers — and expo-notifications' own
+  // `useLastNotificationResponse` hook draws the same line, on the same field,
+  // for the same reason.
+  const acceptedAlertIdRef = useRef<string | null>(null);
+  const clearTappedAlert = useCallback(() => setTappedAlert(null), []);
 
   const runBootstrap = useCallback(() => {
     setBootstrapState("pending");
@@ -266,6 +356,45 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
       runBootstrap();
     }
   }, [lockStatus, runBootstrap]);
+
+  // THE ONE SUBSCRIPTION IN THIS SHELL THAT IS NOT GATED ON ANYTHING, and it
+  // has to be. A notification tapped on a locked phone wakes the app straight
+  // onto the lock screen, where there is no Stack, no database and no
+  // bootstrap — gate this the way its neighbours are gated and the tap is
+  // simply never heard. So the tap is CAPTURED here, always, and merely HELD:
+  // <AlertTapNavigation /> below is mounted only inside the unlocked, booted
+  // branch, so the actual navigation cannot happen a moment sooner. Nothing in
+  // this effect reads the database or renders anything, which is what makes
+  // running it while locked safe.
+  //
+  // Both halves are needed. The listener catches a tap while this process is
+  // alive; `getLastNotificationResponse()` catches the cold start, where the
+  // tap that LAUNCHED the app happened before any JS existed to hear it.
+  //
+  // WRAPPED, BECAUSE A NATIVE MODULE THAT IS NOT THERE MUST NOT TAKE THE APP
+  // DOWN. Both calls reach `expo-notifications`' native emitter and throw
+  // synchronously if it is missing, which inside an effect unmounts the whole
+  // tree — the failure mode `startSubscriber` above exists to forbid. Losing
+  // notification routing is survivable; losing the app is not.
+  useEffect(() => {
+    const accept = (response: Notifications.NotificationResponse) => {
+      const id = response.notification.request.identifier;
+      if (acceptedAlertIdRef.current === id) return;
+      acceptedAlertIdRef.current = id;
+      setTappedAlert({ id, data: response.notification.request.content.data });
+    };
+
+    let subscription: { remove: () => void } | undefined;
+    try {
+      subscription = Notifications.addNotificationResponseReceivedListener(accept);
+      const launchingResponse = Notifications.getLastNotificationResponse();
+      if (launchingResponse) accept(launchingResponse);
+    } catch (error) {
+      console.warn("notification taps will not open their screen", error);
+    }
+
+    return () => subscription?.remove();
+  }, []);
 
   // Ingest starts only once bootstrap has succeeded — the pipeline reads the
   // parser ruleset bootstrap seeds, and starting first would drain the native
@@ -480,6 +609,12 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
           <MutationErrorToast />
           <StatusBar style="auto" />
           <PaydaySheets />
+          {/* RENDERS NOTHING — it is here for its position, not its output.
+              Being a later sibling of the <Stack /> above is what guarantees
+              the navigator it pushes into has already mounted, and being
+              inside this branch at all is what guarantees the app is unlocked
+              and booted. See the component's own header. */}
+          <AlertTapNavigation tapped={tappedAlert} onHandled={clearTappedAlert} />
         </NavigationThemeProvider>
       )}
     </PersistQueryClientProvider>
