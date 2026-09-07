@@ -51,6 +51,21 @@ describe("production build smoke", () => {
     expect(body["configComplete"]).toBe(true);
   });
 
+  // next.config.ts is the only place these are set, and a config read alone cannot prove
+  // they survive the standalone server. `/` matters as much as `/en`: it is prerendered
+  // and answers from the route cache, which is exactly where a header rule can be skipped.
+  it.each(["/", "/en"])("%s carries the security headers", async (route) => {
+    const response = await fetch(`${BASE}${route}`, { redirect: "manual" });
+    const csp = response.headers.get("content-security-policy");
+    expect(csp).toContain("default-src 'self'");
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(csp).toContain("form-action 'self'");
+    expect(response.headers.get("strict-transport-security")).toMatch(/^max-age=\d+/);
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("x-frame-options")).toBe("DENY");
+    expect(response.headers.get("referrer-policy")).toBe("strict-origin-when-cross-origin");
+  });
+
   it("echoes a correlation id", async () => {
     const response = await fetch(`${BASE}/en`, { headers: { "x-request-id": "smoke-1" } });
     expect(response.headers.get("x-request-id")).toBe("smoke-1");
