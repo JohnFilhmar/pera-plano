@@ -21,19 +21,26 @@ jest.mock("@/lib/alerts/alerts_service", () => ({
 }));
 
 import { MutationCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
 import type { ReactNode } from "react";
 
 import { KeypadHost } from "@/components/ui/keypad_host";
 import { KeypadProvider } from "@/contexts/keypad_context";
 import { ThemeProvider } from "@/contexts/theme_context";
 import { closeDatabase } from "@/lib/db/database";
-import { createBill, listBillPayments, listCycles, skipCycle } from "@/lib/db/repos/bills_repo";
+import {
+  createBill,
+  listBillPayments,
+  listCycles,
+  recordBillPayment,
+  skipCycle,
+} from "@/lib/db/repos/bills_repo";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { insertTransaction } from "@/lib/db/repos/transactions_repo";
 import { createWallet } from "@/lib/db/repos/wallets_repo";
 import { systemClock } from "@/lib/clock";
 import { addDaysIso, toDateIso } from "@/lib/dates";
+import { formatDate } from "@/lib/datetime";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
 import { typeAmount } from "@/test_support/keypad";
@@ -275,6 +282,63 @@ test("THE DETAIL SHOWS THE ESTIMATE AND WHERE IT CAME FROM", async () => {
   await screen.findByTestId("bill-detail");
   expect(screen.getByTestId("bill-detail-estimate").props.children).toBe("~₱2,350.00");
   screen.getByText("Your starting figure — no payments recorded yet.");
+});
+
+// GAP-065. Every history row printed `status.estimate.amount` — ONE figure
+// computed for the whole bill and copied onto each of its cycles — so a bill
+// paid ₱2,100 one month and ₱2,600 the next showed two rows of the same
+// number, and neither was a number the user had ever paid. The spec calls this
+// list "payment history (matched transactions)", and the matched transaction
+// is where both the amount and the date actually live.
+//
+// A FIXED bill, so the estimate is pinned to what was typed at setup and
+// cannot drift into agreeing with either payment. Scoped with `within`,
+// because the estimate is on this screen twice already — the row at the top
+// and the Expected card — and an unscoped query would find one of those.
+test("EACH HISTORY ROW SHOWS ITS OWN PAYMENT, NOT THE BILL'S ESTIMATE", async () => {
+  const bill = await billDueOn(TODAY);
+  const cheaperDue = addDaysIso(TODAY, -60);
+  const dearerDue = addDaysIso(TODAY, -30);
+  const cheaper = await insertTransaction({
+    walletId: cash.id,
+    categoryId: UNCATEGORIZED_ID,
+    amount: 210000,
+    direction: "out",
+    occurredAt: systemClock.now() - 59 * DAY_MS,
+    merchant: "MERALCO PAYMENT",
+    source: "notification",
+    confidence: 0.9,
+  });
+  const dearer = await insertTransaction({
+    walletId: cash.id,
+    categoryId: UNCATEGORIZED_ID,
+    amount: 260000,
+    direction: "out",
+    occurredAt: systemClock.now() - 29 * DAY_MS,
+    merchant: "MERALCO PAYMENT",
+    source: "notification",
+    confidence: 0.9,
+  });
+  await recordBillPayment({ billId: bill.id, dueDate: cheaperDue, transactionId: cheaper.id });
+  await recordBillPayment({ billId: bill.id, dueDate: dearerDue, transactionId: dearer.id });
+  mockParams = { id: bill.id, dueDate: TODAY };
+
+  renderScreen(<BillDetailScreen />);
+  await screen.findByTestId("bill-detail");
+
+  const cheaperRow = within(await screen.findByTestId(`bill-history-${cheaperDue}`));
+  cheaperRow.getByText("₱2,100.00");
+  // The TRANSACTION's date, not the payment row's `createdAt` — that is when
+  // the match was made, which for both of these is right now.
+  cheaperRow.getByText(`Paid ${formatDate(cheaper.occurredAt)}`);
+
+  const dearerRow = within(screen.getByTestId(`bill-history-${dearerDue}`));
+  dearerRow.getByText("₱2,600.00");
+  dearerRow.getByText(`Paid ${formatDate(dearer.occurredAt)}`);
+
+  // Untouched, and still the ₱2,350.00 the user set — the figure both rows
+  // above used to print in place of what was paid.
+  expect(screen.getByTestId("bill-detail-estimate").props.children).toBe("₱2,350.00");
 });
 
 test("THE MATCH SHEET LISTS CANDIDATES WITH THEIR REASONS", async () => {

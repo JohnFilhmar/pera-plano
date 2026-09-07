@@ -94,6 +94,32 @@ test("STATUSES REPORT UPCOMING, DUE TODAY, OVERDUE AND PAID", async () => {
   expect(byDate.get("2026-03-20")?.daysUntil).toBe(28);
 });
 
+// GAP-065. `payment` used to be the bare `bill_payments` row, which carries no
+// amount and no date — so the only figure a caller had for a paid cycle was
+// `estimate`, one number computed for the WHOLE BILL and copied onto every
+// cycle of it. The bill detail printed that number as the payment, and a bill
+// whose amount moves (which is the only kind worth estimating) reported the
+// same peso for every month it had ever been paid.
+//
+// A FIXED bill here on purpose: its estimate is pinned to what the user typed
+// and cannot drift into agreeing with the payment by accident, so the two
+// figures below are guaranteed to be different things.
+test("A PAID STATUS CARRIES THE TRANSACTION'S OWN AMOUNT AND DATE", async () => {
+  const bill = await meralco({ amountMode: "fixed" });
+  const paidAt = NOW - 31 * DAY;
+  const tx = await outflow(241236, paidAt);
+  await recordBillPayment({ billId: bill.id, dueDate: "2026-01-20", transactionId: tx.id });
+
+  const statuses = await listBillStatuses(NOW, 45);
+  const paid = statuses.find((status) => status.dueDate === "2026-01-20");
+
+  expect(paid?.payment?.amount).toBe(241236);
+  expect(paid?.payment?.occurredAt).toBe(paidAt);
+  // ...and the bill-level estimate is still the ₱2,350.00 the user set, which
+  // is what makes the two above worth carrying separately.
+  expect(paid?.estimate.amount).toBe(235000);
+});
+
 test("AN OVERDUE UNPAID CYCLE STAYS LISTED AND DOES NOT ROLL FORWARD", async () => {
   // Plan rule 4 and spec rule 25: an unresolved occurrence past its due date
   // "stays in the list until paid or explicitly skipped", ALONGSIDE the next

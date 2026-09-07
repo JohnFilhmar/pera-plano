@@ -26,8 +26,10 @@ import {
   useRejectBillMatch,
 } from "@/hooks/mutations/use_record_bill_payment";
 import { useSkipBillCycle } from "@/hooks/mutations/use_skip_bill_cycle";
+import type { BillStatus } from "@/lib/bills/bills_service";
 import { parseDateIso } from "@/lib/dates";
 import { formatDate } from "@/lib/datetime";
+import type { MatchedBillPayment } from "@/types/domain";
 
 export default function BillDetailScreen() {
   const { id, dueDate } = useLocalSearchParams<{ id: string; dueDate?: string }>();
@@ -84,7 +86,12 @@ export default function BillDetailScreen() {
     );
   }
 
-  const history = forBill.filter((row) => row.payment !== null);
+  // A PREDICATE, not a bare `!== null`: the rows below read the payment's own
+  // amount and date, and a plain filter leaves the field nullable and forces a
+  // branch for a case this list has already excluded.
+  const history = forBill.filter(
+    (row): row is BillStatus & { payment: MatchedBillPayment } => row.payment !== null,
+  );
   const unresolved = status.state !== "paid" && status.state !== "skipped" &&
     status.state !== "resolved_external";
 
@@ -227,13 +234,21 @@ export default function BillDetailScreen() {
                 <Text className="text-fg dark:text-fg-dark">
                   {formatDate(parseDateIso(row.dueDate).getTime())}
                 </Text>
+                {/* THE TRANSACTION'S OWN DATE, not the payment row's
+                    `createdAt` — that is when the match was confirmed, which
+                    for a cycle matched weeks late is not the day the money
+                    moved. Spec's states table: "Paid ₱2,412.36 on Jan 18". */}
                 <Text className="text-xs text-fg-2 dark:text-fg-2-dark">
-                  {row.payment === null
-                    ? "Settled"
-                    : `Paid ${formatDate(row.payment.createdAt)}`}
+                  {`Paid ${formatDate(row.payment.occurredAt)}`}
                 </Text>
               </View>
-              <AmountText amount={row.estimate.amount} />
+              {/* AND THE TRANSACTION'S OWN AMOUNT (GAP-065). This was
+                  `row.estimate.amount`, which is one figure computed for the
+                  bill and copied onto every one of its cycles — so a bill paid
+                  ₱2,100, ₱2,350 and ₱2,600 printed the average three times.
+                  The spec calls this list "payment history (matched
+                  transactions)"; the matched transaction is the fact. */}
+              <AmountText amount={row.payment.amount} />
             </View>
           </Card>
         ))

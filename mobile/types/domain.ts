@@ -499,6 +499,24 @@ export type BillPayment = {
   updatedAt: EpochMs;
 };
 
+/**
+ * A `BillPayment` joined to the ledger Transaction it points at.
+ *
+ * `bill_payments` HAS NO AMOUNT OR DATE COLUMN, deliberately (see
+ * lib/db/repos/bills_repo.ts): both figures live on the transaction, so the
+ * bill history and the ledger can never disagree about the same peso. The
+ * price of that is a join, and every surface showing a payment needs the same
+ * one — so `listBillStatuses` does it once and hands this down, rather than
+ * leaving each screen to fetch a transaction of its own or, as the bill detail
+ * did, print the bill's current estimate in place of what was actually paid.
+ */
+export type MatchedBillPayment = BillPayment & {
+  /** What LEFT THE WALLET — never the bill's estimate of what it costs today. */
+  amount: Centavos;
+  /** When the money moved, as opposed to `createdAt`, when the match was made. */
+  occurredAt: EpochMs;
+};
+
 // ---------- RecurringPattern ----------
 export type RecurringPeriod = "weekly" | "monthly" | "annual";
 

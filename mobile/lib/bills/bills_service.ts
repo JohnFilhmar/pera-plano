@@ -46,6 +46,7 @@ import type {
   Centavos,
   DueRule,
   IsoDate,
+  MatchedBillPayment,
   Transaction,
 } from "@/types/domain";
 
@@ -107,7 +108,14 @@ export type BillStatus = {
   /** Negative once past. */
   daysUntil: number;
   cycle: BillCycle | null;
-  payment: BillPayment | null;
+  /**
+   * Joined to its ledger transaction, so a caller drawing payment history has
+   * the amount that was actually paid. `estimate` above is one figure for the
+   * WHOLE BILL, copied onto every cycle — it answers "what does this cost", not
+   * "what did I pay in January", and the two differ by exactly the amount the
+   * bill moved between cycles.
+   */
+  payment: MatchedBillPayment | null;
 };
 
 export type BillPaymentCandidate = {
@@ -170,12 +178,14 @@ export async function listBillStatuses(now: number, horizonDays: number): Promis
     const created = toDateIso(new Date(bill.createdAt));
     const from = created > today ? lookbackFloor : maxIso(created, lookbackFloor);
     const to = addDaysIso(today, horizonDays);
-    const estimate = estimateAmount(bill, await paymentAmounts(bill.id));
+    // ONE join, two readers: the estimator wants the amounts, and a status's
+    // `payment` carries the whole matched row so the bill detail can show what
+    // each cycle actually cost instead of repeating this estimate on every row.
+    const matched = await matchedPayments(bill.id);
+    const estimate = estimateAmount(bill, matched);
 
     const cycles = new Map((await listCycles(bill.id)).map((cycle) => [cycle.dueDate, cycle]));
-    const payments = new Map(
-      (await listBillPayments(bill.id)).map((payment) => [payment.cycleDueDate, payment]),
-    );
+    const payments = new Map(matched.map((payment) => [payment.cycleDueDate, payment]));
 
     // A resolved cycle outside the enumerated range still belongs in the list —
     // it is history the user paid, and `from` is a floor on GENERATION, not on
@@ -199,17 +209,36 @@ export async function listBillStatuses(now: number, horizonDays: number): Promis
   return statuses.sort((a, b) => (a.dueDate < b.dueDate ? -1 : a.dueDate > b.dueDate ? 1 : 0));
 }
 
-/** The joined payment history the estimator needs — amounts live on the ledger. */
-async function paymentAmounts(billId: string): Promise<PaymentAmount[]> {
+/**
+ * Every matched payment for a bill, each carrying its ledger transaction's
+ * amount and date — the figures `bill_payments` deliberately does not store.
+ *
+ * A payment whose transaction has gone is DROPPED rather than reported at zero.
+ * The estimator has always skipped it, and a history row reading ₱0.00 would be
+ * a lie about money rather than the absence of a fact.
+ */
+async function matchedPayments(billId: string): Promise<MatchedBillPayment[]> {
   const payments = await listBillPayments(billId);
-  const amounts: PaymentAmount[] = [];
+  const matched: MatchedBillPayment[] = [];
   for (const payment of payments) {
     const transaction = await getTransaction(payment.transactionId);
     if (transaction !== null) {
-      amounts.push({ cycleDueDate: payment.cycleDueDate, amount: transaction.amount });
+      matched.push({
+        ...payment,
+        amount: transaction.amount,
+        occurredAt: transaction.occurredAt,
+      });
     }
   }
-  return amounts;
+  return matched;
+}
+
+/** The joined payment history the estimator needs — amounts live on the ledger. */
+async function paymentAmounts(billId: string): Promise<PaymentAmount[]> {
+  return (await matchedPayments(billId)).map((payment) => ({
+    cycleDueDate: payment.cycleDueDate,
+    amount: payment.amount,
+  }));
 }
 
 /**
