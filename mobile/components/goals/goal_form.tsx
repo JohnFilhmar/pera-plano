@@ -25,6 +25,7 @@ import { Card } from "@/components/ui/card";
 import { Chip } from "@/components/ui/chip";
 import { DateField } from "@/components/ui/date_field";
 import { NumericField } from "@/components/ui/numeric_field";
+import { SegmentedControl } from "@/components/ui/segmented_control";
 import { centavosFrom, pesoInputFrom } from "@/lib/money/peso_input";
 import type { ContributionRule, IsoDate, Wallet } from "@/types/domain";
 import { usePlaceholderColor } from "@/lib/ui/placeholder";
@@ -35,6 +36,23 @@ function FieldLabel({ children }: { children: string }) {
     <Text className="text-micro font-semibold text-fg-2 dark:text-fg-2-dark">{children}</Text>
   );
 }
+
+/**
+ * Rule 13's two shapes for a contribution rule: a flat peso amount, or a share
+ * of the pay. `ContributionRule` has had both variants since m2b and both
+ * engines that read one (`goals_service.ts`'s `requestedFor`,
+ * `safe_to_spend_service.ts`'s `contributionAmount`) have always handled
+ * `percent` — the form was the only half that could not produce it, so the
+ * kinsenas persona's "percent of pay" promise had no control behind it.
+ *
+ * Same segmented-control treatment as `limit_form.tsx`'s Amount-versus-% row,
+ * for the same reason: it is the same choice, and the app should not ask it
+ * two different ways.
+ */
+const RULE_KIND_SEGMENTS = [
+  { value: "fixed", label: "Amount ₱" },
+  { value: "percent", label: "% of pay" },
+] as const satisfies ReadonlyArray<{ value: ContributionRule["kind"]; label: string }>;
 
 export type GoalFormValues = {
   name: string;
@@ -84,14 +102,51 @@ export function GoalForm({
   );
   const [targetDate, setTargetDate] = useState<IsoDate | null>(initial?.targetDate ?? null);
   const [walletId, setWalletId] = useState<string | null>(initial?.linkedWalletId ?? null);
+  // SEEDED FROM THE STORED KIND, so editing a goal cannot quietly change what
+  // kind of rule it has. Before this, a percent rule reached the edit form,
+  // matched neither branch below, and was saved back as `null` or as a fixed
+  // amount — the form destroyed the very data the engines were built to read.
+  const [ruleKind, setRuleKind] = useState<ContributionRule["kind"]>(
+    initial?.contributionRule?.kind ?? "fixed",
+  );
   const [ruleText, setRuleText] = useState(
     initial?.contributionRule?.kind === "fixed" ? pesoInputFrom(initial.contributionRule.amount) : "",
   );
+  // String(), NEVER pesoInputFrom — the inverse of the note on `targetText`
+  // above. `percent` is a PLAIN percentage (10 means 10%, as
+  // goals_service.ts's `requestedFor` spells out against `Limit.value`'s
+  // percent × 100), so it is not Centavos and must not be divided by 100.
+  const [rulePercentText, setRulePercentText] = useState(
+    initial?.contributionRule?.kind === "percent" ? String(initial.contributionRule.percent) : "",
+  );
 
   const targetAmount = centavosFrom(targetText);
+  const rulePercent = Number(rulePercentText) || 0;
+  // 100% of a payday is the whole packet, and below 1% is not a rule the
+  // payday prompt can act on. An out-of-range percent BLOCKS THE SAVE rather
+  // than being silently dropped: the rule is usually why the user opened this
+  // field at all, and a goal saved without it looks identical to one saved
+  // with it until the next payday fails to prompt.
+  const rulePercentValid = rulePercentText === "" || (rulePercent >= 1 && rulePercent <= 100);
   // Rule 3's three requirements, and 001_core.sql's `CHECK (target_amount > 0)`.
   // A disabled button beats a constraint violation surfacing as a crash.
-  const canSave = name.trim() !== "" && targetAmount > 0 && walletId !== null && !busy;
+  const canSave =
+    name.trim() !== "" &&
+    targetAmount > 0 &&
+    walletId !== null &&
+    (ruleKind === "fixed" || rulePercentValid) &&
+    !busy;
+
+  /** The payload rule for whichever kind is selected, or none at all. */
+  function contributionRuleFrom(): ContributionRule | null {
+    if (ruleKind === "percent") {
+      return rulePercent >= 1 && rulePercent <= 100
+        ? { kind: "percent", percent: rulePercent }
+        : null;
+    }
+    const ruleAmount = centavosFrom(ruleText);
+    return ruleAmount > 0 ? { kind: "fixed", amount: ruleAmount } : null;
+  }
 
   return (
     // bg-bg/px-4/pt-4 move in from the route (numeric-input-system Task 11)
@@ -196,14 +251,46 @@ export function GoalForm({
             PeraPlano will remind you to move this amount each payday. It never moves money on its
             own — you do it in your banking app and it records the transfer.
           </Text>
-          <NumericField
-            testID="goal-rule-amount"
-            label="Move money automatically on payday"
-            mode="peso"
-            placeholder="Amount each payday, e.g. 2000"
-            value={ruleText}
-            onChangeText={setRuleText}
-          />
+          <View className="mt-2">
+            <SegmentedControl
+              testID="goal-rule-kind"
+              segments={RULE_KIND_SEGMENTS}
+              value={ruleKind}
+              onChange={setRuleKind}
+            />
+          </View>
+          {ruleKind === "fixed" ? (
+            <NumericField
+              testID="goal-rule-amount"
+              label="Move money automatically on payday"
+              mode="peso"
+              placeholder="Amount each payday, e.g. 2000"
+              value={ruleText}
+              onChangeText={setRuleText}
+            />
+          ) : (
+            <>
+              {/* `rate`, not `peso`: a percent is not money, so the panel's
+                  read-out suffixes a % instead of prefixing a ₱ — the same
+                  reason limit_form.tsx's percent branch uses it. */}
+              <NumericField
+                testID="goal-rule-percent"
+                label="Percent of each payday"
+                mode="rate"
+                placeholder="Percent of each payday, e.g. 10"
+                value={rulePercentText}
+                onChangeText={setRulePercentText}
+              />
+              {rulePercentValid ? null : (
+                <Text
+                  testID="goal-rule-percent-error"
+                  className="mt-2 text-danger dark:text-danger-dark"
+                >
+                  Enter a percent between 1 and 100.
+                </Text>
+              )}
+            </>
+          )}
         </View>
       </PlusGate>
 
@@ -215,7 +302,6 @@ export function GoalForm({
         loading={busy}
         onPress={() => {
           if (!canSave || walletId === null) return;
-          const ruleAmount = centavosFrom(ruleText);
           onSubmit({
             name: name.trim(),
             targetAmount,
@@ -224,7 +310,7 @@ export function GoalForm({
             // untouched.
             targetDate,
             linkedWalletId: walletId,
-            contributionRule: ruleAmount > 0 ? { kind: "fixed", amount: ruleAmount } : null,
+            contributionRule: contributionRuleFrom(),
           });
         }}
       />
