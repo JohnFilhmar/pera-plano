@@ -128,14 +128,7 @@ class NotificationListenerModule : Module() {
     // ---- Decrypting drain of the buffered-while-dead queue ---------------
 
     AsyncFunction("drainPendingCaptures") {
-      val file = CaptureBuffer.fileFor(requireContext())
-      val records =
-        try {
-          mapKeyErrors { CaptureBuffer.drain(file) }
-        } catch (readFailed: CaptureBuffer.ReadFailedException) {
-          throw CaptureBufferReadFailedException()
-        }
-      records.map { it.toMap() }
+      drainPendingCaptures(requireContext())
     }
 
     // ---- §11a "wipe and start over": delete the buffer outright ---------
@@ -404,6 +397,43 @@ internal fun listenerHealth(context: Context): Map<String, Any?> {
  */
 internal fun observedPackages(context: Context): List<Map<String, Any?>> =
   CapturePrefs(context).listObservedPackages().map { it.toMap() }
+
+/**
+ * Everything the `drainPendingCaptures` AsyncFunction does: drain the
+ * buffered-while-dead queue, translate the two failure kinds JS has to tell
+ * apart into their coded exceptions, and hand back the contract §4 maps.
+ *
+ * A top-level, `Module`-free function for the same reason as everything else
+ * on this page, and here the reason is sharper than usual: while this logic
+ * lived INSIDE the `AsyncFunction` block, the only way for
+ * `NotificationListenerModuleTest` to reach it was to re-type it into a test
+ * helper -- and a re-typed copy of the error mapping proves nothing about the
+ * mapping the bridge actually runs. Deleting the [mapKeyErrors] call here
+ * would have left every drain test green while a `NotAuthenticated` rejection
+ * reached JS as a raw [UserNotAuthenticatedException] with no `code` to
+ * branch on, which JS reads as an unknown failure and, per
+ * [CaptureBuffer]'s class doc, must never be confused with "the buffer is
+ * empty". Keep the DSL body a one-liner.
+ *
+ * THE TWO TRANSLATIONS ARE NOT INTERCHANGEABLE. [mapKeyErrors] handles the
+ * Keystore pair ([KeyPermanentlyInvalidatedException],
+ * [UserNotAuthenticatedException]); the `catch` below handles a storage-layer
+ * read failure, which is not a key problem at all. Both leave the buffer
+ * completely untouched on disk -- see [CaptureBuffer.drain]'s doc for why
+ * that ordering is what makes a retry safe -- and both must stay
+ * distinguishable from the fifth outcome, an empty buffer, which is a normal
+ * `[]` and never an error.
+ */
+internal fun drainPendingCaptures(context: Context): List<Map<String, Any?>> {
+  val file = CaptureBuffer.fileFor(context)
+  val records =
+    try {
+      mapKeyErrors { CaptureBuffer.drain(file) }
+    } catch (readFailed: CaptureBuffer.ReadFailedException) {
+      throw CaptureBufferReadFailedException()
+    }
+  return records.map { it.toMap() }
+}
 
 /**
  * Points [PeraPlanoNotificationListenerService.liveSink] at [emit], adapting

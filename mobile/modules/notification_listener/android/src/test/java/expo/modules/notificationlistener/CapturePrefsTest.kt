@@ -419,6 +419,74 @@ class CapturePrefsTest {
     assertEquals(setOf(gcash, maya), third.getProviderFilter())
   }
 
+  // ---------------------------------------------------------------------
+  // The migration's PRESERVE-ON-FAILURE claim, which every test above takes
+  // for granted by only ever running with a usable prefs KEK.
+  //
+  // `migrateLegacyPlaintextValues` documents that a failed seal "writes and
+  // deletes NOTHING and returns, leaving the plaintext for the next
+  // construction to retry", and the whole of that guarantee rests on one
+  // `?: return` firing before `editor.commit()`. An upgrade that removed the
+  // plaintext it could not preserve would take the user's provider selection
+  // with it -- the setting gone AND the plaintext gone, for no benefit.
+  // ---------------------------------------------------------------------
+
+  @Test
+  fun `a migration that cannot seal writes nothing, deletes nothing, and the next construction retries`() {
+    val postedAt = 1754060400000L
+    writeLegacyPlaintextFilter(setOf(gcash, bpi))
+    writeLegacyPlaintextCapture(postedAt)
+
+    // A device with no usable prefs KEK: sealPrefsValue throws
+    // PrefsValueSealException, which CapturePrefs.seal reduces to null. This
+    // is the same "no key at all" state the never-throw tests below use, and
+    // the realistic shape of a Keystore that refused to generate.
+    KeyStoreBridge.vault = FakeKeyVault()
+
+    CapturePrefs(context) // must not throw
+
+    // NOTHING SEALED. A `?: ""` in place of the `?: return`, or a seal
+    // failure that fell through, would leave an unopenable blob here that
+    // the "runs once" rule would then never revisit.
+    assertNull(
+      "a failed seal must not leave a sealed key behind",
+      rawPrefs().getString(sealedKeyProviderFilter, null),
+    )
+    assertNull(rawPrefs().getString(sealedKeyLastCaptureAt, null))
+
+    // NOTHING DELETED. This is the half that costs real data if it breaks:
+    // both `editor.remove` calls are staged before the commit, so the early
+    // return has to abandon them together with the writes.
+    assertTrue(
+      "the plaintext filter must survive a migration that could not seal it",
+      rawPrefs().contains(legacyKeyProviderFilter),
+    )
+    assertTrue(
+      "the plaintext timestamp must survive it too -- one commit covers both",
+      rawPrefs().contains(legacyKeyLastCaptureAt),
+    )
+    assertEquals(setOf(gcash, bpi), rawPrefs().getStringSet(legacyKeyProviderFilter, null))
+    assertEquals(postedAt, rawPrefs().getLong(legacyKeyLastCaptureAt, -1L))
+
+    // AND THE RETRY HEALS IT. "Leaving the plaintext for the next
+    // construction to retry" is only a guarantee if a later construction
+    // actually completes the move -- CapturePrefs is built fresh on every
+    // notification, so the next one with a working key is the retry.
+    KeyStoreBridge.ensurePrefsKek()
+    val migrated = CapturePrefs(context)
+
+    assertEquals(setOf(gcash, bpi), migrated.getProviderFilter())
+    assertEquals(postedAt, migrated.lastCaptureAt())
+    assertFalse(
+      "the retry must finish the job the failed attempt left alone",
+      rawPrefs().contains(legacyKeyProviderFilter),
+    )
+    assertFalse(rawPrefs().contains(legacyKeyLastCaptureAt))
+    val onDisk = rawStoredText()
+    assertFalse("the migrated package names must not remain on disk: $onDisk", onDisk.contains(gcash))
+    assertFalse(onDisk.contains(postedAt.toString()))
+  }
+
   @Test
   fun `constructing CapturePrefs on a fresh install writes nothing`() {
     // Nothing has ever been stored, so there is nothing to migrate -- and the

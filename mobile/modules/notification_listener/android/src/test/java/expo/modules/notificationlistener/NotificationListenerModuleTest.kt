@@ -348,6 +348,75 @@ class NotificationListenerModuleTest {
     assertEquals("You received PHP 1,500.00 from JUAN D.", drained[1]["text"])
   }
 
+  // ---------------------------------------------------------------------
+  // The two failure modes drainPendingCaptures has to keep distinguishable
+  // from each other AND from an empty buffer (the class doc's taxonomy).
+  //
+  // The taxonomy tests further up prove mapKeyErrors maps the right
+  // exception to the right code IN ISOLATION. These two prove the drain
+  // path actually routes through it -- which is a separate claim, and the
+  // one that was unprovable while this file re-typed the AsyncFunction's
+  // body into a helper of its own. Each also asserts the buffer SURVIVES,
+  // because a coded rejection that arrived after the file was already
+  // deleted would be a correct-looking error over permanent data loss.
+  // ---------------------------------------------------------------------
+
+  @Test
+  fun `a drain called before the private key's auth window rejects as NotAuthenticated and leaves every capture on disk`() {
+    KeyStoreBridge.ensureCaptureKeyPair()
+    val file = CaptureBuffer.fileFor(context)
+    CaptureBuffer.clear(file)
+    CaptureBuffer.append(file, sampleRecord())
+    CaptureBuffer.append(file, sampleRecord(id = "55555555-5555-4555-8555-555555555555"))
+
+    // Seal still works, open does not -- exactly docs §6's asymmetry, and
+    // exactly what a drain a moment before the user authenticates hits.
+    val liveVault = KeyStoreBridge.vault
+    KeyStoreBridge.vault = LockedPrivateKeyVault(liveVault)
+
+    val thrown = assertThrows(NotAuthenticatedException::class.java) {
+      drainAsTheBridgeDoes()
+    }
+    // The CODE, not just the type: JS branches on this string to decide
+    // whether to re-prompt biometric or to send the user to onboarding.
+    assertEquals("NotAuthenticated", thrown.code)
+
+    // Nothing was lost. A raw UserNotAuthenticatedException reaching JS has
+    // no code to branch on and reads as an unknown failure; a drain that had
+    // already deleted the file would make the retry this rejection exists to
+    // invite return nothing at all.
+    assertTrue("a drain that could not authenticate must not touch the file", file.exists())
+    assertEquals(2, CaptureBuffer.size(file))
+
+    // ...and the retry, once the key is usable again, returns both.
+    KeyStoreBridge.vault = liveVault
+    assertEquals(2, drainAsTheBridgeDoes().size)
+  }
+
+  @Test
+  fun `a drain over an unreadable buffer file rejects as CaptureBufferReadFailed rather than resolving empty`() {
+    KeyStoreBridge.ensureCaptureKeyPair()
+    val file = CaptureBuffer.fileFor(context)
+    CaptureBuffer.clear(file)
+
+    // A directory in the file's exact place: File.readText() fails on every
+    // platform, and it is a STORAGE failure, untouched by the base64/crypto
+    // machinery -- the case CaptureBuffer.ReadFailedException exists for.
+    file.mkdirs()
+
+    val thrown = assertThrows(CaptureBufferReadFailedException::class.java) {
+      drainAsTheBridgeDoes()
+    }
+    assertEquals("CaptureBufferReadFailed", thrown.code)
+
+    // Resolving `[]` here is the bug this whole distinction exists to
+    // prevent: JS would read "nothing pending" over a transient storage
+    // hiccup and the next successful drain would have nothing left to find.
+    assertTrue("a failed read must never delete the file it could not read", file.exists())
+
+    file.delete()
+  }
+
   // =====================================================================
   // The two user-facing switches (contract §4; plan Task 6)
   // =====================================================================
@@ -509,16 +578,6 @@ class NotificationListenerModuleTest {
   // Fixtures
   // =====================================================================
 
-  /**
-   * The `drainPendingCaptures` AsyncFunction's body, minus the
-   * `requireContext()` that needs an `AppContext` -- see the class doc's
-   * note on the seam. The error-mapping half of that body (`mapKeyErrors`
-   * and the `ReadFailedException` -> `CaptureBufferReadFailedException`
-   * translation) is covered by the taxonomy tests above and by
-   * `CaptureBufferTest`; what these three tests exercise is the composition
-   * of [CaptureBuffer.drain] with [CaptureRecord.toMap], which is what JS
-   * actually receives.
-   */
   // ---------------------------------------------------------------------
   // openAccessSettings. Not in the plan's six-test list, but rule 2 of the
   // task brief is a behavioural requirement like any other, and this is the
@@ -554,8 +613,24 @@ class NotificationListenerModuleTest {
     )
   }
 
+  /**
+   * The REAL `drainPendingCaptures` body -- [drainPendingCaptures], the
+   * top-level function the AsyncFunction now calls in one line -- with only
+   * the `requireContext()` that needs an `AppContext` supplied from here.
+   *
+   * This used to be a hand-retyped COPY of the AsyncFunction's body, and the
+   * copy is what made the error-mapping half untestable: a copy that carries
+   * its own `mapKeyErrors` call proves the copy maps errors, not that the
+   * bridge does. Deleting `mapKeyErrors` from production left every drain
+   * test here green. Calling the production function is what closed that.
+   *
+   * `modules/notification_listener/__tests__/module_wiring.test.ts` pins the
+   * other half -- that the AsyncFunction body really is the one-line
+   * delegation to this function -- since no JVM test can invoke an
+   * `AsyncFunction` without the JSI runtime.
+   */
   private fun drainAsTheBridgeDoes(): List<Map<String, Any?>> =
-    CaptureBuffer.drain(CaptureBuffer.fileFor(context)).map { it.toMap() }
+    drainPendingCaptures(context)
 
   /**
    * Every string below is ILLUSTRATIVE: invented sample copy in the shape of

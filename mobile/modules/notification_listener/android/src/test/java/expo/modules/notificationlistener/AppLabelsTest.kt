@@ -173,4 +173,74 @@ class AppLabelsTest {
 
     assertEquals(mapOf(gcash to "GCash"), appLabels(context, listOf("  $gcash  ")))
   }
+
+  // -------------------------------------------------------------------------
+  // The NEVER THROWS claim, against a failure that is NOT a missing package.
+  //
+  // `appLabels` catches two things, and only one of them had a test. Every
+  // case above reaches the `NameNotFoundException` branch -- a package that
+  // is simply not installed -- and none reaches the `RuntimeException` one,
+  // which is the branch that exists for a PackageManager that misbehaves
+  // rather than one that answers "no". Delete that second catch and every
+  // test above this line still passes.
+  //
+  // The trigger here is a label whose own `toString()` throws. It fires
+  // inside `getApplicationInfo`, because Robolectric's shadow returns the
+  // stored PackageInfo through a Parcel round trip and
+  // `PackageItemInfo.writeToParcel` hands `nonLocalizedLabel` to
+  // `TextUtils.writeToParcel`, which calls `toString()` on it. That is the
+  // same call `appLabels` makes on the next line, inside the same `try`, so
+  // either read reaches the branch under test.
+  //
+  // The mechanism differs from the production case -- a dead binder cannot
+  // be produced under Robolectric at all, and no mocking framework is
+  // available to fake one (this module's build.gradle has junit, org.json
+  // and robolectric, and nothing else). The branch, and the guarantee it
+  // backs, are the same.
+  // -------------------------------------------------------------------------
+
+  @Test
+  fun `a PackageManager failure that is not a missing package costs only that one name`() {
+    installPackage(gcash, "GCash")
+    val hostile = ExplodingLabel("Bank PH")
+    installPackage("com.example.hostile", hostile)
+    installPackage(rebranded, "Maribank")
+    // Armed only AFTER the fake device is set up, so nothing Robolectric
+    // does while installing the package can trip it and turn this into a
+    // test about Robolectric's internals.
+    hostile.armed = true
+
+    val labels = appLabels(context, listOf(gcash, "com.example.hostile", rebranded))
+
+    // NEVER THROWS: reaching this line at all is half the assertion. Without
+    // the `RuntimeException` catch this call propagates and onboarding shows
+    // a screen of raw package ids instead of names.
+    assertFalse(
+      "a package whose label cannot be read is absent, never a placeholder",
+      labels.containsKey("com.example.hostile"),
+    )
+    // ...and the other twenty names are not collateral damage. A catch
+    // placed around the whole loop instead of around one package would
+    // return an empty map here and still never throw.
+    assertEquals(mapOf(gcash to "GCash", rebranded to "Maribank"), labels)
+  }
+}
+
+/**
+ * An app label that explodes when read as text, once [armed].
+ *
+ * Stands in for the branch `AppLabels.appLabels` documents as "a dead
+ * PackageManager binder surfaces as a RuntimeException" -- a binder death
+ * cannot be staged in a JVM test, but the catch it lands in can be, and that
+ * catch is the thing under test. An app label is arbitrary text supplied by
+ * whoever built the app, so a label object that misbehaves is not a purely
+ * hypothetical shape either.
+ */
+private class ExplodingLabel(private val text: String) : CharSequence by text {
+  var armed = false
+
+  override fun toString(): String {
+    if (armed) throw IllegalStateException("the package manager went away")
+    return text
+  }
 }

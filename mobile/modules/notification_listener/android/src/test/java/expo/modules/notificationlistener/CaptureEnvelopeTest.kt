@@ -1,11 +1,13 @@
 package expo.modules.notificationlistener
 
 import android.util.Base64
+import java.security.GeneralSecurityException
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -185,11 +187,24 @@ class CaptureEnvelopeTest {
 
   // ---------------------------------------------------------------------
   // Corrupt input never fabricates a record.
+  //
+  // Every assertThrows here names a SPECIFIC type, and that is the point of
+  // this block rather than a detail of it. `assertThrows(Exception::class)`
+  // is satisfied by a NullPointerException from an unrelated refactor, by an
+  // ArrayIndexOutOfBoundsException from a guard someone deleted, by anything
+  // at all -- so it proves only that `open` is not silently returning a
+  // fabricated record, never that the failure it produced is the failure the
+  // class doc promises. The types below separate "this line is malformed"
+  // (IllegalArgumentException, from the two `require`s and from base64)
+  // from "the crypto layer rejected it" (GeneralSecurityException, the
+  // family BadPaddingException/AEADBadTagException/InvalidKeyException all
+  // belong to), which is exactly the distinction someone debugging a real
+  // device has to make.
   // ---------------------------------------------------------------------
 
   @Test
   fun `opening a corrupt line throws instead of returning a fabricated record`() {
-    assertThrows(Exception::class.java) {
+    assertThrows(IllegalArgumentException::class.java) {
       CaptureEnvelope.open("this is not a valid sealed line at all")
     }
   }
@@ -207,9 +222,102 @@ class CaptureEnvelopeTest {
     KeyStoreBridge.vault = FakeKeyVault()
     KeyStoreBridge.ensureCaptureKeyPair()
 
-    assertThrows(Exception::class.java) {
+    // A GeneralSecurityException specifically, not just "something": the
+    // line is perfectly well-formed, so it has to survive BOTH wire-format
+    // guards below and fail in the RSA-OAEP unwrap. An IllegalArgumentException
+    // here would mean a guard rejected a line it had no business rejecting.
+    assertThrows(GeneralSecurityException::class.java) {
       CaptureEnvelope.open(sealedUnderFirstKey)
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // The two wire-format guards, by name. Both are `require`s, so both throw
+  // IllegalArgumentException -- which means the TYPE alone cannot say which
+  // one fired, and the message is what discriminates. Each test below also
+  // picks an input where deleting the guard changes the exception TYPE, not
+  // merely its text, so neither rests on the message alone.
+  // ---------------------------------------------------------------------
+
+  @Test
+  fun `a line too short for even the length header is rejected by the short-line guard`() {
+    // Without `require(bytes.size > LENGTH_HEADER_BYTES)` these two read
+    // bytes[0]/bytes[1] straight off the end of the array, so the guard's
+    // absence surfaces as ArrayIndexOutOfBoundsException -- a different type
+    // from a different layer, not a different message.
+    for (raw in listOf(ByteArray(0), byteArrayOf(0x2A))) {
+      val line = Base64.encodeToString(raw, Base64.NO_WRAP)
+
+      val thrown = assertThrows(IllegalArgumentException::class.java) {
+        CaptureEnvelope.open(line)
+      }
+      assertTrue(
+        "a ${raw.size}-byte line must be rejected by the length-header guard, " +
+          "not by whatever happens to fail next: ${thrown.message}",
+        thrown.message.orEmpty().contains("shorter than its own length header"),
+      )
+    }
+  }
+
+  @Test
+  fun `a line of exactly the length header and nothing else is rejected by the short-line guard`() {
+    // The boundary the `>` in that guard is about. A `>=` here would let a
+    // two-byte line through to the next guard, which would also reject it --
+    // so only the MESSAGE can tell a correct boundary from an off-by-one.
+    val line = Base64.encodeToString(byteArrayOf(0x00, 0x00), Base64.NO_WRAP)
+
+    val thrown = assertThrows(IllegalArgumentException::class.java) {
+      CaptureEnvelope.open(line)
+    }
+    assertTrue(
+      "the header-only line must fail the header guard, not the overrun one: ${thrown.message}",
+      thrown.message.orEmpty().contains("shorter than its own length header"),
+    )
+  }
+
+  @Test
+  fun `a declared wrapped-key length that overruns the line is rejected by the overrun guard`() {
+    // A GENUINE sealed line with only its two-byte length header rewritten,
+    // so everything else about it is valid -- this is the shape of a
+    // truncated write, and of a hostile line claiming a key far longer than
+    // the bytes that follow.
+    val genuine = Base64.decode(CaptureEnvelope.seal(record(), publicKey()), Base64.NO_WRAP)
+    val overrunning = genuine.copyOf()
+    overrunning[0] = 0xFF.toByte()
+    overrunning[1] = 0xFF.toByte()
+
+    val thrown = assertThrows(IllegalArgumentException::class.java) {
+      CaptureEnvelope.open(Base64.encodeToString(overrunning, Base64.NO_WRAP))
+    }
+    // Without `require(bytes.size > ivEnd)` the copyOfRange below it reads
+    // 65535 bytes out of a ~300-byte array: an IndexOutOfBoundsException,
+    // again a different type from a different layer.
+    assertTrue(
+      "an overrunning declared length must fail the overrun guard: ${thrown.message}",
+      thrown.message.orEmpty().contains("shorter than its declared key length plus IV"),
+    )
+  }
+
+  @Test
+  fun `a line that ends exactly where its ciphertext should start is rejected`() {
+    // The overrun guard's own boundary: wrappedKey + IV consume the line
+    // exactly, leaving zero ciphertext bytes. A `>=` there would let this
+    // through to a GCM decrypt of an empty buffer, which fails as a tag
+    // mismatch -- a security-layer error standing in for what is really a
+    // malformed line, and one that hides which layer actually broke.
+    val genuine = Base64.decode(CaptureEnvelope.seal(record(), publicKey()), Base64.NO_WRAP)
+    val declaredLength = genuine.size - 2 - 12
+    val exact = genuine.copyOf()
+    exact[0] = ((declaredLength ushr 8) and 0xFF).toByte()
+    exact[1] = (declaredLength and 0xFF).toByte()
+
+    val thrown = assertThrows(IllegalArgumentException::class.java) {
+      CaptureEnvelope.open(Base64.encodeToString(exact, Base64.NO_WRAP))
+    }
+    assertTrue(
+      "a line with no ciphertext left must be rejected as malformed, not decrypted: ${thrown.message}",
+      thrown.message.orEmpty().contains("shorter than its declared key length plus IV"),
+    )
   }
 }
 

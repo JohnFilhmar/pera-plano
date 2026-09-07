@@ -447,6 +447,24 @@ describe("openSecuritySettings", () => {
     expect(mockNativeModule.openSecuritySettings).toHaveBeenCalledWith();
     expect(result).toBeUndefined();
   });
+
+  // A `void` wrapper over a `void` native `Function` has exactly one way to
+  // go wrong that the delegation case above cannot see: swallowing. Neither
+  // side of this pair catches anything today, and neither should start --
+  // `Settings.ACTION_SECURITY_SETTINGS` missing is an ActivityNotFoundException
+  // out of `context.startActivity`, and a wrapper that quietly ate it would
+  // leave the user tapping a button that does nothing, with nothing thrown,
+  // nothing logged and nothing on screen. The caller cannot fall back to
+  // re-checking `isDeviceSecure()` either: the answer is unchanged, because
+  // the settings screen never opened.
+  it("does not swallow a native failure -- a settings screen that never opened must not look like success", () => {
+    const failure = new Error("ActivityNotFoundException");
+    mockNativeModule.openSecuritySettings.mockImplementationOnce(() => {
+      throw failure;
+    });
+
+    expect(() => openSecuritySettings()).toThrow(failure);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -702,6 +720,20 @@ describe("the contract §4 listener surface", () => {
 
       expect(mockNativeModule.openAccessSettings).toHaveBeenCalledWith();
       expect(result).toBeUndefined();
+    });
+
+    // Same reasoning as openSecuritySettings' twin of this test, and it
+    // matters more here: until the user reaches the Notification Access
+    // screen nothing is ever captured at all, so a navigation failure that
+    // was silently eaten would present as "the app just doesn't work", with
+    // no thrown error anywhere to say why.
+    it("does not swallow a native failure -- the one navigation the whole feature depends on", () => {
+      const failure = new Error("ActivityNotFoundException");
+      mockNativeModule.openAccessSettings.mockImplementationOnce(() => {
+        throw failure;
+      });
+
+      expect(() => openAccessSettings()).toThrow(failure);
     });
   });
 
