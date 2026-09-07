@@ -70,9 +70,29 @@ jest.mock("@/lib/query_client", () => ({
   clearCacheEncryptionKey: jest.fn(),
 }));
 
-jest.mock("@/lib/security/wipe", () => ({
-  wipeAndStartOver: jest.fn(),
-}));
+// `WipeIncompleteError` is redeclared here rather than imported from the real
+// module, the same shape the key_manager factory above uses: this factory IS
+// the module lock_context.tsx imports, so the class the test throws and the
+// class the `instanceof` check reads are the same one. lib/security/__tests__/
+// wipe.test.ts is what pins the REAL wipeAndStartOver to actually throw this
+// type for a post-database failure and NOT for a wipeDatabase() one — without
+// that file the two tests below would only be describing a fiction this
+// factory invented.
+jest.mock("@/lib/security/wipe", () => {
+  class WipeIncompleteError extends Error {
+    readonly cause: unknown;
+
+    constructor(cause: unknown) {
+      super(cause instanceof Error ? cause.message : String(cause));
+      this.name = "WipeIncompleteError";
+      this.cause = cause;
+    }
+  }
+  return {
+    wipeAndStartOver: jest.fn(),
+    WipeIncompleteError,
+  };
+});
 
 // Keeps jest_setup.ts's real Node CSPRNG and adds a one-shot park, so the
 // last describe in this file can hold a persisted-cache write suspended on
@@ -160,7 +180,7 @@ import type { PersistedClient } from "@tanstack/react-query-persist-client";
 import * as KeyManager from "@/lib/crypto/key_manager";
 import * as Database from "@/lib/db/database";
 import * as QueryCache from "@/lib/query_client";
-import { wipeAndStartOver } from "@/lib/security/wipe";
+import { wipeAndStartOver, WipeIncompleteError } from "@/lib/security/wipe";
 import {
   DeviceKeyMissingError,
   DeviceKeyInvalidatedError,
@@ -867,6 +887,75 @@ describe("wipeAndStartOver()", () => {
       await Promise.resolve();
     });
     expect(mockWipeAndStartOver).toHaveBeenCalledTimes(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // GAP-078 — the wipe's own failure must be reported. RecoveryUnlockForm
+  // fires this as `void onWipe()`, so before these two paths existed a
+  // rejection was an unhandled promise and the status simply never moved.
+  // -------------------------------------------------------------------------
+
+  test("a wipe that fails AFTER the database file is gone still lands on onboarding, with a message saying so", async () => {
+    mockUnlockWithDeviceKey.mockRejectedValue(new DeviceKeyInvalidatedError());
+    const { result } = renderHook(() => useLock(), { wrapper });
+    await waitFor(() => expect(result.current.status).toBe("locked"));
+    await act(async () => {
+      await result.current.unlock();
+    });
+    await waitFor(() => expect(result.current.status).toBe("needs_recovery"));
+
+    // wipeDatabase() succeeded and wipeKeys() threw — the ordering
+    // lib/security/wipe.ts's header calls deliberate, and the state its
+    // WipeIncompleteError exists to name.
+    mockWipeAndStartOver.mockRejectedValueOnce(
+      new WipeIncompleteError(new Error("secure store unavailable")),
+    );
+
+    await act(async () => {
+      // NOT `rejects` — this must resolve. Its one call site does not hold the
+      // promise, so a rejection here is an unhandled one on the screen where a
+      // silent failure is most dangerous.
+      await expect(result.current.wipeAndStartOver()).resolves.toBeUndefined();
+    });
+
+    // STAYING ON "needs_recovery" IS THE DEFECT, not the safe option. The
+    // database file is deleted by this point, so the phrase box the user would
+    // be left staring at can only re-wrap a key against a database that no
+    // longer exists.
+    expect(result.current.status).toBe("needs_onboarding");
+    expect(result.current.errorMessage).not.toBeNull();
+    // The two claims the message has to make: the data IS gone (the user is
+    // about to be handed a fresh setup flow that would otherwise look like the
+    // wipe did nothing), and the reset did not finish.
+    expect(result.current.errorMessage).toContain("erased");
+    expect(result.current.errorMessage).toContain("couldn't finish");
+    // Same cleanup the success path does: this module's cache key is its own
+    // copy of the DEK bytes and wipeKeys() could never have reached it.
+    expect(mockClearCacheEncryptionKey).toHaveBeenCalled();
+  });
+
+  test("a wipe that fails BEFORE anything is destroyed stays on the recovery screen and says nothing was erased", async () => {
+    mockUnlockWithDeviceKey.mockRejectedValue(new DeviceKeyInvalidatedError());
+    const { result } = renderHook(() => useLock(), { wrapper });
+    await waitFor(() => expect(result.current.status).toBe("locked"));
+    await act(async () => {
+      await result.current.unlock();
+    });
+    await waitFor(() => expect(result.current.status).toBe("needs_recovery"));
+
+    // A bare Error, which is what wipeAndStartOver propagates when
+    // wipeDatabase() itself fails: the ledger and both wraps are untouched.
+    mockWipeAndStartOver.mockRejectedValueOnce(new Error("disk I/O error"));
+
+    await act(async () => {
+      await expect(result.current.wipeAndStartOver()).resolves.toBeUndefined();
+    });
+
+    // The opposite of the test above, and the reason the two failures may not
+    // share one branch: nothing was destroyed, so the recovery phrase still
+    // opens this database and the form must stay mounted for it.
+    expect(result.current.status).toBe("needs_recovery");
+    expect(result.current.errorMessage).toContain("Nothing was erased");
   });
 
   // The DOUBLE CONFIRMATION requirement itself (one confirmation alone must

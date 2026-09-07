@@ -91,7 +91,10 @@ import * as LocalAuthentication from "expo-local-authentication";
 import * as KeyManager from "@/lib/crypto/key_manager";
 import * as Database from "@/lib/db/database";
 import * as QueryCache from "@/lib/query_client";
-import { wipeAndStartOver as performWipeAndStartOver } from "@/lib/security/wipe";
+import {
+  wipeAndStartOver as performWipeAndStartOver,
+  WipeIncompleteError,
+} from "@/lib/security/wipe";
 import {
   DeviceKeyInvalidatedError,
   DeviceKeyMissingError,
@@ -118,7 +121,7 @@ type LockContextValue = {
   submitRecoveryPhrase: (phrase: string[]) => Promise<void>;
   /** Onboarding's first-run handoff: "keys now exist on this device" — moves "needs_onboarding" to "locked", and nothing else. See its implementation for why this is the only correct destination. */
   keysProvisioned: () => void;
-  /** The §11a escape hatch. Callers (RecoveryUnlockForm) own the double-confirmation UI; this only runs the actual destruction once invoked. */
+  /** The §11a escape hatch. Callers (RecoveryUnlockForm) own the double-confirmation UI; this only runs the actual destruction once invoked. NEVER REJECTS — its one call site fires it as `void onWipe()`, so a failure reported by rejection would be an unhandled promise on the one screen where a silent failure is most dangerous. Every outcome lands in `status`/`errorMessage` instead. */
   wipeAndStartOver: () => Promise<void>;
 };
 
@@ -134,6 +137,23 @@ const FIVE_MINUTES_MS = 5 * 60 * 1000;
  */
 const RECOVERY_AUTH_NOT_COMPLETED_MESSAGE =
   "We couldn't confirm it's you, so nothing was unlocked. Your words are still here — tap Unlock to try again.";
+
+/**
+ * The wipe stopped after the database file was already deleted (see
+ * lib/security/wipe.ts's `WipeIncompleteError`). It says the data IS gone,
+ * because it is and the user is about to be handed a fresh setup flow that
+ * would otherwise look like the wipe silently did nothing.
+ */
+const WIPE_INCOMPLETE_MESSAGE =
+  "Your data was erased, but PeraPlano couldn't finish resetting. Setting up again from here is safe — close and reopen the app if anything looks wrong.";
+
+/**
+ * The wipe failed before it destroyed anything. It says so plainly: this user
+ * asked for their data to be deleted, and leaving them to guess whether it was
+ * is the one thing this screen must not do.
+ */
+const WIPE_FAILED_MESSAGE =
+  "Nothing was erased — that didn't go through. Your data and your recovery words are still here, so you can try again.";
 
 /**
  * The system authentication challenge that opens the Keystore's ~10s window
@@ -436,6 +456,27 @@ export function LockProvider({ children }: { children: ReactNode }) {
       QueryCache.clearCacheEncryptionKey();
       setErrorMessage(null);
       setStatus("needs_onboarding");
+    } catch (error) {
+      if (error instanceof WipeIncompleteError) {
+        // THE DATABASE FILE IS ALREADY GONE. Everything below the try's happy
+        // path still has to happen: the cache key is a copy wipeKeys() could
+        // never have reached even when it succeeds, and staying on
+        // "needs_recovery" would park the user in front of a phrase box whose
+        // only button re-wraps a key against a database that no longer exists.
+        // So the status moves forward exactly as on success, and the message —
+        // rendered by app/lock.tsx above the onboarding pre-flow — is the only
+        // part that differs.
+        QueryCache.clearCacheEncryptionKey();
+        setErrorMessage(WIPE_INCOMPLETE_MESSAGE);
+        setStatus("needs_onboarding");
+      } else {
+        // wipeDatabase() itself failed, so NOTHING was destroyed: the ledger,
+        // both wraps and the recovery phrase are all still exactly as they
+        // were. Status deliberately stays "needs_recovery" — the same rule
+        // every other failure path in this file follows — so the form stays
+        // mounted and both the phrase and a second wipe attempt stay live.
+        setErrorMessage(WIPE_FAILED_MESSAGE);
+      }
     } finally {
       wipeInFlightRef.current = false;
     }

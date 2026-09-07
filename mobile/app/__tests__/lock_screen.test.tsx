@@ -96,6 +96,31 @@ test('"needs_onboarding" renders the onboarding flow directly, not the tabs or a
   expect(screen.queryByTestId("fake-unlock-prompt")).toBeNull();
 });
 
+// GAP-078. contexts/lock_context.tsx routes a wipe that failed AFTER deleting
+// the database file to "needs_onboarding" WITH a message. Every screen the
+// sequencer can render below is a first-run screen that knows nothing about
+// it, so this branch is the only place that message can be seen at all.
+test('"needs_onboarding" carrying a message shows it above the flow, so a failed wipe is not handed back as a pristine first run', () => {
+  mockUseLock.mockReturnValue(
+    baseLockValue({
+      status: "needs_onboarding",
+      errorMessage: "Your data was erased, but PeraPlano couldn't finish resetting.",
+    }),
+  );
+  render(<LockScreen />);
+  expect(screen.getByTestId("onboarding-lock-notice")).toHaveTextContent(/Your data was erased/);
+  // The flow still runs — the notice is a strip above it, never a replacement
+  // for it. Setting up again from here is the whole point.
+  expect(screen.getByTestId("fake-onboarding-entry")).toBeTruthy();
+});
+
+test('an ordinary first run has no message and gets no notice strip', () => {
+  mockUseLock.mockReturnValue(baseLockValue({ status: "needs_onboarding", errorMessage: null }));
+  render(<LockScreen />);
+  expect(screen.queryByTestId("onboarding-lock-notice")).toBeNull();
+  expect(screen.getByTestId("fake-onboarding-entry")).toBeTruthy();
+});
+
 test('"needs_recovery" renders RecoveryUnlockForm, not UnlockPrompt', () => {
   mockUseLock.mockReturnValue(
     baseLockValue({ status: "needs_recovery", errorMessage: "wrong words" }),

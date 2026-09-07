@@ -124,6 +124,13 @@ export default function DoneScreen({
   const { data: income } = useIncomeSummary();
   const { data: limitStatuses } = useLimitStatuses();
   const [finishing, setFinishing] = useState(false);
+  // `completeOnboarding()` is a bare repository write this screen calls itself
+  // — no mutation hook behind it, so lib/query_client.ts's MutationCache
+  // handler never sees it and there is nothing but this state to hold a
+  // failure. Until it existed, a rejected write left the button's spinner
+  // stopping with no message and the user still on "You're all set", tapping
+  // "Go to Home" at a screen that would never go anywhere.
+  const [finishError, setFinishError] = useState<string | null>(null);
 
   // task-7-brief.md Step 4: the launch beat "plays on mount, alongside the
   // confetti dots the board draws." There is no confetti component to reuse
@@ -168,6 +175,9 @@ export default function DoneScreen({
   const finish = useCallback(async () => {
     if (finishing) return;
     setFinishing(true);
+    // Cleared on every attempt so a message from the last try cannot sit under
+    // a Go to Home that has just worked.
+    setFinishError(null);
     try {
       await completeOnboarding();
       if (onDone) {
@@ -175,6 +185,13 @@ export default function DoneScreen({
       } else {
         router.replace("/(tabs)");
       }
+    } catch {
+      // NOTHING IS LOST AND NOTHING IS HALF-DONE. Every step before this one
+      // already wrote its own rows; the only thing that did not land is the
+      // `onboarding_complete` flag, so a retry is both safe and the entire
+      // remedy — which is why the copy asks for exactly that and nothing else.
+      // The `finally` below brings the button back for it.
+      setFinishError("That didn't go through. Everything you set up is saved — tap Go to Home again.");
     } finally {
       setFinishing(false);
     }
@@ -285,6 +302,17 @@ export default function DoneScreen({
           anywhere else.
         </Text>
       </Card>
+
+      {/* LAST CHILD, so it sits directly above the "Go to Home" button the
+          message is asking the user to press again. */}
+      {finishError ? (
+        <Text
+          testID="done-finish-error"
+          className="text-center text-secondary font-medium text-danger dark:text-danger-dark"
+        >
+          {finishError}
+        </Text>
+      ) : null}
     </OnboardingFrame>
   );
 }

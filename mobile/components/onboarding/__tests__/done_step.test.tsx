@@ -103,6 +103,36 @@ describe("DoneScreen", () => {
     expect(onDone).toHaveBeenCalledTimes(1);
   });
 
+  // GAP-078. `completeOnboarding()` is a bare repository write with no
+  // mutation hook behind it, so lib/query_client.ts's MutationCache handler
+  // never sees it — this screen is the only thing that can report the failure.
+  test("a write that fails says so and hands the button back, instead of a spinner that stops with no message", async () => {
+    const onDone = jest.fn();
+    await renderScreen({ onDone });
+
+    // The real failure this path takes: the app-lock timeout closes the
+    // database out from under an onboarding screen, so `setSetting` rejects
+    // with DatabaseLockedError. No mock — the rejection is genuine.
+    await closeDatabase();
+
+    fireEvent.press(screen.getByTestId("onboarding-primary-button"));
+
+    const failure = await screen.findByTestId("done-finish-error");
+    // Every step before this one wrote its own rows; only the completion flag
+    // did not land, so a retry is both safe and the whole remedy.
+    expect(failure).toHaveTextContent(/Everything you set up is saved/);
+    // Not advanced — the flag is still false, so sending the user to Home
+    // would put them one relaunch away from starting setup over.
+    expect(onDone).not.toHaveBeenCalled();
+    // And the button has to come back, or the message asks for a retry the
+    // screen will not accept.
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("onboarding-primary-button").props.accessibilityState.disabled,
+      ).toBeFalsy();
+    });
+  });
+
   test("done has nothing left to skip — no skip link renders", async () => {
     await renderScreen();
 

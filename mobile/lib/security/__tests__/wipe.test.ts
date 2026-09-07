@@ -23,7 +23,7 @@ import { wipeDatabase } from "@/lib/db/database";
 import { wipeKeys } from "@/lib/crypto/key_manager";
 import { clearCaptureBuffer } from "@/modules/notification_listener";
 import { deleteAllSupportAttachmentFiles } from "@/lib/support/attachments";
-import { wipeAndStartOver } from "../wipe";
+import { wipeAndStartOver, WipeIncompleteError } from "../wipe";
 
 const mockWipeDatabase = wipeDatabase as jest.Mock;
 const mockWipeKeys = wipeKeys as jest.Mock;
@@ -95,4 +95,57 @@ test("a capture-buffer-clear failure still propagates rather than reporting a si
 
 test("requires no arguments and no prior authentication state -- callable in the unrecoverable state where nothing else works", async () => {
   await expect(wipeAndStartOver()).resolves.toBeUndefined();
+});
+
+// ---------------------------------------------------------------------------
+// GAP-078 -- WHICH SIDE OF wipeDatabase() THE FAILURE FELL ON.
+//
+// The four tests above pin that every failure propagates. These pin that a
+// caller can tell the two KINDS apart, which is what contexts/lock_context.tsx
+// needs in order to answer them oppositely: a wipeDatabase() failure destroyed
+// nothing, so the user stays on the recovery screen with their phrase still
+// usable; anything after it leaves a device whose database file is already
+// deleted, so the recovery screen is a dead end and the user must be moved on
+// to onboarding. That context's own suite mocks this module, so these are the
+// only tests that hold the real function to the contract it mocks.
+// ---------------------------------------------------------------------------
+
+/** The rejection, or `null` for a resolve -- one call, so a `*Once` mock in a
+ *  test above cannot be silently consumed by a second invocation. */
+async function rejectionFrom(promise: Promise<void>): Promise<unknown> {
+  return promise.then(
+    () => null,
+    (error: unknown) => error,
+  );
+}
+
+test("a database wipe failure is NOT a WipeIncompleteError -- nothing was destroyed, and a caller must not be told otherwise", async () => {
+  const cause = new Error("disk I/O error");
+  mockWipeDatabase.mockRejectedValueOnce(cause);
+
+  const thrown = await rejectionFrom(wipeAndStartOver());
+
+  // The discriminating assertion. If this function wrapped indiscriminately,
+  // lock_context would move a user with a perfectly intact database off the
+  // one screen that can still open it.
+  expect(thrown).not.toBeInstanceOf(WipeIncompleteError);
+  expect(thrown).toBe(cause);
+});
+
+test("a key-wipe failure IS a WipeIncompleteError -- the database file is already gone", async () => {
+  const cause = new Error("secure store unavailable");
+  mockWipeKeys.mockRejectedValueOnce(cause);
+
+  const thrown = await rejectionFrom(wipeAndStartOver());
+
+  expect(thrown).toBeInstanceOf(WipeIncompleteError);
+  // The underlying reason is carried, not replaced: this type adds WHERE the
+  // sequence stopped, never a new description of what went wrong.
+  expect(thrown).toHaveProperty("cause", cause);
+});
+
+test("a capture-buffer-clear failure IS a WipeIncompleteError too -- same side of the database wipe", async () => {
+  mockClearCaptureBuffer.mockRejectedValueOnce(new Error("filesystem error"));
+
+  expect(await rejectionFrom(wipeAndStartOver())).toBeInstanceOf(WipeIncompleteError);
 });

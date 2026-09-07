@@ -461,6 +461,55 @@ describe("a transfer draft", () => {
     // Save has to stay live, or the only thing left to do is lose the draft.
     expect(screen.getByTestId("manual-entry-save").props.accessibilityState.disabled).toBe(false);
   });
+
+  // GAP-078. The test above is the failure BEFORE the write; this is the one
+  // after it, and the two must not say the same thing.
+  test("a failure AFTER the legs commit says the transfer WAS recorded — never that nothing was", async () => {
+    const bank = await createWallet({ name: "BPI", openingBalance: 200_000 });
+    await setMatchers(bank.id, [{ packageName: "com.bpi.ng.app", hint: null }]);
+    await renderNew();
+
+    fireEvent.press(screen.getByTestId("manual-entry-segment-transfer"));
+    typeAmount("manual-amount", "1000");
+    fireEvent.press(screen.getByTestId(`manual-entry-to-wallet-${bank.id}`));
+
+    // `recordTransfer` SUCCEEDS HERE. What fails is the step after it — the
+    // screen closing itself, which is the real rejection this path can hit
+    // ("Attempted to navigate before mounting the Root Layout component") and
+    // stands in for the invalidation failing the same way. `Once`, so nothing
+    // leaks into another test: jest.clearAllMocks() does not drop
+    // implementations.
+    mockBack.mockImplementationOnce(() => {
+      throw new Error("Attempted to navigate before mounting the Root Layout component");
+    });
+    save();
+
+    const failure = await screen.findByTestId("manual-entry-submit-error");
+    const message = failure.props.children as string;
+
+    // THE DISCRIMINATING ASSERTION — and it is the message, not the row count.
+    // The rows below land either way, because recordTransfer already
+    // committed before anything went wrong; what a single catch spanning the
+    // whole chain got wrong was telling the user the opposite.
+    expect(message).not.toContain("Nothing was recorded");
+    expect(message).toContain("Your transfer was recorded");
+    // And it must not invite the retry the pre-commit message does:
+    // recordTransfer is not idempotent, so a second Save writes both legs and
+    // the fee again.
+    expect(message).not.toContain("try again");
+
+    // The money really did move — which is exactly why the copy above may not
+    // deny it. Two linked legs, both balances settled.
+    expect(await ledger()).toHaveLength(2);
+    expect((await getWallet(pocket.id))?.balance).toBe(0);
+    expect((await getWallet(bank.id))?.balance).toBe(300_000);
+
+    // The screen could not close itself, so Save has to come back — otherwise
+    // the user is looking at a message under a permanently spinning button.
+    await waitFor(() => {
+      expect(screen.getByTestId("manual-entry-save").props.accessibilityState.disabled).toBe(false);
+    });
+  });
 });
 
 describe("the amount panel", () => {

@@ -90,10 +90,25 @@ export default function OnboardingIndexScreen({
 
   useEffect(() => {
     let cancelled = false;
-    getKeyState().then((state) => {
-      if (cancelled) return;
-      setStep(state === "uninitialized" ? "device_lock" : "already_keyed");
-    });
+    getKeyState()
+      .then((state) => {
+        if (cancelled) return;
+        setStep(state === "uninitialized" ? "device_lock" : "already_keyed");
+      })
+      // "device_lock", NOT A STUCK "checking". Without this catch a rejecting
+      // bridge left the step at "checking" forever, and "checking" renders
+      // `null` — a permanently blank screen with no spinner, no message and no
+      // control, on the very first screen of a first install. Falling forward
+      // to the device-lock step is the safe direction of the two: it re-checks
+      // the device itself and, once satisfied, runs `initializeKeys()`, which
+      // is a no-op-or-create rather than a destructive write, so a device that
+      // turns out to be keyed after all is not harmed by arriving here. The
+      // opposite guess ("already_keyed") would hand a brand-new user straight
+      // to the numbered flow with no keys and no database behind it.
+      .catch(() => {
+        if (cancelled) return;
+        setStep("device_lock");
+      });
     return () => {
       cancelled = true;
     };

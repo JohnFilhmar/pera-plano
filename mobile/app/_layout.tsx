@@ -223,7 +223,22 @@ function PaydaySheets() {
         busy={applyAllocations.isPending}
         onDismiss={dismissAllocations}
         onConfirm={async (accepted) => {
-          await applyAllocations.mutateAsync(accepted);
+          try {
+            await applyAllocations.mutateAsync(accepted);
+          } catch {
+            // THE CATCH IS FOR THE REJECTION, NOT FOR THE MESSAGE. `onConfirm`
+            // is typed `=> void` and AllocationSheet calls it without holding
+            // the promise, so an unhandled rejection was the whole cost of a
+            // failed apply here. What the user is told is already handled a
+            // level up and must not be duplicated: this is a real
+            // `useMutation`, so lib/query_client.ts's single MutationCache
+            // `onError` has already raised the failure toast by the time this
+            // runs, and a second in-place message would be the same failure
+            // reported twice. The `return` matters as much as the catch —
+            // leaving the sheet OPEN is what keeps the proposals and the
+            // user's ticks alive for the retry the toast asks for.
+            return;
+          }
           dismissAllocations();
         }}
       />
