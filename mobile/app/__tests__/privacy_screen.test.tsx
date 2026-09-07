@@ -28,7 +28,15 @@
 // suite carried is kept verbatim below: both confirmations required,
 // cancelling either wipes nothing, a wrong word never enables the button, and
 // a failure surfaces `privacy-wipe-error` instead of a stuck spinner.
+//
+// `getListenerHealth`/`openAccessSettings` join that same native mock because
+// the capture row now states the LIVE grant rather than the switch's position
+// (GAP-089): the screen reads `useListenerHealth()` and hands the settings
+// opener down to `CaptureToggle`, exactly as app/(tabs)/more/listener_health.tsx
+// already does for the health card.
 jest.mock("@/modules/notification_listener", () => ({
+  getListenerHealth: jest.fn(),
+  openAccessSettings: jest.fn(),
   setCaptureEnabled: jest.fn().mockResolvedValue(undefined),
   setProviderFilter: jest.fn().mockResolvedValue(undefined),
 }));
@@ -69,7 +77,12 @@ import { listDataTableNames } from "@/lib/db/table_names";
 import { exportAllData } from "@/lib/privacy/data_export";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
-import { setCaptureEnabled, setProviderFilter } from "@/modules/notification_listener";
+import {
+  getListenerHealth,
+  openAccessSettings,
+  setCaptureEnabled,
+  setProviderFilter,
+} from "@/modules/notification_listener";
 
 import PrivacyScreen from "../(tabs)/more/privacy";
 import type { SQLiteDatabase } from "@/lib/db/database";
@@ -77,6 +90,24 @@ import type { SQLiteDatabase } from "@/lib/db/database";
 const mockSetCaptureEnabled = setCaptureEnabled as jest.Mock;
 const mockSetProviderFilter = setProviderFilter as jest.Mock;
 const mockExportAllData = exportAllData as jest.Mock;
+const mockGetListenerHealth = getListenerHealth as jest.MockedFunction<typeof getListenerHealth>;
+const mockOpenAccessSettings = openAccessSettings as jest.Mock;
+
+const HEALTHY = { granted: true, serviceConnected: true, lastCaptureAt: null };
+const REVOKED = { granted: false, serviceConnected: false, lastCaptureAt: null };
+const DISCONNECTED = { granted: true, serviceConnected: false, lastCaptureAt: null };
+
+// The exact sentences the row may print, quoted rather than imported: the whole
+// point of GAP-089 is what a reader SEES, and a test that imports the constant
+// it asserts would keep passing through any rewording, including a rewording
+// back to a claim the app cannot support.
+const ACTIVE_COPY =
+  "PeraPlano is reading your bank and e-wallet notifications to record transactions automatically.";
+const NO_ACCESS_COPY =
+  "Notification access is off, so PeraPlano is reading nothing. Grant it again to resume automatic tracking.";
+const DISCONNECTED_COPY =
+  "Notification access is on, but the listener service is not running, so nothing is being read right now.";
+const CHECKING_COPY = "Checking whether PeraPlano can read your notifications right now.";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const GCASH_PACKAGE = "com.globe.gcash.android";
@@ -111,6 +142,9 @@ let db: SQLiteDatabase;
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  // Healthy by default, so every test that is not about the grant renders the
+  // same screen it always did.
+  mockGetListenerHealth.mockResolvedValue(HEALTHY);
   db = await freshDb();
   await seedDefaultCategories();
   await upsertRuleset({
@@ -139,6 +173,90 @@ test("the master pause calls the native setter and persists the setting", async 
 
   await waitFor(() => expect(mockSetCaptureEnabled).toHaveBeenCalledWith(false));
   await waitFor(async () => expect(await getSetting("capture_enabled")).toBe(false));
+});
+
+// ---------------------------------------------------------------------------
+// The capture row states the LIVE grant, not the switch's position (GAP-089).
+//
+// The switch is the user's INTENT; whether anything is actually being read
+// also needs Notification Access and a connected listener, which only
+// `getListenerHealth()` knows. The row used to print "PeraPlano is reading
+// your bank and e-wallet notifications" whenever `capture_enabled` was not
+// `false` — to a user who declined the permission, to one whose OEM revoked
+// it on a reboot, and during the frames before either value had loaded.
+//
+// ASSERTED ON RENDERED TEXT, and every case asserts the ABSENCE of the active
+// sentence as well as the presence of the honest one: a subtitle that computed
+// the right string and then failed to reach the screen would satisfy a
+// presence-only test while the user still read the false claim.
+// ---------------------------------------------------------------------------
+
+test("with notification access revoked the row says access is off and offers the settings fix", async () => {
+  mockGetListenerHealth.mockResolvedValue(REVOKED);
+
+  await renderPrivacyScreen();
+
+  await waitFor(() => expect(screen.getByText(NO_ACCESS_COPY)).toBeTruthy());
+  expect(screen.queryByText(ACTIVE_COPY)).toBeNull();
+
+  fireEvent.press(screen.getByTestId("capture-toggle-open-settings"));
+  expect(mockOpenAccessSettings).toHaveBeenCalledTimes(1);
+});
+
+test("a granted permission with a dead listener service reads as disconnected, not as tracking", async () => {
+  mockGetListenerHealth.mockResolvedValue(DISCONNECTED);
+
+  await renderPrivacyScreen();
+
+  await waitFor(() => expect(screen.getByText(DISCONNECTED_COPY)).toBeTruthy());
+  expect(screen.queryByText(ACTIVE_COPY)).toBeNull();
+  // Same destination: re-granting access in system settings is what rebinds
+  // the listener, so the fix prompt is offered for this state too.
+  expect(screen.getByTestId("capture-toggle-open-settings")).toBeTruthy();
+});
+
+test("the active claim survives only when the grant and the service both confirm it", async () => {
+  await renderPrivacyScreen();
+
+  await waitFor(() => expect(screen.getByText(ACTIVE_COPY)).toBeTruthy());
+  // Nothing to fix, so nothing is offered — a permanent settings link would
+  // train the reader to ignore the one that means something.
+  expect(screen.queryByTestId("capture-toggle-open-settings")).toBeNull();
+  expect(mockOpenAccessSettings).not.toHaveBeenCalled();
+});
+
+test("the row claims nothing while the live read has not landed", async () => {
+  // Never resolves: the state the screen is in for its first frames, and the
+  // state it stays in if the bridge hangs. `retry: false` on the hook means a
+  // throw lands here too.
+  mockGetListenerHealth.mockReturnValue(new Promise<never>(() => {}));
+
+  await renderPrivacyScreen();
+
+  await waitFor(() => expect(screen.getByText(CHECKING_COPY)).toBeTruthy());
+  expect(screen.queryByText(ACTIVE_COPY)).toBeNull();
+  expect(screen.queryByTestId("capture-toggle-open-settings")).toBeNull();
+});
+
+test("a user who paused on purpose is told they paused, not that the permission is broken", async () => {
+  // Both faults at once, which is the ordinary consequence of pausing rather
+  // than a second problem — the precedence components/home/tracking_banner.tsx
+  // and use_listener_health.ts's header already set for this pair.
+  mockGetListenerHealth.mockResolvedValue(REVOKED);
+  await setSetting("capture_enabled", false);
+
+  await renderPrivacyScreen();
+
+  await waitFor(() =>
+    expect(
+      screen.getByText(
+        "While paused, PeraPlano reads and stores nothing from any provider — not even for the Review Queue. Turn it back on to resume.",
+      ),
+    ).toBeTruthy(),
+  );
+  expect(screen.queryByText(NO_ACCESS_COPY)).toBeNull();
+  expect(screen.queryByText(ACTIVE_COPY)).toBeNull();
+  expect(screen.queryByTestId("capture-toggle-open-settings")).toBeNull();
 });
 
 // ---------------------------------------------------------------------------

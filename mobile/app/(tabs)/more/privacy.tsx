@@ -15,9 +15,11 @@
 // components/privacy/*.tsx receive already-resolved props and callbacks —
 // which is also what keeps every one of those components free of the
 // `lib/db/repos/**` import the global constraints forbid.
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Smartphone } from "lucide-react-native";
-import { ScrollView, Text, View } from "react-native";
+import { AppState, ScrollView, Text, View } from "react-native";
+import type { AppStateStatus } from "react-native";
 
 import { CaptureToggle } from "@/components/privacy/capture_toggle";
 import { CapturedList } from "@/components/privacy/captured_list";
@@ -26,13 +28,16 @@ import { WipeFlow } from "@/components/privacy/wipe_flow";
 import { Button, registerIcon } from "@/components/ui/button";
 import { SectionHeader } from "@/components/ui/section_header";
 import { providerLabel, providerLabelForPackage } from "@/constants/providers";
+import { queryKeys } from "@/constants/query_keys";
 import { useSetCaptureEnabled } from "@/hooks/mutations/use_set_capture_enabled";
 import { useSetProviderPause } from "@/hooks/mutations/use_set_provider_pause";
 import { useCaptureEnabled, usePausedProviderPackages } from "@/hooks/queries/use_capture_settings";
+import { useListenerHealth } from "@/hooks/queries/use_listener_health";
 import { useRawCaptures } from "@/hooks/queries/use_raw_captures";
 import { useRuleset } from "@/hooks/queries/use_ruleset";
 import { useLock } from "@/contexts/lock_context";
 import { exportAllData } from "@/lib/privacy/data_export";
+import { openAccessSettings } from "@/modules/notification_listener";
 import type { ProviderSwitchItem } from "@/components/privacy/provider_switch_list";
 
 /**
@@ -54,14 +59,49 @@ const SmartphoneIcon = registerIcon(Smartphone);
 
 export default function PrivacyScreen() {
   const { wipeAndStartOver } = useLock();
+  const queryClient = useQueryClient();
 
   const { data: captureEnabled } = useCaptureEnabled();
   const { data: pausedPackages } = usePausedProviderPackages();
   const { data: bundle } = useRuleset();
   const { data: captures } = useRawCaptures();
+  /**
+   * THE SWITCH ALONE CANNOT SAY WHETHER ANYTHING IS BEING READ. `capture_enabled`
+   * is the user's intent; whether the listener actually has Notification Access
+   * and is connected is a live native fact, and only this hook has it. Without
+   * it this screen printed "PeraPlano is reading your bank and e-wallet
+   * notifications" to a user who had declined the permission or had it revoked
+   * by their OEM — see components/privacy/capture_toggle.tsx's own note.
+   *
+   * NOT A SECOND SOURCE OF TRUTH FOR THE SWITCH: `TrackingHealth.captureEnabled`
+   * is deliberately ignored here, so the Switch keeps rendering off exactly one
+   * query (`useCaptureEnabled`) and the two can never disagree mid-write.
+   */
+  const { data: health } = useListenerHealth();
 
   const setCaptureEnabled = useSetCaptureEnabled();
   const setProviderPause = useSetProviderPause();
+
+  /**
+   * Notification Access is granted, and revoked, in ANOTHER app — the system
+   * settings screen the row below opens — with no callback to this one
+   * (`isAccessGranted`'s own doc, modules/notification_listener/index.ts). So
+   * the live read has to be re-asked on every foreground return, or the row
+   * would keep telling a user who just fixed the grant that access is still
+   * off. AppState rather than `useFocusEffect` for the reason
+   * app/(tabs)/more/index.tsx states for the same round trip: leaving PeraPlano
+   * never unfocuses the tab, so a focus effect would miss the one return that
+   * matters. Identical to app/(tabs)/more/listener_health.tsx's effect, which
+   * exists for this same grant.
+   */
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (next: AppStateStatus) => {
+      if (next === "active") {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.listenerHealth.all });
+      }
+    });
+    return () => subscription.remove();
+  }, [queryClient]);
 
   const [exporting, setExporting] = useState(false);
   const [wiping, setWiping] = useState(false);
@@ -224,7 +264,9 @@ export default function PrivacyScreen() {
       <SectionHeader title="Listening" />
       <CaptureToggle
         enabled={captureEnabled}
+        health={health}
         onChange={(enabled) => setCaptureEnabled.mutate(enabled)}
+        onOpenAccessSettings={openAccessSettings}
         busy={setCaptureEnabled.isPending}
       />
 
