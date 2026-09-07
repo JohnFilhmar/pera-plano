@@ -16,11 +16,7 @@ import { listGoals } from "@/lib/db/repos/goals_repo";
 import { countOpen } from "@/lib/db/repos/review_queue_repo";
 import { addDaysIso, toDateIso } from "@/lib/dates";
 import { hasPaydayAutoAllocation } from "@/lib/entitlements";
-import {
-  getIncomeSummary,
-  listPayEventsBetween,
-  type IncomeSummary,
-} from "@/lib/income/income_service";
+import { getIncomeSummary, listPayEventsBetween } from "@/lib/income/income_service";
 import { expandCategoryIds } from "@/lib/limits/limit_engine";
 import { getLimitStatuses } from "@/lib/limits/limit_service";
 import { limitFilterLabel } from "@/lib/limits/limit_label";
@@ -46,11 +42,10 @@ export async function buildSafeToSpendInput(
   today: IsoDate,
   now: number,
 ): Promise<SafeToSpendInput> {
-  // Income comes FIRST because two later steps need it: `getLimitStatuses`
-  // resolves a percent-of-income limit against the monthly equivalent (rule 4),
-  // and the contribution forecast needs the payday cadence (rule 6). One read
-  // rather than two, so the limit and the forecast cannot disagree about what
-  // the user earns.
+  // Income comes FIRST because `getLimitStatuses` resolves a percent-of-income
+  // limit against the monthly equivalent (rule 4). The contribution forecast
+  // takes NOTHING from the profile: since rule 6b it reserves from the credits
+  // that actually landed, so it reads the ledger rather than the average.
   const income = await getIncomeSummary(now);
   const limits = await candidateLimits(now, income.monthlyEquivalent);
 
@@ -75,7 +70,7 @@ export async function buildSafeToSpendInput(
 
   const [unpaidBills, plannedContributions, reviewQueueCount] = await Promise.all([
     unresolvedBills(now, horizonDays),
-    forecastContributions(windowStart, today, income),
+    forecastContributions(windowStart, today),
     countOpen(),
   ]);
 
@@ -188,7 +183,6 @@ async function unresolvedBills(now: number, horizonDays: number): Promise<Upcomi
 async function forecastContributions(
   windowStart: IsoDate,
   today: IsoDate,
-  income: IncomeSummary,
 ): Promise<PlannedContribution[]> {
   // Payday auto-allocation is a Plus capability (docs/05-monetization.md §3.2):
   // on free the `contributionRule` is RETAINED but no prompt ever fires, so
@@ -226,26 +220,57 @@ async function forecastContributions(
   );
   if (payEvents.length === 0) return [];
 
+  // Each credit as it landed. A FIXED rule reserves against these, unchanged:
+  // its amount does not depend on how much arrived, only on the fact that
+  // something did.
+  const credits = payEvents.map((event) => ({
+    // Dated to the pay's own day, so `evaluate`'s "counted from the start of
+    // the period" test lands on the day the money really arrived.
+    date: toDateIso(new Date(event.occurredAt)),
+    amount: event.amount,
+  }));
+
+  // The same pay collapsed to ONE ENTRY PER DAY, which is what a percent rule
+  // takes its share of: goals rule 13 computes it "from the sum of income
+  // Transactions detected on that payday date". A salary split into two credits
+  // on one day is one payday with one combined base — 10% of the pair, not 10%
+  // twice, and not 10% of either half. Keyed rather than run-length grouped, so
+  // the sum is right whatever order the credits come back in.
+  const paidOnDate = new Map<IsoDate, Centavos>();
+  for (const credit of credits) {
+    paidOnDate.set(credit.date, (paidOnDate.get(credit.date) ?? 0) + credit.amount);
+  }
+  const paydays = Array.from(paidOnDate, ([date, amount]) => ({ date, amount }));
+
   const contributions: PlannedContribution[] = [];
   for (const goal of goals) {
-    const amount = contributionAmount(goal, income.averageAmount);
-    if (amount <= 0) continue;
-    for (const event of payEvents) {
-      // Dated to the pay's own day, so `evaluate`'s "counted from the start of
-      // the period" test lands on the day the money really arrived.
-      contributions.push({ goalId: goal.id, amount, date: toDateIso(new Date(event.occurredAt)) });
+    const triggers = goal.contributionRule?.kind === "percent" ? paydays : credits;
+    for (const trigger of triggers) {
+      const amount = contributionAmount(goal, trigger.amount);
+      if (amount <= 0) continue;
+      contributions.push({ goalId: goal.id, amount, date: trigger.date });
     }
   }
   return contributions;
 }
 
-/** A fixed rule's own amount, or a percent rule's share of average pay. */
-function contributionAmount(goal: Goal, averageAmount: Centavos | null): Centavos {
+/** A fixed rule's own amount, or a percent rule's share of the pay that landed. */
+function contributionAmount(goal: Goal, paydayAmount: Centavos): Centavos {
   const rule = goal.contributionRule;
   if (rule === null) return 0;
   if (rule.kind === "fixed") return rule.amount;
-  // Percent OF ONE PAY PACKET, not of monthly income — the rule fires on a
-  // payday and takes its cut of what arrived, which is what `averageAmount` is.
-  return Math.round(((averageAmount ?? 0) * rule.percent) / 100);
+  // Percent OF THE PAY THAT ARRIVED (goals rule 13), never of the profile
+  // average. `IncomeProfile.averageAmount` is a smoothed trailing figure of
+  // what pay USUALLY is, so taking a cut of it reserves the wrong peso amount
+  // on exactly the paydays that differ: a thirteenth-month pay reserves too
+  // little, a short or half payday reserves more than actually came in.
+  // Goals rule 16 keeps the average as the fallback base for the payday
+  // PROMPT; it has no place here, because this term reserves nothing at all
+  // until money lands (safe-to-spend rule 6b).
+  //
+  // `percent` is a PLAIN percentage (10 means 10%), matching `requestedFor` in
+  // lib/goals/goals_service.ts and unlike `Limit.value`, which types/domain.ts
+  // documents as percent × 100.
+  return Math.round((paydayAmount * rule.percent) / 100);
 }
 

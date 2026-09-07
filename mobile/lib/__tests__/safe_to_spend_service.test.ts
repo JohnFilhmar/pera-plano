@@ -319,23 +319,53 @@ test("LATE PAY MOVES THE RESERVATION TO THE DAY IT ACTUALLY LANDED", async () =>
   expect(input.plannedContributions.map((c) => c.date)).toEqual(["2026-08-09"]);
 });
 
-test("A PERCENT RULE TAKES ITS SHARE OF ONE PAY PACKET, NOT OF MONTHLY INCOME", async () => {
-  // The rule fires on a payday and takes a cut of what arrived. Using the
-  // monthly figure would reserve double on a kinsenas earner.
+test("A PERCENT RULE TAKES ITS SHARE OF THE PAY THAT LANDED, NOT OF THE AVERAGE", async () => {
+  // Goals rule 13: the base is the income that arrived on that payday date.
+  // The profile average and the payday DIFFER here on purpose — a thirteenth
+  // month pay is the whole point of the rule, and against the ₱10,000.00
+  // average this would reserve ₱1,000.00 for a ₱13,000.00 packet.
   await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
   await setManualIncome({ cadence: "kinsenas", averageAmount: 1_000_000, sourceWalletIds: [cash.id] }, NOW);
   const savings = await createWallet({ name: "GSave" });
-  await createGoal({
+  const goal = await createGoal({
     name: "Emergency Fund",
     targetAmount: 5_000_000,
     linkedWalletId: savings.id,
     contributionRule: { kind: "percent", percent: 10 },
   });
-  await payday(1_000_000, new Date(2026, 7, 10, 9, 0).getTime());
+  await payday(1_300_000, new Date(2026, 7, 10, 9, 0).getTime());
 
   const input = await buildSafeToSpendInput(TODAY, NOW);
 
-  expect(input.plannedContributions[0].amount).toBe(100_000); // 10% of ₱10,000.00
+  // 10% of the ₱13,000.00 that landed, not of the ₱10,000.00 average.
+  expect(input.plannedContributions).toEqual([
+    { goalId: goal.id, amount: 130_000, date: "2026-08-10" },
+  ]);
+});
+
+test("A PERCENT RULE TAKES ONE SHARE OF A PAYDAY SPLIT ACROSS TWO CREDITS", async () => {
+  // Rule 13 computes from "the sum of income Transactions detected on that
+  // payday date". Employers split pay — a base credit plus an allowance — and
+  // per-credit shares would either reserve a slice of each half or, worse,
+  // reserve the whole share twice on one day.
+  await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
+  await setManualIncome({ cadence: "kinsenas", averageAmount: 1_000_000, sourceWalletIds: [cash.id] }, NOW);
+  const savings = await createWallet({ name: "GSave" });
+  const goal = await createGoal({
+    name: "Emergency Fund",
+    targetAmount: 5_000_000,
+    linkedWalletId: savings.id,
+    contributionRule: { kind: "percent", percent: 10 },
+  });
+  await payday(700_000, new Date(2026, 7, 10, 9, 0).getTime());
+  await payday(600_000, new Date(2026, 7, 10, 17, 0).getTime());
+
+  const input = await buildSafeToSpendInput(TODAY, NOW);
+
+  // One reservation of 10% of ₱13,000.00 — not two.
+  expect(input.plannedContributions).toEqual([
+    { goalId: goal.id, amount: 130_000, date: "2026-08-10" },
+  ]);
 });
 
 test("A GOAL WITH NO CONTRIBUTION RULE FORECASTS NOTHING", async () => {
