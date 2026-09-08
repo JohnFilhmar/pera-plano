@@ -413,6 +413,20 @@ test("findReplayCapture ignores a capture with no slot key", async () => {
   expect(await findReplayCapture(other, WINDOW_MS)).toBe(null);
 });
 
+test("findReplayCapture treats a blank slot key as no key at all", async () => {
+  // A slot key is `package|id|tag|user` and is never empty, so a blank one says
+  // exactly what a missing one says: this capture cannot name the slot it came
+  // from. Read as a real slot identity it is worse than useless — every keyless
+  // capture shares the ONE empty bucket, so two byte-identical captures look
+  // like "the same slot, same text" and the second is suppressed. That is
+  // dedupe-on-text-alone, which migration 018 rejected by name, reached by
+  // accident through a blank string.
+  await storeRawCapture(capture({ id: "cap-a", notificationKey: "" }), NOW);
+
+  const other = capture({ id: "cap-b", notificationKey: "" });
+  expect(await findReplayCapture(other, WINDOW_MS)).toBe(null);
+});
+
 test("findReplayCapture ignores identical text posted into a different slot", async () => {
   // Two separately-posted notifications. They may read identically — the same
   // ₱500.00 sent to the same person twice — and suppressing the second would
