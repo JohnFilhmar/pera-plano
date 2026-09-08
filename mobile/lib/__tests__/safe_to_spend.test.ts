@@ -272,7 +272,17 @@ test("THE PER-DAY FIGURE ROUNDS DOWN, NEVER UP", () => {
   input.plannedContributions = [];
   input.limits[0].spendInPeriod = 1_500_000 - 19; // 19 centavos over 20 days
 
-  expect(computeSafeToSpend(input).perDay).toBe(0);
+  // THE STATE IS ASSERTED WITH THE FIGURE, and it is the half that makes this
+  // case mean anything. `perDay: 0` is also what `numerator <= 0` returns —
+  // the over branch floors at zero too — so on its own this assertion holds
+  // against an implementation that had run out of headroom entirely, which is
+  // the opposite of the claim in the title. ₱0.19 still unspent, and floored
+  // to nothing per day, is the rounding direction under test.
+  const nearlyOut = computeSafeToSpend(input);
+  expect(nearlyOut.headroom).toBe(19);
+  expect(nearlyOut.overBy).toBe(0);
+  expect(nearlyOut.state).toBe("tight");
+  expect(nearlyOut.perDay).toBe(0);
 
   input.limits[0].spendInPeriod = 1_500_000 - 39; // 39 centavos over 20 days
   expect(computeSafeToSpend(input).perDay).toBe(1);

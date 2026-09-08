@@ -1,3 +1,26 @@
+// THE SUITE'S TIME ZONE, PINNED — first statement in the file, before any
+// module here constructs a Date.
+//
+// This app is built for one country and its calendar arithmetic is LOCAL
+// throughout: `localDateKey` groups the ledger by the local day, `toDateIso`
+// stamps a local date, and every fixture written as `new Date(y, m, d, h)` is
+// a local instant. Without a pin those all resolve against whatever the
+// running machine happens to be set to, which has two consequences and both
+// are bad. On a UTC or west-of-Greenwich box a test can fail for a reason that
+// has nothing to do with the code. Worse, and the reason this line exists: on
+// a box that happens to sit in +08:00 a test written to prove local-vs-UTC
+// handling can pass while proving nothing, because the fixture it chose lands
+// on the same calendar day in both. A pinned zone makes the difference between
+// those two readings a property of the FIXTURE, which a test author can then
+// choose deliberately (see the 7am fixture in
+// components/transactions/__tests__/ledger_list.test.tsx).
+//
+// Asia/Manila (+08:00, no DST) is the product's own zone — see lib/dates.ts.
+// Node 16+ re-reads `process.env.TZ` on the next Date operation, so assigning
+// it here is enough; there is no cached-offset trap on the versions this repo
+// builds with.
+process.env.TZ = "Asia/Manila";
+
 // NOTE on package.json's jest.moduleNameMapper entry for "^lucide-react-native$":
 // lucide-react-native ships ESM-only at its default entry point, which Jest 29
 // cannot parse (a bare `export ... from './icons/...mjs'` throws a syntax

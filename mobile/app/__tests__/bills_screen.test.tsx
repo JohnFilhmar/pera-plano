@@ -365,12 +365,19 @@ test("THE MATCH SHEET LISTS CANDIDATES WITH THEIR REASONS", async () => {
   screen.getByText("· Paid to Meralco");
 });
 
-test("CONFIRMING A MATCH RECORDS THE PAYMENT AND RESOLVES THE CYCLE", async () => {
+// ₱2,410.00 AGAINST A ₱2,350.00 BILL, and the merchant is what makes it a
+// candidate — the amount is only ever a scoring reason (the rejection test
+// below matches on "MERALCO KIOSK" with no amount agreement at all). An exact
+// ₱2,350.00 here would have made the rendered history row unreadable as
+// evidence: it is the estimate as well, so the row would look right whether
+// the screen printed the payment or the estimate, which is precisely the bug
+// GAP-065 fixed one test above.
+test("CONFIRMING A MATCH RECORDS THE PAYMENT, RESOLVES THE CYCLE, AND SHOWS IT IN HISTORY", async () => {
   const bill = await billDueOn(TODAY);
   const tx = await insertTransaction({
     walletId: cash.id,
     categoryId: UNCATEGORIZED_ID,
-    amount: 235000,
+    amount: 241000,
     direction: "out",
     occurredAt: systemClock.now() - DAY_MS,
     merchant: "MERALCO PAYMENT",
@@ -390,6 +397,13 @@ test("CONFIRMING A MATCH RECORDS THE PAYMENT AND RESOLVES THE CYCLE", async () =
     timeout: 30_000,
   });
   expect((await listCycles(bill.id))[0].state).toBe("paid");
+
+  // AND ON SCREEN. Two rows in `bill_payments` is not what the user gets out
+  // of confirming a match — a history entry is, and the write landing while
+  // the screen never refetches is a real failure mode this test could not see.
+  const row = within(await screen.findByTestId(`bill-history-${TODAY}`));
+  row.getByText("₱2,410.00");
+  row.getByText(`Paid ${formatDate(tx.occurredAt)}`);
 });
 
 test("REJECTING A MATCH RECORDS NOTHING AND STOPS OFFERING IT", async () => {

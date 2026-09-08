@@ -327,9 +327,8 @@ test("A FLAT LOAN'S PRINCIPAL IS THE TOTAL REPAYABLE, not the cash borrowed", ()
 
   fireEvent.press(screen.getByTestId("loan-kind-flat"));
   fireEvent.changeText(screen.getByTestId("loan-counterparty"), "Aling Nena");
-  // The principal field itself is not what gets submitted for a flat loan
-  // (installment * count is, below) — any positive amount just satisfies
-  // canSave.
+  // ₱5,000 typed here and never seen again — see the GAP-082 note at the foot
+  // of this test. It is typed only because `canSave` refuses without it.
   typeAmount("loan-principal", "5000");
   // ₱1,000 each — the old test typed "100000" as raw centavo digits.
   typeAmount("loan-installment", "1000");
@@ -348,6 +347,26 @@ test("A FLAT LOAN'S PRINCIPAL IS THE TOTAL REPAYABLE, not the cash borrowed", ()
   expect(values.schedule).toHaveLength(6);
   // No split — the interest is already inside the stated installment.
   expect(values.schedule?.[0].interestPortion).toBeUndefined();
+
+  // ------------------------------------------------------------------------
+  // PINS A KNOWN-OPEN DEFECT — GAP-082, blocked on an owner decision. Read
+  // this before "correcting" anything below it.
+  //
+  // ₱5,000 was typed into "How much?" above, the field previewed it back, and
+  // `canSave` refused to enable Save until it was there. None of that reaches
+  // the submission: `loan_form.tsx` sends `installment * count` for a flat
+  // loan, so the borrowed figure is discarded and the edit form later reseeds
+  // the same field from the stored TOTAL REPAYABLE. The user is asked for a
+  // number, shown it, gated on it, and it is thrown away.
+  //
+  // The assertions here describe WHAT THE FORM DOES, not what it should do.
+  // Storing ₱6,000 as the principal is itself correct — loans rule 2 defines a
+  // flat loan's balance as total repayable — and GAP-082's fix is a UI one
+  // (hide or relabel the field for flat, or persist the borrowed amount
+  // separately). When it lands, the two lines below are the ones to revisit:
+  // the typed ₱5,000 should either not be askable or not be lost.
+  expect(screen.getByTestId("loan-principal-preview")).toHaveTextContent("₱5,000.00");
+  expect(values.principal).not.toBe(500000);
 });
 
 test("the form cannot be saved without a counterparty and an amount", () => {

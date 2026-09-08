@@ -37,6 +37,7 @@ import { createWallet } from "@/lib/db/repos/wallets_repo";
 import { GATE_REASONS } from "@/lib/ingest/confidence_gate";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
+import { typeAmount } from "@/test_support/keypad";
 import type { RawCapture, ReviewKind, ReviewQueueItem, Wallet } from "@/types/domain";
 
 import { ConfidenceMeter, confidencePercent } from "../confidence_meter";
@@ -1050,7 +1051,44 @@ describe("the one-sided transfer card", () => {
     expect(preselected.props.accessibilityState?.selected).toBe(true);
   });
 
-  test("confirming reports the chosen wallet and fee", async () => {
+  // THE FEE HAS TO BE TYPED FOR THIS TEST TO BE ABOUT THE FEE. It used to
+  // touch the wallet rows only and then assert a fee of `0` — which is the
+  // initial state of `transferFeeText`, so the assertion held against a card
+  // that dropped the field's value on the floor, and equally against one with
+  // no fee field at all. ₱25.00 is a real GCash cash-in charge, and it is a
+  // figure nothing else on the card could have produced.
+  test("confirming reports the chosen wallet and the fee that was typed", async () => {
+    const onChoose = jest.fn();
+    const queued = oneSidedItem();
+
+    render(
+      <ReviewCard
+        item={queued}
+        wallets={[gcash, bpi]}
+        onPrimary={jest.fn()}
+        onSecondary={jest.fn()}
+        onChooseTransferWallet={onChoose}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    fireEvent.press(await screen.findByTestId(`one-sided-wallet-${bpi.id}`));
+    typeAmount("one-sided-fee", "25");
+    fireEvent.press(await screen.findByTestId(`review-primary-${queued.id}`));
+
+    expect(onChoose).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "one-sided-transfer" }),
+      bpi.id,
+      // Pesos in, centavos out — the field is a NumericField like every other
+      // money input, so "25" is ₱25.00 and not 25 centavos.
+      2500,
+    );
+  });
+
+  // The other half, kept separate rather than folded above: an untouched fee
+  // field means no fee, not `undefined` or `NaN`, and the pair only says
+  // something because the test above proves a typed fee changes the answer.
+  test("confirming with the fee field untouched reports no fee", async () => {
     const onChoose = jest.fn();
     const queued = oneSidedItem();
 

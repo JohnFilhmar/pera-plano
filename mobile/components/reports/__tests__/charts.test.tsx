@@ -196,10 +196,19 @@ test("THE TREND LINE RENDERS ONE POINT PER PERIOD", () => {
   expect(screen.getAllByTestId(/^trend-legend-/)).toHaveLength(points.length);
 });
 
+// The negative half of this used to query `trend-path`, an id NO COMPONENT HAS
+// EVER EMITTED — a leftover from the SVG polyline this chart replaced with
+// bars. `queryByTestId` on an id that cannot exist returns null against every
+// possible implementation, so the assertion was true even of a TrendLine that
+// drew a full chart off one point. The ids asserted now are the ones the
+// passing test directly above proves the component really renders, which is
+// what makes their absence here mean something.
 test("fewer than two periods shows an explanation instead of a broken line", () => {
   withTheme(<TrendLine points={[{ label: "2026-03-01", range: { from: "2026-03-01", to: "2026-03-31" }, spend: 100000, income: 0 }]} />);
 
-  expect(screen.queryByTestId("trend-path")).toBeNull();
+  expect(screen.queryAllByTestId(/^trend-point-/)).toHaveLength(0);
+  expect(screen.queryAllByTestId(/^trend-legend-/)).toHaveLength(0);
+  expect(screen.queryByTestId("trend-legend")).toBeNull();
   screen.getByText("Not enough periods yet to show a trend.");
 });
 
