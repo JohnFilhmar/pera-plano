@@ -246,8 +246,11 @@ export const queryClient = new QueryClient({
  * `transactions`; a bill pay on `bills` and `transactions`; a review
  * confirmation on `review_queue`.
  *
- * Local-midnight rollover is deliberately absent: no query is invalidated at
- * midnight, so it is a clock concern rather than a cache one.
+ * Local-midnight rollover is deliberately absent from this list, and always
+ * will be: it is a clock concern rather than a cache one — no write happens, so
+ * there is no invalidation here for the cascade to mirror. It is not
+ * unimplemented, though. `hooks/use_day_rollover.ts` owns it per screen, and
+ * app/(tabs)/index.tsx is the screen that uses it today.
  */
 const SAFE_TO_SPEND_SOURCE_ROOTS: readonly QueryKey[] = [
   queryKeys.transactions.all,
