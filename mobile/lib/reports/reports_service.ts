@@ -165,10 +165,15 @@ function resolveScope(
  * that names the day after — matching straight through to `range.to` (as
  * `parseDateIso` would) drops every transaction on the last day.
  */
-async function fetchTransactions(ranges: DateRange[]): Promise<Transaction[]> {
+async function fetchTransactions(ranges: DateRange[], today: IsoDate): Promise<Transaction[]> {
   const from = Math.min(...ranges.map((range) => parseDateIso(range.from).getTime()));
   const to = Math.max(...ranges.map((range) => endOfLocalDay(parseDateIso(range.to).getTime())));
-  return listTransactions({ from, to });
+  // `today` reaches the repository as `now` so the tier's history floor is
+  // measured from the day this report is FOR. This file's own clock discipline
+  // note says "`today` is a parameter everywhere. Nothing here reads" the wall
+  // clock — which was true of every line except this call, where the floor was
+  // being taken from `Date.now()` inside `listTransactions`.
+  return listTransactions({ from, to, now: parseDateIso(today).getTime() });
 }
 
 /**
@@ -189,7 +194,7 @@ export async function getReport(scope: ReportScope, today: IsoDate): Promise<Rep
   const trendRanges = tier === "plus" ? trailingMonths(today, TREND_TRAILING_MONTHS) : [range];
 
   const [transactions, categories] = await Promise.all([
-    fetchTransactions([range, ...trendRanges]),
+    fetchTransactions([range, ...trendRanges], today),
     // Hidden included: a report can reference a category the user has since
     // archived, and naming it here beats categoryBreakdown falling back to a
     // raw uuid (its own `?? categoryId`) when it can't find one.

@@ -166,6 +166,32 @@ test("MISSING TWO EXPECTED WINDOWS LAPSES THE PROFILE BUT KEEPS ITS VALUES", asy
   expect(summary.monthlyEquivalent).toBe(3700000);
 });
 
+test("A LAPSE WAITS FOR THE SECOND EXPECTED WINDOW TO CLOSE, NOT FOR 30 DAYS", async () => {
+  // Rule 13 counts WINDOWS: "two consecutive expected windows pass with no
+  // matched pay event". The last credit lands Aug 12, three days early for the
+  // Aug 15 window (rule 7's ordinary Philippine payday slide), so it MATCHED
+  // that window. The next two expected windows are katapusan, Aug 28 - Sep 3,
+  // and the 15th, Sep 12 - 18. The second closes at the end of Sep 18, so the
+  // profile is still confirmed on the 18th and lapses on the 19th.
+  //
+  // `floor(elapsedDays / 15)` reaches two on Sep 11 and lapses there: the "we
+  // haven't seen your usual pay — did it change?" prompt fires eight days
+  // early, while the September 15th pay is not yet even due.
+  await seedConfirmedKinsenas();
+  await credit(1850000, on(2026, 7, 12)); // Aug 12
+  const established = await refreshIncomeDetection(on(2026, 7, 14, 12));
+  expect(established.status).toBe("confirmed");
+
+  const onTheEighteenth = await refreshIncomeDetection(on(2026, 8, 18, 12));
+  expect(onTheEighteenth.status).toBe("confirmed");
+
+  const onTheNineteenth = await refreshIncomeDetection(on(2026, 8, 19, 12));
+  expect(onTheNineteenth.status).toBe("lapsed");
+  // Rule 13 again: a lapse keeps the figures it last knew, so percent-of-income
+  // Limits carry on rather than collapsing to Paused.
+  expect(onTheNineteenth.averageAmount).toBe(1850000);
+});
+
 // ---------------------------------------------------------------------------
 // Manual override (rules 14, 15)
 // ---------------------------------------------------------------------------
@@ -318,9 +344,20 @@ test("getMonthlyEquivalentIncome is the figure limits consume", async () => {
   expect(await getMonthlyEquivalentIncome(NOW)).toBe(3700000);
 });
 
-/** Sep 3 2026, noon — the trailing 90 days still reach back to Jun 5. */
+/** Sep 3 2026, noon — the trailing 90 days open at Jun 5 00:00. */
 const SEP_3 = on(2026, 8, 3, 12);
-/** Sep 4 2026, noon — the same window now starts Jun 6 at noon. */
+/**
+ * Sep 4 2026, noon — the same window has slid one whole day, to Jun 6 00:00.
+ *
+ * NOON ON BOTH, AND THE FIXTURE CREDIT SITS AT 10:00 ON JUN 5, which is what
+ * makes this pair discriminate. The window is anchored to local midnight
+ * (rule 9's "trailing 90 days" is a span of the user's calendar), so Jun 5 is
+ * wholly in on Sep 3 and wholly out on Sep 4. Measured from the instant instead
+ * — `now - 90 * DAY_MS`, which is what this file used to assert — Sep 3 noon
+ * opens the window at Jun 5 NOON and the 10:00 credit is already gone a day
+ * early, so the drift lands on the wrong day and, worse, lands halfway through
+ * one.
+ */
 const SEP_4 = on(2026, 8, 4, 12);
 /** Oct 1 2026, noon — the first day of the next monthly limit period. */
 const OCT_1 = on(2026, 9, 1, 12);
@@ -336,9 +373,15 @@ const OCT_1 = on(2026, 9, 1, 12);
  * over a quiet ledger, which is what makes the drift observable at all.
  *
  * All four are the same amount so rule 4's ±30% band keeps them in one stream.
+ *
+ * THE FIRST ONE IS ON JUN 5 AT 10:00 ON PURPOSE. It is the credit the trailing
+ * window drops between SEP_3 and SEP_4, and 10:00 is on the far side of the
+ * noon the two `now`s are taken at — so a window measured from the instant
+ * drops it a day early and a window measured from local midnight drops it on
+ * the day the calendar says. See SEP_4's note.
  */
 async function seedIrregularStream(): Promise<void> {
-  await credit(2000000, on(2026, 5, 6));
+  await credit(2000000, on(2026, 5, 5));
   await credit(2000000, on(2026, 6, 20));
   await credit(2000000, on(2026, 7, 6));
   await credit(2000000, on(2026, 7, 20));
@@ -372,9 +415,10 @@ test("AN AUTOMATIC MID-PERIOD DRIFT LEAVES THE CURRENT PERIOD'S BASE ALONE", asy
   // Limits rule 11: automatic income drift applies from the NEXT period start,
   // "so alerts never flap mid-period". On Sep 3 the trailing 90 days hold all
   // four credits, M is ₱26,666.67 and a 30% monthly limit has a base of
-  // ₱8,000.00. A ₱120 fare commits on Sep 4, the window slides past Jun 6, and
-  // M drops to ₱20,000.00 — with no new spending, and nothing on screen to
-  // explain a limit the user was inside suddenly reading as over.
+  // ₱8,000.00. A ₱120 fare commits on Sep 4, the window's first day is now
+  // Jun 6 so the Jun 5 credit is out, and M drops to ₱20,000.00 — with no new
+  // spending, and nothing on screen to explain a limit the user was inside
+  // suddenly reading as over.
   const percentLimit = await createLimit({
     scope: "monthly",
     basis: "percent-of-income",

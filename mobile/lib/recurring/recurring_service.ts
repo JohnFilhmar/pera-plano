@@ -130,7 +130,10 @@ const MONTHLY_FACTOR: Record<RecurringPeriod, number> = {
  */
 export async function refreshPatterns(now: number): Promise<RecurringPattern[]> {
   const from = now - LEDGER_WINDOW_DAYS * DAY_MS;
-  const transactions = await listTransactions({ from, to: now + 1 });
+  // `now` through to the repository as well: the tier's history floor is part of
+  // this window, and a floor read from the wall clock inside a repository is one
+  // instant this otherwise clock-injected pass cannot pin (lib/clock.ts).
+  const transactions = await listTransactions({ from, to: now + 1, now });
   const detected = detectPatterns(transactions, now);
 
   const suppressRules = await listUserRules("suppress-recurring");

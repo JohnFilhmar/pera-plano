@@ -20,7 +20,7 @@
 // rule 6 says "the 15th ±3 days (12th-18th)" and "katapusan ±3 days". This
 // plan's Global Constraints settle it: "where this plan and that spec disagree,
 // the spec wins and the plan is the bug."
-import { lastDayOfMonth, startOfLocalDay } from "@/lib/dates";
+import { lastDayOfMonth, startOfLocalDay, startOfLocalDayBefore } from "@/lib/dates";
 import type { IncomeCadence } from "@/types/domain";
 
 import type { CandidateEvent } from "./candidates";
@@ -63,6 +63,18 @@ type Attempt = {
 /** Whole local days between two instants, ignoring the time of day. */
 function dayGap(earlier: number, later: number): number {
   return Math.round((startOfLocalDay(later) - startOfLocalDay(earlier)) / DAY_MS);
+}
+
+/**
+ * Has the window around `anchor` finished, as of `now`?
+ *
+ * A window is the anchor ±`toleranceDays`, so it is still OPEN on its last day
+ * — rule 7's whole point is that pay legitimately arrives up to three days off
+ * the anchor, and a window cannot have "passed with no matched pay event"
+ * (rule 13) while pay could still arrive inside it and match.
+ */
+function windowClosed(anchor: number, now: number, toleranceDays: number): boolean {
+  return dayGap(anchor, now) > toleranceDays;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,18 +142,32 @@ function nextKinsenasAnchor(now: number): number {
  * double the user's income.
  */
 function tryKinsenas(events: CandidateEvent[], now: number): Attempt | null {
-  const from = now - DETECTION_WINDOW_DAYS * DAY_MS;
+  const from = startOfLocalDayBefore(now, DETECTION_WINDOW_DAYS);
   const anchors = kinsenasAnchorsBetween(from, now);
   if (anchors.length === 0) return null;
 
   const matchedIds: string[] = [];
-  const matchedWindows = anchors.map((anchor) => {
+  const windows = anchors.map((anchor) => {
     const hit = events.find(
       (event) => Math.abs(dayGap(anchor, event.occurredAt)) <= PAYDAY_TOLERANCE_DAYS,
     );
     if (hit) matchedIds.push(hit.transactionId);
-    return hit !== undefined;
+    return { matched: hit !== undefined, closed: windowClosed(anchor, now, PAYDAY_TOLERANCE_DAYS) };
   });
+
+  // A WINDOW THAT HAS NOT CLOSED YET IS NOT EVIDENCE OF ANYTHING, so it is
+  // dropped from the scoring below rather than counted as a miss. On the morning
+  // of the 15th the 15th's anchor is already in `anchors` (it is <= now) while
+  // its window runs to the 18th; scored as unmatched it resets `longestRun` to
+  // zero and knocks `matchedOfLastFive` down by one, so a confirmed kinsenas
+  // profile demoted itself on payday morning and re-confirmed once the credit
+  // landed — the income figure changing for a reason nothing on screen explains.
+  //
+  // IT IS ONLY DROPPED FROM THE SCORING, never from `matchedIds`: an early
+  // credit sitting in a still-open window is exactly the one `maybeEmitPayday`
+  // needs to find in `matchedEventIds` before it will announce a payday, and
+  // dropping it there would silently stop payday auto-allocation for on-time pay.
+  const matchedWindows = windows.filter((w) => w.matched || w.closed).map((w) => w.matched);
 
   let longestRun = 0;
   let run = 0;
@@ -274,7 +300,11 @@ function tryMonthly(events: CandidateEvent[]): Attempt | null {
  * auto-allocation prompt, and inventing one manufactures a payday.
  */
 export function detectCadence(events: CandidateEvent[], now: number): CadenceEvidence {
-  const from = now - DETECTION_WINDOW_DAYS * DAY_MS;
+  // LOCAL MIDNIGHT, not `now - 120 * DAY_MS`. Rule 5's "trailing 120 days" is a
+  // span of the user's calendar; measured from the instant, the cutoff slides
+  // forward through the boundary day as the clock runs, so the same ledger
+  // classifies differently at 09:59 and at 10:01 with nothing having changed.
+  const from = startOfLocalDayBefore(now, DETECTION_WINDOW_DAYS);
   const recent = [...events]
     .filter((event) => event.occurredAt >= from && event.occurredAt <= now)
     .sort((a, b) => a.occurredAt - b.occurredAt);
@@ -289,7 +319,7 @@ export function detectCadence(events: CandidateEvent[], now: number): CadenceEvi
   const provisional = attempts.find((attempt) => attempt !== null);
   if (provisional) return provisional;
 
-  const irregularFrom = now - IRREGULAR_WINDOW_DAYS * DAY_MS;
+  const irregularFrom = startOfLocalDayBefore(now, IRREGULAR_WINDOW_DAYS);
   const withinNinetyDays = recent.filter((event) => event.occurredAt >= irregularFrom);
 
   return {
@@ -299,4 +329,71 @@ export function detectCadence(events: CandidateEvent[], now: number): CadenceEvi
     // No window to project from. A number here would be a fabricated payday.
     expectedNextAt: null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// The lapse count (rule 13)
+// ---------------------------------------------------------------------------
+
+/** Rule 6's spacing for the two cadences whose windows are evenly spaced. */
+const NOMINAL_WINDOW_DAYS: Record<"weekly" | "monthly", number> = {
+  weekly: 7,
+  monthly: 30,
+};
+
+/** Rule 6's half-widths: weekly is "7 ±1 days", monthly "same calendar date ±3". */
+const NOMINAL_WINDOW_TOLERANCE_DAYS: Record<"weekly" | "monthly", number> = {
+  weekly: 1,
+  monthly: 3,
+};
+
+/**
+ * How many expected windows have CLOSED since `lastEventAt` with no pay event
+ * in them — rule 13's "two consecutive expected windows pass with no matched
+ * pay event", counted the way rule 13 words it.
+ *
+ * IT LIVES HERE BECAUSE RULE 6 DOES. What an expected window is — the 15th and
+ * katapusan for kinsenas, seven days for weekly, a month for monthly, each with
+ * its own tolerance — is this module's subject, and `income_service` counting
+ * windows for itself would be a second implementation of rule 6 free to
+ * disagree with the one that does the matching.
+ *
+ * WHY NOT `floor(elapsedDays / windowDays)`, which is what this replaces. That
+ * form starts the clock at the credit rather than at the window, and it ignores
+ * the tolerance entirely. Worked through with the spec's own arithmetic: a
+ * kinsenas stream whose last credit landed on August 12th matched the August
+ * 15th window (12th-18th). The next two expected windows are katapusan
+ * (August 28th - September 3rd) and the 15th (September 12th - 18th), so the
+ * second one passes unmatched at the end of September 18th and the profile
+ * lapses on the 19th. `floor(30 / 15)` reaches two on September 11th — eight
+ * days early, with the "we haven't seen your usual pay" prompt firing while the
+ * user's pay is not yet even late.
+ *
+ * `irregular` has no windows at all (rule 11), so it can never lapse.
+ */
+export function missedWindowsSince(
+  cadence: IncomeCadence,
+  lastEventAt: number,
+  now: number,
+): number {
+  if (cadence === "irregular") return 0;
+
+  if (cadence === "kinsenas") {
+    // From the credit's own local day, so the anchor the credit matched is in
+    // the list and is then excluded by the tolerance test below rather than
+    // being counted as a miss — an August 12th credit did not miss August 15th.
+    return kinsenasAnchorsBetween(startOfLocalDay(lastEventAt), now).filter(
+      (anchor) =>
+        windowClosed(anchor, now, PAYDAY_TOLERANCE_DAYS) &&
+        Math.abs(dayGap(anchor, lastEventAt)) > PAYDAY_TOLERANCE_DAYS,
+    ).length;
+  }
+
+  // Evenly spaced cadences need no anchor list: the k-th window opens
+  // `k * spacing` days after the last credit and closes `tolerance` days later,
+  // so the count is how many whole windows fit before today.
+  const spacing = NOMINAL_WINDOW_DAYS[cadence];
+  const tolerance = NOMINAL_WINDOW_TOLERANCE_DAYS[cadence];
+  const elapsedDays = dayGap(lastEventAt, now);
+  return Math.max(0, Math.ceil((elapsedDays - tolerance) / spacing) - 1);
 }

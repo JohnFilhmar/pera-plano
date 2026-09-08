@@ -202,6 +202,19 @@ export type TxFilter = {
    * the ledger, where an adjustment is history the user should see.
    */
   excludeAdjustments?: boolean;
+  /**
+   * The instant the tier's history floor is measured from. NOT a window bound —
+   * `from`/`to` are the window; this only says when "the last 90 days" is being
+   * asked about (docs/05-monetization.md §3.3).
+   *
+   * OPTIONAL, AND THAT IS THE COMPROMISE. lib/clock.ts's rule is that nothing
+   * under lib/ reads `Date.now()` itself, and a repository is the last place it
+   * belongs; but the ledger screens and hooks that read through here are
+   * composition edges with no clock of their own to pass. So a clock-injected
+   * caller supplies it and gets a pinnable, reproducible floor, and a caller
+   * that omits it falls back to the wall clock exactly as before.
+   */
+  now?: EpochMs;
 };
 
 // ---------- TransferLink ----------

@@ -103,6 +103,31 @@ export function startOfLocalDay(ms: number): number {
 }
 
 /**
+ * Local midnight opening the day `days` calendar days before the day `ms` falls
+ * in — the INCLUSIVE lower bound of a trailing-window query.
+ *
+ * NOT `startOfLocalDay(ms) - days * 86_400_000`, for the reason `addDaysIso`
+ * gives right above: subtracting a fixed duration encodes "a day is 24 hours",
+ * which is a different claim from "the square this many places back on the
+ * calendar", and the two only agree while the zone's offset never moves. The
+ * Philippines has no daylight saving today, so the two DO agree here — but this
+ * is the file that owns the distinction, and one zone's current politics is not
+ * a reason to write the arithmetic that is wrong in general. `new Date(y, m, d -
+ * days)` normalises the overflow through the same engine `setDate` uses, and
+ * lands on a real local midnight whatever the offset did in between.
+ *
+ * The boundary DAY IS INCLUDED: with `days` of 90 and `ms` on September 4th, the
+ * bound is June 6th 00:00, so a June 6th credit at 08:00 and one at 10:00 are
+ * both inside. That is the side contract §3's `[from, to)` already implies —
+ * `from` is inclusive — and the side that keeps a visibility window from hiding,
+ * at 10:01, a row it was showing at 09:59.
+ */
+export function startOfLocalDayBefore(ms: number, days: number): number {
+  const d = new Date(ms);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() - days).getTime();
+}
+
+/**
  * Local midnight opening the NEXT day — an EXCLUSIVE upper bound.
  *
  * Contract §3: date ranges are `[from, to)` everywhere, settled by the

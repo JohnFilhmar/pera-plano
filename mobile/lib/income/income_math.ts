@@ -22,6 +22,7 @@
 //    ₱0.00". Rule 9 has a "Minimum history" column precisely so that "we do not
 //    know yet" is sayable, and `IncomeProfile.averageAmount` is already
 //    `Centavos | null`.
+import { startOfLocalDayBefore } from "@/lib/dates";
 import type { Centavos, IncomeCadence } from "@/types/domain";
 
 import type { CandidateEvent } from "./candidates";
@@ -44,7 +45,6 @@ const MINIMUM_EVENTS: Record<IncomeCadence, number> = {
 /** Rule 9's irregular row sums this window and divides by three. */
 const IRREGULAR_WINDOW_DAYS = 90;
 const IRREGULAR_MONTHS = 3;
-const DAY_MS = 86_400_000;
 
 /**
  * Nearest centavo, HALF AWAY FROM ZERO.
@@ -92,7 +92,15 @@ export function averageAmountFor(
   now: number,
 ): Centavos | null {
   if (cadence === "irregular") {
-    const from = now - IRREGULAR_WINDOW_DAYS * DAY_MS;
+    // A LOCAL-MIDNIGHT BOUND, not `now - 90 * DAY_MS`. Measured from the instant,
+    // the cutoff walks forward with the wall clock: at 09:00 the window opens at
+    // 09:00 on the boundary day and at 10:01 it opens at 10:01, so a credit that
+    // landed at 10:00 that day drops out of the sum between two reads and the
+    // user's income figure changes with nothing having happened. Rule 9's
+    // "trailing 90 days" is a statement about the calendar, like every other
+    // window in this app, so the bound is the boundary day's midnight and the
+    // whole of that day is in.
+    const from = startOfLocalDayBefore(now, IRREGULAR_WINDOW_DAYS);
     const withinWindow = events.filter(
       (event) => event.occurredAt >= from && event.occurredAt <= now,
     );

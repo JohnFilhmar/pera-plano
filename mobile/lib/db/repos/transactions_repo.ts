@@ -1,6 +1,6 @@
 // lib/db/repos/transactions_repo.ts — the only SQL surface for the ledger
 // (interface contract §3). Windows are [from, to): `from` inclusive, `to` exclusive.
-import { addDaysIso } from "@/lib/dates";
+import { addDaysIso, startOfLocalDayBefore } from "@/lib/dates";
 import { getDatabase } from "@/lib/db/database";
 import { rowToTransaction, transactionToRow, type TransactionRow } from "@/lib/db/mappers";
 import { historyWindowDays } from "@/lib/entitlements";
@@ -56,10 +56,23 @@ async function settleBalance(
  * Earliest `occurred_at` the current tier may see, or null when unlimited.
  * A VISIBILITY floor only — nothing is deleted and wallet balances are
  * unaffected (docs/05-monetization.md §2/§3.3).
+ *
+ * A LOCAL-MIDNIGHT FLOOR, AND `now` IS AN ARGUMENT. Both halves matter and both
+ * were wrong. `Date.now() - 90 * DAY_MS` put a live wall-clock read inside a
+ * repository, which lib/clock.ts forbids outright — "no engine or service under
+ * lib/ calls `Date.now()`... only the composition edges reach for
+ * `systemClock`" — so nothing downstream could pin the floor, and a Free-tier
+ * fixture written 90 days before a test ran would quietly stop being visible.
+ * It also made the cutoff an instant rather than a day: at 09:00 the floor sat
+ * at 09:00 on the boundary day, so a credit stamped 08:00 that day was hidden
+ * while one stamped 10:00 was shown, and the boundary crept forward hour by
+ * hour. §3.3 hides records "older than 90 days", which is a claim about the
+ * calendar; `startOfLocalDayBefore` makes the whole boundary day visible and
+ * moves the floor only when the local date does.
  */
-function historyFloor(): number | null {
+function historyFloor(now: number): number | null {
   const days = historyWindowDays();
-  return days === null ? null : Date.now() - days * DAY_MS;
+  return days === null ? null : startOfLocalDayBefore(now, days);
 }
 
 /** The wallet's balance as it stands right now, or 0 when the id has no row. */
@@ -621,7 +634,7 @@ export async function listTransactions(filter: TxFilter): Promise<Transaction[]>
   const clauses: string[] = [];
   const params: (string | number)[] = [];
 
-  const floor = historyFloor();
+  const floor = historyFloor(filter.now ?? Date.now());
   const from =
     floor === null ? filter.from : Math.max(filter.from ?? Number.NEGATIVE_INFINITY, floor);
   if (from !== undefined && Number.isFinite(from)) {
@@ -682,11 +695,13 @@ export async function sumSpend(args: {
   to: number;
   categoryIds?: string[];
   walletIds?: string[];
+  /** Same meaning and same fallback as `TxFilter.now`: when the floor is measured. */
+  now?: number;
 }): Promise<Centavos> {
   if (args.categoryIds?.length === 0 || args.walletIds?.length === 0) return 0;
 
   const db = await getDatabase();
-  const floor = historyFloor();
+  const floor = historyFloor(args.now ?? Date.now());
   const from = floor === null ? args.from : Math.max(args.from, floor);
 
   const clauses = [

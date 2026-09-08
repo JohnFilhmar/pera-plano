@@ -333,6 +333,105 @@ test("free tier clamps sumSpend and listTransactions to the 90-day window", asyn
 });
 
 // ---------------------------------------------------------------------------
+// The history floor is a DAY, and it comes from the caller (GAP-047)
+// ---------------------------------------------------------------------------
+//
+// docs/05-monetization.md §3.3 hides records "older than 90 days" — a claim
+// about the user's calendar, like every other window in this app. Computed as
+// `Date.now() - 90 * DAY` it was neither of those things: it was an instant, so
+// the cutoff crept forward through the boundary day hour by hour and a row
+// visible at 09:59 vanished at 10:01; and it was the wall clock read inside a
+// repository, which lib/clock.ts forbids outright — "no engine or service under
+// lib/ calls `Date.now()`" — so nothing downstream could pin it.
+//
+// The fixtures are the pair from the gap's own probe: with `now` at 09:00 on
+// Sep 4 2026 the 90-day boundary day is Jun 6 (Sep 4 - 31 = Aug 4, - 31 =
+// Jul 4, - 30 = Jun 4, - 2 = Jun 2... counted the other way: Jun 6 + 30 = Jul 6,
+// + 31 = Aug 6, + 29 = Sep 4). A credit at 08:00 that day is INSIDE a
+// midnight-anchored window and outside an instant-anchored one; a credit at
+// 10:00 is inside both.
+describe("the Free-tier history floor", () => {
+  const NOW_SEP_4_9AM = new Date(2026, 8, 4, 9, 0).getTime();
+
+  async function seedBoundaryRows(): Promise<void> {
+    for (const [label, at] of [
+      ["day-before", new Date(2026, 5, 5, 23, 59)],
+      ["boundary-08", new Date(2026, 5, 6, 8, 0)],
+      ["boundary-10", new Date(2026, 5, 6, 10, 0)],
+      ["recent", new Date(2026, 8, 1, 10, 0)],
+    ] as const) {
+      await insertTransaction({
+        walletId,
+        categoryId: CATEGORY_ID,
+        amount: 100,
+        direction: "out",
+        occurredAt: at.getTime(),
+        merchant: label,
+        source: "manual",
+        confidence: 1,
+      });
+    }
+  }
+
+  test("A ROW AT 08:00 AND ONE AT 10:00 ON THE BOUNDARY DAY ARE BOTH VISIBLE", async () => {
+    __setTierForTests("free");
+    await seedBoundaryRows();
+
+    const merchants = (await listTransactions({ now: NOW_SEP_4_9AM })).map((row) => row.merchant);
+
+    expect(merchants).toEqual(expect.arrayContaining(["boundary-08", "boundary-10", "recent"]));
+    // Inclusive at the boundary DAY, exclusive before it: contract §3 makes
+    // `from` inclusive, and reaching a day further back would make 90 days 91.
+    expect(merchants).not.toContain("day-before");
+  });
+
+  test("the floor comes from the caller's `now`, not from the wall clock", async () => {
+    __setTierForTests("free");
+    await seedBoundaryRows();
+
+    // Two reads, one process clock, two different answers — which is only
+    // possible if the floor came from the argument. On Sep 4 the boundary day is
+    // Jun 6 and the two Jun 6 rows are in; on Sep 5 it is Jun 7 and they are out.
+    const onSep4 = (await listTransactions({ now: NOW_SEP_4_9AM })).map((row) => row.merchant);
+    const onSep5 = (
+      await listTransactions({ now: new Date(2026, 8, 5, 9, 0).getTime() })
+    ).map((row) => row.merchant);
+
+    expect(onSep4).toContain("boundary-10");
+    expect(onSep5).not.toContain("boundary-10");
+    expect(onSep5).toEqual(["recent"]);
+  });
+
+  test("an omitted `now` still falls back to the wall clock", async () => {
+    // The fallback is what keeps the ledger screens and hooks — composition
+    // edges with no clock of their own — working unchanged.
+    __setTierForTests("free");
+    await insertTransaction({
+      walletId,
+      categoryId: CATEGORY_ID,
+      amount: 100,
+      direction: "out",
+      occurredAt: Date.now() - 10 * DAY,
+      merchant: "recent",
+      source: "manual",
+      confidence: 1,
+    });
+    await insertTransaction({
+      walletId,
+      categoryId: CATEGORY_ID,
+      amount: 900,
+      direction: "out",
+      occurredAt: Date.now() - 100 * DAY,
+      merchant: "ancient",
+      source: "manual",
+      confidence: 1,
+    });
+
+    expect((await listTransactions({})).map((row) => row.merchant)).toEqual(["recent"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Discriminating suite below. The tests above prove the shape from the brief;
 // these are built so a plausible-but-broken implementation (dropped transfer
 // filter, flipped range bound, silently-ignored filter, insertion-order leak,

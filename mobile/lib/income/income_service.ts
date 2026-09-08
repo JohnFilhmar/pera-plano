@@ -49,7 +49,12 @@ import { refreshLimitBase } from "@/lib/limits/limit_service";
 import { UNKNOWN_INCOME_DETECTION, type IncomeDetectionState } from "@/types/control";
 import type { Centavos, EpochMs, IncomeCadence } from "@/types/domain";
 
-import { CONFIRMED_CONFIDENCE, detectCadence, PROVISIONAL_CONFIDENCE } from "./cadence_detector";
+import {
+  CONFIRMED_CONFIDENCE,
+  detectCadence,
+  missedWindowsSince,
+  PROVISIONAL_CONFIDENCE,
+} from "./cadence_detector";
 import { primaryStream, selectCandidates, type CandidateEvent } from "./candidates";
 import { averageAmountFor, monthlyEquivalent } from "./income_math";
 
@@ -129,16 +134,6 @@ const CURRENT_WINDOW_MS = 7 * DAY_MS;
 /** How many emitted payday ids to remember. See `emittedPaydayTransactionIds`. */
 const EMITTED_HISTORY = 50;
 
-/** Nominal length of one expected window, for the lapse count. */
-const WINDOW_DAYS: Record<IncomeCadence, number> = {
-  kinsenas: 15,
-  weekly: 7,
-  monthly: 30,
-  // Irregular has no windows (rule 11), so it can never lapse. A large number
-  // rather than a special case: `missedWindows` stays 0 for any real gap.
-  irregular: Number.MAX_SAFE_INTEGER,
-};
-
 type Detection = {
   cadence: IncomeCadence;
   confidence: number;
@@ -159,7 +154,14 @@ async function detect(now: number): Promise<Detection> {
   // stamped at exactly `now` falls outside `to: now` — and the credit that just
   // landed is precisely the one `maybeEmitPayday` is being asked about. The
   // symptom is a payday that only announces itself a day late.
-  const transactions = await listTransactions({ from, to: now + 1 });
+  //
+  // `now` IS PASSED THROUGH so the tier's history floor is measured against the
+  // instant this detection pass is running at, not against whatever the wall
+  // clock says inside the repository. Everything in this file is clock-injected
+  // for the reason lib/clock.ts gives; a repository reaching for `Date.now()`
+  // behind it would put one un-pinnable instant in the middle of a pinned
+  // calculation.
+  const transactions = await listTransactions({ from, to: now + 1, now });
   const loanPaymentIds = new Set(await listLoanPaymentTransactionIds());
 
   const stream = primaryStream(selectCandidates(transactions, loanPaymentIds));
@@ -263,13 +265,18 @@ function divergentDetection(
  * Derived rather than stored: `IncomeDetectionState` has nowhere to keep the
  * previous `expectedNextAt`, and deriving it means a lapse cannot drift out of
  * step with the ledger it is supposed to describe.
+ *
+ * THE COUNTING ITSELF IS `cadence_detector`'s, because rule 6 is. This function
+ * owns only the two edges rule 13 leaves to the service: an EMPTY stream lapses
+ * outright — there is no last credit to count from, and a confirmed profile
+ * whose evidence has entirely fallen out of the trailing window has certainly
+ * missed two windows — and everything else is a question about expected windows,
+ * which the detector answers.
  */
 function missedWindowsFor(detection: Detection, previousCadence: IncomeCadence, now: number): number {
-  const windowDays = WINDOW_DAYS[previousCadence];
   const last = detection.stream[detection.stream.length - 1];
   if (last === undefined) return LAPSE_AFTER_MISSED_WINDOWS;
-  const elapsedDays = (now - last.occurredAt) / DAY_MS;
-  return Math.floor(elapsedDays / windowDays);
+  return missedWindowsSince(previousCadence, last.occurredAt, now);
 }
 
 function statusFor(

@@ -10,6 +10,7 @@
 import {
   CONFIRMED_CONFIDENCE,
   detectCadence,
+  missedWindowsSince,
   PROVISIONAL_CONFIDENCE,
   UNCONFIRMED_CONFIDENCE,
 } from "../cadence_detector";
@@ -336,6 +337,152 @@ test("detection is pure — same fixtures and same now, same answer, input untou
 
   expect(first).toEqual(second);
   expect(events.map((event) => event.transactionId)).toEqual(snapshot);
+});
+
+// ---------------------------------------------------------------------------
+// Windows are DAYS, not milliseconds from now (GAP-047)
+// ---------------------------------------------------------------------------
+
+/** A candidate credit at an explicit local hour, where the hour is the point. */
+function atHour(id: string, y: number, m: number, d: number, hour: number): CandidateEvent {
+  return { ...at(id, y, m, d), occurredAt: new Date(y, m, d, hour, 0).getTime() };
+}
+
+test("THE 120-DAY WINDOW OPENS AT LOCAL MIDNIGHT, NOT AT THIS HOUR", () => {
+  // now is 09:00 on Jul 29 2026, so the trailing 120 days open on Mar 31
+  // (Mar 31 + 30 = Apr 30, + 31 = May 31, + 30 = Jun 30, + 29 = Jul 29). Mar 31
+  // is also a katapusan anchor, which is what makes the boundary observable:
+  // the three credits below are three CONSECUTIVE matched windows, rule 6's
+  // provisional threshold, and the run is only three if the Mar 31 credit is in
+  // the window at all.
+  //
+  // Measured as `now - 120 * DAY_MS` the window opens at 09:00 on Mar 31, so an
+  // 08:00 credit that day falls out, the run drops to two, kinsenas fails
+  // entirely and the answer becomes the irregular fallback — an income figure
+  // that changes on the hour with no ledger change behind it.
+  const events = [
+    atHour("e1", 2026, 2, 31, 8), // Mar 31, 08:00 — the boundary day
+    at("e2", 2026, 3, 15),
+    at("e3", 2026, 3, 30),
+  ];
+
+  const evidence = detectCadence(events, new Date(2026, 6, 29, 9, 0).getTime());
+
+  expect(evidence.cadence).toBe("kinsenas");
+  expect(evidence.confidence).toBe(PROVISIONAL_CONFIDENCE);
+  expect(evidence.matchedEventIds).toContain("e1");
+});
+
+test("a credit at 08:00 and one at 10:00 on the boundary day are treated the same", () => {
+  // The acceptance criterion, stated as an equality so it cannot be satisfied by
+  // both hours being excluded. 10:00 is after `now`'s hour and 08:00 is before
+  // it, which is precisely where the two arithmetics disagree.
+  const now = new Date(2026, 6, 29, 9, 0).getTime();
+  const rest = [at("e2", 2026, 3, 15), at("e3", 2026, 3, 30)];
+
+  const early = detectCadence([atHour("e1", 2026, 2, 31, 8), ...rest], now);
+  const late = detectCadence([atHour("e1", 2026, 2, 31, 10), ...rest], now);
+
+  expect(early).toEqual(late);
+  expect(early.cadence).toBe("kinsenas");
+});
+
+test("A WINDOW THAT HAS NOT CLOSED YET IS NOT COUNTED AS A MISS", () => {
+  // Rule 7: the ±3-day window exists because pay legitimately moves. So on the
+  // morning of the 15th the 15th's window is still open, and scoring it as a
+  // miss is a statement about pay that is not yet late.
+  //
+  // This stream matched five straight windows and then genuinely missed
+  // katapusan on Jul 31 — 4 of the last 5, which is rule 6's confirmed
+  // threshold, and it holds all through Aug 14. Count the still-open Aug 15
+  // window as a sixth, unmatched, expected window and the last five become
+  // 3 of 5: the profile demotes itself to provisional on payday morning and
+  // re-confirms once the credit lands, with the user's monthly-equivalent income
+  // moving both times.
+  const events = [
+    at("e1", 2026, 4, 15), // May 15
+    at("e2", 2026, 4, 31), // May 31
+    at("e3", 2026, 5, 15), // Jun 15
+    at("e4", 2026, 5, 30), // Jun 30
+    at("e5", 2026, 6, 15), // Jul 15
+    // Jul 31 missed — nothing between Jul 28 and Aug 3.
+  ];
+
+  const dayBefore = detectCadence(events, on(2026, 7, 14));
+  const paydayMorning = detectCadence(events, on(2026, 7, 15));
+
+  expect(dayBefore.confidence).toBe(CONFIRMED_CONFIDENCE);
+  expect(paydayMorning.cadence).toBe("kinsenas");
+  expect(paydayMorning.confidence).toBe(CONFIRMED_CONFIDENCE);
+});
+
+test("an early credit inside a still-open window is STILL a matched event", () => {
+  // The open window is dropped from the SCORING and from nothing else. Dropping
+  // it from `matchedEventIds` instead would be silent and expensive:
+  // `maybeEmitPayday` refuses to announce a payday whose transaction is not in
+  // this list (income rule 11), and the payday event is what moves money into a
+  // Goal (rule 12). Pay that arrives on or slightly before the anchor is the
+  // ordinary case, not the edge case.
+  const events = [
+    at("e1", 2026, 4, 15),
+    at("e2", 2026, 4, 31),
+    at("e3", 2026, 5, 15),
+    at("e4", 2026, 5, 30),
+    at("e5", 2026, 6, 15),
+    at("e6", 2026, 6, 31),
+    at("early", 2026, 7, 13), // Aug 13 — inside the Aug 15 window
+  ];
+
+  // Aug 16: the Aug 15 anchor is now in the list and its window runs to the
+  // 18th, so this is a matched window that has not closed.
+  const evidence = detectCadence(events, on(2026, 7, 16));
+
+  expect(evidence.matchedEventIds).toContain("early");
+});
+
+// ---------------------------------------------------------------------------
+// The lapse count (rule 13)
+// ---------------------------------------------------------------------------
+test("A KINSENAS LAPSE IS COUNTED IN CLOSED WINDOWS, NOT IN ELAPSED DAYS", () => {
+  // Rule 13: "two consecutive expected windows pass with no matched pay event".
+  // Last credit Aug 12, which matched the Aug 15 window (the 12th-18th). The
+  // next expected windows are katapusan (Aug 28 - Sep 3) and the 15th
+  // (Sep 12 - 18), so the second one passes unmatched at the end of Sep 18 and
+  // the count reaches two on Sep 19.
+  //
+  // `floor(elapsedDays / 15)`, which this replaces, reaches two on Sep 11 —
+  // eight days early, firing "we haven't seen your usual pay" while the pay is
+  // not yet even due.
+  const lastCredit = on(2026, 7, 12);
+
+  expect(missedWindowsSince("kinsenas", lastCredit, on(2026, 8, 11))).toBe(1); // Sep 11
+  expect(missedWindowsSince("kinsenas", lastCredit, on(2026, 8, 18))).toBe(1); // Sep 18
+  expect(missedWindowsSince("kinsenas", lastCredit, on(2026, 8, 19))).toBe(2); // Sep 19
+});
+
+test("the window the last credit matched is not itself a miss", () => {
+  // Aug 12 is three days early for the Aug 15 anchor, which rule 7 says is the
+  // normal Philippine payday slide. Counting anchors that merely fall after the
+  // credit would call it a missed window and lapse the profile a fortnight early.
+  expect(missedWindowsSince("kinsenas", on(2026, 7, 12), on(2026, 7, 25))).toBe(0);
+});
+
+test("weekly and monthly lapses wait for their own tolerance too", () => {
+  // Weekly windows are 7 ±1 days, so the second one runs to day 15 and cannot
+  // have passed until day 16. Monthly is a month ±3: the second window runs to
+  // day 63, so it has passed on day 64. `floor(elapsedDays / windowDays)`
+  // reaches two on day 14 and on day 60 — both while the window is still open.
+  const lastCredit = on(2026, 5, 1); // Jun 1
+
+  expect(missedWindowsSince("weekly", lastCredit, on(2026, 5, 15))).toBe(1); // day 14
+  expect(missedWindowsSince("weekly", lastCredit, on(2026, 5, 17))).toBe(2); // day 16
+
+  expect(missedWindowsSince("monthly", lastCredit, on(2026, 6, 31))).toBe(1); // day 60
+  expect(missedWindowsSince("monthly", lastCredit, on(2026, 7, 4))).toBe(2); // day 64
+});
+
+test("irregular has no windows, so it never lapses (rule 11)", () => {
+  expect(missedWindowsSince("irregular", on(2026, 0, 1), on(2026, 8, 1))).toBe(0);
 });
 
 test("event order in does not change the answer", () => {
