@@ -24,15 +24,33 @@
 // recovery_unlock_form.tsx's copy, written for the DIFFERENT moment of
 // recovering after a settings change).
 //
-// NOTHING ON THIS SCREEN MOVES THE WORDS OFF IT (GAP-017). The twelve words
-// are the second unwrap path for the entire ledger (docs §5), so every
-// affordance that copies them somewhere is a leak of the whole thing. The
-// "Copy or share" control that used to sit below the list handed them to the
-// OS share sheet -- that is, to whatever third-party app the user picked,
-// plus Android's share history and usually a clipboard on the way. The words
-// are no longer `selectable` for the same reason: long-press selection is a
-// one-tap route to the system clipboard. Writing them down by hand is the
-// only way off this screen, which is exactly what the confirm step checks.
+// ONE WAY OFF THIS SCREEN, AND IT IS NOT THE ONE GAP-017 REMOVED. The twelve
+// words are the second unwrap path for the entire ledger (docs §5), so every
+// affordance that copies them somewhere is a leak of the whole thing, and
+// `83b1253` removed the "Copy or share" control that handed them to the OS
+// share sheet -- to whatever third-party app the user picked, plus Android's
+// share history and usually a clipboard on the way there. That left writing
+// twelve words on paper as the only exit.
+//
+// The owner's call, 2026-09-08: that is too much to ask of every user at first
+// run. SAVE is the replacement, and it is not the share sheet under another
+// name: the Storage Access Framework asks the USER which folder, then hands
+// this app a one-shot URI to write one file into. No third-party app receives
+// the words, nothing enters share history, no clipboard is touched, and the app
+// keeps no standing permission afterwards. lib/crypto/phrase_export.ts owns the
+// operation; this component only forwards the tap.
+//
+// THERE IS NO COPY BUTTON, AND THAT WAS DECIDED RATHER THAN FORGOTTEN. One was
+// planned beside Save, justified by Android's ClipDescription.EXTRA_IS_SENSITIVE
+// (hides the 13+ paste preview, keeps the words out of Gboard's clipboard
+// history). expo-clipboard exposes that as `isSensitive` -- and not in the
+// version SDK 54 pins, whose SetStringOptions carries only `inputFormat`. A
+// Copy button here would therefore have been the original leak with none of the
+// mitigation that justified reopening it. phrase_export.ts's header records
+// what it would take to bring it back.
+//
+// The words are also still not `selectable`: long-press selection is the same
+// clipboard route by another name, and nothing above replaces it.
 //
 // THE PROMISE IS SCOPED TO THIS PHONE, DELIBERATELY (GAP-100). The copy below
 // used to open with "If you ever get a new phone" -- half of a sentence whose
@@ -91,9 +109,29 @@ const CAPTURE_GUARD_KEY = "recovery-phrase-display";
 export function PhraseDisplay({
   words,
   onContinue,
+  onSave,
+  notice,
 }: {
   words: string[];
   onContinue: () => void;
+  /**
+   * Opens the folder picker and writes the file. Owned by the caller.
+   *
+   * REQUIRED, NOT OPTIONAL. An optional handler would let a caller mount this
+   * screen with a Save button that silently does nothing, on the one screen
+   * where the user's belief that they saved their words is the whole point.
+   */
+  onSave: () => void;
+  /**
+   * What just happened, in the user's words -- "Saved.", "Copied." and the
+   * failure cases.
+   *
+   * IT IS A PROP, NOT STATE HERE, because the outcomes it reports belong to
+   * operations this component does not perform. A local `useState` would have
+   * this file guessing whether a save it did not run succeeded, which is how a
+   * screen ends up claiming a file was written that was not.
+   */
+  notice?: string | null;
 }) {
   usePreventScreenCapture(CAPTURE_GUARD_KEY);
 
@@ -147,16 +185,42 @@ export function PhraseDisplay({
         </View>
       </ScrollView>
 
+      {/* `secondary`, so it does not compete with "I've saved these words"
+          below. Saving is the convenience; confirming is the step. */}
+      <View className="mt-4">
+        <Button
+          testID="phrase-save-button"
+          title="Save to a file"
+          variant="secondary"
+          onPress={onSave}
+        />
+      </View>
+
+      {notice === null || notice === undefined ? null : (
+        <Text
+          testID="phrase-export-notice"
+          className="mt-2 text-center text-secondary font-medium text-fg-2 dark:text-fg-2-dark"
+        >
+          {notice}
+        </Text>
+      )}
+
+      {/* WHAT THIS PARAGRAPH MAY AND MAY NOT PROMISE. FLAG_SECURE is
+          Android-effective, not a guarantee (see the header), and the button
+          above puts the words somewhere this app does not control. So it says
+          what is true of the destination and stops: a file is only as private
+          as the folder it is put in. It does not tell the user their words are
+          safe, because once they pick a folder that is no longer something this
+          app knows. */}
       <Text className="mt-4 text-center text-secondary font-medium text-warn dark:text-warn-dark">
-        Screenshots are turned off on this screen, so these words cannot reach your photo
-        library. Write them on paper and keep it somewhere private -- don't photograph them
-        either.
+        Screenshots are turned off on this screen. Whether you save the file or write the words
+        down, keep them somewhere only you can reach -- and don't photograph them.
       </Text>
 
       <View className="mt-3">
         <Button
           testID="phrase-continue-button"
-          title="I've written these down"
+          title="I've saved these words"
           size="lg"
           onPress={onContinue}
         />

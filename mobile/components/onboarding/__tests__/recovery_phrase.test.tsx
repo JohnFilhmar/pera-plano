@@ -471,15 +471,31 @@ test("the displayed words are not selectable -- no long-press route to the clipb
   }
 });
 
-test("warns that screenshots are off here, and still says to write the words on paper", async () => {
+test("warns that screenshots are off here, and still tells the user to keep the words private", async () => {
   await renderScreenAndWaitForWords();
 
   const tree = JSON.stringify(screen.toJSON()).toLowerCase();
   expect(tree).toMatch(/screenshots are turned off/);
   // The guard is Android-effective, not absolute -- a camera still works, so
   // the copy must not stop at "you're safe here".
-  expect(tree).toMatch(/on paper/);
+  //
+  // THIS USED TO PIN /on paper/, and paper used to be the only way off this
+  // screen. Since the save affordance landed there are two, so the assertion
+  // moved to the part that is true of BOTH and is the part that actually
+  // matters: wherever the words end up, only the user should be able to reach
+  // them. Pinning "on paper" now would fail the screen for offering the file
+  // the owner asked for, which is the opposite of what this test is guarding.
+  expect(tree).toMatch(/keep them somewhere only you can reach/);
   expect(tree).toMatch(/photograph/);
+});
+
+// THE SAVE AFFORDANCE ITSELF. The button's absence would not fail any test
+// above -- the screen would simply render as it did before the owner asked for
+// this, and hand-copying twelve words would quietly come back.
+test("offers a way to save the words to a file the user chooses", async () => {
+  await renderScreenAndWaitForWords();
+
+  expect(screen.getByTestId("phrase-save-button")).toBeTruthy();
 });
 
 test("blocks screen capture while the words are displayed, and releases it on unmount", async () => {

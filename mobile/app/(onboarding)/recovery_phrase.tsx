@@ -100,19 +100,25 @@
 // user might be holding opens anything. Once initializeKeys() is in flight
 // the route back is gone -- see the `stage === "confirm"` guards below.
 //
-// THERE IS NO SHARE ACTION ON THIS ROUTE ANY MORE (GAP-017). This screen used
-// to own a handleShare that put `words.join(" ")` on the OS share sheet, and
-// PhraseDisplay rendered the button for it. That handed the ledger's second
-// unwrap path to whichever third-party app the user tapped -- and, on
-// Android, to share history and usually a clipboard on the way there. The
-// words now leave this screen only on paper, which is what the confirm step
-// was always there to verify; phrase_display.tsx's header carries the rest of
-// the reasoning, including the screenshot guard that replaced the warning.
+// THERE IS STILL NO SHARE ACTION ON THIS ROUTE (GAP-017), AND THERE IS NOW ONE
+// NARROWER ONE. This screen used to own a handleShare that put
+// `words.join(" ")` on the OS share sheet, handing the ledger's second unwrap
+// path to whichever third-party app the user tapped and, on Android, to share
+// history and usually a clipboard on the way there. `83b1253` deleted it and
+// left paper as the only exit.
+//
+// The owner's call, 2026-09-08, is that twelve hand-copied words is too much to
+// ask at first run. `handleSave` below is the replacement: the share sheet does
+// not come back, a folder the user picks does. lib/crypto/phrase_export.ts owns
+// the operation, and its header carries the rest of the reasoning -- including
+// why the Copy button that was planned beside it was dropped rather than
+// shipped without the clipboard mitigation SDK 54 cannot provide.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BackHandler, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as LocalAuthentication from "expo-local-authentication";
 import { generatePhrase } from "@/lib/crypto/recovery_phrase";
+import { savePhraseToFile } from "@/lib/crypto/phrase_export";
 import { initializeKeys } from "@/lib/crypto/key_manager";
 import { NotAuthenticatedError } from "@/modules/notification_listener";
 import { Button } from "@/components/ui/button";
@@ -174,6 +180,9 @@ export default function RecoveryPhraseScreen({ onDone }: { onDone?: () => void }
   const [confirmAttempt, setConfirmAttempt] = useState(0);
   const initializingRef = useRef(false);
 
+  /** What the last save did, in the user's words. Cleared by the next one. */
+  const [exportNotice, setExportNotice] = useState<string | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     setStage("generating");
@@ -196,6 +205,27 @@ export default function RecoveryPhraseScreen({ onDone }: { onDone?: () => void }
       cancelled = true;
     };
   }, [retryKey]);
+
+  /**
+   * "Save to a file" -- the folder picker, then one file into it.
+   *
+   * A DECLINED PICKER SAYS NOTHING. `savePhraseToFile` reports `cancelled`
+   * rather than throwing for exactly this, and a "saved" notice there would be
+   * a lie while an error notice would report a failure that did not happen.
+   */
+  const handleSave = useCallback(async () => {
+    if (words === null) return;
+    try {
+      const outcome = await savePhraseToFile(words);
+      setExportNotice(outcome === "saved" ? "Saved to the folder you picked." : null);
+    } catch (err) {
+      // NEVER the words, only the failure -- the same rule the generation
+      // handler above keeps. A file error carries paths and permission codes,
+      // which are safe; the phrase is not passed to the logger at all.
+      console.error("[recovery_phrase] saving the recovery words failed", err);
+      setExportNotice("That didn't save. Your words are still on this screen.");
+    }
+  }, [words]);
 
   /** Hands the confirm step back to the user with the phrase they already
    * wrote down still intact -- the ONLY response to an incomplete
@@ -346,7 +376,19 @@ export default function RecoveryPhraseScreen({ onDone }: { onDone?: () => void }
   }
 
   if (stage === "display") {
-    return <PhraseDisplay words={words} onContinue={() => setStage("confirm")} />;
+    return (
+      <PhraseDisplay
+        words={words}
+        onContinue={() => setStage("confirm")}
+        // `void` rather than passing the async function straight through: the
+        // prop is `() => void`, and handing it a promise nobody awaits is how a
+        // rejection becomes an unhandled one. `handleSave` catches internally.
+        onSave={() => {
+          void handleSave();
+        }}
+        notice={exportNotice}
+      />
+    );
   }
 
   if (stage === "confirm" || stage === "initializing") {

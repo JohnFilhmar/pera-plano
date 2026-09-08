@@ -80,6 +80,7 @@ import { systemClock } from "@/lib/clock";
 import { applyGlobalFont } from "@/lib/fonts";
 import { bootstrapApp, getLastBootstrapResult, startNetworkSyncSubscriber } from "@/lib/bootstrap";
 import { SchemaTooNewError } from "@/lib/db/migrations";
+import { applyCaptureGuard } from "@/lib/privacy/capture_guard";
 import { startSupportOutboxSubscriber } from "@/lib/support/outbox_runner";
 import { useApplyAllocations } from "@/hooks/mutations/use_apply_allocations";
 import { usePaydayAllocations } from "@/hooks/use_payday_allocations";
@@ -341,6 +342,23 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
   // for the same reason.
   const acceptedAlertIdRef = useRef<string | null>(null);
   const clearTappedAlert = useCallback(() => setTappedAlert(null), []);
+
+  // FLAG_SECURE FOR THE WHOLE APP, SET ONCE AND NEVER RELEASED.
+  //
+  // HERE RATHER THAN ANYWHERE LOWER because this component mounts
+  // unconditionally, before bootstrap and regardless of lock state, so the
+  // guard is already on for the lock screen and for every screen behind it.
+  // Gating it on `bootstrapState` or `lockStatus` would leave a window at start
+  // where the app is drawing and capture is still allowed.
+  //
+  // NO CLEANUP, DELIBERATELY. Releasing the flag on unmount would mean the last
+  // thing this app does before going away is make itself capturable, and the
+  // only unmount of this component is the app itself ending. Development builds
+  // never set it in the first place -- see lib/privacy/capture_guard.ts for
+  // that exemption and for why an unknown variant is guarded rather than not.
+  useEffect(() => {
+    void applyCaptureGuard();
+  }, []);
 
   const runBootstrap = useCallback(() => {
     setBootstrapState("pending");

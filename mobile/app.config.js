@@ -38,11 +38,29 @@ const androidPackage = IS_DEV
     ? `${BASE_PACKAGE}.prev`
     : BASE_PACKAGE;
 
+// The same value the fields above are derived from, normalised once so the app
+// can read it at runtime. Unset and empty both mean production, exactly as they
+// do for the package name -- see the KNOWN_VARIANTS check above, which has
+// already rejected anything else by the time this runs.
+const resolvedVariant = VARIANT === undefined || VARIANT === '' ? 'production' : VARIANT;
+
 module.exports = ({ config }) => ({
   ...config,
   name,
   android: {
     ...config.android,
     package: androidPackage,
+  },
+  // WHY THE VARIANT HAS TO REACH THE RUNNING APP AT ALL: app/_layout.tsx turns
+  // Android's FLAG_SECURE on for the whole app, and development builds are
+  // deliberately exempt so screenshots stay available for the on-device
+  // verification walkthrough and for bug reports. Nothing else in the app may
+  // branch on this -- it is a build identity, not a feature flag, and a second
+  // reader of it would be the beginning of a debug-only code path shipping to
+  // users. `__DEV__` is not the same question: it tracks the JS bundle mode,
+  // and a release-mode bundle of the dev package would still need capture.
+  extra: {
+    ...config.extra,
+    appVariant: resolvedVariant,
   },
 });
