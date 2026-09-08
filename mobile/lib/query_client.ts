@@ -3,8 +3,12 @@
 // PersistQueryClientProvider (see app/_layout.tsx per §16). This app is
 // local-first with no login — there is no auth boundary, so unlike the
 // multi-account guidance in STACK_BASIS §6 this file does NOT build a
-// session-reset/cache-purge mechanism. The cache persists indefinitely
-// (`maxAge: Infinity`) and that's the whole story.
+// session-reset/cache-purge mechanism. It builds a narrower thing instead,
+// and the bottom of this file is where it lives: an ALLOWLIST of the two
+// query families that reach AsyncStorage at all (PERSISTED_QUERY_PREFIXES),
+// and a DAY-SCOPED expiry on the blob (`persistedCacheMaxAge`). This file
+// used to persist every query in the app forever; it no longer does, and
+// both of those comments explain why in full.
 //
 // The one option here that is correctness, not tuning: `mutations.retry: 0`.
 // React Query's own default is already 0 — set it explicitly anyway. Every
@@ -35,14 +39,16 @@
 // comment), exactly as lib/db/database.ts's unlockDatabase(dek) was added by
 // Task 7 without Task 7 itself calling it from the app.
 import { createAsyncStoragePersister } from "@tanstack/query-async-storage-persister";
-import { MutationCache, QueryClient } from "@tanstack/react-query";
-import type { QueryKey } from "@tanstack/react-query";
+import { defaultShouldDehydrateQuery, MutationCache, QueryClient } from "@tanstack/react-query";
+import type { Query, QueryKey } from "@tanstack/react-query";
 import type { PersistedClient } from "@tanstack/react-query-persist-client";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { queryKeys } from "@/constants/query_keys";
 
+import { systemClock } from "./clock";
 import { createCacheCodec, CacheCipherKeyMissingError } from "./crypto/cache_cipher";
+import { startOfLocalDay } from "./dates";
 
 const FIVE_MINUTES_MS = 5 * 60 * 1000;
 const THIRTY_MINUTES_MS = 30 * 60 * 1000;
@@ -374,6 +380,112 @@ const persister = createAsyncStoragePersister({
   deserialize: (cached) => createCacheCodec(() => cacheEncryptionKey).deserialize(cached) as PersistedClient,
 });
 
+/**
+ * THE ONLY QUERY FAMILIES THAT REACH DISK. Key PREFIXES, matched segment by
+ * segment from the front exactly as `SAFE_TO_SPEND_SOURCE_ROOTS` above is —
+ * so `["wallets","list"]` covers `list(false)` and `list(true)` without
+ * naming either, and without reaching `wallets.detail`, `drift`, `matchers`
+ * or `allMatchers`, which are screens the user has already navigated to.
+ *
+ * AN ALLOWLIST, NOT A DENYLIST. Until this existed the blob was a second full
+ * copy of the ledger: every transaction, every merchant name, and the raw
+ * notification text behind `raw_captures`. That text is the one thing
+ * docs/12 promises to destroy on a 30-day timer, and the promise is kept by
+ * `purgeExpiredRawCaptures` (lib/bootstrap.ts's `runRetention`), which
+ * deletes DATABASE ROWS AND NOTHING ELSE — no code in this app invalidates
+ * `queryKeys.rawCaptures.*`, so a capture that happened to be cached when the
+ * purge ran was serialized straight back to AsyncStorage afterwards and
+ * restored again on the next launch, outliving the row it came from. A
+ * denylist naming `raw_captures` would close that one hole and leave the
+ * ledger copy standing; an allowlist means the family somebody adds next
+ * month is off disk by default and has to be argued onto it here, in the file
+ * that also holds the key encrypting it.
+ *
+ * WHY THESE TWO AND NOTHING ELSE. Persistence buys exactly one thing in this
+ * app — a first paint before the first local read resolves — and it cannot
+ * buy anything more, because every `queryFn` under hooks/queries/ reads
+ * on-device SQLite or a native module (there is no network in this app at
+ * all), and app/_layout.tsx does not mount PersistQueryClientProvider until
+ * `unlockDatabase(dek)` and `bootstrapApp()` have both resolved. So no screen
+ * goes from "works offline" to "broken" here. The families dropped from the
+ * blob render their own empty/loading state for the milliseconds a SQLite
+ * read takes, and then show the same numbers they always did. Home's hero and
+ * the wallet balances are what the user is looking at during that window.
+ *
+ * NOT `listenerHealth`, which constants/query_keys.ts already describes as
+ * "Not persisted and not derived from the database — it is a live read of
+ * whether capture is actually working, which is what makes the tracking
+ * banner trustworthy." That was an intention this file had never implemented:
+ * a restored "healthy" from yesterday is the banner asserting something about
+ * right now that it did not check. It is true as of this list.
+ */
+const PERSISTED_QUERY_PREFIXES: readonly QueryKey[] = [
+  queryKeys.safeToSpend.all,
+  queryKeys.wallets.lists(),
+];
+
+/**
+ * COMPOSED WITH `defaultShouldDehydrateQuery`, NEVER SUBSTITUTED FOR IT.
+ *
+ * `dehydrate` picks ONE filter — `options.shouldDehydrateQuery ?? ... ??
+ * defaultShouldDehydrateQuery` (@tanstack/query-core 5.101.4, hydration.ts) —
+ * so a bare prefix test here would not run alongside the default, it would
+ * REPLACE it, and the default is doing real work: it is
+ * `query.state.status === 'success'`. Dropping it would start persisting
+ * errored and pending queries that nothing persists today, and `dehydrateQuery`
+ * serializes a pending query's `promise` as well, so a cold start could paint
+ * a failed or half-finished read's husk as though it were an answer.
+ */
+function shouldPersistQuery(query: Query): boolean {
+  if (!defaultShouldDehydrateQuery(query)) return false;
+  return PERSISTED_QUERY_PREFIXES.some((prefix) =>
+    prefix.every((segment, index) => query.queryKey[index] === segment),
+  );
+}
+
+/**
+ * HOW OLD A BLOB MAY BE AND STILL ANSWER: until the end of the local day it
+ * was written on, and not one millisecond longer.
+ *
+ * `persistQueryClientRestore` discards the blob when `Date.now() -
+ * persistedClient.timestamp > maxAge`. Returning the milliseconds elapsed
+ * since today's local midnight turns that comparison into exactly "was this
+ * written before today began": a blob saved at 23:58 is dead at 00:01, and one
+ * saved five minutes ago today is not.
+ *
+ * WHY NOT `Infinity`, WHICH THIS FILE USED TO CALL "THE WHOLE STORY".
+ * `safeToSpend.today()` resolves the calendar day inside its own `queryFn`, so
+ * a restored entry is an answer ABOUT A PARTICULAR DAY. Usually that fixes
+ * itself: hydrated data is older than the 5-minute `staleTime`, so
+ * `refetchOnMount` refires before anyone reads the number. The case that does
+ * NOT fix itself is the app being killed at 23:58 and relaunched at 00:01 —
+ * the hydrated hero is three minutes old, therefore not stale, therefore never
+ * refetched, and `hooks/use_day_rollover.ts` cannot help because it captures
+ * its `dayKey` at mount and no day changes underneath it. Home would paint
+ * yesterday's Safe-to-Spend and keep it. `installSafeToSpendCascade` above
+ * calls a stale headline "the single most visible bug this app can have"; this
+ * is what makes that particular one impossible.
+ *
+ * WHY NOT A FLAT 24 HOURS, the obvious spelling of "finite". Three minutes is
+ * inside any 24-hour window, so it would not touch the case above at all — it
+ * would only cost the cold-start paint to every user who skips a day, and buy
+ * nothing `Infinity` did not already give.
+ *
+ * A GETTER ON `persistOptions`, evaluated when read rather than fixed at
+ * module load, because "milliseconds since midnight" is only true for the
+ * instant it is asked. PersistQueryClientProvider spreads `persistOptions`
+ * INSIDE its effect (@tanstack/react-query-persist-client 5.101.4,
+ * PersistQueryClientProvider.tsx), so the read lands on the same tick as the
+ * restore it gates. `systemClock.now()` is `Date.now()` (lib/clock.ts) and has
+ * to stay that way here: the library compares against `Date.now()`, and a
+ * maxAge measured on some other clock would be comparing two unrelated
+ * instants.
+ */
+function persistedCacheMaxAge(): number {
+  const now = systemClock.now();
+  return now - startOfLocalDay(now);
+}
+
 /** Bump on any change to the persisted cache's shape (query keys, dehydrated
  * data structure) — OR, as of this encrypted version, the on-disk encoding
  * itself: every cache written before this change is plaintext JSON, and
@@ -382,13 +494,25 @@ const persister = createAsyncStoragePersister({
  * ever collided, worse — silently trust stale plaintext. Bumping the buster
  * makes persistQueryClientRestore discard any old blob unconditionally,
  * before it is ever handed to deserialize at all. NEVER revert this string
- * to the pre-encryption value. */
-const CACHE_BUSTER = "peraplano-query-cache-v2-encrypted";
+ * to the pre-encryption value.
+ *
+ * v3 is the `PERSISTED_QUERY_PREFIXES` change, and it is exactly the "change
+ * to the persisted cache's shape (query keys)" this comment already asked for
+ * a bump on. Nothing about a v2 blob is unreadable — hydrate would accept it
+ * happily — and that is the problem: a v2 blob is the OLD, wide set, so
+ * without this bump the first launch after the update would restore the whole
+ * ledger and the raw notification text one last time, and keep it in memory
+ * until the query cache garbage-collected it. Bumping makes the new rule
+ * unconditional from the first launch. It costs one cold-start paint, once. */
+const CACHE_BUSTER = "peraplano-query-cache-v3-encrypted-selective";
 
 export const persistOptions = {
   persister,
-  maxAge: Infinity,
+  get maxAge(): number {
+    return persistedCacheMaxAge();
+  },
   buster: CACHE_BUSTER,
+  dehydrateOptions: { shouldDehydrateQuery: shouldPersistQuery },
 };
 
 export { CacheCipherKeyMissingError };
