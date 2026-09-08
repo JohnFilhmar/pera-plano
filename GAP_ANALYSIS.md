@@ -35,6 +35,9 @@ not been started. Each gap's detail entry in section 9 carries the same marker i
 
 | ID | Status | Commit | Branch | Verification | Date |
 |---|---|---|---|---|---|
+| GAP-053 | DONE | 8f0022c | gap-wave-13 | jest verification of the shipped shard config: `--shard=1/6 --maxWorkers=1` 45 suites 628 tests PASS in 358 s, and `--shard=3/3 --maxWorkers=1` 89 suites 1,697 tests PASS. THE PRE-EXISTING TYPECHECK ERROR IS FIXED HERE, deliberately reaching into GAP-052 because a gate red on its first run is the failure this entry's own ORDER OVERRIDE warns about, and because GAP-052's checklist prescribes exactly this fix. `npx tsc --noEmit` now exits 0 for the FIRST TIME IN THIS CAMPAIGN. THE ORCHESTRATOR'S BRIEF WAS WRONG ABOUT THE INFRASTRUCTURE and the agent checked rather than trusting it: `server-ci.yml` is `ubuntu-latest` throughout and only `deploy.yml`'s deploy job is self-hosted, so each matrix leg is its own VM and shards never contend - which makes sharding the right lever rather than the wrong one. THE ENTRY'S THREE SHARDS IS THE WRONG NUMBER: at the worker count that actually makes the suite green, three shards takes 733 s, over the entry's own ten-minute target; six shards at one worker runs 45 suites in 358 s. ONE WORKER, because the contention is between WORKERS specifically - `review_queue.test.tsx` run ALONE at two workers passes in 86 s while the same file inside a shard at two workers fails, its `waitFor` losing a ten-second budget whenever a second worker competes. Coverage verified rather than assumed: six shards summing to 269, union of 269 distinct paths, all fifteen pairwise intersections empty, union diffed clean against `npx jest --listTests`. Other entry errors: "250 test files" (actual 269); the `server-ci.yml:1-35` range omits the entire secret-scan job; `--ci` is already in `npm test`; and "the two checks" is incompatible with a matrix, which is why an aggregation job was added. UNVERIFIED AND UNVERIFIABLE FROM A WORKTREE: no GitHub Actions run has occurred, so the acceptance criterion stands open; `npm ci` on Linux was never executed; hosted-runner wall time is unproven; shards 2 and 4-6 were never run locally. Also flagged: a mobile-only PR gets no secret scan today, since `server-ci.yml`'s gitleaks job sits behind a `server/**` paths filter | 2026-09-09 |
+| GAP-075 | PARTIAL | da5e58b | gap-wave-13 | jest review_queue + resolve_actions 4 suites 135 PASS, lib/review + components/review 5 suites 185 PASS, blast radius 38 suites 1,031 PASS, all at `--maxWorkers=1`. Four separate revert experiments, each failing exactly its own witnesses. **DELIBERATELY PARTIAL, AND LEFT IN THE QUEUE.** Shipped: undo for the four triages whose entire write was `resolved_at` - the low-confidence and unknown-provider rejects, the possible-duplicate "same transaction" which discards a HELD never-committed twin, and the loan-match decline. This is the "cheap first slice" the entry itself names. NOT SHIPPED: undo for confirm, correct, one-sided transfer, merge, loan match and wallet kind. THE ENTRY'S PROPOSED FIX CONTRADICTS THE DOCUMENT IT CITES. Rule 9 promises the affordance; rule 10, twelve words later, reads "committed transactions are never deleted by any queue action", and the entry says undo should delete the committed transaction, as does its acceptance criterion. Rule 9's own second clause gives the intended remedy: committed results "remain editable in the ledger indefinitely afterward". Verified by the orchestrator at `docs/04-features/08-review-queue.md:118-119`. WORSE, IMPLEMENTING IT WOULD HAVE DELETED ROWS THIS TRIAGE NEVER WROTE: `correctItem` resolves onto a PRE-EXISTING transaction when one already holds the movement (the GAP-012 branch at `resolve_actions.ts:524`) and returns that row's id, so "delete the transaction the confirm returned" destroys the other channel's row and its wallet balance. The entry does not mention the branch. Also found: a matched or transfer-linked row cannot be deleted at all, since `loan_payments`/`bill_payments`/`transfer_links` hold NOT NULL UNIQUE foreign keys with no ON DELETE and `PRAGMA foreign_keys = ON`. Two guards keep the scope honest: the screen scopes the offer to the item just triaged, and `undoResolution` refuses any card whose capture already has a transaction - asked of the LEDGER rather than the action kind, so it holds if undo is ever wired elsewhere. Android freezes JS timers on a backgrounded app, so the ten-second timeout may never fire; a 60-second data-layer bound, looser than the affordance so a slow write cannot turn an honest tap into a refusal, refuses a stale tap and SAYS SO. All four location cites stale, including rule 9 at :99 when it is at :118. **REMAINS OPEN pending an owner ruling on rule 10, and note that rule 9's "editable in the ledger" remedy is only half-real: `deleteTransaction` has no caller outside `mergeDuplicate`** | 2026-09-09 |
+| GAP-085 | DONE | a117abd | gap-wave-13 | jest bills_screen 22 tests PASS (baseline 16) at `--maxWorkers=1`; lib/bills + components/bills + safe_to_spend + bills_repo 13 suites 274 PASS; blast radius 7 suites 180 PASS. Three revert experiments, each failing its own witnesses. THE ENTRY'S CENTRAL EVIDENCE CLAIM IS FALSE: "Skip removes the cycle from the estimator ... skips and corrupts the estimate". Migration 006's CHECK forbids a `bill_payment_id` on any state but `paid`, and `amount_estimator.ts` takes PAYMENTS, so a skipped cycle feeds it nothing - which that file's own header states in as many words, at the very lines the entry cites. THE ORCHESTRATOR'S BRIEF COMPOUNDED THIS by demanding a test proving skip and paid-externally differ in the estimator; such a test could only have been false, and the agent refused it and pinned the truth instead ("they differ in the RECORD, not in the estimate"). The real defect is the entry's OTHER horn: an open cycle keeps depressing Safe-to-Spend. `resolved_external` was far more wired than "already exists" suggests - schema CHECKs, `resolveCycleExternally`, the "Settled elsewhere" chip, the Plan panel section, the Safe-to-Spend exclusion, the reminder exclusions and the screen's own unresolved predicate were ALL in place, with no production caller. THE ENTRY UNDERCOUNTS THE MISSING ROWS: the doc's States table lists five content items and four actions, and rule 3's unadjusted date was also absent; "mark paid" is three options in the doc, of which only "Paid outside my wallets" is new, since "record a cash payment" would write the synthetic transaction the entry forbids. The checklist's "invalidating bills and Safe-to-Spend" contradicts GAP-058, which deliberately put the Safe-to-Spend cascade in `query_client.ts` rather than naming the key per hook. The acceptance criterion is a zeugma and is satisfiable by doing nothing on one reading; the chosen reading is pinned by a test that fails under the other. A DEFECT THIS CHANGE WOULD OTHERWISE HAVE INTRODUCED, found and fixed by the agent itself: the screen's no-`dueDate` fallback picked the soonest cycle that was neither paid nor skipped, so a notification tap would have opened the newly-settled cycle with every action spent. Also flagged for its own entry: `findBillPaymentCandidates` does not implement rule 15's "never wider than half the bill's period" clamp, so the summary reports the real window rather than the spec's | 2026-09-09 |
 | GAP-098 | DONE | c40f9df | gap-wave-12 | jest lib/limits 12 suites 162 tests PASS (baseline 156 after GAP-041); blast radius lib/income + limit_routes + hooks/mutations + components/limits + safe_to_spend + plan 11 suites 160 PASS. Unwrapping the three lock sites fails exactly the three service-level tests. THE ENTRY HAS RULES 11 AND 25 SWAPPED: it says "rule 11 says a mute lasts until the period boundary; rule 25 says a manual edit re-snapshots immediately", and the doc is the reverse - rule 11 is the percent-of-income base snapshot, rule 25 is the per-limit mute. Verified. THE PROPOSED LOCATION IS AN INVERTED DEPENDENCY: it says to put the chain in `limit_ledger_subscriber.ts`, but that file imports `recomputeLimits` from `./limit_service` at line 40, so service -> subscriber -> service, and it would drag `limit_notifier` and its expo-notifications and native-module chain into every consumer of `limit_service` including the Plan tab - which the file header records as the reason the notifier was moved out. The entry's own checklist says `limit_service.ts`, contradicting its own proposed fix. THE ALTERNATIVE FIX IS NOT IMPLEMENTABLE AND WOULD NOT CLOSE THE RACE: `muted` and `base` live inside the `limit_alert_state_json` blob rather than in columns; a mute may have to CREATE the state, which `json_set` on NULL cannot do; and a partial write only removes a race if the OTHER writer is also partial, while `recomputeLimits` must write the whole object because a period-boundary reset must never half-apply. THE ENTRY MISSES A THIRD SYMPTOM, now reproduced and pinned: two overlapping passes both read `fired: []` and both post the same threshold, breaking rule 19 "each threshold fires at most once per period" - a duplicate notification the user actually sees. NOTE FOR LATER WAVES: our own GAP-041 WIDENED this race, since `previousBaseOf` makes the previous-window `sumSpend` fire on period rolls that previously had none, taking that path from 2 awaited reads to 3-4. The lock is width-independent so they compose | 2026-09-08 |
 | GAP-048 | DONE | 8ea7d68 | gap-wave-12 | jest lib/ingest 14 suites 433 tests PASS (baseline 429); confirmed again in the wave sweep. Three revert experiments, each failing exactly its own witness. HALF THE DIAGNOSIS IS FALSE: the title and Evidence say the buffered path skips the PAUSE check. It does not. `processStored` has no caller outside `startIngest`, whose first statement returns when `capture_enabled === false`. Verified. The check is hoisted, not absent, so no per-capture pause check was added - one would abandon rows that are already durable in order to close a race a user can only lose by pausing mid-drain. Only the dismissed-package half is a real defect. THE PROPOSED FIX WOULD HAVE SHIPPED A REGRESSION: "extract `preflight(...)` and call it from `processCapture` and `processStored`", done literally, leaves every muted buffered capture STORED with neither a transaction nor a card - which is exactly what `listUnprocessedRawCaptures` selects (`NOT EXISTS transactions` AND `NOT EXISTS review_queue_items`, verified). A chatty muted source would then saturate the oldest-first `RECOVERY_SWEEP_LIMIT = 100` on every launch for the row's whole 30-day life, starving the sweep of the captures it exists for: real transactions whose stages threw. The guard must ALSO run before `storeRawCapture` in the drain. THE ENTRY'S ACCEPTANCE CRITERIA PASS ON THAT DEFECTIVE VERSION, which is why the new tests assert the capture is never STORED rather than merely that no card appears. The proposed signature is also wasteful: `rules` passed eagerly costs a `listUserRules()` read for every non-financial notification on the live path and 500 per drain, so a lazy loader is used. `preflight` returns a discriminated union, not a boolean, so `ignored: not_financial` and `ignored: unknown-provider` stay distinguishable. Every cite stale, including "the file's own comment at 193-195", which is a different comment entirely | 2026-09-08 |
 | GAP-049 | DONE | 2821da5 | gap-wave-12 | jest lib/__tests__/query_client 38 tests PASS (baseline 31), hooks 3 suites 94 PASS, contexts + lib/__tests__ + constants 21 suites 352 PASS, app 39 suites 576 PASS, components 90 suites 1154 PASS. Reverting all three production changes fails 6 of the 8 new tests. THE PROPOSED FIX SHIPS A DEFECT AS LITERALLY WRITTEN: `dehydrate` picks ONE filter with `??` and does not chain (`query-core` hydration.js:62), and `defaultShouldDehydrateQuery` is `query.state.status === "success"`, so a filter keyed on `meta.persist` REPLACES the success-only rule and starts persisting errored and pending queries, promise and all. Verified in node_modules. Composed instead. THE CHECKLIST IS IMPOSSIBLE AS WRITTEN in one branch and wrong in another: `constants/query_keys.ts` is a pure key factory returning `as const` tuples with no `useQuery` call, so it cannot carry `meta` at all; and the checklist names `use_limit_statuses.ts` as a query to persist, when `limits.statuses()` resolves its period window from the clock inside its queryFn - its own key doc says "NOT KEYED ON `now`" - making it exactly the day-dependent snapshot the entry's Intended behavior argues against persisting. Excluded. THE ACCEPTANCE CRITERION IS VACUOUS: "the persisted blob contains no `raw_captures` key" is true of any cache that never held one, so the new tests populate eighteen real queries and first prove the library default WOULD write the notification text to disk. `maxAge` is day-scoped rather than the entry's flat 24 h, which does nothing for the only case that does not self-correct: a kill at 23:58 and relaunch at 00:01 leaves the hero three minutes old, therefore not stale, therefore never refetched, and `useDayRollover` captures its day key at mount. CACHE_BUSTER bumped, which the entry mentions only under Rollback though the FORWARD change needs it - a v2 blob is readable and IS the old wide set. SECURITY CLAIM SUBSTANTIATED AND UNDERSTATED: nothing invalidates the raw-capture keys, and bootstrap purges rows BEFORE the provider mounts, so each launch purged the rows then restored the blob and put the purged text back in memory. Also corrected a FALSE COMMENT: `query_keys.ts` documents `listenerHealth` as "not persisted ... which is what makes the tracking banner trustworthy", and it was persisted | 2026-09-08 |
@@ -719,7 +722,7 @@ Facts established while fixing entries, that later entries must not rediscover t
   111 / 1,536; `app/` 34 / 482. Typecheck unchanged, still only `gates.test.tsx(91,29)`.
   Server NOT RUN: no server file touched.
 
-- **GAP-052's SEVEN FLAKES ARE A WORKER-COUNT ARTIFACT, AND THAT IS ACTIONABLE FOR GAP-053.**
+- **GAP-052's SEVEN FLAKES ARE LOAD-SENSITIVE, AND WORKER COUNT IS ONE LEVER ON THAT LOAD.**
   Every previous wave saw one or two `review_queue.test.tsx` "filterable by kind" failures in
   the `app/` chunk. This wave that chunk ran at **`--maxWorkers=2` and passed 34/34, 482/482**,
   where the same chunk at 4 workers has failed in waves 10 and 11 and where a concurrent agent
@@ -728,8 +731,25 @@ Facts established while fixing entries, that later entries must not rediscover t
   only under load, the pattern is CPU starvation on a memory-bound box rather than a defect in
   the tests. **GAP-052 should be re-read in that light, and GAP-053 (no mobile CI workflow),
   which it blocks, should pin `--maxWorkers` rather than wait for seven "flaky" tests to be
-  rewritten.** This does not prove the tests are correct — a `waitFor` that needs more than
-  10 s of wall clock is still fragile — but it moves the cost of GAP-053 sharply down.
+  rewritten.**
+
+  > **CORRECTED IN WAVE 13 (2026-09-09), and the mechanism is now MEASURED rather than
+  > inferred.** This bullet originally read "ARE A WORKER-COUNT ARTIFACT" and implied two
+  > workers was the fix; that claim also went into the wave 12 commit message and handoff.
+  > **Two workers is not sufficient.** GAP-053's agent measured, same shard and same commit:
+  > `--shard=3/3 --maxWorkers=2` on an IDLE box still failed 1 suite / 1 test, and the same
+  > shard at `--maxWorkers=1` passed 89/89 suites and 1,697/1,697 tests. The wave 12 green
+  > sweep at two workers covered the 34-suite `app/` chunk on an idle machine, and that narrow
+  > condition is all it demonstrated.
+  >
+  > The mechanism is sharper than "machine load", which was this file's first correction and is
+  > also too vague. It is CONTENTION BETWEEN WORKERS: `app/__tests__/review_queue.test.tsx` run
+  > ALONE at two workers passes in 86 s, while the same file inside a shard at two workers
+  > fails. Its `waitFor` sits on a ten-second budget and loses the race whenever a second worker
+  > competes for CPU. **The lever is serialism, not headroom.** Parallelism belongs BETWEEN
+  > runners, where each matrix leg is its own VM, and not between workers inside one — which is
+  > why the shipped gate is six shards at one worker rather than the entry's three at an
+  > inferred count.
 
 - **A THIRD CONSECUTIVE WAVE IN WHICH EVERY ENTRY WAS WRONG. The count is now TWENTY.** Waves
   10, 11 and 12 are each 3-for-3. Nine consecutive entries. Treat "this entry's fix is wrong"
@@ -789,6 +809,84 @@ Facts established while fixing entries, that later entries must not rediscover t
 Two are HUMAN-FIRST because the fix is a choice rather than a defect with one answer. **GAP-103 is the most serious thing in this group and possibly in the remaining queue**: pausing every provider in the Privacy centre computes an empty allowlist, and the native side documents an empty allowlist as allow-all by design, so the most restrictive action a user can take captures everything. It is HUMAN-FIRST only because the wire protocol has no way to say "deny all", so closing it means either conflating two user-visible switches or changing the Kotlin contract -- and Kotlin is not compiled or run in any worktree. **GAP-107** is a genuine trade rather than a bug: honouring the stated privacy principle means a heuristic's false negative would destroy a real transaction's only trace.
 
 The other three are ordinary agent work. GAP-104 is a one-line branch on a class wave 9 already created. GAP-105 applies a browsing gate to a computation, latent only because Entitlements is hardcoded to `plus`. GAP-106 is the fixed-rule half of a collapse the percent path already does, and explains its reasoning in a comment that applies equally to both.
+
+**Wave 13 findings (2026-09-09).**
+
+- **Wave 13 suite result: 269 suites, 4,662 tests, ZERO failures, AND a clean typecheck.** The
+  second consecutive zero-failure sweep, and the first where `npx tsc --noEmit` also exits 0.
+  Chunk sum reconciled against `npx jest --listTests` (269 = 269): `lib test_support` 123 /
+  2,628 at `--maxWorkers=4`; `hooks contexts services modules constants types components` 112 /
+  1,543 at `--maxWorkers=4`; **`app/` 34 / 491 at `--maxWorkers=1`, in 674 s**. The `app/` chunk
+  is now run serially on the measured evidence below, and at one worker it produced no flakes at
+  all -- not the two "filterable by kind" failures every 4-worker wave saw, and not the single
+  failure the 2-worker run in wave 12's sweep escaped only by covering fewer suites. Server NOT
+  RUN: no server file touched.
+
+- **`npx tsc --noEmit` EXITS 0 FOR THE FIRST TIME IN THIS CAMPAIGN.** The
+  `gates.test.tsx(91,29)` error had stood for twelve consecutive waves and is closed by
+  GAP-053, deliberately reaching into GAP-052 because a gate that is red on its first run is
+  the failure GAP-053's own ORDER OVERRIDE describes. **This closes one of GAP-052's three
+  locations**; its TZ location was closed earlier, and only the load-sensitive `waitFor` tests
+  remain, so GAP-052 is now much smaller than its entry describes.
+
+- **THE ORCHESTRATOR'S OWN BRIEFS ARE NOW A SOURCE OF ERROR, TWICE IN ONE WAVE, AND BOTH WERE
+  CAUGHT ONLY BECAUSE THE AGENTS CHECKED.** This is a new failure mode and it deserves the same
+  standing as the file's own unreliability.
+  - The GAP-053 brief asserted the project uses **self-hosted runners**. It does not, for CI:
+    `server-ci.yml` is `ubuntu-latest` throughout, and only `deploy.yml`'s deploy job is
+    self-hosted, with a sibling job carrying a comment explaining why builds must stay off that
+    box. The error INVERTED the design conclusion: on GitHub-hosted runners each matrix leg is
+    its own VM, so shards never contend and sharding is the right lever rather than the wrong
+    one.
+  - The GAP-085 brief demanded "proof that paid-externally and skip differ in the estimator,
+    since if they don't you have shipped a renamed button". **Such a test could only have been
+    false.** Migration 006's CHECK forbids a `bill_payment_id` on any state but `paid`, and
+    `amount_estimator.ts` takes payments, so neither resolution feeds the estimator -- which
+    that file's own header states at the very lines the entry cites. The agent refused the test
+    and pinned the truth instead.
+  **A brief is an entry with a shorter half-life. Brief agents to push back on the BRIEF, not
+  only on the entry.**
+
+- **A FOURTH CONSECUTIVE WAVE IN WHICH EVERY ENTRY WAS WRONG. Twelve consecutive entries.** The
+  count is now twenty-three. GAP-053 named the wrong shard count and the wrong file range and
+  asked for a check shape a matrix cannot produce; GAP-085's central Evidence sentence is false;
+  and GAP-075's proposed fix contradicts the specification it cites.
+
+- **A SPEC CAN CONTRADICT ITSELF, AND AN ENTRY CAN CITE ONE HALF WHILE BREAKING THE OTHER.**
+  GAP-075 quotes review-queue rule 9's ten-second undo. Rule 10, twelve words later, reads
+  "committed transactions are never deleted by any queue action" -- and the entry's proposed fix
+  and its acceptance criterion both delete the committed transaction. Rule 9's own second clause
+  carries the intended remedy instead: committed results "remain editable in the ledger
+  indefinitely afterward". **Read the rule AFTER the one an entry cites.** The neighbours are
+  where the constraint usually lives.
+
+- **THE FIRST PARTIAL IN THE REMEDIATION LOG, AND IT SHOULD NOT BE THE LAST.** GAP-075 ships
+  undo for the four triages whose entire write was `resolved_at` -- the slice the entry itself
+  calls "the cheap first slice" -- and stops. Undo for confirm and correct is not merely harder;
+  as specified it is destructive. `correctItem` resolves onto a PRE-EXISTING transaction when
+  one already holds the movement (the GAP-012 branch), so "delete the transaction the confirm
+  returned" deletes the OTHER ingest channel's row and its wallet balance. Marked `PARTIAL`
+  rather than `DONE` so `left.js` keeps it in the queue, which is the honest state. **When an
+  acceptance criterion cannot be met without violating the spec, PARTIAL plus a recorded reason
+  beats either a false DONE or a risky implementation.**
+
+- **THE RATE LIMIT KILLED ALL THREE AGENTS MID-FLIGHT, and the recovery is worth recording.**
+  Three concurrent agents plus two other Claude sessions on the same account exhausted the
+  shared session budget; every agent died with unverified, uncommitted work in the tree
+  (1,211 insertions). Nothing was lost: the agents resume from their own transcripts, and
+  resuming them ONE AT A TIME finished all three. Two of them were further along than their
+  dying messages implied, so **re-read the diff before believing an agent's last words about
+  its own progress.** The standing "max 3 concurrent agents" guidance is too high when other
+  sessions are running against the same account.
+
+- **Three follow-ups found this wave, none of them in the 107, all recorded rather than fixed.**
+  `findBillPaymentCandidates` does not implement bills rule 15's "never wider than half the
+  bill's period" clamp, so the new auto-match summary reports the window the matcher really
+  enforces rather than the spec's. A mobile-only pull request gets NO SECRET SCAN, because
+  `server-ci.yml`'s gitleaks job sits behind a `server/**` paths filter. And
+  `mutation_error_toast.tsx` renders a warning triangle for every tone, so the neutral undo
+  notice carries an alarm glyph.
+
 
 ## 1. Executive summary
 
@@ -4581,6 +4679,8 @@ none (AGENT-ASSISTED because the flake root cause may be machine load and needs 
 
 ### GAP-053 [OPS] No mobile CI workflow exists
 
+> **REMEDIATION: DONE** (2026-09-09) - commit 8f0022c, branch gap-wave-13. Verification: jest verification of the shipped shard config: `--shard=1/6 --maxWorkers=1` 45 suites 628 tests PASS in 358 s, and `--shard=3/3 --maxWorkers=1` 89 suites 1,697 tests PASS. THE PRE-EXISTING TYPECHECK ERROR IS FIXED HERE, deliberately reaching into GAP-052 because a gate red on its first run is the failure this entry's own ORDER OVERRIDE warns about, and because GAP-052's checklist prescribes exactly this fix. `npx tsc --noEmit` now exits 0 for the FIRST TIME IN THIS CAMPAIGN. THE ORCHESTRATOR'S BRIEF WAS WRONG ABOUT THE INFRASTRUCTURE and the agent checked rather than trusting it: `server-ci.yml` is `ubuntu-latest` throughout and only `deploy.yml`'s deploy job is self-hosted, so each matrix leg is its own VM and shards never contend - which makes sharding the right lever rather than the wrong one. THE ENTRY'S THREE SHARDS IS THE WRONG NUMBER: at the worker count that actually makes the suite green, three shards takes 733 s, over the entry's own ten-minute target; six shards at one worker runs 45 suites in 358 s. ONE WORKER, because the contention is between WORKERS specifically - `review_queue.test.tsx` run ALONE at two workers passes in 86 s while the same file inside a shard at two workers fails, its `waitFor` losing a ten-second budget whenever a second worker competes. Coverage verified rather than assumed: six shards summing to 269, union of 269 distinct paths, all fifteen pairwise intersections empty, union diffed clean against `npx jest --listTests`. Other entry errors: "250 test files" (actual 269); the `server-ci.yml:1-35` range omits the entire secret-scan job; `--ci` is already in `npm test`; and "the two checks" is incompatible with a matrix, which is why an aggregation job was added. UNVERIFIED AND UNVERIFIABLE FROM A WORKTREE: no GitHub Actions run has occurred, so the acceptance criterion stands open; `npm ci` on Linux was never executed; hosted-runner wall time is unproven; shards 2 and 4-6 were never run locally. Also flagged: a mobile-only PR gets no secret scan today, since `server-ci.yml`'s gitleaks job sits behind a `server/**` paths filter
+
 | Field | Value |
 |---|---|
 | Severity | S3 Moderate |
@@ -5914,6 +6014,8 @@ none
 
 ### GAP-075 [FEAT] Review triage has no undo; docs/08 rule 9 promises a ten-second undo affordance
 
+> **REMEDIATION: PARTIAL** (2026-09-09) - commit da5e58b, branch gap-wave-13. Verification: jest review_queue + resolve_actions 4 suites 135 PASS, lib/review + components/review 5 suites 185 PASS, blast radius 38 suites 1,031 PASS, all at `--maxWorkers=1`. Four separate revert experiments, each failing exactly its own witnesses. **DELIBERATELY PARTIAL, AND LEFT IN THE QUEUE.** Shipped: undo for the four triages whose entire write was `resolved_at` - the low-confidence and unknown-provider rejects, the possible-duplicate "same transaction" which discards a HELD never-committed twin, and the loan-match decline. This is the "cheap first slice" the entry itself names. NOT SHIPPED: undo for confirm, correct, one-sided transfer, merge, loan match and wallet kind. THE ENTRY'S PROPOSED FIX CONTRADICTS THE DOCUMENT IT CITES. Rule 9 promises the affordance; rule 10, twelve words later, reads "committed transactions are never deleted by any queue action", and the entry says undo should delete the committed transaction, as does its acceptance criterion. Rule 9's own second clause gives the intended remedy: committed results "remain editable in the ledger indefinitely afterward". Verified by the orchestrator at `docs/04-features/08-review-queue.md:118-119`. WORSE, IMPLEMENTING IT WOULD HAVE DELETED ROWS THIS TRIAGE NEVER WROTE: `correctItem` resolves onto a PRE-EXISTING transaction when one already holds the movement (the GAP-012 branch at `resolve_actions.ts:524`) and returns that row's id, so "delete the transaction the confirm returned" destroys the other channel's row and its wallet balance. The entry does not mention the branch. Also found: a matched or transfer-linked row cannot be deleted at all, since `loan_payments`/`bill_payments`/`transfer_links` hold NOT NULL UNIQUE foreign keys with no ON DELETE and `PRAGMA foreign_keys = ON`. Two guards keep the scope honest: the screen scopes the offer to the item just triaged, and `undoResolution` refuses any card whose capture already has a transaction - asked of the LEDGER rather than the action kind, so it holds if undo is ever wired elsewhere. Android freezes JS timers on a backgrounded app, so the ten-second timeout may never fire; a 60-second data-layer bound, looser than the affordance so a slow write cannot turn an honest tap into a refusal, refuses a stale tap and SAYS SO. All four location cites stale, including rule 9 at :99 when it is at :118. **REMAINS OPEN pending an owner ruling on rule 10, and note that rule 9's "editable in the ledger" remedy is only half-real: `deleteTransaction` has no caller outside `mergeDuplicate`**
+
 | Field | Value |
 |---|---|
 | Severity | S3 Moderate |
@@ -6501,6 +6603,8 @@ Revert.
 none
 
 ### GAP-085 [FEAT] Bill detail has no manual "mark paid" and omits the due rule, reminder schedule and auto-match summary the doc lists
+
+> **REMEDIATION: DONE** (2026-09-09) - commit a117abd, branch gap-wave-13. Verification: jest bills_screen 22 tests PASS (baseline 16) at `--maxWorkers=1`; lib/bills + components/bills + safe_to_spend + bills_repo 13 suites 274 PASS; blast radius 7 suites 180 PASS. Three revert experiments, each failing its own witnesses. THE ENTRY'S CENTRAL EVIDENCE CLAIM IS FALSE: "Skip removes the cycle from the estimator ... skips and corrupts the estimate". Migration 006's CHECK forbids a `bill_payment_id` on any state but `paid`, and `amount_estimator.ts` takes PAYMENTS, so a skipped cycle feeds it nothing - which that file's own header states in as many words, at the very lines the entry cites. THE ORCHESTRATOR'S BRIEF COMPOUNDED THIS by demanding a test proving skip and paid-externally differ in the estimator; such a test could only have been false, and the agent refused it and pinned the truth instead ("they differ in the RECORD, not in the estimate"). The real defect is the entry's OTHER horn: an open cycle keeps depressing Safe-to-Spend. `resolved_external` was far more wired than "already exists" suggests - schema CHECKs, `resolveCycleExternally`, the "Settled elsewhere" chip, the Plan panel section, the Safe-to-Spend exclusion, the reminder exclusions and the screen's own unresolved predicate were ALL in place, with no production caller. THE ENTRY UNDERCOUNTS THE MISSING ROWS: the doc's States table lists five content items and four actions, and rule 3's unadjusted date was also absent; "mark paid" is three options in the doc, of which only "Paid outside my wallets" is new, since "record a cash payment" would write the synthetic transaction the entry forbids. The checklist's "invalidating bills and Safe-to-Spend" contradicts GAP-058, which deliberately put the Safe-to-Spend cascade in `query_client.ts` rather than naming the key per hook. The acceptance criterion is a zeugma and is satisfiable by doing nothing on one reading; the chosen reading is pinned by a test that fails under the other. A DEFECT THIS CHANGE WOULD OTHERWISE HAVE INTRODUCED, found and fixed by the agent itself: the screen's no-`dueDate` fallback picked the soonest cycle that was neither paid nor skipped, so a notification tap would have opened the newly-settled cycle with every action spent. Also flagged for its own entry: `findBillPaymentCandidates` does not implement rule 15's "never wider than half the bill's period" clamp, so the summary reports the real window rather than the spec's
 
 | Field | Value |
 |---|---|
