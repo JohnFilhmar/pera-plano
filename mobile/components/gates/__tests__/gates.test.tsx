@@ -88,7 +88,11 @@ describe("SoonGate", () => {
     expect(screen.queryByText("Soon")).toBeNull();
     // Not merely "the chip is hidden" — there is no extra host element at all:
     // the child itself is the render root.
-    expect(screen.toJSON()?.type).toBe("Text");
+    // `toJSON()` widens to an array exactly when the root is a fragment, which is
+    // the case this test rules out — so the narrowing below IS part of the assertion.
+    const tree = screen.toJSON();
+    const rootType = Array.isArray(tree) ? "fragment" : tree?.type;
+    expect(rootType).toBe("Text");
   });
 
   test("shipped children stay fully interactive (no lingering wrapper swallows touches)", () => {

@@ -51,3 +51,7 @@ device_results/
 modules/*/android/build/
 modules/*/android/.cxx/
 modules/*/android/.gradle/
+
+# Jest JSON reports. Written by `--outputFile` in .github/workflows/mobile-ci.yml,
+# and by the same command when a shard failure is reproduced locally.
+jest-report-*.json
