@@ -9,6 +9,7 @@ import {
   isOverdue,
   nextOccurrence,
   occurrencesBetween,
+  unadjustedOccurrence,
 } from "@/lib/bills/due_rules";
 import type { DueRule } from "@/types/domain";
 
@@ -307,4 +308,69 @@ test("daysUntil counts CALENDAR days across a month and a year boundary", () => 
   expect(daysUntil("2027-01-01", "2026-12-31")).toBe(1);
   expect(daysUntil("2026-03-01", "2026-02-28")).toBe(1); // 2026 is not a leap year
   expect(daysUntil("2028-03-01", "2028-02-28")).toBe(2); // 2028 is
+});
+
+// ---------------------------------------------------------------------------
+// The unadjusted date — spec rule 3 (GAP-085)
+// ---------------------------------------------------------------------------
+// "Weekday adjustment moves the due date at most 2 days; the UNADJUSTED date is
+// still shown in the bill detail for transparency." Only the adjusted date is
+// stored (migration 006), so the detail screen recovers the base one from the
+// rule — which this file's header has always said it can.
+test("THE UNADJUSTED DATE IS RECOVERED FROM THE RULE", () => {
+  // 2026-02-21 is a Saturday, so "earlier" pulls it back to Friday the 20th.
+  const rule: DueRule = { kind: "day-of-month", day: 21, weekdayAdjust: "earlier" };
+  expect(occurrencesBetween(rule, "2026-02-01", "2026-02-28")).toEqual(["2026-02-20"]);
+
+  expect(unadjustedOccurrence(rule, "2026-02-20")).toBe("2026-02-21");
+});
+
+test("`later` is recovered too", () => {
+  // 2026-02-22 is a Sunday; "later" pushes it to Monday the 23rd.
+  const rule: DueRule = { kind: "day-of-month", day: 22, weekdayAdjust: "later" };
+  expect(occurrencesBetween(rule, "2026-02-01", "2026-02-28")).toEqual(["2026-02-23"]);
+
+  expect(unadjustedOccurrence(rule, "2026-02-23")).toBe("2026-02-22");
+});
+
+test("A DATE THAT NEVER MOVED COMES BACK UNCHANGED", () => {
+  // The detail screen renders the transparency line only when the two differ,
+  // so this is what "there was no shift" looks like. 2026-02-20 is a Friday.
+  const rule: DueRule = { kind: "day-of-month", day: 20, weekdayAdjust: "earlier" };
+  expect(unadjustedOccurrence(rule, "2026-02-20")).toBe("2026-02-20");
+  expect(unadjustedOccurrence({ kind: "day-of-month", day: 21 }, "2026-02-21")).toBe(
+    "2026-02-21",
+  );
+});
+
+test("THE MONTH-BOUNDARY FALLBACK IS RECOVERED IN THE DIRECTION IT REALLY WENT", () => {
+  // 2026-05-31 is a Sunday. "later" would be June 1st, which leaves the month
+  // and breaks the one-per-month promise, so due_rules falls back the OTHER
+  // way — to Friday the 29th. Recovering "the day after the adjusted date"
+  // would have answered the 30th, a Saturday the rule never produces.
+  const rule: DueRule = { kind: "last-day-of-month", weekdayAdjust: "later" };
+  expect(occurrencesBetween(rule, "2026-05-01", "2026-05-31")).toEqual(["2026-05-29"]);
+
+  expect(unadjustedOccurrence(rule, "2026-05-29")).toBe("2026-05-31");
+});
+
+test("a week-based rule has no unadjusted date to recover", () => {
+  // The spec scopes the shift to month-based rules, and `adjustOf` returns
+  // "none" here whatever the field says — so the stored date IS the base date.
+  const rule: DueRule = {
+    kind: "every-n-weeks",
+    n: 2,
+    weekday: 0,
+    anchorDate: "2026-02-22",
+    weekdayAdjust: "earlier",
+  };
+  expect(unadjustedOccurrence(rule, "2026-02-22")).toBe("2026-02-22");
+});
+
+test("an edited rule that no longer produces an open cycle reports the stored date", () => {
+  // Rule 25 keeps an old cycle open while the rule underneath it changes.
+  // Inventing a base for an occurrence the rule cannot make would be a
+  // fabricated fact on a screen whose whole job here is transparency.
+  const rule: DueRule = { kind: "day-of-month", day: 21, weekdayAdjust: "earlier" };
+  expect(unadjustedOccurrence(rule, "2026-02-11")).toBe("2026-02-11");
 });

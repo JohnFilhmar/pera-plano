@@ -180,6 +180,38 @@ export function occurrencesBetween(
 }
 
 /**
+ * The date an occurrence would have fallen on BEFORE the weekday shift.
+ *
+ * Spec rule 3: "Weekday adjustment moves the due date at most 2 days; the
+ * UNADJUSTED date is still shown in the bill detail for transparency." Only the
+ * adjusted date is stored (migration 006), because every downstream date is
+ * computed from it — so the base date is recovered from the rule here, which is
+ * exactly what this file's header says it is recoverable for.
+ *
+ * Returns `adjustedDate` unchanged whenever nothing moved: a rule with no
+ * adjustment, a week-based rule (which ignores the shift by design), or a date
+ * that never landed on a weekend. The detail screen shows the line only when
+ * the two differ, so "unchanged" reads as "there was no shift".
+ */
+export function unadjustedOccurrence(rule: DueRule, adjustedDate: IsoDate): IsoDate {
+  const adjust = adjustOf(rule);
+  if (adjust === "none") return adjustedDate;
+
+  // The shift never leaves the month (see the header), so the base occurrence
+  // is among that month's own — no neighbouring month can have produced it.
+  const date = parseDateIso(adjustedDate);
+  for (const base of baseOccurrencesInMonth(rule, date.getFullYear(), date.getMonth())) {
+    if (applyWeekdayAdjust(base, adjust) === adjustedDate) return base;
+  }
+
+  // No base occurrence adjusts onto this date: the rule was edited while an
+  // older cycle was still open (rule 25), so the stored date is the only fact
+  // left. Reporting it is honest; inventing a base for a rule that no longer
+  // produces this occurrence is not.
+  return adjustedDate;
+}
+
+/**
  * The first occurrence STRICTLY AFTER `afterDate`.
  *
  * Strictly, because a bill due today has already been enumerated: an inclusive

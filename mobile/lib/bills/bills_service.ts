@@ -28,6 +28,13 @@
 // asks, even after the ladder has been earned", and rule 13's reset on any
 // rejection.
 import {
+  ALWAYS_CONFIRM_DEVIATION_PCT,
+  LADDER_THRESHOLD,
+  OVERDUE_WINDOW_DAYS,
+  WINDOW_CLOSES_DAYS_AFTER,
+  WINDOW_OPENS_DAYS_BEFORE,
+} from "@/constants/bills";
+import {
   createBill,
   getBill,
   listBillPayments,
@@ -52,20 +59,16 @@ import type {
 
 import { estimateAmount, type AmountEstimate, type PaymentAmount } from "./amount_estimator";
 import { daysUntil, occurrencesBetween } from "./due_rules";
+import { toleranceFor } from "./rule_summary";
 
 const DAY_MS = 86_400_000;
 
-/** Spec rule 15: the auto-match window opens 7 days before the due date. */
-const WINDOW_OPENS_DAYS_BEFORE = 7;
-/** ...and closes 15 days after it. */
-const WINDOW_CLOSES_DAYS_AFTER = 15;
-/**
- * Except for an overdue cycle, where rule 26 keeps it open for 30 days:
- * "late payment of an overdue bill is the expected resolution path", and a
- * window that shut first would leave the app unable to recognise the very
- * payment it has been nagging for.
- */
-const OVERDUE_WINDOW_DAYS = 30;
+// THE MATCHER'S OWN NUMBERS NOW LIVE IN `constants/bills.ts` (GAP-085), with
+// the same names and values. The bill detail's "auto-match rule summary" row
+// has to state the tolerance and window this file matches under, and a screen
+// cannot import them from here — this module imports the repositories, so the
+// import would pull `getDatabase` into the UI layer. Re-exported below only
+// where something outside already named them.
 
 /**
  * How far back to enumerate cycles that were never resolved.
@@ -77,16 +80,7 @@ const OVERDUE_WINDOW_DAYS = 30;
  */
 const OVERDUE_LOOKBACK_DAYS = 120;
 
-/** Spec rule 14's floor for a FIXED bill: ±₱30.00 or ±3%, whichever is greater. */
-const FIXED_TOLERANCE_CENTAVOS = 3000;
-const FIXED_TOLERANCE_PCT = 3;
-/** ...and ±30% of the current estimate for an ESTIMATED one. */
-const ESTIMATED_TOLERANCE_PCT = 30;
-
-/** Spec rule 13: confirmations needed before matching goes silent. */
-export const LADDER_THRESHOLD = 3;
-/** Spec rule 8: a jump this large always asks, ladder or no ladder. */
-export const ALWAYS_CONFIRM_DEVIATION_PCT = 30;
+export { ALWAYS_CONFIRM_DEVIATION_PCT, LADDER_THRESHOLD };
 
 /** Below this a transaction is not worth mentioning at all. */
 const CANDIDATE_FLOOR = 0.5;
@@ -272,15 +266,10 @@ export async function totalDueInPeriod(
 // ---------------------------------------------------------------------------
 // Candidates — spec rules 14-19
 // ---------------------------------------------------------------------------
-/** Rule 14's two tolerance bands, which differ by amount mode. */
-function toleranceFor(bill: Bill, estimate: AmountEstimate): Centavos {
-  if (bill.amountMode === "fixed") {
-    // "±₱30.00 or ±3% of the amount, whichever is greater" — the allowance that
-    // absorbs an e-wallet's ₱7.00 bills-payment convenience fee.
-    return Math.max(FIXED_TOLERANCE_CENTAVOS, (estimate.amount * FIXED_TOLERANCE_PCT) / 100);
-  }
-  return (estimate.amount * ESTIMATED_TOLERANCE_PCT) / 100;
-}
+// RULE 14's TOLERANCE NOW LIVES IN `rule_summary.ts` (GAP-085) and is imported
+// above. The bill detail has to print the band it is matching under, and a
+// screen cannot reach into this module for it — so the one implementation moved
+// to the side of the wall both callers can stand on.
 
 function normalize(text: string): string {
   return text.toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();

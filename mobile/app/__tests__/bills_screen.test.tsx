@@ -33,10 +33,11 @@ import {
   listBillPayments,
   listCycles,
   recordBillPayment,
+  resolveCycleExternally,
   skipCycle,
 } from "@/lib/db/repos/bills_repo";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
-import { insertTransaction } from "@/lib/db/repos/transactions_repo";
+import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions_repo";
 import { createWallet } from "@/lib/db/repos/wallets_repo";
 import { systemClock } from "@/lib/clock";
 import { addDaysIso, toDateIso } from "@/lib/dates";
@@ -515,6 +516,167 @@ test("two confirms in ONE tick skip the cycle once, and nothing fails", async ()
   });
   expect(await listCycles(bill.id)).toHaveLength(1);
   expect(mutationFailed).not.toHaveBeenCalled();
+});
+
+// ---------------------------------------------------------------------------
+// Paid outside my wallets — the spec's third mark-paid option (GAP-085)
+// ---------------------------------------------------------------------------
+// The cash payer had no truthful action on this screen. Leaving the cycle open
+// keeps it subtracting from Safe-to-Spend for a bill that is paid; skipping it
+// clears the number but records "no payment was expected", which is not what
+// happened. `resolved_external` has been in the schema since migration 006 and
+// nothing in the app could write it.
+test("PAID OUTSIDE MY WALLETS SETTLES THE CYCLE, AND THE USER SEES IT SETTLE", async () => {
+  const bill = await billDueOn(TODAY);
+  mockParams = { id: bill.id, dueDate: TODAY };
+
+  renderScreen(<BillDetailScreen />);
+  await screen.findByTestId("bill-paid-externally");
+
+  fireEvent.press(screen.getByTestId("bill-paid-externally"));
+  fireEvent.press(screen.getByTestId("confirm-dialog-confirm"));
+
+  await waitFor(
+    async () => expect((await listCycles(bill.id))[0]?.state).toBe("resolved_external"),
+    { timeout: 30_000 },
+  );
+
+  // AND THE SCREEN SAYS SO. A write nobody can see on the screen that made it
+  // is the failure this campaign has caught before: the state is right, the
+  // estimator is untouched, and the user is looking at a cycle that still
+  // offers to settle itself. "Settled elsewhere" is `due_chip.tsx`'s word for
+  // this state and is deliberately not "Paid" — no transaction to open.
+  await waitFor(() => screen.getByText("Settled elsewhere"), { timeout: 30_000 });
+  expect(screen.queryByTestId("bill-paid-externally")).toBeNull();
+  expect(screen.queryByTestId("bill-skip-cycle")).toBeNull();
+});
+
+test("PAID OUTSIDE MY WALLETS WRITES NO PAYMENT AND NO TRANSACTION", async () => {
+  // The entry's one "do not": a synthetic transaction for the cash would
+  // double-count against every limit, every category total and Safe-to-Spend's
+  // committed spend.
+  const bill = await billDueOn(TODAY);
+  mockParams = { id: bill.id, dueDate: TODAY };
+
+  renderScreen(<BillDetailScreen />);
+  await screen.findByTestId("bill-paid-externally");
+
+  fireEvent.press(screen.getByTestId("bill-paid-externally"));
+  fireEvent.press(screen.getByTestId("confirm-dialog-confirm"));
+
+  await waitFor(
+    async () => expect((await listCycles(bill.id))[0]?.state).toBe("resolved_external"),
+    { timeout: 30_000 },
+  );
+  expect(await listBillPayments(bill.id)).toEqual([]);
+  expect(await listTransactions({})).toEqual([]);
+  expect((await listCycles(bill.id))[0]?.billPaymentId).toBeNull();
+});
+
+test("PAID OUTSIDE MY WALLETS ASKS FIRST, AND WRITES NOTHING UNTIL IT IS ANSWERED", async () => {
+  // Same one-way write as the skip beside it (GAP-086): `resolveCycle` refuses
+  // to re-resolve, so there is nothing to reach for after a mis-tap.
+  const bill = await billDueOn(TODAY);
+  mockParams = { id: bill.id, dueDate: TODAY };
+
+  renderScreen(<BillDetailScreen />);
+  await screen.findByTestId("bill-paid-externally");
+
+  fireEvent.press(screen.getByTestId("bill-paid-externally"));
+
+  screen.getByTestId("confirm-dialog");
+  screen.getByText("Already paid this one?");
+  expect(await listCycles(bill.id)).toEqual([]);
+
+  fireEvent.press(screen.getByTestId("confirm-dialog-cancel"));
+
+  expect(screen.queryByTestId("confirm-dialog")).toBeNull();
+  expect(await listCycles(bill.id)).toEqual([]);
+  screen.getByTestId("bill-paid-externally");
+});
+
+// THE NEW STATE MADE AN OLD LINE WRONG. The screen picks the soonest
+// UNRESOLVED cycle when the link carries no `dueDate` — a notification tap, a
+// bare bill link — and that predicate excluded only `paid` and `skipped`.
+// Nothing could write `resolved_external`, so the omission cost nothing; the
+// moment this feature exists it opens a settled cycle with every action already
+// spent and no way to reach the one still owed.
+test("WITHOUT A CYCLE IN THE LINK, A SETTLED CYCLE IS NOT THE ONE THAT OPENS", async () => {
+  const bill = await billDueOn(TODAY);
+  await resolveCycleExternally({ billId: bill.id, dueDate: TODAY });
+  mockParams = { id: bill.id };
+
+  renderScreen(<BillDetailScreen />);
+  await screen.findByTestId("bill-detail");
+
+  // Next month's cycle, which is still owed — not the one just settled.
+  expect(screen.queryByText("Settled elsewhere")).toBeNull();
+  screen.getByTestId("bill-paid-externally");
+  screen.getByTestId("bill-skip-cycle");
+});
+
+test("two confirms in ONE tick settle the cycle once, and nothing fails", async () => {
+  const bill = await billDueOn(TODAY);
+  mockParams = { id: bill.id, dueDate: TODAY };
+
+  const mutationFailed = jest.fn();
+
+  renderScreen(<BillDetailScreen />, new MutationCache({ onError: mutationFailed }));
+  await screen.findByTestId("bill-paid-externally");
+  fireEvent.press(screen.getByTestId("bill-paid-externally"));
+  const confirm = screen.getByTestId("confirm-dialog-confirm");
+
+  act(() => {
+    fireEvent.press(confirm);
+    fireEvent.press(confirm);
+  });
+
+  await waitFor(
+    async () => expect((await listCycles(bill.id))[0]?.state).toBe("resolved_external"),
+    { timeout: 30_000 },
+  );
+  expect(await listCycles(bill.id)).toHaveLength(1);
+  expect(mutationFailed).not.toHaveBeenCalled();
+});
+
+// ---------------------------------------------------------------------------
+// The rule rows the spec lists and the screen never drew (GAP-085)
+// ---------------------------------------------------------------------------
+test("THE DETAIL RENDERS THE DUE RULE, THE REMINDER SCHEDULE AND THE AUTO-MATCH SUMMARY", async () => {
+  // docs/04-features/07-bills.md, Bill detail: "Due rule in plain words ...,
+  // amount and its type, reminder schedule, payment history (matched
+  // transactions), auto-match rule summary". Three of the five were nowhere in
+  // the app; every one is a setting made once at creation and never seen again.
+  //
+  // The reminder and match strings are clock-independent; the due rule is not,
+  // so it is checked for the day `billDueOn` actually used. The exact wording
+  // of every rule form is pinned in components/bills/__tests__.
+  const bill = await billDueOn(TODAY);
+  mockParams = { id: bill.id, dueDate: TODAY };
+
+  renderScreen(<BillDetailScreen />);
+  await screen.findByTestId("bill-rules");
+
+  const due = screen.getByTestId("bill-rule-due").props.children as string;
+  expect(due.startsWith("Every ")).toBe(true);
+  expect(due).toContain(String(Number(TODAY.slice(8, 10))));
+
+  // Rule 10's default, applied by `createBill` without anyone asking for it.
+  expect(screen.getByTestId("bill-rule-reminders").props.children).toBe(
+    "3 days before and on the due date.",
+  );
+  // Rule 13's "merchant keyword set + amount tolerance + date window", and the
+  // ladder position, which is otherwise invisible. ₱70.50 is rule 14's 3% of a
+  // FIXED ₱2,350.00 — the estimated band would be ₱705.00.
+  expect(screen.getByTestId("bill-rule-automatch").props.children).toBe(
+    'Looks for "MERALCO" in what you spend.',
+  );
+  expect(screen.getByTestId("bill-rule-tolerance").props.children).toBe(
+    "Amounts within ₱70.50 of the expected figure.",
+  );
+  expect(screen.getByTestId("bill-rule-window").props.children).toBe(
+    "From 7 days before the due date to 15 days after — 30 days once it is overdue.",
+  );
 });
 
 test("no candidates means no match affordance at all", async () => {

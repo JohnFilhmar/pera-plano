@@ -5,7 +5,12 @@
 // predicate, or quietly recomputed — the last of which would make Task 1's
 // worked-example tests stop protecting the number users actually see.
 import { closeDatabase } from "@/lib/db/database";
-import { createBill, recordBillPayment, skipCycle } from "@/lib/db/repos/bills_repo";
+import {
+  createBill,
+  recordBillPayment,
+  resolveCycleExternally,
+  skipCycle,
+} from "@/lib/db/repos/bills_repo";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { createGoal } from "@/lib/db/repos/goals_repo";
 import { createLimit, updateLimit } from "@/lib/db/repos/limits_repo";
@@ -235,6 +240,32 @@ test("a skipped cycle is excluded too", async () => {
   const input = await buildSafeToSpendInput(TODAY, NOW);
 
   expect(input.unpaidBills.map((b) => b.dueDate)).not.toContain("2026-08-20");
+});
+
+test("A CYCLE PAID OUTSIDE EVERY TRACKED WALLET LEAVES THE BILLS TERM", async () => {
+  // GAP-085's acceptance criterion, against the term Safe-to-Spend actually
+  // reads — `unresolvedBills` here, not `totalDueInPeriod`, which has no
+  // production caller.
+  //
+  // THIS IS THE HALF THAT HAS TO CHANGE. Money paid at a Bayad Center is gone;
+  // continuing to hold it back (rule 5's "unresolved ... keep subtracting")
+  // understates Safe-to-Spend for a bill that is settled, which is the whole
+  // reason a cash payer had to lie to the app and skip the cycle instead.
+  await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
+  const bill = await meralco(20);
+
+  const before = await buildSafeToSpendInput(TODAY, NOW);
+  expect(before.unpaidBills.map((b) => b.dueDate)).toContain("2026-08-20");
+
+  await resolveCycleExternally({ billId: bill.id, dueDate: "2026-08-20" });
+
+  const after = await buildSafeToSpendInput(TODAY, NOW);
+  expect(after.unpaidBills.map((b) => b.dueDate)).not.toContain("2026-08-20");
+  // And no transaction was invented for it, so it does not reappear as spend
+  // inside the driving limit either — it simply is not owed any more.
+  expect(after.limits.map((limit) => limit.spendInPeriod)).toEqual(
+    before.limits.map((limit) => limit.spendInPeriod),
+  );
 });
 
 // ---------------------------------------------------------------------------

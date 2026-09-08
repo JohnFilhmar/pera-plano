@@ -10,6 +10,7 @@ import { ScrollView, Text, View } from "react-native";
 
 import { BillMatchSheet } from "@/components/bills/bill_match_sheet";
 import { BillRow } from "@/components/bills/bill_row";
+import { BillRulesCard } from "@/components/bills/bill_rules_card";
 import { estimateLabel } from "@/components/bills/estimate_text";
 import { AmountText } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
@@ -21,6 +22,7 @@ import { SectionHeader } from "@/components/ui/section_header";
 import { useBillCandidates } from "@/hooks/queries/use_bill_candidates";
 import { useBills } from "@/hooks/queries/use_bills";
 import { useArchiveBill } from "@/hooks/mutations/use_archive_bill";
+import { useMarkBillPaidExternally } from "@/hooks/mutations/use_mark_bill_paid_externally";
 import {
   useRecordBillPayment,
   useRejectBillMatch,
@@ -50,18 +52,37 @@ export default function BillDetailScreen() {
   // to re-render the button, which a ref never does.
   const skipInFlight = useRef(false);
   const [skipBusy, setSkipBusy] = useState(false);
+  // The same guard, for the same reason, on the other one-way cycle write —
+  // see the comment above. `resolveCycle` refuses to re-resolve a resolved
+  // cycle, so the loser of a same-tick double tap raises a failure toast about
+  // a mark-paid that in fact went through.
+  const externalInFlight = useRef(false);
+  const [externalBusy, setExternalBusy] = useState(false);
+  const [confirmingExternal, setConfirmingExternal] = useState(false);
   const archive = useArchiveBill();
 
   const record = useRecordBillPayment();
   const reject = useRejectBillMatch();
   const skip = useSkipBillCycle();
+  const payExternally = useMarkBillPaidExternally();
 
   const forBill = (statuses ?? []).filter((status) => status.bill.id === id);
   // Without a `dueDate` param, the soonest UNRESOLVED cycle is the one the user
   // most likely means; falling back to the first row would open a paid cycle.
+  //
+  // ALL THREE RESOLVED STATES, not two. `resolved_external` was unreachable
+  // from the app until the action below existed, so this line agreeing with
+  // `unresolved` a few lines down cost nothing; the moment a cycle can be
+  // settled outside the ledger, a bare bill link would open it and show a
+  // screen with every action already spent.
   const status =
     forBill.find((candidate) => candidate.dueDate === dueDate) ??
-    forBill.find((candidate) => candidate.state !== "paid" && candidate.state !== "skipped") ??
+    forBill.find(
+      (candidate) =>
+        candidate.state !== "paid" &&
+        candidate.state !== "skipped" &&
+        candidate.state !== "resolved_external",
+    ) ??
     forBill[0];
 
   const { data: candidates } = useBillCandidates(id, status?.dueDate);
@@ -124,6 +145,17 @@ export default function BillDetailScreen() {
         </Text>
       </Card>
 
+      {/* THE THREE SPEC ROWS THAT WERE NEVER DRAWN (GAP-085): due rule in
+          plain words, reminder schedule, auto-match rule summary — plus rule
+          3's unadjusted date. Every one of them is set once at creation and
+          was, until now, unreadable afterwards anywhere in the app. */}
+      <BillRulesCard
+        testID="bill-rules"
+        bill={status.bill}
+        estimate={status.estimate}
+        dueDate={status.dueDate}
+      />
+
       {unresolved && candidates !== undefined && candidates.length > 0 ? (
         <Button
           title={`${candidates.length} possible payment${candidates.length === 1 ? "" : "s"}`}
@@ -132,6 +164,57 @@ export default function BillDetailScreen() {
           onPress={() => setSheetOpen(true)}
         />
       ) : null}
+
+      {/* THE SPEC'S THIRD MARK-PAID OPTION, "Paid outside my wallets" (GAP-085).
+          The other two are already here or deliberately absent: "pick from
+          ledger" is the candidate sheet above, and "record a cash payment"
+          would write a Transaction, which double-counts against every limit and
+          total the moment it exists.
+
+          WITHOUT THIS THE CASH PAYER HAD NO TRUTHFUL ACTION AT ALL. Leaving the
+          cycle open keeps it subtracting from Safe-to-Spend (safe-to-spend rule
+          5) for a bill that is paid; skipping it clears the number but records
+          "no payment was expected", which is the opposite of what happened and
+          is what the bill's own history is for. `resolved_external` has existed
+          in the schema since migration 006 — the chip, the Settled section,
+          Safe-to-Spend's bills term and the reminder scheduler all already
+          handle it — and nothing in the app could write it. */}
+      {unresolved ? (
+        <Button
+          title="Paid outside my wallets"
+          variant="secondary"
+          testID="bill-paid-externally"
+          disabled={payExternally.isPending || externalBusy}
+          onPress={() => setConfirmingExternal(true)}
+        />
+      ) : null}
+
+      <ConfirmDialog
+        visible={confirmingExternal}
+        title="Already paid this one?"
+        // Names the cycle, for the same reason the skip below does: a bill can
+        // have two cycles open at once (rule 25).
+        body={`${formatDate(
+          parseDateIso(status.dueDate).getTime(),
+        )} will be settled with no ledger entry — nothing is added to your spending, and no amount is learned for your estimate. It stops counting against your Safe-to-Spend and its remaining reminders are cancelled. You cannot undo this.`}
+        confirmLabel="Yes, it's paid"
+        onCancel={() => setConfirmingExternal(false)}
+        onConfirm={() => {
+          if (externalInFlight.current || payExternally.isPending) return;
+          externalInFlight.current = true;
+          setExternalBusy(true);
+          setConfirmingExternal(false);
+          payExternally.mutate(
+            { billId: status.bill.id, dueDate: status.dueDate },
+            {
+              onSettled: () => {
+                externalInFlight.current = false;
+                setExternalBusy(false);
+              },
+            },
+          );
+        }}
+      />
 
       {/* ASKS FIRST (GAP-086). Skipping is a one-way write on a Safe-to-Spend
           input — the cycle leaves the term, its reminders are cancelled, and

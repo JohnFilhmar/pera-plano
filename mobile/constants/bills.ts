@@ -15,3 +15,40 @@ export const DEFAULT_REMINDER_OFFSETS = [-3, 0];
 
 /** The create flow's default category (spec's create-bill flow, step 6). */
 export const DEFAULT_BILL_CATEGORY_ID = "cat_bills_utilities";
+
+// ---------------------------------------------------------------------------
+// The auto-match rule's own numbers — spec rules 8 and 13-15
+// ---------------------------------------------------------------------------
+// MOVED OUT OF `lib/bills/bills_service.ts` (GAP-085), unchanged in name and
+// value. The bill detail has to state the rule it is matching under — rule 13
+// defines `autoMatchRule` as "merchant keyword set + amount tolerance + date
+// window", and the detail screen's spec row is "auto-match rule summary" — and
+// a summary that carried its own copy of these figures would drift away from
+// the matcher on the first tuning pass and lie about what the app does.
+//
+// Here rather than exported from `bills_service.ts` for this file's own reason,
+// above: that module imports the repositories, so a component reaching it for
+// one number pulls `getDatabase` into the UI layer.
+
+/** Spec rule 15: the auto-match window opens 7 days before the due date. */
+export const WINDOW_OPENS_DAYS_BEFORE = 7;
+/** ...and closes 15 days after it. */
+export const WINDOW_CLOSES_DAYS_AFTER = 15;
+/**
+ * Except for an overdue cycle, where rule 26 keeps it open for 30 days:
+ * "late payment of an overdue bill is the expected resolution path", and a
+ * window that shut first would leave the app unable to recognise the very
+ * payment it has been nagging for.
+ */
+export const OVERDUE_WINDOW_DAYS = 30;
+
+/** Spec rule 14's floor for a FIXED bill: ±₱30.00 or ±3%, whichever is greater. */
+export const FIXED_TOLERANCE_CENTAVOS = 3000;
+export const FIXED_TOLERANCE_PCT = 3;
+/** ...and ±30% of the current estimate for an ESTIMATED one. */
+export const ESTIMATED_TOLERANCE_PCT = 30;
+
+/** Spec rule 13: confirmations needed before matching goes silent. */
+export const LADDER_THRESHOLD = 3;
+/** Spec rule 8: a jump this large always asks, ladder or no ladder. */
+export const ALWAYS_CONFIRM_DEVIATION_PCT = 30;

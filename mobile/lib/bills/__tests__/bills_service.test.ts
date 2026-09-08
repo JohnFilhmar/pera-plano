@@ -12,6 +12,7 @@ import {
   getBill,
   listBillPayments,
   recordBillPayment,
+  resolveCycleExternally,
   skipCycle,
 } from "@/lib/db/repos/bills_repo";
 import { closeDatabase } from "@/lib/db/database";
@@ -452,10 +453,109 @@ test("TOTAL DUE EXCLUDES PAID CYCLES — THE SAFE-TO-SPEND REGRESSION", async ()
 test("total due excludes skipped and externally-resolved cycles", async () => {
   // Spec's skip flow: a skipped cycle is "removed from Safe-to-Spend". Money
   // paid outside every tracked wallet is not owed either.
+  //
+  // BOTH HALVES ARE NOW EXERCISED (GAP-085). This test named
+  // `resolved_external` and only ever skipped, which was true of the app too:
+  // nothing could write that state until the detail screen's "Paid outside my
+  // wallets" existed.
   const bill = await meralco();
   await skipCycle({ billId: bill.id, dueDate: "2026-02-20" });
 
+  const other = await meralco({ name: "Maynilad", amount: 90000, amountMode: "fixed" });
+  await resolveCycleExternally({ billId: other.id, dueDate: "2026-02-20" });
+
   expect(await totalDueInPeriod("2026-02-01", "2026-02-28", NOW)).toBe(0);
+});
+
+// ---------------------------------------------------------------------------
+// Paid outside my wallets — the spec's third mark-paid option (GAP-085)
+// ---------------------------------------------------------------------------
+// THE ACCEPTANCE CRITERION, PINNED. "An externally paid cycle leaves the bills
+// term and the estimator unchanged" reads two ways, and only one of them is
+// the feature: the cycle LEAVES the bills term (it stops being subtracted —
+// otherwise the cash payer is no better off than before and Safe-to-Spend
+// still holds back money that is already spent), and it leaves the ESTIMATOR
+// unchanged (no amount is invented for it). The numbers below differ under the
+// other reading: ₱2,100.00 against ₱0.00.
+test("AN EXTERNALLY PAID CYCLE LEAVES THE BILLS TERM AND LEAVES THE ESTIMATE UNTOUCHED", async () => {
+  const bill = await meralco();
+  // One real matched payment, so the estimate is a HISTORY figure rather than
+  // the seed — a seed would be unchanged by anything at all and could not tell
+  // a working estimator from a broken one.
+  const tx = await outflow(210000, NOW - DAY);
+  await confirmBillPaymentMatch(bill.id, "2026-02-20", tx.id);
+
+  const estimateOf = async (dueDate: string) =>
+    (await listBillStatuses(NOW, 45)).find((status) => status.dueDate === dueDate)?.estimate;
+
+  const estimateBefore = await estimateOf("2026-03-20");
+  expect(estimateBefore).toEqual({
+    amount: 210000,
+    basis: "history",
+    sampleSize: 1,
+    spread: 0,
+  });
+  // February is paid, so only the March cycle is still owed.
+  expect(await totalDueInPeriod("2026-02-01", "2026-03-31", NOW)).toBe(210000);
+
+  await resolveCycleExternally({ billId: bill.id, dueDate: "2026-03-20" });
+
+  // Leaves the term...
+  expect(await totalDueInPeriod("2026-02-01", "2026-03-31", NOW)).toBe(0);
+  // ...and taught the estimator nothing. Not "roughly the same": identical.
+  expect(await estimateOf("2026-03-20")).toEqual(estimateBefore);
+});
+
+test("PAID EXTERNALLY WRITES NO PAYMENT AND NO TRANSACTION", async () => {
+  // The one thing the feature must not do. A synthetic transaction for a cash
+  // payment would double-count against every limit, every category total and
+  // Safe-to-Spend's committed spend — and migration 006's CHECK forbids a
+  // `bill_payment_id` on any state but `paid`, so there is nowhere to put one.
+  const bill = await meralco();
+  await resolveCycleExternally({ billId: bill.id, dueDate: "2026-02-20" });
+
+  expect(await listBillPayments(bill.id)).toEqual([]);
+
+  const status = (await listBillStatuses(NOW, 45)).find(
+    (row) => row.dueDate === "2026-02-20",
+  );
+  expect(status?.state).toBe("resolved_external");
+  expect(status?.payment).toBeNull();
+  expect(status?.cycle?.billPaymentId).toBeNull();
+});
+
+test("SKIPPING AND PAYING EXTERNALLY DIFFER IN THE RECORD, NOT IN THE ESTIMATE", async () => {
+  // GAP-085's Evidence says skipping "corrupts the estimate" and that the new
+  // action is what leaves it alone. IT IS NOT SO, and this pins the truth: the
+  // estimator takes matched PAYMENTS, and neither resolution has one — the
+  // schema forbids it. `amount_estimator.ts`'s own header says as much ("a
+  // skipped or externally-resolved cycle has none by construction").
+  //
+  // The difference is the FACT each one records, which is what the bill's
+  // history is for and what the chip reads off: a skip says no payment was
+  // expected, this says the money was paid where the app cannot see it.
+  const skipped = await meralco({ name: "Skipped" });
+  const external = await meralco({ name: "External" });
+  for (const bill of [skipped, external]) {
+    const tx = await outflow(210000, NOW - DAY, `${bill.name} PAYMENT`);
+    await recordBillPayment({ billId: bill.id, dueDate: "2026-01-20", transactionId: tx.id });
+  }
+
+  await skipCycle({ billId: skipped.id, dueDate: "2026-02-20" });
+  await resolveCycleExternally({ billId: external.id, dueDate: "2026-02-20" });
+
+  const statuses = await listBillStatuses(NOW, 45);
+  const cycleOf = (billId: string) =>
+    statuses.find((status) => status.bill.id === billId && status.dueDate === "2026-02-20");
+
+  // Different states, and therefore different chips and different history.
+  expect(cycleOf(skipped.id)?.state).toBe("skipped");
+  expect(cycleOf(external.id)?.state).toBe("resolved_external");
+  // Identical estimates, because neither fed the estimator anything.
+  expect(cycleOf(external.id)?.estimate).toEqual(cycleOf(skipped.id)?.estimate);
+  expect(cycleOf(external.id)?.estimate.amount).toBe(210000);
+  // And both leave the bills term, which is the half GAP-085 is right about.
+  expect(await totalDueInPeriod("2026-02-20", "2026-02-20", NOW)).toBe(0);
 });
 
 test("TOTAL DUE COUNTS AN OVERDUE CYCLE INSIDE THE RANGE", async () => {
