@@ -234,6 +234,66 @@ function isDismissedPackage(rules: UserRule[], packageName: string): boolean {
   );
 }
 
+/**
+ * What Stage 1 plus the dismissal rule decided about one capture.
+ *
+ * A REASON, NOT A BOOLEAN, and the two drop reasons are not the same fact.
+ * `"not_financial"` means the router never admitted the notification at all;
+ * `"unknown-provider"` means it did and the user has since said this source is
+ * not money. `processCapture` reports each one to its caller unchanged, so
+ * collapsing them into one flag would leave the outcome unable to say which
+ * happened — and the two are diagnosed completely differently.
+ */
+type Preflight =
+  | { kind: "known"; provider: ProviderRuleset }
+  | { kind: "unknown" }
+  | { kind: "drop"; reason: "not_financial" | "unknown-provider" };
+
+/**
+ * The routing-time guards, in ONE place for both entry points (GAP-048).
+ *
+ * The live path and the buffered path used to disagree here: `processCapture`
+ * dropped a capture whose package the user had marked "not money", and
+ * `processStored` queued an `unknown-provider` card for it anyway — so a muted
+ * source raised a fresh card for every notification it had posted while the app
+ * was dead, on every cold start. That is exactly the "re-queueing it every time
+ * would make the Review Queue useless" failure `isDismissedPackage` above
+ * exists to prevent, reached through the door that never asked it.
+ *
+ * EVALUATED AT ROUTING TIME, NOT AT POSTING TIME.
+ * docs/04-features/08-review-queue.md places the mute at the SourceRouter stage
+ * and states it as "a mute at the source level stops future captures from that
+ * source"; the mute is a standing statement about the PACKAGE, not about one
+ * notification, so a capture buffered before the user muted its source and
+ * routed after is dropped too. That is also the only rule under which the two
+ * paths can agree, since the buffered path routes whenever it happens to run.
+ *
+ * WHAT IS DELIBERATELY NOT HERE. The pause switch and the two replay checks
+ * belong to exactly one caller each and are documented at their call sites:
+ * pause guards an ENTRY (`processCapture` for live, `startIngest` for the whole
+ * buffered path), and the replay checks compare against rows only the path that
+ * has not stored anything yet can meaningfully ask about.
+ *
+ * THE RULES LOAD LAZILY, which is not tidiness. `listUserRules` is consulted
+ * only on the `unknown` branch, so a private chat message — most of what a
+ * phone with an empty provider filter hands this pipeline — still costs zero
+ * extra queries, and the drain can hand a batch of up to 500 captures one
+ * already-read list instead of reading the table 500 times.
+ */
+async function preflight(
+  capture: RawCapture,
+  bundle: RulesetBundle,
+  loadRules: () => Promise<UserRule[]>,
+): Promise<Preflight> {
+  const routed = routeCapture(capture, bundle);
+  if (routed.kind === "not_financial") return { kind: "drop", reason: "not_financial" };
+  if (routed.kind === "known") return { kind: "known", provider: routed.provider };
+
+  return isDismissedPackage(await loadRules(), capture.packageName)
+    ? { kind: "drop", reason: "unknown-provider" }
+    : { kind: "unknown" };
+}
+
 async function queue(
   kind: ReviewKind,
   rawNotificationId: string,
@@ -324,8 +384,10 @@ async function markCaptureQueuedTwin(
  * happen before any parsing:
  *
  *   1. The pause switch, so a paused app does no work and stores nothing.
- *   2. Routing, so a private chat message is dropped before it can be persisted
- *      (§1 principle 2 — non-financial text never touches the database).
+ *   2. `preflight` — routing, so a private chat message is dropped before it
+ *      can be persisted (§1 principle 2 — non-financial text never touches the
+ *      database), plus the muted-source rule for the same reason. Shared with
+ *      `processStored` so the two entry points cannot drift apart again.
  *   3. The replay check, because `drainPendingCaptures` is at-least-once by
  *      design and the same batch can come back after a crash.
  *
@@ -348,14 +410,12 @@ export async function processCapture(
     return { kind: "ignored", reason: "not_financial" };
   }
 
-  const routed = routeCapture(capture, bundle);
-  if (routed.kind === "not_financial") {
-    return { kind: "ignored", reason: "not_financial" };
-  }
-
-  const userRules = await listUserRules();
-  if (routed.kind === "unknown" && isDismissedPackage(userRules, capture.packageName)) {
-    return { kind: "ignored", reason: "unknown-provider" };
+  // Routing and the muted-source rule, both of them, from the one function
+  // `processStored` also calls — the reason is carried out verbatim rather
+  // than folded into a single "ignored", see `Preflight`.
+  const decision = await preflight(capture, bundle, listUserRules);
+  if (decision.kind === "drop") {
+    return { kind: "ignored", reason: decision.reason };
   }
 
   // Rule 11: at-least-once delivery means the identical capture can arrive
@@ -378,7 +438,7 @@ export async function processCapture(
 
   await storeRawCapture(capture, now);
 
-  if (routed.kind === "unknown") {
+  if (decision.kind === "unknown") {
     return queue("unknown-provider", capture.id, {
       amount: null,
       direction: null,
@@ -386,7 +446,7 @@ export async function processCapture(
     });
   }
 
-  return runStages(capture, routed.provider, bundle, now);
+  return runStages(capture, decision.provider, bundle, now);
 }
 
 /** The seven stages, for a capture already stored and known to be from a real provider. */
@@ -1066,6 +1126,48 @@ export async function startIngest(): Promise<() => void> {
     const drainBundle = await getActiveRuleset();
     const replayWindowMs = drainBundle?.tunables.dedupeTwinWindowMs ?? null;
 
+    // THE MUTED-SOURCE GUARD, AHEAD OF THE STORE (GAP-048). `processCapture`
+    // drops a capture from a package the user marked "not money" BEFORE
+    // `storeRawCapture`, so the live path keeps none of its text and raises no
+    // card. The drain used to store the whole batch unrouted and only ask
+    // afterwards, which is how a muted source still produced one
+    // `unknown-provider` card per buffered notification on every cold start.
+    //
+    // WHY NOT IN `processStored` ALONE. That runs after the row is durable, so
+    // dropping there leaves a capture pointing at neither a Transaction nor a
+    // card — which is precisely what `listUnprocessedRawCaptures` calls
+    // unprocessed work. A chatty muted source would then fill the oldest-first
+    // `RECOVERY_SWEEP_LIMIT` on every launch for the row's whole 30-day life and
+    // starve the sweep of the captures it exists for, and those are real
+    // transactions whose stages threw. Dropping before the store leaves nothing
+    // to strand.
+    //
+    // AND IT CANNOT COST A TRANSACTION. It fires only on the `unknown` route —
+    // no provider ruleset claims the package — where the only outcome this
+    // pipeline could ever have produced is the `unknown-provider` card the user
+    // muted. A `known` provider is never touched, whatever rules exist.
+    //
+    // ONLY THE DISMISSAL, not the router's `not_financial` verdict, even though
+    // `processStored` discards those too. The money-signal test is a heuristic
+    // whose false negatives lose a transaction silently (source_router.ts's
+    // asymmetry note), and the stored row is what makes such a miss findable in
+    // the Privacy centre; the dismissal is not a heuristic, it is the user's own
+    // standing instruction about that package.
+    //
+    // ONE `listUserRules` FOR THE WHOLE BATCH, for the same reason the ruleset
+    // above is read once: nothing in this pass can change the table.
+    const drainRules = drainBundle === null ? [] : await listUserRules();
+    const loadDrainRules = (): Promise<UserRule[]> => Promise.resolve(drainRules);
+
+    const admitted: RawCapture[] = [];
+    for (const capture of ordered) {
+      if (drainBundle !== null) {
+        const decision = await preflight(capture, drainBundle, loadDrainRules);
+        if (decision.kind === "drop" && decision.reason === "unknown-provider") continue;
+      }
+      admitted.push(capture);
+    }
+
     // ONE SQL TRANSACTION FOR THE WHOLE BATCH, not one autocommit per capture.
     // The batch is a hundred-odd separate inserts and the native ack already
     // happened, so a kill landing between two of them used to leave the drain
@@ -1081,7 +1183,7 @@ export async function startIngest(): Promise<() => void> {
     // in the same drain both survive it.
     const fresh = await withUnitOfWork(async () => {
       const stored: RawCapture[] = [];
-      for (const capture of ordered) {
+      for (const capture of admitted) {
         if (await hasRawCapture(capture.id)) continue;
         // The buffered path needs this guard for the same reason the live one
         // does, and needs it MORE: the buffer holds whatever accumulated while
@@ -1161,15 +1263,41 @@ async function recoverUnprocessed(now: number): Promise<void> {
  * Re-entering `processCapture` would see its own stored row and return
  * `ignored: "duplicate"` — the replay check doing its job against the durable
  * write rule 10 just made. So the batch path skips straight to the stages.
+ *
+ * THE SAME `preflight` THE LIVE PATH RUNS, AND THE SAME ANSWER (GAP-048).
+ * Routing was always shared in spirit; the muted-source rule was not, so this
+ * function used to raise an `unknown-provider` card for a package the user had
+ * explicitly marked "not money". It no longer does. See `preflight` for why the
+ * mute is applied at routing time, which makes it reach a capture that was
+ * buffered before the user muted its source.
+ *
+ * `startIngest` DROPS MUTED CAPTURES BEFORE STORING THEM, so on the drain path
+ * this branch is normally unreachable. It is still needed for the recovery
+ * sweep, whose captures were stored in an earlier session — possibly before the
+ * mute existed. Those few rows then point at neither a Transaction nor a card
+ * and stay on `listUnprocessedRawCaptures` until their TTL expires, exactly as
+ * the `not_financial` return above has always left its own; the sweep re-runs
+ * them, re-drops them and writes nothing, which is why it is affordable HERE
+ * and not affordable for a whole drained batch.
+ *
+ * THE PAUSE SWITCH IS NOT RE-ASKED PER CAPTURE, DELIBERATELY. `startIngest` is
+ * this function's only caller, through the drain loop and `recoverUnprocessed`,
+ * and it returns before either of them when `capture_enabled` is false — so the
+ * buffered path already sits behind the same switch `processCapture` checks for
+ * a live one. Repeating it here would add a settings read to every capture of a
+ * 500-capture drain to close one race, the user pausing mid-drain, and would
+ * close it the worst possible way: these rows are already durable, so returning
+ * early abandons them with no Transaction and no card and hands them to the
+ * sweep to re-run on every launch. The switch guards the entry, once.
  */
 async function processStored(capture: RawCapture, now: number): Promise<void> {
   try {
     const bundle = await getActiveRuleset();
     if (bundle === null) return;
 
-    const routed = routeCapture(capture, bundle);
-    if (routed.kind === "not_financial") return;
-    if (routed.kind === "unknown") {
+    const decision = await preflight(capture, bundle, listUserRules);
+    if (decision.kind === "drop") return;
+    if (decision.kind === "unknown") {
       await queue("unknown-provider", capture.id, {
         amount: null,
         direction: null,
@@ -1178,7 +1306,7 @@ async function processStored(capture: RawCapture, now: number): Promise<void> {
       return;
     }
 
-    await runStages(capture, routed.provider, bundle, now);
+    await runStages(capture, decision.provider, bundle, now);
   } catch (error) {
     // One malformed capture must not take the rest of the batch with it. The
     // raw row is already durable, and `recoverUnprocessed` is what actually

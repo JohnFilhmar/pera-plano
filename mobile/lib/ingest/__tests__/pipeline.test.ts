@@ -1391,6 +1391,111 @@ test("startIngest leaves the native buffer alone while capture is paused", async
   stop();
 });
 
+// ---------------------------------------------------------------------------
+// The two entry points apply the same guards (GAP-048).
+//
+// `processCapture` (live) and `processStored` (buffered, via the drain and the
+// recovery sweep) reach the same stages, and the buffered one used to reach
+// them past the muted-source rule the live one applies. A package the user
+// marked "not money" then raised a fresh `unknown-provider` card for every
+// notification it had posted while the app was dead — the "queue teaches the
+// user to ignore it" failure the queue's own dismissal rule exists to prevent.
+// ---------------------------------------------------------------------------
+
+test("a dismissed package in the buffered batch raises no card and is never stored", async () => {
+  await createWallet({ name: "GCash" });
+  // The mute `ignoreProvider` writes: the matcher carries the raw package name.
+  await createUserRule({ matcher: { providerKey: CHAT }, action: { kind: "ignore" } });
+  mockDrain.mockResolvedValue([
+    capture({
+      id: "buf-dismissed-1",
+      packageName: CHAT,
+      text: "Promo! Only ₱99.00 today",
+      postedAt: NOW - 5 * MINUTE,
+    }),
+    capture({
+      id: "buf-dismissed-2",
+      packageName: CHAT,
+      text: "Last chance, ₱49.00 off",
+      postedAt: NOW - 4 * MINUTE,
+    }),
+  ]);
+
+  const stop = await startIngest();
+  await __awaitIngestIdle();
+  stop();
+
+  expect(await listOpenReviewItems()).toHaveLength(0);
+  // Dropped BEFORE the store, exactly as the live path drops it — so nothing is
+  // left pointing at neither a transaction nor a card for the recovery sweep to
+  // re-run on every launch for the next thirty days.
+  expect(await getRawCapture("buf-dismissed-1")).toBeNull();
+  expect(await getRawCapture("buf-dismissed-2")).toBeNull();
+});
+
+test("the recovery sweep raises no card for a capture whose package was muted later", async () => {
+  await createWallet({ name: "GCash" });
+  // Stored in an earlier session, back when the source was still unknown rather
+  // than muted. The drain's pre-store filter cannot reach this one; only
+  // `processStored`'s own guard can.
+  await storeRawCapture(
+    capture({ id: "swept-dismissed", packageName: CHAT, text: "Promo! Only ₱99.00 today" }),
+    NOW - DAY,
+  );
+  await createUserRule({ matcher: { providerKey: CHAT }, action: { kind: "ignore" } });
+  mockDrain.mockResolvedValue([]);
+
+  const stop = await startIngest();
+  await __awaitIngestIdle();
+  stop();
+
+  // The mute is a standing statement about the PACKAGE, evaluated when the
+  // capture is routed — so a capture that was buffered before it still gets no
+  // card (04-features/08-review-queue.md puts the rule at the SourceRouter
+  // stage).
+  expect(await listOpenReviewItems()).toHaveLength(0);
+});
+
+test("an ignore rule never silences a known provider in the buffered batch", async () => {
+  const wallet = await createWallet({ name: "GCash", openingBalance: 900000 });
+  await addMatcher(wallet.id, GCASH);
+  // A rule naming a package the ruleset DOES claim. `isDismissedPackage` is
+  // asked only on the `unknown` route, and this pins that: widening the guard
+  // to a known provider would silently delete real transactions.
+  await createUserRule({ matcher: { providerKey: GCASH }, action: { kind: "ignore" } });
+  mockDrain.mockResolvedValue([gcashSend("buf-known-ignored")]);
+
+  const stop = await startIngest();
+  await __awaitIngestIdle();
+  stop();
+
+  expect((await ledger()).map((row) => row.amount)).toEqual([50000]);
+  expect(await getRawCapture("buf-known-ignored")).not.toBeNull();
+});
+
+test("a paused app runs no recovery sweep either", async () => {
+  await createWallet({ name: "GCash" });
+  // Stranded from an earlier session: durable, with neither a transaction nor a
+  // card behind it, which is exactly what the sweep comes back for.
+  await storeRawCapture(gcashSend("swept-while-paused"), NOW - DAY);
+  await setSetting("capture_enabled", false);
+
+  const stop = await startIngest();
+  await __awaitIngestIdle();
+  stop();
+
+  // THE PAUSE GUARD FOR THE BUFFERED PATH LIVES HERE, at `startIngest`, and it
+  // covers the sweep as well as the drain — which is why `processStored` does
+  // not re-ask per capture. Re-asking would abandon rows that are already
+  // durable; guarding the single entry point cannot.
+  expect(await ledger()).toHaveLength(0);
+  expect(await listOpenReviewItems()).toHaveLength(0);
+  // Still stranded, still recoverable: the sweep did not run, it did not
+  // consume the capture, and unpausing brings it back.
+  expect(await getRawCapture("swept-while-paused")).not.toBeNull();
+  expect(await isRawCaptureUnreferenced("swept-while-paused")).toBe(true);
+});
+
 test("a replayed batch after a crash re-commits nothing", async () => {
   const wallet = await createWallet({ name: "GCash", openingBalance: 900000 });
   await addMatcher(wallet.id, GCASH);
