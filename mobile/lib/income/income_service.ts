@@ -76,6 +76,16 @@ export type IncomeSummary = {
    * surface to be true on.
    */
   hasPendingSuggestion: boolean;
+  /**
+   * What accepting that suggestion would set the profile to, when the user has
+   * DECLARED their income and detection has since diverged from it (rule 14).
+   *
+   * The declared-income card shows the user's own figures, so without this the
+   * suggestion would be asking them to accept a number that is nowhere on
+   * screen. `null`/absent for the detection-only case, where the card's main
+   * sentence already IS what is being proposed.
+   */
+  suggestedChange?: { cadence: IncomeCadence; averageAmount: Centavos } | null;
 };
 
 /** Detection reads a trailing 120 days; refunds look back 7 before a credit. */
@@ -90,6 +100,21 @@ const PAYDAY_AMOUNT_TOLERANCE = 0.3;
 
 /** Rule 11's irregular clause: "any primary-stream candidate ≥ ₱1,000.00". */
 const IRREGULAR_PAYDAY_FLOOR: Centavos = 100_000;
+
+/**
+ * Rule 14: under a manual override, detection may only interrupt when the
+ * detected `averageAmount` "diverges from the declared amount by more than
+ * 20%".
+ *
+ * MORE THAN, so exactly 20.0% raises nothing — the rule names the far side of
+ * the boundary, not the boundary. And the DECLARED amount is the denominator,
+ * for the same reason: "diverges FROM the declared amount by more than 20%"
+ * measures the gap against the figure it diverged from. That is also the only
+ * stable choice — the declared amount holds still while a median-based
+ * detection moves, so a ratio taken against detection would slide the
+ * threshold every payday.
+ */
+const OVERRIDE_DIVERGENCE_THRESHOLD = 0.2;
 
 /**
  * How far back "the CURRENT expected window" reaches (rule 11).
@@ -184,6 +209,11 @@ export async function listPayEventsBetween(
     .sort((a, b) => a.occurredAt - b.occurredAt);
 }
 
+/** The one place the signature's shape is written down. */
+function signatureOf(cadence: IncomeCadence | null, averageAmount: Centavos | null): string {
+  return `${cadence}:${averageAmount ?? "none"}`;
+}
+
 /**
  * What the user would be asked to accept, as a stable string. A SIGNATURE
  * rather than a boolean, per rule 3: a genuinely different suggestion — a
@@ -191,7 +221,40 @@ export async function listPayEventsBetween(
  * ask.
  */
 function suggestionSignature(detection: Detection): string {
-  return `${detection.cadence}:${detection.averageAmount ?? "none"}`;
+  return signatureOf(detection.cadence, detection.averageAmount);
+}
+
+/**
+ * What detection would ask a user who has DECLARED their income to accept, or
+ * `null` when it has nothing worth interrupting them for (rule 14: "raises a
+ * suggestion card only when the detected `averageAmount` diverges from the
+ * declared amount by more than 20%, or a different cadence reaches confirmed
+ * status").
+ *
+ * CONFIRMED ONLY, FOR BOTH CLAUSES. The cadence clause says so outright, and
+ * reading the amount clause as accepting weaker evidence would mean a
+ * provisional guess may tell a user their salary changed while the same
+ * provisional guess may not tell them their pay schedule did. A `lapsed`
+ * detection is excluded for a different reason: rule 13 keeps its last known
+ * figures precisely BECAUSE the ledger stopped supporting them, so they are the
+ * one thing that must never be offered as news.
+ *
+ * The comparison is a multiplication rather than a ratio so a declared zero —
+ * which `NewIncomeProfile.averageAmount` permits — cannot divide.
+ */
+function divergentDetection(
+  profile: { cadence: IncomeCadence; averageAmount: Centavos | null },
+  state: IncomeDetectionState,
+): { cadence: IncomeCadence; averageAmount: Centavos } | null {
+  if (state.status !== "confirmed") return null;
+  if (state.cadence === null || state.averageAmount === null) return null;
+
+  const suggestion = { cadence: state.cadence, averageAmount: state.averageAmount };
+  if (state.cadence !== profile.cadence) return suggestion;
+
+  if (profile.averageAmount === null) return null;
+  const gap = Math.abs(state.averageAmount - profile.averageAmount);
+  return gap > profile.averageAmount * OVERRIDE_DIVERGENCE_THRESHOLD ? suggestion : null;
 }
 
 /**
@@ -241,14 +304,22 @@ function statusFor(
  * `clearManualIncome` and `confirmDetectedIncome` — call
  * `recomputePercentLimits` themselves, which is rule 11's manual-edit
  * exception.
+ *
+ * `keepManualOverride` is flow "manual override and back" step 3: accepting the
+ * rule-14 suggestion "updates the values but keeps `isManualOverride` true (the
+ * user made the change)". Defaulting it to false is what keeps the automatic
+ * path and "switch to automatic" automatic.
  */
-async function applyDetectionToProfile(detection: Detection): Promise<void> {
+async function applyDetectionToProfile(
+  detection: Detection,
+  keepManualOverride = false,
+): Promise<void> {
   if (detection.averageAmount === null) return;
   await saveIncomeProfile({
     cadence: detection.cadence,
     averageAmount: detection.averageAmount,
     sourceWalletIds: [...new Set(detection.stream.map((event) => event.walletId))],
-    isManualOverride: false,
+    isManualOverride: keepManualOverride,
   });
 }
 
@@ -311,6 +382,14 @@ export async function getIncomeSummary(now: number): Promise<IncomeSummary> {
   const [profile, state] = await Promise.all([getIncomeProfile(), getIncomeDetectionState()]);
 
   if (profile?.isManualOverride === true) {
+    // Rule 14's suggestion under an override. The DECLARED figures are still
+    // what this summary reports — nothing below rewrites them, and nothing
+    // will until the user accepts. Detection's own belief only rides along in
+    // `suggestedChange`, so the card has a number to show.
+    const suggested = divergentDetection(profile, state);
+    const alreadyDismissed =
+      state.suggestionDismissedSignature === signatureOf(state.cadence, state.averageAmount);
+
     return {
       cadence: profile.cadence,
       averageAmount: profile.averageAmount,
@@ -319,9 +398,8 @@ export async function getIncomeSummary(now: number): Promise<IncomeSummary> {
       isManualOverride: true,
       expectedNextAt: null,
       sourceWalletIds: profile.sourceWalletIds,
-      // Rule 14 still allows a suggestion under an override, but only on a
-      // material divergence — which is m2-part2 Task 13's surface, not this one.
-      hasPendingSuggestion: false,
+      hasPendingSuggestion: suggested !== null && !alreadyDismissed,
+      suggestedChange: alreadyDismissed ? null : suggested,
     };
   }
 
@@ -337,18 +415,30 @@ export async function getIncomeSummary(now: number): Promise<IncomeSummary> {
     sourceWalletIds: state.sourceWalletIds,
     hasPendingSuggestion:
       state.status === "provisional" &&
-      state.suggestionDismissedSignature !== `${state.cadence}:${state.averageAmount ?? "none"}`,
+      state.suggestionDismissedSignature !== signatureOf(state.cadence, state.averageAmount),
+    // Nothing to carry: on this path the card's own figures ARE detection's.
+    suggestedChange: null,
   };
 }
 
-/** The user accepted the detected income (income flow 2, "Confirm"). */
+/**
+ * The user accepted the detected income (income flow 2, "Confirm") — or, when
+ * they had declared it themselves, accepted rule 14's "your pay changed"
+ * suggestion, which is the same act on the same card.
+ */
 export async function confirmDetectedIncome(now: number): Promise<IncomeSummary> {
   const detection = await detect(now);
   const state = await getIncomeDetectionState();
+  const profile = await getIncomeProfile();
   await setIncomeDetectionState({ ...state, status: "confirmed", missedWindows: 0 });
   // `isManualOverride` stays FALSE (income flow 2): accepting what detection
   // found is not the same as typing a figure, and automatic updates continue.
-  await applyDetectionToProfile(detection);
+  //
+  // EXCEPT over a declared income, where it stays TRUE (override flow step 3).
+  // Clearing it there would turn "yes, my pay changed" into a silent surrender
+  // of the user's control over the figure — from then on detection would
+  // rewrite it unasked, which is the one thing rule 14 exists to prevent.
+  await applyDetectionToProfile(detection, profile?.isManualOverride === true);
   // A confirmation is a user action, so rule 11's immediate exception applies
   // here where it does not on the automatic path.
   await recomputePercentLimits(now, monthlyEquivalent(detection.cadence, detection.averageAmount));

@@ -345,7 +345,27 @@ export async function isRawCaptureUnreferenced(id: string): Promise<boolean> {
  * A NULL KEY SUPPRESSES NOTHING, and that is the safe direction. Rows stored
  * before migration 018, and records still in the native buffer written by a
  * build that predates it, carry none — "cannot tell" must behave exactly like
- * today rather than guess.
+ * today rather than guess. Widening those into a package-and-text match is the
+ * dedupe-on-text-alone that migration 018's own header rejects by name, and
+ * `pipeline.test.ts`'s "two distinct captures with identical amount, channel
+ * and timing still reach the DedupeGate" fails the moment it is tried: the two
+ * genuine ₱100.00 purchases it describes carry no key either, so the match
+ * cannot tell them from a redelivery and eats the second one. The DedupeGate's
+ * §6 rule 4 is what settles a keyless pair, and it only gets the chance
+ * because this function declines to.
+ *
+ * A BLANK KEY IS A NULL KEY. `StatusBarNotification.getKey()` is
+ * `package|id|tag|user` and is never empty, so an empty or whitespace-only key
+ * is not a slot identity — it is the same "cannot tell". Taking it literally
+ * would be strictly worse than the null case rather than equivalent to it:
+ * `notification_key = ''` MATCHES, so every keyless capture would share one
+ * empty bucket and any two of them agreeing on package and text inside the
+ * window would suppress each other. That is exactly the text-only rule above,
+ * arrived at by accident. Nothing on the Kotlin path can produce a blank key
+ * today (`CaptureRecord.fromJson` maps a missing one to `null`), which is why
+ * this is a guard rather than a bug fix — but the field is a plain
+ * `string | null` on a native contract, and the cost of it ever becoming `""`
+ * is a silently deleted transaction.
  *
  * THE TEXT IS STILL COMPARED, because a slot is reused for genuinely new
  * content: a tile that goes "Processing" then "Sent ₱1,000" is one slot and
@@ -366,7 +386,7 @@ export async function findReplayCapture(
   windowMs: number,
 ): Promise<string | null> {
   const notificationKey = capture.notificationKey ?? null;
-  if (notificationKey === null) return null;
+  if (notificationKey === null || notificationKey.trim() === "") return null;
 
   const db = await getDatabase();
   const row = await db.getFirstAsync<{ id: string }>(

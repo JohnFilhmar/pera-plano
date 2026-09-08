@@ -35,6 +35,9 @@ not been started. Each gap's detail entry in section 9 carries the same marker i
 
 | ID | Status | Commit | Branch | Verification | Date |
 |---|---|---|---|---|---|
+| GAP-035 | DONE | 6d65c86 | gap-wave-10 | jest lib/db/repos + lib/ingest 33 suites 912 tests PASS; the new blank-key test fails with the guard removed (returns cap-a instead of null). THE ENTRY'S PROPOSED FIX IS A DEFECT AND WAS NOT IMPLEMENTED. Widening every null key into a package-and-text match was tried and it breaks pipeline.test.ts's "two distinct captures with identical amount, channel and timing still reach the DedupeGate" - those are two GENUINE purchases, they carry no key either, and the match cannot tell them from a redelivery, so it eats the second one silently. The entry's own safety clause, "genuine identical purchases stay protected by the posted_at window and dedupe rule 4", is FALSE: findReplayCapture returning non-null returns ignored:duplicate at pipeline.ts:375, BEFORE storeRawCapture and before the DedupeGate runs at all, so rule 4 is unreachable exactly when it would be needed. Verified at the call site by the orchestrator. The acceptance criterion can therefore only be satisfied by breaking an existing test. What shipped instead is a strictly NARROWING guard: a blank key now counts as no key, because notification_key = '' MATCHES where = NULL never does, so blank keys would share one bucket and dedupe on text alone by accident. DEFENSIVE ONLY - CaptureRecord.fromJson maps a missing key to null and sbn.key is never empty, so nothing on the Kotlin path can produce this today. THE ENTRY'S REAL CLAIMED EXPOSURE, the pre-migration-018 null-key backlog, IS NOT CLOSED and the argument is that it cannot be: an edit redelivery gets a fresh postTime, so it is genuinely indistinguishable from a second purchase. The information was never captured. Also found a PRE-EXISTING VACUOUS TEST at raw_notifications_repo.test.ts "findReplayCapture ignores a capture with no slot key", which passes with its guard deleted because notification_key = ? with a NULL parameter never matches anyway | 2026-09-08 |
+| GAP-037 | DONE | b137584 | gap-wave-10 | jest lib/income 8 suites 106 tests PASS, jest income 12 suites 145 PASS, components/income 17 PASS; reverting the summary computation fails 8 of 14, and reverting ONLY the keepManualOverride argument fails 1. THE ENTRY'S FIX WOULD HAVE SHIPPED A DEFECT. It stops at setting the flag and says to reuse the existing suggestion sheet, but that sheet's Confirm is wired to confirmDetectedIncome, which passed isManualOverride:false unconditionally - so the ONLY accept path on the new suggestion would silently surrender the user's control of their own income figure, after which detection rewrites it unasked forever. That contradicts docs/04-features/04-income.md flow "manual override and back" step 3: "applying it updates the values but keeps isManualOverride true (the user made the change)". Confirmed against the doc by the orchestrator. THE ACCEPTANCE CRITERIA ARE SATISFIABLE WITHOUT FIXING ANYTHING: all four hold with the override-clearing bug present, and all four hold while the card asks the user to accept a number that is nowhere on screen (the sheet's only figure is the DECLARED one and its copy reads "We think we spotted your payday", which is false over a declaration). Two readings are recorded as INTERPRETATIONS, not facts: exactly 20.0 percent raises nothing, since rule 14 says "more than"; and both clauses require confirmed status though only the cadence clause says so outright - stricter than a literal reading, so it under-fires rather than over-fires, which is the right direction for an interruption that tells someone their salary changed. Cite drift as warned: the entry puts rule 14 at :49, it is at :107; :49 is override flow step 3 | 2026-09-08 |
+| GAP-097 | DONE | 7d5bf67 | gap-wave-10 | jest bills_screen loan_routes limit_routes ledger_list review_card charts 204 tests, jest lib test_support 119 suites; full wave sweep recorded in the wave 10 findings block. Reverting SIX production behaviours at once fails 13 tests that previously passed. FIVE OF THE ENTRY'S ELEVEN LOCATIONS WERE ALREADY STALE - fixed by GAP-063, GAP-064, GAP-065, GAP-070, GAP-083 and GAP-086 - so the entry's own acceptance criterion ("reverting GAP-063, 064 or 065 fails at least one test") was ALREADY MET before this work started. ONE LOCATION IS A MIS-DIAGNOSIS: access_step and done_step do not contradict docs/01. done_step was rewritten by GAP-090 and now matches 01-onboarding.md:113 line for line; access_step's divergence from the three-option retry screen is a deliberate product decision documented in app/(onboarding)/access.tsx, and the tests describe it accurately. Changing them would have made the suite red on unfixed code. THE REAL FIND IS THE TIME ZONE: 09:00 in Manila is 01:00 UTC on the SAME date, so ledger_list's entire local-vs-UTC claim passed identically against the naive toISOString().slice(0,10) it says it guards against - and the file's OWN COMMENT described 7am while the fixture used 9am. At the 7am fixture, reverting localDateKey fails 6 tests; at 9am it failed none. TZ is now pinned to Asia/Manila in jest_setup.ts, with an explicit toISOString assertion so the pin fails loudly rather than letting the fixture go quiet again. No suite changed status from the pin. loan_form is ANNOTATED, NOT CORRECTED, because GAP-082 is still open: two new lines state the observed loss without endorsing it and will fail when the fix lands. NOT DONE: the setup_flow_e2e relaunch test, which is missing COVERAGE rather than a vacuous fixture and belongs in its own entry | 2026-09-08 |
 | GAP-019 | DONE | 5730243 | gap-wave-9 | server vitest 22 files 162 tests PASS, smoke 19 PASS, typecheck and lint clean; reverting next.config.ts fails all 8 header tests and both smoke assertions. THE ENTRY'S CSP WOULD HAVE BROKEN THE SITE: it blamed motion and ogl, but the real need is inline script (layout.tsx theme bootstrap plus Next's RSC payload), so a literal default-src self would have served the site UNHYDRATED and passed a header-only test. Verified in a real browser under the live policy: zero console errors, bootstrap ran, WebGL live. HSTS is max-age=86400 not a year - the entry says both, and nothing has been served over TLS yet. script-src carries unsafe-inline; a nonce cannot work while / is prerendered. Acceptance criterion "smoke with SMOKE_SKIP_BUILD unset" CANNOT BE MET in a worktree (Turbopack rejects the junction) and needs checking in the main checkout | 2026-09-07 |
 | GAP-078 | DONE | 5fa4d3a | gap-wave-9 | jest wipe + lock_context + transaction_new + done_step 78 tests PASS, lock_screen 8 PASS, 86 combined; reverting fails exactly the 7 new tests. Worst live defect was not the headline: a rejected getKeyState() left onboarding at step "checking", which renders null, so a first install could dead-end on a permanently blank screen. THE ENTRY'S EVIDENCE WAS WRONG that mutateAsync escapes the central toast - MutationCache.onError is cache-level - so an isError branch would have double-reported. New WipeIncompleteError separates a pre-database failure from a post-database one, without which the acceptance criterion is unsatisfiable. The lock notice had to be RENDERED: setting errorMessage passed a test while the user saw a blank screen | 2026-09-07 |
 | GAP-083 | DONE | 46725f4 | gap-wave-9 | jest components/loans + components/goals 8 suites 82 tests PASS; reverting fails exactly the 4 new tests. THE ENTRY CONTRADICTED ITSELF - checklist said condition the floor on mode, Intended behavior says create allows a past first-due, and an in-progress bank loan is CREATED. The real damage was not "cannot pick a past date": date_field passes minimumDate to the native dialog, which opens CLAMPED, so tapping the field on an in-progress loan and confirming rewrote firstDue to today and the save rebuilt every installment. A name-only edit re-dated the whole schedule. Goal floor is min(today, stored), derived from initial not the live field, so a mis-tap cannot ratchet it | 2026-09-07 |
@@ -547,6 +550,82 @@ Facts established while fixing entries, that later entries must not rediscover t
   throws, `useListenerHealth` does not retry, so the Privacy row now reads "checking"
   indefinitely rather than showing an error: true, better than the confident falsehood it
   replaced, but not a bridge-error state.
+
+**Wave 10 findings (2026-09-08).**
+
+- **Wave 10 suite result.** Mobile **263 suites, 4,551 tests, ONE failure**, and that one is
+  GAP-052's own catalogued flake -- `review_queue.test.tsx` "EMPTYING A FILTER IS NOT 'All
+  caught up.'", which GAP-052 already reproduced and pinned on master at `7a42793`. It passed
+  30/30 in isolation immediately afterwards. Chunk sum reconciled against
+  `npx jest --listTests` (263 = 263): `lib test_support` 119 suites / 2,544 tests;
+  `hooks contexts services modules constants types` 20 / 375; `components` 90 / 1,153;
+  `app/` 34 / 479. The two suites over wave 9's 261 are GAP-037's. Typecheck unchanged, still
+  only `gates.test.tsx(91,29)`. Server NOT RUN: no server file was touched this wave.
+
+- **ALL THREE ENTRIES ATTEMPTED THIS WAVE CARRIED A DEFECTIVE PRESCRIPTION. The count is now
+  FOURTEEN.** This is the first wave in which EVERY entry was wrong, and it is the strongest
+  evidence yet for the standing warning: the diagnoses in this file are reliable, the fixes are
+  not, and the ratio degrades as the easy entries are consumed. All three were caught only
+  because the agent was required to justify the mechanism instead of implementing the checklist.
+  - GAP-035's fix would have SILENTLY DELETED GENUINE TRANSACTIONS. Widening a null key into a
+    package-and-text match was implemented and it broke `pipeline.test.ts`'s "two distinct
+    captures with identical amount, channel and timing still reach the DedupeGate". The entry
+    asserts those purchases stay protected by dedupe rule 4. They do not:
+    `findReplayCapture` returning non-null returns `ignored: "duplicate"` at
+    `pipeline.ts:375`, before `storeRawCapture` and before the DedupeGate exists, so rule 4
+    is unreachable exactly when it is needed. The entry's acceptance criterion can only be met
+    by breaking that test.
+  - GAP-037's fix would have SILENTLY SURRENDERED THE USER'S CONTROL OF THEIR INCOME. It stops
+    at setting `hasPendingSuggestion` and says to reuse the existing sheet, but that sheet's
+    Confirm calls `confirmDetectedIncome`, which passed `isManualOverride: false`
+    unconditionally. The only accept path on the new suggestion would clear the override, after
+    which detection rewrites the figure unasked forever -- against the doc's own flow step 3.
+  - GAP-097 was FIVE-ELEVENTHS STALE and its acceptance criterion was ALREADY MET before the
+    work began. GAP-063, 064, 065, 070, 083 and 086 had already fixed those locations. A sixth
+    location was a mis-diagnosis that would have turned the suite red on correct code.
+
+- **AN ENTRY CAN BE STALE BECAUSE WE FIXED IT, AND THE FILE DOES NOT KNOW.** GAP-097 is the
+  first entry whose locations were substantially consumed by earlier waves of this same
+  campaign. Cite drift was already known; this is the next stage of the same problem, and it
+  will get worse with every wave. **Before starting any TEST-category entry, check whether its
+  locations were already remediated** -- the remediation log is the index for that. An agent
+  that trusts such an entry spends its whole budget rediscovering finished work.
+
+- **A FIXTURE CAN DESCRIBE THE RIGHT TEST AND STILL BE THE WRONG ONE, and prose is no
+  protection.** The best catch of the wave: `ledger_list.test.tsx` carried a comment reading
+  "7am in Manila is the PREVIOUS day in UTC, so a morning coffee would file itself under
+  yesterday" -- directly above a fixture built at **9am**. 09:00 +08:00 is 01:00 UTC on the SAME
+  date, so the naive `toISOString().slice(0, 10)` the file says it guards against returned the
+  identical key, and every local-grouping assertion held against the exact bug it named.
+  Reverting `localDateKey` to that one-liner now fails six tests; at 9am it failed none. The
+  suite's TZ is now pinned to `Asia/Manila` in `test_support/jest_setup.ts`, with an explicit
+  `toISOString()` assertion beside the fixture so the pin fails loudly rather than letting the
+  fixture go quiet again. **This closes the `package.json` "no TZ pinned" location of GAP-052**;
+  the seven flakes it also lists are untouched and still open.
+
+- **A TEST THAT PINS A STILL-OPEN DEFECT SHOULD BE ANNOTATED, NOT CORRECTED.** `loan_form`
+  pins GAP-082, which is blocked on an owner decision. "Correcting" it would have made the suite
+  red on unfixed code; deleting it would have lost the coverage. It now names GAP-082 in a block
+  header and asserts the observed loss explicitly, so the two lines fail when the fix lands and
+  point at it. Same treatment for `access_step`, where the divergence from docs/01 is a
+  deliberate product decision documented in `app/(onboarding)/access.tsx`.
+
+- **TWO LOAD-BOUND FLAKES WERE MISREAD AS REGRESSIONS THIS WAVE, both innocent.**
+  `ruleset_schema.test.ts` "the bundled seed parses" failed under a 767 s chunk and was
+  suspected of being the new TZ pin. It is not: `probePatternCost` rejects a regex whose probe
+  exceeds `PATTERN_PROBE_BUDGET_MS = 20`, and the loaded run measured 82 ms against a shipped
+  seed whose slowest pattern needs ~0.35 ms. It passed in the clean wave sweep with the pin in
+  place. **A wall-clock budget asserted inside a memory-starved test suite is a flake generator**
+  and belongs with GAP-052's list.
+
+- **THE LOW-MEMORY SUPERVISOR KILLED A BACKGROUND CHUNK AGAIN, and the cleanup has a trap.**
+  `hooks contexts services modules constants types components` (110 suites) was killed midway.
+  Re-run FOREGROUND, split as 20 + 90 with `--maxWorkers=4`, both halves passed in 61 s and
+  224 s. **Do not kill leaked workers by matching `jest` in the command line:** Metro
+  (`expo start --dev-client`) uses `jest-worker` too, so that pattern matches the owner's
+  running dev server, whose workers look identical to jest's. Match the jest CLI's own command
+  line, or the parent PID, instead.
+
 
 ## 1. Executive summary
 
@@ -3218,6 +3297,8 @@ none (AGENT-ASSISTED: crypto reviewer confirms the wipe is offered only when the
 
 ### GAP-035 [CODE] A capture with no notification key falls back to id-only replay detection
 
+> **REMEDIATION: DONE** (2026-09-08) - commit 6d65c86, branch gap-wave-10. Verification: jest lib/db/repos + lib/ingest 33 suites 912 tests PASS; the new blank-key test fails with the guard removed (returns cap-a instead of null). THE ENTRY'S PROPOSED FIX IS A DEFECT AND WAS NOT IMPLEMENTED. Widening every null key into a package-and-text match was tried and it breaks pipeline.test.ts's "two distinct captures with identical amount, channel and timing still reach the DedupeGate" - those are two GENUINE purchases, they carry no key either, and the match cannot tell them from a redelivery, so it eats the second one silently. The entry's own safety clause, "genuine identical purchases stay protected by the posted_at window and dedupe rule 4", is FALSE: findReplayCapture returning non-null returns ignored:duplicate at pipeline.ts:375, BEFORE storeRawCapture and before the DedupeGate runs at all, so rule 4 is unreachable exactly when it would be needed. Verified at the call site by the orchestrator. The acceptance criterion can therefore only be satisfied by breaking an existing test. What shipped instead is a strictly NARROWING guard: a blank key now counts as no key, because notification_key = '' MATCHES where = NULL never does, so blank keys would share one bucket and dedupe on text alone by accident. DEFENSIVE ONLY - CaptureRecord.fromJson maps a missing key to null and sbn.key is never empty, so nothing on the Kotlin path can produce this today. THE ENTRY'S REAL CLAIMED EXPOSURE, the pre-migration-018 null-key backlog, IS NOT CLOSED and the argument is that it cannot be: an edit redelivery gets a fresh postTime, so it is genuinely indistinguishable from a second purchase. The information was never captured. Also found a PRE-EXISTING VACUOUS TEST at raw_notifications_repo.test.ts "findReplayCapture ignores a capture with no slot key", which passes with its guard deleted because notification_key = ? with a NULL parameter never matches anyway
+
 | Field | Value |
 |---|---|
 | Severity | S3 Moderate |
@@ -3331,6 +3412,8 @@ Revert.
 none
 
 ### GAP-037 [FEAT] Manual income override never gets the 20 percent divergence suggestion
+
+> **REMEDIATION: DONE** (2026-09-08) - commit b137584, branch gap-wave-10. Verification: jest lib/income 8 suites 106 tests PASS, jest income 12 suites 145 PASS, components/income 17 PASS; reverting the summary computation fails 8 of 14, and reverting ONLY the keepManualOverride argument fails 1. THE ENTRY'S FIX WOULD HAVE SHIPPED A DEFECT. It stops at setting the flag and says to reuse the existing suggestion sheet, but that sheet's Confirm is wired to confirmDetectedIncome, which passed isManualOverride:false unconditionally - so the ONLY accept path on the new suggestion would silently surrender the user's control of their own income figure, after which detection rewrites it unasked forever. That contradicts docs/04-features/04-income.md flow "manual override and back" step 3: "applying it updates the values but keeps isManualOverride true (the user made the change)". Confirmed against the doc by the orchestrator. THE ACCEPTANCE CRITERIA ARE SATISFIABLE WITHOUT FIXING ANYTHING: all four hold with the override-clearing bug present, and all four hold while the card asks the user to accept a number that is nowhere on screen (the sheet's only figure is the DECLARED one and its copy reads "We think we spotted your payday", which is false over a declaration). Two readings are recorded as INTERPRETATIONS, not facts: exactly 20.0 percent raises nothing, since rule 14 says "more than"; and both clauses require confirmed status though only the cadence clause says so outright - stricter than a literal reading, so it under-fires rather than over-fires, which is the right direction for an interruption that tells someone their salary changed. Cite drift as warned: the entry puts rule 14 at :49, it is at :107; :49 is override flow step 3
 
 | Field | Value |
 |---|---|
@@ -6956,6 +7039,8 @@ Revert.
 none
 
 ### GAP-097 [TEST] Screen tests use fixtures that cannot distinguish the defect from the fix
+
+> **REMEDIATION: DONE** (2026-09-08) - commit 7d5bf67, branch gap-wave-10. Verification: jest bills_screen loan_routes limit_routes ledger_list review_card charts 204 tests, jest lib test_support 119 suites; full wave sweep recorded in the wave 10 findings block. Reverting SIX production behaviours at once fails 13 tests that previously passed. FIVE OF THE ENTRY'S ELEVEN LOCATIONS WERE ALREADY STALE - fixed by GAP-063, GAP-064, GAP-065, GAP-070, GAP-083 and GAP-086 - so the entry's own acceptance criterion ("reverting GAP-063, 064 or 065 fails at least one test") was ALREADY MET before this work started. ONE LOCATION IS A MIS-DIAGNOSIS: access_step and done_step do not contradict docs/01. done_step was rewritten by GAP-090 and now matches 01-onboarding.md:113 line for line; access_step's divergence from the three-option retry screen is a deliberate product decision documented in app/(onboarding)/access.tsx, and the tests describe it accurately. Changing them would have made the suite red on unfixed code. THE REAL FIND IS THE TIME ZONE: 09:00 in Manila is 01:00 UTC on the SAME date, so ledger_list's entire local-vs-UTC claim passed identically against the naive toISOString().slice(0,10) it says it guards against - and the file's OWN COMMENT described 7am while the fixture used 9am. At the 7am fixture, reverting localDateKey fails 6 tests; at 9am it failed none. TZ is now pinned to Asia/Manila in jest_setup.ts, with an explicit toISOString assertion so the pin fails loudly rather than letting the fixture go quiet again. No suite changed status from the pin. loan_form is ANNOTATED, NOT CORRECTED, because GAP-082 is still open: two new lines state the observed loss without endorsing it and will fail when the fix lands. NOT DONE: the setup_flow_e2e relaunch test, which is missing COVERAGE rather than a vacuous fixture and belongs in its own entry
 
 | Field | Value |
 |---|---|
