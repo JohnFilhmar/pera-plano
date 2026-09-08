@@ -278,6 +278,35 @@ export async function getTransaction(id: string): Promise<Transaction | null> {
 }
 
 /**
+ * Whether any Transaction was built from this raw capture.
+ *
+ * ONE `EXISTS`, NOT A LIST, because the only caller needs the answer and not the
+ * rows: `undoResolution` (lib/review/resolve_actions.ts) uses it to refuse to
+ * reopen a queue card whose triage COMMITTED. A reopened card with its
+ * transaction still in the ledger is a second confirmation of a movement the
+ * user has already recorded, which is the double-post the Review Queue's own
+ * duplicate defences exist to prevent.
+ *
+ * NOT CLAMPED TO THE TIER'S HISTORY FLOOR, for the reason `getTransaction`
+ * above gives: the floor is a listing rule, and a row hidden by it is still a
+ * row. A Free-tier caller told "nothing was committed" about a capture that
+ * committed 91 days ago would get exactly the wrong answer.
+ *
+ * `raw_notifications_repo.isRawCaptureUnreferenced` asks a WIDER question — no
+ * transaction AND no queue card — which is the right one for the ingest sweep
+ * and the wrong one here, where the asking card is itself a reference and would
+ * make every answer "referenced".
+ */
+export async function hasTransactionForRawCapture(rawNotificationId: string): Promise<boolean> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ committed: number }>(
+    "SELECT EXISTS (SELECT 1 FROM transactions WHERE raw_notification_id = ?) AS committed",
+    [rawNotificationId],
+  );
+  return (row?.committed ?? 0) === 1;
+}
+
+/**
  * The fields a user correction may rewrite. Deliberately excludes `source`,
  * `confidence` and `rawNotificationId` — those are the PROVENANCE that lets the
  * app answer "why was this recorded?", and a correction changes the facts, not

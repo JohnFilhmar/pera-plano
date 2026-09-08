@@ -66,6 +66,8 @@ import {
   ignoreProvider,
   mergeDuplicate,
   linkAsTransfer,
+  undoResolution,
+  UNDO_MAX_AGE_MS,
 } from "../resolve_actions";
 
 const FOOD = "cat_food_dining";
@@ -1130,5 +1132,131 @@ describe("a failure part-way through an action leaves no partial write", () => {
     expect(transactionId).not.toBeNull();
     expect(await listTransactions({})).toHaveLength(1);
     expect(await listOpen()).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// undoResolution — spec rule 9's ten-second take-back (GAP-075)
+// ---------------------------------------------------------------------------
+//
+// "Triage is undoable: a just-triaged item shows an undo affordance for 10
+// seconds; committed results remain editable in the ledger indefinitely
+// afterward."
+//
+// WHAT IS ACTUALLY UNDER TEST IS THE REFUSALS, not the reopen. Clearing a
+// `resolved_at` is one UPDATE; the reason this function exists rather than a
+// direct call to `reopen` is that three kinds of resolved card must never come
+// back, and only one of those three is a question about time.
+//
+// THE THIRD ONE IS THE MONEY ONE. Spec rule 10 is unqualified — "committed
+// transactions are never deleted by any queue action" — so an undo cannot
+// delete what a confirmation wrote, and reopening the card while leaving the row
+// is worse than either: the user meets the same question again, answers it
+// again, and their ledger holds one purchase twice. The guard is asked of the
+// LEDGER rather than of the action kind, so it holds however the function is
+// called.
+
+describe("undoResolution takes back a triage that wrote nothing but a resolution", () => {
+  /** When the queue actually stamped the item, read back rather than assumed. */
+  async function resolvedAtOf(itemId: string): Promise<number> {
+    const stamp = (await getReviewItem(itemId))?.resolvedAt;
+    expect(stamp).not.toBeNull();
+    return stamp as number;
+  }
+
+  test("a dismissed card comes back to the open queue", async () => {
+    const item = await queueParse();
+    await resolve(item.id, "dismissed");
+    expect(await countOpen()).toBe(0);
+
+    expect(await undoResolution(item.id, (await resolvedAtOf(item.id)) + 2_000)).toBe(true);
+
+    expect((await listOpen()).map((row) => row.id)).toEqual([item.id]);
+    expect((await getReviewItem(item.id))?.resolvedAt).toBeNull();
+    // And it stayed a dismissal all the way through: nothing was committed on
+    // the way out and nothing on the way back.
+    expect(await listTransactions({})).toEqual([]);
+    expect(await listUserRules()).toEqual([]);
+  });
+
+  test("a triage that committed is NEVER reopened, and its row is never touched", async () => {
+    const item = await queueParse();
+    const transactionId = (await confirmItem(item.id, NOW)) as string;
+    expect(transactionId).not.toBeNull();
+
+    expect(await undoResolution(item.id, (await resolvedAtOf(item.id)) + 2_000)).toBe(false);
+
+    // The card stays closed — a reopened card over a committed row is an
+    // invitation to record the same purchase twice.
+    expect((await getReviewItem(item.id))?.resolvedAt).not.toBeNull();
+    expect(await countOpen()).toBe(0);
+    // And spec rule 10 holds: the ledger row and the balance it moved are
+    // exactly where the confirmation left them.
+    expect(await getTransaction(transactionId)).not.toBeNull();
+    expect((await getWallet(gcashId))?.balance).toBe(100000 - 125000);
+  });
+
+  test("the offer is refused once it is older than the window", async () => {
+    const item = await queueParse();
+    await resolve(item.id, "dismissed");
+    const at = await resolvedAtOf(item.id);
+
+    expect(await undoResolution(item.id, at + UNDO_MAX_AGE_MS)).toBe(true);
+
+    await resolve(item.id, "dismissed");
+    const again = await resolvedAtOf(item.id);
+    expect(await undoResolution(item.id, again + UNDO_MAX_AGE_MS + 1)).toBe(false);
+    expect(await countOpen()).toBe(0);
+  });
+
+  test("a card whose thirty days ran out while the offer was on screen stays closed", async () => {
+    await storeCapture("raw-expiring");
+    const item = await enqueue({
+      kind: "low-confidence",
+      rawNotificationId: "raw-expiring",
+      payload: { amount: 125000, direction: "out", walletId: gcashId },
+      expiresAt: Date.now() + 1_000,
+    });
+    await resolve(item.id, "dismissed");
+    const at = await resolvedAtOf(item.id);
+
+    // Two seconds later the offer is still on screen and the card is not.
+    expect(await undoResolution(item.id, at + 2_000)).toBe(false);
+    expect((await getReviewItem(item.id))?.resolvedAt).not.toBeNull();
+  });
+
+  test("a card with no capture behind it is judged on its own, not on the ledger", async () => {
+    // `loan-match`'s shape: `loan_match_queue.ts` stores no `rawNotificationId`
+    // because the card is about a row that was committed long before it, and
+    // "Not a loan payment" does not touch that row. A guard keyed on the action
+    // would have to be told that; one keyed on the capture gets it for free.
+    await insertTransaction({
+      walletId: gcashId,
+      categoryId: FOOD,
+      amount: 200000,
+      direction: "out",
+      occurredAt: POSTED_AT,
+      merchant: "JUAN D",
+      source: "notification",
+      confidence: 1,
+    });
+    const item = await enqueue({ kind: "loan-match", payload: { transactionId: "t-1" } });
+    await resolve(item.id, "dismissed");
+
+    expect(await undoResolution(item.id, (await resolvedAtOf(item.id)) + 2_000)).toBe(true);
+    expect((await listOpen()).map((row) => row.id)).toEqual([item.id]);
+  });
+
+  test("there is nothing to take back on an open item, an unknown id, or a second tap", async () => {
+    const item = await queueParse();
+
+    expect(await undoResolution("no-such-item")).toBe(false);
+    expect(await undoResolution(item.id)).toBe(false);
+
+    await resolve(item.id, "dismissed");
+    const at = await resolvedAtOf(item.id);
+    expect(await undoResolution(item.id, at + 1_000)).toBe(true);
+    expect(await undoResolution(item.id, at + 2_000)).toBe(false);
+    expect(await countOpen()).toBe(1);
   });
 });

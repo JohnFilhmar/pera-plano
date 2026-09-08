@@ -443,6 +443,44 @@ export async function resolve(id: string, resolution: ReviewResolution): Promise
 }
 
 /**
+ * Clears an item's `resolved_at`, putting the card back in front of the user —
+ * the reverse of `resolve`, and the persistence half of spec rule 9's
+ * ten-second undo.
+ *
+ * Returns whether a row was actually reopened, so a caller can tell "the undo
+ * took" from "there was nothing to undo". A missing id and an already-open item
+ * are both a silent `false`, mirroring `resolve`'s own idempotence: a second tap
+ * on an offer that has already been taken is not an error worth telling anyone
+ * about.
+ *
+ * WHAT THIS FUNCTION DELIBERATELY DOES NOT DECIDE IS WHETHER REOPENING IS SAFE.
+ * Two kinds of resolved row here must never come back. A marker written by
+ * `markCaptureMerged` (resolved inside the same unit of work that creates it,
+ * and never shown to anyone) would become a card about a movement the user
+ * already merged away. And any card whose triage COMMITTED a Transaction would
+ * invite a second confirmation of a row the ledger already holds — the
+ * double-post `findOpenForRawNotification` above exists to prevent, reintroduced
+ * by the undo. Neither test belongs in a repository: one is a question about
+ * age, the other about a different aggregate. `undoResolution` in
+ * lib/review/resolve_actions.ts is the ONLY caller, and it asks both first.
+ *
+ * `expires_at` IS NOT TOUCHED. The hygiene clock (rules 21-25) runs from
+ * arrival, not from triage, and restarting it here would let a card outlive the
+ * raw text that justifies it (domain invariant 3, spec rule 21). A reopened item
+ * therefore keeps exactly the lifetime it had before it was triaged — which is
+ * also why `undoResolution` refuses an item that expired in the meantime rather
+ * than handing `purgeExpired` a row the user just asked to see again.
+ */
+export async function reopen(id: string): Promise<boolean> {
+  const db = await getDatabase();
+  const result = await db.runAsync(
+    "UPDATE review_queue_items SET resolved_at = NULL WHERE id = ? AND resolved_at IS NOT NULL",
+    [id],
+  );
+  return result.changes > 0;
+}
+
+/**
  * Deletes unresolved rows past their `expires_at` and returns the count
  * removed (rule 5). The `resolved_at IS NULL` guard is what keeps this a
  * hygiene purge instead of erasing a user's triage history — a resolved item

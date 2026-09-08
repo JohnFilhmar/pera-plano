@@ -37,11 +37,18 @@ import { UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { checkDuplicate } from "@/lib/ingest/dedupe_gate";
 import { getActiveRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { getRawCapture, isRawCaptureUnreferenced } from "@/lib/db/repos/raw_notifications_repo";
-import { enqueue, listOpen, resolve } from "@/lib/db/repos/review_queue_repo";
+import {
+  enqueue,
+  getReviewItem,
+  listOpen,
+  reopen,
+  resolve,
+} from "@/lib/db/repos/review_queue_repo";
 import { setWalletOwed } from "@/lib/db/repos/wallet_traits_repo";
 import {
   deleteTransaction,
   getTransaction,
+  hasTransactionForRawCapture,
   insertTransaction,
   listTransactions,
 } from "@/lib/db/repos/transactions_repo";
@@ -907,4 +914,126 @@ export async function answerWalletKind(itemId: string, owed: boolean): Promise<v
 
   await setWalletOwed(walletId, owed, { pinned: true });
   await resolve(itemId, "confirmed");
+}
+
+/**
+ * How long the undo affordance stays on screen — spec rule 9's ten seconds,
+ * exactly: "a just-triaged item shows an undo affordance for 10 seconds".
+ *
+ * It is the toast's `durationMs` in app/review/index.tsx and nothing else. The
+ * window the DATA layer enforces is `UNDO_MAX_AGE_MS` below, and the two are
+ * deliberately different numbers.
+ */
+export const UNDO_WINDOW_MS = 10_000;
+
+/**
+ * The oldest resolution `undoResolution` will reverse.
+ *
+ * NOT ten seconds, and the gap is the whole point. The affordance above is a
+ * `setTimeout` inside a mounted component: Android freezes JS timers on a
+ * backgrounded app, so a user who leaves at second three and returns at minute
+ * five can come back to an Undo button that should have vanished. Rule 9's ten
+ * seconds is a promise about what is OFFERED; this is the backstop on what is
+ * ACCEPTED, and a card reopened five minutes after its triage is a card whose
+ * queue has moved on without it.
+ *
+ * It is loose enough that no honest tap on a live affordance can fall outside
+ * it — the mutation that stamped `resolved_at` had already returned before the
+ * toast was published, so the ten seconds the user sees always begins after the
+ * clock this bound measures, and a slow write must never turn a legitimate undo
+ * into a silent no-op. Tightening it to exactly `UNDO_WINDOW_MS` would do
+ * precisely that.
+ *
+ * It is also what keeps `markCaptureMerged`'s markers buried. Those rows are
+ * enqueued and resolved inside one unit of work and their ids are never handed
+ * to a caller, so they are unreachable from the UI in the first place; a bound
+ * on age means that even a caller that somehow got hold of one could only
+ * disturb it in the minute after a merge, rather than forever.
+ */
+export const UNDO_MAX_AGE_MS = 60_000;
+
+/**
+ * Spec rule 9's undo: put a just-triaged card back in front of the user.
+ *
+ * Returns whether the item was actually reopened. `false` is a refusal, not a
+ * failure — see the four guards below — and the caller renders nothing new for
+ * it: the card simply does not come back, which is what the user already sees.
+ *
+ * WHAT IT REVERSES, AND WHY THAT IS THE WHOLE LIST. It reverses a triage that
+ * wrote nothing but `resolved_at`: "Not money" on an unknown provider, the
+ * reject on a low-confidence card, "Same transaction" on a duplicate whose twin
+ * was never committed, and "Not a loan payment". For those the resolution IS the
+ * entire write, so clearing it is a complete reversal with nothing left over.
+ *
+ * IT DOES NOT REVERSE A TRIAGE THAT COMMITTED, and that is a reading of the
+ * spec rather than a shortcut. Rule 10 of the same document is unqualified:
+ * "committed transactions are never deleted by any queue action" — and an undo
+ * rendered by the queue screen, dispatched through the queue's own mutation, is
+ * a queue action. Rule 9's own second clause says what happens to a confirmation
+ * instead: "committed results remain editable in the ledger indefinitely
+ * afterward". So the document never contemplates the queue deleting a row it
+ * committed; it contemplates the row being edited afterwards.
+ *
+ * AND THE CODE AGREES, in a way that matters more than the reading. `correctItem`
+ * has a branch (GAP-012) where the movement was ALREADY in the ledger from the
+ * other channel: it commits nothing, resolves the card, and returns the id of a
+ * row it did not create. An undo built from "delete the transaction the confirm
+ * returned" would delete that pre-existing row — a real transaction, from a real
+ * notification, that this triage never wrote. `confirmOneSidedTransfer` mints a
+ * counterpart leg, an optional fee row and a link; `mergeDuplicate` deletes a
+ * row and writes a capture marker; `confirmLoanMatch` writes a `loan_payments`
+ * row under a UNIQUE constraint. Each needs its own reversal with its own
+ * proof, not one shared delete.
+ *
+ * THE FOUR GUARDS, in order, and each one closes a way this could go wrong:
+ *
+ *   NO ITEM, OR NOTHING TO UNDO. An unknown id, or one already open — the
+ *   second tap on an offer that has been taken. Silent, exactly as `resolve`
+ *   is on the same double tap.
+ *
+ *   TOO OLD. `UNDO_MAX_AGE_MS` above.
+ *
+ *   ALREADY EXPIRED. Reopening a card past its `expires_at` would hand
+ *   `purgeExpired` a row the user just asked to see again, and `listOpen` would
+ *   not show it in the meantime — an undo that appears to do nothing. The
+ *   hygiene clock is not restarted (see `reopen`), so the honest answer is that
+ *   this card's thirty days ran out while the offer was on screen.
+ *
+ *   THE TRIAGE COMMITTED. Asked of the ledger rather than of the action kind,
+ *   so it holds however this function is called later: if any Transaction was
+ *   built from this card's capture, reopening it puts a card back for a movement
+ *   the ledger already holds, and confirming it again is how one purchase
+ *   becomes two rows. A `loan-match` card carries no `rawNotificationId` at all
+ *   (`loan_match_queue.ts` explains why) and passes this guard, which is right:
+ *   its transaction was committed long before the card existed and "Not a loan
+ *   payment" did not touch it.
+ *
+ * ONE UNIT OF WORK, though it issues a single UPDATE. The guards read state the
+ * decision depends on, and a triage landing between the ledger check and the
+ * reopen would let a card come back for a row that was committed in between.
+ *
+ * NOT DURABLE, DELIBERATELY. The offer lives in the toast queue in memory
+ * (lib/query_client.ts), so it is gone after a kill or a reload — the ten
+ * seconds is an affordance, not a promise the app makes across launches. The
+ * only durable trace is the untouched `resolved_at`, which is the correct
+ * resting state for a triage the user did not take back.
+ */
+export async function undoResolution(itemId: string, now: EpochMs = Date.now()): Promise<boolean> {
+  return withUnitOfWork(async () => {
+    const item = await getReviewItem(itemId);
+    if (item === null || item.resolvedAt === null) return false;
+    if (now - item.resolvedAt > UNDO_MAX_AGE_MS) return false;
+    // `listOpen`'s own predicate, negated: `expires_at > ?` is false for a past
+    // stamp AND for a NULL, so neither would come back to the list anyway.
+    // Reopening either is an undo the user watches do nothing.
+    if (item.expiresAt === null || item.expiresAt <= now) return false;
+    if (
+      item.rawNotificationId !== null &&
+      (await hasTransactionForRawCapture(item.rawNotificationId))
+    ) {
+      return false;
+    }
+
+    return reopen(itemId);
+  });
 }

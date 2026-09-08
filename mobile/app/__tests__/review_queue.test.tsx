@@ -28,8 +28,9 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react-nativ
 import type { ReactNode } from "react";
 
 import { KeypadHost } from "@/components/ui/keypad_host";
+import { MutationErrorToast } from "@/components/ui/mutation_error_toast";
 import { KeypadProvider } from "@/contexts/keypad_context";
-import { closeDatabase } from "@/lib/db/database";
+import { closeDatabase, getDatabase } from "@/lib/db/database";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { createLoan, listPayments, outstandingBalance } from "@/lib/db/repos/loans_repo";
 import { raiseLoanMatchSuggestion } from "@/lib/loans/loan_match_queue";
@@ -43,7 +44,7 @@ import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions
 import { listUserRules } from "@/lib/db/repos/user_rules_repo";
 import { createWallet } from "@/lib/db/repos/wallets_repo";
 import { GATE_REASONS } from "@/lib/ingest/confidence_gate";
-import { queryClient as appQueryClient } from "@/lib/query_client";
+import { clearToasts, queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
 import type { NewReviewItem, ReviewQueueItem, Transaction } from "@/types/domain";
 
@@ -51,6 +52,9 @@ import ReviewQueueScreen, {
   REVIEW_BACKLOG_BANNER,
   REVIEW_EMPTY_BODY,
   REVIEW_EMPTY_TITLE,
+  REVIEW_UNDO_BODY,
+  REVIEW_UNDO_LATE_TITLE,
+  REVIEW_UNDO_TITLE,
   sortOldestFirst,
 } from "../review/index";
 
@@ -126,16 +130,43 @@ async function renderScreen(): Promise<void> {
   await waitFor(() => expect(screen.getByTestId("review-queue-screen")).toBeTruthy());
 }
 
+/**
+ * The same screen with the app's notice host above it, as app/_layout.tsx
+ * mounts it (GAP-075).
+ *
+ * SEPARATE FROM `renderScreen` ON PURPOSE. Rule 9's undo is offered through
+ * `publishToast`, and asserting only that something reached the toast QUEUE
+ * would pass with nothing on screen at all — the queue is a module-level array
+ * in lib/query_client.ts, and a host that never rendered it would satisfy every
+ * such assertion. Mounting the real host is what makes "the user is offered an
+ * undo" the thing under test rather than "a function was called".
+ */
+async function renderScreenWithNotices(): Promise<void> {
+  render(
+    <>
+      <MutationErrorToast />
+      <ReviewQueueScreen />
+    </>,
+    { wrapper: Wrapper },
+  );
+  await waitFor(() => expect(screen.getByTestId("review-queue-screen")).toBeTruthy());
+}
+
 let walletId: string;
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  // The notice queue is module state and outlives a test that published into
+  // it — an undo offer left over from the previous case would be on screen
+  // before the next one pressed anything.
+  clearToasts();
   await freshDb();
   await seedDefaultCategories();
   walletId = (await createWallet({ name: "GCash" })).id;
 });
 
 afterEach(async () => {
+  clearToasts();
   await closeDatabase();
 });
 
@@ -754,5 +785,95 @@ describe("the queue is filterable by kind", () => {
     await waitFor(() => expect(screen.getByTestId(`review-card-${parse.id}`)).toBeTruthy(), {
       timeout: 10_000,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// UNDO — docs/04-features/08-review-queue.md rule 9 (GAP-075)
+//
+// "Triage is undoable: a just-triaged item shows an undo affordance for 10
+// seconds; committed results remain editable in the ledger indefinitely
+// afterward."
+//
+// The offer is scoped by rule 10 of the same document, which is unqualified:
+// "committed transactions are never deleted by any queue action". So undo is
+// offered for the triages whose entire write was a `resolved_at` — and the
+// second test here is the one that keeps it that way, because an undo over a
+// committed row is not a smaller feature, it is a second chance to record the
+// same purchase twice.
+// ---------------------------------------------------------------------------
+
+describe("taking back a triage", () => {
+  test("dismissing offers an undo, and taking it puts the card back", async () => {
+    const queued = await enqueueAt(NOW - HOUR, {
+      kind: "low-confidence",
+      payload: gatedPayload({ walletId }),
+    });
+
+    await renderScreenWithNotices();
+    fireEvent.press(await screen.findByTestId(`review-reject-${queued.id}`));
+
+    await waitFor(async () => expect(await countOpen()).toBe(0));
+    // The notice says what happened AND that the ledger did not move, which is
+    // the half a user has no other way to check.
+    expect(await screen.findByText(REVIEW_UNDO_TITLE)).toBeTruthy();
+    expect(screen.getByText(REVIEW_UNDO_BODY)).toBeTruthy();
+
+    fireEvent.press(screen.getByTestId("app-toast-action"));
+
+    await waitFor(async () => expect(await countOpen()).toBe(1));
+    expect(await screen.findByTestId(`review-card-${queued.id}`)).toBeTruthy();
+    // Reversing a dismissal writes nothing anywhere else — the dismissal wrote
+    // nothing either.
+    expect(await listTransactions({})).toEqual([]);
+    expect(await listUserRules()).toEqual([]);
+  });
+
+  test("confirming offers NO undo — rule 10 keeps the committed row", async () => {
+    const queued = await enqueueAt(NOW - HOUR, {
+      kind: "low-confidence",
+      payload: gatedPayload({ walletId }),
+    });
+
+    await renderScreenWithNotices();
+    fireEvent.press(await screen.findByTestId(`review-primary-${queued.id}`));
+
+    await waitFor(async () => expect(await listTransactions({})).toHaveLength(1));
+    await waitFor(async () => expect(await countOpen()).toBe(0));
+    // No offer at all, rather than an offer that fails when it is taken: an
+    // undo the user can see and press is a promise, and this one cannot be
+    // kept without deleting a row rule 10 protects.
+    expect(screen.queryByTestId("app-toast")).toBeNull();
+    expect(screen.queryByText(REVIEW_UNDO_TITLE)).toBeNull();
+  });
+
+  test("an offer left on screen by a backgrounded app says so instead of doing nothing", async () => {
+    const queued = await enqueueAt(NOW - HOUR, {
+      kind: "low-confidence",
+      payload: gatedPayload({ walletId }),
+    });
+
+    await renderScreenWithNotices();
+    fireEvent.press(await screen.findByTestId(`review-reject-${queued.id}`));
+    await waitFor(async () => expect(await countOpen()).toBe(0));
+    await screen.findByTestId("app-toast-action");
+
+    // What Android does to a foregrounded timer when the app goes away: the
+    // ten-second countdown stops, the card stays cleared, and the button is
+    // still there when the user comes back minutes later.
+    const db = await getDatabase();
+    await db.runAsync("UPDATE review_queue_items SET resolved_at = ? WHERE id = ?", [
+      Date.now() - 5 * MINUTE,
+      queued.id,
+    ]);
+
+    fireEvent.press(screen.getByTestId("app-toast-action"));
+
+    expect(await screen.findByText(REVIEW_UNDO_LATE_TITLE)).toBeTruthy();
+    expect(await countOpen()).toBe(0);
+    expect(screen.queryByTestId(`review-card-${queued.id}`)).toBeNull();
+    // And it is not reported as a failed write: nothing was attempted that
+    // could have half-succeeded.
+    expect(screen.queryByTestId("review-action-error")).toBeNull();
   });
 });

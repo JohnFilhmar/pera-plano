@@ -31,6 +31,7 @@ import {
   ignoreProvider,
   linkAsTransfer,
   mergeDuplicate,
+  undoResolution,
   type CorrectionPatch,
 } from "@/lib/review/resolve_actions";
 import type { Centavos } from "@/types/domain";
@@ -96,28 +97,50 @@ export type ReviewAction =
   | { kind: "answer-wallet-kind"; itemId: string; owed: boolean }
   | { kind: "ignore-provider"; itemId: string; packageName: string }
   | { kind: "link-transfer"; itemId: string; outTransactionId: string; inTransactionId: string }
-  | { kind: "merge"; itemId: string; keepTransactionId: string; dropTransactionId: string };
+  | { kind: "merge"; itemId: string; keepTransactionId: string; dropTransactionId: string }
+  /**
+   * "Undo" — spec rule 9's ten-second take-back, which is the only action here
+   * that REVERSES one of the others rather than answering a card.
+   *
+   * IT CARRIES NOTHING BUT THE ITEM, and that is deliberate: what has to be
+   * reversed is a fact about the database, not about the tap. `undoResolution`
+   * reads the item's own state and refuses anything it cannot completely undo
+   * — see its docblock for why a triage that COMMITTED is not on that list and
+   * what spec rule 10 has to do with it. An action carrying "and here is the
+   * transaction to delete" would be the caller deciding that instead, from a
+   * value it took on trust.
+   */
+  | { kind: "undo"; itemId: string };
 
-async function run(action: ReviewAction): Promise<void> {
+/**
+ * `true` when the action did its work; `false` ONLY when an `undo` declined.
+ *
+ * Every other case here either succeeds or throws, so the boolean is about the
+ * one action that has a third answer: an offer taken too late, or on a card
+ * whose thirty days ran out while the notice was on screen. `undoResolution`
+ * returns that as a refusal rather than an error because nothing went wrong and
+ * "Try again" is not the advice — the caller says so in its own words instead.
+ */
+async function run(action: ReviewAction): Promise<boolean> {
   switch (action.kind) {
     case "confirm":
       await confirmItem(action.itemId);
-      return;
+      return true;
     case "confirm-loan-match":
       // `confirmLoanMatch` wraps `recordPayment` and `resolve` in one unit of
       // work — the direction invariant (`PaymentDirectionMismatchError`) and
       // the one-transaction-one-loan invariant both live in that repository
       // call, and nothing here may reach past it.
       await confirmLoanMatch(action.itemId, action.loanId);
-      return;
+      return true;
     case "correct":
       await correctItem(action.itemId, action.patch);
-      return;
+      return true;
     case "dismiss":
       // Straight to the repository: there is no ledger consequence to make
       // atomic with it, and `resolve` is already idempotent on a double tap.
       await resolve(action.itemId, "dismissed");
-      return;
+      return true;
     case "dismiss-loan-match":
       // Not a bare `resolve`: loans rule 10's rejection COUNTER ("repeated
       // rejections for the same merchant surface a one-time prompt") needs a
@@ -125,10 +148,10 @@ async function run(action: ReviewAction): Promise<void> {
       // loans module gives it nowhere to live. `dismissLoanMatch` is a
       // pass-through today and exists for exactly that reason.
       await dismissLoanMatch(action.itemId);
-      return;
+      return true;
     case "confirm-transfer":
       await confirmAsTransfer(action.itemId);
-      return;
+      return true;
     case "confirm-one-sided-transfer":
       await confirmOneSidedTransfer(
         action.itemId,
@@ -136,19 +159,26 @@ async function run(action: ReviewAction): Promise<void> {
         action.feeAmount,
         Date.now(),
       );
-      return;
+      return true;
     case "answer-wallet-kind":
       await answerWalletKind(action.itemId, action.owed);
-      return;
+      return true;
     case "ignore-provider":
       await ignoreProvider(action.itemId, action.packageName);
-      return;
+      return true;
     case "link-transfer":
       await linkAsTransfer(action.itemId, action.outTransactionId, action.inTransactionId);
-      return;
+      return true;
     case "merge":
       await mergeDuplicate(action.itemId, action.keepTransactionId, action.dropTransactionId);
-      return;
+      return true;
+    case "undo":
+      // The ONLY case whose answer is not "it is done". Every guard lives in
+      // `undoResolution`, including the one that refuses a card whose triage
+      // committed — asked of the ledger rather than of the action kind, so it
+      // holds even if a future caller offers undo somewhere this file does not
+      // know about.
+      return undoResolution(action.itemId);
   }
 }
 
@@ -158,6 +188,15 @@ function keysFor(action: ReviewAction) {
   switch (action.kind) {
     case "dismiss":
     case "dismiss-loan-match":
+    // THE QUEUE KEYS AND NOTHING ELSE, exactly like the two dismissals it
+    // shares this branch with — and for the same reason, read backwards.
+    // `undoResolution` only ever reverses a triage whose ENTIRE write was
+    // `resolved_at`; it refuses every card that committed. So the one thing
+    // undo can change is which items are open, which is the badge, the counts
+    // and the list. Adding the ledger keys here would refetch every
+    // transaction and every wallet balance to render numbers that by
+    // construction did not move.
+    case "undo":
       return queue;
     case "confirm-loan-match":
       // The LOANS keys, not the ledger's. No Transaction was created, edited or

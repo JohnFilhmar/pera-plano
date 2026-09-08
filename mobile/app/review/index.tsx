@@ -71,7 +71,8 @@ import { useReviewQueuePage } from "@/hooks/queries/use_review_queue_page";
 import { useRuleset } from "@/hooks/queries/use_ruleset";
 import { useWallets } from "@/hooks/queries/use_wallets";
 import { PaymentAlreadyMatchedError } from "@/lib/db/repos/loans_repo";
-import { IncompleteReviewItemError } from "@/lib/review/resolve_actions";
+import { publishToast } from "@/lib/query_client";
+import { IncompleteReviewItemError, UNDO_WINDOW_MS } from "@/lib/review/resolve_actions";
 import type { ReviewKind, ReviewQueueItem } from "@/types/domain";
 
 const BackGlyph = registerIcon(ChevronLeft);
@@ -359,6 +360,82 @@ function rejectActionFor(item: ReviewQueueItem): ReviewAction | null {
   return item.kind === "low-confidence" ? { kind: "dismiss", itemId: item.id } : null;
 }
 
+// ---------------------------------------------------------------------------
+// Undo (spec rule 9)
+// ---------------------------------------------------------------------------
+//
+// "Triage is undoable: a just-triaged item shows an undo affordance for 10
+// seconds; committed results remain editable in the ledger indefinitely
+// afterward."
+//
+// THE OFFER IS THE APP'S ONE TRANSIENT NOTICE SURFACE, not a second overlay.
+// `publishToast` (lib/query_client.ts) and the host in app/_layout.tsx were
+// built with a neutral tone, a caller-supplied duration and an action slot for
+// exactly this; growing a snackbar of our own here would put two strips at the
+// top of the same screen with no rule about which wins.
+//
+// ONE OFFER AT A TIME, which is what the shared `dedupeKey` buys. Rule 9's
+// subject is singular — "a just-triaged item" — and a queue being swept clears
+// several cards in a few seconds. Three stacked Undo buttons over a list that
+// has already moved would ask the user to remember which card each one meant.
+// A repeat REPLACES the entry in place and reissues its id, so the second
+// dismissal takes over the offer and restarts the ten seconds.
+
+const REVIEW_UNDO_TOAST_KEY = "review:undo";
+
+export const REVIEW_UNDO_TITLE = "Cleared from your review queue.";
+/**
+ * IT SAYS THE LEDGER DID NOT MOVE, and that clause is the one doing work.
+ * Undo is offered only for triages that wrote nothing but `resolved_at`
+ * (`undoableItemId` below), so this is a fact about those actions rather than
+ * reassurance — the same fact spec rule 10 states about dismissing, said to the
+ * user at the moment they might wonder.
+ */
+export const REVIEW_UNDO_BODY = "Nothing in your ledger changed. Undo puts the card back.";
+
+export const REVIEW_UNDO_LATE_TITLE = "Too late to undo.";
+/**
+ * The offer is a `setTimeout` in a mounted component, and Android freezes JS
+ * timers on a backgrounded app — so a user who leaves mid-window and comes back
+ * minutes later can find the button still on screen. `undoResolution` refuses
+ * that tap (`UNDO_MAX_AGE_MS`), and a refusal the user cannot see is the silence
+ * GAP-013 exists to end: they pressed a button about their own data and the card
+ * did not come back.
+ */
+export const REVIEW_UNDO_LATE_BODY = "That card stays cleared, and your ledger is unchanged.";
+
+/**
+ * The item an undo may be offered for, or `null` when this triage must not
+ * offer one.
+ *
+ * ONLY THE TRIAGES THAT WROTE NOTHING BUT `resolved_at`: "Not money" on an
+ * unknown provider, the reject on a low-confidence card, "Same transaction" on
+ * a duplicate whose twin was never committed, and "Not a loan payment". For
+ * those, clearing the resolution is the complete reversal — there is no ledger
+ * row, no rule and no link left over.
+ *
+ * EVERY COMMITTING ACTION IS ABSENT ON PURPOSE, and `undoResolution` refuses
+ * them a second time from the database side. Spec rule 10 is unqualified —
+ * "committed transactions are never deleted by any queue action" — and rule 9's
+ * own next clause says what happens to a confirmation instead: it "remains
+ * editable in the ledger". See `undoResolution`'s docblock for the rest,
+ * including the confirm branch that resolves onto a row it did not write, which
+ * a delete-what-was-returned undo would destroy.
+ *
+ * THE `default` IS THE SAFE SIDE OF THE FENCE. A kind added to `ReviewAction`
+ * later gets no undo until someone decides it deserves one; the failure mode is
+ * a missing affordance, not an undo that half-reverses a write.
+ */
+function undoableItemId(action: ReviewAction): string | null {
+  switch (action.kind) {
+    case "dismiss":
+    case "dismiss-loan-match":
+      return action.itemId;
+    default:
+      return null;
+  }
+}
+
 export default function ReviewQueueScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -418,15 +495,69 @@ export default function ReviewQueueScreen() {
   const remaining =
     filteredTotal === undefined || filteredTotal - shown <= 0 ? undefined : filteredTotal - shown;
 
+  /**
+   * Takes the offer back: reopens the card the user just cleared.
+   *
+   * THE REFUSAL IS SPOKEN, not swallowed. `undoResolution` answers `false`
+   * rather than throwing when the offer is stale or the card expired
+   * underneath it — nothing went wrong, so the inline failure banner's "nothing
+   * was saved, try again" would be two wrong sentences. This says what actually
+   * happened instead, on the same surface the offer came from.
+   */
+  const takeUndo = useCallback(
+    (itemId: string): void => {
+      triage.mutate(
+        { kind: "undo", itemId },
+        {
+          onSuccess: (reopened) => {
+            if (reopened) return;
+            publishToast({
+              tone: "neutral",
+              title: REVIEW_UNDO_LATE_TITLE,
+              body: REVIEW_UNDO_LATE_BODY,
+              dedupeKey: REVIEW_UNDO_TOAST_KEY,
+            });
+          },
+        },
+      );
+    },
+    [triage],
+  );
+
   const dispatch = useCallback(
     (action: ReviewAction | "correct", item: ReviewQueueItem): void => {
       if (action === "correct") {
         setCorrecting(item.id);
         return;
       }
-      triage.mutate(action);
+
+      const undoable = undoableItemId(action);
+      if (undoable === null) {
+        triage.mutate(action);
+        return;
+      }
+
+      // ON SUCCESS ONLY, and per-call rather than in the hook. A triage that
+      // failed left the card exactly where it was, so offering to undo it would
+      // be an offer to reverse nothing — over the inline failure banner that is
+      // already explaining the opposite.
+      triage.mutate(action, {
+        onSuccess: () =>
+          publishToast({
+            tone: "neutral",
+            title: REVIEW_UNDO_TITLE,
+            body: REVIEW_UNDO_BODY,
+            dedupeKey: REVIEW_UNDO_TOAST_KEY,
+            // Rule 9's ten seconds, which is longer than the app's default
+            // notice: this one is a window the user has to act inside, not a
+            // message they only have to read.
+            durationMs: UNDO_WINDOW_MS,
+            actionLabel: "Undo",
+            onAction: () => takeUndo(undoable),
+          }),
+      });
     },
-    [triage],
+    [takeUndo, triage],
   );
 
   /**

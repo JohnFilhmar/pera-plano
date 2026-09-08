@@ -6,9 +6,11 @@ import {
   enqueue,
   findOpenForRawNotification,
   findOpenTwin,
+  getReviewItem,
   listOpen,
   listOpenPage,
   purgeExpired,
+  reopen,
   resolve,
 } from "../review_queue_repo";
 import { storeRawCapture } from "../raw_notifications_repo";
@@ -720,5 +722,60 @@ describe("findOpenTwin", () => {
 
     expect(far.id).not.toBe(near.id);
     expect((await findOpenTwin(smsTwin()))?.id).toBe(near.id);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reopen — the persistence half of spec rule 9's ten-second undo (GAP-075)
+// ---------------------------------------------------------------------------
+//
+// The claim is that `resolve` is reversible AND that reversing it costs the
+// item nothing else. The second half is the one worth a test: an undo that
+// restarted the 30-day hygiene clock would let a card outlive the raw text that
+// justifies it (rule 21, domain invariant 3), and nothing about a reopened card
+// on screen would show it.
+
+describe("reopen", () => {
+  async function queued(): Promise<ReviewQueueItem> {
+    return enqueue({ kind: "low-confidence", payload: { amount: 125000 } });
+  }
+
+  test("a resolved item goes back to being open", async () => {
+    const item = await queued();
+    await resolve(item.id, "dismissed");
+    expect(await countOpen()).toBe(0);
+
+    expect(await reopen(item.id)).toBe(true);
+
+    expect(await countOpen()).toBe(1);
+    expect((await listOpen()).map((row) => row.id)).toEqual([item.id]);
+  });
+
+  test("the expiry clock is not restarted — it runs from arrival, not from triage", async () => {
+    const item = await queued();
+    await resolve(item.id, "dismissed");
+    await reopen(item.id);
+
+    const after = await getReviewItem(item.id);
+    expect(after?.expiresAt).toBe(item.expiresAt);
+    expect(after?.createdAt).toBe(item.createdAt);
+    expect(after?.resolvedAt).toBeNull();
+  });
+
+  test("there is nothing to reopen on an unknown id or an item that is already open", async () => {
+    const item = await queued();
+
+    expect(await reopen("no-such-item")).toBe(false);
+    expect(await reopen(item.id)).toBe(false);
+    expect(await countOpen()).toBe(1);
+  });
+
+  test("a second undo of the same item changes nothing", async () => {
+    const item = await queued();
+    await resolve(item.id, "dismissed");
+
+    expect(await reopen(item.id)).toBe(true);
+    expect(await reopen(item.id)).toBe(false);
+    expect(await countOpen()).toBe(1);
   });
 });
