@@ -12,7 +12,7 @@
 // lets these tests drive a limit across a month boundary in one call.
 //
 // ---------------------------------------------------------------------------
-// Two things worth knowing before changing anything here
+// Three things worth knowing before changing anything here
 // ---------------------------------------------------------------------------
 // 1. `getLimitStatuses` NEVER WRITES. The m2 plan routes it through the same
 //    state-rolling helper `recomputeLimits` uses, which means simply looking at
@@ -27,6 +27,16 @@
 //    any" headroom from before it existed. But a period is not required to have
 //    been RECORDED — a quiet month writes no alert state and still carries its
 //    headroom forward (rule 14). See `previousBaseOf`.
+//
+// 3. EVERY WRITE OF ONE LIMIT'S ALERT STATE IS QUEUED BEHIND THE LAST, READ
+//    INCLUDED. All three writers read the whole object, await at least one more
+//    query, then write the whole object back, so unordered they overwrite each
+//    other: a mute tapped while a pass sat inside `sumSpend` was persisted and
+//    then replaced by that pass's older, unmuted copy (rule 25), a base
+//    re-snapshot went the same way (rule 11), and two overlapping passes each
+//    posted the same threshold (rule 19). `withLimitWriteLock` orders them per
+//    limit; see `limit_write_queue.ts` for why it is a JS queue and not a
+//    transaction held open across those awaits.
 //
 // POSTING LIVES IN `limit_notifier.ts`, NOT HERE. `getLimitStatuses` is what a
 // screen calls to draw a progress bar, and when the notifier sat beside it,
@@ -59,6 +69,7 @@ import {
 // and loading the category table to phrase a notification would be a query per
 // alert. Screens pass the map and get the richer form of the same name.
 import { limitDisplayName } from "./limit_label";
+import { withLimitWriteLock } from "./limit_write_queue";
 
 /**
  * One limit as a screen needs it. `uiState` mirrors the limits spec's UX states
@@ -232,6 +243,12 @@ function effectiveLimitOf(limit: Limit, state: LimitAlertState): Centavos {
  * A muted limit still RECORDS its fired threshold while contributing no alert
  * (rules 25 and 30: muting affects notifications only). Recording it is what
  * stops the threshold re-arming the moment the mute expires.
+ *
+ * ONE LIMIT AT A TIME, READ AND WRITE TOGETHER. The per-limit section below is
+ * queued (header item 3) so a mute or a base refresh cannot land inside it and
+ * be overwritten, and so two overlapping passes cannot both see `fired: []` and
+ * both post the same threshold. The queue is per limit, so this loop is no more
+ * serialised than it already was.
  */
 export async function recomputeLimits(args: {
   now: number;
@@ -245,38 +262,48 @@ export async function recomputeLimits(args: {
     if (base === null) continue;
 
     const window = periodWindowFor(limit.scope, args.now);
-    const state = await resolveState(limit, window, base, args.now);
-    const effectiveLimit = effectiveLimitOf(limit, state);
-    const spend = await sumSpend({
-      from: window.start,
-      to: window.end,
-      ...(await filtersFor(limit)),
-    });
 
-    const threshold = crossedThreshold({
-      prevSpend: state.lastSpend,
-      newSpend: spend,
-      effectiveLimit,
-      alreadyFired: state.fired,
-    });
+    const alert = await withLimitWriteLock(limit.id, async (): Promise<LimitAlert | null> => {
+      const state = await resolveState(limit, window, base, args.now);
+      const effectiveLimit = effectiveLimitOf(limit, state);
+      const spend = await sumSpend({
+        from: window.start,
+        to: window.end,
+        ...(await filtersFor(limit)),
+      });
 
-    if (threshold !== null) {
-      state.fired = [...state.fired, threshold];
-      if (!state.muted) {
-        alerts.push({
-          limitId: limit.id,
-          limitName: limitDisplayName(limit),
-          scope: limit.scope,
-          threshold,
-          spend,
-          effectiveLimit,
-          daysLeft: window.daysLeft,
-        });
+      const threshold = crossedThreshold({
+        prevSpend: state.lastSpend,
+        newSpend: spend,
+        effectiveLimit,
+        alreadyFired: state.fired,
+      });
+
+      let posted: LimitAlert | null = null;
+      if (threshold !== null) {
+        state.fired = [...state.fired, threshold];
+        if (!state.muted) {
+          posted = {
+            limitId: limit.id,
+            limitName: limitDisplayName(limit),
+            scope: limit.scope,
+            threshold,
+            spend,
+            effectiveLimit,
+            daysLeft: window.daysLeft,
+          };
+        }
       }
-    }
 
-    state.lastSpend = spend;
-    await setLimitAlertState(limit.id, state);
+      state.lastSpend = spend;
+      await setLimitAlertState(limit.id, state);
+      return posted;
+    });
+
+    // Outside the lock: an alert is a return value, not persisted state, and
+    // holding the limit's queue while the list grows would serialise nothing
+    // worth serialising.
+    if (alert !== null) alerts.push(alert);
   }
 
   return coalesceAlerts(alerts);
@@ -367,6 +394,13 @@ export async function getLimitStatuses(args: {
  *
  * A PAUSED limit is a no-op: it does not alert, so there is nothing to mute,
  * and inventing a base for it is the bug above by another route.
+ *
+ * QUEUED BEHIND ANY LEDGER PASS ALREADY WRITING THIS LIMIT, and the read is
+ * inside the queue with the write. Rule 25 scopes the mute to the period, so
+ * losing it to a pass that started first means the user is notified for a limit
+ * they silenced seconds earlier, with no way to silence it again but to tap the
+ * same button. The two early returns stay OUTSIDE the queue: a no-op has
+ * nothing to serialise.
  */
 export async function muteLimitForPeriod(
   limitId: string,
@@ -380,8 +414,10 @@ export async function muteLimitForPeriod(
   if (base === null) return;
 
   const window = periodWindowFor(limit.scope, now);
-  const state = await resolveState(limit, window, base, now);
-  await setLimitAlertState(limitId, { ...state, muted: true });
+  await withLimitWriteLock(limitId, async () => {
+    const state = await resolveState(limit, window, base, now);
+    await setLimitAlertState(limitId, { ...state, muted: true });
+  });
 }
 
 /**
@@ -399,6 +435,12 @@ export async function muteLimitForPeriod(
  * rather than relabelling it. The m2 plan overwrites `periodStart` while
  * spreading the rest, so a stale July state becomes August's — carrying July's
  * `fired`, `carryover` and `lastSpend` into a period that earned none of them.
+ *
+ * QUEUED, READ INCLUDED, for the same reason as `muteLimitForPeriod`: the whole
+ * point of rule 11's exception is that the new base applies IMMEDIATELY, and a
+ * ledger pass that started first would otherwise put the old one back and leave
+ * it there until the period boundary — the user raises their cap, the bar does
+ * not move, and nothing says why.
  */
 export async function refreshLimitBase(
   limitId: string,
@@ -412,6 +454,8 @@ export async function refreshLimitBase(
   if (base === null) return;
 
   const window = periodWindowFor(limit.scope, now);
-  const state = await resolveState(limit, window, base, now);
-  await setLimitAlertState(limitId, { ...state, base });
+  await withLimitWriteLock(limitId, async () => {
+    const state = await resolveState(limit, window, base, now);
+    await setLimitAlertState(limitId, { ...state, base });
+  });
 }
