@@ -22,9 +22,11 @@
 //    they would use and throw it away; only `recomputeLimits`, `muteLimitForPeriod`
 //    and `refreshLimitBase` persist.
 //
-// 2. CARRYOVER IS ONLY EVER TAKEN FROM A PERIOD THIS LIMIT ACTUALLY TRACKED.
-//    Limits rule 18: a limit "does not retroactively receive any" headroom from
-//    before it existed. See `resolveState`.
+// 2. CARRYOVER IS ONLY EVER TAKEN FROM A PERIOD THIS LIMIT ACTUALLY RAN UNDER
+//    ITS CURRENT TERMS. Limits rule 18: a limit "does not retroactively receive
+//    any" headroom from before it existed. But a period is not required to have
+//    been RECORDED — a quiet month writes no alert state and still carries its
+//    headroom forward (rule 14). See `previousBaseOf`.
 //
 // POSTING LIVES IN `limit_notifier.ts`, NOT HERE. `getLimitStatuses` is what a
 // screen calls to draw a progress bar, and when the notifier sat beside it,
@@ -100,26 +102,77 @@ async function filtersFor(limit: Limit): Promise<SpendFilters> {
 }
 
 /**
+ * `base(N−1)` for rule 14, or `null` when this limit is not entitled to a
+ * carryover at all — in which case the previous window is never summed.
+ *
+ * THE STORED SNAPSHOT FIRST, ALWAYS. When state exists for exactly the previous
+ * period, `existing.base` is the figure that period was actually measured
+ * against (rule 11 snapshots it at the boundary), and rule 18's last sentence
+ * requires it for percent-of-income: "carryover math uses the snapshotted peso
+ * bases of each period".
+ *
+ * A MISSING SNAPSHOT IS NOT A MISSING PERIOD, and treating it as one was the
+ * bug. The alert state is only written by `recomputeLimits`, which only runs on
+ * a ledger commit — so a period in which nothing was committed leaves no row.
+ * A daily limit on a quiet day, or a weekly limit over a quiet week, then
+ * carried nothing forward: exactly inverted, since a period with no spend is
+ * the one rule 14 carries in FULL. The doc's own acceptance example ("spend
+ * ₱0.00 in June → July effective limit ₱16,000.00") was unreachable, because
+ * spending nothing in June is what stops June from being recorded.
+ *
+ * `base(N−1)` IS RECONSTRUCTED ONLY WHERE IT IS EXACT, never estimated:
+ *
+ * - `basis: fixed` only. Rule 9: "the base limit for every period equals
+ *   `value`" — a constant this row still carries. For percent-of-income the
+ *   base is a snapshot of an income that has since moved on; deriving it from
+ *   TODAY's income would substitute base(N) for base(N−1), which rule 18
+ *   forbids in as many words, and would also credit a period the limit spent
+ *   **Paused — income unknown** (rule 12: it "stops counting"), which is
+ *   indistinguishable from a quiet one once the snapshot is gone.
+ * - `updatedAt` MUST PRE-DATE THE CURRENT PERIOD. `previous.end` is this
+ *   period's first instant, so this asks whether the limit's terms have been
+ *   edited since the previous period closed. It covers three separate rules at
+ *   once, and dropping it inflates a limit rather than deflating one:
+ *   · rule 18's "does not retroactively receive any" — a limit created this
+ *     period, or one whose rollover toggle was switched on this period, has
+ *     `updatedAt` inside it (`createdAt <= updatedAt` always, so creation is
+ *     subsumed) and gets nothing;
+ *   · rule 9 again — raising `value` from ₱8,000 to ₱20,000 today must not
+ *     retroactively make last month's base ₱20,000;
+ *   · rules 2-4 — `filtersFor` sums the previous window with TODAY's filters,
+ *     so a filter edited since is a spend figure for a limit that never
+ *     existed.
+ *
+ * ONE STEP BACK, NEVER CHAINED. Rule 14 is `clamp(base(N−1) − spend(N−1), 0,
+ * base(N))` and rule 16 says carryover "expires at the end of the period it was
+ * carried into", so three quiet weeks carry one week of headroom, not three.
+ * `previous` is the immediately preceding window whatever the stored state
+ * says, which is what makes a two-period-stale row carry N−1 and not N−2.
+ */
+function previousBaseOf(
+  limit: Limit,
+  existing: LimitAlertState | null,
+  base: Centavos,
+  previous: PeriodWindow,
+): Centavos | null {
+  if (!limit.rollover) return null;
+  if (existing !== null && existing.periodStart === previous.start) return existing.base;
+  if (limit.basis !== "fixed") return null;
+  if (limit.updatedAt >= previous.end) return null;
+  // `baseFor` on a fixed limit is `limit.value` for every period, so the base
+  // already resolved for N is base(N−1) exactly — no second derivation.
+  return base;
+}
+
+/**
  * The alert state this limit should be using for `window`, WITHOUT persisting
  * it. Returns the stored state untouched when it already belongs to `window`;
  * otherwise builds the state a period boundary produces.
  *
- * CARRYOVER IS ZERO UNLESS THE STORED STATE IS EXACTLY THE PREVIOUS PERIOD'S.
- * Two cases collapse into that one rule, and the m2 plan gets both wrong by
- * falling back to `prevBase = base` whenever no usable prior state exists:
- *
- * - A LIMIT CREATED THIS PERIOD. The plan sums last month's spend against the
- *   new base, so a limit created today, behind a quiet previous month, opens
- *   with a full extra base of headroom. Rule 18 is explicit: the period in
- *   which rollover was enabled "contributes its headroom forward but does not
- *   retroactively receive any".
- * - A STATE MORE THAN ONE PERIOD STALE (the app was not opened for a month).
- *   There is no base snapshot for the immediately preceding period, so any
- *   carryover would be computed against a guess. Rule 14 is defined over
- *   `base(N−1)`; without one, the honest answer is zero.
- *
- * The previous period's spend is only queried when it can actually be used —
- * this runs on every ledger commit, for every active limit.
+ * The previous period's spend is only queried when `previousBaseOf` says it can
+ * actually be used — this runs on every ledger commit, for every active limit,
+ * and the early return above it means the query costs at most one extra sum per
+ * limit per period boundary rather than one per commit.
  */
 async function resolveState(
   limit: Limit,
@@ -131,10 +184,10 @@ async function resolveState(
   if (existing !== null && existing.periodStart === window.start) return existing;
 
   const previous = previousPeriodWindow(limit.scope, now);
-  const carriesForward = limit.rollover && existing !== null && existing.periodStart === previous.start;
+  const prevBase = previousBaseOf(limit, existing, base, previous);
 
   let carryover = 0;
-  if (carriesForward) {
+  if (prevBase !== null) {
     const prevSpend = await sumSpend({
       from: previous.start,
       to: previous.end,
@@ -142,7 +195,7 @@ async function resolveState(
     });
     carryover = carryoverFor({
       rollover: limit.rollover,
-      prevBase: existing.base,
+      prevBase,
       prevSpend,
       base,
     });
