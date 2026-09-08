@@ -783,6 +783,13 @@ Facts established while fixing entries, that later entries must not rediscover t
   transaction loss. Which way to err is the owner's call.**
 
 
+
+**Waves 9-12 additions (2026-09-08).** GAP-103 to GAP-107 were not found by an audit pass either. Like GAP-100 to GAP-102 they were found while REMEDIATING other entries, and each was read in the code before it was written up, which is why all five carry C1. They were held out of the file for four waves while the owner decided whether to file them, and are filed now unchanged.
+
+Two are HUMAN-FIRST because the fix is a choice rather than a defect with one answer. **GAP-103 is the most serious thing in this group and possibly in the remaining queue**: pausing every provider in the Privacy centre computes an empty allowlist, and the native side documents an empty allowlist as allow-all by design, so the most restrictive action a user can take captures everything. It is HUMAN-FIRST only because the wire protocol has no way to say "deny all", so closing it means either conflating two user-visible switches or changing the Kotlin contract -- and Kotlin is not compiled or run in any worktree. **GAP-107** is a genuine trade rather than a bug: honouring the stated privacy principle means a heuristic's false negative would destroy a real transaction's only trace.
+
+The other three are ordinary agent work. GAP-104 is a one-line branch on a class wave 9 already created. GAP-105 applies a browsing gate to a computation, latent only because Entitlements is hardcoded to `plus`. GAP-106 is the fixed-rule half of a collapse the percent path already does, and explains its reasoning in a comment that applies equally to both.
+
 ## 1. Executive summary
 
 Three findings matter most.
@@ -963,6 +970,11 @@ Priority = (severity weight x confidence weight) / complexity weight, with S1=8,
 | GAP-100 | CONTRA | Onboarding tells the user the recovery phrase brings their data back on a new phone; it cannot | S1 | XS | D2 | R2 | C1 | 8.0 | AGENT-READY |
 | GAP-101 | CODE | The locked-in total counts a fortnightly subscription at twice its cost | S3 | XS | D2 | R2 | C1 | 2.0 | AGENT-READY |
 | GAP-102 | DOC | Two sibling docs still carry claims that were corrected everywhere else | S3 | XS | D1 | R1 | C1 | 2.0 | AGENT-READY |
+| GAP-103 | SEC | Pausing every provider computes an empty allowlist, and empty means allow-all on the native side | S2 | M | D3 | R2 | C1 | 1.25 | HUMAN-FIRST |
+| GAP-104 | CODE | The wipe failure message says the data was erased even when the database delete is what failed | S3 | XS | D1 | R1 | C1 | 2.0 | AGENT-READY |
+| GAP-105 | CONTRA | Limit totals are clamped to the Free tier's 90-day history floor, against limits rule 8 | S3 | S | D2 | R2 | C1 | 1.0 | AGENT-READY |
+| GAP-106 | CODE | A fixed Goal contribution reserves once per credit, so a split payday reserves twice | S3 | S | D2 | R2 | C1 | 1.0 | AGENT-READY |
+| GAP-107 | CONTRA | The buffered drain stores non-financial notification text before discarding it | S3 | M | D3 | R3 | C1 | 0.5 | HUMAN-FIRST |
 
 Pass-2 rows (GAP-058 to GAP-097) are appended below the pass-1 rows in their own priority order rather than merged, so the pass-1 ordering stays stable for agents already assigned.
 
@@ -1160,6 +1172,13 @@ Wave P8 (the wave 6 findings; 3 agents, no shared files)
 - GAP-100: `mobile/components/onboarding/phrase_display.tsx` and `recovery_phrase.test.tsx`. Take this FIRST -- it is the highest-priority row in the file and the fix is one paragraph of copy.
 - GAP-101: `mobile/lib/recurring/recurring_service.ts` and its test. Must land AFTER GAP-008 (already merged), whose test comment it removes.
 - GAP-102: `docs/02-domain-model.md`, `docs/04-features/08-review-queue.md`
+
+Wave P9 (the waves 9-12 findings; owner decisions first)
+- GAP-103: `mobile/hooks/mutations/use_set_provider_pause.ts`, and whichever of `mobile/modules/notification_listener/android/.../CapturePrefs.kt` or `mobile/app/(tabs)/more/privacy.tsx` the owner's chosen approach requires. BLOCKED ON AN OWNER DECISION -- see the entry's Open questions.
+- GAP-104: `mobile/app/(tabs)/more/privacy.tsx`, `mobile/app/__tests__/privacy_screen.test.tsx`
+- GAP-105: `mobile/lib/db/repos/transactions_repo.ts`, `mobile/lib/db/repos/__tests__/transactions_repo.test.ts`, `mobile/lib/limits/__tests__/limit_service.test.ts`
+- GAP-106: `mobile/lib/safe_to_spend_service.ts`, `mobile/lib/__tests__/safe_to_spend_service.test.ts`
+- GAP-107: `mobile/lib/ingest/pipeline.ts`, `mobile/lib/ingest/__tests__/pipeline.test.ts`. BLOCKED ON AN OWNER DECISION -- see the entry's Open questions.
 
 ## 8. Contradiction register
 
@@ -7650,6 +7669,309 @@ Revert the commit.
 **Open questions**
 none
 
+### GAP-103 [SEC] Pausing every provider computes an empty allowlist, and empty means allow-all on the native side
+
+| Field | Value |
+|---|---|
+| Severity | S2 Major |
+| Complexity | M |
+| Difficulty | D3 Specialist |
+| Risk | R2 |
+| Confidence | C1 Verified |
+| Priority score | 1.25 |
+| Agent suitability | HUMAN-FIRST |
+| Depends on | none |
+| Blocks | none |
+| Est. agent turns | 4-6 after the decision |
+
+**Location**
+- `mobile/hooks/mutations/use_set_provider_pause.ts:67` (the `nextPaused.length === 0` ternary)
+- `mobile/modules/notification_listener/android/src/main/java/expo/modules/notificationlistener/CapturePrefs.kt:123` (the sealed provider allowlist, "Empty means ALLOW ALL, not deny all")
+- `mobile/app/(tabs)/more/privacy.tsx` (renders one switch per provider and calls the hook)
+
+**Evidence**
+The mutation computes `allowed = nextPaused.length === 0 ? [] : allPackageNames.filter((p) => !pausedSet.has(p))`. When the user has paused EVERY provider, `pausedSet` covers `allPackageNames`, so the filter yields `[]` while `nextPaused.length` is non-zero -- the guarded branch is skipped and the computed empty array is sent anyway. `CapturePrefs.getProviderFilter`'s own doc states that an empty set means "allow every package", deliberately, so a fresh install is not an inverted default. Verified on both sides of the bridge on 2026-09-08.
+
+**What is wrong**
+The most restrictive action available in the Privacy centre produces the least restrictive outcome. A user who switches every provider off is captured from every package.
+
+**Why it matters**
+It inverts an explicit privacy instruction, silently, on the screen whose entire purpose is to honour it. The hook's own doc block reasons about the empty-allowlist trap but only for the "nothing paused" case, so the comment reads as though the hazard were handled.
+
+**Intended behavior**
+Pausing every provider captures nothing. Pausing some captures the rest. Neither state may be expressed to the native side as an empty allowlist.
+
+**Proposed fix**
+UNDECIDED, and this is why the entry is HUMAN-FIRST. The wire protocol cannot express "deny all": the allowlist has exactly one empty value and it already means allow-all. Two options, both with costs:
+(a) When the computed allowlist is empty and something is paused, also call `setCaptureEnabled(false)`. No native change, but it conflates two user-visible switches and needs a defined story for what resuming one provider does to the master switch.
+(b) Extend the native contract with an explicit deny-all signal or a nullable filter. Correct, and it keeps the two switches independent, but it is a Kotlin change -- and Kotlin is NOT COMPILED OR RUN in any worktree, which is this campaign's largest blind spot.
+
+**Implementation checklist**
+- [ ] Owner picks (a) or (b).
+- [ ] Implement the chosen option in `use_set_provider_pause.ts`, plus the native contract if (b).
+- [ ] Add a test that pauses every provider and asserts the native call is NOT an empty allowlist.
+- [ ] Add a test for the reverse transition: resuming one provider from the all-paused state.
+
+**Acceptance criteria**
+- [ ] With every provider paused, no capture from any package reaches the pipeline.
+- [ ] With no provider paused, capture is unrestricted (the fresh-install default is preserved).
+- [ ] The all-paused state survives a relaunch, since `paused_provider_packages` is the only readable record and the native module exposes no getter.
+
+**Verification commands**
+```bash
+cd mobile && npx jest use_set_provider_pause privacy_screen --maxWorkers=2
+cd mobile && npx tsc --noEmit
+```
+
+**Do not**
+Do not send the full known package list as the allowlist instead. That is the inverted default `app/(onboarding)/providers.tsx` already documents: it silently blocks any package the listener learns about later.
+
+**Rollback**
+Revert.
+
+**Open questions**
+Option (a) or option (b)? If (b), the Kotlin change cannot be verified in a worktree and needs a device or a Gradle run.
+
+### GAP-104 [CODE] The wipe failure message says the data was erased even when the database delete is what failed
+
+| Field | Value |
+|---|---|
+| Severity | S3 Moderate |
+| Complexity | XS |
+| Difficulty | D1 Mechanical |
+| Risk | R1 |
+| Confidence | C1 Verified |
+| Priority score | 2.0 |
+| Agent suitability | AGENT-READY |
+| Depends on | none |
+| Blocks | none |
+| Est. agent turns | 2-3 |
+
+**Location**
+- `mobile/app/(tabs)/more/privacy.tsx:222` (the single catch's message)
+- `mobile/lib/security/wipe.ts:86` (`throw new WipeIncompleteError(error)`) and the class doc above it
+
+**Evidence**
+`wipeAndStartOver` deliberately distinguishes two failures: a `wipeDatabase()` rejection propagates AS ITSELF, because nothing was destroyed, while every later rejection is re-thrown as `WipeIncompleteError`, because the file is gone. Its doc says so and adds "See that class for why the caller needs to tell them apart." The caller has one catch and shows one message for both: "Your data was erased, but PeraPlano could not finish resetting."
+
+**What is wrong**
+When `wipeDatabase()` itself fails, nothing was erased, and the user is told their data is gone. The code states the requirement to distinguish the cases and the caller does not meet it.
+
+**Why it matters**
+It is the opposite of the truth, in the more alarming direction, on a privacy-critical screen. A user told their ledger is gone may reinstall or abandon the app while the data is still on the device.
+
+**Intended behavior**
+Two messages. A pre-database failure says nothing was erased and the user may retry. A post-database failure keeps the current wording, which is accurate for that case.
+
+**Proposed fix**
+Branch the catch on `error instanceof WipeIncompleteError`. The class already exists; wave 9 added it for exactly this.
+
+**Implementation checklist**
+- [ ] In `mobile/app/(tabs)/more/privacy.tsx`, branch the catch and add the pre-database message.
+- [ ] In `mobile/app/__tests__/privacy_screen.test.tsx`, add a case where `wipeDatabase` rejects and assert the RENDERED message does not claim the data was erased.
+- [ ] Add the companion case where a later step rejects and the existing message is still shown.
+
+**Acceptance criteria**
+- [ ] A `wipeDatabase` rejection renders a message that does not say the data was erased.
+- [ ] A post-database failure still renders the existing message.
+
+**Verification commands**
+```bash
+cd mobile && npx jest privacy_screen wipe --maxWorkers=2
+cd mobile && npx tsc --noEmit
+```
+
+**Do not**
+Do not remove the catch or let the error reach the central toast. The comment above it explains that without the catch the user is left on a stopped spinner with data already gone, which is the more dangerous failure.
+
+**Rollback**
+Revert.
+
+**Open questions**
+none
+
+### GAP-105 [CONTRA] Limit totals are clamped to the Free tier's 90-day history floor, against limits rule 8
+
+| Field | Value |
+|---|---|
+| Severity | S3 Moderate |
+| Complexity | S |
+| Difficulty | D2 Standard |
+| Risk | R2 |
+| Confidence | C1 Verified |
+| Priority score | 1.0 |
+| Agent suitability | AGENT-READY |
+| Depends on | none |
+| Blocks | none |
+| Est. agent turns | 3-4 |
+
+**Location**
+- `mobile/lib/db/repos/transactions_repo.ts:704` (`sumSpend`: `const from = floor === null ? args.from : Math.max(args.from, floor)`)
+- `mobile/lib/db/repos/transactions_repo.ts:637` (`listTransactions`, where the floor IS correct -- it gates browsing)
+- `docs/04-features/03-limits.md` rule 8
+
+**Evidence**
+Limits rule 8, verbatim: "Limit totals are always computed from the full ledger, regardless of the free tier's 90-day history view gate -- data is never deleted, only the browsing view is gated." `sumSpend` clamps its window to `historyFloor`, and its own doc says "Every limit and every Safe-to-Spend figure funnels through here." Found while remediating GAP-041 and verified independently on 2026-09-08.
+
+**What is wrong**
+A view gate is applied to a computation. The 90-day floor exists to limit what a Free user can BROWSE; rule 8 says it must not limit what is COUNTED.
+
+**Why it matters**
+Latent during MVP only because Entitlements is hardcoded to `plus`, so `historyFloor` returns null and the clamp never fires. The moment tiering goes live, every Free-tier limit whose period exceeds 90 days -- an annual limit, or a quarterly one near its end -- silently understates spend, which reads to the user as headroom they do not have.
+
+**Intended behavior**
+`sumSpend` counts the full ledger. `listTransactions` keeps the floor.
+
+**Proposed fix**
+Remove the floor from `sumSpend` only, leaving `listTransactions` untouched. Confirm no other computation path applies it.
+
+**Implementation checklist**
+- [ ] In `mobile/lib/db/repos/transactions_repo.ts`, drop the `historyFloor` clamp from `sumSpend` and record rule 8 in the function's doc.
+- [ ] Grep every other consumer of `historyFloor` and confirm each is a browsing path, not a computation.
+- [ ] Add a test with a Free entitlement, a limit period longer than 90 days, and spend older than the floor, asserting the total includes it.
+- [ ] Add the companion test that `listTransactions` still hides that row.
+
+**Acceptance criteria**
+- [ ] With a Free entitlement, a limit spanning more than 90 days counts spend from before the floor.
+- [ ] The same row is still absent from the browsable transaction list.
+
+**Verification commands**
+```bash
+cd mobile && npx jest lib/db/repos lib/limits lib/__tests__/safe_to_spend --maxWorkers=4
+cd mobile && npx tsc --noEmit
+```
+
+**Do not**
+Do not remove `historyFloor` itself, and do not touch `listTransactions`. The browsing gate is the feature; only its use in `sumSpend` is the defect.
+
+**Rollback**
+Revert.
+
+**Open questions**
+none
+
+### GAP-106 [CODE] A fixed Goal contribution reserves once per credit, so a split payday reserves twice
+
+| Field | Value |
+|---|---|
+| Severity | S3 Moderate |
+| Complexity | S |
+| Difficulty | D2 Standard |
+| Risk | R2 |
+| Confidence | C1 Verified |
+| Priority score | 1.0 |
+| Agent suitability | AGENT-READY |
+| Depends on | none |
+| Blocks | none |
+| Est. agent turns | 3-4 |
+
+**Location**
+- `mobile/lib/safe_to_spend_service.ts:247` (`const triggers = goal.contributionRule?.kind === "percent" ? paydays : credits;`)
+- the `paidOnDate` collapse a few lines above it
+- `docs/04-features/09-goals.md` rule 13
+
+**Evidence**
+`forecastContributions` builds `credits` (one entry per pay event) and `paydays` (the same pay collapsed to one entry per date). The collapse carries an explicit reason: "A salary split into two credits on one day is one payday with one combined base -- 10% of the pair, not 10% twice." Percent rules use `paydays`; fixed rules are handed the uncollapsed `credits`. Pre-existing, and GAP-070 deliberately left fixed-rule behaviour byte-identical, so this is not a regression from that work. Verified 2026-09-08.
+
+**What is wrong**
+The reasoning that produced `paydays` applies to fixed rules too, and is not applied to them. The in-code justification -- "its amount does not depend on how much arrived, only on the fact that something did" -- is the argument FOR using `paydays`, since something arriving is a per-payday fact rather than a per-credit one.
+
+**Why it matters**
+An employer who splits one payday into two deposits makes a PHP 2,000 fixed rule reserve PHP 4,000, so Safe-to-Spend drops by double for money the user never agreed to set aside. Split deposits are ordinary in the target market.
+
+**Intended behavior**
+A fixed rule reserves its amount once per payday, on the date the pay landed, whatever number of credits made it up.
+
+**Proposed fix**
+Use `paydays` as the trigger list for both rule kinds. `contributionAmount` already ignores the payday amount for fixed rules, so no other change is needed.
+
+**Implementation checklist**
+- [ ] In `mobile/lib/safe_to_spend_service.ts`, make `triggers` `paydays` for both kinds, and rewrite the comment that currently justifies the split.
+- [ ] Add a test: one payday arriving as two credits on the same date, a fixed rule, asserting ONE reservation of the rule's amount.
+- [ ] Add the companion test that two credits on DIFFERENT dates still reserve twice, since those are two paydays.
+
+**Acceptance criteria**
+- [ ] Two credits on one date with a fixed rule reserve the amount once.
+- [ ] Two credits on different dates reserve it twice.
+- [ ] Percent-rule behaviour is byte-identical.
+
+**Verification commands**
+```bash
+cd mobile && npx jest safe_to_spend lib/goals --maxWorkers=4
+cd mobile && npx tsc --noEmit
+```
+
+**Do not**
+Do not change `contributionAmount`, and do not alter the percent path -- GAP-070 settled it.
+
+**Rollback**
+Revert.
+
+**Open questions**
+none
+
+### GAP-107 [CONTRA] The buffered drain stores non-financial notification text before discarding it
+
+| Field | Value |
+|---|---|
+| Severity | S3 Moderate |
+| Complexity | M |
+| Difficulty | D3 Specialist |
+| Risk | R3 |
+| Confidence | C1 Verified |
+| Priority score | 0.5 |
+| Agent suitability | HUMAN-FIRST |
+| Depends on | none |
+| Blocks | none |
+| Est. agent turns | 4-6 after the decision |
+
+**Location**
+- `mobile/lib/ingest/pipeline.ts:1150` (the comment recording why the dismissal guard covers only the dismissal, not the `not_financial` verdict)
+- `mobile/lib/ingest/pipeline.ts` `processStored`, which discards `not_financial` captures AFTER the row is durable
+- the live path in `processCapture`, which drops them BEFORE `storeRawCapture`
+
+**Evidence**
+The live path never stores a non-financial capture. The buffered drain stores the row first and `processStored` discards it after, so the text reaches `raw_notifications` regardless. `pipeline.ts:388` cites the principle by name: "§1 principle 2 -- non-financial text never touches the database." Found while remediating GAP-048 and verified 2026-09-08.
+
+**What is wrong**
+Two entry points to the same stages disagree about a stated privacy principle, and the buffered one breaks it. It also leaves rows that reference neither a transaction nor a card, which is what `listUnprocessedRawCaptures` calls unprocessed work -- the same permanent-stranding churn GAP-048 removed for muted packages.
+
+**Why it matters**
+Magnitude depends on the native `provider_filter`, which is an allowlist where empty means allow-all, and onboarding's "Skip" writes exactly that. On such an install the buffer can hold every notification the phone receives, and the drain writes the non-financial ones to disk.
+
+**Intended behavior**
+Undecided, and that is the entry. Either the principle holds and the drain drops non-financial captures before storing them, or the principle is amended to record that the buffered path stores first by design and says why.
+
+**Proposed fix**
+UNDECIDED, and this is why the entry is HUMAN-FIRST. The two sides are not comparable in kind:
+(a) Drop before the store, honouring the principle. The cost is that the money-signal test is a HEURISTIC: `source_router.ts` documents its own asymmetry, and a false negative would now delete a real transaction's only trace instead of leaving a row an operator can find in the Privacy centre. This trades a privacy rule against silent transaction loss.
+(b) Keep storing, and amend the principle to say so. The cost is that a stated privacy guarantee becomes narrower than users were told, and the stranding churn stays.
+
+**Implementation checklist**
+- [ ] Owner picks (a) or (b).
+- [ ] If (a): drop non-financial captures before `storeRawCapture` in the drain, and add a test that the row is never written; measure the false-negative exposure first.
+- [ ] If (b): amend the principle where it is stated and correct `pipeline.ts:388`'s citation; add a test pinning the buffered path's storage as intended.
+- [ ] Either way, decide what happens to the stranding: a stored-and-discarded capture is re-swept until its 30-day TTL.
+
+**Acceptance criteria**
+- [ ] The live and buffered paths agree, and whichever behaviour is chosen is stated in the docs and pinned by a test.
+
+**Verification commands**
+```bash
+cd mobile && npx jest lib/ingest --maxWorkers=4
+cd mobile && npx tsc --noEmit
+```
+
+**Do not**
+Do not change this without the decision. Both directions have a real cost and picking one silently is how the next audit finds a third contradiction.
+
+**Rollback**
+Revert.
+
+**Open questions**
+Does the privacy principle hold, at the cost of a heuristic's false negatives losing a transaction's only trace? Or is it amended to match what the buffered path does?
+
+
 ## 10. Deferred and rejected
 
 Considered and not listed, with the reason.
@@ -7796,7 +8118,12 @@ Pass-2 deferrals (S4; each has a citation in the analyst's pass-2 notes and can 
 {"id":"GAP-099","category":"SEC","title":"The full-database export writes a plaintext JSON dump to the cache directory, never deletes it, and reports success when sharing is unavailable","severity":"S2","complexity":"XS","difficulty":"D1","risk":"R1","confidence":"C1","priority":5.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/lib/privacy/data_export.ts","mobile/lib/privacy/__tests__/data_export.test.ts"]},
 {"id":"GAP-100","category":"CONTRA","title":"Onboarding tells the user the recovery phrase brings their data back on a new phone; it cannot","severity":"S1","complexity":"XS","difficulty":"D2","risk":"R2","confidence":"C1","priority":8.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/components/onboarding/phrase_display.tsx","mobile/components/onboarding/__tests__/recovery_phrase.test.tsx"]},
 {"id":"GAP-101","category":"CODE","title":"The locked-in total counts a fortnightly subscription at twice its cost","severity":"S3","complexity":"XS","difficulty":"D2","risk":"R2","confidence":"C1","priority":2.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/lib/recurring/recurring_service.ts","mobile/lib/recurring/__tests__/recurring_service.test.ts"]},
-{"id":"GAP-102","category":"DOC","title":"Two sibling docs still carry claims that were corrected everywhere else","severity":"S3","complexity":"XS","difficulty":"D1","risk":"R1","confidence":"C1","priority":2.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["docs/02-domain-model.md","docs/04-features/08-review-queue.md"]}
+{"id":"GAP-102","category":"DOC","title":"Two sibling docs still carry claims that were corrected everywhere else","severity":"S3","complexity":"XS","difficulty":"D1","risk":"R1","confidence":"C1","priority":2.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["docs/02-domain-model.md","docs/04-features/08-review-queue.md"]},
+{"id":"GAP-103","category":"SEC","title":"Pausing every provider computes an empty allowlist, and empty means allow-all on the native side","severity":"S2","complexity":"M","difficulty":"D3","risk":"R2","confidence":"C1","priority":1.25,"suitability":"HUMAN-FIRST","depends_on":[],"blocks":[],"files":["mobile/hooks/mutations/use_set_provider_pause.ts","mobile/modules/notification_listener/android/src/main/java/expo/modules/notificationlistener/CapturePrefs.kt","mobile/app/(tabs)/more/privacy.tsx"]},
+{"id":"GAP-104","category":"CODE","title":"The wipe failure message says the data was erased even when the database delete is what failed","severity":"S3","complexity":"XS","difficulty":"D1","risk":"R1","confidence":"C1","priority":2.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/app/(tabs)/more/privacy.tsx","mobile/app/__tests__/privacy_screen.test.tsx"]},
+{"id":"GAP-105","category":"CONTRA","title":"Limit totals are clamped to the Free tier's 90-day history floor, against limits rule 8","severity":"S3","complexity":"S","difficulty":"D2","risk":"R2","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/lib/db/repos/transactions_repo.ts","mobile/lib/db/repos/__tests__/transactions_repo.test.ts"]},
+{"id":"GAP-106","category":"CODE","title":"A fixed Goal contribution reserves once per credit, so a split payday reserves twice","severity":"S3","complexity":"S","difficulty":"D2","risk":"R2","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/lib/safe_to_spend_service.ts","mobile/lib/__tests__/safe_to_spend_service.test.ts"]},
+{"id":"GAP-107","category":"CONTRA","title":"The buffered drain stores non-financial notification text before discarding it","severity":"S3","complexity":"M","difficulty":"D3","risk":"R3","confidence":"C1","priority":0.5,"suitability":"HUMAN-FIRST","depends_on":[],"blocks":[],"files":["mobile/lib/ingest/pipeline.ts","mobile/lib/ingest/__tests__/pipeline.test.ts"]}
 ]
 ```
 
@@ -7817,7 +8144,7 @@ Checked against the quality bar before returning:
 
 Revisions during self-audit: 9 entries revised, 6 dropped or merged.
 
-The counts above are a PASS-1 snapshot (57 entries) and were not rewritten as the file grew; the master index and the JSON appendix are the current authority, at 102 entries. GAP-100 to GAP-102 were added on 2026-09-06 and were checked against the same bar: unique IDs, every score present, priority recomputed from the stated weights (8.0, 5.0, 2.0), every checklist item naming a file, zero open questions on all three since all three are AGENT-READY, and appendix objects whose `files` lists match their checklists. GAP-100 is a CONTRA entry whose two positions are the in-app copy and `key_manager.ts`; the authority call is the code, and the blast radius is every user who switches phones.
+The counts above are a PASS-1 snapshot (57 entries) and were not rewritten as the file grew; the master index and the JSON appendix are the current authority, at 107 entries. GAP-100 to GAP-102 were added on 2026-09-06 and were checked against the same bar: unique IDs, every score present, priority recomputed from the stated weights (8.0, 5.0, 2.0), every checklist item naming a file, zero open questions on all three since all three are AGENT-READY, and appendix objects whose `files` lists match their checklists. GAP-100 is a CONTRA entry whose two positions are the in-app copy and `key_manager.ts`; the authority call is the code, and the blast radius is every user who switches phones.
 
 - Dropped to Deferred: the plan-screen query-error state (folded into the GAP-013 follow-up), the cash-leg auto-link contradiction (C2, S4), the bills conflict and auto-acknowledge pair (C2, S4), the reports interaction set, the `Date.parse` template seam, and the dead `data_wipe.ts` module. Each had a real citation but would have been a formatting-grade row above real defects because of how the formula treats XS work.
 - Merged: five wall-clock window seams into GAP-047 (one root cause); ten doc-drift pairs into GAP-045; the money glossary, katapusan wording and stale backlog note into the same entry; the docs/12 recovery overclaim and the testing-section overclaim into GAP-015.
