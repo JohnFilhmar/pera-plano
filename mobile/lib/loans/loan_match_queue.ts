@@ -46,7 +46,6 @@ import type {
   LoanPayment,
   ReviewItemPayload,
   ReviewQueueItem,
-  ReviewResolution,
   Transaction,
   TxDirection,
 } from "@/types/domain";
@@ -377,33 +376,30 @@ export async function confirmLoanMatch(
  * card would otherwise sit in the queue asking a question that is already
  * answered until it expires, offering an accept that can only fail.
  *
- * `confirmed` BY DEFAULT. The card asked "is this a payment on one of your
- * loans", the answer turned out to be yes, and a queue that recorded it as a
- * dismissal would be filing the user's own decision as a rejection.
+ * `confirmed`, not `dismissed`. The card asked "is this a payment on one of
+ * your loans", the answer turned out to be yes, and a queue that recorded it
+ * as a dismissal would be filing the user's own decision as a rejection.
  *
- * THE ARGUMENT EXISTS FOR THE OTHER WAY A CARD CAN STOP BEING ANSWERABLE
- * (GAP-108): the transaction is deleted from the ledger. The question is not
- * answered "yes" then — it is void, because the row it was about is gone — and
- * leaving the card up would offer an accept that can only fail, since
- * `recordPayment` would insert a `loan_payments` row pointing at nothing and
- * take the foreign key with it.
- *
- * AND IT CHANGES NOTHING THAT IS STORED, WHICH THIS COMMENT WOULD OTHERWISE
- * IMPLY. `review_queue_repo.resolve` opens with `void resolution` and its own
- * doc says the argument "is accepted for the pinned contract §3 signature but
- * not persisted"; all it writes is `resolved_at`. So a void card and a
- * confirmed one are indistinguishable on disk, and this parameter states an
- * intention at the call site rather than recording one. Nothing may be built
- * on reading it back.
+ * IT TAKES NO RESOLUTION ARGUMENT, AND THAT IS A DECISION, NOT AN OVERSIGHT.
+ * Two different things bring a caller here: the payment was recorded on
+ * another surface (the answer is yes), and the transaction was deleted from
+ * the ledger (GAP-108 — the question is not answered at all, it is void,
+ * because the row it asked about is gone). Distinguishing them looks worth a
+ * parameter and is not, because nothing downstream can record the difference:
+ * `review_queue_repo.resolve` opens with `void resolution`, and its own doc
+ * says the argument "is accepted for the pinned contract §3 signature but not
+ * persisted". All that is ever written is `resolved_at`. A parameter here
+ * would state an intention it cannot store, and an argument that READS as
+ * though it changes the row is worse than no argument at all — the next
+ * person writes a test asserting a distinction that has never existed. If a
+ * resolution is ever persisted, add it back here, with a test that reads it
+ * back out.
  */
-export async function closeLoanMatchesFor(
-  transactionId: string,
-  resolution: ReviewResolution = "confirmed",
-): Promise<void> {
+export async function closeLoanMatchesFor(transactionId: string): Promise<void> {
   const open = await listOpen();
   for (const item of open) {
     if (readLoanMatchPayload(item)?.transactionId === transactionId) {
-      await resolve(item.id, resolution);
+      await resolve(item.id, "confirmed");
     }
   }
 }

@@ -235,12 +235,15 @@ export async function deleteTransactionAndLinks(transactionId: string): Promise<
     // nothing — and the only working button would be "Not a loan payment",
     // which asks the user to record the opposite of what happened.
     //
-    // THE CARD IS SIMPLY CLOSED. The second argument states the intention at
-    // this call site and nothing more: `review_queue_repo.resolve` opens with
-    // `void resolution` and writes only `resolved_at`, so a card closed here and
-    // one the user confirmed are indistinguishable on disk. Nothing may be built
-    // on telling them apart.
-    await closeLoanMatchesFor(transactionId, "dismissed");
+    // THE CARD IS SIMPLY CLOSED, and there is no way to record that it was
+    // closed for THIS reason rather than because the payment turned out to be
+    // real. `review_queue_repo.resolve` writes only `resolved_at` — its
+    // `resolution` argument is voided on the first line, by its own doc, for
+    // the pinned contract's signature — so a card closed here and one the user
+    // confirmed are indistinguishable on disk. `closeLoanMatchesFor` therefore
+    // takes no resolution to pass; see its header for why adding one back
+    // would be a claim the storage cannot keep.
+    await closeLoanMatchesFor(transactionId);
 
     await deleteTransaction(transactionId);
 
