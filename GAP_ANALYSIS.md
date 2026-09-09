@@ -6816,6 +6816,8 @@ Either hide or relabel the field for flat loans, or persist the borrowed amount 
 **Proposed fix**
 For flat, hide the principal field and drop it from `canSave`; if the owner wants the borrowed figure kept, add it as a separate optional field once GAP-029 settles the balance formula.
 
+> **THE PROPOSED FIX ABOVE CONTRADICTS THE DOC. DO NOT IMPLEMENT IT AS WRITTEN (found 2026-09-10).** Hiding the field deletes a documented input. `docs/04-features/06-loans.md:43` defines the flat type as "enter the total amount to repay (e.g., borrowed P5,000.00, repay P6,000.00)" -- two figures, not one. The doc's own worked example at `:82` enters both: "Add loan -> I owe -> counterparty 'Aling Nena' -> `principal` P5,000.00 -> Flat -> total repayable P6,000.00". `:40` has every loan take a `principal` regardless of type. And doc open question 3 at `:162` asks whether to show an implied cost figure for flat loans, "you are paying P1,000.00 over principal" -- a number that exists ONLY as total repayable minus amount borrowed. Hiding the field would foreclose that question permanently by never capturing the second operand. So the real choice is the entry's SECOND branch, not its first. Per GAP-029, `principal` must keep holding `installment * count` for flat loans because the balance formula at `:89` reads outstanding as total repayable minus payments; the borrowed figure therefore needs a NEW nullable column and a migration, never a repurposed `principal`. That makes this entry a migration, not the S / 2-3-turn form tweak it was filed as. **BLOCKED ON THE OWNER**: capture the borrowed amount in a new column (correct per the doc, costs a migration), or knowingly drop it and amend `06-loans.md:43`, `:82` and open question 3 to match. Not dispatched in wave 16 pending that answer.
+
 **Implementation checklist**
 - [ ] In `mobile/components/loans/loan_form.tsx`, hide the field for flat and adjust `canSave`.
 - [ ] In `mobile/components/loans/__tests__/loan_form.test.tsx`, replace the discard assertion.
@@ -6835,7 +6837,7 @@ Do not change how `principal` is stored until GAP-029 lands.
 Revert.
 
 **Open questions**
-none
+Raised 2026-09-10: new column for the borrowed amount, or drop the figure and amend the doc? See the blocking note under Proposed fix.
 
 ### GAP-083 [CODE] Loan first-due and goal deadline pickers floor at today, so an in-progress loan cannot be entered and an edit re-dates the whole schedule
 
