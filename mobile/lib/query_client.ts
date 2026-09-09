@@ -35,8 +35,8 @@
 // comment), exactly as lib/db/database.ts's unlockDatabase(dek) was added by
 // Task 7 without Task 7 itself calling it from the app.
 import { createAsyncStoragePersister } from "@tanstack/query-async-storage-persister";
-import { MutationCache, QueryClient } from "@tanstack/react-query";
-import type { QueryKey } from "@tanstack/react-query";
+import { defaultShouldDehydrateQuery, MutationCache, QueryClient } from "@tanstack/react-query";
+import type { Query, QueryKey } from "@tanstack/react-query";
 import type { PersistedClient } from "@tanstack/react-query-persist-client";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
@@ -380,12 +380,51 @@ const persister = createAsyncStoragePersister({
  * makes persistQueryClientRestore discard any old blob unconditionally,
  * before it is ever handed to deserialize at all. NEVER revert this string
  * to the pre-encryption value. */
-const CACHE_BUSTER = "peraplano-query-cache-v2-encrypted";
+const CACHE_BUSTER = "peraplano-query-cache-v3-bounded";
+
+/**
+ * Query roots that are NEVER written to the persisted cache.
+ *
+ * WHY THIS EXISTS. The persister re-serializes the WHOLE dehydrated cache on
+ * every cache event, throttled to one second — and `serialize` above is not
+ * `JSON.stringify`. It is `JSON.stringify`, then pure-JavaScript AES-256-GCM,
+ * then a hex encode that DOUBLES the payload, all of it synchronous on the JS
+ * thread (cache_cipher.ts). The cost is therefore paid per write and scales
+ * with everything the cache happens to be holding.
+ *
+ * Measured on a Samsung A54 against a month-old ledger, before this filter
+ * existed: the JS thread pinned at 100% for ~4.6 s every 32 s while the app sat
+ * idle and untouched — the 30 s review-count poller was on its own enough to
+ * trigger a full re-encrypt — and 2.5 s+ on a tab change. The RenderThread did
+ * 0.0 ms of work across the whole window, which is what proved it: the app was
+ * not drawing anything, it was encrypting.
+ *
+ * These two roots are what made the payload big. Both are unbounded row
+ * collections — `listTransactions` has no LIMIT and the shipped Plus tier
+ * removes its only date floor, `reviewQueue.open` is unpaged and a
+ * `ReviewItemPayload` is an open `Record` — and both are already on disk in
+ * SQLite, which re-reads them in milliseconds on mount. Persisting them bought
+ * a warm first paint worth a few ms and cost seconds on every single write.
+ *
+ * Everything else stays persisted. Settings, categories, wallets and the
+ * derived Safe-to-Spend figures are small, and having them before the first
+ * query resolves is the reason the persister is here at all.
+ */
+const UNPERSISTED_QUERY_ROOTS: readonly string[] = ["transactions", "review_queue"];
 
 export const persistOptions = {
   persister,
   maxAge: Infinity,
   buster: CACHE_BUSTER,
+  dehydrateOptions: {
+    // `defaultShouldDehydrateQuery` FIRST, and kept rather than replaced: it is
+    // the check that keeps errored and still-pending queries out of the blob
+    // (it is exactly `state.status === "success"`). Writing a bare key test in
+    // its place would silently start persisting failure states.
+    shouldDehydrateQuery: (query: Query) =>
+      defaultShouldDehydrateQuery(query) &&
+      !UNPERSISTED_QUERY_ROOTS.includes(query.queryKey[0] as string),
+  },
 };
 
 export { CacheCipherKeyMissingError };
