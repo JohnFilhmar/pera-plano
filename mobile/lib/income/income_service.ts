@@ -24,10 +24,10 @@
 //    in lib/events/app_events.ts, and the interface contract pins it. Two keys
 //    would leave the goals plan subscribing to one while this service publishes
 //    the other — with nothing failing anywhere, in either build. The shipped
-//    payload is also the better one: it carries `transactionId`, which is
+//    payload is also the better one: it carries `transactionIds`, which are
 //    exactly what rule 4's deduplication needs and the plan's shape lacks.
 //    `cadence` is dropped because no subscriber uses it (goals allocate against
-//    the actual credit amount, rule 12) and the bus's stated rule is that
+//    the pay that actually arrived, rule 12) and the bus's stated rule is that
 //    payloads are identifiers, not copies of state.
 //
 // 3. NOTHING HERE EVER PRODUCES A ZERO INCOME. `null` travels end to end, so an
@@ -57,6 +57,7 @@ import {
 } from "./cadence_detector";
 import { primaryStream, selectCandidates, type CandidateEvent } from "./candidates";
 import { averageAmountFor, monthlyEquivalent } from "./income_math";
+import { collapsePaydays } from "./paydays";
 
 /**
  * The bus key a payday is announced on. An alias for the event m2 Task 1
@@ -131,7 +132,14 @@ const OVERRIDE_DIVERGENCE_THRESHOLD = 0.2;
  */
 const CURRENT_WINDOW_MS = 7 * DAY_MS;
 
-/** How many emitted payday ids to remember. See `emittedPaydayTransactionIds`. */
+/**
+ * How many emitted payday ids to remember. See `emittedPaydayTransactionIds`.
+ *
+ * IDS, NOT PAYDAYS: a payday split into two deposits spends two slots, because
+ * both have to be remembered or the sibling credit announces the payday again.
+ * Fifty still covers well over a year of kinsenas paid in halves, and a payday
+ * old enough to age out of this list has aged out of the detection window too.
+ */
 const EMITTED_HISTORY = 50;
 
 type Detection = {
@@ -517,62 +525,121 @@ export async function getMonthlyEquivalentIncome(now: number): Promise<Centavos 
 }
 
 /**
- * Emits `income:payday` for a credit that matches the profile (rule 11), at
- * most once per transaction (plan rule 4). Returns whether it emitted.
+ * Emits `income:payday` for the pay that landed on one local date (rule 11), at
+ * most once per payday (plan rule 4). Returns whether it emitted.
+ *
+ * ONE PROMPT PER PAYDAY, NOT PER CREDIT. The thing being announced is "your pay
+ * arrived", which is a fact about a payday; the credits are only how it
+ * travelled. An employer splitting one packet into two deposits is ordinary
+ * here, and screened per credit that payday either fires twice or — when each
+ * half falls outside the ±30% band — never fires at all. The collapse is
+ * `collapsePaydays`, the same one Safe-to-Spend's contributions forecast runs
+ * on, so the money that term reserves and the transfer this prompt asks for can
+ * never describe different paydays.
+ *
+ * THE EMITTED AMOUNT IS THE DAY'S COMBINED PAY, because goals rule 13 computes
+ * a percent contribution "from the sum of income Transactions detected on that
+ * payday date". Leading with one credit would have `proposePaydayAllocations`
+ * take its percentage of half a payday, and cap every allocation at half the
+ * budget the user actually received.
  *
  * DEDUPLICATED BY TRANSACTION ID, PERSISTED. The subscriber moves real money
  * into a Goal (rule 12), so a retry, a re-render, or a second drained capture
  * batch must not fire twice. In-memory deduplication would not survive the app
- * being killed between the credit landing and the user opening the app.
+ * being killed between the credit landing and the user opening the app. EVERY
+ * id the payday covers is recorded, not just the one the payload leads with:
+ * remembering half of a split payday leaves the other half unseen, and the next
+ * pass announces the same payday again.
  */
 export async function maybeEmitPayday(now: number): Promise<boolean> {
   const summary = await getIncomeSummary(now);
-  if (summary.cadence === null || summary.averageAmount === null) return false;
+  const { cadence, averageAmount } = summary;
+  if (cadence === null || averageAmount === null) return false;
 
   const state = await getIncomeDetectionState();
   const detection = await detect(now);
   const alreadyEmitted = new Set(state.emittedPaydayTransactionIds);
 
-  // NEWEST FIRST. Several credits can qualify at once on a first run after a
-  // quiet spell, and the one worth announcing is the one that just landed.
-  const payday = [...detection.stream].reverse().find((event) => {
-    if (alreadyEmitted.has(event.transactionId)) return false;
-    if (!summary.sourceWalletIds.includes(event.walletId)) return false;
+  /** Rule 11's ±30% band, asked of one figure. */
+  const withinBand = (amount: Centavos): boolean =>
+    Math.abs(amount - averageAmount) <= averageAmount * PAYDAY_AMOUNT_TOLERANCE;
 
+  const inScope = detection.stream.filter((event) => {
+    if (!summary.sourceWalletIds.includes(event.walletId)) return false;
     // Rule 11: the timestamp must fall in the CURRENT expected window, not in
     // any window this stream ever matched.
     const age = now - event.occurredAt;
-    if (age < 0 || age > CURRENT_WINDOW_MS) return false;
+    return age >= 0 && age <= CURRENT_WINDOW_MS;
+  });
 
-    if (summary.cadence === "irregular") {
+  // NEWEST FIRST. Several paydays can qualify at once on a first run after a
+  // quiet spell, and the one worth announcing is the one that just landed.
+  const payday = [...collapsePaydays(inScope)].reverse().find((candidate) => {
+    // ANY covered id, not all of them. A payday announced when its first half
+    // landed must stay announced once its second half arrives, or the sibling
+    // credit fires the same payday a second time.
+    if (candidate.credits.some((credit) => alreadyEmitted.has(credit.transactionId))) return false;
+
+    if (cadence === "irregular") {
       // Rule 11: "For cadence: irregular there are no windows: any
       // primary-stream candidate ≥ ₱1,000.00 counts as a payday."
-      return event.amount >= IRREGULAR_PAYDAY_FLOOR;
+      //
+      // THE FLOOR STAYS PER CREDIT while the collapse applies. The floor is the
+      // only thing separating pay from noise on this path — there is no average
+      // to compare against — so summing sub-floor credits until they clear it
+      // would manufacture paydays out of exactly the small credits it exists to
+      // exclude. What the collapse buys here is the other half: one prompt for
+      // the day, carrying the day's total, instead of one per gig payment.
+      return candidate.credits.some((credit) => credit.amount >= IRREGULAR_PAYDAY_FLOOR);
     }
 
-    const withinAmount =
-      Math.abs(event.amount - summary.averageAmount!) <=
-      summary.averageAmount! * PAYDAY_AMOUNT_TOLERANCE;
-    // The event matched a real expected window during detection; that is what
-    // `matchedEventIds` means. Re-deriving the window here would be a second
-    // implementation of rule 6 that could disagree with the first.
-    return withinAmount && detection.matchedEventIds.includes(event.transactionId);
+    // THE DAY'S COMBINED PAY FIRST — a packet split into halves is one payday,
+    // and its total is the figure the band was written about. Then any single
+    // credit on the day, because that is the figure `averageAmount` itself is
+    // built from: `detectCadence` records one matched credit per expected
+    // window, so an employer who splits EVERY payday has a half-sized average,
+    // and testing only the combined total would silently stop announcing their
+    // pay altogether.
+    const looksLikePay =
+      withinBand(candidate.amount) || candidate.credits.some((credit) => withinBand(credit.amount));
+
+    // A credit on this day matched a real expected window during detection;
+    // that is what `matchedEventIds` means. Re-deriving the window here would
+    // be a second implementation of rule 6 that could disagree with the first.
+    // ANY credit again, for the same reason: one hit per window is recorded, so
+    // a split payday has only its first half in there.
+    return (
+      looksLikePay &&
+      candidate.credits.some((credit) => detection.matchedEventIds.includes(credit.transactionId))
+    );
   });
 
   if (payday === undefined) return false;
 
   await setIncomeDetectionState({
     ...state,
-    emittedPaydayTransactionIds: [...state.emittedPaydayTransactionIds, payday.transactionId].slice(
-      -EMITTED_HISTORY,
-    ),
+    emittedPaydayTransactionIds: [
+      ...state.emittedPaydayTransactionIds,
+      ...payday.credits.map((credit) => credit.transactionId),
+    ].slice(-EMITTED_HISTORY),
   });
 
+  // The wallet holding the BIGGEST share of the day's pay, not the last one to
+  // receive some of it. Its one consumer is `proposePaydayAllocations`, which
+  // makes it the wallet a transfer would leave from — so a payday split across
+  // two accounts has to name the one the money is actually in. Ties go to the
+  // later credit, which is the same wallet in the ordinary undivided case.
+  const into = payday.credits.reduce((biggest, credit) =>
+    credit.amount >= biggest.amount ? credit : biggest,
+  );
+
   await emitAppEvent(PAYDAY_EVENT, {
-    transactionId: payday.transactionId,
-    walletId: payday.walletId,
+    transactionIds: payday.credits.map((credit) => credit.transactionId),
+    walletId: into.walletId,
     amount: payday.amount,
-    occurredAt: payday.occurredAt,
+    // The instant the pay finished arriving. An allocation belongs to the
+    // payday, and the payday is complete at its last credit.
+    occurredAt: payday.credits[payday.credits.length - 1].occurredAt,
   });
   return true;
 }

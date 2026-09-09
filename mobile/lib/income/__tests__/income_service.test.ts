@@ -52,6 +52,30 @@ async function credit(amount: number, at: number, walletId?: string): Promise<st
   return row.id;
 }
 
+/**
+ * The same six kinsenas paydays, each deposited in two equal halves — an
+ * employer who splits every payday, which is ordinary in this market.
+ *
+ * Kinsenas is scored over WINDOWS rather than events, so this still confirms.
+ * What it changes is `averageAmount`: `detectCadence` records ONE matched credit
+ * per expected window, so the median it feeds is ₱9,250.00 — half the real
+ * payday. Any payday screen written against that figure has to cope with a day
+ * whose combined pay is twice the average it is compared to.
+ */
+async function seedHabitualSplitKinsenas(): Promise<void> {
+  for (const [month, day] of [
+    [4, 15],
+    [4, 31],
+    [5, 15],
+    [5, 30],
+    [6, 15],
+    [6, 31],
+  ] as const) {
+    await credit(925000, on(2026, month, day, 9));
+    await credit(925000, on(2026, month, day, 16));
+  }
+}
+
 /** Six kinsenas paydays ending Jul 31 — enough for rule 6's confirmed threshold. */
 async function seedConfirmedKinsenas(): Promise<void> {
   await credit(1850000, on(2026, 4, 15));
@@ -478,11 +502,70 @@ test("maybeEmitPayday emits once for a credit inside the expected window", async
   expect(emitted).toBe(true);
   expect(seen).toHaveLength(1);
   expect(seen[0]).toEqual({
-    transactionId: paydayId,
+    transactionIds: [paydayId],
     walletId: payroll.id,
     amount: 1850000,
     occurredAt: on(2026, 7, 15),
   });
+});
+
+test("A PAYDAY SPLIT INTO TWO CREDITS ON ONE LOCAL DATE FIRES ONE PROMPT FOR THE PAIR", async () => {
+  // GAP-110. Rule 11's ±30% band is a test of "is this your pay", which is a
+  // fact about a PAYDAY; screening it per credit asks the wrong question of an
+  // employer who deposits half in the morning and half in the afternoon. Goals
+  // rule 13 settles the amount: a percent contribution computes "from the sum of
+  // income Transactions detected on that payday date", so the prompt has to
+  // announce the pair, not one half of it.
+  //
+  await seedHabitualSplitKinsenas();
+  await refreshIncomeDetection(NOW);
+
+  const morning = await credit(925000, on(2026, 7, 15, 9));
+  const afternoon = await credit(925000, on(2026, 7, 15, 16));
+  const { seen, stop } = capturePaydays();
+
+  const first = await maybeEmitPayday(on(2026, 7, 15, 17));
+  // The sibling credit must not announce the same payday again on the next pass
+  // — the subscriber moves real money into a Goal.
+  const second = await maybeEmitPayday(on(2026, 7, 15, 18));
+  stop();
+
+  expect([first, second]).toEqual([true, false]);
+  expect(seen).toEqual([
+    {
+      transactionIds: [morning, afternoon],
+      walletId: payroll.id,
+      amount: 1850000,
+      occurredAt: on(2026, 7, 15, 16),
+    },
+  ]);
+  // BOTH ids are remembered, which is what makes the second pass silent even
+  // after the app is killed between the two credits landing.
+  expect((await getIncomeDetectionState()).emittedPaydayTransactionIds).toEqual([
+    morning,
+    afternoon,
+  ]);
+});
+
+test("credits on DIFFERENT local dates are judged separately, not added together", async () => {
+  // The collapse keys on the local CALENDAR DAY, not on the expected window.
+  // Aug 14 and Aug 15 both sit inside the 15th's ±3-day window, so a screen that
+  // collapsed by window would add two separate part-payments into one ₱18,500.00
+  // payday and announce a figure that never landed on any one day. Two paydays
+  // of ₱9,250.00 is the right reading, and one call announces one of them.
+  await seedHabitualSplitKinsenas();
+  await refreshIncomeDetection(NOW);
+  await credit(925000, on(2026, 7, 14, 16));
+  await credit(925000, on(2026, 7, 15, 9));
+  const { seen, stop } = capturePaydays();
+
+  const emitted = await maybeEmitPayday(on(2026, 7, 15, 11));
+  stop();
+
+  expect(emitted).toBe(true);
+  expect(seen).toHaveLength(1);
+  expect(seen[0].amount).toBe(925000);
+  expect(seen[0].transactionIds).toHaveLength(1);
 });
 
 test("MAYBEEMITPAYDAY DOES NOT EMIT TWICE FOR THE SAME PAYDAY", async () => {
@@ -546,6 +629,28 @@ test("maybeEmitPayday ignores a credit into a wallet that is not an income sourc
 
   expect(emitted).toBe(false);
   expect(seen).toEqual([]);
+});
+
+test("an irregular cadence collapses one day's gigs into one prompt for their total", async () => {
+  // Rule 11's irregular clause has no windows and no average: "any primary-stream
+  // candidate ≥ ₱1,000.00 counts as a payday". The FLOOR stays per credit there —
+  // it is the only thing separating pay from noise, so summing sub-floor credits
+  // until they clear it would invent paydays. The COLLAPSE still applies: two gigs
+  // paid on one day are one day's pay, announced once, for what they came to.
+  await seedIrregularStream();
+  await refreshIncomeDetection(SEP_3);
+  await credit(2000000, on(2026, 8, 2, 9));
+  await credit(2000000, on(2026, 8, 2, 15));
+  const { seen, stop } = capturePaydays();
+
+  const first = await maybeEmitPayday(on(2026, 8, 2, 16));
+  const second = await maybeEmitPayday(on(2026, 8, 2, 17));
+  stop();
+
+  expect([first, second]).toEqual([true, false]);
+  expect(seen).toHaveLength(1);
+  expect(seen[0].amount).toBe(4000000);
+  expect(seen[0].transactionIds).toHaveLength(2);
 });
 
 test("maybeEmitPayday emits nothing while income is unknown", async () => {

@@ -27,7 +27,7 @@ import { startPaydayNotificationSubscriber } from "../payday_notification_subscr
 const mockNotify = notifyPaydaySummary as jest.MockedFunction<typeof notifyPaydaySummary>;
 
 const PAYDAY = {
-  transactionId: "tx-payday",
+  transactionIds: ["tx-payday"],
   walletId: "w1",
   amount: 1_800_000,
   occurredAt: new Date(2026, 6, 15, 9, 0).getTime(),
@@ -54,7 +54,11 @@ test("THE PUSH INHERITS THE EVENT'S ONE-PER-PAYDAY DEDUPE", async () => {
   const stop = startPaydayNotificationSubscriber();
 
   await emitAppEvent("income:payday", PAYDAY);
-  await emitAppEvent("income:payday", { ...PAYDAY, transactionId: "tx-next", amount: 1_900_000 });
+  await emitAppEvent("income:payday", {
+    ...PAYDAY,
+    transactionIds: ["tx-next"],
+    amount: 1_900_000,
+  });
   stop();
 
   expect(mockNotify).toHaveBeenCalledTimes(2);

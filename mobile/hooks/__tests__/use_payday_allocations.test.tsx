@@ -40,7 +40,7 @@ afterEach(async () => {
 // The payday hand-off — rule 2
 // ---------------------------------------------------------------------------
 const PAYDAY = {
-  transactionId: "tx-payday",
+  transactionIds: ["tx-payday"],
   walletId: "w-payroll",
   amount: 1850000,
   occurredAt: Date.now(),

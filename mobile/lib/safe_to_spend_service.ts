@@ -14,9 +14,10 @@ import { listBillStatuses } from "@/lib/bills/bills_service";
 import { listCategories, listCategoryRefs } from "@/lib/db/repos/categories_repo";
 import { listGoals } from "@/lib/db/repos/goals_repo";
 import { countOpen } from "@/lib/db/repos/review_queue_repo";
-import { addDaysIso, toDateIso } from "@/lib/dates";
+import { addDaysIso } from "@/lib/dates";
 import { hasPaydayAutoAllocation } from "@/lib/entitlements";
 import { getIncomeSummary, listPayEventsBetween } from "@/lib/income/income_service";
+import { collapsePaydays } from "@/lib/income/paydays";
 import { expandCategoryIds } from "@/lib/limits/limit_engine";
 import { getLimitStatuses } from "@/lib/limits/limit_service";
 import { limitFilterLabel } from "@/lib/limits/limit_label";
@@ -220,16 +221,10 @@ async function forecastContributions(
   );
   if (payEvents.length === 0) return [];
 
-  // Each credit as it landed, the raw material for the collapse below.
-  const credits = payEvents.map((event) => ({
-    // Dated to the pay's own LOCAL day, so `evaluate`'s "counted from the start
-    // of the period" test lands on the day the money really arrived.
-    date: toDateIso(new Date(event.occurredAt)),
-    amount: event.amount,
-  }));
-
-  // The same pay collapsed to ONE ENTRY PER DAY: the trigger list for BOTH rule
-  // kinds, because a payday is the unit a contribution rule is written in.
+  // The pay collapsed to ONE ENTRY PER LOCAL DAY: the trigger list for BOTH
+  // rule kinds, because a payday is the unit a contribution rule is written in.
+  // Dated to the pay's own LOCAL day, so `evaluate`'s "counted from the start of
+  // the period" test lands on the day the money really arrived.
   //
   // A PERCENT rule takes its share of the day's combined base: goals rule 13
   // computes it "from the sum of income Transactions detected on that payday
@@ -246,14 +241,12 @@ async function forecastContributions(
   // one payday into two deposits reserve the amount twice, for a transfer the
   // user is asked to make once.
   //
-  // Keyed rather than run-length grouped, so the sum is right whatever order
-  // the credits come back in; insertion order leaves the paydays chronological,
-  // as `listPayEventsBetween` sorted them.
-  const paidOnDate = new Map<IsoDate, Centavos>();
-  for (const credit of credits) {
-    paidOnDate.set(credit.date, (paidOnDate.get(credit.date) ?? 0) + credit.amount);
-  }
-  const paydays = Array.from(paidOnDate, ([date, amount]) => ({ date, amount }));
+  // SHARED WITH THE PAYDAY PROMPT (`lib/income/paydays.ts`). The prompt asks the
+  // user to make the transfer this term is holding money back for, so the two
+  // have to agree about what one payday is; two collapses written separately
+  // would eventually disagree, and the symptom would be money reserved for a
+  // transfer nobody was ever asked to make.
+  const paydays = collapsePaydays(payEvents);
 
   const contributions: PlannedContribution[] = [];
   for (const goal of goals) {
