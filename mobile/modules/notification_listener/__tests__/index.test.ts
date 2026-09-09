@@ -634,9 +634,11 @@ describe("the contract §4 listener surface", () => {
       wrapper: "setProviderFilter",
       nativeMethod: "setProviderFilter",
       // Two entries, so a wrapper that spread the array into positional
-      // arguments, or reversed it, fails.
-      call: () => setProviderFilter(["com.globe.gcash.android", "com.bdo.digitalbanking"]),
-      nativeArgs: [["com.globe.gcash.android", "com.bdo.digitalbanking"]],
+      // arguments, or reversed it, fails. The second argument is the deny-all
+      // flag, and `false` here is the allowlist case -- a wrapper that dropped
+      // it would leave the Kotlin `AsyncFunction`'s second parameter missing.
+      call: () => setProviderFilter(["com.globe.gcash.android", "com.bdo.digitalbanking"], false),
+      nativeArgs: [["com.globe.gcash.android", "com.bdo.digitalbanking"], false],
     },
     {
       wrapper: "drainPendingCaptures",
@@ -757,10 +759,21 @@ describe("the contract §4 listener surface", () => {
       // CapturePrefs.getProviderFilter reads an empty allowlist as "allow
       // every package". A wrapper that dropped `[]` as falsy, or substituted a
       // default, would turn "clear the filter" into something else entirely.
-      await setProviderFilter([]);
+      await setProviderFilter([], false);
 
-      expect(mockNativeModule.setProviderFilter).toHaveBeenCalledWith([]);
+      expect(mockNativeModule.setProviderFilter).toHaveBeenCalledWith([], false);
       expect(mockNativeModule.setProviderFilter.mock.calls[0][0]).toHaveLength(0);
+    });
+
+    it("forwards the deny-all flag as its own argument -- the same empty array means the opposite with it set", async () => {
+      // GAP-103. `[]` alone is allow-all; `[]` with the flag is block-all. The
+      // wrapper is the only place the two are told apart before the bridge, so
+      // a flag dropped or defaulted here silently inverts the most restrictive
+      // action the Privacy centre offers.
+      await setProviderFilter([], true);
+
+      expect(mockNativeModule.setProviderFilter).toHaveBeenCalledWith([], true);
+      expect(mockNativeModule.setProviderFilter.mock.calls[0][1]).toBe(true);
     });
   });
 

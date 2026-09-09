@@ -55,7 +55,11 @@ import {
 } from "@/lib/bootstrap";
 import { setSetting } from "@/lib/db/repos/app_settings_repo";
 import { setProviderFilter } from "@/modules/notification_listener";
-import { getActiveRuleset, getActiveVersion } from "@/lib/db/repos/parser_rulesets_repo";
+import {
+  getActiveRuleset,
+  getActiveVersion,
+  upsertRuleset,
+} from "@/lib/db/repos/parser_rulesets_repo";
 import { TEST_DEK } from "@/test_support/db";
 import { enqueue, listOpen } from "@/lib/db/repos/review_queue_repo";
 import { getRawCapture, RAW_CAPTURE_TTL_MS, storeRawCapture } from "@/lib/db/repos/raw_notifications_repo";
@@ -531,6 +535,8 @@ describe("provider filter re-sync", () => {
     expect([...allowed].sort()).toEqual(
       everyPackage.filter((packageName) => packageName !== MAYA).sort(),
     );
+    // Something is still allowed, so this is an allowlist and not a deny-all.
+    expect(mockSetProviderFilter.mock.calls[0][1]).toBe(false);
   });
 
   test("nothing is pushed when the pause list is empty — `[]` would mean allow-all natively", async () => {
@@ -544,17 +550,35 @@ describe("provider filter re-sync", () => {
     expect(mockSetProviderFilter).not.toHaveBeenCalled();
   });
 
-  test("pausing every known provider pushes nothing rather than an empty, allow-all list", async () => {
-    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+  test("pausing every known provider pushes the explicit deny-all, never an empty allow-all list", async () => {
     await bootstrapApp();
     await setSetting("paused_provider_packages", await seededPackages());
     mockSetProviderFilter.mockClear();
 
     await bootstrapApp();
 
-    // An allowlist cannot express "deny everything"; `[]` is allow-all on the
-    // Kotlin side. Leaving the listener with whatever it holds is the smaller
-    // error, and the skip is announced rather than silent.
+    // This used to push NOTHING, because an allowlist could not express "block
+    // everything" and `[]` is allow-all on the Kotlin side. GAP-103 gave the
+    // bridge a flag for it, so the state is now re-asserted like every other —
+    // which matters most in the case this whole re-sync exists for: a sealed
+    // filter that could not be opened and silently fell back to allow-all.
+    expect(mockSetProviderFilter).toHaveBeenCalledTimes(1);
+    expect(mockSetProviderFilter).toHaveBeenCalledWith([], true);
+  });
+
+  test("a ruleset that names no packages is still skipped — that empty list is not a deny-all", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    await bootstrapApp();
+    await setSetting("paused_provider_packages", [MAYA]);
+    // A ruleset with no providers at all: the allowlist arithmetic yields the
+    // same `[]` as "everyone is paused", and only one of the two means block
+    // everything. Pushing a deny-all here would stop capture on any launch
+    // where the ruleset had not loaded.
+    await upsertRuleset({ version: 9999, providers: [], tunables: {} });
+    mockSetProviderFilter.mockClear();
+
+    await bootstrapApp();
+
     expect(mockSetProviderFilter).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("provider filter re-sync skipped"));
 

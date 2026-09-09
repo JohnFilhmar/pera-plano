@@ -52,6 +52,7 @@ class CapturePrefsTest {
   private val legacyKeyProviderFilter = "provider_filter"
   private val legacyKeyLastCaptureAt = "last_capture_at"
   private val sealedKeyProviderFilter = "provider_filter_sealed"
+  private val denyAllKeyProviderFilter = "provider_filter_deny_all"
   private val sealedKeyLastCaptureAt = "last_capture_at_sealed"
   private val sealedKeyObservedPackages = "observed_packages_sealed"
 
@@ -156,6 +157,87 @@ class CapturePrefsTest {
     assertEquals(emptySet<String>(), prefs.getProviderFilter())
     assertTrue(prefs.shouldCapture(gcash))
     assertTrue(prefs.shouldCapture(maya))
+  }
+
+  // ---------------------------------------------------------------------
+  // Deny-all: the sentence the allowlist cannot carry (GAP-103). Pausing
+  // every provider in the Privacy centre used to compute an EMPTY allowlist,
+  // which this class reads as allow-all -- the most restrictive action the
+  // app offers producing the least restrictive outcome.
+  // ---------------------------------------------------------------------
+
+  @Test
+  fun `deny-all refuses every package, including one the allowlist names`() {
+    prefs.setProviderFilter(setOf(gcash, maya), denyAll = true)
+
+    assertTrue(prefs.isProviderFilterDenyAll())
+    // A package INSIDE the filter, so an implementation that consulted only
+    // the allowlist would answer true here. That is the actual bug excluded.
+    assertFalse(prefs.shouldCapture(gcash))
+    assertFalse(prefs.shouldCapture(maya))
+    assertFalse(prefs.shouldCapture(bpi))
+    assertFalse(prefs.shouldCapture("com.some.bank.nobody.allowlisted"))
+    // ...and with the empty filter the Privacy centre actually sends, which
+    // on its own is allow-all.
+    prefs.setProviderFilter(emptySet(), denyAll = true)
+    assertFalse(prefs.shouldCapture(gcash))
+    assertFalse(prefs.shouldCapture("com.some.bank.nobody.allowlisted"))
+  }
+
+  @Test
+  fun `deny-all is off unless something set it, on a fresh install and on an upgrade`() {
+    // Fresh install: the key has never been written.
+    assertFalse(prefs.isProviderFilterDenyAll())
+    assertTrue(prefs.shouldCapture(gcash))
+
+    // The upgrade shape: a filter sealed by a build that had no such key.
+    // Reading it must not invent a deny-all, or every upgraded install
+    // silently stops capturing.
+    prefs.setProviderFilter(setOf(gcash))
+    rawPrefs().edit().remove(denyAllKeyProviderFilter).commit()
+
+    val upgraded = CapturePrefs(context)
+
+    assertFalse(upgraded.isProviderFilterDenyAll())
+    assertEquals(setOf(gcash), upgraded.getProviderFilter())
+    assertTrue(upgraded.shouldCapture(gcash))
+    assertFalse(upgraded.shouldCapture(maya))
+  }
+
+  @Test
+  fun `deny-all survives a new instance, and resuming one provider lifts it`() {
+    prefs.setProviderFilter(emptySet(), denyAll = true)
+
+    val reopened = CapturePrefs(context)
+    assertTrue("a block the user asked for must outlive the process", reopened.isProviderFilterDenyAll())
+    assertFalse(reopened.shouldCapture(gcash))
+
+    // The reverse transition: one provider resumed becomes an allowlist of
+    // exactly that provider, and the block is lifted in the same write.
+    reopened.setProviderFilter(setOf(gcash))
+
+    val third = CapturePrefs(context)
+    assertFalse(third.isProviderFilterDenyAll())
+    assertTrue(third.shouldCapture(gcash))
+    assertFalse("lifting the block must not fall back to allow-all", third.shouldCapture(maya))
+  }
+
+  @Test
+  fun `deny-all outlives a lost prefs key, unlike the sealed filter beside it`() {
+    prefs.setProviderFilter(emptySet(), denyAll = true)
+
+    // A Keystore reset: the sealed filter is unreadable from here on and
+    // falls back to allow-all. The flag is plaintext precisely so this
+    // cannot turn "block everything" into "allow everything".
+    KeyStoreBridge.vault = FakeKeyVault()
+    KeyStoreBridge.ensurePrefsKek()
+
+    val stranded = CapturePrefs(context)
+
+    assertEquals(emptySet<String>(), stranded.getProviderFilter())
+    assertTrue(stranded.isProviderFilterDenyAll())
+    assertFalse(stranded.shouldCapture(gcash))
+    assertFalse(stranded.shouldCapture("com.some.bank.nobody.allowlisted"))
   }
 
   // ---------------------------------------------------------------------

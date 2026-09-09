@@ -452,6 +452,29 @@ class NotificationListenerModuleTest {
     assertTrue(reopened.shouldCapture("com.some.bank.nobody.allowlisted"))
   }
 
+  @Test
+  fun `setProviderFilter carries deny-all across the bridge, and clears it again`() {
+    // The Privacy centre's every-provider-paused state (GAP-103). It arrives
+    // as an EMPTY list plus the flag, and the flag is the whole message: the
+    // list on its own is allow-all, which is the opposite of what was asked.
+    setProviderFilter(context, emptyList(), denyAll = true)
+
+    val fresh = CapturePrefs(context)
+    assertTrue(fresh.isProviderFilterDenyAll())
+    assertFalse(fresh.shouldCapture(gcash))
+    assertFalse(fresh.shouldCapture("com.some.bank.nobody.allowlisted"))
+
+    // Resuming one provider is a single write that both names the allowlist
+    // and lifts the block. A bridge that only ever set the flag would strand
+    // the user with capture off and no way back.
+    setProviderFilter(context, listOf(gcash))
+
+    val reopened = CapturePrefs(context)
+    assertFalse(reopened.isProviderFilterDenyAll())
+    assertTrue(reopened.shouldCapture(gcash))
+    assertFalse(reopened.shouldCapture(maya))
+  }
+
   // =====================================================================
   // getListenerHealth (contract §4; plan Task 6 rule 4)
   // =====================================================================

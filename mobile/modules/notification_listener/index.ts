@@ -99,7 +99,7 @@ type NativeNotificationListenerModule = {
   isAccessGranted(): Promise<boolean>;
   openAccessSettings(): void;
   setCaptureEnabled(enabled: boolean): Promise<void>;
-  setProviderFilter(packageNames: string[]): Promise<void>;
+  setProviderFilter(packageNames: string[], denyAll: boolean): Promise<void>;
   getListenerHealth(): Promise<NativeListenerHealth>;
 
   // ---- Learned package names (provider-selection plan Task 3) ----------
@@ -460,9 +460,21 @@ export function setCaptureEnabled(enabled: boolean): Promise<void> {
  * AN EMPTY ARRAY MEANS "ALLOW EVERY PACKAGE", not "allow none". Passing `[]`
  * is how a caller CLEARS the filter, never how it disables capture; that is
  * `setCaptureEnabled(false)`'s job.
+ *
+ * `denyAll` IS THE ONE SENTENCE THE ARRAY CANNOT CARRY (GAP-103): "block every
+ * package". An allowlist has exactly one empty value and it already means the
+ * opposite, so pausing every provider used to arrive here as `[]` and switch
+ * capture from most-restricted to unrestricted. It is REQUIRED, with no
+ * default, for that reason — the fail-open value is the one a caller would
+ * omit, and every call site now has to say which of the two it means.
+ *
+ * IT IS NOT THE MASTER PAUSE. `setCaptureEnabled` stays a separate control the
+ * user sets separately; neither call moves the other. Send `[]` alongside
+ * `true` — the flag outranks the filter below the bridge, so the array is only
+ * what a later resume falls back to.
  */
-export function setProviderFilter(packageNames: string[]): Promise<void> {
-  return NativeNotificationListener.setProviderFilter(packageNames);
+export function setProviderFilter(packageNames: string[], denyAll: boolean): Promise<void> {
+  return NativeNotificationListener.setProviderFilter(packageNames, denyAll);
 }
 
 /**

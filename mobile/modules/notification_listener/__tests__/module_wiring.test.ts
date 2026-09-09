@@ -107,4 +107,30 @@ describe("notification_listener local module wiring", () => {
       /^internal fun drainPendingCaptures\(context: Context\): List<Map<String, Any\?>> \{/m,
     );
   });
+
+  /**
+   * The other cross-language fact with no runtime here: ARITY.
+   *
+   * `index.ts` sends `setProviderFilter` two arguments -- the allowlist and
+   * the deny-all flag an allowlist cannot express (GAP-103) -- and Expo
+   * coerces positionally against the Kotlin lambda's parameters. A Kotlin
+   * side still declaring one parameter would not fail to compile, would not
+   * fail any Kotlin test, and would not fail the TypeScript build: it would
+   * throw on a real device the first time a user touched a provider switch.
+   * Kotlin is compiled in no worktree of this project, so this text assertion
+   * is the only place the two halves are checked against each other at all.
+   */
+  it("declares setProviderFilter with BOTH parameters the JS wrapper sends", () => {
+    const source = readFileSync(MODULE_KOTLIN, "utf8");
+
+    expect(source).toContain(
+      'AsyncFunction("setProviderFilter") { packageNames: List<String>, denyAll: Boolean ->',
+    );
+    // And the helper the block delegates to takes them in the same order --
+    // two arguments of different types, so a swap is a compile error rather
+    // than a silent inversion of the most restrictive control in the app.
+    expect(source).toMatch(
+      /^internal fun setProviderFilter\(\r?\n\s*context: Context,\r?\n\s*packageNames: List<String>,\r?\n\s*denyAll: Boolean = false,\r?\n\) \{/m,
+    );
+  });
 });

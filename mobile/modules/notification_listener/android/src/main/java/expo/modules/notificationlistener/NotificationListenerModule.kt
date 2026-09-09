@@ -178,8 +178,11 @@ class NotificationListenerModule : Module() {
       setCaptureEnabled(requireContext(), enabled)
     }
 
-    AsyncFunction("setProviderFilter") { packageNames: List<String> ->
-      setProviderFilter(requireContext(), packageNames)
+    // TWO ARGUMENTS, BOTH REQUIRED FROM JS. `denyAll` is what an allowlist
+    // cannot say (GAP-103); `modules/notification_listener/index.ts` is the
+    // only caller and always passes it.
+    AsyncFunction("setProviderFilter") { packageNames: List<String>, denyAll: Boolean ->
+      setProviderFilter(requireContext(), packageNames, denyAll)
     }
 
     // ---- Health (contract §4; plan Task 6 rule 4) ------------------------
@@ -348,9 +351,24 @@ internal fun setCaptureEnabled(context: Context, enabled: Boolean) {
  * [CapturePrefs.getProviderFilter]. Passing `[]` is therefore how a caller
  * clears the filter, not how it disables capture; that is
  * [setCaptureEnabled]'s job.
+ *
+ * [denyAll] IS THE SENTENCE THE LIST CANNOT CARRY (GAP-103): "block every
+ * package", which the Privacy centre reaches by pausing every provider and
+ * which used to arrive here as `[]`, i.e. as its exact opposite. It stays
+ * INDEPENDENT of [setCaptureEnabled]: the master pause and the provider
+ * switches are two controls the user sets separately, and neither may move
+ * the other. Pass `[]` alongside it -- the flag outranks the filter, so the
+ * list it is sent with is only what a later resume falls back to.
+ *
+ * Defaulted to `false` for the same reason [CapturePrefs.setProviderFilter]
+ * defaults it: a caller that names only an allowlist means only an allowlist.
  */
-internal fun setProviderFilter(context: Context, packageNames: List<String>) {
-  CapturePrefs(context).setProviderFilter(packageNames.toSet())
+internal fun setProviderFilter(
+  context: Context,
+  packageNames: List<String>,
+  denyAll: Boolean = false,
+) {
+  CapturePrefs(context).setProviderFilter(packageNames.toSet(), denyAll)
 }
 
 /**

@@ -18,7 +18,7 @@ import android.content.SharedPreferences
  * symptom would be the app quietly capturing from providers the user
  * de-selected, which is a privacy regression, not a glitch.
  *
- * THREE OF THE FIVE ARE SEALED AT REST, TWO ARE NOT, and the split is
+ * THREE OF THE SIX ARE SEALED AT REST, THREE ARE NOT, and the split is
  * deliberate (provider-selection plan Task 2 rule 1):
  *
  *  - **Sealed** under the prefs KEK ([KeyStoreBridge.sealPrefsValue]):
@@ -31,10 +31,15 @@ import android.content.SharedPreferences
  *    scope and promises "the database file is ciphertext; the buffer is
  *    ciphertext" -- until this task these sat beside them in plaintext,
  *    readable with `cat shared_prefs/peraplano_capture_prefs.xml`.
- *  - **Plaintext:** `capture_enabled` and `listener_connected`. Two booleans
- *    that reveal nothing about anyone's finances. Sealing them would buy
- *    nothing and would cost a decrypt on the hot path -- [shouldCapture]
- *    reads `capture_enabled` on every single notification.
+ *  - **Plaintext:** `capture_enabled`, `listener_connected` and
+ *    `provider_filter_deny_all`. Three booleans that reveal nothing about
+ *    anyone's finances -- the third says only THAT the user blocked
+ *    everything, never WHICH banks they hold, which is the disclosure the
+ *    filter beside it is sealed to prevent. Sealing them would buy nothing
+ *    and would cost a decrypt on the hot path -- [shouldCapture] reads
+ *    `capture_enabled` on every single notification. `provider_filter_deny_all`
+ *    has a third reason to stay plaintext, and it is the stronger one: see
+ *    [isProviderFilterDenyAll].
  *
  * WHERE THE PREFS KEK COMES FROM. This class never creates it; it is created
  * by [KeyStoreBridge.ensurePrefsKek] from **both** entry points that can be
@@ -121,6 +126,7 @@ class CapturePrefs(context: Context) {
 
   // ---------------------------------------------------------------------
   // Provider allowlist -- SEALED. Empty means ALLOW ALL, not deny all.
+  // "Block every package" is a SEPARATE plaintext flag, never an empty list.
   // ---------------------------------------------------------------------
 
   /**
@@ -130,6 +136,13 @@ class CapturePrefs(context: Context) {
    * Reading empty as "allow nothing" is the inverted default that would make
    * a new install capture silently nothing at all.
    *
+   * DENY-ALL IS NOT SPELLED HERE, and cannot be. An allowlist has exactly one
+   * empty value and it is already spoken for by the sentence above, so the
+   * "block everything" state the Privacy centre reaches by pausing every
+   * provider lives in [isProviderFilterDenyAll] instead. Anything that reads
+   * this set to decide whether to capture must consult that flag too --
+   * [shouldCapture] is the only such reader, deliberately.
+   *
    * Stored sealed, so this decrypts on every call. No copy-out is needed any
    * more (the pre-Task-2 version handed back `getStringSet`'s live instance
    * and had to defend against a caller mutating persisted state) -- the set
@@ -138,21 +151,76 @@ class CapturePrefs(context: Context) {
   fun getProviderFilter(): Set<String> =
     openSealed(KEY_PROVIDER_FILTER_SEALED)?.let { decodeProviderFilter(it) } ?: emptySet()
 
-  fun setProviderFilter(packageNames: Set<String>) {
+  /**
+   * Whether the user has blocked EVERY package: the state an allowlist cannot
+   * express, because its empty value means the opposite.
+   *
+   * **Defaults to `false`,** which is what keeps the fresh-install and the
+   * upgrade defaults where they were. A device that has never written this
+   * key -- a new install, or one upgrading from a build that had no such key
+   * -- reads `false` here and falls through to the allowlist exactly as
+   * before, so nothing that a previous version sealed changes meaning.
+   *
+   * PLAINTEXT, unlike the filter it accompanies. Two of the reasons are the
+   * ones the other plaintext booleans give: it names no bank and no e-wallet,
+   * and it is read on the hot path. The third is particular to this one and
+   * is the reason it MUST NOT be sealed -- a sealed value that cannot be
+   * opened (Keystore reset, restore onto another device, a preferences file
+   * from a foreign build) falls back to its default, and for this flag that
+   * fallback would silently turn "block everything" back into "allow
+   * everything". That is the precise failure this flag exists to end, so
+   * storing it where that failure can reach it would be self-defeating.
+   */
+  fun isProviderFilterDenyAll(): Boolean =
+    try {
+      prefs.getBoolean(KEY_PROVIDER_FILTER_DENY_ALL, DEFAULT_PROVIDER_FILTER_DENY_ALL)
+    } catch (error: Exception) {
+      DEFAULT_PROVIDER_FILTER_DENY_ALL
+    }
+
+  /**
+   * Writes the WHOLE capture scope -- the allowlist AND the deny-all flag, in
+   * one `commit()`. They are never written apart: a deny-all that landed
+   * without its filter, or a filter that landed while a stale deny-all still
+   * stood, is a scope no caller asked for.
+   *
+   * [denyAll] defaults to `false` because every pre-existing caller is handing
+   * over an ALLOWLIST, and must keep its exact previous meaning.
+   */
+  fun setProviderFilter(packageNames: Set<String>, denyAll: Boolean = false) {
     // Sealed BEFORE the editor is opened: if the seal fails there is no
     // half-written state to undo, and the previous value stands. Removing it
     // instead would drop the user to allow-all, which is a strictly larger
     // set of captured apps than the stale filter it replaced.
-    val sealed = seal(encodeProviderFilter(packageNames)) ?: return
-    write { it.putString(KEY_PROVIDER_FILTER_SEALED, sealed) }
+    val sealed = seal(encodeProviderFilter(packageNames))
+    if (sealed == null) {
+      // No usable prefs KEK, so the allowlist cannot be updated at all -- but
+      // a deny-all still can, and still must. It is plaintext, it needs no
+      // KEK, and it outranks whatever stale filter is left on disk. Leaving
+      // the user at allow-all because an unrelated key was unavailable is the
+      // fail-open this flag exists to close. The reverse case (denyAll false)
+      // still writes nothing, so a filter update that could not be sealed
+      // cannot lift a block the user is still asking for.
+      if (denyAll) write { it.putBoolean(KEY_PROVIDER_FILTER_DENY_ALL, true) }
+      return
+    }
+    write {
+      it.putString(KEY_PROVIDER_FILTER_SEALED, sealed)
+        .putBoolean(KEY_PROVIDER_FILTER_DENY_ALL, denyAll)
+    }
   }
 
   /**
    * The one question the listener service actually asks, per plan rule 2:
-   * `isCaptureEnabled() && (filter.isEmpty() || packageName in filter)`.
+   * `isCaptureEnabled() && !isProviderFilterDenyAll() &&
+   * (filter.isEmpty() || packageName in filter)`.
    *
    * The pause switch outranks the allowlist -- when capture is off, no
-   * package passes, including ones the user explicitly allowlisted.
+   * package passes, including ones the user explicitly allowlisted. The
+   * deny-all flag outranks it too, and for the same reason: it is the user
+   * saying "block everything", which an empty allowlist reads as its exact
+   * opposite. Both are checked before the filter is even opened, so neither
+   * pays the decrypt below.
    *
    * THIS DECRYPTS ON EVERY NOTIFICATION AND IS DELIBERATELY NOT CACHED.
    * Plan Task 2 rule 2 says measure before caching, so it was measured
@@ -189,6 +257,7 @@ class CapturePrefs(context: Context) {
    */
   fun shouldCapture(packageName: String): Boolean {
     if (!isCaptureEnabled()) return false
+    if (isProviderFilterDenyAll()) return false
     val filter = getProviderFilter()
     return filter.isEmpty() || packageName in filter
   }
@@ -645,6 +714,18 @@ class CapturePrefs(context: Context) {
     private const val KEY_LISTENER_CONNECTED = "listener_connected"
 
     /**
+     * The deny-all flag that sits beside the sealed filter and outranks it
+     * (GAP-103). A NEW key rather than a new shape for the old one: a device
+     * upgrading from a build that never wrote this reads its `false` default
+     * and behaves exactly as that build did, and the sealed value written by
+     * the previous version still decodes to the same allowlist it always
+     * meant. Nothing on disk changes meaning.
+     *
+     * Plaintext, and it has to be -- see [isProviderFilterDenyAll].
+     */
+    private const val KEY_PROVIDER_FILTER_DENY_ALL = "provider_filter_deny_all"
+
+    /**
      * The sealed keys. Deliberately DIFFERENT names from the plaintext ones
      * below rather than the same names holding a different type -- see
      * [migrateLegacyPlaintextValues] for why that difference is what makes
@@ -664,7 +745,7 @@ class CapturePrefs(context: Context) {
      *
      * It keeps the `_sealed` suffix anyway, so the preferences file stays
      * self-describing -- every key in it either is sealed or is one of the
-     * two booleans that deliberately are not.
+     * three booleans that deliberately are not.
      */
     private const val KEY_OBSERVED_PACKAGES_SEALED = "observed_packages_sealed"
 
@@ -720,6 +801,13 @@ class CapturePrefs(context: Context) {
 
     private const val DEFAULT_CAPTURE_ENABLED = true
     private const val DEFAULT_LISTENER_CONNECTED = false
+
+    /**
+     * `false`, so "no flag on disk" keeps meaning "fall through to the
+     * allowlist", which for an absent or empty filter is allow-all. Flipping
+     * this to `true` would make every fresh install capture nothing.
+     */
+    private const val DEFAULT_PROVIDER_FILTER_DENY_ALL = false
   }
 }
 

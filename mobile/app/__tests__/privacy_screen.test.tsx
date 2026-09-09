@@ -286,6 +286,9 @@ test("a provider switch calls setProviderFilter with the remaining packages", as
   // gcash does not, and the filter is not simply cleared to allow-all.
   const lastCall = mockSetProviderFilter.mock.calls[mockSetProviderFilter.mock.calls.length - 1];
   expect(lastCall[0]).toEqual([BPI_PACKAGE]);
+  // Not a deny-all: bpi is still capturing, and the second argument is what
+  // says so (GAP-103).
+  expect(lastCall[1]).toBe(false);
 });
 
 test("resuming a paused provider clears the filter back to allow-all once nothing is paused", async () => {
@@ -296,7 +299,26 @@ test("resuming a paused provider clears the filter back to allow-all once nothin
 
   fireEvent(screen.getByTestId("provider-switch-gcash"), "valueChange", true);
 
-  await waitFor(() => expect(mockSetProviderFilter).toHaveBeenCalledWith([]));
+  await waitFor(() => expect(mockSetProviderFilter).toHaveBeenCalledWith([], false));
+});
+
+test("PAUSING THE LAST REMAINING PROVIDER SENDS DENY-ALL FROM THIS SCREEN", async () => {
+  // The defect this closes was reachable from here, not only from the hook:
+  // switching off the last provider computed `[]`, which the listener reads as
+  // allow-all. Two providers exist in this ruleset, so pausing the second one
+  // empties the allowlist.
+  await setSetting("paused_provider_packages", [GCASH_PACKAGE]);
+
+  await renderPrivacyScreen();
+  await waitFor(() => expect(screen.getByTestId("provider-switch-bpi")).toBeTruthy());
+
+  fireEvent(screen.getByTestId("provider-switch-bpi"), "valueChange", false);
+
+  await waitFor(() => expect(mockSetProviderFilter).toHaveBeenCalledWith([], true));
+  // And the master capture switch is NOT touched: the two controls stay
+  // independent, which is the whole reason the bridge grew a deny-all instead
+  // of the screen reaching for setCaptureEnabled(false).
+  expect(mockSetCaptureEnabled).not.toHaveBeenCalled();
 });
 
 // ---------------------------------------------------------------------------

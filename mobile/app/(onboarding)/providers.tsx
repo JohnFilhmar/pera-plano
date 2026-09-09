@@ -15,8 +15,15 @@
 // `CapturePrefs.shouldCapture` returns true when the provider filter is empty —
 // that is the allow-all default a fresh install depends on, and it is pinned on
 // the Kotlin side by CapturePrefsTest. Both "the user ticked nothing" and "the
-// user tapped Skip" therefore write `setProviderFilter([])` and change nothing
-// else.
+// user tapped Skip" therefore write `setProviderFilter([], false)` and change
+// nothing else.
+//
+// THE `false` IS THE DENY-ALL FLAG, AND IT STAYS `false` HERE (GAP-103). The
+// bridge can now say "block every package", which is what the Privacy centre
+// sends when the user pauses every provider. Ticking nothing at onboarding is
+// not that: it is a user who has not chosen yet, and answering them with a
+// block would be the same never-tracks-anything app the next paragraph refuses
+// to build out of `setCaptureEnabled(false)`.
 //
 // THIS FILE DELIBERATELY DOES NOT IMPORT `setCaptureEnabled`. Not an omission
 // to helpfully fill in later: pausing capture because the user chose no
@@ -143,7 +150,9 @@ export default function ProvidersScreen({ onDone }: { onDone?: () => void } = {}
       if (writeInFlightRef.current) return;
       writeInFlightRef.current = true;
       setBusy(true);
-      setProviderFilter(packageNames)
+      // `false`, always: this screen writes an ALLOWLIST and never a deny-all,
+      // including when the list is empty. See the header comment.
+      setProviderFilter(packageNames, false)
         .catch((error: unknown) => {
           // Allow-all is already the on-disk default, so a failed write leaves
           // the app capturing everything — degraded, but still tracking. The

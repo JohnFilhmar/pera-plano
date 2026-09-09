@@ -162,11 +162,18 @@ async function runRetention(now: number): Promise<void> {
  * launch: the exact fail-open this function exists to close, dressed up as a
  * re-sync. Nothing known means nothing pushed.
  *
- * AN EMPTY ALLOWLIST IS NEVER PUSHED EITHER, for the same reason: if every
- * package the ruleset knows about is paused, `[]` would mean "allow all" on
- * the Kotlin side rather than "allow none" — an allowlist cannot express deny
- * everything, `setCaptureEnabled(false)` is what that state is for. Leaving
- * the listener with whatever it already holds is the smaller error.
+ * EVERY PACKAGE PAUSED IS PUSHED AS THE EXPLICIT DENY-ALL, never as `[]`.
+ * This used to be a second skip, because an allowlist could not express "block
+ * everything" and `[]` meant its exact opposite on the Kotlin side; GAP-103
+ * added the flag, so the state can now be re-asserted like any other instead
+ * of being the one setting a re-sync deliberately gave up on. It stays
+ * independent of `setCaptureEnabled`, which no launch path may touch.
+ *
+ * A RULESET THAT NAMES NO PACKAGES IS STILL SKIPPED, and it is not the same
+ * case. "Everyone else is paused" and "there is no everyone else to ask about"
+ * both compute an empty allowlist, and only the first is a deny-all — pushing
+ * one for the second would block capture on any launch where the ruleset had
+ * not loaded yet.
  *
  * FAILURES ARE SWALLOWED, like `runRetention`'s and for the same reason: a
  * launch that cannot reach the bridge is still a usable app, and the recovery
@@ -186,17 +193,18 @@ async function resyncProviderFilter(): Promise<void> {
     // (`app/(tabs)/more/privacy.tsx`): every package in the active ruleset,
     // minus the paused ones. The two have to agree, so neither may invent its
     // own idea of what "every package" means.
-    const allowed = (bundle?.providers ?? [])
-      .flatMap((provider) => provider.packageNames)
-      .filter((packageName) => !pausedSet.has(packageName));
-    if (allowed.length === 0) {
+    const universe = (bundle?.providers ?? []).flatMap((provider) => provider.packageNames);
+    if (universe.length === 0) {
       console.warn(
-        "provider filter re-sync skipped: no package is left allowed, and an empty allowlist means allow-all natively",
+        "provider filter re-sync skipped: the active ruleset names no packages, so there is no allowlist to rebuild",
       );
       return;
     }
 
-    await setProviderFilter(allowed);
+    const allowed = universe.filter((packageName) => !pausedSet.has(packageName));
+    // Nothing left allowed, out of a universe that was not empty to begin
+    // with, is the every-provider-paused state — deny-all, not allow-all.
+    await setProviderFilter(allowed, allowed.length === 0);
   } catch (error) {
     console.error(
       "provider filter re-sync failed; the listener keeps whatever filter it already had",

@@ -347,7 +347,7 @@ describe("ProvidersScreen", () => {
       fireEvent.press(screen.getByTestId("provider-picker-continue-button"));
     });
 
-    await waitFor(() => expect(mockSetProviderFilter).toHaveBeenCalledWith([GCASH]));
+    await waitFor(() => expect(mockSetProviderFilter).toHaveBeenCalledWith([GCASH], false));
   });
 
   // -------------------------------------------------------------------------
@@ -362,7 +362,11 @@ describe("ProvidersScreen", () => {
       fireEvent.press(screen.getByTestId("provider-picker-continue-button"));
     });
 
-    await waitFor(() => expect(mockSetProviderFilter).toHaveBeenCalledWith([]));
+    // `false` is the deny-all flag, and it is a THIRD way this screen could
+    // build the never-tracks-anything app (GAP-103): `[]` with the flag SET is
+    // block-everything, the exact opposite of the allow-all this empty
+    // selection means. Asserted, not assumed.
+    await waitFor(() => expect(mockSetProviderFilter).toHaveBeenCalledWith([], false));
     // The assertion that actually discriminates. Writing [] and then pausing
     // capture produces an app that tracks nothing, forever, silently.
     expect(mockSetCaptureEnabled).not.toHaveBeenCalledWith(false);
@@ -379,7 +383,7 @@ describe("ProvidersScreen", () => {
 
     // Skip and "selected none" must be the SAME write. Wiring them to two
     // handlers is how one of them ends up safe and the other does not.
-    await waitFor(() => expect(mockSetProviderFilter).toHaveBeenCalledWith([]));
+    await waitFor(() => expect(mockSetProviderFilter).toHaveBeenCalledWith([], false));
     expect(mockSetCaptureEnabled).not.toHaveBeenCalledWith(false);
     expect(mockSetCaptureEnabled).not.toHaveBeenCalled();
   });
@@ -604,7 +608,7 @@ describe("ProvidersScreen — real app names", () => {
 
     // The name is display only. The filter is keyed on the package id, which
     // is exactly what does NOT change when a bank rebrands.
-    await waitFor(() => expect(mockSetProviderFilter).toHaveBeenCalledWith([REBRANDED]));
+    await waitFor(() => expect(mockSetProviderFilter).toHaveBeenCalledWith([REBRANDED], false));
     expect(mockSetCaptureEnabled).not.toHaveBeenCalled();
   });
 

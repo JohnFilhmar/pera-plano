@@ -10,6 +10,14 @@
 // "send its packages"; it means "send everyone ELSE's packages" — the
 // allowlist has to be computed from the FULL known package universe minus
 // whatever is currently paused, every time.
+//
+// AND WHEN THAT SUBTRACTION LEAVES NOTHING, THE ALLOWLIST CANNOT SAY SO. That
+// is the second argument, `denyAll` (GAP-103): pausing EVERY provider computes
+// `[]`, which the native side reads as allow-all, so the most restrictive
+// action in the Privacy centre used to produce the least restrictive outcome.
+// It is a separate signal rather than a call to `setCaptureEnabled(false)`
+// because the master pause and the provider switches are two independent
+// controls, and neither may silently move the other.
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { queryKeys } from "@/constants/query_keys";
@@ -23,7 +31,17 @@ export type SetProviderPauseVariables = {
   packageNames: string[];
   /** `true` to pause this provider, `false` to resume it. */
   paused: boolean;
-  /** Every package name across every provider the installed ruleset knows about. */
+  /**
+   * Every package name across every provider the installed ruleset knows about.
+   *
+   * MUST NOT BE EMPTY while anything is paused. With no universe to subtract
+   * from, "everyone else" has no members, and this mutation reads a paused set
+   * with nothing left over as deny-all. `app/(tabs)/more/privacy.tsx` builds
+   * this from the same rows the switch being toggled belongs to, so it always
+   * carries at least that provider's packages — which is why there is no guard
+   * here, unlike `resyncProviderFilter()` in `lib/bootstrap.ts`, where the
+   * ruleset genuinely can be missing at launch.
+   */
   allPackageNames: string[];
 };
 
@@ -35,14 +53,22 @@ export type SetProviderPauseVariables = {
  * doc), so a settings write with no matching native write would tell the
  * switch list a provider is paused that is, in fact, still capturing.
  *
- * NO EMPTY-ALLOWLIST TRAP. When the resulting paused set is empty, the
- * native call is `setProviderFilter([])` — genuine allow-all — rather than
- * an explicit list of every package this ruleset currently knows about.
- * Passing the full list instead would silently block any package the
- * listener learns about AFTER this write (a provider the user has not
- * touched a switch for yet), which is the exact inverted-default failure
- * `app/(onboarding)/providers.tsx` already documents for the identical
- * choice at onboarding time.
+ * NO EMPTY-ALLOWLIST TRAP, IN EITHER DIRECTION, and there are two of them.
+ *
+ * When the resulting paused set is empty, the native call is
+ * `setProviderFilter([], false)` — genuine allow-all — rather than an explicit
+ * list of every package this ruleset currently knows about. Passing the full
+ * list instead would silently block any package the listener learns about
+ * AFTER this write (a provider the user has not touched a switch for yet),
+ * which is the exact inverted-default failure `app/(onboarding)/providers.tsx`
+ * already documents for the identical choice at onboarding time.
+ *
+ * When every known package is paused, the remaining allowlist is ALSO empty —
+ * and that empty means the opposite. It is sent as `setProviderFilter([],
+ * true)`, the explicit deny-all, because `[]` on its own would hand the user
+ * who just blocked everything an unrestricted listener. The two cases are told
+ * apart by whether anything is paused at all, never by the length of the
+ * computed list, which is `0` in both.
  */
 export function useSetProviderPause() {
   const queryClient = useQueryClient();
@@ -64,11 +90,14 @@ export function useSetProviderPause() {
       }
 
       const nextPaused = [...pausedSet];
-      const allowed = nextPaused.length === 0
-        ? []
-        : allPackageNames.filter((packageName) => !pausedSet.has(packageName));
+      const remaining = allPackageNames.filter((packageName) => !pausedSet.has(packageName));
+      // Nothing paused is allow-all, so the allowlist is cleared rather than
+      // filled with the whole universe. Something paused with nothing left
+      // over is deny-all, which no allowlist value can express.
+      const allowed = nextPaused.length === 0 ? [] : remaining;
+      const denyAll = nextPaused.length > 0 && remaining.length === 0;
 
-      await setProviderFilter(allowed);
+      await setProviderFilter(allowed, denyAll);
       await setSetting("paused_provider_packages", nextPaused);
       return nextPaused;
     },
