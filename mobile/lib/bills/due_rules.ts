@@ -235,6 +235,41 @@ export function nextOccurrence(rule: DueRule, afterDate: IsoDate): IsoDate {
   throw new Error(`no occurrence of ${rule.kind} within four years of ${afterDate}`);
 }
 
+/** Exactly 52 weeks, so a week-based rule divides into it without a remainder. */
+const PERIOD_SAMPLE_DAYS = 364;
+
+/**
+ * How many days a bill's PERIOD is, averaged over a year of its own schedule.
+ *
+ * `DueRule` has no period field — it says WHEN, never HOW OFTEN — and rule 15's
+ * "half the bill's period" needs a number. Counting the rule's own occurrences
+ * across a fixed year is the only derivation that cannot drift from the
+ * schedule: a constant table per `kind` would be a second model of the calendar
+ * living beside this file, free to disagree with it the first time either moves.
+ *
+ * AVERAGED, NOT THE GAP TO THE NEXT ONE. Rule 15 says "the BILL's period" — a
+ * property of the bill, not of one cycle — and the exact forward gap is not
+ * that: it is 28 days from a February due date and 31 from a March one, so a
+ * monthly bill's window would narrow by a day every February and the detail
+ * screen's sentence would change month to month for no reason a user could
+ * name. Semi-monthly alternates 15 and 16 for the same reason. The average
+ * (30.33 and 15.17) is what the spec's own "weekly bills use a proportionally
+ * tighter window" is contrasting a monthly bill against.
+ *
+ * A rule with no occurrence in a whole year cannot be produced by the create
+ * form (`every-n-months` is capped at n = 12), but a hand-edited or migrated
+ * one could be; it is reported as annual, which makes every clamp derived from
+ * it non-binding — the safe direction, since 7 and 15 are already the maxima.
+ */
+export function periodDays(rule: DueRule, fromDate: IsoDate): number {
+  const count = occurrencesBetween(
+    rule,
+    fromDate,
+    addDaysIso(fromDate, PERIOD_SAMPLE_DAYS - 1),
+  ).length;
+  return count > 0 ? PERIOD_SAMPLE_DAYS / count : PERIOD_SAMPLE_DAYS;
+}
+
 /**
  * Spec rule 21: a cycle becomes overdue at the START OF THE DAY AFTER its
  * (adjusted) due date, if it is neither paid nor skipped.

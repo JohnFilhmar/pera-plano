@@ -58,6 +58,21 @@ test("THE TOLERANCE AND WINDOW ARE THE MATCHER'S OWN, IN PESOS", () => {
   );
 });
 
+test("A WEEKLY BILL'S ROW PRINTS THE CLAMPED WINDOW, NOT THE SPEC'S 7 AND 15", () => {
+  // GAP-112. Rule 15 caps the window at half the bill's period, so the matcher
+  // looks 3 days either side of a weekly due date rather than 7 and 15. This
+  // row is the only place a user can find that out, and printing the unclamped
+  // figures would be the same lie GAP-085 removed, pointing the other way.
+  const weekly = bill({
+    dueRule: { kind: "every-n-weeks", n: 1, weekday: 5, anchorDate: "2026-02-20" },
+  });
+  render(<BillRulesCard bill={weekly} estimate={HISTORY} dueDate="2026-02-20" />);
+
+  expect(screen.getByTestId("bill-rule-window").props.children).toBe(
+    "From 3 days before the due date to 3 days after — 30 days once it is overdue.",
+  );
+});
+
 test("A FIXED BILL SHOWS THE OTHER BAND", () => {
   // ₱70.50, the 3% that beats the ₱30.00 floor at this amount — and a tenth of
   // the estimated band above, so the two fixtures cannot be confused.

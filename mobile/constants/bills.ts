@@ -30,9 +30,16 @@ export const DEFAULT_BILL_CATEGORY_ID = "cat_bills_utilities";
 // above: that module imports the repositories, so a component reaching it for
 // one number pulls `getDatabase` into the UI layer.
 
-/** Spec rule 15: the auto-match window opens 7 days before the due date. */
+/**
+ * Spec rule 15: the auto-match window opens 7 days before the due date.
+ *
+ * A CEILING, NOT THE ENFORCED FIGURE (GAP-112). The same rule ends "but never
+ * wider than half the bill's period", so a weekly bill gets 3. `matchWindowFor`
+ * in lib/bills/rule_summary.ts applies that clamp and is what both the matcher
+ * and the bill detail read; these two are the widest it will ever return.
+ */
 export const WINDOW_OPENS_DAYS_BEFORE = 7;
-/** ...and closes 15 days after it. */
+/** ...and closes 15 days after it, subject to the same clamp. */
 export const WINDOW_CLOSES_DAYS_AFTER = 15;
 /**
  * Except for an overdue cycle, where rule 26 keeps it open for 30 days:

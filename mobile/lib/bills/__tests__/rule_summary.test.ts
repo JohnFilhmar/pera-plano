@@ -7,6 +7,7 @@ import type { AmountEstimate } from "@/lib/bills/amount_estimator";
 import {
   autoMatchFacts,
   dueRuleLabel,
+  matchWindowFor,
   reminderScheduleLabel,
   toleranceFor,
 } from "@/lib/bills/rule_summary";
@@ -14,6 +15,9 @@ import type { Bill, BillAutoMatchRule, DueRule } from "@/types/domain";
 
 const FIXED: AmountEstimate = { amount: 235000, basis: "fixed", sampleSize: 0, spread: 0 };
 const HISTORY: AmountEstimate = { amount: 235000, basis: "history", sampleSize: 3, spread: 40000 };
+
+/** The cycle every summary here is scoped to. A Friday, so nothing is adjusted. */
+const DUE = "2026-02-20";
 
 function bill(over: Partial<Bill> = {}): Bill {
   return {
@@ -133,23 +137,90 @@ test("NO REMINDERS IS SAID OUT LOUD, NOT LEFT BLANK", () => {
 // Auto-match summary — rules 13-14
 // ---------------------------------------------------------------------------
 test("no rule means matching is off, not a blank summary", () => {
-  expect(autoMatchFacts(bill({ autoMatchRule: null }), HISTORY)).toEqual({ enabled: false });
+  expect(autoMatchFacts(bill({ autoMatchRule: null }), HISTORY, DUE)).toEqual({ enabled: false });
 });
 
 test("THE SUMMARY CARRIES RULE 13'S THREE PARTS", () => {
   // Rule 13: "The autoMatchRule is: merchant keyword set + amount tolerance +
   // date window."
-  const facts = autoMatchFacts(bill(), HISTORY);
+  const facts = autoMatchFacts(bill(), HISTORY, DUE);
   expect(facts.enabled).toBe(true);
   if (!facts.enabled) return;
 
   expect(facts.merchantPattern).toBe("MERALCO");
   // Rule 14 for an ESTIMATED bill: ±30% of the current estimate.
   expect(facts.toleranceCentavos).toBe(70500);
-  // Rule 15's window, and rule 26's wider one once overdue.
+  // Rule 15's window, and rule 26's wider one once overdue. A monthly bill's
+  // period is over 30 days, so its half is over 15 and the clamp binds neither
+  // edge — 7 and 15 are the maxima, and the clamp only ever tightens.
   expect(facts.opensDaysBefore).toBe(7);
   expect(facts.closesDaysAfter).toBe(15);
   expect(facts.overdueClosesDaysAfter).toBe(30);
+});
+
+// ---------------------------------------------------------------------------
+// Rule 15's half-period clamp — GAP-112
+// ---------------------------------------------------------------------------
+// The window the matcher enforces is the window this summary must print. These
+// assert the same function `findBillPaymentCandidates` matches through, so the
+// sentence on the bill detail cannot drift from the behaviour it describes.
+test("A WEEKLY BILL'S SUMMARY REPORTS THE CLAMPED WINDOW, NOT THE SPEC'S MAXIMA", () => {
+  // Rule 15: "never wider than half the bill's period (so weekly bills use a
+  // proportionally tighter window)". Half of 7 is 3.5, floored to 3 because the
+  // rule says never WIDER than half.
+  const weekly = bill({
+    dueRule: { kind: "every-n-weeks", n: 1, weekday: 5, anchorDate: DUE },
+  });
+  const facts = autoMatchFacts(weekly, HISTORY, DUE);
+  if (!facts.enabled) throw new Error("expected matching to be on");
+
+  expect(facts.opensDaysBefore).toBe(3);
+  expect(facts.closesDaysAfter).toBe(3);
+  // Rule 26 supersedes rule 15's CLOSE, clamp and all: an overdue weekly cycle
+  // still gets its 30 days, or late payment would have nowhere to land.
+  expect(facts.overdueClosesDaysAfter).toBe(30);
+});
+
+test("THE CLAMP BINDS ONE EDGE AT A TIME AS THE PERIOD GROWS", () => {
+  // Fortnightly: half of 14 is 7, so the close tightens from 15 to 7 while the
+  // open is already at 7 and does not move. Semi-monthly averages 15.17 days
+  // and lands in the same place — a fixture with both would not distinguish
+  // "clamped" from "left alone", so the weekly case above is the one that does.
+  const fortnightly = autoMatchFacts(
+    bill({ dueRule: { kind: "every-n-weeks", n: 2, weekday: 5, anchorDate: DUE } }),
+    HISTORY,
+    DUE,
+  );
+  if (!fortnightly.enabled) throw new Error("expected matching to be on");
+  expect(fortnightly.opensDaysBefore).toBe(7);
+  expect(fortnightly.closesDaysAfter).toBe(7);
+
+  // Quarterly: half of ~91 days is far past both maxima, so neither moves.
+  const quarterly = autoMatchFacts(
+    bill({ dueRule: { kind: "every-n-months", n: 3, day: 20, anchorMonth: 2 } }),
+    HISTORY,
+    DUE,
+  );
+  if (!quarterly.enabled) throw new Error("expected matching to be on");
+  expect(quarterly.opensDaysBefore).toBe(7);
+  expect(quarterly.closesDaysAfter).toBe(15);
+});
+
+test("THE CLAMPED WINDOW IS THE SAME ONE THE MATCHER USES", () => {
+  // GAP-085's whole point, restated for the window: the summary must not be a
+  // second implementation. `matchWindowFor` is the function the service calls.
+  const weekly: DueRule = { kind: "every-n-weeks", n: 1, weekday: 5, anchorDate: DUE };
+
+  expect(matchWindowFor(weekly, DUE, false)).toEqual({
+    opensDaysBefore: 3,
+    closesDaysAfter: 3,
+  });
+  // Overdue: the OPEN edge is still clamped — rule 26 supersedes the close and
+  // says nothing about the open — and the close becomes rule 26's flat 30.
+  expect(matchWindowFor(weekly, DUE, true)).toEqual({
+    opensDaysBefore: 3,
+    closesDaysAfter: 30,
+  });
 });
 
 test("A FIXED BILL GETS RULE 14'S OTHER BAND, NOT THE ESTIMATED ONE", () => {
@@ -157,11 +228,11 @@ test("A FIXED BILL GETS RULE 14'S OTHER BAND, NOT THE ESTIMATED ONE", () => {
   // is ₱70.50 and wins over the ₱30.00 floor — and the estimated band would be
   // 30%, ₱705.00, ten times as wide. The two are deliberately far apart here:
   // a fixture where both bands agreed would pass whichever one the code picked.
-  const facts = autoMatchFacts(bill({ amountMode: "fixed" }), FIXED);
+  const facts = autoMatchFacts(bill({ amountMode: "fixed" }), FIXED, DUE);
   if (!facts.enabled) throw new Error("expected matching to be on");
 
   expect(facts.toleranceCentavos).toBe(7050);
-  expect(autoMatchFacts(bill(), HISTORY)).toMatchObject({ toleranceCentavos: 70500 });
+  expect(autoMatchFacts(bill(), HISTORY, DUE)).toMatchObject({ toleranceCentavos: 70500 });
 });
 
 test("the ₱30.00 floor is what a small fixed bill gets", () => {
@@ -182,6 +253,7 @@ test("THE LADDER'S POSITION IS PART OF THE SUMMARY", () => {
   const asking = autoMatchFacts(
     bill({ autoMatchRule: { merchantPattern: "MERALCO", dateWindowDays: 7, confirmedStreak: 1 } }),
     HISTORY,
+    DUE,
   );
   if (!asking.enabled) throw new Error("expected matching to be on");
   expect(asking.silent).toBe(false);
@@ -196,6 +268,7 @@ test("THE LADDER'S POSITION IS PART OF THE SUMMARY", () => {
       },
     }),
     HISTORY,
+    DUE,
   );
   if (!earned.enabled) throw new Error("expected matching to be on");
   expect(earned.silent).toBe(true);
@@ -208,7 +281,7 @@ test("rejected keywords are reported, because nothing else surfaces them", () =>
     dateWindowDays: 7,
     excludedKeywords: ["MERALCO KIOSK"],
   };
-  const facts = autoMatchFacts(bill({ autoMatchRule: rule }), HISTORY);
+  const facts = autoMatchFacts(bill({ autoMatchRule: rule }), HISTORY, DUE);
   if (!facts.enabled) throw new Error("expected matching to be on");
 
   expect(facts.excludedKeywords).toEqual(["MERALCO KIOSK"]);

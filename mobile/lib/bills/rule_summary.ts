@@ -16,10 +16,12 @@
 // comparison in the matcher can never disagree about what counts as a match.
 //
 // SAYS WHAT THE CODE DOES, NOT WHAT THE SPEC ASKS FOR. Rule 15 also caps the
-// date window at "half the bill's period", which `findBillPaymentCandidates`
-// does not implement; this summary therefore reports the window the matcher
-// really uses. A screen that recited the spec at a user whose app behaves
-// differently would be worse than the blank rows it replaces.
+// date window at "half the bill's period"; `matchWindowFor` below is that cap,
+// and `findBillPaymentCandidates` matches through the same function, so this
+// summary reports the window the matcher really enforces. A screen that recited
+// the spec at a user whose app behaves differently would be worse than the
+// blank rows it replaces — and now that the matcher clamps, a summary still
+// printing a flat 7/15 would be that same lie in the other direction (GAP-112).
 import {
   ESTIMATED_TOLERANCE_PCT,
   FIXED_TOLERANCE_CENTAVOS,
@@ -29,9 +31,10 @@ import {
   WINDOW_CLOSES_DAYS_AFTER,
   WINDOW_OPENS_DAYS_BEFORE,
 } from "@/constants/bills";
-import type { Bill, Centavos, DueRule } from "@/types/domain";
+import type { Bill, Centavos, DueRule, IsoDate } from "@/types/domain";
 
 import type { AmountEstimate } from "./amount_estimator";
+import { periodDays } from "./due_rules";
 
 const WEEKDAYS = [
   "Sunday",
@@ -156,6 +159,51 @@ export function toleranceFor(bill: Bill, estimate: AmountEstimate): Centavos {
   return (estimate.amount * ESTIMATED_TOLERANCE_PCT) / 100;
 }
 
+/** How far either side of a due date the matcher will look, in whole days. */
+export type MatchWindow = {
+  opensDaysBefore: number;
+  closesDaysAfter: number;
+};
+
+/**
+ * Rule 15's date window for ONE cycle, with its half-period clamp applied.
+ *
+ * Rule 15: "opens 7 days before the (adjusted) due date and closes 15 days
+ * after it, but never wider than half the bill's period (so weekly bills use a
+ * proportionally tighter window)."
+ *
+ * PER EDGE, NOT PER TOTAL WIDTH. Read as a cap on the whole span, "never wider
+ * than half" would make the rule contradict its own first clause: 7 + 15 is 22
+ * days, already wider than half a monthly period, so no bill could ever get the
+ * 7 and 15 the same sentence promises. Read per edge it is consistent, and it
+ * is the reading the parenthetical points at — half the period on each side is
+ * exactly the width at which one cycle's window stops reaching the next cycle's
+ * due date, which is the whole failure a weekly bill had.
+ *
+ * HALF IS FLOORED. A weekly period halves to 3.5, and rule 15's words are
+ * "never WIDER than half" — 4 is wider. Rounding up would also undo the clamp's
+ * one job: two adjacent weekly windows of 4 days each side overlap on two days,
+ * so both cycles would offer the same payment again.
+ *
+ * RULE 26 REPLACES THE CLAMPED CLOSE, IT DOES NOT STACK WITH IT. Rule 26:
+ * "auto-match against an overdue cycle stays active for 30 days past the due
+ * date (SUPERSEDING RULE 15'S CLOSE)". Rule 15's close is the whole close —
+ * "15 days after it" and the cap on it alike — so an overdue cycle takes 30
+ * days flat. Keeping the clamp on top would repeal rule 26 for every bill whose
+ * period is under 60 days, monthly included (half of 30 is 15, so the close
+ * would stay 15 and never reach 30), and a late Meralco payment is the exact
+ * case rule 26 was written for. The OPEN edge has no such supersession and is
+ * clamped in both states.
+ */
+export function matchWindowFor(rule: DueRule, dueDate: IsoDate, overdue: boolean): MatchWindow {
+  const half = Math.floor(periodDays(rule, dueDate) / 2);
+
+  return {
+    opensDaysBefore: Math.min(WINDOW_OPENS_DAYS_BEFORE, half),
+    closesDaysAfter: overdue ? OVERDUE_WINDOW_DAYS : Math.min(WINDOW_CLOSES_DAYS_AFTER, half),
+  };
+}
+
 /**
  * Rule 13's definition of an `autoMatchRule`, as facts rather than as prose:
  * "merchant keyword set + amount tolerance + date window", plus where the
@@ -173,6 +221,7 @@ export type AutoMatchFacts =
       merchantPattern: string;
       /** Rule 14, unrounded — the figure the matcher itself compares against. */
       toleranceCentavos: Centavos;
+      /** Rule 15 AFTER its half-period clamp, so 7 and 15 are ceilings here. */
       opensDaysBefore: number;
       closesDaysAfter: number;
       /** Rule 26 keeps an overdue cycle's window open this long instead. */
@@ -185,20 +234,28 @@ export type AutoMatchFacts =
       confirmationsLeft: number;
     };
 
-export function autoMatchFacts(bill: Bill, estimate: AmountEstimate): AutoMatchFacts {
+export function autoMatchFacts(
+  bill: Bill,
+  estimate: AmountEstimate,
+  /** The cycle on screen: rule 15's clamp is a fact about a due date, not a bill. */
+  dueDate: IsoDate,
+): AutoMatchFacts {
   const rule = bill.autoMatchRule;
   // No rule means the user never opted into matching for this bill — the same
   // test `shouldAutoMatch` makes before anything else.
   if (rule === null) return { enabled: false };
 
   const streak = rule.confirmedStreak ?? 0;
+  // The not-yet-overdue window, because both of its edges are what the sentence
+  // on screen names; rule 26's 30 days is stated separately beside them.
+  const matchWindow = matchWindowFor(bill.dueRule, dueDate, false);
 
   return {
     enabled: true,
     merchantPattern: rule.merchantPattern,
     toleranceCentavos: toleranceFor(bill, estimate),
-    opensDaysBefore: WINDOW_OPENS_DAYS_BEFORE,
-    closesDaysAfter: WINDOW_CLOSES_DAYS_AFTER,
+    opensDaysBefore: matchWindow.opensDaysBefore,
+    closesDaysAfter: matchWindow.closesDaysAfter,
     overdueClosesDaysAfter: OVERDUE_WINDOW_DAYS,
     excludedKeywords: rule.excludedKeywords ?? [],
     silent: streak >= LADDER_THRESHOLD,
