@@ -35,6 +35,8 @@ not been started. Each gap's detail entry in section 9 carries the same marker i
 
 | ID | Status | Commit | Branch | Verification | Date |
 |---|---|---|---|---|---|
+| GAP-103 | DONE | 34418d4 | gap-wave-15 | jest use_set_provider_pause + privacy_screen + modules + bootstrap + provider_picker 8 suites 156 tests PASS at `--maxWorkers=1`, re-run independently by the orchestrator; `npx tsc --noEmit` exit 0. Two reverts each failing exactly their own witnesses. **BUILT TO THE OWNER'S DECISION OF 2026-09-09: extend the native contract**, rather than conflating the provider switches with the master capture switch. A new PLAINTEXT boolean `provider_filter_deny_all` sits beside the sealed filter and is written in the same `commit()`, and `shouldCapture` consults it before the allowlist. The sealed value's name, encoding and meaning are unchanged, so a filter written by the previous version decodes identically and the new key is simply absent there, defaulting to false - which is also what keeps a fresh install on allow-all rather than inverting it. One deliberate asymmetry: when sealing fails the old code wrote nothing, and it still writes nothing EXCEPT when denying all, where the plaintext flag lands alone, so a failure always falls toward LESS capture. **THE KOTLIN IS NOT COMPILED AND NOT RUN.** No Gradle project exists in a worktree; this is the campaign's first deliberate native change and its largest blind spot. Five Kotlin tests are written and unexecuted. A new `module_wiring` test asserts the Kotlin source declares the two-parameter signature the JS side sends, because a one-parameter native side would compile, pass every Kotlin test, pass tsc, and throw only on the device. HUMAN VERIFICATION REQUIRED, in the wave 15 findings block: `npx expo prebuild --platform android` then `./gradlew :notification_listener:testDebugUnitTest`, plus a seven-step device check on the A54 including an upgrade-over-previous-build case. The entry's two cites are both CORRECT, which is worth recording against the pattern, but its third acceptance criterion has the wrong MECHANISM: the all-paused state survives a relaunch because the native flag is persisted, not because the settings row is the only readable record. **THE ORCHESTRATOR'S BRIEF NAMED AN INCOMPLETE VERIFICATION SET for the third time in three waves**, omitting `bootstrap` and `provider_picker`, both of which a bridge-signature change necessarily breaks; following it literally would have shipped `provider_picker` red with four failures | 2026-09-09 |
+| GAP-029 | DONE | 0f8d91d | gap-wave-15 | jest lib/loans + loans_repo + components/loans 10 suites 188 tests PASS; loan_routes + plan_segments 2 suites 26 PASS at `--maxWorkers=1`; ingest/pipeline + utang_strip 73 PASS; `npx tsc --noEmit` exit 0. Three reverts, one per mechanism, each failing its own witnesses. **HALF THIS ENTRY WAS NEVER A DEFECT, AND IT IS THE HALF THE ENTRY AND THE ORCHESTRATOR'S BRIEF BOTH LEAD WITH.** The claim that a flat 5-6 loan reads as settled PHP 1,000 early is FALSE: `loan_form.tsx:544` stores `installment * count` as `principal` for flat loans, so `principal - paid` is already rule 2's "total repayable minus the sum of paymentHistory[]", and an existing test has pinned it at PHP 6,000 since the loan screens first shipped (`c1bd52a`). The entry's own acceptance criterion was satisfied BEFORE any fix. That falsehood had propagated into the entry title, the Contradiction Register's authoritative line, its decision-required line and a section 0 loose-end note that built an argument on it; all three prose sites are now struck and corrected in place. **THE ENTRY'S PRESCRIPTION WOULD HAVE SHIPPED A DEFECT:** summing `schedule[].amountDue` as the basis was implemented first and failed three tests, because nothing constrains a stored schedule to describe the whole loan and a two-row stub against a PHP 50,000 principal collapsed the balance to PHP 8,884.88. `principal` is already the right basis for all three kinds; what was wrong is what a PAYMENT TAKES OFF IT. The real defect is amortized-only and reached two sites the entry never names: `matchBasisFor` placed the auto-match pointer with the same arithmetic, aiming the plus-or-minus 2 percent window at PHP 1,000 instead of PHP 4,000 on the test loan, so a stray PHP 1,000 would have scored "Matches the amount due" while the genuine payment scored no amount signal at all; and `listLoans({includeSettled:false})` carried a SECOND COPY of the formula as a SQL predicate, the only filter feeding the open-loan scan. Adjustments stay on all three kinds, justified from rules 12, 13 and 20 rather than by analogy. User-visible: amortized loans showing Settled with interest outstanding become unsettled, the Plan tab utang total rises, payment buttons return, and due-date reminders resume per rule 15. **UNBLOCKS GAP-033 AND GAP-082**, and GAP-082's answer is now known: `principal` must keep holding `installment * count` for flat loans, so keeping the borrowed figure visible needs a NEW column, never a repurposed `principal` | 2026-09-09 |
 | GAP-104 | DONE | 392cc7a | gap-wave-14 | jest privacy_screen + wipe + data_wipe 3 suites 44 tests PASS (privacy_screen 22 to 25); three separate reverts each failing exactly its own witness. **THIS ENTRY'S EVIDENCE AND SYMPTOM WERE WRONG, AND THE CAMPAIGN FILED IT.** The entry says the screen's single catch shows "Your data was erased" for both failure kinds. `privacy.tsx` does NOT call `lib/security/wipe.ts`: it takes `wipeAndStartOver` from `useLock()`, and `contexts/lock_context.tsx` ALREADY branches on `WipeIncompleteError` and NEVER REJECTS - its own type doc says so and two tests pin it - so the screen's catch is DEAD CODE and that message has never rendered there. Verified independently by the orchestrator at `privacy.tsx:87` and `lock_context.tsx:124`. The entry's harm scenario cannot occur: on a POST-database failure the context flips the status, the tab stack unmounts, and the lock screen prints the accurate notice. THE REAL DEFECT IS THE OPPOSITE FAILURE - SILENCE. On a PRE-database failure the context sets its message and deliberately KEEPS the status, so the screen stays mounted, the promise resolves, the catch never runs, and the user watches the spinner stop and sees NOTHING - which is precisely the "stopped spinner, no message" that `privacy.tsx`'s own comment claims the catch prevents. The fix surfaces the context's `errorMessage` once a wipe has been attempted, reusing the context's existing sentence so the wording has one owner, and ALSO branches the catch as the entry asks, kept deliberately as defensive code. The entry's second acceptance criterion is NOT SATISFIABLE on this screen, because the screen is unmounted before that message could render; it is already met on the lock gate. A pre-existing test was enforcing the falsehood by mocking the context into rejecting, which production never does. **LESSON: the author read the file but never traced the call path. A catch is only a defect if something can reach it.** | 2026-09-09 |
 | GAP-105 | DONE | 8a2b847 | gap-wave-14 | jest lib/db/repos + lib/limits 31 suites 653 tests PASS; safe_to_spend + entitlements + reports + recurring + ingest 24 suites 620 PASS; limit_routes 27 PASS; `npx tsc --noEmit` exit 0. Both new tests fail with the clamp restored. Rule 8 verified verbatim at `03-limits.md:79`, corroborated at :142 ("a VIEWING gate only; limit totals ... always compute from the full ledger") and by `05-monetization.md:87` ("The today number is computed identically in both tiers"), which is what settles the fix at `sumSpend` rather than per caller. **THE ENTRY UNDERCOUNTS ITS OWN BLAST RADIUS, and the campaign filed it.** It frames the harm as understated spend. The larger defect is the CARRYOVER: `resolveState` sums the PREVIOUS period for rule 14, and for a Free annual limit that window sits entirely behind the floor, so last year's spend read as ZERO and a FULL EXTRA BASE of headroom carried forward. Understated spend and an inflated cap, compounding in the same direction. **A STANDING RULE POINTED THE WRONG WAY HERE, and the refinement matters: doc comments outrank an ENTRY, but a SPECIFICATION outranks a doc comment.** `sumSpend`'s own doc said the window "is clamped to the tier's history floor so Free never reports spend it cannot show", arguing FOR the defect; it was a rationalisation, contradicted by rule 8, by :142 and twice by monetization §3.3. A test was ENFORCING the falsehood (asserting `sumSpend` returns the clamped figure on Free) and is now its inverse, which is also what proves the floor is live rather than inert. The entry's cite was already stale by 29 lines after ONE wave (:704, actually :733) because GAP-075 added a function to that file - rule 7 in action. Consequence stated rather than hidden: on Free a limit total can now exceed what its drill-down receipts add up to, since that list keeps the browsing gate; the limit detail header claimed the opposite invariant and is corrected. Flagged for a future entry: `ingest/pipeline.ts` feeds categorization history through an unbounded `listTransactions({})`, which silently narrows to 90 days on Free | 2026-09-09 |
 | GAP-106 | DONE | 98a00e2 | gap-wave-14 | jest safe_to_spend + lib/goals 6 suites 137 tests PASS, widened to lib/income 14 suites 255 PASS; `npx tsc --noEmit` exit 0. Restoring the ternary fails the new test with two entries where one was expected, and BOTH carry the same date, which is itself the proof the fixture is sound under the suite's pinned `TZ=Asia/Manila`. **THREE ERRORS IN THIS ENTRY, WHICH THE CAMPAIGN FILED, AND THE ORCHESTRATOR REPEATED THE FIRST TWO IN THE BRIEF.** (1) The doc path `docs/04-features/09-goals.md` DOES NOT EXIST; goals rules live in `05-goals-savings.md` and `09-` is safe-to-spend. (2) Rule 13 does not carry the claim: its second sentence governs only the PERCENT base and says nothing about how often a fixed rule fires. The rules that settle it are 9 and 10, which denominate the reference pace per payday and put the fixed `contributionRule` amount on that same axis, and 14, which names the trigger a payday trigger - so the fix is argued FROM THE SPEC rather than from the code comment the entry paraphrased. (3) "Why it matters" leans on payday auto-allocation being Plus-only, which contains nothing: `MVP_TIER` is hardcoded to `"plus"`, so EVERY user on the shipped build is exposed, and `goal_form.tsx` defaults a new rule to `fixed`. GAP-070 did NOT settle fixed rules: its "Do not touch fixed-amount rules" is a scope fence, not a finding, so no decision is being reversed. Blast radius checked before halving the entry count: nothing reads `PlannedContribution[]` by length, every consumer sums amounts. Found and NOT fixed, needing its own entry: the payday PROMPT screens each credit against the profile average within 30 percent, so an even 50/50 split fires no prompt at all - the forecast was reserving twice for a transfer the user is asked to make once at most | 2026-09-09 |
@@ -190,9 +192,12 @@ Facts established while fixing entries, that later entries must not rediscover t
     removed from the detail screen, so a fee or balance adjustment still shrinks the card's
     bar. `LoanStatus.paidTotal` now exists and is the correct source; this is a one-line
     follow-up that was outside GAP-064's stated locations.
-  - The schedule table's balance column walks down the flat TOTAL REPAYABLE (matching
+  - ~~The schedule table's balance column walks down the flat TOTAL REPAYABLE (matching
     `buildFlatSchedule`), while `outstandingBalance` walks down PRINCIPAL. On a flat loan the
-    two therefore disagree by the built-in interest. This is pre-existing, sits between
+    two therefore disagree by the built-in interest.~~ **FALSE, WITHDRAWN IN WAVE 15.** They
+    agreed all along: `loan_form.tsx` stores `installment * count` as `principal` for a flat
+    loan, so on that kind `principal` IS the total repayable and both columns walk the same
+    number. This is pre-existing, sits between
     `loan_math.ts` and the repo formula, and is squarely GAP-029's question. GAP-063 and
     GAP-064 were both fixed without reading `outstandingBalance`, so nothing about that
     formula has been prejudged.
@@ -987,6 +992,93 @@ affected entries carry the same text inline.
    wrongly confirmed row. **That missing ledger delete is now a gap in its own right and must be
    filed before GAP-075 can be closed.**
 
+**Wave 15 findings (2026-09-09).**
+
+- **Wave 15 suite result: 270 suites, 4,687 tests, ZERO failures, and `npx tsc --noEmit` exits
+  0.** Fourth consecutive zero-failure sweep, third with a clean typecheck. Chunk sum reconciled
+  against `npx jest --listTests` (270 = 270): `lib test_support` 123 / 2,642 at
+  `--maxWorkers=4`; `hooks contexts services modules constants types components` 113 / 1,550 at
+  `--maxWorkers=4`; `app/` 34 / 495 at `--maxWorkers=1`, in 907 s. **These numbers cover the
+  TypeScript only. Five new Kotlin tests are NOT RUN and the two native source files are
+  uncompiled** -- see the deny-all bullet below. Server NOT RUN: no server file touched.
+
+- **FOUR OWNER DECISIONS WERE TAKEN, unblocking work that had been stalled for six waves.** They
+  are recorded in full in section 0 under "OWNER DECISIONS, 2026-09-09": extend the native
+  contract for GAP-103; archive-only for GAP-022; one user action creates one limit for GAP-023;
+  and rule 10 wins for GAP-075, so a queue action never deletes a committed transaction.
+  **GAP-075's answer carries a debt**: rule 9's remedy says a committed result "remains editable
+  in the ledger indefinitely", and `deleteTransaction` has no caller outside `mergeDuplicate`,
+  so that remedy does not exist. **The missing ledger delete must be filed before GAP-075 can be
+  closed.**
+
+- **THE CAMPAIGN ALSO WITHDREW A CLAIM IT HAD BEEN REPEATING FOR SEVERAL WAVES: GAP-029 WAS
+  NEVER AN OWNER DECISION.** `docs/04-features/06-loans.md:89` gives the outstanding-balance
+  formula outright for all three schedule kinds. Multiple handoffs listed it as blocked on the
+  owner. It was ordinary agent work, and treating it as blocked delayed GAP-033 and GAP-082
+  behind it for no reason.
+
+- **HALF OF GAP-029 WAS NEVER A DEFECT, AND THE FALSEHOOD HAD BECOME LOAD-BEARING.** The entry,
+  its title, the Contradiction Register's authoritative line and its decision-required line all
+  say a flat 5-6 loan (borrow PHP 5,000, repay PHP 6,000) reads as settled PHP 1,000 early. It
+  does not. `loan_form.tsx:544` stores `installment * count` as `principal` for a flat loan, so
+  `principal - paid` is already rule 2's flat clause, and a test has pinned it at PHP 6,000
+  since the loan screens first shipped. **The entry's own acceptance criterion was satisfied
+  before any fix.** Worse, a section 0 loose-end note had built a further argument on top of it,
+  asserting that the schedule table and `outstandingBalance` "disagree by the built-in
+  interest". They never did. All three prose sites are struck and corrected in place. **A false
+  claim in this file does not stay put: later notes cite it, and the citation makes it look
+  corroborated.**
+
+- **GAP-029's PRESCRIPTION WOULD HAVE SHIPPED A DEFECT, and the agent found out by building it.**
+  The checklist says to sum `schedule[].amountDue` as the balance basis. Implemented first, it
+  failed three tests: nothing constrains a stored schedule to describe the whole loan, and a
+  two-row stub against a PHP 50,000 principal collapsed the balance to PHP 8,884.88.
+  `principal` was already the correct basis for every kind; what was wrong was **what a payment
+  takes off it**. The real defect also reached two sites the entry never names -- the auto-match
+  pointer in `matchBasisFor`, which aimed the tolerance window at PHP 1,000 instead of
+  PHP 4,000, and a second copy of the formula living as a SQL predicate in
+  `listLoans({includeSettled:false})`.
+
+- **GAP-103 IS THE FIRST ENTRY IN FIFTEEN WHOSE DIAGNOSIS AND CITES WERE BOTH CORRECT, and that
+  is worth recording as carefully as the failures.** Its two `path:line` cites landed exactly,
+  and every clause of its diagnosis held. Only its third acceptance criterion was flawed, and
+  only in mechanism rather than outcome: the all-paused state survives a relaunch because the
+  NATIVE flag is persisted, not because the settings row is the only readable record. The
+  campaign's standing expectation that an entry is wrong is a prior, not a certainty.
+
+- **THE FIRST DELIBERATE KOTLIN CHANGE OF THE CAMPAIGN SHIPPED UNCOMPILED. A HUMAN MUST VERIFY
+  IT.** No Gradle project exists in a worktree, so five new Kotlin tests are written and
+  unexecuted, and the two main-source files are unchecked by anything but eye. The JS side is
+  fully tested and a new `module_wiring` test asserts the Kotlin source declares the
+  two-parameter signature JS sends -- because a one-parameter native side would compile, pass
+  every Kotlin test, pass `tsc`, and throw only on the device. **What the owner must run:**
+  `npx expo prebuild --platform android`, then
+  `cd android && ./gradlew :notification_listener:testDebugUnitTest` (confirm the project path
+  with `./gradlew projects` first; set `APP_VARIANT`; kill Gradle daemons before any
+  `--clean`; never run prebuild from a shell sitting inside `mobile/android`). Then on the A54:
+  grant access and confirm capture works; pause EVERY provider and confirm logcat has no
+  exception and nothing is captured; force-stop, relaunch, confirm the switches still read
+  paused and still nothing captures; resume ONE provider and confirm only it captures; check
+  `shared_prefs` shows `provider_filter_deny_all` as plaintext while
+  `provider_filter_sealed` is still ciphertext; and install this build over the previous one to
+  confirm an existing allowlist still works.
+
+- **THE ORCHESTRATOR NAMED AN INCOMPLETE VERIFICATION SET FOR THE THIRD WAVE RUNNING.** GAP-103's
+  brief listed three suites and omitted `bootstrap` and `provider_picker`, both of which a
+  bridge-signature change necessarily breaks; following it literally would have shipped
+  `provider_picker` red with four failures. **When a change alters a shared signature, run every
+  caller's suite, not the ones the brief names.** The brief is not the boundary of the blast
+  radius.
+
+- **THE CAMPAIGN'S OWN TOOLING DRIFTED FOR A WHOLE WAVE, and only a disagreement between two
+  counts caught it.** `left.js`, `wave6.js` and `show_gap.js` still pointed at the WAVE 14
+  worktree throughout wave 15, so every "N done, M left" figure quoted during the wave was read
+  from the previous wave's file. The marker and row counts came from grep against the correct
+  file and the done count did not, and the two disagreeing is what exposed it. **Reconcile two
+  independent sources rather than trusting one number**, and repoint the helpers as the first
+  act of a wave, not an afterthought.
+
+
 ## 1. Executive summary
 
 Three findings matter most.
@@ -1433,9 +1525,9 @@ Authority order used unless stated: verified on-device measurement, then current
 ### GAP-029 Loan outstanding balance
 - Position A (docs/04-features/06-loans.md:82-83, :88-89): flat loans owe total repayable minus payments; amortized loans owe the schedule remainder; only free-form loans owe principal minus payments plus adjustments.
 - Position B (`mobile/lib/db/repos/loans_repo.ts:635`): `Math.max(0, loan.principal - paid + adjusted)` for every schedule kind; `loans_service.ts:270` feeds the same figure to next-due.
-- Authoritative: the doc. Its own 5-6 example (borrow ₱5,000, repay ₱6,000) shows the code marking the loan settled ₱1,000 early.
+- Authoritative: the doc. ~~Its own 5-6 example (borrow ₱5,000, repay ₱6,000) shows the code marking the loan settled ₱1,000 early.~~ **THAT CLAIM IS FALSE AND WAS WITHDRAWN IN WAVE 15 (2026-09-09) WHILE FIXING GAP-029.** `loan_form.tsx` stores `installment * count` as `principal` for a flat loan, pinned by a test since the loan screens first shipped, so `principal - paid` is already rule 2's flat clause and the 5-6 example was correct before any fix. **The real defect is the amortized half only**: a payment cleared the whole of its installment rather than the installment's principal portion, so an amortized loan read as settled while interest rows remained.
 - Blast radius: loan detail and card, settled state, payment matching ceiling (`loans_service.ts:381-387`), loan reminders, the Plan tab utang total.
-- Decision required: none on intent; AGENT-ASSISTED because the flat total is currently derived in the form (`loan_form.tsx:157-158`) and not stored, so the agent must decide where to persist it (recommend: sum of `schedule[].amountDue` at read time, no schema change).
+- Decision required: none on intent. ~~AGENT-ASSISTED because the flat total is currently derived in the form (`loan_form.tsx:157-158`) and not stored, so the agent must decide where to persist it (recommend: sum of `schedule[].amountDue` at read time, no schema change).~~ **BOTH HALVES OF THAT ARE WRONG, CORRECTED IN WAVE 15.** The flat total IS stored, as `principal`, at `loan_form.tsx:544`; `:157-158` is the edit-seed, not the save path. And the recommended basis WOULD HAVE SHIPPED A DEFECT: it was implemented first and failed three tests, because nothing constrains a stored schedule to describe the whole loan, and a two-row stub against a ₱50,000 principal collapsed the balance to ₱8,884.88. `principal` is already the correct basis for all three kinds; what was wrong is what a payment takes off it.
 
 ### GAP-030 Locked state
 - Position A (docs/12-encryption-and-app-lock.md:156, :168-170): re-lock after five minutes in the background; while locked the DEK is cleared and the database handle closed.
@@ -3305,6 +3397,8 @@ Revert the config line; docs stay.
 none (AGENT-ASSISTED because the `checkAutomatically` choice and the privacy row wording deserve owner review before the notice is published)
 
 ### GAP-029 [CONTRA] Loan outstanding balance ignores flat total repayable and amortized interest
+
+> **REMEDIATION: DONE** (2026-09-09) - commit 0f8d91d, branch gap-wave-15. Verification: jest lib/loans + loans_repo + components/loans 10 suites 188 tests PASS; loan_routes + plan_segments 2 suites 26 PASS at `--maxWorkers=1`; ingest/pipeline + utang_strip 73 PASS; `npx tsc --noEmit` exit 0. Three reverts, one per mechanism, each failing its own witnesses. **HALF THIS ENTRY WAS NEVER A DEFECT, AND IT IS THE HALF THE ENTRY AND THE ORCHESTRATOR'S BRIEF BOTH LEAD WITH.** The claim that a flat 5-6 loan reads as settled PHP 1,000 early is FALSE: `loan_form.tsx:544` stores `installment * count` as `principal` for flat loans, so `principal - paid` is already rule 2's "total repayable minus the sum of paymentHistory[]", and an existing test has pinned it at PHP 6,000 since the loan screens first shipped (`c1bd52a`). The entry's own acceptance criterion was satisfied BEFORE any fix. That falsehood had propagated into the entry title, the Contradiction Register's authoritative line, its decision-required line and a section 0 loose-end note that built an argument on it; all three prose sites are now struck and corrected in place. **THE ENTRY'S PRESCRIPTION WOULD HAVE SHIPPED A DEFECT:** summing `schedule[].amountDue` as the basis was implemented first and failed three tests, because nothing constrains a stored schedule to describe the whole loan and a two-row stub against a PHP 50,000 principal collapsed the balance to PHP 8,884.88. `principal` is already the right basis for all three kinds; what was wrong is what a PAYMENT TAKES OFF IT. The real defect is amortized-only and reached two sites the entry never names: `matchBasisFor` placed the auto-match pointer with the same arithmetic, aiming the plus-or-minus 2 percent window at PHP 1,000 instead of PHP 4,000 on the test loan, so a stray PHP 1,000 would have scored "Matches the amount due" while the genuine payment scored no amount signal at all; and `listLoans({includeSettled:false})` carried a SECOND COPY of the formula as a SQL predicate, the only filter feeding the open-loan scan. Adjustments stay on all three kinds, justified from rules 12, 13 and 20 rather than by analogy. User-visible: amortized loans showing Settled with interest outstanding become unsettled, the Plan tab utang total rises, payment buttons return, and due-date reminders resume per rule 15. **UNBLOCKS GAP-033 AND GAP-082**, and GAP-082's answer is now known: `principal` must keep holding `installment * count` for flat loans, so keeping the borrowed figure visible needs a NEW column, never a repurposed `principal`
 
 | Field | Value |
 |---|---|
@@ -7873,6 +7967,8 @@ Revert the commit.
 none
 
 ### GAP-103 [SEC] Pausing every provider computes an empty allowlist, and empty means allow-all on the native side
+
+> **REMEDIATION: DONE** (2026-09-09) - commit 34418d4, branch gap-wave-15. Verification: jest use_set_provider_pause + privacy_screen + modules + bootstrap + provider_picker 8 suites 156 tests PASS at `--maxWorkers=1`, re-run independently by the orchestrator; `npx tsc --noEmit` exit 0. Two reverts each failing exactly their own witnesses. **BUILT TO THE OWNER'S DECISION OF 2026-09-09: extend the native contract**, rather than conflating the provider switches with the master capture switch. A new PLAINTEXT boolean `provider_filter_deny_all` sits beside the sealed filter and is written in the same `commit()`, and `shouldCapture` consults it before the allowlist. The sealed value's name, encoding and meaning are unchanged, so a filter written by the previous version decodes identically and the new key is simply absent there, defaulting to false - which is also what keeps a fresh install on allow-all rather than inverting it. One deliberate asymmetry: when sealing fails the old code wrote nothing, and it still writes nothing EXCEPT when denying all, where the plaintext flag lands alone, so a failure always falls toward LESS capture. **THE KOTLIN IS NOT COMPILED AND NOT RUN.** No Gradle project exists in a worktree; this is the campaign's first deliberate native change and its largest blind spot. Five Kotlin tests are written and unexecuted. A new `module_wiring` test asserts the Kotlin source declares the two-parameter signature the JS side sends, because a one-parameter native side would compile, pass every Kotlin test, pass tsc, and throw only on the device. HUMAN VERIFICATION REQUIRED, in the wave 15 findings block: `npx expo prebuild --platform android` then `./gradlew :notification_listener:testDebugUnitTest`, plus a seven-step device check on the A54 including an upgrade-over-previous-build case. The entry's two cites are both CORRECT, which is worth recording against the pattern, but its third acceptance criterion has the wrong MECHANISM: the all-paused state survives a relaunch because the native flag is persisted, not because the settings row is the only readable record. **THE ORCHESTRATOR'S BRIEF NAMED AN INCOMPLETE VERIFICATION SET for the third time in three waves**, omitting `bootstrap` and `provider_picker`, both of which a bridge-signature change necessarily breaks; following it literally would have shipped `provider_picker` red with four failures
 
 | Field | Value |
 |---|---|
