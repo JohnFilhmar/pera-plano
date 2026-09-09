@@ -16,9 +16,21 @@
 // components/transactions/__tests__/ledger_list.test.tsx).
 //
 // Asia/Manila (+08:00, no DST) is the product's own zone — see lib/dates.ts.
-// Node 16+ re-reads `process.env.TZ` on the next Date operation, so assigning
-// it here is enough; there is no cached-offset trap on the versions this repo
-// builds with.
+//
+// THE PIN THAT ACTUALLY WORKS LIVES IN `jest_global_setup.ts`. This assignment
+// is kept only so a reader of a setup file is not left wondering where the zone
+// comes from; by the time this runs the worker's Node has already resolved its
+// zone and cached it, so this line changes nothing.
+//
+// This comment used to claim the opposite: "Node 16+ re-reads `process.env.TZ`
+// on the next Date operation, so assigning it here is enough; there is no
+// cached-offset trap". That is FALSE, and it went unnoticed for five waves
+// because the machine this suite is developed on is already in Asia/Manila, so
+// the no-op agreed with the answer. The first CI run on a Linux runner failed
+// `localDateKey keys by the LOCAL calendar day, not by UTC` on its explicit
+// `toISOString()` guard — the guard working as designed. Reproduce the old
+// behaviour by deleting `globalSetup` from package.json and running
+// `TZ=UTC npx jest ledger_list`.
 process.env.TZ = "Asia/Manila";
 
 // NOTE on package.json's jest.moduleNameMapper entry for "^lucide-react-native$":
