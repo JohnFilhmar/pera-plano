@@ -35,6 +35,9 @@ not been started. Each gap's detail entry in section 9 carries the same marker i
 
 | ID | Status | Commit | Branch | Verification | Date |
 |---|---|---|---|---|---|
+| GAP-104 | DONE | 392cc7a | gap-wave-14 | jest privacy_screen + wipe + data_wipe 3 suites 44 tests PASS (privacy_screen 22 to 25); three separate reverts each failing exactly its own witness. **THIS ENTRY'S EVIDENCE AND SYMPTOM WERE WRONG, AND THE CAMPAIGN FILED IT.** The entry says the screen's single catch shows "Your data was erased" for both failure kinds. `privacy.tsx` does NOT call `lib/security/wipe.ts`: it takes `wipeAndStartOver` from `useLock()`, and `contexts/lock_context.tsx` ALREADY branches on `WipeIncompleteError` and NEVER REJECTS - its own type doc says so and two tests pin it - so the screen's catch is DEAD CODE and that message has never rendered there. Verified independently by the orchestrator at `privacy.tsx:87` and `lock_context.tsx:124`. The entry's harm scenario cannot occur: on a POST-database failure the context flips the status, the tab stack unmounts, and the lock screen prints the accurate notice. THE REAL DEFECT IS THE OPPOSITE FAILURE - SILENCE. On a PRE-database failure the context sets its message and deliberately KEEPS the status, so the screen stays mounted, the promise resolves, the catch never runs, and the user watches the spinner stop and sees NOTHING - which is precisely the "stopped spinner, no message" that `privacy.tsx`'s own comment claims the catch prevents. The fix surfaces the context's `errorMessage` once a wipe has been attempted, reusing the context's existing sentence so the wording has one owner, and ALSO branches the catch as the entry asks, kept deliberately as defensive code. The entry's second acceptance criterion is NOT SATISFIABLE on this screen, because the screen is unmounted before that message could render; it is already met on the lock gate. A pre-existing test was enforcing the falsehood by mocking the context into rejecting, which production never does. **LESSON: the author read the file but never traced the call path. A catch is only a defect if something can reach it.** | 2026-09-09 |
+| GAP-105 | DONE | 8a2b847 | gap-wave-14 | jest lib/db/repos + lib/limits 31 suites 653 tests PASS; safe_to_spend + entitlements + reports + recurring + ingest 24 suites 620 PASS; limit_routes 27 PASS; `npx tsc --noEmit` exit 0. Both new tests fail with the clamp restored. Rule 8 verified verbatim at `03-limits.md:79`, corroborated at :142 ("a VIEWING gate only; limit totals ... always compute from the full ledger") and by `05-monetization.md:87` ("The today number is computed identically in both tiers"), which is what settles the fix at `sumSpend` rather than per caller. **THE ENTRY UNDERCOUNTS ITS OWN BLAST RADIUS, and the campaign filed it.** It frames the harm as understated spend. The larger defect is the CARRYOVER: `resolveState` sums the PREVIOUS period for rule 14, and for a Free annual limit that window sits entirely behind the floor, so last year's spend read as ZERO and a FULL EXTRA BASE of headroom carried forward. Understated spend and an inflated cap, compounding in the same direction. **A STANDING RULE POINTED THE WRONG WAY HERE, and the refinement matters: doc comments outrank an ENTRY, but a SPECIFICATION outranks a doc comment.** `sumSpend`'s own doc said the window "is clamped to the tier's history floor so Free never reports spend it cannot show", arguing FOR the defect; it was a rationalisation, contradicted by rule 8, by :142 and twice by monetization §3.3. A test was ENFORCING the falsehood (asserting `sumSpend` returns the clamped figure on Free) and is now its inverse, which is also what proves the floor is live rather than inert. The entry's cite was already stale by 29 lines after ONE wave (:704, actually :733) because GAP-075 added a function to that file - rule 7 in action. Consequence stated rather than hidden: on Free a limit total can now exceed what its drill-down receipts add up to, since that list keeps the browsing gate; the limit detail header claimed the opposite invariant and is corrected. Flagged for a future entry: `ingest/pipeline.ts` feeds categorization history through an unbounded `listTransactions({})`, which silently narrows to 90 days on Free | 2026-09-09 |
+| GAP-106 | DONE | 98a00e2 | gap-wave-14 | jest safe_to_spend + lib/goals 6 suites 137 tests PASS, widened to lib/income 14 suites 255 PASS; `npx tsc --noEmit` exit 0. Restoring the ternary fails the new test with two entries where one was expected, and BOTH carry the same date, which is itself the proof the fixture is sound under the suite's pinned `TZ=Asia/Manila`. **THREE ERRORS IN THIS ENTRY, WHICH THE CAMPAIGN FILED, AND THE ORCHESTRATOR REPEATED THE FIRST TWO IN THE BRIEF.** (1) The doc path `docs/04-features/09-goals.md` DOES NOT EXIST; goals rules live in `05-goals-savings.md` and `09-` is safe-to-spend. (2) Rule 13 does not carry the claim: its second sentence governs only the PERCENT base and says nothing about how often a fixed rule fires. The rules that settle it are 9 and 10, which denominate the reference pace per payday and put the fixed `contributionRule` amount on that same axis, and 14, which names the trigger a payday trigger - so the fix is argued FROM THE SPEC rather than from the code comment the entry paraphrased. (3) "Why it matters" leans on payday auto-allocation being Plus-only, which contains nothing: `MVP_TIER` is hardcoded to `"plus"`, so EVERY user on the shipped build is exposed, and `goal_form.tsx` defaults a new rule to `fixed`. GAP-070 did NOT settle fixed rules: its "Do not touch fixed-amount rules" is a scope fence, not a finding, so no decision is being reversed. Blast radius checked before halving the entry count: nothing reads `PlannedContribution[]` by length, every consumer sums amounts. Found and NOT fixed, needing its own entry: the payday PROMPT screens each credit against the profile average within 30 percent, so an even 50/50 split fires no prompt at all - the forecast was reserving twice for a transfer the user is asked to make once at most | 2026-09-09 |
 | GAP-053 | DONE | 8f0022c | gap-wave-13 | jest verification of the shipped shard config: `--shard=1/6 --maxWorkers=1` 45 suites 628 tests PASS in 358 s, and `--shard=3/3 --maxWorkers=1` 89 suites 1,697 tests PASS. THE PRE-EXISTING TYPECHECK ERROR IS FIXED HERE, deliberately reaching into GAP-052 because a gate red on its first run is the failure this entry's own ORDER OVERRIDE warns about, and because GAP-052's checklist prescribes exactly this fix. `npx tsc --noEmit` now exits 0 for the FIRST TIME IN THIS CAMPAIGN. THE ORCHESTRATOR'S BRIEF WAS WRONG ABOUT THE INFRASTRUCTURE and the agent checked rather than trusting it: `server-ci.yml` is `ubuntu-latest` throughout and only `deploy.yml`'s deploy job is self-hosted, so each matrix leg is its own VM and shards never contend - which makes sharding the right lever rather than the wrong one. THE ENTRY'S THREE SHARDS IS THE WRONG NUMBER: at the worker count that actually makes the suite green, three shards takes 733 s, over the entry's own ten-minute target; six shards at one worker runs 45 suites in 358 s. ONE WORKER, because the contention is between WORKERS specifically - `review_queue.test.tsx` run ALONE at two workers passes in 86 s while the same file inside a shard at two workers fails, its `waitFor` losing a ten-second budget whenever a second worker competes. Coverage verified rather than assumed: six shards summing to 269, union of 269 distinct paths, all fifteen pairwise intersections empty, union diffed clean against `npx jest --listTests`. Other entry errors: "250 test files" (actual 269); the `server-ci.yml:1-35` range omits the entire secret-scan job; `--ci` is already in `npm test`; and "the two checks" is incompatible with a matrix, which is why an aggregation job was added. UNVERIFIED AND UNVERIFIABLE FROM A WORKTREE: no GitHub Actions run has occurred, so the acceptance criterion stands open; `npm ci` on Linux was never executed; hosted-runner wall time is unproven; shards 2 and 4-6 were never run locally. Also flagged: a mobile-only PR gets no secret scan today, since `server-ci.yml`'s gitleaks job sits behind a `server/**` paths filter | 2026-09-09 |
 | GAP-075 | PARTIAL | da5e58b | gap-wave-13 | jest review_queue + resolve_actions 4 suites 135 PASS, lib/review + components/review 5 suites 185 PASS, blast radius 38 suites 1,031 PASS, all at `--maxWorkers=1`. Four separate revert experiments, each failing exactly its own witnesses. **DELIBERATELY PARTIAL, AND LEFT IN THE QUEUE.** Shipped: undo for the four triages whose entire write was `resolved_at` - the low-confidence and unknown-provider rejects, the possible-duplicate "same transaction" which discards a HELD never-committed twin, and the loan-match decline. This is the "cheap first slice" the entry itself names. NOT SHIPPED: undo for confirm, correct, one-sided transfer, merge, loan match and wallet kind. THE ENTRY'S PROPOSED FIX CONTRADICTS THE DOCUMENT IT CITES. Rule 9 promises the affordance; rule 10, twelve words later, reads "committed transactions are never deleted by any queue action", and the entry says undo should delete the committed transaction, as does its acceptance criterion. Rule 9's own second clause gives the intended remedy: committed results "remain editable in the ledger indefinitely afterward". Verified by the orchestrator at `docs/04-features/08-review-queue.md:118-119`. WORSE, IMPLEMENTING IT WOULD HAVE DELETED ROWS THIS TRIAGE NEVER WROTE: `correctItem` resolves onto a PRE-EXISTING transaction when one already holds the movement (the GAP-012 branch at `resolve_actions.ts:524`) and returns that row's id, so "delete the transaction the confirm returned" destroys the other channel's row and its wallet balance. The entry does not mention the branch. Also found: a matched or transfer-linked row cannot be deleted at all, since `loan_payments`/`bill_payments`/`transfer_links` hold NOT NULL UNIQUE foreign keys with no ON DELETE and `PRAGMA foreign_keys = ON`. Two guards keep the scope honest: the screen scopes the offer to the item just triaged, and `undoResolution` refuses any card whose capture already has a transaction - asked of the LEDGER rather than the action kind, so it holds if undo is ever wired elsewhere. Android freezes JS timers on a backgrounded app, so the ten-second timeout may never fire; a 60-second data-layer bound, looser than the affordance so a slow write cannot turn an honest tap into a refusal, refuses a stale tap and SAYS SO. All four location cites stale, including rule 9 at :99 when it is at :118. **REMAINS OPEN pending an owner ruling on rule 10, and note that rule 9's "editable in the ledger" remedy is only half-real: `deleteTransaction` has no caller outside `mergeDuplicate`** | 2026-09-09 |
 | GAP-085 | DONE | a117abd | gap-wave-13 | jest bills_screen 22 tests PASS (baseline 16) at `--maxWorkers=1`; lib/bills + components/bills + safe_to_spend + bills_repo 13 suites 274 PASS; blast radius 7 suites 180 PASS. Three revert experiments, each failing its own witnesses. THE ENTRY'S CENTRAL EVIDENCE CLAIM IS FALSE: "Skip removes the cycle from the estimator ... skips and corrupts the estimate". Migration 006's CHECK forbids a `bill_payment_id` on any state but `paid`, and `amount_estimator.ts` takes PAYMENTS, so a skipped cycle feeds it nothing - which that file's own header states in as many words, at the very lines the entry cites. THE ORCHESTRATOR'S BRIEF COMPOUNDED THIS by demanding a test proving skip and paid-externally differ in the estimator; such a test could only have been false, and the agent refused it and pinned the truth instead ("they differ in the RECORD, not in the estimate"). The real defect is the entry's OTHER horn: an open cycle keeps depressing Safe-to-Spend. `resolved_external` was far more wired than "already exists" suggests - schema CHECKs, `resolveCycleExternally`, the "Settled elsewhere" chip, the Plan panel section, the Safe-to-Spend exclusion, the reminder exclusions and the screen's own unresolved predicate were ALL in place, with no production caller. THE ENTRY UNDERCOUNTS THE MISSING ROWS: the doc's States table lists five content items and four actions, and rule 3's unadjusted date was also absent; "mark paid" is three options in the doc, of which only "Paid outside my wallets" is new, since "record a cash payment" would write the synthetic transaction the entry forbids. The checklist's "invalidating bills and Safe-to-Spend" contradicts GAP-058, which deliberately put the Safe-to-Spend cascade in `query_client.ts` rather than naming the key per hook. The acceptance criterion is a zeugma and is satisfiable by doing nothing on one reading; the chosen reading is pinned by a test that fails under the other. A DEFECT THIS CHANGE WOULD OTHERWISE HAVE INTRODUCED, found and fixed by the agent itself: the screen's no-`dueDate` fallback picked the soonest cycle that was neither paid nor skipped, so a notification tap would have opened the newly-settled cycle with every action spent. Also flagged for its own entry: `findBillPaymentCandidates` does not implement rule 15's "never wider than half the bill's period" clamp, so the summary reports the real window rather than the spec's | 2026-09-09 |
@@ -886,6 +889,76 @@ The other three are ordinary agent work. GAP-104 is a one-line branch on a class
   `server-ci.yml`'s gitleaks job sits behind a `server/**` paths filter. And
   `mutation_error_toast.tsx` renders a warning triangle for every tone, so the neutral undo
   notice carries an alarm glyph.
+
+
+**Wave 14 findings (2026-09-09).**
+
+- **Wave 14 suite result: 269 suites, 4,667 tests, ZERO failures, and `npx tsc --noEmit` exits
+  0.** Third consecutive zero-failure sweep, second with a clean typecheck. Chunk sum reconciled
+  against `npx jest --listTests` (269 = 269): `lib test_support` 123 / 2,630 at
+  `--maxWorkers=4`; `hooks contexts services modules constants types components` 112 / 1,543 at
+  `--maxWorkers=4`; `app/` 34 / 494 at `--maxWorkers=1`, in 788 s. Serial `app/` has now produced
+  no flakes in two consecutive waves, which is the strongest evidence yet for the wave 13
+  correction: the lever is serialism, not headroom. Server NOT RUN: no server file touched.
+
+- **EVERY ENTRY THIS WAVE WAS WRONG, AND THIS CAMPAIGN WROTE ALL THREE OF THEM.** GAP-104,
+  GAP-105 and GAP-106 were filed by us one wave earlier, each read in the code before being
+  written up, each carrying C1. All three were wrong anyway, in three different ways, and the
+  count is now twenty-six across fifteen consecutive entries. **The file's unreliability was
+  never a fact about the original auditor.** It is what happens when a defect is written up from
+  a static read. We have spent five waves proving the audit's prescriptions cannot be trusted;
+  wave 14 proves ours cannot either, and nothing about being the fixer earns an exemption.
+
+- **A NEW RULE, AND THE SHARPEST OF THE CAMPAIGN: TRACE THE CALL PATH, DO NOT JUST READ THE
+  FILE. A `catch` is only a defect if something can reach it.** GAP-104 claimed
+  `privacy.tsx`'s single catch showed "Your data was erased" for both wipe failures. That catch
+  is DEAD CODE: the screen takes `wipeAndStartOver` from `useLock()`, and
+  `contexts/lock_context.tsx` already branches on `WipeIncompleteError` and **never rejects**,
+  which its own type doc states and two tests pin. The message has never rendered there, and the
+  entry's harm scenario cannot occur, because a post-database failure unmounts the tab stack and
+  the lock screen prints the truth. **The real defect was the exact opposite: silence.** A
+  pre-database failure leaves the screen mounted with the promise resolved, so the user watches
+  the spinner stop and sees nothing at all -- the "stopped spinner, no message" that file's own
+  comment claims the catch prevents. The author read `privacy.tsx` and `wipe.ts` and never
+  asked who actually calls whom.
+
+- **RULE 4 REFINED, BECAUSE IT POINTED THE WRONG WAY: DOC COMMENTS OUTRANK AN ENTRY, BUT A
+  SPECIFICATION OUTRANKS A DOC COMMENT.** `sumSpend`'s own doc said its window "is clamped to
+  the tier's history floor so Free never reports spend it cannot show" -- an argument FOR the
+  very clamp limits rule 8 forbids. It was a rationalisation of the defect, contradicted by rule
+  8, by `03-limits.md:142` and twice by monetization §3.3. Wave 11 established that the target
+  file's comments outrank the entry; wave 14 establishes the ceiling on that.
+
+- **AN ENTRY CAN UNDERCOUNT ITS OWN BLAST RADIUS, and GAP-105's larger half went unmentioned.**
+  It framed the harm as understated spend. But `resolveState` sums the PREVIOUS period for rule
+  14's carryover, and for a Free annual limit that window sits entirely behind the 90-day floor,
+  so last year's spend read as ZERO and a full extra base of headroom carried forward.
+  Understated spend and an inflated cap, compounding in the same direction. **When an entry
+  names one caller of a shared function, enumerate the rest before believing its severity.**
+
+- **A CITE CAN NAME A FILE THAT DOES NOT EXIST, AND A RULE THAT DOES NOT CARRY THE CLAIM.**
+  GAP-106 cited `docs/04-features/09-goals.md` rule 13. That file does not exist -- goals rules
+  live in `05-goals-savings.md`, and `09-` is safe-to-spend -- and rule 13's second sentence
+  governs only the percent base, saying nothing about how often a fixed rule fires. The spec DOES
+  settle it, at rules 9, 10 and 14, which denominate the reference pace per payday and name the
+  trigger a payday trigger. **The orchestrator repeated both errors verbatim in the agent
+  brief**, which is the wave's second instance of briefs inheriting an entry's mistakes rather
+  than catching them.
+
+- **"PLUS-ONLY" CONTAINS NOTHING WHILE `MVP_TIER` IS HARDCODED.** GAP-106's "Why it matters"
+  leaned on payday auto-allocation being a Plus capability. `lib/entitlements.ts` sets
+  `const MVP_TIER: Tier = "plus"`, so every user on the shipped build passes every Plus gate,
+  and `goal_form.tsx` defaults a new contribution rule to `fixed`. **Any entry that softens its
+  severity with "Plus-only" is wrong today by construction.** GAP-105 is the mirror image: it is
+  latent only because the same constant makes the Free floor unreachable.
+
+- **Two follow-ups found and deliberately not fixed, neither in the 107.** `ingest/pipeline.ts`
+  feeds categorization history through an unbounded `listTransactions({})`, which silently
+  narrows to 90 days on Free -- a floor-on-computation of the same family as GAP-105 but outside
+  limits rule 8's reach. And the payday PROMPT screens each credit against the profile average
+  within `PAYDAY_AMOUNT_TOLERANCE` of 30 percent, so an even 50/50 split fires no prompt at all:
+  before GAP-106 the forecast was reserving twice for a transfer the user is asked to make once
+  at most, and possibly never.
 
 
 ## 1. Executive summary
@@ -7838,6 +7911,8 @@ Option (a) or option (b)? If (b), the Kotlin change cannot be verified in a work
 
 ### GAP-104 [CODE] The wipe failure message says the data was erased even when the database delete is what failed
 
+> **REMEDIATION: DONE** (2026-09-09) - commit 392cc7a, branch gap-wave-14. Verification: jest privacy_screen + wipe + data_wipe 3 suites 44 tests PASS (privacy_screen 22 to 25); three separate reverts each failing exactly its own witness. **THIS ENTRY'S EVIDENCE AND SYMPTOM WERE WRONG, AND THE CAMPAIGN FILED IT.** The entry says the screen's single catch shows "Your data was erased" for both failure kinds. `privacy.tsx` does NOT call `lib/security/wipe.ts`: it takes `wipeAndStartOver` from `useLock()`, and `contexts/lock_context.tsx` ALREADY branches on `WipeIncompleteError` and NEVER REJECTS - its own type doc says so and two tests pin it - so the screen's catch is DEAD CODE and that message has never rendered there. Verified independently by the orchestrator at `privacy.tsx:87` and `lock_context.tsx:124`. The entry's harm scenario cannot occur: on a POST-database failure the context flips the status, the tab stack unmounts, and the lock screen prints the accurate notice. THE REAL DEFECT IS THE OPPOSITE FAILURE - SILENCE. On a PRE-database failure the context sets its message and deliberately KEEPS the status, so the screen stays mounted, the promise resolves, the catch never runs, and the user watches the spinner stop and sees NOTHING - which is precisely the "stopped spinner, no message" that `privacy.tsx`'s own comment claims the catch prevents. The fix surfaces the context's `errorMessage` once a wipe has been attempted, reusing the context's existing sentence so the wording has one owner, and ALSO branches the catch as the entry asks, kept deliberately as defensive code. The entry's second acceptance criterion is NOT SATISFIABLE on this screen, because the screen is unmounted before that message could render; it is already met on the lock gate. A pre-existing test was enforcing the falsehood by mocking the context into rejecting, which production never does. **LESSON: the author read the file but never traced the call path. A catch is only a defect if something can reach it.**
+
 | Field | Value |
 |---|---|
 | Severity | S3 Moderate |
@@ -7863,6 +7938,25 @@ When `wipeDatabase()` itself fails, nothing was erased, and the user is told the
 
 **Why it matters**
 It is the opposite of the truth, in the more alarming direction, on a privacy-critical screen. A user told their ledger is gone may reinstall or abandon the app while the data is still on the device.
+
+> **THIS ENTRY'S EVIDENCE AND SYMPTOM ARE WRONG. CORRECTED IN WAVE 14 (2026-09-09) WHILE FIXING IT.**
+> The defect is real but inverted, and the entry was filed by this campaign, so the error is ours.
+> `privacy.tsx` does NOT call `lib/security/wipe.ts`. It takes `wipeAndStartOver` from
+> `useLock()`, and `contexts/lock_context.tsx` ALREADY branches on `WipeIncompleteError` and
+> **never rejects** — its own type doc says so ("NEVER REJECTS ... Every outcome lands in
+> `status`/`errorMessage` instead") and two tests pin it. So the screen's `catch` is dead code
+> and the message this entry objects to has never rendered there.
+>
+> What actually happens: on a POST-database failure the context flips the status, the tab stack
+> unmounts and the lock screen prints the accurate notice, so the entry's harm scenario cannot
+> occur. On a PRE-database failure the context sets its message and deliberately KEEPS the
+> status, so the screen stays mounted, the promise resolves, the catch never runs, and the user
+> watches the spinner stop and sees **nothing at all** — which is the "stopped spinner, no
+> message" that `privacy.tsx`'s own comment claims the catch prevents.
+>
+> **The lesson: the entry's author read the file but never traced the call path.** A `catch` is
+> only a defect if something can reach it. This is the third entry filed by this campaign to be
+> found wrong, alongside GAP-105's stale cite and undercounted blast radius.
 
 **Intended behavior**
 Two messages. A pre-database failure says nothing was erased and the user may retry. A post-database failure keeps the current wording, which is accurate for that case.
@@ -7895,6 +7989,8 @@ Revert.
 none
 
 ### GAP-105 [CONTRA] Limit totals are clamped to the Free tier's 90-day history floor, against limits rule 8
+
+> **REMEDIATION: DONE** (2026-09-09) - commit 8a2b847, branch gap-wave-14. Verification: jest lib/db/repos + lib/limits 31 suites 653 tests PASS; safe_to_spend + entitlements + reports + recurring + ingest 24 suites 620 PASS; limit_routes 27 PASS; `npx tsc --noEmit` exit 0. Both new tests fail with the clamp restored. Rule 8 verified verbatim at `03-limits.md:79`, corroborated at :142 ("a VIEWING gate only; limit totals ... always compute from the full ledger") and by `05-monetization.md:87` ("The today number is computed identically in both tiers"), which is what settles the fix at `sumSpend` rather than per caller. **THE ENTRY UNDERCOUNTS ITS OWN BLAST RADIUS, and the campaign filed it.** It frames the harm as understated spend. The larger defect is the CARRYOVER: `resolveState` sums the PREVIOUS period for rule 14, and for a Free annual limit that window sits entirely behind the floor, so last year's spend read as ZERO and a FULL EXTRA BASE of headroom carried forward. Understated spend and an inflated cap, compounding in the same direction. **A STANDING RULE POINTED THE WRONG WAY HERE, and the refinement matters: doc comments outrank an ENTRY, but a SPECIFICATION outranks a doc comment.** `sumSpend`'s own doc said the window "is clamped to the tier's history floor so Free never reports spend it cannot show", arguing FOR the defect; it was a rationalisation, contradicted by rule 8, by :142 and twice by monetization §3.3. A test was ENFORCING the falsehood (asserting `sumSpend` returns the clamped figure on Free) and is now its inverse, which is also what proves the floor is live rather than inert. The entry's cite was already stale by 29 lines after ONE wave (:704, actually :733) because GAP-075 added a function to that file - rule 7 in action. Consequence stated rather than hidden: on Free a limit total can now exceed what its drill-down receipts add up to, since that list keeps the browsing gate; the limit detail header claimed the opposite invariant and is corrected. Flagged for a future entry: `ingest/pipeline.ts` feeds categorization history through an unbounded `listTransactions({})`, which silently narrows to 90 days on Free
 
 | Field | Value |
 |---|---|
@@ -7956,6 +8052,8 @@ none
 
 ### GAP-106 [CODE] A fixed Goal contribution reserves once per credit, so a split payday reserves twice
 
+> **REMEDIATION: DONE** (2026-09-09) - commit 98a00e2, branch gap-wave-14. Verification: jest safe_to_spend + lib/goals 6 suites 137 tests PASS, widened to lib/income 14 suites 255 PASS; `npx tsc --noEmit` exit 0. Restoring the ternary fails the new test with two entries where one was expected, and BOTH carry the same date, which is itself the proof the fixture is sound under the suite's pinned `TZ=Asia/Manila`. **THREE ERRORS IN THIS ENTRY, WHICH THE CAMPAIGN FILED, AND THE ORCHESTRATOR REPEATED THE FIRST TWO IN THE BRIEF.** (1) The doc path `docs/04-features/09-goals.md` DOES NOT EXIST; goals rules live in `05-goals-savings.md` and `09-` is safe-to-spend. (2) Rule 13 does not carry the claim: its second sentence governs only the PERCENT base and says nothing about how often a fixed rule fires. The rules that settle it are 9 and 10, which denominate the reference pace per payday and put the fixed `contributionRule` amount on that same axis, and 14, which names the trigger a payday trigger - so the fix is argued FROM THE SPEC rather than from the code comment the entry paraphrased. (3) "Why it matters" leans on payday auto-allocation being Plus-only, which contains nothing: `MVP_TIER` is hardcoded to `"plus"`, so EVERY user on the shipped build is exposed, and `goal_form.tsx` defaults a new rule to `fixed`. GAP-070 did NOT settle fixed rules: its "Do not touch fixed-amount rules" is a scope fence, not a finding, so no decision is being reversed. Blast radius checked before halving the entry count: nothing reads `PlannedContribution[]` by length, every consumer sums amounts. Found and NOT fixed, needing its own entry: the payday PROMPT screens each credit against the profile average within 30 percent, so an even 50/50 split fires no prompt at all - the forecast was reserving twice for a transfer the user is asked to make once at most
+
 | Field | Value |
 |---|---|
 | Severity | S3 Moderate |
@@ -7972,7 +8070,7 @@ none
 **Location**
 - `mobile/lib/safe_to_spend_service.ts:247` (`const triggers = goal.contributionRule?.kind === "percent" ? paydays : credits;`)
 - the `paidOnDate` collapse a few lines above it
-- `docs/04-features/09-goals.md` rule 13
+- `docs/04-features/05-goals-savings.md` rules 9, 10 and 14 (CORRECTED IN WAVE 14: this entry originally cited `docs/04-features/09-goals.md` rule 13. That FILE DOES NOT EXIST -- `09-` is safe-to-spend -- and rule 13's second sentence governs only the percent base, saying nothing about how often a FIXED rule fires. The rules that actually settle it are 9 and 10, which denominate the reference pace per payday and put the fixed `contributionRule` amount on that same axis, and 14, which calls the trigger a payday trigger.)
 
 **Evidence**
 `forecastContributions` builds `credits` (one entry per pay event) and `paydays` (the same pay collapsed to one entry per date). The collapse carries an explicit reason: "A salary split into two credits on one day is one payday with one combined base -- 10% of the pair, not 10% twice." Percent rules use `paydays`; fixed rules are handed the uncollapsed `credits`. Pre-existing, and GAP-070 deliberately left fixed-rule behaviour byte-identical, so this is not a regression from that work. Verified 2026-09-08.
@@ -7982,6 +8080,10 @@ The reasoning that produced `paydays` applies to fixed rules too, and is not app
 
 **Why it matters**
 An employer who splits one payday into two deposits makes a PHP 2,000 fixed rule reserve PHP 4,000, so Safe-to-Spend drops by double for money the user never agreed to set aside. Split deposits are ordinary in the target market.
+
+> **EXPOSURE CORRECTED IN WAVE 14.** This entry's framing leans on payday auto-allocation being a Plus capability, which contains nothing: `lib/entitlements.ts` hardcodes `MVP_TIER = "plus"`, so EVERY user on the shipped build passes the gate, and `components/goals/goal_form.tsx` defaults a new rule to `fixed`. This was live for everyone with a fixed rule, not for a paying minority.
+>
+> Also found while fixing it, and NOT fixed because it is a different function needing its own entry: the payday PROMPT screens each credit against the profile average within `PAYDAY_AMOUNT_TOLERANCE` of 30 percent, so for an even 50/50 split neither half fires a prompt at all. The forecast was reserving twice for a transfer the user is asked to make once at most, and possibly never.
 
 **Intended behavior**
 A fixed rule reserves its amount once per payday, on the date the pay landed, whatever number of credits made it up.
