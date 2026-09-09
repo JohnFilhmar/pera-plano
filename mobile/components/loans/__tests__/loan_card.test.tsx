@@ -186,3 +186,70 @@ test("the due-date caption and the overdue banner carry an explicit type-scale c
   const bannerBody = screen.getByText(/is waiting on this one\.$/);
   expect(String(bannerBody.props.className)).toContain("text-secondary");
 });
+
+// ---------------------------------------------------------------------------
+// GAP-115: the bar reports what has been PAID, not what is LEFT.
+// ---------------------------------------------------------------------------
+/** The bar's width, as the integer percent the component painted. */
+function percentPaidOf(): number {
+  const fill = screen.getByTestId("loan-progress-fill");
+  return Number(String((fill.props.style as { width: string }).width).replace("%", ""));
+}
+
+test("A BALANCE ADJUSTMENT DOES NOT MOVE THE BAR BACKWARDS", () => {
+  // Rule 20's late fee raises `outstanding` without unpaying anything. The bar
+  // used to be `principal - outstanding`, so the fee slid it backwards and the
+  // app read as having lost the user's payments.
+  const paidTwoThousand = { paidTotal: 200000, paidCount: 2 };
+
+  const before = render(
+    <LoanCard
+      status={statusOf({ ...paidTwoThousand, outstanding: 400000 })}
+      now={NOW}
+      testID="loan"
+    />,
+  );
+  expect(percentPaidOf()).toBe(33);
+  before.unmount();
+
+  // The same payments, with a ₱1,000.00 fee added to the balance.
+  render(
+    <LoanCard
+      status={statusOf({ ...paidTwoThousand, outstanding: 500000 })}
+      now={NOW}
+      testID="loan"
+    />,
+  );
+  expect(percentPaidOf()).toBe(33);
+});
+
+test("AN AMORTIZED LOAN REACHES 100% ONLY AT THE FINAL INSTALLMENT", () => {
+  // Each installment is principal plus interest while the basis is principal
+  // alone, so a bar denominated in `paidTotal` would read 55% here and cross
+  // 100% before the last payment is made. The principal-denominated figure
+  // reads 50%, which is what this pins.
+  const schedule: Installment[] = [
+    { dueDate: "2026-09-18", amountDue: 55000, principalPortion: 50000, interestPortion: 5000 },
+    { dueDate: "2026-10-18", amountDue: 55000, principalPortion: 50000, interestPortion: 5000 },
+  ];
+  const loan = { principal: 100000, schedule };
+
+  const half = render(
+    <LoanCard
+      status={statusOf({ loan, paidTotal: 55000, paidCount: 1, outstanding: 50000 })}
+      now={NOW}
+      testID="loan"
+    />,
+  );
+  expect(percentPaidOf()).toBe(50);
+  half.unmount();
+
+  render(
+    <LoanCard
+      status={statusOf({ loan, paidTotal: 110000, paidCount: 2, outstanding: 1 })}
+      now={NOW}
+      testID="loan"
+    />,
+  );
+  expect(percentPaidOf()).toBe(100);
+});
