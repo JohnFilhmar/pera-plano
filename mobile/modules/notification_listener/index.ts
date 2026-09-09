@@ -165,7 +165,8 @@ type BridgeErrorCode =
   | "DeviceKeyInvalidated"
   | "DeviceKeyMissing"
   | "NotAuthenticated"
-  | "CaptureBufferReadFailed";
+  | "CaptureBufferReadFailed"
+  | "ProviderFilterNotStored";
 
 /**
  * The device KEK (or the capture keypair's private key, for
@@ -225,11 +226,37 @@ export class CaptureBufferReadFailedError extends Error {
 }
 
 /**
+ * The capture scope the caller asked for is NOT the one the device is
+ * applying: `setProviderFilter` could not store it (GAP-114). The listener
+ * keeps whatever filter it already had, so the provider the user just paused
+ * is still being captured -- and the reverse for a resume.
+ *
+ * NOT AN AUTHENTICATION FAILURE, unlike the four above, and callers must not
+ * treat it as one. The provider allowlist is sealed under the listener's
+ * UNAUTHENTICATED prefs key, so no biometric prompt and no recovery phrase can
+ * make the same call succeed; only a relaunch can, because that is where the
+ * key is created (`ensurePrefsKeyOnLaunch`, and the listener service's own
+ * `onListenerConnected`).
+ *
+ * A CALLER MUST NOT RECORD THE CHANGE. `paused_provider_packages` is the only
+ * readable record of which providers are paused, so writing it after this
+ * rejection is what produces a switch list that reports a pause the listener
+ * never applied.
+ */
+export class ProviderFilterNotStoredError extends Error {
+  readonly code: BridgeErrorCode = "ProviderFilterNotStored";
+  constructor(message = "the provider filter could not be stored on this device") {
+    super(message);
+    this.name = "ProviderFilterNotStoredError";
+  }
+}
+
+/**
  * Maps a native rejection's `code` to its distinguishable JS error type. An
  * unrecognized `code` (or no `code` at all) rethrows the original error
- * completely unchanged -- this function only ever narrows the four known
+ * completely unchanged -- this function only ever narrows the five known
  * codes, never substitutes a default for anything else, so a genuinely
- * novel native failure is never miscategorized as one of the four.
+ * novel native failure is never miscategorized as one of the five.
  */
 function rethrowTyped(error: unknown): never {
   const code = (error as { code?: unknown } | null | undefined)?.code;
@@ -237,6 +264,7 @@ function rethrowTyped(error: unknown): never {
   if (code === "DeviceKeyMissing") throw new DeviceKeyMissingError();
   if (code === "NotAuthenticated") throw new NotAuthenticatedError();
   if (code === "CaptureBufferReadFailed") throw new CaptureBufferReadFailedError();
+  if (code === "ProviderFilterNotStored") throw new ProviderFilterNotStoredError();
   throw error;
 }
 
@@ -405,8 +433,14 @@ export function isKeyguardLocked(): Promise<boolean> {
 // Everything above is the encryption plan's half of contract §4. Below is
 // the half the listener itself needs: the notification-access grant, the two
 // user-facing switches, health, and live capture events. None of these
-// touches a Keystore key, so none requires authentication and none can
-// produce a rejection from the taxonomy above.
+// requires AUTHENTICATION, so none can produce a rejection from the
+// four-code taxonomy above.
+//
+// `setProviderFilter` is the one that can still reject (GAP-114): the
+// allowlist it writes is sealed under the listener's own unauthenticated
+// prefs key, and on a device where that key is unavailable the write does not
+// happen. `ProviderFilterNotStoredError` is deliberately kept out of the
+// taxonomy above for that reason -- it is not fixed by authenticating.
 // ---------------------------------------------------------------------
 
 /**
@@ -472,9 +506,18 @@ export function setCaptureEnabled(enabled: boolean): Promise<void> {
  * user sets separately; neither call moves the other. Send `[]` alongside
  * `true` — the flag outranks the filter below the bridge, so the array is only
  * what a later resume falls back to.
+ *
+ * REJECTS WITH `ProviderFilterNotStoredError` WHEN THE SCOPE DID NOT LAND
+ * (GAP-114). The allowlist is sealed on the far side, and a device with no
+ * usable prefs key writes nothing rather than falling back to allow-all — this
+ * used to resolve regardless, so a caller recorded a pause the listener never
+ * applied. **Nothing may write its own record of the change until this
+ * resolves**, since there is no getter across this bridge to notice the
+ * disagreement later. See that error's doc for why re-authenticating is the
+ * wrong response.
  */
 export function setProviderFilter(packageNames: string[], denyAll: boolean): Promise<void> {
-  return NativeNotificationListener.setProviderFilter(packageNames, denyAll);
+  return NativeNotificationListener.setProviderFilter(packageNames, denyAll).catch(rethrowTyped);
 }
 
 /**

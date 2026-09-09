@@ -69,6 +69,7 @@ import {
   DeviceKeyInvalidatedError,
   DeviceKeyMissingError,
   NotAuthenticatedError,
+  ProviderFilterNotStoredError,
   addCaptureListener,
   clearCaptureBuffer,
   drainPendingCaptures,
@@ -333,7 +334,7 @@ describe("drainPendingCaptures", () => {
     expect(thrown).toBeInstanceOf(CaptureBufferReadFailedError);
   });
 
-  it("the four rejection types map to four distinct, non-overlapping error classes -- collapsing any two is the bug this task must avoid", async () => {
+  it("the five rejection types map to five distinct, non-overlapping error classes -- collapsing any two is the bug this task must avoid", async () => {
     // Exercised via drainPendingCaptures purely as a vehicle: rethrowTyped
     // is the SAME shared mapping function behind wrapWithDeviceKek,
     // unwrapWithDeviceKek, and drainPendingCaptures, so testing it through
@@ -357,6 +358,12 @@ describe("drainPendingCaptures", () => {
       ["DeviceKeyMissing", DeviceKeyMissingError],
       ["NotAuthenticated", NotAuthenticatedError],
       ["CaptureBufferReadFailed", CaptureBufferReadFailedError],
+      // GAP-114, and the pairwise check below is why it belongs in this list
+      // rather than beside it: three of the four above are answered by
+      // AUTHENTICATING, and this one never can be. A collapse into
+      // `NotAuthenticated` in particular would put a biometric prompt in front
+      // of a user whose provider switch failed for a reason no prompt reaches.
+      ["ProviderFilterNotStored", ProviderFilterNotStoredError],
     ];
 
     const rejections = await Promise.all(classesByCode.map(([code]) => rejectionFor(code)));
@@ -377,7 +384,7 @@ describe("drainPendingCaptures", () => {
     });
   });
 
-  it("an unrecognized native rejection code is rethrown unchanged, not miscategorized as one of the four known types", async () => {
+  it("an unrecognized native rejection code is rethrown unchanged, not miscategorized as one of the five known types", async () => {
     mockNativeModule.drainPendingCaptures.mockRejectedValue(new Error("boom, no code at all"));
 
     let thrown: unknown;
@@ -391,6 +398,7 @@ describe("drainPendingCaptures", () => {
     expect(thrown).not.toBeInstanceOf(DeviceKeyMissingError);
     expect(thrown).not.toBeInstanceOf(NotAuthenticatedError);
     expect(thrown).not.toBeInstanceOf(CaptureBufferReadFailedError);
+    expect(thrown).not.toBeInstanceOf(ProviderFilterNotStoredError);
     expect((thrown as Error).message).toBe("boom, no code at all");
   });
 });
@@ -774,6 +782,36 @@ describe("the contract §4 listener surface", () => {
 
       expect(mockNativeModule.setProviderFilter).toHaveBeenCalledWith([], true);
       expect(mockNativeModule.setProviderFilter.mock.calls[0][1]).toBe(true);
+    });
+
+    it("narrows a dropped write to ProviderFilterNotStoredError, which callers branch on", async () => {
+      // GAP-114. The Kotlin side throws this when the allowlist could not be
+      // sealed and no deny-all was asked for, so nothing was written at all.
+      // It is NOT one of the four auth codes: `hooks/mutations/
+      // use_set_provider_pause.ts` tells these apart with `instanceof` to
+      // decide whether "PeraPlano is still reading the same apps" is a true
+      // sentence, and a bare Error here would send it the generic copy.
+      mockNativeModule.setProviderFilter.mockRejectedValue(
+        Object.assign(new Error("native"), { code: "ProviderFilterNotStored" }),
+      );
+
+      await expect(setProviderFilter(["com.globe.gcash.android"], false)).rejects.toBeInstanceOf(
+        ProviderFilterNotStoredError,
+      );
+      await expect(setProviderFilter([], false)).rejects.toMatchObject({
+        code: "ProviderFilterNotStored",
+      });
+    });
+
+    it("leaves a rejection with no recognized code completely unchanged", async () => {
+      // The taxonomy only ever NARROWS. A bridge outage or a future native
+      // failure must not be miscategorized as "the filter was not stored",
+      // which would tell the user to restart over something a restart cannot
+      // fix.
+      const raw = new Error("the bridge is gone");
+      mockNativeModule.setProviderFilter.mockRejectedValue(raw);
+
+      await expect(setProviderFilter([], true)).rejects.toBe(raw);
     });
   });
 

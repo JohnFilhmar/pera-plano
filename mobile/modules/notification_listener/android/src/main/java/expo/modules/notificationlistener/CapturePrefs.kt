@@ -186,8 +186,23 @@ class CapturePrefs(context: Context) {
    *
    * [denyAll] defaults to `false` because every pre-existing caller is handing
    * over an ALLOWLIST, and must keep its exact previous meaning.
+   *
+   * THE ONE FUNCTION IN THIS CLASS THAT REPORTS FAILURE (GAP-114) -- as a
+   * RETURN VALUE, so the class-wide never-throws rule stands untouched and the
+   * listener service can go on calling this without a catch. Everything else
+   * here is read by that headless service, which has nobody to tell; this is
+   * written by a user standing in front of the Privacy centre having just
+   * asked for a pause. Returning `Unit` on a write that did not happen is what
+   * let that pause be reported as applied while capture continued, with
+   * `paused_provider_packages` -- the only readable record, since there is no
+   * getter across the bridge -- recording a state the listener never entered.
+   *
+   * WHAT THE RESULT MEANS: **whether the requested capture SCOPE is now in
+   * force**, not whether both keys were written. The two differ in exactly one
+   * case, the deny-all-without-a-seal branch below, and that comment carries
+   * the argument for why `true` is honest there.
    */
-  fun setProviderFilter(packageNames: Set<String>, denyAll: Boolean = false) {
+  fun setProviderFilter(packageNames: Set<String>, denyAll: Boolean = false): Boolean {
     // Sealed BEFORE the editor is opened: if the seal fails there is no
     // half-written state to undo, and the previous value stands. Removing it
     // instead would drop the user to allow-all, which is a strictly larger
@@ -201,10 +216,21 @@ class CapturePrefs(context: Context) {
       // fail-open this flag exists to close. The reverse case (denyAll false)
       // still writes nothing, so a filter update that could not be sealed
       // cannot lift a block the user is still asking for.
-      if (denyAll) write { it.putBoolean(KEY_PROVIDER_FILTER_DENY_ALL, true) }
-      return
+      //
+      // A LANDED DENY-ALL IS A SUCCESS, even though the allowlist beside it is
+      // stale, because the stale allowlist is unreachable for as long as the
+      // flag stands: [shouldCapture] returns false before it ever opens the
+      // filter, and this function is the only writer of the flag, whose only
+      // path back to `false` is the full write below -- which replaces the
+      // filter in the same `commit()`. So there is no sequence of calls in
+      // which that stale value is ever consulted. Reporting failure here would
+      // instead make the caller drop `paused_provider_packages` for a block the
+      // device really is applying, which is the same divergence in the other
+      // direction and undoes half of GAP-103.
+      if (denyAll) return write { it.putBoolean(KEY_PROVIDER_FILTER_DENY_ALL, true) }
+      return false
     }
-    write {
+    return write {
       it.putString(KEY_PROVIDER_FILTER_SEALED, sealed)
         .putBoolean(KEY_PROVIDER_FILTER_DENY_ALL, denyAll)
     }
@@ -690,8 +716,17 @@ class CapturePrefs(context: Context) {
    * Every write goes through here so the `commit()`-not-`apply()` decision
    * (see the class doc) is made in exactly one place, and so a failing write
    * can never escape into the listener service either.
+   *
+   * RETURNS WHETHER THE VALUE REACHED DISK -- `commit()`'s own result, and
+   * `false` for the exception this still swallows. Every caller but
+   * [setProviderFilter] ignores it, deliberately and unchanged: they run in
+   * the headless service, where there is nothing to report a failure to. It
+   * exists so the ONE caller with a user waiting on the answer can stop
+   * inventing one (GAP-114). `apply()` could never have supported this --
+   * it returns before the flush -- which is a third reason the class doc's
+   * `commit()` decision holds.
    */
-  private fun write(edit: (SharedPreferences.Editor) -> SharedPreferences.Editor) {
+  private fun write(edit: (SharedPreferences.Editor) -> SharedPreferences.Editor): Boolean =
     try {
       edit(prefs.edit()).commit()
     } catch (error: Exception) {
@@ -699,8 +734,8 @@ class CapturePrefs(context: Context) {
       // usually the headless service. The next read falls back to its
       // documented default, which is the same outcome as the write never
       // having happened.
+      false
     }
-  }
 
   companion object {
     /**

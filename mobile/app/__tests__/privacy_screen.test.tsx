@@ -34,11 +34,24 @@
 // (GAP-089): the screen reads `useListenerHealth()` and hands the settings
 // opener down to `CaptureToggle`, exactly as app/(tabs)/more/listener_health.tsx
 // already does for the health card.
+//
+// `ProviderFilterNotStoredError` is part of this mock because the pause hook
+// branches on it with `instanceof` (GAP-114) — a stand-in class rather than the
+// real one, since index.ts calls `requireNativeModule` at import time and
+// cannot be required under Jest. Identity is all that is needed: the hook and
+// the test below reach the class through this same mock.
 jest.mock("@/modules/notification_listener", () => ({
   getListenerHealth: jest.fn(),
   openAccessSettings: jest.fn(),
   setCaptureEnabled: jest.fn().mockResolvedValue(undefined),
   setProviderFilter: jest.fn().mockResolvedValue(undefined),
+  ProviderFilterNotStoredError: class ProviderFilterNotStoredError extends Error {
+    readonly code = "ProviderFilterNotStored";
+    constructor(message = "the provider filter could not be stored on this device") {
+      super(message);
+      this.name = "ProviderFilterNotStoredError";
+    }
+  },
 }));
 
 jest.mock("@/lib/privacy/data_export", () => ({
@@ -91,6 +104,7 @@ import { freshDb } from "@/test_support/db";
 import {
   getListenerHealth,
   openAccessSettings,
+  ProviderFilterNotStoredError,
   setCaptureEnabled,
   setProviderFilter,
 } from "@/modules/notification_listener";
@@ -319,6 +333,33 @@ test("PAUSING THE LAST REMAINING PROVIDER SENDS DENY-ALL FROM THIS SCREEN", asyn
   // independent, which is the whole reason the bridge grew a deny-all instead
   // of the screen reaching for setCaptureEnabled(false).
   expect(mockSetCaptureEnabled).not.toHaveBeenCalled();
+});
+
+test("A PAUSE THE DEVICE COULD NOT STORE LEAVES THE SWITCH ON, AND RECORDS NOTHING", async () => {
+  // GAP-114. `setProviderFilter` used to resolve on a device that could not
+  // seal the allowlist and therefore wrote nothing, so this switch moved to
+  // "Paused", `paused_provider_packages` recorded it, and the listener carried
+  // on capturing from gcash — with no getter across the bridge, nothing could
+  // ever have noticed the disagreement.
+  mockSetProviderFilter.mockRejectedValueOnce(new ProviderFilterNotStoredError());
+
+  await renderPrivacyScreen();
+  await waitFor(() => expect(screen.getByTestId("provider-switch-gcash")).toBeTruthy());
+
+  fireEvent(screen.getByTestId("provider-switch-gcash"), "valueChange", false);
+
+  await waitFor(() => expect(mockSetProviderFilter).toHaveBeenCalled());
+  // The switch reads `true` for "not paused", so it is still on — and the
+  // "Paused" caption, which is the row's other statement about the same fact,
+  // never appears. Asserted through `waitFor` so a row that flips and only
+  // later settles back would still fail rather than race.
+  await waitFor(() =>
+    expect(screen.getByTestId("provider-switch-gcash").props.value).toBe(true),
+  );
+  expect(screen.queryByTestId("provider-switch-paused-gcash")).toBeNull();
+  // And the only readable record is untouched, which is what keeps the next
+  // launch's re-sync (lib/bootstrap.ts) from pushing a pause that never was.
+  expect(await getSetting("paused_provider_packages")).toEqual([]);
 });
 
 // ---------------------------------------------------------------------------

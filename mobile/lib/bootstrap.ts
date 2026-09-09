@@ -180,6 +180,15 @@ async function runRetention(now: number): Promise<void> {
  * screen protects nobody's privacy. Logged, because unlike a skipped purge
  * this one leaves a setting the user can see disagreeing with what the
  * listener does.
+ *
+ * ONE OF THOSE FAILURES NOW HAS A NAME (GAP-114): `setProviderFilter` rejects
+ * with `ProviderFilterNotStoredError` when the device could not seal the
+ * allowlist, which is precisely the state this function exists to re-assert
+ * out of. Still swallowed, and deliberately — the remedy for that error is a
+ * relaunch, and this IS the launch path, so there is nothing left to retry and
+ * nobody on screen to tell. The Privacy centre reports it when the user is
+ * standing in front of a switch; here the log line above is the whole record,
+ * and it already says the right thing.
  */
 async function resyncProviderFilter(): Promise<void> {
   try {

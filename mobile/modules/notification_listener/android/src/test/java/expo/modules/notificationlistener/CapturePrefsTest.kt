@@ -241,6 +241,97 @@ class CapturePrefsTest {
   }
 
   // ---------------------------------------------------------------------
+  // A WRITE THAT DID NOT HAPPEN MUST NOT BE REPORTED AS ONE THAT DID
+  // (GAP-114). [CapturePrefs.setProviderFilter] is the only function in this
+  // class with a caller that can act on a failure: everything else here is
+  // read by the headless listener, which has nobody to tell, while this is
+  // written by a user watching a switch. It returned `Unit`, so a device with
+  // no usable prefs key silently kept capturing from the provider the user had
+  // just paused, and the JS settings row -- the ONLY readable record of that
+  // pause, since this class is exposed across the bridge with a setter and no
+  // getter -- recorded a state the listener never entered.
+  // ---------------------------------------------------------------------
+
+  /**
+   * A device that cannot seal anything: the prefs KEK alias was never created,
+   * so [KeyStoreBridge.sealPrefsValue] finds no key and every seal fails. The
+   * shape of a Keystore that refused to generate the key at launch -- NOT the
+   * same as the lost-key tests above, which install a DIFFERENT key and so
+   * still seal happily while failing to open what came before.
+   */
+  private fun loseThePrefsKey() {
+    KeyStoreBridge.vault = FakeKeyVault()
+  }
+
+  @Test
+  fun `a write that lands reports success, in all three of its shapes`() {
+    // Asserted first and separately, because every failure case below is also
+    // satisfied by an implementation that simply always answers `false` --
+    // which would strand the user unable to change a switch at all.
+    assertTrue("an allowlist", prefs.setProviderFilter(setOf(gcash)))
+    assertTrue("a deny-all", prefs.setProviderFilter(emptySet(), denyAll = true))
+    assertTrue("a clear back to allow-all", prefs.setProviderFilter(emptySet()))
+  }
+
+  @Test
+  fun `an allowlist that could not be sealed reports failure and leaves the stored one alone`() {
+    prefs.setProviderFilter(setOf(gcash, maya))
+    val before = rawPrefs().getString(sealedKeyProviderFilter, null)
+    assertNotNull(before)
+
+    loseThePrefsKey()
+
+    assertFalse(
+      "the pause the user asked for did not land, and saying otherwise is the defect",
+      CapturePrefs(context).setProviderFilter(setOf(gcash)),
+    )
+    // Read as CIPHERTEXT off disk rather than through getProviderFilter():
+    // with the key gone, the accessor answers "allow all" for a value that is
+    // still perfectly intact, so only the raw string can show that the failed
+    // write neither replaced nor removed it.
+    assertEquals(
+      "a failed seal must not touch what is already stored",
+      before,
+      rawPrefs().getString(sealedKeyProviderFilter, null),
+    )
+  }
+
+  @Test
+  fun `a deny-all that landed without its allowlist still reports success`() {
+    loseThePrefsKey()
+
+    // The allowlist could not be sealed, so only the plaintext flag was
+    // written -- and the flag is the whole of the scope the user asked for.
+    // shouldCapture never opens the filter while it stands, and the only path
+    // back to `false` is a write that replaces the filter in the same commit,
+    // so the stale value beside it can never be consulted. Reporting failure
+    // here would make the caller drop `paused_provider_packages` for a block
+    // the device really is applying.
+    assertTrue(CapturePrefs(context).setProviderFilter(emptySet(), denyAll = true))
+
+    val reopened = CapturePrefs(context)
+    assertTrue(reopened.isProviderFilterDenyAll())
+    assertFalse(reopened.shouldCapture(gcash))
+    assertFalse(reopened.shouldCapture("com.some.bank.nobody.allowlisted"))
+  }
+
+  @Test
+  fun `a resume that could not be sealed reports failure and leaves the block standing`() {
+    prefs.setProviderFilter(emptySet(), denyAll = true)
+    loseThePrefsKey()
+
+    // Resuming one provider is an allowlist write with the flag OFF. It cannot
+    // be sealed, so nothing at all is written -- including the flag, which
+    // must not be cleared by a write whose allowlist never landed, or the user
+    // would be dropped from "block everything" to allow-all.
+    assertFalse(CapturePrefs(context).setProviderFilter(setOf(gcash)))
+
+    val reopened = CapturePrefs(context)
+    assertTrue("a block must stand until a write actually replaces it", reopened.isProviderFilterDenyAll())
+    assertFalse(reopened.shouldCapture(gcash))
+  }
+
+  // ---------------------------------------------------------------------
   // A non-empty filter is a real allowlist in the right direction.
   // ---------------------------------------------------------------------
 

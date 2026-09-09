@@ -27,14 +27,43 @@ import type { ReactNode } from "react";
 
 import { closeDatabase } from "@/lib/db/database";
 import { getSetting, setSetting } from "@/lib/db/repos/app_settings_repo";
-import { queryClient as appQueryClient } from "@/lib/query_client";
-import { setProviderFilter } from "@/modules/notification_listener";
+import {
+  clearToasts,
+  createMutationErrorCache,
+  getToasts,
+  MUTATION_FAILURE_TOAST,
+  queryClient as appQueryClient,
+} from "@/lib/query_client";
+import { ProviderFilterNotStoredError, setProviderFilter } from "@/modules/notification_listener";
 import { freshDb } from "@/test_support/db";
 
-import { useSetProviderPause } from "../mutations/use_set_provider_pause";
+import {
+  PROVIDER_PAUSE_NOT_STORED_TOAST,
+  useSetProviderPause,
+} from "../mutations/use_set_provider_pause";
 
+// The error CLASS is part of the mock, not just the function: the hook tells a
+// dropped native write from a failed settings write with `instanceof`, and a
+// mock that omitted it would leave that branch unreachable — a test that passes
+// while the user is told the wrong thing.
+//
+// A STAND-IN CLASS, not the real one, because `modules/notification_listener/
+// index.ts` calls `requireNativeModule` at import time and cannot be required
+// under Jest at all. Identity is the only property this file needs: the hook
+// and the assertions below both reach the class through this same mock, so
+// `instanceof` means here exactly what it means on a device. What the real
+// class carries — its `code`, and that `rethrowTyped` produces it for that code
+// and for no other — is pinned in modules/notification_listener/__tests__/
+// index.test.ts, against the real file.
 jest.mock("@/modules/notification_listener", () => ({
   setProviderFilter: jest.fn().mockResolvedValue(undefined),
+  ProviderFilterNotStoredError: class ProviderFilterNotStoredError extends Error {
+    readonly code = "ProviderFilterNotStored";
+    constructor(message = "the provider filter could not be stored on this device") {
+      super(message);
+      this.name = "ProviderFilterNotStoredError";
+    }
+  },
 }));
 
 const mockSetProviderFilter = setProviderFilter as jest.Mock;
@@ -55,10 +84,17 @@ let client: QueryClient;
 beforeEach(async () => {
   await freshDb();
   jest.clearAllMocks();
+  clearToasts();
   mockSetProviderFilter.mockResolvedValue(undefined);
   const defaults = appQueryClient.getDefaultOptions();
   client = new QueryClient({
     ...defaults,
+    // The app's own failure surface, not a bare client: without it a hook that
+    // silently swallowed every rejection would look identical here (see
+    // lib/query_client.ts's header). It is also what the GAP-114 assertions
+    // below need in order to prove the specific copy REPLACES the generic card
+    // rather than stacking a second one on top of it.
+    mutationCache: createMutationErrorCache(),
     defaultOptions: {
       ...defaults,
       queries: { ...defaults.queries, retry: 0, staleTime: 0, gcTime: Infinity },
@@ -69,6 +105,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   client.clear();
+  clearToasts();
   await closeDatabase();
 });
 
@@ -207,4 +244,95 @@ test("a failed native write leaves the settings row untouched, deny-all included
   });
 
   expect(await getSetting("paused_provider_packages")).toEqual([MAYA, SMS_A, SMS_B]);
+});
+
+// ---------------------------------------------------------------------------
+// GAP-114. Until the native side reported it, a device that could not seal the
+// allowlist RESOLVED — so the ordering above was ordering a settings write
+// behind a call that had merely claimed to have happened. The row was written,
+// the switch showed "Paused", and the listener went on capturing from that
+// provider with nothing anywhere able to notice: this bridge has a setter and
+// no getter, and `paused_provider_packages` is the only readable record.
+//
+// The rejection is asserted here rather than the Kotlin behaviour behind it,
+// like the rest of this file. That the seal failure actually produces it lives
+// in CapturePrefsTest and NotificationListenerModuleTest, which need Gradle.
+// ---------------------------------------------------------------------------
+
+/** What the bridge now rejects with when the scope did not reach disk. */
+function notStored(): Error {
+  return new ProviderFilterNotStoredError();
+}
+
+test("A DROPPED NATIVE WRITE DOES NOT RECORD THE PAUSE, SO THE SWITCH HAS NOTHING TO STICK TO", async () => {
+  mockSetProviderFilter.mockRejectedValueOnce(notStored());
+
+  const { result } = renderHook(() => useSetProviderPause(), { wrapper: Wrapper });
+  await act(async () => {
+    await expect(
+      result.current.mutateAsync({
+        packageNames: [GCASH],
+        paused: true,
+        allPackageNames: EVERY_PACKAGE,
+      }),
+    ).rejects.toBeInstanceOf(ProviderFilterNotStoredError);
+  });
+
+  // Nothing paused, which is where the row started. The switch renders off this
+  // row (`usePausedProviderPackages`), so an unwritten row IS the switch
+  // staying where it was — there is no separate revert to get wrong.
+  expect(await getSetting("paused_provider_packages")).toEqual([]);
+});
+
+test("the dropped-write card says what is still being read, and replaces the generic one", async () => {
+  mockSetProviderFilter.mockRejectedValueOnce(notStored());
+
+  const { result } = renderHook(() => useSetProviderPause(), { wrapper: Wrapper });
+  await act(async () => {
+    await expect(
+      result.current.mutateAsync({
+        packageNames: [GCASH],
+        paused: true,
+        allPackageNames: EVERY_PACKAGE,
+      }),
+    ).rejects.toBeInstanceOf(ProviderFilterNotStoredError);
+  });
+
+  // ONE card, not two: the hook publishes under the app-wide dedupe key, so its
+  // copy swaps into the entry the mutation cache already queued.
+  const queued = getToasts();
+  expect(queued).toHaveLength(1);
+  expect(queued[0].title).toBe(PROVIDER_PAUSE_NOT_STORED_TOAST.title);
+  expect(queued[0].body).toBe(PROVIDER_PAUSE_NOT_STORED_TOAST.body);
+  expect(queued[0].tone).toBe("failure");
+  // The generic copy cannot say the thing that matters on this screen — that
+  // the bank the user just switched off is still being read — so its presence
+  // here would be the defect, not merely a weaker wording.
+  expect(queued[0].body).not.toBe(MUTATION_FAILURE_TOAST.body);
+});
+
+test("any OTHER failure keeps the app-wide card, because the reworded one would be a false statement", async () => {
+  // The reason the reworded copy is behind an `instanceof` and not applied to
+  // every rejection this mutation can produce. A settings-row write that failed
+  // AFTER the bridge resolved changed the listener's scope for real, so
+  // "PeraPlano is still reading the same apps it was before" would be untrue —
+  // and telling that user to restart would fix nothing. Exercised through a
+  // bridge failure of a different kind, which lands in the same branch.
+  mockSetProviderFilter.mockRejectedValueOnce(new Error("bridge unavailable"));
+
+  const { result } = renderHook(() => useSetProviderPause(), { wrapper: Wrapper });
+  await act(async () => {
+    await expect(
+      result.current.mutateAsync({
+        packageNames: [GCASH],
+        paused: true,
+        allPackageNames: EVERY_PACKAGE,
+      }),
+    ).rejects.toThrow("bridge unavailable");
+  });
+
+  const queued = getToasts();
+  expect(queued).toHaveLength(1);
+  expect(queued[0].title).toBe(MUTATION_FAILURE_TOAST.title);
+  expect(queued[0].body).toBe(MUTATION_FAILURE_TOAST.body);
 });

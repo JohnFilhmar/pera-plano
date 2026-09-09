@@ -159,7 +159,16 @@ export default function ProvidersScreen({ onDone }: { onDone?: () => void } = {}
           // user can narrow it later in Settings; stranding them on this step
           // would be the worse outcome, and there is nothing here for them to
           // fix.
-          console.error("setProviderFilter failed; capture stays unfiltered", error);
+          //
+          // GAP-114 MADE THIS BRANCH REACHABLE ON PURPOSE, and it is why the
+          // native side reports a dropped write as a REJECTION rather than as
+          // a returned flag: this handler is the identical bug one screen
+          // away, and a `false` would have passed straight through it while
+          // the Privacy centre looked fixed. The Privacy centre refuses to
+          // record a scope that did not land because it keeps a readable row
+          // that would otherwise lie; this screen keeps no such record, so
+          // there is nothing here to be wrong.
+          console.error("setProviderFilter failed; the listener keeps its existing filter", error);
         })
         .finally(() => {
           writeInFlightRef.current = false;
