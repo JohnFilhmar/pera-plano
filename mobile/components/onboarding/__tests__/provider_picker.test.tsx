@@ -51,6 +51,10 @@ import {
   setProviderFilter,
 } from "@/modules/notification_listener";
 import { getActiveRuleset } from "@/lib/db/repos/parser_rulesets_repo";
+import {
+  clearOnboardingProviderPause,
+  pendingOnboardingProviderPause,
+} from "@/lib/onboarding/pending_provider_pause";
 import { DEFAULT_TUNABLES } from "@/lib/ingest/ruleset_types";
 import { ProviderPicker } from "../provider_picker";
 import ProvidersScreen from "@/app/(onboarding)/providers";
@@ -95,6 +99,9 @@ function choice(overrides: Partial<ProviderChoice> & { packageName: string }): P
 
 beforeEach(() => {
   jest.clearAllMocks();
+  // A module-level singleton, not a mock — `jest.clearAllMocks()` cannot reach
+  // it, and a record left behind by one test would be read as another's.
+  clearOnboardingProviderPause();
   mockListObservedPackages.mockResolvedValue([]);
   mockGetAppLabels.mockResolvedValue({});
   mockSetProviderFilter.mockResolvedValue(undefined);
@@ -528,6 +535,138 @@ describe("ProvidersScreen", () => {
       resolveObserved([]);
     });
     await screen.findByTestId("provider-picker");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THE RECORD A FAILED SEAL LEAVES BEHIND (GAP-116).
+//
+// This screen has no open database — it renders above the unlock gate — so it
+// hands the COMPLEMENT of its allowlist to
+// lib/onboarding/pending_provider_pause.ts, and lib/bootstrap.ts writes that
+// into `paused_provider_packages` on the first launch that can. Until it did,
+// a selection the device failed to seal was not merely unapplied but
+// unrecoverable: no row for the launch re-sync to read, and no second pass
+// through this step, since app/(onboarding)/index.tsx does not re-run it for
+// an install that already has keys.
+//
+// EVERY TEST HERE IS ALSO ABOUT THE INVERSION, because this is the one place
+// in the flow that can manufacture a deny-all out of a user who asked for the
+// opposite: `resyncProviderFilter()` reads a non-empty pause list whose
+// remainder is empty as `setProviderFilter([], true)`, block everything.
+// ---------------------------------------------------------------------------
+
+describe("ProvidersScreen — the record a failed seal leaves behind", () => {
+  /** Every package the ruleset behind the catalogue knows about. */
+  function seedUniverse(): string[] {
+    return SEED.providers.flatMap((provider) => provider.packageNames);
+  }
+
+  test("a selection is recorded as the complement of the allowlist", async () => {
+    mockListObservedPackages.mockResolvedValue([observed(GCASH)]);
+
+    await renderScreen();
+    fireEvent.press(screen.getByTestId(`provider-choice-${GCASH}`));
+    await act(async () => {
+      fireEvent.press(screen.getByTestId("provider-picker-continue-button"));
+    });
+
+    const paused = pendingOnboardingProviderPause();
+    expect(paused).not.toContain(GCASH);
+    expect(paused).toContain(MAYA);
+    // The exact complement over the RULESET universe — the same universe
+    // resyncProviderFilter() and the Privacy switch rows subtract from. A
+    // record built from the catalogue instead would name packages the switch
+    // list has no row for and the re-sync ignores.
+    expect([...(paused ?? [])].sort()).toEqual(
+      seedUniverse()
+        .filter((packageName) => packageName !== GCASH)
+        .sort(),
+    );
+  });
+
+  test("the record is made before the bridge call, so a rejected write cannot lose it", async () => {
+    const pendingAtBridgeCall: (string[] | null)[] = [];
+    mockSetProviderFilter.mockImplementation(async () => {
+      pendingAtBridgeCall.push(pendingOnboardingProviderPause());
+      throw new Error("could not seal the allowlist");
+    });
+    mockListObservedPackages.mockResolvedValue([observed(GCASH)]);
+
+    await renderScreen();
+    fireEvent.press(screen.getByTestId(`provider-choice-${GCASH}`));
+    await act(async () => {
+      fireEvent.press(screen.getByTestId("provider-picker-continue-button"));
+    });
+
+    // ORDERING, not merely presence. Recorded in a `.then` it would be absent
+    // on exactly the path this gap is about; recorded in a `.finally` it would
+    // be present here but not yet at the moment the bridge was asked.
+    expect(pendingAtBridgeCall[0]).toContain(MAYA);
+    expect(pendingOnboardingProviderPause()).toContain(MAYA);
+  });
+
+  test("Skip records nothing paused — the inversion can never become a deny-all", async () => {
+    mockListObservedPackages.mockResolvedValue([observed(GCASH)]);
+
+    await renderScreen();
+    await act(async () => {
+      fireEvent.press(screen.getByTestId("provider-picker-skip-button"));
+    });
+
+    await waitFor(() => expect(mockSetProviderFilter).toHaveBeenCalledWith([], false));
+    // `universe - []` would record EVERY provider as paused, and the next
+    // launch would push the explicit block-everything. Same rule as the
+    // filter write above, one indirection later.
+    expect(pendingOnboardingProviderPause()).toBeNull();
+  });
+
+  test("ticking nothing records nothing either — the same path, the same record", async () => {
+    mockListObservedPackages.mockResolvedValue([observed(GCASH)]);
+
+    await renderScreen();
+    await act(async () => {
+      fireEvent.press(screen.getByTestId("provider-picker-continue-button"));
+    });
+
+    await waitFor(() => expect(mockSetProviderFilter).toHaveBeenCalledWith([], false));
+    expect(pendingOnboardingProviderPause()).toBeNull();
+  });
+
+  test("a selection of only packages the ruleset never heard of records nothing", async () => {
+    mockListObservedPackages.mockResolvedValue([observed(UNSEEDED_BANK)]);
+
+    await renderScreen();
+    fireEvent.press(screen.getByTestId(`provider-choice-${UNSEEDED_BANK}`));
+    await act(async () => {
+      fireEvent.press(screen.getByTestId("provider-picker-continue-button"));
+    });
+
+    // The user's only bank is a package the ruleset does not know, so every
+    // KNOWN package is unticked and the naive complement is the whole
+    // universe — which the launch re-sync reads as block-everything, on behalf
+    // of the one user whose selection it would be blocking. The bridge still
+    // gets exactly what they chose; only the record is skipped.
+    await waitFor(() =>
+      expect(mockSetProviderFilter).toHaveBeenCalledWith([UNSEEDED_BANK], false),
+    );
+    expect(pendingOnboardingProviderPause()).toBeNull();
+  });
+
+  test("an unrecognised package alongside a known one is not recorded as paused", async () => {
+    mockListObservedPackages.mockResolvedValue([observed(GCASH), observed(UNSEEDED_BANK)]);
+
+    await renderScreen();
+    fireEvent.press(screen.getByTestId(`provider-choice-${GCASH}`));
+    await act(async () => {
+      fireEvent.press(screen.getByTestId("provider-picker-continue-button"));
+    });
+
+    // Left unticked, but absent from the ruleset universe the row is expressed
+    // in — so it is neither recorded nor re-assertable, which is the re-sync's
+    // pre-existing shape rather than anything this record changes.
+    expect(pendingOnboardingProviderPause()).not.toContain(UNSEEDED_BANK);
+    expect(pendingOnboardingProviderPause()).toContain(MAYA);
   });
 });
 

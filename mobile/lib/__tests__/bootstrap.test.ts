@@ -53,7 +53,12 @@ import {
   getLastBootstrapResult,
   startNetworkSyncSubscriber,
 } from "@/lib/bootstrap";
-import { setSetting } from "@/lib/db/repos/app_settings_repo";
+import { getSetting, setSetting } from "@/lib/db/repos/app_settings_repo";
+import { SEED_BUNDLE } from "@/lib/ingest/seed_rules";
+import {
+  clearOnboardingProviderPause,
+  recordOnboardingProviderPause,
+} from "@/lib/onboarding/pending_provider_pause";
 import { setProviderFilter } from "@/modules/notification_listener";
 import {
   getActiveRuleset,
@@ -130,6 +135,10 @@ beforeEach(async () => {
   await closeDatabase();
   await unlockDatabase(TEST_DEK);
   __resetBootstrapForTests();
+  // A module-level singleton like `lastResult`, so it needs the same explicit
+  // reset: a pending onboarding selection left by one test would be written by
+  // the next test's very first bootstrapApp().
+  clearOnboardingProviderPause();
   getSpy = jest.spyOn(apiClient, "get").mockResolvedValue(axiosResponse(404, null));
   postSpy = jest.spyOn(apiClient, "post").mockResolvedValue(axiosResponse(200, {}));
 });
@@ -540,11 +549,11 @@ describe("provider filter re-sync", () => {
   });
 
   test("nothing is pushed when the pause list is empty — `[]` would mean allow-all natively", async () => {
-    // An empty row is NOT "the user wants everything captured". It is also the
-    // fresh-install default and the state app/(onboarding)/providers.tsx
-    // leaves behind, which writes the user's chosen packages straight to the
-    // bridge and never records them here — so pushing `[]` on an empty row
-    // would wipe an onboarding selection on the next launch.
+    // An empty row is NOT "the user wants everything captured". It is the
+    // fresh-install default, and what app/(onboarding)/providers.tsx leaves
+    // behind for a user who allowed everything or tapped Skip — so pushing `[]`
+    // on an empty row would wipe whatever narrower filter the listener is
+    // already holding from that step.
     await bootstrapApp();
 
     expect(mockSetProviderFilter).not.toHaveBeenCalled();
@@ -599,5 +608,133 @@ describe("provider filter re-sync", () => {
     );
 
     errorSpy.mockRestore();
+  });
+});
+
+// The onboarding provider step's own selection, carried into the first launch
+// that has a database (GAP-116). That screen renders above the unlock gate, so
+// it cannot write `paused_provider_packages` itself — it hands the complement of
+// its allowlist to lib/onboarding/pending_provider_pause.ts, and `bootstrapApp()`
+// stores it just before the re-sync above pushes it back down.
+//
+// WHAT WAS LOST WITHOUT IT: `setProviderFilter` rejects when the scope did not
+// seal (GAP-114), and that screen deliberately logs and carries on rather than
+// stranding a first-run user over a filter — so the selection may never have
+// reached the listener at all. With no row, nothing could re-apply it, nothing
+// could show it, and the step is never offered again to an install that already
+// has keys.
+//
+// EVERY EMPTY CASE HERE IS ALSO A GAP-092 TEST. The re-sync only ever narrows,
+// and this pass is what decides whether there is a row for it to narrow from; a
+// record that turned "the user allowed everything" into a full pause list would
+// make the very next launch push the explicit block-everything.
+describe("onboarding provider selection", () => {
+  const mockSetProviderFilter = setProviderFilter as jest.Mock;
+  const GCASH = "com.globe.gcash.android";
+  const MAYA = "com.paymaya";
+
+  beforeEach(() => {
+    mockSetProviderFilter.mockClear();
+    mockSetProviderFilter.mockResolvedValue(undefined);
+  });
+
+  /** The universe the provider step inverts against: no database is open on
+   * that screen, so it is the bundled seed rather than the installed ruleset. */
+  function stepUniverse(): string[] {
+    return SEED_BUNDLE.providers.flatMap((provider) => provider.packageNames);
+  }
+
+  /** Every package name in the ruleset a completed bootstrapApp() has seeded. */
+  async function seededPackages(): Promise<string[]> {
+    const bundle = await getActiveRuleset();
+    return (bundle?.providers ?? []).flatMap((provider) => provider.packageNames);
+  }
+
+  test("a selection whose seal failed is stored and re-asserted on the launch after it", async () => {
+    // The whole of what the provider step can do: push an allowlist at a bridge
+    // that dropped it, and record the complement for the launch that has
+    // somewhere to put it.
+    recordOnboardingProviderPause([GCASH], stepUniverse());
+
+    await bootstrapApp();
+
+    const everyPackage = await seededPackages();
+    // Checked, not assumed: a seed that stopped carrying these would leave the
+    // rest of this test passing while proving nothing.
+    expect(everyPackage).toContain(GCASH);
+    expect(everyPackage).toContain(MAYA);
+    // The readable row — what the Privacy switches show and what every later
+    // launch re-asserts from. It did not exist at all before this pass.
+    expect([...(await getSetting("paused_provider_packages"))].sort()).toEqual(
+      everyPackage.filter((packageName) => packageName !== GCASH).sort(),
+    );
+    // And pushed back across the bridge in the SAME launch, not merely written
+    // down: the row is stored before the re-sync runs, on purpose.
+    expect(mockSetProviderFilter).toHaveBeenCalledTimes(1);
+    expect(new Set(mockSetProviderFilter.mock.calls[0][0] as string[])).toEqual(new Set([GCASH]));
+    expect(mockSetProviderFilter.mock.calls[0][1]).toBe(false);
+  });
+
+  test("the stored selection is re-asserted on later launches too, not only the one that wrote it", async () => {
+    recordOnboardingProviderPause([GCASH], stepUniverse());
+    await bootstrapApp();
+    mockSetProviderFilter.mockClear();
+
+    await bootstrapApp();
+
+    expect(mockSetProviderFilter).toHaveBeenCalledTimes(1);
+    expect(new Set(mockSetProviderFilter.mock.calls[0][0] as string[])).toEqual(new Set([GCASH]));
+  });
+
+  test("a skipped step records nothing, so the re-sync still pushes nothing (GAP-092)", async () => {
+    // `[]` from that screen is ALLOW-ALL. Recorded as `universe - []` it would
+    // be every provider paused, and the re-sync above reads a non-empty pause
+    // list with an empty remainder as `setProviderFilter([], true)` — every user
+    // who tapped Skip would silently stop capturing anything.
+    recordOnboardingProviderPause([], stepUniverse());
+
+    await bootstrapApp();
+
+    expect(await getSetting("paused_provider_packages")).toEqual([]);
+    expect(mockSetProviderFilter).not.toHaveBeenCalled();
+  });
+
+  test("allowing every known provider records nothing — there is nothing to narrow", async () => {
+    recordOnboardingProviderPause(stepUniverse(), stepUniverse());
+
+    await bootstrapApp();
+
+    expect(await getSetting("paused_provider_packages")).toEqual([]);
+    expect(mockSetProviderFilter).not.toHaveBeenCalled();
+  });
+
+  test("a selection of only packages the ruleset never heard of records nothing", async () => {
+    // Their one bank is absent from the ruleset, so every KNOWN package is
+    // unticked and the naive complement is the entire universe — which the
+    // re-sync reads as block-everything, aimed at the very user whose choice it
+    // would be blocking. The re-sync cannot express "allow only this unknown
+    // package" (pre-existing, see resyncProviderFilter); what it must not do is
+    // answer with a deny-all instead.
+    recordOnboardingProviderPause(["com.example.realbank.ph"], stepUniverse());
+
+    await bootstrapApp();
+
+    expect(await getSetting("paused_provider_packages")).toEqual([]);
+    expect(mockSetProviderFilter).not.toHaveBeenCalled();
+  });
+
+  test("the selection is written once, never re-applied over a pause the user changed later", async () => {
+    recordOnboardingProviderPause([GCASH], stepUniverse());
+    await bootstrapApp();
+
+    // The user resumes every provider in the Privacy centre, then re-locks and
+    // unlocks — a second bootstrapApp() in the same process.
+    await setSetting("paused_provider_packages", []);
+    mockSetProviderFilter.mockClear();
+
+    await bootstrapApp();
+
+    expect(await getSetting("paused_provider_packages")).toEqual([]);
+    expect(mockSetProviderFilter).not.toHaveBeenCalled();
   });
 });

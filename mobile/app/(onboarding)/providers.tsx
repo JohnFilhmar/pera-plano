@@ -34,6 +34,16 @@
 //
 // SKIP AND "TICKED NOTHING" GO THROUGH THE SAME `commit([])`. Wiring them to
 // two handlers is exactly how one of them ends up safe and the other does not.
+//
+// AND THE SELECTION IS ALSO WRITTEN DOWN NOW, WHICH IS WHERE THAT RULE BITES
+// HARDEST (GAP-116). `paused_provider_packages` — the row the Privacy switches
+// read back and lib/bootstrap.ts re-asserts on every launch — holds the
+// COMPLEMENT of the allowlist this screen sends, so recording an empty
+// allowlist as "every provider paused" would hand every user who taps Skip
+// exactly the deny-all the paragraph above refuses.
+// lib/onboarding/pending_provider_pause.ts owns that inversion and the empty
+// case. There is no open database on this screen, so the record is handed to
+// the first launch that has one.
 // ---------------------------------------------------------------------------
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Text, View } from "react-native";
@@ -44,6 +54,7 @@ import { getActiveRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { applyAppLabels, buildProviderChoices } from "@/lib/ingest/provider_catalogue";
 import { SEED_BUNDLE } from "@/lib/ingest/seed_rules";
 import { DEFAULT_TRAIT_SIGNALS, DEFAULT_TUNABLES } from "@/lib/ingest/ruleset_types";
+import { recordOnboardingProviderPause } from "@/lib/onboarding/pending_provider_pause";
 import { getAppLabels, listObservedPackages, setProviderFilter } from "@/modules/notification_listener";
 
 import type { ProviderChoice } from "@/lib/ingest/provider_catalogue";
@@ -125,6 +136,14 @@ export default function ProvidersScreen({ onDone }: { onDone?: () => void } = {}
   // true for the SECOND synchronous tap of a double-tap, before React has
   // re-rendered.
   const writeInFlightRef = useRef(false);
+  // Every package the ruleset behind the catalogue knows about — the universe
+  // the paused record is inverted against. A ref rather than state because
+  // `commit` is the only reader and nothing renders from it, so putting it in
+  // that callback's dependencies would rebuild the callback for no visible
+  // change. Starts empty, which records nothing rather than something wrong;
+  // it is always set by the time a tile is tappable, since the same
+  // `if (!cancelled)` block below publishes both it and `choices`.
+  const universeRef = useRef<string[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -138,7 +157,9 @@ export default function ProvidersScreen({ onDone }: { onDone?: () => void } = {}
       const [observed, bundle] = await Promise.all([loadObserved(), loadBundle()]);
       const catalogue = buildProviderChoices(observed, bundle);
       const labels = await loadAppLabels(catalogue.map((choice) => choice.packageName));
-      if (!cancelled) setChoices(applyAppLabels(catalogue, labels));
+      if (cancelled) return;
+      universeRef.current = bundle.providers.flatMap((provider) => provider.packageNames);
+      setChoices(applyAppLabels(catalogue, labels));
     })();
     return () => {
       cancelled = true;
@@ -150,6 +171,21 @@ export default function ProvidersScreen({ onDone }: { onDone?: () => void } = {}
       if (writeInFlightRef.current) return;
       writeInFlightRef.current = true;
       setBusy(true);
+      // RECORDED BEFORE THE BRIDGE CALL, NEVER AFTER IT (GAP-116). The call
+      // below can reject, the `.catch` deliberately carries on, and the entire
+      // point of the record is that it survives exactly that — so it is a
+      // synchronous in-memory assignment that runs whichever way the bridge
+      // goes, not a `.then`.
+      //
+      // THE OPPOSITE ORDER TO THE PRIVACY CENTRE'S, DELIBERATELY.
+      // `hooks/mutations/use_set_provider_pause.ts` writes native first and
+      // refuses to record a scope that did not land, because its row is what a
+      // switch list reads back and a row nobody applied would lie to the user
+      // standing in front of it. This record is an intent, not a claim about
+      // the listener: lib/bootstrap.ts persists it and pushes it across the
+      // bridge in the same launch, and there is nobody on this screen left to
+      // mislead — only a selection with nothing to recover it from.
+      recordOnboardingProviderPause(packageNames, universeRef.current);
       // `false`, always: this screen writes an ALLOWLIST and never a deny-all,
       // including when the list is empty. See the header comment.
       setProviderFilter(packageNames, false)
@@ -166,8 +202,17 @@ export default function ProvidersScreen({ onDone }: { onDone?: () => void } = {}
           // away, and a `false` would have passed straight through it while
           // the Privacy centre looked fixed. The Privacy centre refuses to
           // record a scope that did not land because it keeps a readable row
-          // that would otherwise lie; this screen keeps no such record, so
-          // there is nothing here to be wrong.
+          // that would otherwise lie.
+          //
+          // THIS SCREEN NOW KEEPS A RECORD TOO, AND KEEPS IT REGARDLESS
+          // (GAP-116) — the opposite rule, for the opposite reason. A selection
+          // that failed to seal used to end here and nowhere else: not applied,
+          // not written down, and never re-offered either, because
+          // app/(onboarding)/index.tsx does not re-run this step for an install
+          // that already has keys. `recordOnboardingProviderPause` above ran
+          // before the call that just failed, so `bootstrapApp()` stores the
+          // same selection in `paused_provider_packages` and pushes it back
+          // across the bridge as soon as there is a database to hold it.
           console.error("setProviderFilter failed; the listener keeps its existing filter", error);
         })
         .finally(() => {
