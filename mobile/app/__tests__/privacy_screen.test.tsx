@@ -45,12 +45,22 @@ jest.mock("@/lib/privacy/data_export", () => ({
   exportAllData: jest.fn().mockResolvedValue("file:///cache/peraplano-export-fake.json"),
 }));
 
-// The whole lock context is stubbed to a single spy: the screen's only use of
-// it is this one call, and mounting a real LockProvider here would drag in
-// expo-local-authentication and the native key manager for no added proof.
+// The whole lock context is stubbed: mounting a real LockProvider here would
+// drag in expo-local-authentication and the native key manager for no added
+// proof. Two values, because the screen uses two — and `errorMessage` is the
+// one a failed wipe actually arrives on. The real `wipeAndStartOver` NEVER
+// REJECTS (its own doc; contexts/__tests__/lock_context.test.tsx pins both
+// failure kinds as `resolves` and asserts the message each one leaves behind),
+// so the stub below fails the way the real one does: it sets the message and
+// then resolves. A stub that rejected instead would be testing a promise the
+// app cannot produce.
 const mockWipeAndStartOver = jest.fn().mockResolvedValue(undefined);
+let mockLockErrorMessage: string | null = null;
 jest.mock("@/contexts/lock_context", () => ({
-  useLock: () => ({ wipeAndStartOver: mockWipeAndStartOver }),
+  useLock: () => ({
+    wipeAndStartOver: mockWipeAndStartOver,
+    errorMessage: mockLockErrorMessage,
+  }),
 }));
 
 // Nothing in the screen navigates any more — the lock context's status change
@@ -76,6 +86,7 @@ import { storeRawCapture, RAW_CAPTURE_TTL_MS } from "@/lib/db/repos/raw_notifica
 import { listDataTableNames } from "@/lib/db/table_names";
 import { exportAllData } from "@/lib/privacy/data_export";
 import { queryClient as appQueryClient } from "@/lib/query_client";
+import { WipeIncompleteError } from "@/lib/security/wipe";
 import { freshDb } from "@/test_support/db";
 import {
   getListenerHealth,
@@ -142,6 +153,7 @@ let db: SQLiteDatabase;
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  mockLockErrorMessage = null;
   // Healthy by default, so every test that is not about the grant renders the
   // same screen it always did.
   mockGetListenerHealth.mockResolvedValue(HEALTHY);
@@ -419,16 +431,42 @@ test("an export failure surfaces an error and releases the busy spinner", async 
 });
 
 // ---------------------------------------------------------------------------
-// The wipe's failure path (coordinator finding). `wipeKeys()` and
-// `clearCaptureBuffer()` both run AFTER `wipeDatabase()` has already deleted
-// the file irreversibly — see privacy.tsx's own doc on `handleWipeConfirmed`
-// and lib/security/wipe.ts's header on that ordering. Before this catch
-// existed, a rejection from either left the user with a stopped spinner, no
-// error, and an app whose data was already gone.
+// The wipe's failure paths, and WHICH ONE THIS SCREEN CAN EVEN REPORT.
+// lib/security/wipe.ts splits them at the database file: a `wipeDatabase()`
+// rejection propagates as itself because nothing was destroyed, every later
+// rejection is re-thrown as `WipeIncompleteError` because the file is gone.
+// The lock context turns that split into two states, and only ONE of them
+// leaves this screen mounted:
+//
+//   - after the database is gone -> status "needs_onboarding", so
+//     app/_layout.tsx's AppShell replaces this whole Stack with the lock gate
+//     and app/lock.tsx prints the notice (app/__tests__/lock_screen.test.tsx
+//     asserts that rendered notice; contexts/__tests__/lock_context.test.tsx
+//     asserts the message and the status). Nothing here could be seen.
+//   - before anything is erased -> status stays "unlocked", this screen stays
+//     mounted, and the promise RESOLVES. That is the case below, and until the
+//     screen read `errorMessage` the user got a stopped spinner and no message
+//     at all: the catch never ran, because nothing ever rejected.
+//
+// GAP-104 also asked for the catch itself to stop saying "Your data was
+// erased" about a failure that erased nothing. It is unreachable while the
+// context swallows every rejection, so the two tests that exercise it say so
+// in their names; they mock ONLY to force the rejection, and assert what is
+// rendered.
 // ---------------------------------------------------------------------------
 
-test("a wipe failure after the database is cleared surfaces an error instead of leaving the spinner stuck", async () => {
-  mockWipeAndStartOver.mockRejectedValueOnce(new Error("wipe: keystore delete failed"));
+// contexts/lock_context.tsx's WIPE_FAILED_MESSAGE, quoted verbatim. What is
+// pinned here is that the screen prints the CONTEXT's sentence for the failure
+// that happened; that the context produces this one is pinned in its own suite.
+const WIPE_FAILED_COPY =
+  "Nothing was erased — that didn't go through. Your data and your recovery words are still here, so you can try again.";
+
+test("a wipe that stops before the database is deleted says nothing was erased, instead of stopping the spinner in silence", async () => {
+  // Exactly what the real context does with a `wipeDatabase()` failure: keep
+  // the status, put its own sentence in `errorMessage`, resolve.
+  mockWipeAndStartOver.mockImplementationOnce(async () => {
+    mockLockErrorMessage = WIPE_FAILED_COPY;
+  });
   await renderPrivacyScreen();
 
   fireEvent.press(screen.getByTestId("wipe-everything-trigger"));
@@ -437,13 +475,77 @@ test("a wipe failure after the database is cleared surfaces an error instead of 
   fireEvent.press(screen.getByTestId("wipe-confirm-erase"));
 
   await waitFor(() => expect(mockWipeAndStartOver).toHaveBeenCalledTimes(1));
-  await waitFor(() => expect(screen.getByTestId("privacy-wipe-error")).toBeTruthy());
-  screen.getByText(
-    "Your data was erased, but PeraPlano could not finish resetting. Please close and reopen the app.",
+  // The words the user READS, not the state behind them: setting a message
+  // that never reaches the screen is the failure this whole screen is about.
+  await waitFor(() =>
+    expect(screen.getByTestId("privacy-wipe-error")).toHaveTextContent(WIPE_FAILED_COPY),
   );
-  // Nothing navigated — the user is not silently left on a half-reset app
-  // that LOOKS like it moved on when it did not.
+  // And it is the CONTEXT's sentence on screen, not a fixed one this screen
+  // keeps for itself — the message has to follow which failure happened.
+  expect(
+    screen.queryByText(
+      "Your data was erased, but PeraPlano could not finish resetting. Please close and reopen the app.",
+    ),
+  ).toBeNull();
   expect(mockReplace).not.toHaveBeenCalled();
+  expect(screen.getByTestId("wipe-confirm-erase").props.accessibilityState.busy).toBe(false);
+});
+
+test("nothing is printed under the Erase button before a wipe is ever attempted", async () => {
+  // The gate on the context's message. `errorMessage` is a channel the whole
+  // lock shares, so an unlock failure's leftovers must not appear here as a
+  // verdict on a wipe the user never ran.
+  mockLockErrorMessage = "Something went wrong. Try again.";
+
+  await renderPrivacyScreen();
+
+  expect(screen.queryByTestId("privacy-wipe-error")).toBeNull();
+});
+
+test("if the context ever rejects instead, a post-database failure still says the data was erased", async () => {
+  mockWipeAndStartOver.mockRejectedValueOnce(
+    new WipeIncompleteError(new Error("wipe: keystore delete failed")),
+  );
+  await renderPrivacyScreen();
+
+  fireEvent.press(screen.getByTestId("wipe-everything-trigger"));
+  fireEvent.press(screen.getByTestId("confirm-dialog-confirm"));
+  fireEvent.changeText(screen.getByTestId("wipe-confirm-input"), "DELETE");
+  fireEvent.press(screen.getByTestId("wipe-confirm-erase"));
+
+  await waitFor(() => expect(mockWipeAndStartOver).toHaveBeenCalledTimes(1));
+  await waitFor(() =>
+    expect(screen.getByTestId("privacy-wipe-error")).toHaveTextContent(
+      "Your data was erased, but PeraPlano could not finish resetting. Please close and reopen the app.",
+    ),
+  );
+  expect(mockReplace).not.toHaveBeenCalled();
+  expect(screen.getByTestId("wipe-confirm-erase").props.accessibilityState.busy).toBe(false);
+});
+
+test("if the context ever rejects instead, a pre-database failure does not claim the data was erased", async () => {
+  // A bare Error is what `wipeAndStartOver` propagates when `wipeDatabase()`
+  // itself failed. One message for both kinds told this user their ledger was
+  // gone while it was still on the phone.
+  mockWipeAndStartOver.mockRejectedValueOnce(new Error("disk I/O error"));
+  await renderPrivacyScreen();
+
+  fireEvent.press(screen.getByTestId("wipe-everything-trigger"));
+  fireEvent.press(screen.getByTestId("confirm-dialog-confirm"));
+  fireEvent.changeText(screen.getByTestId("wipe-confirm-input"), "DELETE");
+  fireEvent.press(screen.getByTestId("wipe-confirm-erase"));
+
+  await waitFor(() => expect(mockWipeAndStartOver).toHaveBeenCalledTimes(1));
+  await waitFor(() =>
+    expect(screen.getByTestId("privacy-wipe-error")).toHaveTextContent(
+      "Nothing was erased. Your data and your recovery words are still on this phone, so you can try again.",
+    ),
+  );
+  expect(
+    screen.queryByText(
+      "Your data was erased, but PeraPlano could not finish resetting. Please close and reopen the app.",
+    ),
+  ).toBeNull();
   expect(screen.getByTestId("wipe-confirm-erase").props.accessibilityState.busy).toBe(false);
 });
 

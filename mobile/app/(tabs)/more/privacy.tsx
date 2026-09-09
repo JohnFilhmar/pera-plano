@@ -37,6 +37,7 @@ import { useRawCaptures } from "@/hooks/queries/use_raw_captures";
 import { useRuleset } from "@/hooks/queries/use_ruleset";
 import { useLock } from "@/contexts/lock_context";
 import { exportAllData } from "@/lib/privacy/data_export";
+import { WipeIncompleteError } from "@/lib/security/wipe";
 import { openAccessSettings } from "@/modules/notification_listener";
 import type { ProviderSwitchItem } from "@/components/privacy/provider_switch_list";
 
@@ -55,10 +56,35 @@ const INTRO_BODY =
 const CAPTURED_LIST_BODY =
   "Every notification PeraPlano captured from your banks and e-wallets, kept for 30 days, then deleted automatically.";
 
+/**
+ * The two sentences a failed wipe can honestly print, split exactly where
+ * lib/security/wipe.ts splits its failures: a `wipeDatabase()` rejection
+ * propagates as itself because NOTHING was destroyed, and every later
+ * rejection arrives as `WipeIncompleteError` because the file is already gone.
+ * The second sentence is this screen's original wording, kept because it is
+ * accurate for that case. The first exists because it was previously printed
+ * too: one message for both told a user whose ledger was still on their phone
+ * that their data had been erased, which is the opposite of the truth in the
+ * more frightening direction, on the one screen whose whole job is being
+ * checkable about their data. It says what state they are actually in and that
+ * the phrase and the ledger both survived, so a retry is a real option.
+ */
+const WIPE_INCOMPLETE_BODY =
+  "Your data was erased, but PeraPlano could not finish resetting. Please close and reopen the app.";
+const WIPE_NOT_STARTED_BODY =
+  "Nothing was erased. Your data and your recovery words are still on this phone, so you can try again.";
+
 const SmartphoneIcon = registerIcon(Smartphone);
 
 export default function PrivacyScreen() {
-  const { wipeAndStartOver } = useLock();
+  /**
+   * `errorMessage` is the wipe's real reporting channel, not the `catch` in
+   * `handleWipeConfirmed` — see that function's doc. It is read here rather
+   * than after the `await` because the value in that closure is the one from
+   * the render that started the wipe, i.e. always the one from before the
+   * context set it.
+   */
+  const { wipeAndStartOver, errorMessage: lockErrorMessage } = useLock();
   const queryClient = useQueryClient();
 
   const { data: captureEnabled } = useCaptureEnabled();
@@ -108,6 +134,13 @@ export default function PrivacyScreen() {
   const [busyProviderKey, setBusyProviderKey] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const [wipeError, setWipeError] = useState<string | null>(null);
+  /**
+   * True once a wipe attempt has come back and left this screen mounted, which
+   * is the only situation in which the lock context's `errorMessage` belongs
+   * to this screen's wipe. Without the gate, any message the context happens to
+   * be holding would print itself under the Erase button on first mount.
+   */
+  const [wipeAttempted, setWipeAttempted] = useState(false);
 
   const providers = useMemo(() => bundle?.providers ?? [], [bundle]);
   const allPackageNames = useMemo(
@@ -203,28 +236,59 @@ export default function PrivacyScreen() {
    * therefore still happens on the way back in, just at the one moment there
    * is a key to do it with.
    *
-   * THE CATCH BELOW IS STILL NOT OPTIONAL, for the same reason as before:
-   * `wipeKeys()` and `clearCaptureBuffer()` both run AFTER `wipeDatabase()`
-   * has already deleted the file irreversibly (see lib/security/wipe.ts's
-   * header on why that order is deliberate). Without this catch, either one
-   * throwing would leave the user on this screen with a stopped spinner, no
-   * message, and an app whose data is already gone — the single most
-   * dangerous silent failure this feature could have.
+   * A FAILURE DOES NOT ARRIVE AS A REJECTION. The context's
+   * `wipeAndStartOver` NEVER REJECTS — its own doc says so, and
+   * contexts/__tests__/lock_context.test.tsx pins both failure kinds as
+   * `resolves` — because its first call site (app/lock.tsx) fires it as
+   * `void onWipe()`, where a rejection would be an unhandled promise on the
+   * screen a silent failure is most dangerous on. Every outcome lands in the
+   * context's `status`/`errorMessage` instead, and which of the two failures
+   * happened decides whether this screen is even still mounted to report it:
+   *
+   * - A failure AFTER `wipeDatabase()` (`WipeIncompleteError`) moves status to
+   *   "needs_onboarding", so app/_layout.tsx's AppShell replaces this entire
+   *   Stack with the lock gate, and app/lock.tsx prints the context's message
+   *   above the fresh setup flow. Nothing this file renders is on screen by
+   *   then, and nothing it could set would ever be seen.
+   * - A `wipeDatabase()` failure destroyed nothing, so status deliberately
+   *   stays "unlocked" and this screen stays mounted — and until this handler
+   *   read `errorMessage`, that user watched the spinner stop and got no
+   *   message at all. Its `catch` never ran, because there was no rejection to
+   *   catch. That is the silent failure the block below actually prevents.
+   *
+   * THE CATCH STILL IS NOT OPTIONAL, and now branches. It is what stands
+   * between a future context that does reject and that same stopped spinner —
+   * and if it ever fires it must not repeat the bug it was written with: one
+   * message for both kinds told a user whose ledger was untouched that their
+   * data had been erased. `WipeIncompleteError` is the only thing that can say
+   * which side of the database file the sequence stopped on.
    */
   const handleWipeConfirmed = async () => {
     setWiping(true);
     setWipeError(null);
+    setWipeAttempted(false);
     try {
       await wipeAndStartOver();
+      setWipeAttempted(true);
     } catch (error) {
-      console.warn("privacy: wipe could not finish after the database was cleared", error);
-      setWipeError(
-        "Your data was erased, but PeraPlano could not finish resetting. Please close and reopen the app.",
-      );
+      if (error instanceof WipeIncompleteError) {
+        console.warn("privacy: wipe could not finish after the database was cleared", error);
+        setWipeError(WIPE_INCOMPLETE_BODY);
+      } else {
+        console.warn("privacy: wipe stopped before anything was erased", error);
+        setWipeError(WIPE_NOT_STARTED_BODY);
+      }
     } finally {
       setWiping(false);
     }
   };
+
+  /**
+   * The catch's message first (it only exists for a rejection this screen has
+   * no other account of), then the context's, which is where every failure the
+   * app can currently produce actually reports itself.
+   */
+  const wipeNotice = wipeError ?? (wipeAttempted ? lockErrorMessage : null);
 
   return (
     <ScrollView
@@ -343,9 +407,9 @@ export default function PrivacyScreen() {
           </Text>
         ) : null}
         <WipeFlow onConfirmed={handleWipeConfirmed} busy={wiping} />
-        {wipeError ? (
+        {wipeNotice ? (
           <Text testID="privacy-wipe-error" className="text-body text-danger dark:text-danger-dark">
-            {wipeError}
+            {wipeNotice}
           </Text>
         ) : null}
       </View>
