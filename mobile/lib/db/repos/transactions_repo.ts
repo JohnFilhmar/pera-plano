@@ -709,8 +709,24 @@ export async function listTransactions(filter: TxFilter): Promise<Transaction[]>
 /**
  * Total money spent in [from, to). Counts `direction = 'out'` only and never
  * counts transfer legs (invariant I2) or balance adjustments
- * (017_transaction_adjustments). The window is clamped to the tier's history
- * floor so Free never reports spend it cannot show.
+ * (017_transaction_adjustments). The window is exactly the one the caller
+ * asked for: it is NOT clamped to the tier's history floor.
+ *
+ * THE FLOOR IS A BROWSING GATE, AND THIS IS A COMPUTATION (GAP-105). Limits
+ * rule 8, verbatim: "Limit totals are always computed from the full ledger,
+ * regardless of the free tier's 90-day history view gate — data is never
+ * deleted, only the browsing view is gated." docs/05-monetization.md §3.3
+ * scopes the same gate the same way: records older than 90 days go "invisible
+ * in ledger, search, and Reports" while they "still participate in Wallet
+ * balance math", and Safe-to-Spend's "today number is computed identically in
+ * both tiers". This function used to clamp `from` to `historyFloor()`, which
+ * was harmless only because MVP hardcodes `plus` so the floor is null. On
+ * Free, any window reaching further back than 90 days — an annual limit, or
+ * the previous period rule 14's carryover reads — would have summed a
+ * fraction of its own period and printed headroom the user does not have.
+ * `listTransactions` keeps the floor, because browsing is the one thing the
+ * floor is for; `dailySpend` below states the same exemption from the other
+ * side.
  *
  * THE ADJUSTMENT EXCLUSION IS NOT OPTIONAL HERE, unlike on `listTransactions`.
  * This function has exactly one meaning — "how much money did this person
@@ -724,14 +740,10 @@ export async function sumSpend(args: {
   to: number;
   categoryIds?: string[];
   walletIds?: string[];
-  /** Same meaning and same fallback as `TxFilter.now`: when the floor is measured. */
-  now?: number;
 }): Promise<Centavos> {
   if (args.categoryIds?.length === 0 || args.walletIds?.length === 0) return 0;
 
   const db = await getDatabase();
-  const floor = historyFloor(args.now ?? Date.now());
-  const from = floor === null ? args.from : Math.max(args.from, floor);
 
   const clauses = [
     "direction = 'out'",
@@ -740,7 +752,7 @@ export async function sumSpend(args: {
     "occurred_at >= ?",
     "occurred_at < ?",
   ];
-  const params: (string | number)[] = [from, args.to];
+  const params: (string | number)[] = [args.from, args.to];
 
   if (args.categoryIds) {
     clauses.push(`category_id IN (${args.categoryIds.map(() => "?").join(", ")})`);

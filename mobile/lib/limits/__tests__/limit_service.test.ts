@@ -19,6 +19,8 @@ import {
   setLimitAlertState,
   updateLimit,
 } from "@/lib/db/repos/limits_repo";
+import { listTransactions } from "@/lib/db/repos/transactions_repo";
+import { __setTierForTests } from "@/lib/entitlements";
 import { newId } from "@/lib/ids";
 import { freshDb } from "@/test_support/db";
 
@@ -137,6 +139,9 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  // The tier override is process-global: a test that switches to free must not
+  // leak it into the next one.
+  __setTierForTests(null);
   await closeDatabase();
 });
 
@@ -697,4 +702,51 @@ test("a state written by an earlier version is respected, not overwritten", asyn
   // 90% — above 80 (already fired) and below 100. Nothing new.
   expect(alerts).toEqual([]);
   expect((await getLimitAlertState(limit.id))?.fired).toEqual([50, 80]);
+});
+
+// ---------------------------------------------------------------------------
+// The 90-day history floor gates BROWSING, not counting — rule 8 (GAP-105)
+// ---------------------------------------------------------------------------
+//
+// Rule 8, verbatim: "Limit totals are always computed from the full ledger,
+// regardless of the free tier's 90-day history view gate — data is never
+// deleted, only the browsing view is gated." docs/05-monetization.md §3.3 says
+// it twice more: the gate makes records invisible "in ledger, search, and
+// Reports" while they "still participate in Wallet balance math", and
+// Safe-to-Spend's "today number is computed identically in both tiers".
+//
+// `__setTierForTests("free")` IS LOAD-BEARING. The shipped MVP tier is `plus`,
+// where `historyWindowDays()` returns null and the floor is never applied at
+// all — this test would pass with or without the fix if it ran on the default.
+//
+// AN ANNUAL LIMIT IS ALSO LOAD-BEARING. The floor only bites on a window that
+// reaches further back than 90 days; a monthly or weekly limit would sit
+// entirely inside the free window and prove nothing either way.
+test("FREE: an annual limit counts spend the ledger list is not allowed to show", async () => {
+  __setTierForTests("free");
+
+  const now = ms(2026, 10, 15); // Nov 15 2026 — the annual window opened Jan 1.
+  await createLimit({ scope: "annual", basis: "fixed", value: 5000000 });
+
+  // Both rows are inside the annual period. Only the November one is inside
+  // the free tier's 90-day view (the floor on this `now` is Aug 17 2026).
+  await seedTx({ walletId: "w1", categoryId: "food", amount: 300000, occurredAt: ms(2026, 1, 20) });
+  await seedTx({ walletId: "w1", categoryId: "food", amount: 200000, occurredAt: ms(2026, 10, 14) });
+
+  const [status] = await getLimitStatuses({ now, monthlyIncome: null });
+  expect(status.spend).toBe(500000);
+
+  // THE FLOOR REALLY IS ACTIVE, AND IN THE FAILING DIRECTION. Same tier, same
+  // window, same rows: the browsable ledger drops the February purchase that
+  // the total above just counted. That divergence is what rule 8 asks for.
+  const browsable = await listTransactions({
+    from: status.window.start,
+    to: status.window.end,
+    now,
+  });
+  expect(browsable.map((row) => row.amount)).toEqual([200000]);
+
+  // §3.3's "computed identically in both tiers", stated as an assertion.
+  __setTierForTests("plus");
+  expect((await getLimitStatuses({ now, monthlyIncome: null }))[0].spend).toBe(500000);
 });

@@ -302,7 +302,20 @@ test("sumSpend honours the exclusive upper bound and category/wallet filters", a
   expect(await sumSpend({ from: 0, to: 1 })).toBe(0);
 });
 
-test("free tier clamps sumSpend and listTransactions to the 90-day window", async () => {
+// GAP-105: THE 90-DAY FLOOR GATES BROWSING, NOT COUNTING. Limits rule 8,
+// verbatim: "Limit totals are always computed from the full ledger, regardless
+// of the free tier's 90-day history view gate — data is never deleted, only
+// the browsing view is gated." docs/05-monetization.md §3.3 draws the same
+// line, listing the surfaces the gate touches as "ledger, search, and Reports"
+// while older records "still participate in Wallet balance math".
+//
+// This test used to assert the opposite (`sumSpend` returning 100 on free),
+// which is why the defect survived: it enforced the falsehood. The pair of
+// assertions in the free block below is the whole point — the SAME row, at the
+// SAME instant, on the SAME tier, is invisible to the list and counted by the
+// sum. The list half is what proves the floor is really active; without it a
+// passing sum would mean nothing.
+test("on free the 90-day floor hides a row from listTransactions and still counts it in sumSpend", async () => {
   const now = Date.now();
   await insertTransaction({
     walletId,
@@ -310,6 +323,7 @@ test("free tier clamps sumSpend and listTransactions to the 90-day window", asyn
     amount: 100,
     direction: "out",
     occurredAt: now - 10 * DAY,
+    merchant: "recent",
     source: "manual",
     confidence: 1,
   });
@@ -319,17 +333,20 @@ test("free tier clamps sumSpend and listTransactions to the 90-day window", asyn
     amount: 900,
     direction: "out",
     occurredAt: now - 100 * DAY,
+    merchant: "ancient",
     source: "manual",
     confidence: 1,
   });
 
   __setTierForTests("plus");
   expect(await sumSpend({ from: 0, to: now + 1000 })).toBe(1000);
-  expect((await listTransactions({})).length).toBe(2);
+  expect((await listTransactions({})).map((row) => row.merchant)).toEqual(["recent", "ancient"]);
 
   __setTierForTests("free");
-  expect(await sumSpend({ from: 0, to: now + 1000 })).toBe(100);
-  expect((await listTransactions({})).length).toBe(1);
+  // The floor is active, in the direction that matters: browsing loses the row.
+  expect((await listTransactions({})).map((row) => row.merchant)).toEqual(["recent"]);
+  // And the total keeps it anyway.
+  expect(await sumSpend({ from: 0, to: now + 1000 })).toBe(1000);
 });
 
 // ---------------------------------------------------------------------------

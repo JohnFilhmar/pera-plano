@@ -166,10 +166,15 @@ describe("017 backfills adjustments already on the device", () => {
   const ONLY_017 = MIGRATIONS.filter((migration) => migration.version === 17);
 
   /**
-   * `occurredAt` defaults to a moment inside every tier's history window
-   * rather than to epoch 0. `sumSpend` clamps its `from` to `historyFloor()`,
-   * so a row planted in 1970 would be filtered out by the FLOOR and a spend
-   * assertion over it would pass whether or not the backfill worked.
+   * `occurredAt` defaults to a moment inside the day the spend assertion below
+   * actually asks about, rather than to epoch 0: a row planted in 1970 would
+   * fall outside that window and the assertion would pass whether or not the
+   * backfill worked.
+   *
+   * The original reason given here was the tier's history floor, which
+   * `sumSpend` no longer applies (GAP-105: limits rule 8 — totals count the
+   * full ledger; only browsing is gated). The window is what makes the fixture
+   * load-bearing now.
    */
   const RECENT = atLocalTime(DAY, 9, 0);
 

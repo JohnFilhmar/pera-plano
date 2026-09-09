@@ -20,6 +20,18 @@
 // `sumSpend` are given the SAME filters here, expanded the same way
 // (`expandCategoryIds`, rule 4's descendants rule), so the list adds up to the
 // number printed above it.
+//
+// WITH ONE EXCEPTION THE SPEC ASKS FOR (GAP-105). On the free tier
+// `listTransactions` still clamps to the 90-day history floor while `sumSpend`
+// does not, so a limit whose period reaches further back than 90 days — an
+// annual one — prints a total larger than the rows beneath it add up to.
+// Limits rule 8 requires exactly that: "Limit totals are always computed from
+// the full ledger, regardless of the free tier's 90-day history view gate —
+// data is never deleted, only the browsing view is gated." The gap is the gate
+// being visible, not the screen contradicting itself; the boundary row
+// docs/05-monetization.md §5 specifies for the ledger is what will explain it
+// when tiering goes live (not built for this list yet — MVP is hardcoded to
+// `plus`, where the floor is null and the two always agree).
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
