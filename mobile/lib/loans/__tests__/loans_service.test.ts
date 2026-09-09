@@ -420,6 +420,55 @@ test("confirming records the payment and reduces the balance", async () => {
   expect(await outstandingBalance(loan.id)).toBe(5000000 - 444244);
 });
 
+test("THE AMOUNT CEILING FOLLOWS THE MONEY PAID, NOT `principal - outstanding`", async () => {
+  // Rule 8(d) scores a transaction against what the NEXT installment asks for,
+  // so the schedule pointer that picks that installment sets the ceiling of the
+  // ±2% window — this is a money signal, not a label.
+  //
+  // On an amortized loan the two ways of asking "how much has been paid?"
+  // diverge: ₱4,000 handed over clears ₱3,000 of a principal balance, so
+  // `principal - outstanding` reports ₱3,000 and leaves the pointer on the
+  // installment the user has ALREADY paid, asking for its ₱1,000 remainder.
+  // The next ₱4,000 payment then matches nothing and a stray ₱1,000 would
+  // match "the amount due".
+  const loan = await createLoan({
+    direction: "i-owe",
+    counterparty: "Home Credit",
+    principal: 1000000,
+    interestRate: 12,
+    linkedWalletId: cash.id,
+    schedule: [
+      { dueDate: "2026-09-15", amountDue: 400000, principalPortion: 300000, interestPortion: 100000 },
+      { dueDate: "2026-10-15", amountDue: 400000, principalPortion: 330000, interestPortion: 70000 },
+      { dueDate: "2026-11-15", amountDue: 400000, principalPortion: 370000, interestPortion: 30000 },
+    ],
+  });
+  await recordPayment({
+    loanId: loan.id,
+    transactionId: await spend({ amount: 400000, at: NOW - 3 * DAY, merchant: "HOME CREDIT" }),
+  });
+
+  // The next installment, and a stray the size of the FIRST installment's
+  // unpaid remainder under the old pointer — one of these matches "the amount
+  // due" and it is not the same one under both readings.
+  await spend({ amount: 400000, at: NOW, merchant: "HOME CREDIT" });
+  await spend({ amount: 100000, at: NOW, merchant: "HOME CREDIT" });
+
+  const candidates = await findPaymentCandidates(
+    loan.id,
+    NOW,
+    5,
+    // Below the floor too, so this asserts the REASONS rather than merely
+    // whether the transaction cleared a threshold.
+    true,
+  );
+
+  const second = candidates.find((candidate) => candidate.amount === 400000);
+  expect(second?.reasons).toContain("Matches the amount due");
+  const stray = candidates.find((candidate) => candidate.amount === 100000);
+  expect(stray?.reasons ?? []).not.toContain("Matches the amount due");
+});
+
 test("A CONFIRMED PAYMENT IS EXCLUDED FROM INCOME DETECTION", async () => {
   // Loans rule 17: "Transactions matched to an owed-to-me loan are excluded
   // from income cadence detection so that a borrower's regular repayments are

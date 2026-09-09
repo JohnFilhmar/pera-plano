@@ -151,6 +151,81 @@ export function buildFlatSchedule(
 }
 
 /**
+ * The part of one installment that comes off the BALANCE.
+ *
+ * Amortized rows carry a `principalPortion`; flat rows carry none because rule
+ * 4 leaves 5-6 with no interest to split off ("EVERY PESO IS PRINCIPAL", see
+ * `buildFlatSchedule`). The `??` is therefore the whole difference between the
+ * spec's two scheduled kinds, written once — and it is the same fold
+ * `app/(tabs)/plan/loans/[id].tsx` already makes for the schedule table's
+ * balance column, so the headline balance and that column cannot disagree.
+ *
+ * THE BALANCE ITSELF STILL COUNTS DOWN FROM `Loan.principal`, not from a sum
+ * over these. Rule 2 wants a flat loan's total repayable and an amortized
+ * loan's principal, and `principal` IS BOTH ALREADY: `loan_form.tsx` stores
+ * `installment * count` for a flat loan (its own comment cites rule 2), and
+ * `buildAmortizationSchedule` guarantees the principal column sums to the
+ * principal. Summing the schedule instead would look equivalent and is not —
+ * nothing makes a stored schedule describe the whole loan, and a partial one
+ * would silently shrink the balance to whatever rows happen to be there.
+ */
+function balancePortionOf(installment: Installment): Centavos {
+  return installment.principalPortion ?? installment.amountDue;
+}
+
+/**
+ * How much of what has been paid comes off the balance.
+ *
+ * WHY THIS IS NOT SIMPLY THE TOTAL PAID. An amortized installment is principal
+ * PLUS interest, and the balance it pays down is denominated in principal
+ * alone. Subtracting the whole installment from a principal balance is how a
+ * ₱50,000 loan repaid at ₱4,442.44 a month reads as settled after eleven and a
+ * bit payments while a twelfth installment is still owed. For flat and
+ * free-form loans every peso is principal (rule 4), so this returns the total
+ * unchanged and nothing about those two kinds moves.
+ *
+ * INTEREST FIRST WITHIN A PART-PAID INSTALLMENT, which is how a lender applies
+ * one, and it keeps the reduction inside `[0, principalPortion]` so a partial
+ * payment can never clear more principal than the row it landed on holds.
+ *
+ * ANYTHING BEYOND THE LAST INSTALLMENT COUNTS IN FULL (rule 11: "an
+ * overpayment applies the excess to the balance"). Without that tail a loan
+ * whose lender added a late fee (rule 20) could be paid off and still never
+ * reach zero.
+ */
+export function principalApplied(
+  schedule: Installment[] | null,
+  totalPaid: Centavos,
+): Centavos {
+  if (schedule === null || schedule.length === 0) return Math.max(0, totalPaid);
+
+  // Date order, not array order — the same reason `nextDue` sorts below.
+  const ordered = [...schedule].sort((a: Installment, b: Installment) =>
+    a.dueDate.localeCompare(b.dueDate),
+  );
+
+  let covered = totalPaid;
+  let applied = 0;
+
+  for (const installment of ordered) {
+    if (covered <= 0) break;
+
+    const principalPortion = balancePortionOf(installment);
+    if (covered >= installment.amountDue) {
+      applied += principalPortion;
+      covered -= installment.amountDue;
+      continue;
+    }
+
+    const interestPortion = installment.amountDue - principalPortion;
+    applied += Math.max(0, Math.min(principalPortion, covered - interestPortion));
+    covered = 0;
+  }
+
+  return applied + Math.max(0, covered);
+}
+
+/**
  * The next installment still owed, or `null` when there is nothing to be due.
  *
  * TAKES THE TOTAL PAID, NOT THE PAYMENT ROWS. The m2b plan's signature is

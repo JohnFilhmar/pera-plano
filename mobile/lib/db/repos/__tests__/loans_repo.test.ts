@@ -16,7 +16,7 @@ import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categori
 import { insertTransaction } from "@/lib/db/repos/transactions_repo";
 import { createWallet } from "@/lib/db/repos/wallets_repo";
 import { freshDb } from "@/test_support/db";
-import type { Wallet } from "@/types/domain";
+import type { Installment, Wallet } from "@/types/domain";
 
 import {
   archiveLoan,
@@ -427,6 +427,143 @@ test("deleteAdjustment restores the balance", async () => {
   await deleteAdjustment(adjustment.id);
 
   expect(await outstandingBalance(loan.id)).toBe(500000);
+});
+
+// ---------------------------------------------------------------------------
+// The balance by schedule kind — spec rule 2, which is three rules
+//
+//   "Amortized: remaining balance per the schedule after applied payments.
+//    Flat: total repayable minus the sum of `paymentHistory[]`.
+//    Free-form: `principal` ... minus payments, plus any balance adjustments."
+//
+// All three count down from `principal`, because `principal` already IS each
+// of those figures: `loan_form.tsx` stores `installment * count` for a flat
+// loan, and `buildAmortizationSchedule`'s principal column sums to the
+// principal. What differs is how much of a PAYMENT comes off it.
+// ---------------------------------------------------------------------------
+
+/** Three months of ₱10,000 principal at ₱4,000 a month — ₱2,000 of interest. */
+const AMORTIZED: Installment[] = [
+  { dueDate: "2026-09-15", amountDue: 400000, principalPortion: 300000, interestPortion: 100000 },
+  { dueDate: "2026-10-15", amountDue: 400000, principalPortion: 330000, interestPortion: 70000 },
+  { dueDate: "2026-11-15", amountDue: 400000, principalPortion: 370000, interestPortion: 30000 },
+];
+
+async function amortized() {
+  return createLoan({
+    direction: "i-owe",
+    counterparty: "GLoan",
+    principal: 1000000,
+    interestRate: 12,
+    schedule: AMORTIZED,
+  });
+}
+
+test("AN AMORTIZED LOAN IS NOT SETTLED WHILE INTEREST ROWS REMAIN", async () => {
+  // THE DEFECT THIS FIXES. ₱10,000 borrowed, ₱12,000 repayable over three
+  // installments. Subtracting whole installments from a principal balance made
+  // the loan read settled after ₱10,000 — two and a half payments — with a
+  // third installment still to collect. Rule 2 wants "remaining balance per
+  // the schedule", and the schedule's balance column is principal.
+  const loan = await amortized();
+
+  expect(await outstandingBalance(loan.id)).toBe(1000000);
+
+  await recordPayment({ loanId: loan.id, transactionId: await payment(400000) });
+  // ₱4,000 handed over, of which ₱1,000 was interest.
+  expect(await outstandingBalance(loan.id)).toBe(1000000 - 300000);
+
+  await recordPayment({ loanId: loan.id, transactionId: await payment(400000) });
+  expect(await outstandingBalance(loan.id)).toBe(1000000 - 300000 - 330000);
+
+  // ₱8,000 paid. The old formula called this ₱2,000 outstanding on the way to
+  // settling at ₱10,000; the schedule says ₱3,700 of principal is still owed.
+  expect(await outstandingBalance(loan.id)).toBeGreaterThan(0);
+  expect((await listLoans({ includeSettled: false })).map((row) => row.id)).toEqual([loan.id]);
+
+  await recordPayment({ loanId: loan.id, transactionId: await payment(400000) });
+  // Settled by the LAST installment, not before it.
+  expect(await outstandingBalance(loan.id)).toBe(0);
+  expect(await listLoans({ includeSettled: false })).toEqual([]);
+});
+
+test("THE OPEN-LOAN FILTER ASKS THE BALANCE, it does not re-derive one in SQL", async () => {
+  // `listLoans({ includeSettled: false })` is what the matcher scans, and it
+  // used to carry its own WHERE-clause copy of `principal - paid + adjustments`.
+  // Here the two answers diverge: ₱10,000 handed over on a ₱10,000 amortized
+  // loan is only ₱8,000 of principal, so ₱2,000 is still owed — and the SQL
+  // copy would have called that settled and dropped the loan out of the scan,
+  // leaving the user with a payment they cannot record against it.
+  const loan = await amortized();
+
+  await recordPayment({ loanId: loan.id, transactionId: await payment(400000) });
+  await recordPayment({ loanId: loan.id, transactionId: await payment(400000) });
+  await recordPayment({ loanId: loan.id, transactionId: await payment(200000) });
+
+  expect(await outstandingBalance(loan.id)).toBe(200000);
+  expect((await listLoans({ includeSettled: false })).map((row) => row.id)).toEqual([loan.id]);
+});
+
+test("a PART-PAID amortized installment clears its interest before its principal", async () => {
+  // How a lender applies a short payment, and it keeps the reduction inside
+  // the row: ₱1,500 against a ₱4,000 installment carrying ₱1,000 of interest
+  // clears ₱500 of principal, not ₱1,500.
+  const loan = await amortized();
+
+  await recordPayment({ loanId: loan.id, transactionId: await payment(150000) });
+
+  expect(await outstandingBalance(loan.id)).toBe(1000000 - 50000);
+});
+
+test("an overpayment past the last installment still clears a late fee", async () => {
+  // Rule 11: "an overpayment applies the excess to the balance", and rule 20
+  // reopens a settled loan with exactly such a fee. Without counting the tail
+  // beyond the schedule, the ₱500 paid to clear the ₱500 fee would land on no
+  // installment and the loan could never reach zero again.
+  const loan = await amortized();
+  await recordAdjustment({
+    loanId: loan.id,
+    amount: 50000,
+    occurredAt: NOW,
+    note: "Late fee",
+  });
+
+  await recordPayment({ loanId: loan.id, transactionId: await payment(1200000 + 50000) });
+
+  expect(await outstandingBalance(loan.id)).toBe(0);
+});
+
+test("THE DOC'S OWN 5-6 EXAMPLE: borrow ₱5,000, repay ₱6,000", async () => {
+  // docs/04-features/06-loans.md, flow §5-6: "the app tracks outstanding =
+  // ₱6,000.00 minus payments". `loan_form.tsx` is what makes that true — it
+  // saves `installment * count` as a flat loan's principal, so ₱6,000 is what
+  // reaches this layer and the borrowed ₱5,000 is never the balance. Pinned
+  // here because GAP-082 will change that field's UI and must not change this.
+  const loan = await createLoan({
+    direction: "i-owe",
+    counterparty: "Aling Nena",
+    principal: 600000,
+    schedule: [
+      { dueDate: "2026-09-01", amountDue: 100000 },
+      { dueDate: "2026-09-08", amountDue: 100000 },
+      { dueDate: "2026-09-15", amountDue: 100000 },
+      { dueDate: "2026-09-22", amountDue: 100000 },
+      { dueDate: "2026-09-29", amountDue: 100000 },
+      { dueDate: "2026-10-06", amountDue: 100000 },
+    ],
+  });
+
+  expect(await outstandingBalance(loan.id)).toBe(600000);
+
+  // Five collector visits — the whole ₱5,000 borrowed.
+  for (let visit = 0; visit < 5; visit++) {
+    await recordPayment({ loanId: loan.id, transactionId: await payment(100000) });
+  }
+
+  // Rule 4: every peso of a 5-6 loan is principal, so nothing is withheld —
+  // and the sixth installment is still owed.
+  expect(await outstandingBalance(loan.id)).toBe(100000);
+  expect((await listLoans({ includeSettled: false })).map((row) => row.id)).toEqual([loan.id]);
 });
 
 // ---------------------------------------------------------------------------

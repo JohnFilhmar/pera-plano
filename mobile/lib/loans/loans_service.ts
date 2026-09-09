@@ -356,7 +356,15 @@ async function matchBasisFor(loan: Loan): Promise<MatchBasis | null> {
   const outstanding = await outstandingBalance(loan.id);
   if (outstanding <= 0) return null;
 
-  const due = nextDue(loan, loan.principal - outstanding) ?? {
+  // THE PAYMENTS' TOTAL, NOT `principal - outstanding` — the same correction
+  // `listLoanStatuses` above already carries, and it is no longer merely more
+  // honest here: on an amortized loan the balance is denominated in principal
+  // while an installment is principal plus interest, so the subtraction names
+  // a smaller figure than the user has handed over and walks this pointer back
+  // onto rows they have already paid. `nextDue` sets the amount signal's
+  // ceiling, so a stale pointer aims the ±2% window at the wrong installment.
+  const paidTotal = await paidTotalOf(await listPayments(loan.id));
+  const due = nextDue(loan, paidTotal) ?? {
     dueDate: loan.nextDueDate ?? "",
     amount: loan.nextDueAmount ?? 0,
   };
@@ -591,10 +599,9 @@ export async function findLoanMatchesForTransaction(
   for (const loan of await listLoans({ includeSettled: false })) {
     if (payingDirection(loan) !== transaction.direction) continue;
 
-    // `listLoans({ includeSettled: false })` already filters on the same
-    // arithmetic, and this still re-checks: that SQL predicate and
-    // `outstandingBalance` are two expressions of one rule, and the basis is
-    // needed here anyway.
+    // `listLoans({ includeSettled: false })` already asked `outstandingBalance`
+    // the same question, and this still re-checks because the basis — the next
+    // installment and its date — is needed here regardless.
     const basis = await matchBasisFor(loan);
     if (basis === null) continue;
 

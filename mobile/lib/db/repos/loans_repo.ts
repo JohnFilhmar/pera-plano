@@ -30,6 +30,7 @@
 import { DEFAULT_LOAN_REMINDER_OFFSETS } from "@/constants/loans";
 import { getDatabase } from "@/lib/db/database";
 import { newId } from "@/lib/ids";
+import { principalApplied } from "@/lib/loans/loan_math";
 import type {
   Centavos,
   Installment,
@@ -232,7 +233,8 @@ export async function getLoan(id: string): Promise<Loan | null> {
  * `includeSettled` defaults to TRUE. The spec's states table keeps a settled
  * loan visible ("Loan moves to a settled list; history retained"), so hiding it
  * by default would lose the history the same sentence promises to keep.
- * Settled means balance ≤ 0, computed the same way `outstandingBalance` does.
+ * Settled means balance ≤ 0, asked of `outstandingBalance` itself rather than
+ * re-derived here.
  */
 export async function listLoans(opts?: {
   direction?: LoanDirection;
@@ -256,29 +258,28 @@ export async function listLoans(opts?: {
     params.push(opts.direction);
   }
 
-  if (opts?.includeSettled === false) {
-    // Mirrors `outstandingBalance`: principal, less every matched payment's
-    // ledger amount, plus every signed adjustment.
-    clauses.push(`(
-      loans.principal
-      - COALESCE((
-          SELECT SUM(transactions.amount) FROM loan_payments
-            JOIN transactions ON transactions.id = loan_payments.transaction_id
-           WHERE loan_payments.loan_id = loans.id
-             AND transactions.direction = ${PAYING_DIRECTION_SQL}
-        ), 0)
-      + COALESCE((
-          SELECT SUM(amount) FROM loan_adjustments WHERE loan_adjustments.loan_id = loans.id
-        ), 0)
-    ) > 0`);
-  }
-
   const rows = await db.getAllAsync<LoanRow>(
     `SELECT loans.* FROM loans${clauses.length > 0 ? ` WHERE ${clauses.join(" AND ")}` : ""}
       ORDER BY loans.created_at`,
     params,
   );
-  return rows.map(rowToLoan);
+  const loans = rows.map(rowToLoan);
+  if (opts?.includeSettled !== false) return loans;
+
+  // SETTLED IS ASKED OF `outstandingBalance`, NOT RE-DERIVED IN SQL. This
+  // clause used to be a second copy of the balance formula written as a WHERE
+  // predicate, and the copy went wrong the moment the formula stopped being
+  // `principal - paid + adjustments`: a payment's principal content depends on
+  // the SCHEDULE, which lives in `schedule_json` and cannot be summed in a
+  // predicate. Two expressions of one rule is how an amortized loan ended up
+  // filtered out of the matcher's open-loan scan while its own detail screen
+  // still showed a balance — and a loan the matcher cannot see is a payment
+  // the user cannot record against it.
+  const open: Loan[] = [];
+  for (const loan of loans) {
+    if ((await outstandingBalance(loan.id)) > 0) open.push(loan);
+  }
+  return open;
 }
 
 export async function updateLoan(id: string, patch: Partial<NewLoan>): Promise<Loan> {
@@ -687,20 +688,51 @@ export async function deleteAdjustment(id: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * What is still owed — spec rule 2: principal, less the matched payments, plus
- * any balance adjustments.
+ * What is still owed — spec rule 2, which is THREE rules and not one:
+ * "Amortized: remaining balance per the schedule after applied payments. Flat:
+ * total repayable minus the sum of `paymentHistory[]`. Free-form: `principal`
+ * (or a user-set starting balance) minus payments, plus any balance
+ * adjustments."
+ *
+ * ALL THREE COUNT DOWN FROM `principal`, and that is not a simplification.
+ * `loan_form.tsx` stores `installment * count` as a flat loan's principal —
+ * citing this very rule — so `principal` already IS the total repayable there;
+ * `buildAmortizationSchedule` makes the principal column sum to the principal,
+ * so it is the schedule's own closing balance there. Free-form says it
+ * outright.
+ *
+ * WHAT DIFFERS IS WHAT A PAYMENT TAKES OFF IT. `principalApplied`
+ * (lib/loans/loan_math.ts) walks the schedule and counts each payment's
+ * PRINCIPAL CONTENT: the whole installment on a flat schedule, where rule 4
+ * leaves every peso principal, and the principal portion alone on an amortized
+ * one, where the rest is interest. Subtracting a whole amortized installment
+ * from a principal balance is what reported a ₱50,000 loan settled after
+ * eleven and a bit of its twelve payments, with interest rows still to run.
+ *
+ * ADJUSTMENTS COUNT ON EVERY KIND, not only free-form. Rule 2 names them under
+ * free-form because that is the only kind where accrued interest can ONLY
+ * arrive as one, but rule 12 has any lender's late fee "recorded as a balance
+ * adjustment", rule 13 covers "payments made entirely outside tracked money" —
+ * the 5-6 case, a flat loan — and rule 20 reopens a SETTLED loan with one.
+ * Dropping them for scheduled loans would leave the collector-paid-by-a-cousin
+ * payment with nothing to reduce.
  *
  * FLOORED AT ZERO (plan rule 5). A negative balance renders as the lender owing
- * the user money, which is a different loan.
+ * the user money, which is a different loan. Only an overpayment or a negative
+ * adjustment can reach it: `principalApplied` is bounded by the schedule for
+ * every peso that lands inside it.
  */
 export async function outstandingBalance(loanId: string): Promise<Centavos> {
   const db = await getDatabase();
 
-  const loan = await db.getFirstAsync<{ principal: number }>(
-    "SELECT principal FROM loans WHERE id = ?",
+  const loan = await db.getFirstAsync<{ principal: number; schedule_json: string | null }>(
+    "SELECT principal, schedule_json FROM loans WHERE id = ?",
     [loanId],
   );
   if (!loan) throw new LoanNotFoundError(loanId);
+
+  const schedule =
+    loan.schedule_json === null ? null : (JSON.parse(loan.schedule_json) as Installment[]);
 
   // ONLY PAYMENTS POINTING THE RIGHT WAY COUNT. `recordPayment` refuses to
   // link a mismatched transaction, so on a healthy database this clause
@@ -720,5 +752,8 @@ export async function outstandingBalance(loanId: string): Promise<Centavos> {
     [loanId],
   );
 
-  return Math.max(0, loan.principal - (paid?.total ?? 0) + (adjusted?.total ?? 0));
+  return Math.max(
+    0,
+    loan.principal - principalApplied(schedule, paid?.total ?? 0) + (adjusted?.total ?? 0),
+  );
 }
