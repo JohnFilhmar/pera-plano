@@ -139,3 +139,30 @@ jobs:
             echo "::error::at least one Jest shard did not pass."
             exit 1
           fi
+
+  # GAP-109. `server-ci.yml` already runs gitleaks, but behind a `server/**` paths
+  # filter, so a pull request touching only `mobile/**` was scanned by nothing at all
+  # -- and mobile is the half that ships to users, holding the encryption path, the
+  # Play Integrity wiring and the provider ruleset URL.
+  #
+  # A separate job rather than widening server-ci's filter: the two workflows carry
+  # different filters for good reasons, and widening one to cover the other's paths
+  # would run a server build on a mobile-only change.
+  secret-scan:
+    runs-on: ubuntu-latest
+    # gitleaks-action calls `GET /pulls/:number/commits` to scan just the PR's diff on
+    # a pull_request event. The default workflow token is contents:read only, which
+    # 403s that call ("Resource not accessible by integration") -- a missing scope, not
+    # a finding. contents:read is still needed for the checkout below.
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # History, not just the tip: a value deleted in a later commit was still
+          # published if it was ever pushed.
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

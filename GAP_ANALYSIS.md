@@ -35,12 +35,13 @@ not been started. Each gap's detail entry in section 9 carries the same marker i
 
 | ID | Status | Commit | Branch | Verification | Date |
 |---|---|---|---|---|---|
+| GAP-109 | DONE | 0237c95 | gap-wave-16 | **VERIFIED BY A REAL GITHUB ACTIONS RUN, not locally.** `secret-scan` passed in 14 s on run 34377079562 (PR #35), on a path that had never been scanned in this repository's history -- clean, no findings. The job mirrors `server-ci.yml`'s, including `fetch-depth: 0`, because gitleaks scans history and a value deleted in a later commit was still published if it was ever pushed, and including the `pull-requests: read` scope, without which gitleaks-action's call to list the PR's commits returns a 403 that reads like a finding but is a missing scope. A separate job rather than widening `server-ci.yml`'s filter, because the two workflows carry different filters deliberately and widening one would run a server build on a mobile-only change. Locally only the YAML was checked (parses, four jobs, expected permissions); everything else needed a runner and got one | 2026-09-10 |
 | GAP-103 | DONE | 34418d4 | gap-wave-15 | jest use_set_provider_pause + privacy_screen + modules + bootstrap + provider_picker 8 suites 156 tests PASS at `--maxWorkers=1`, re-run independently by the orchestrator; `npx tsc --noEmit` exit 0. Two reverts each failing exactly their own witnesses. **BUILT TO THE OWNER'S DECISION OF 2026-09-09: extend the native contract**, rather than conflating the provider switches with the master capture switch. A new PLAINTEXT boolean `provider_filter_deny_all` sits beside the sealed filter and is written in the same `commit()`, and `shouldCapture` consults it before the allowlist. The sealed value's name, encoding and meaning are unchanged, so a filter written by the previous version decodes identically and the new key is simply absent there, defaulting to false - which is also what keeps a fresh install on allow-all rather than inverting it. One deliberate asymmetry: when sealing fails the old code wrote nothing, and it still writes nothing EXCEPT when denying all, where the plaintext flag lands alone, so a failure always falls toward LESS capture. **KOTLIN NOW COMPILED, RUN AND VERIFIED ON DEVICE 2026-09-09 -- see the "KOTLIN VERIFIED ON DEVICE" block in section 0. 163 JVM tests pass, and the release build wrote `provider_filter_deny_all=true` with `capture_enabled` untouched.** (Originally recorded as: the Kotlin is not compiled and not run.) No Gradle project exists in a worktree; this is the campaign's first deliberate native change and its largest blind spot. Five Kotlin tests are written and unexecuted. A new `module_wiring` test asserts the Kotlin source declares the two-parameter signature the JS side sends, because a one-parameter native side would compile, pass every Kotlin test, pass tsc, and throw only on the device. HUMAN VERIFICATION REQUIRED, in the wave 15 findings block: `npx expo prebuild --platform android` then `./gradlew :notification_listener:testDebugUnitTest`, plus a seven-step device check on the A54 including an upgrade-over-previous-build case. The entry's two cites are both CORRECT, which is worth recording against the pattern, but its third acceptance criterion has the wrong MECHANISM: the all-paused state survives a relaunch because the native flag is persisted, not because the settings row is the only readable record. **THE ORCHESTRATOR'S BRIEF NAMED AN INCOMPLETE VERIFICATION SET for the third time in three waves**, omitting `bootstrap` and `provider_picker`, both of which a bridge-signature change necessarily breaks; following it literally would have shipped `provider_picker` red with four failures | 2026-09-09 |
 | GAP-029 | DONE | 0f8d91d | gap-wave-15 | jest lib/loans + loans_repo + components/loans 10 suites 188 tests PASS; loan_routes + plan_segments 2 suites 26 PASS at `--maxWorkers=1`; ingest/pipeline + utang_strip 73 PASS; `npx tsc --noEmit` exit 0. Three reverts, one per mechanism, each failing its own witnesses. **HALF THIS ENTRY WAS NEVER A DEFECT, AND IT IS THE HALF THE ENTRY AND THE ORCHESTRATOR'S BRIEF BOTH LEAD WITH.** The claim that a flat 5-6 loan reads as settled PHP 1,000 early is FALSE: `loan_form.tsx:544` stores `installment * count` as `principal` for flat loans, so `principal - paid` is already rule 2's "total repayable minus the sum of paymentHistory[]", and an existing test has pinned it at PHP 6,000 since the loan screens first shipped (`c1bd52a`). The entry's own acceptance criterion was satisfied BEFORE any fix. That falsehood had propagated into the entry title, the Contradiction Register's authoritative line, its decision-required line and a section 0 loose-end note that built an argument on it; all three prose sites are now struck and corrected in place. **THE ENTRY'S PRESCRIPTION WOULD HAVE SHIPPED A DEFECT:** summing `schedule[].amountDue` as the basis was implemented first and failed three tests, because nothing constrains a stored schedule to describe the whole loan and a two-row stub against a PHP 50,000 principal collapsed the balance to PHP 8,884.88. `principal` is already the right basis for all three kinds; what was wrong is what a PAYMENT TAKES OFF IT. The real defect is amortized-only and reached two sites the entry never names: `matchBasisFor` placed the auto-match pointer with the same arithmetic, aiming the plus-or-minus 2 percent window at PHP 1,000 instead of PHP 4,000 on the test loan, so a stray PHP 1,000 would have scored "Matches the amount due" while the genuine payment scored no amount signal at all; and `listLoans({includeSettled:false})` carried a SECOND COPY of the formula as a SQL predicate, the only filter feeding the open-loan scan. Adjustments stay on all three kinds, justified from rules 12, 13 and 20 rather than by analogy. User-visible: amortized loans showing Settled with interest outstanding become unsettled, the Plan tab utang total rises, payment buttons return, and due-date reminders resume per rule 15. **UNBLOCKS GAP-033 AND GAP-082**, and GAP-082's answer is now known: `principal` must keep holding `installment * count` for flat loans, so keeping the borrowed figure visible needs a NEW column, never a repurposed `principal` | 2026-09-09 |
 | GAP-104 | DONE | 392cc7a | gap-wave-14 | jest privacy_screen + wipe + data_wipe 3 suites 44 tests PASS (privacy_screen 22 to 25); three separate reverts each failing exactly its own witness. **THIS ENTRY'S EVIDENCE AND SYMPTOM WERE WRONG, AND THE CAMPAIGN FILED IT.** The entry says the screen's single catch shows "Your data was erased" for both failure kinds. `privacy.tsx` does NOT call `lib/security/wipe.ts`: it takes `wipeAndStartOver` from `useLock()`, and `contexts/lock_context.tsx` ALREADY branches on `WipeIncompleteError` and NEVER REJECTS - its own type doc says so and two tests pin it - so the screen's catch is DEAD CODE and that message has never rendered there. Verified independently by the orchestrator at `privacy.tsx:87` and `lock_context.tsx:124`. The entry's harm scenario cannot occur: on a POST-database failure the context flips the status, the tab stack unmounts, and the lock screen prints the accurate notice. THE REAL DEFECT IS THE OPPOSITE FAILURE - SILENCE. On a PRE-database failure the context sets its message and deliberately KEEPS the status, so the screen stays mounted, the promise resolves, the catch never runs, and the user watches the spinner stop and sees NOTHING - which is precisely the "stopped spinner, no message" that `privacy.tsx`'s own comment claims the catch prevents. The fix surfaces the context's `errorMessage` once a wipe has been attempted, reusing the context's existing sentence so the wording has one owner, and ALSO branches the catch as the entry asks, kept deliberately as defensive code. The entry's second acceptance criterion is NOT SATISFIABLE on this screen, because the screen is unmounted before that message could render; it is already met on the lock gate. A pre-existing test was enforcing the falsehood by mocking the context into rejecting, which production never does. **LESSON: the author read the file but never traced the call path. A catch is only a defect if something can reach it.** | 2026-09-09 |
 | GAP-105 | DONE | 8a2b847 | gap-wave-14 | jest lib/db/repos + lib/limits 31 suites 653 tests PASS; safe_to_spend + entitlements + reports + recurring + ingest 24 suites 620 PASS; limit_routes 27 PASS; `npx tsc --noEmit` exit 0. Both new tests fail with the clamp restored. Rule 8 verified verbatim at `03-limits.md:79`, corroborated at :142 ("a VIEWING gate only; limit totals ... always compute from the full ledger") and by `05-monetization.md:87` ("The today number is computed identically in both tiers"), which is what settles the fix at `sumSpend` rather than per caller. **THE ENTRY UNDERCOUNTS ITS OWN BLAST RADIUS, and the campaign filed it.** It frames the harm as understated spend. The larger defect is the CARRYOVER: `resolveState` sums the PREVIOUS period for rule 14, and for a Free annual limit that window sits entirely behind the floor, so last year's spend read as ZERO and a FULL EXTRA BASE of headroom carried forward. Understated spend and an inflated cap, compounding in the same direction. **A STANDING RULE POINTED THE WRONG WAY HERE, and the refinement matters: doc comments outrank an ENTRY, but a SPECIFICATION outranks a doc comment.** `sumSpend`'s own doc said the window "is clamped to the tier's history floor so Free never reports spend it cannot show", arguing FOR the defect; it was a rationalisation, contradicted by rule 8, by :142 and twice by monetization §3.3. A test was ENFORCING the falsehood (asserting `sumSpend` returns the clamped figure on Free) and is now its inverse, which is also what proves the floor is live rather than inert. The entry's cite was already stale by 29 lines after ONE wave (:704, actually :733) because GAP-075 added a function to that file - rule 7 in action. Consequence stated rather than hidden: on Free a limit total can now exceed what its drill-down receipts add up to, since that list keeps the browsing gate; the limit detail header claimed the opposite invariant and is corrected. Flagged for a future entry: `ingest/pipeline.ts` feeds categorization history through an unbounded `listTransactions({})`, which silently narrows to 90 days on Free | 2026-09-09 |
 | GAP-106 | DONE | 98a00e2 | gap-wave-14 | jest safe_to_spend + lib/goals 6 suites 137 tests PASS, widened to lib/income 14 suites 255 PASS; `npx tsc --noEmit` exit 0. Restoring the ternary fails the new test with two entries where one was expected, and BOTH carry the same date, which is itself the proof the fixture is sound under the suite's pinned `TZ=Asia/Manila`. **THREE ERRORS IN THIS ENTRY, WHICH THE CAMPAIGN FILED, AND THE ORCHESTRATOR REPEATED THE FIRST TWO IN THE BRIEF.** (1) The doc path `docs/04-features/09-goals.md` DOES NOT EXIST; goals rules live in `05-goals-savings.md` and `09-` is safe-to-spend. (2) Rule 13 does not carry the claim: its second sentence governs only the PERCENT base and says nothing about how often a fixed rule fires. The rules that settle it are 9 and 10, which denominate the reference pace per payday and put the fixed `contributionRule` amount on that same axis, and 14, which names the trigger a payday trigger - so the fix is argued FROM THE SPEC rather than from the code comment the entry paraphrased. (3) "Why it matters" leans on payday auto-allocation being Plus-only, which contains nothing: `MVP_TIER` is hardcoded to `"plus"`, so EVERY user on the shipped build is exposed, and `goal_form.tsx` defaults a new rule to `fixed`. GAP-070 did NOT settle fixed rules: its "Do not touch fixed-amount rules" is a scope fence, not a finding, so no decision is being reversed. Blast radius checked before halving the entry count: nothing reads `PlannedContribution[]` by length, every consumer sums amounts. Found and NOT fixed, needing its own entry: the payday PROMPT screens each credit against the profile average within 30 percent, so an even 50/50 split fires no prompt at all - the forecast was reserving twice for a transfer the user is asked to make once at most | 2026-09-09 |
-| GAP-053 | DONE | 8f0022c | gap-wave-13 | jest verification of the shipped shard config: `--shard=1/6 --maxWorkers=1` 45 suites 628 tests PASS in 358 s, and `--shard=3/3 --maxWorkers=1` 89 suites 1,697 tests PASS. THE PRE-EXISTING TYPECHECK ERROR IS FIXED HERE, deliberately reaching into GAP-052 because a gate red on its first run is the failure this entry's own ORDER OVERRIDE warns about, and because GAP-052's checklist prescribes exactly this fix. `npx tsc --noEmit` now exits 0 for the FIRST TIME IN THIS CAMPAIGN. THE ORCHESTRATOR'S BRIEF WAS WRONG ABOUT THE INFRASTRUCTURE and the agent checked rather than trusting it: `server-ci.yml` is `ubuntu-latest` throughout and only `deploy.yml`'s deploy job is self-hosted, so each matrix leg is its own VM and shards never contend - which makes sharding the right lever rather than the wrong one. THE ENTRY'S THREE SHARDS IS THE WRONG NUMBER: at the worker count that actually makes the suite green, three shards takes 733 s, over the entry's own ten-minute target; six shards at one worker runs 45 suites in 358 s. ONE WORKER, because the contention is between WORKERS specifically - `review_queue.test.tsx` run ALONE at two workers passes in 86 s while the same file inside a shard at two workers fails, its `waitFor` losing a ten-second budget whenever a second worker competes. Coverage verified rather than assumed: six shards summing to 269, union of 269 distinct paths, all fifteen pairwise intersections empty, union diffed clean against `npx jest --listTests`. Other entry errors: "250 test files" (actual 269); the `server-ci.yml:1-35` range omits the entire secret-scan job; `--ci` is already in `npm test`; and "the two checks" is incompatible with a matrix, which is why an aggregation job was added. UNVERIFIED AND UNVERIFIABLE FROM A WORKTREE: no GitHub Actions run has occurred, so the acceptance criterion stands open; `npm ci` on Linux was never executed; hosted-runner wall time is unproven; shards 2 and 4-6 were never run locally. Also flagged: a mobile-only PR gets no secret scan today, since `server-ci.yml`'s gitleaks job sits behind a `server/**` paths filter | 2026-09-09 |
+| GAP-053 | DONE | 8f0022c | gap-wave-13 | jest verification of the shipped shard config: `--shard=1/6 --maxWorkers=1` 45 suites 628 tests PASS in 358 s, and `--shard=3/3 --maxWorkers=1` 89 suites 1,697 tests PASS. THE PRE-EXISTING TYPECHECK ERROR IS FIXED HERE, deliberately reaching into GAP-052 because a gate red on its first run is the failure this entry's own ORDER OVERRIDE warns about, and because GAP-052's checklist prescribes exactly this fix. `npx tsc --noEmit` now exits 0 for the FIRST TIME IN THIS CAMPAIGN. THE ORCHESTRATOR'S BRIEF WAS WRONG ABOUT THE INFRASTRUCTURE and the agent checked rather than trusting it: `server-ci.yml` is `ubuntu-latest` throughout and only `deploy.yml`'s deploy job is self-hosted, so each matrix leg is its own VM and shards never contend - which makes sharding the right lever rather than the wrong one. THE ENTRY'S THREE SHARDS IS THE WRONG NUMBER: at the worker count that actually makes the suite green, three shards takes 733 s, over the entry's own ten-minute target; six shards at one worker runs 45 suites in 358 s. ONE WORKER, because the contention is between WORKERS specifically - `review_queue.test.tsx` run ALONE at two workers passes in 86 s while the same file inside a shard at two workers fails, its `waitFor` losing a ten-second budget whenever a second worker competes. Coverage verified rather than assumed: six shards summing to 269, union of 269 distinct paths, all fifteen pairwise intersections empty, union diffed clean against `npx jest --listTests`. Other entry errors: "250 test files" (actual 269); the `server-ci.yml:1-35` range omits the entire secret-scan job; `--ci` is already in `npm test`; and "the two checks" is incompatible with a matrix, which is why an aggregation job was added. ~~UNVERIFIED AND UNVERIFIABLE FROM A WORKTREE: no GitHub Actions run has occurred, so the acceptance criterion stands open;~~ **NOW VERIFIED, 2026-09-10.** The workflow ran for the first time on PR #35. Run 34374880370 caught a real failure and the aggregation job correctly turned one red shard into a red gate; run 34377079562 then passed every job -- typecheck 50 s, six Jest shards between 2m29s and 4m11s, secret-scan 14 s, aggregation 3 s. **Wall time is about 4 minutes against the entry's ten-minute target**, `npm ci` works on a Linux runner, and four of the six shards had never run anywhere before. Remaining open: the `push`-to-master half of the criterion, which needs a merge. Superseded caveats follow. `npm ci` on Linux was never executed; hosted-runner wall time is unproven; shards 2 and 4-6 were never run locally. Also flagged: a mobile-only PR gets no secret scan today, since `server-ci.yml`'s gitleaks job sits behind a `server/**` paths filter | 2026-09-09 |
 | GAP-075 | PARTIAL | da5e58b | gap-wave-13 | jest review_queue + resolve_actions 4 suites 135 PASS, lib/review + components/review 5 suites 185 PASS, blast radius 38 suites 1,031 PASS, all at `--maxWorkers=1`. Four separate revert experiments, each failing exactly its own witnesses. **DELIBERATELY PARTIAL, AND LEFT IN THE QUEUE.** Shipped: undo for the four triages whose entire write was `resolved_at` - the low-confidence and unknown-provider rejects, the possible-duplicate "same transaction" which discards a HELD never-committed twin, and the loan-match decline. This is the "cheap first slice" the entry itself names. NOT SHIPPED: undo for confirm, correct, one-sided transfer, merge, loan match and wallet kind. THE ENTRY'S PROPOSED FIX CONTRADICTS THE DOCUMENT IT CITES. Rule 9 promises the affordance; rule 10, twelve words later, reads "committed transactions are never deleted by any queue action", and the entry says undo should delete the committed transaction, as does its acceptance criterion. Rule 9's own second clause gives the intended remedy: committed results "remain editable in the ledger indefinitely afterward". Verified by the orchestrator at `docs/04-features/08-review-queue.md:118-119`. WORSE, IMPLEMENTING IT WOULD HAVE DELETED ROWS THIS TRIAGE NEVER WROTE: `correctItem` resolves onto a PRE-EXISTING transaction when one already holds the movement (the GAP-012 branch at `resolve_actions.ts:524`) and returns that row's id, so "delete the transaction the confirm returned" destroys the other channel's row and its wallet balance. The entry does not mention the branch. Also found: a matched or transfer-linked row cannot be deleted at all, since `loan_payments`/`bill_payments`/`transfer_links` hold NOT NULL UNIQUE foreign keys with no ON DELETE and `PRAGMA foreign_keys = ON`. Two guards keep the scope honest: the screen scopes the offer to the item just triaged, and `undoResolution` refuses any card whose capture already has a transaction - asked of the LEDGER rather than the action kind, so it holds if undo is ever wired elsewhere. Android freezes JS timers on a backgrounded app, so the ten-second timeout may never fire; a 60-second data-layer bound, looser than the affordance so a slow write cannot turn an honest tap into a refusal, refuses a stale tap and SAYS SO. All four location cites stale, including rule 9 at :99 when it is at :118. **REMAINS OPEN pending an owner ruling on rule 10, and note that rule 9's "editable in the ledger" remedy is only half-real: `deleteTransaction` has no caller outside `mergeDuplicate`** | 2026-09-09 |
 | GAP-085 | DONE | a117abd | gap-wave-13 | jest bills_screen 22 tests PASS (baseline 16) at `--maxWorkers=1`; lib/bills + components/bills + safe_to_spend + bills_repo 13 suites 274 PASS; blast radius 7 suites 180 PASS. Three revert experiments, each failing its own witnesses. THE ENTRY'S CENTRAL EVIDENCE CLAIM IS FALSE: "Skip removes the cycle from the estimator ... skips and corrupts the estimate". Migration 006's CHECK forbids a `bill_payment_id` on any state but `paid`, and `amount_estimator.ts` takes PAYMENTS, so a skipped cycle feeds it nothing - which that file's own header states in as many words, at the very lines the entry cites. THE ORCHESTRATOR'S BRIEF COMPOUNDED THIS by demanding a test proving skip and paid-externally differ in the estimator; such a test could only have been false, and the agent refused it and pinned the truth instead ("they differ in the RECORD, not in the estimate"). The real defect is the entry's OTHER horn: an open cycle keeps depressing Safe-to-Spend. `resolved_external` was far more wired than "already exists" suggests - schema CHECKs, `resolveCycleExternally`, the "Settled elsewhere" chip, the Plan panel section, the Safe-to-Spend exclusion, the reminder exclusions and the screen's own unresolved predicate were ALL in place, with no production caller. THE ENTRY UNDERCOUNTS THE MISSING ROWS: the doc's States table lists five content items and four actions, and rule 3's unadjusted date was also absent; "mark paid" is three options in the doc, of which only "Paid outside my wallets" is new, since "record a cash payment" would write the synthetic transaction the entry forbids. The checklist's "invalidating bills and Safe-to-Spend" contradicts GAP-058, which deliberately put the Safe-to-Spend cascade in `query_client.ts` rather than naming the key per hook. The acceptance criterion is a zeugma and is satisfiable by doing nothing on one reading; the chosen reading is pinned by a test that fails under the other. A DEFECT THIS CHANGE WOULD OTHERWISE HAVE INTRODUCED, found and fixed by the agent itself: the screen's no-`dueDate` fallback picked the soonest cycle that was neither paid nor skipped, so a notification tap would have opened the newly-settled cycle with every action spent. Also flagged for its own entry: `findBillPaymentCandidates` does not implement rule 15's "never wider than half the bill's period" clamp, so the summary reports the real window rather than the spec's | 2026-09-09 |
 | GAP-098 | DONE | c40f9df | gap-wave-12 | jest lib/limits 12 suites 162 tests PASS (baseline 156 after GAP-041); blast radius lib/income + limit_routes + hooks/mutations + components/limits + safe_to_spend + plan 11 suites 160 PASS. Unwrapping the three lock sites fails exactly the three service-level tests. THE ENTRY HAS RULES 11 AND 25 SWAPPED: it says "rule 11 says a mute lasts until the period boundary; rule 25 says a manual edit re-snapshots immediately", and the doc is the reverse - rule 11 is the percent-of-income base snapshot, rule 25 is the per-limit mute. Verified. THE PROPOSED LOCATION IS AN INVERTED DEPENDENCY: it says to put the chain in `limit_ledger_subscriber.ts`, but that file imports `recomputeLimits` from `./limit_service` at line 40, so service -> subscriber -> service, and it would drag `limit_notifier` and its expo-notifications and native-module chain into every consumer of `limit_service` including the Plan tab - which the file header records as the reason the notifier was moved out. The entry's own checklist says `limit_service.ts`, contradicting its own proposed fix. THE ALTERNATIVE FIX IS NOT IMPLEMENTABLE AND WOULD NOT CLOSE THE RACE: `muted` and `base` live inside the `limit_alert_state_json` blob rather than in columns; a mute may have to CREATE the state, which `json_set` on NULL cannot do; and a partial write only removes a race if the OTHER writer is also partial, while `recomputeLimits` must write the whole object because a period-boundary reset must never half-apply. THE ENTRY MISSES A THIRD SYMPTOM, now reproduced and pinned: two overlapping passes both read `fired: []` and both post the same threshold, breaking rule 19 "each threshold fires at most once per period" - a duplicate notification the user actually sees. NOTE FOR LATER WAVES: our own GAP-041 WIDENED this race, since `previousBaseOf` makes the previous-window `sumSpend` fire on period rolls that previously had none, taking that path from 2 awaited reads to 3-4. The lock is width-independent so they compose | 2026-09-08 |
@@ -1143,6 +1144,81 @@ complaint. **A single failure that matches a pattern you already believe is not 
 pattern.** The claim was withdrawn before it reached this file; it is recorded here so the
 withdrawal is part of the record rather than a private correction.
 
+
+**Waves 13-15 additions and two more owner decisions (2026-09-09).** GAP-108 to GAP-115 were all
+found while REMEDIATING other entries and each was read in the code before being written up, so
+all eight carry C1. Every claim in them was re-verified against the working tree on the day they
+were filed, because three entries this campaign wrote earlier (GAP-104, GAP-105, GAP-106) turned
+out to be wrong from a static read.
+
+**GAP-108 is the one that matters: it blocks GAP-075, whose decision is already taken.** The owner
+chose "rule 10 wins", meaning a queue undo never deletes a committed transaction because the
+ledger is where a mistake is fixed. The ledger has no delete -- `deleteTransaction` has exactly
+one production caller, inside duplicate-merge -- so the remedy that decision depends on does not
+exist. **OWNER DECIDED 2026-09-09: add a real delete on transaction detail**, reusing the balance
+reversal the merge path already performs, and handling the NOT NULL foreign keys from loans,
+bills and transfer links rather than raising a raw database error.
+
+**GAP-107 is also decided. OWNER DECIDED 2026-09-09: store a minimal record and drop the body.**
+The buffered drain writes the row with package name and timestamp but not the notification text,
+so the stated privacy principle holds for the content while a missed transaction stays findable
+in the Privacy centre as something that arrived and was ignored. This is a third path neither
+side of the original question described, so the principle needs rewording either way rather than
+simply being honoured or amended.
+
+The remaining six are ordinary work. GAP-109 is the one to take first on merit: the half of the
+codebase that ships to users currently gets no secret scan on a pull request.
+
+**Wave 16 findings, part 1 -- the first CI run (2026-09-10).**
+
+- **CI RAN FOR THE FIRST TIME IN THIS REPOSITORY'S HISTORY, AND IT PAID FOR ITSELF ON THE FIRST
+  ATTEMPT.** `mobile-ci.yml` was written in wave 13 and had never executed. Run
+  `34374880370` on PR #35 caught a real defect; run `34377079562` then passed every job.
+  GAP-053's acceptance criterion, open since wave 13, is met apart from its push-to-master half.
+  **Wall time is about 4 minutes against the entry's ten-minute target**, `npm ci` works on a
+  Linux runner, and four of the six shards had never run anywhere.
+
+- **THE PR HAD TO BE MADE TO TRIGGER THE THING IT WAS OPENED TO TEST.** The branch's first commit
+  touched only `GAP_ANALYSIS.md` at the repository root, and `mobile-ci.yml`'s paths filter is
+  `mobile/**` plus the workflow file. Opening the PR at that point would have "exercised" CI by
+  proving it does not run, and reported success. Landing GAP-109 first -- which edits
+  `mobile-ci.yml`, deliberately inside its own filter -- made the PR self-triggering.
+  **Check the trigger before opening the thing meant to pull it.**
+
+- **THE TIME-ZONE PIN NEVER WORKED, AND ONLY A DIFFERENT MACHINE COULD SHOW IT.** The one failure
+  in the first run was `localDateKey keys by the LOCAL calendar day, not by UTC`, on its
+  explicit `toISOString()` assertion: "Expected: 2026-08-12, Received: 2026-08-13".
+  `process.env.TZ = "Asia/Manila"` in `setupFiles` does NOTHING -- by the time a setup file
+  runs, the worker's Node has resolved and cached its zone for the life of the process. The
+  comment beside it claimed the opposite in as many words ("Node 16+ re-reads `process.env.TZ`
+  on the next Date operation ... there is no cached-offset trap"), and that claim survived five
+  waves for one reason: **the development machine is already in Asia/Manila, so the no-op agreed
+  with the answer.** Fixed by moving the pin to `globalSetup`, which runs in Jest's parent
+  process before any worker forks, so each worker's Node reads the zone at its own startup.
+  Reproduced first with `TZ=UTC npx jest ledger_list` (fails identically), then verified: 57/57
+  under `TZ=UTC`, and the whole `lib test_support` chunk 123 suites / 2,642 tests under
+  `TZ=UTC`.
+
+- **THE CONSEQUENCE WAS NOT COSMETIC, AND IT INVALIDATES A CLAIM THIS FILE ALREADY MADE.** On any
+  machine outside +08:00 -- CI, and any future contributor -- every timezone-dependent fixture
+  has been running in UTC. That is precisely the vacuous state GAP-097 rebuilt those fixtures to
+  eliminate, so **wave 10's "the suite can now tell the defect from the fix" was true only on one
+  machine.** The suite was green while proving less than it claimed, which is this campaign's
+  own catalogued failure mode turning up in its own remediation.
+
+- **THE TEST THAT CAUGHT IT WAS THE GUARD WRITTEN FOR EXACTLY THIS.** GAP-097 added an explicit
+  `toISOString()` assertion beside the fixture whose only job is to fail loudly if the pin ever
+  stops working, rather than let the fixture go quiet. It fired on the first environment that
+  disagreed. **Where a test depends on tooling, assert the tooling.** That one line converted an
+  invisible five-wave regression into a named failure with a reproduction command.
+
+- **GAP-109 was verified by the run that introduced it.** `secret-scan` passed in 14 s on a path
+  that had never been scanned in this repository's history, and returned clean. Before it, a
+  pull request touching only `mobile/**` matched `server-ci.yml`'s `server/**` filter not at
+  all and was scanned by nothing -- on the half of the codebase that ships to users and holds the
+  encryption path, the Play Integrity wiring and the provider ruleset URL.
+
+
 ## 1. Executive summary
 
 Three findings matter most.
@@ -1328,6 +1404,14 @@ Priority = (severity weight x confidence weight) / complexity weight, with S1=8,
 | GAP-105 | CONTRA | Limit totals are clamped to the Free tier's 90-day history floor, against limits rule 8 | S3 | S | D2 | R2 | C1 | 1.0 | AGENT-READY |
 | GAP-106 | CODE | A fixed Goal contribution reserves once per credit, so a split payday reserves twice | S3 | S | D2 | R2 | C1 | 1.0 | AGENT-READY |
 | GAP-107 | CONTRA | The buffered drain stores non-financial notification text before discarding it | S3 | M | D3 | R3 | C1 | 0.5 | HUMAN-FIRST |
+| GAP-108 | CONTRA | Nothing can delete a transaction, so a wrongly confirmed row is permanent while the doc says it stays editable | S2 | M | D3 | R3 | C1 | 1.25 | AGENT-READY |
+| GAP-109 | SEC | A pull request touching only mobile gets no secret scan at all | S3 | XS | D1 | R1 | C1 | 2.0 | AGENT-READY |
+| GAP-110 | CODE | A payday split into two equal halves fires no payday prompt, because each credit is screened against the average | S3 | S | D2 | R2 | C1 | 1.0 | AGENT-READY |
+| GAP-111 | CODE | Categorization history is an unbounded listTransactions, so it silently narrows to 90 days on Free | S3 | S | D2 | R2 | C1 | 1.0 | AGENT-READY |
+| GAP-112 | CONTRA | The bill match window ignores rule 15's never-wider-than-half-the-period clamp | S3 | S | D2 | R2 | C1 | 1.0 | AGENT-READY |
+| GAP-113 | CODE | Every toast tone renders a warning triangle, so a neutral notice carries an alarm glyph | S4 | XS | D1 | R1 | C1 | 1.0 | AGENT-READY |
+| GAP-114 | CODE | setProviderFilter returns success when sealing fails, so a pause the user asked for is silently dropped | S3 | S | D3 | R2 | C1 | 1.0 | AGENT-READY |
+| GAP-115 | CODE | A balance adjustment shrinks a loan's percent-paid bar | S4 | XS | D2 | R1 | C1 | 1.0 | AGENT-READY |
 
 Pass-2 rows (GAP-058 to GAP-097) are appended below the pass-1 rows in their own priority order rather than merged, so the pass-1 ordering stays stable for agents already assigned.
 
@@ -1532,6 +1616,16 @@ Wave P9 (the waves 9-12 findings; owner decisions first)
 - GAP-105: `mobile/lib/db/repos/transactions_repo.ts`, `mobile/lib/db/repos/__tests__/transactions_repo.test.ts`, `mobile/lib/limits/__tests__/limit_service.test.ts`
 - GAP-106: `mobile/lib/safe_to_spend_service.ts`, `mobile/lib/__tests__/safe_to_spend_service.test.ts`
 - GAP-107: `mobile/lib/ingest/pipeline.ts`, `mobile/lib/ingest/__tests__/pipeline.test.ts`. BLOCKED ON AN OWNER DECISION -- see the entry's Open questions.
+
+Wave P10 (the waves 13-15 findings; GAP-108 first, it blocks GAP-075)
+- GAP-108: `mobile/app/(tabs)/transactions/[id].tsx` or the transaction detail route, `mobile/lib/db/repos/transactions_repo.ts`, `mobile/hooks/mutations/`. **Blocks GAP-075.**
+- GAP-109: `.github/workflows/mobile-ci.yml`
+- GAP-110: `mobile/lib/income/income_service.ts` and its tests
+- GAP-111: `mobile/lib/ingest/pipeline.ts` and its tests
+- GAP-112: `mobile/lib/bills/bills_service.ts`, `mobile/lib/bills/__tests__/`
+- GAP-113: `mobile/components/ui/mutation_error_toast.tsx` and its test
+- GAP-114: `mobile/modules/notification_listener/android/.../CapturePrefs.kt` -- **Kotlin is now verifiable, see the "KOTLIN VERIFIED ON DEVICE" block**
+- GAP-115: `mobile/components/loans/loan_card.tsx` and its test
 
 ## 8. Contradiction register
 
@@ -8361,8 +8455,466 @@ Do not change this without the decision. Both directions have a real cost and pi
 Revert.
 
 **Open questions**
-Does the privacy principle hold, at the cost of a heuristic's false negatives losing a transaction's only trace? Or is it amended to match what the buffered path does?
+~~Does the privacy principle hold, at the cost of a heuristic's false negatives losing a transaction's only trace? Or is it amended to match what the buffered path does?~~ **RESOLVED 2026-09-09: NEITHER -- STORE A MINIMAL RECORD AND DROP THE BODY.** The buffered drain writes the row with package name and timestamp but not the notification text. The privacy principle then holds for the content, which is what it is actually about, while a missed transaction stays findable in the Privacy centre as something that arrived from a provider at a time and was ignored. This is a third path the entry did not offer, so the principle must be REWORDED rather than either honoured or amended as written.
 
+
+### GAP-108 [CONTRA] Nothing can delete a transaction, so a wrongly confirmed row is permanent while the doc says it stays editable
+
+| Field | Value |
+|---|---|
+| Severity | S2 Major |
+| Complexity | M |
+| Difficulty | D3 Specialist |
+| Risk | R3 |
+| Confidence | C1 Verified |
+| Priority score | 1.25 |
+| Agent suitability | AGENT-READY |
+| Depends on | none |
+| Blocks | GAP-075 |
+| Est. agent turns | 5-8 |
+
+**Location**
+- `mobile/lib/db/repos/transactions_repo.ts` (`deleteTransaction`, exported)
+- `mobile/lib/review/resolve_actions.ts:777` -- the ONLY production caller, inside the duplicate-merge drop path
+- `docs/04-features/08-review-queue.md` rule 9
+
+**Evidence**
+`grep -rn "deleteTransaction" mobile --include=*.ts --include=*.tsx`, excluding tests, returns one call site: `resolve_actions.ts:777`. Every other hit is a doc comment referring to it. Verified 2026-09-09.
+
+**What is wrong**
+Review-queue rule 9 says a committed result "remains editable in the ledger indefinitely afterward". That is the remedy the owner's rule-10 decision relies on: a queue undo never deletes a committed transaction, because the ledger is where you fix it. The ledger has no delete. Nothing a user can tap removes a transaction.
+
+**Why it matters**
+A mis-tapped Confirm on a scrolling review queue puts a wrong row in the ledger permanently, and every total, limit, report and Safe-to-Spend figure carries it forever. It also leaves GAP-075 unclosable: its decision is sound only once this exists.
+
+**Intended behavior**
+A delete action on transaction detail, behind a confirmation, that reverses the row's effect the way the merge path already does.
+
+**Proposed fix**
+OWNER DECIDED 2026-09-09: add a real delete. Reuse `deleteTransaction` and the balance reversal `mergeDuplicate` already performs.
+
+**Implementation checklist**
+- [ ] Add the delete action to the transaction detail screen, behind a confirmation naming what is removed.
+- [ ] Add a mutation hook that invalidates the transaction and wallet families.
+- [ ] **Handle the foreign keys.** `loan_payments.transaction_id`, `bill_payments.transaction_id` and `transfer_links.out_transaction_id`/`in_transaction_id` are NOT NULL UNIQUE REFERENCES with no ON DELETE, and `PRAGMA foreign_keys = ON`. A naive delete raises a raw error naming nothing the user can act on. Decide per kind: refuse with an explanation, or unlink first.
+- [ ] Tests for: a plain row, a row matched to a loan, a row matched to a bill, and a transfer leg.
+
+**Acceptance criteria**
+- [ ] A confirmed transaction can be deleted from its detail screen, and the wallet balance returns to its prior value.
+- [ ] A transaction matched to a loan, a bill or a transfer link either unlinks cleanly or refuses with a message naming the link. It never raises a raw database error.
+
+**Verification commands**
+```bash
+cd mobile && npx jest transactions lib/db/repos lib/review --maxWorkers=4
+cd mobile && npx tsc --noEmit
+```
+
+**Do not**
+Do not delete a row that a loan, bill or transfer still references without dealing with the reference first. Do not write a compensating negative transaction instead; that doubles the ledger rows and corrupts every total.
+
+**Rollback**
+Revert.
+
+**Open questions**
+none -- the approach was decided on 2026-09-09.
+
+### GAP-109 [SEC] A pull request touching only mobile gets no secret scan at all
+
+> **REMEDIATION: DONE** (2026-09-10) - commit 0237c95, branch gap-wave-16. Verification: **VERIFIED BY A REAL GITHUB ACTIONS RUN, not locally.** `secret-scan` passed in 14 s on run 34377079562 (PR #35), on a path that had never been scanned in this repository's history -- clean, no findings. The job mirrors `server-ci.yml`'s, including `fetch-depth: 0`, because gitleaks scans history and a value deleted in a later commit was still published if it was ever pushed, and including the `pull-requests: read` scope, without which gitleaks-action's call to list the PR's commits returns a 403 that reads like a finding but is a missing scope. A separate job rather than widening `server-ci.yml`'s filter, because the two workflows carry different filters deliberately and widening one would run a server build on a mobile-only change. Locally only the YAML was checked (parses, four jobs, expected permissions); everything else needed a runner and got one
+
+| Field | Value |
+|---|---|
+| Severity | S3 Moderate |
+| Complexity | XS |
+| Difficulty | D1 Mechanical |
+| Risk | R1 |
+| Confidence | C1 Verified |
+| Priority score | 2.0 |
+| Agent suitability | AGENT-READY |
+| Depends on | none |
+| Blocks | none |
+| Est. agent turns | 2-3 |
+
+**Location**
+- `.github/workflows/server-ci.yml:4-13` (the `&paths` anchor) and its `secret-scan` job at `:39`
+- `.github/workflows/mobile-ci.yml` -- no gitleaks job
+
+**Evidence**
+`server-ci.yml`'s paths filter is `server/**`, `docker-compose*.yml`, the two workflow files and `docs/07-privacy-and-compliance.md`. A pull request touching only `mobile/**` matches none of them, so the whole workflow -- including `secret-scan` -- does not run. `grep -c "gitleaks\|secret-scan" .github/workflows/mobile-ci.yml` returns 0. Verified 2026-09-09.
+
+**What is wrong**
+The repository has secret scanning, and the half of the codebase that ships to users is not covered by it.
+
+**Why it matters**
+The mobile app holds the encryption path, the Play Integrity wiring and the provider ruleset URL. A key or token committed under `mobile/` reaches master unscanned. gitleaks scans history, so it would also be the thing that catches a value added and later deleted.
+
+**Intended behavior**
+Every pull request gets a secret scan, whichever half of the repository it touches.
+
+**Proposed fix**
+Add a gitleaks job to `mobile-ci.yml` mirroring `server-ci.yml`'s, or widen the existing filter. Prefer the first: the two workflows already have different paths filters for good reasons.
+
+**Implementation checklist**
+- [ ] Add a `secret-scan` job to `.github/workflows/mobile-ci.yml`, copying `server-ci.yml`'s `fetch-depth: 0` and its `GITHUB_TOKEN` wiring.
+- [ ] Confirm the job is in the required set alongside the typecheck and test gates.
+
+**Acceptance criteria**
+- [ ] A pull request touching only `mobile/**` shows a secret-scan check.
+
+**Verification commands**
+```bash
+grep -c gitleaks .github/workflows/mobile-ci.yml
+```
+The real check is a pull request run; say so rather than claiming a pass.
+
+**Do not**
+Do not put a secret in a test fixture to prove the scan works.
+
+**Rollback**
+Delete the job.
+
+**Open questions**
+none
+
+### GAP-110 [CODE] A payday split into two equal halves fires no payday prompt, because each credit is screened against the average
+
+| Field | Value |
+|---|---|
+| Severity | S3 Moderate |
+| Complexity | S |
+| Difficulty | D2 Standard |
+| Risk | R2 |
+| Confidence | C1 Verified |
+| Priority score | 1.0 |
+| Agent suitability | AGENT-READY |
+| Depends on | none |
+| Blocks | none |
+| Est. agent turns | 3-5 |
+
+**Location**
+- `mobile/lib/income/income_service.ts:104` (`const PAYDAY_AMOUNT_TOLERANCE = 0.3`) and `:555`, where a candidate credit is compared against `summary.averageAmount! * PAYDAY_AMOUNT_TOLERANCE`
+- `docs/04-features/05-goals-savings.md` rules 14 and 16
+
+**Evidence**
+The prompt path screens each credit individually against the profile average within 30 percent. An employer who splits one payday into two equal deposits produces two credits at 50 percent of the average, so neither is within tolerance and neither fires a prompt. Found while fixing GAP-106; verified 2026-09-09.
+
+**What is wrong**
+The screen is per credit where the fact it is testing -- "your pay arrived" -- is per payday.
+
+**Why it matters**
+GAP-106 fixed the forecast so a split payday reserves once rather than twice. This is the other half: the user is never asked to make the transfer that the reservation is holding money for. Split deposits are ordinary in the target market, so for those users payday auto-allocation silently never runs.
+
+**Intended behavior**
+The payday prompt fires once for a payday, judged on the combined credits landing on that local date, the same collapse `forecastContributions` already applies.
+
+**Proposed fix**
+Screen the per-date total rather than each credit. `forecastContributions` already builds that collapse; consider sharing it rather than writing a second one.
+
+**Implementation checklist**
+- [ ] In `mobile/lib/income/income_service.ts`, compare the per-date sum against the tolerance.
+- [ ] Add tests: one credit at the average fires; two credits at half the average on ONE date fire once; two credits on DIFFERENT dates are judged separately.
+- [ ] Confirm the emitted event still names the transactions the prompt covers.
+
+**Acceptance criteria**
+- [ ] A payday arriving as two equal halves on one local date fires exactly one prompt.
+- [ ] A single credit well below tolerance still fires nothing.
+
+**Verification commands**
+```bash
+cd mobile && npx jest lib/income safe_to_spend --maxWorkers=4
+cd mobile && npx tsc --noEmit
+```
+
+**Do not**
+Do not widen `PAYDAY_AMOUNT_TOLERANCE` to paper over it; that admits genuinely wrong amounts.
+
+**Rollback**
+Revert.
+
+**Open questions**
+none
+
+### GAP-111 [CODE] Categorization history is an unbounded listTransactions, so it silently narrows to 90 days on Free
+
+| Field | Value |
+|---|---|
+| Severity | S3 Moderate |
+| Complexity | S |
+| Difficulty | D2 Standard |
+| Risk | R2 |
+| Confidence | C1 Verified |
+| Priority score | 1.0 |
+| Agent suitability | AGENT-READY |
+| Depends on | none |
+| Blocks | none |
+| Est. agent turns | 3-4 |
+
+**Location**
+- `mobile/lib/ingest/pipeline.ts:552` (`const history = await listTransactions({});`)
+- `mobile/lib/db/repos/transactions_repo.ts` `historyFloor`
+
+**Evidence**
+`listTransactions` applies the Free tier's 90-day browsing floor. Passing no filter asks for the whole ledger and receives 90 days on Free. Verified 2026-09-09.
+
+**What is wrong**
+A view gate is applied to a computation, the same family as GAP-105 but outside limits rule 8's reach, so rule 8 does not settle it.
+
+**Why it matters**
+Categorization learns from history. On Free it would learn from a rolling 90-day window while appearing to read everything, and the narrowing is invisible at the call site. Latent today only because `MVP_TIER` is hardcoded to `plus`.
+
+**Intended behavior**
+Categorization history reads the full ledger, or takes an explicit bounded window chosen for the algorithm rather than inherited from a tier gate.
+
+**Proposed fix**
+Decide which, then make it explicit at the call site. If the full ledger is wanted, this needs the same treatment GAP-105 gave `sumSpend`. If a window is wanted, state it as a constant with a reason.
+
+**Implementation checklist**
+- [ ] Establish what the categorizer actually needs from history, and how much.
+- [ ] Make the bound explicit at `pipeline.ts:552` either way.
+- [ ] Add a test with a Free entitlement and a transaction older than 90 days, asserting the chosen behaviour.
+
+**Acceptance criteria**
+- [ ] The window the categorizer reads is stated in code and does not change with the tier unless that is the documented intent.
+
+**Verification commands**
+```bash
+cd mobile && npx jest lib/ingest lib/db/repos --maxWorkers=4
+cd mobile && npx tsc --noEmit
+```
+
+**Do not**
+Do not remove `historyFloor` from `listTransactions`; the browsing gate is the feature.
+
+**Rollback**
+Revert.
+
+**Open questions**
+Full ledger, or an explicit window? Decide from what the categorizer needs, not from the tier.
+
+### GAP-112 [CONTRA] The bill match window ignores rule 15 never-wider-than-half-the-period clamp
+
+| Field | Value |
+|---|---|
+| Severity | S3 Moderate |
+| Complexity | S |
+| Difficulty | D2 Standard |
+| Risk | R2 |
+| Confidence | C1 Verified |
+| Priority score | 1.0 |
+| Agent suitability | AGENT-READY |
+| Depends on | none |
+| Blocks | none |
+| Est. agent turns | 3-4 |
+
+**Location**
+- `mobile/lib/bills/bills_service.ts` `findBillPaymentCandidates`
+- `docs/04-features/07-bills.md` rule 15
+
+**Evidence**
+Rule 15, verbatim: "Date window: opens 7 days before the (adjusted) due date and closes 15 days after it, but never wider than half the bill's period (so weekly bills use a proportionally tighter window)." No half-period clamp exists in the candidate search. Found while building GAP-085's auto-match summary, which reports the window the matcher really enforces rather than the spec's; verified 2026-09-09.
+
+**What is wrong**
+A weekly bill uses the full 7-before, 15-after window, which is more than three weeks wide for a 7-day period, so it can claim a payment belonging to a neighbouring cycle.
+
+**Why it matters**
+Bill matching writes money to a cycle. A window wider than the period means adjacent cycles compete for the same transaction, and the wrong cycle can win.
+
+**Intended behavior**
+Rule 15 as written, including the clamp.
+
+**Proposed fix**
+Clamp the window to half the bill's period on each side, keeping the 7/15 figures as the maximum.
+
+**Implementation checklist**
+- [ ] In `mobile/lib/bills/bills_service.ts`, clamp both edges by half the period.
+- [ ] Update GAP-085's auto-match summary, which currently reports the unclamped window deliberately, and its test.
+- [ ] Add tests: a monthly bill keeps 7/15; a weekly bill gets a tighter window; a payment in the neighbouring cycle is not a candidate.
+
+**Acceptance criteria**
+- [ ] A weekly bill's window is no wider than half its period on either side.
+- [ ] The detail screen's summary reports the window actually enforced.
+
+**Verification commands**
+```bash
+cd mobile && npx jest lib/bills components/bills bills_screen --maxWorkers=2
+cd mobile && npx tsc --noEmit
+```
+
+**Do not**
+Do not change the 7/15 figures; they are the maximum, and the clamp is a floor on tightness.
+
+**Rollback**
+Revert.
+
+**Open questions**
+none
+
+### GAP-113 [CODE] Every toast tone renders a warning triangle, so a neutral notice carries an alarm glyph
+
+| Field | Value |
+|---|---|
+| Severity | S4 Minor |
+| Complexity | XS |
+| Difficulty | D1 Mechanical |
+| Risk | R1 |
+| Confidence | C1 Verified |
+| Priority score | 1.0 |
+| Agent suitability | AGENT-READY |
+| Depends on | none |
+| Blocks | none |
+| Est. agent turns | 2-3 |
+
+**Location**
+- `mobile/components/ui/mutation_error_toast.tsx:34,49` (`TriangleAlert` imported and registered as the icon for every tone)
+
+**Evidence**
+The component registers one icon and uses it regardless of tone. Found while building GAP-075's undo notice, which is neutral and still carries the triangle. Verified 2026-09-09.
+
+**What is wrong**
+A neutral or success notice is presented with an alarm glyph.
+
+**Why it matters**
+Small, but it is the shared surface every mutation reports through, so it miscolours the whole app's feedback. A user who sees a warning triangle after a successful undo reasonably wonders what went wrong.
+
+**Intended behavior**
+The icon follows the tone.
+
+**Proposed fix**
+Map tone to icon, keeping the triangle for the error tone.
+
+**Implementation checklist**
+- [ ] In `mutation_error_toast.tsx`, select the icon from the tone.
+- [ ] Add a test asserting a neutral notice does not render the alert icon.
+
+**Acceptance criteria**
+- [ ] An error notice keeps the triangle; a neutral notice does not carry it.
+
+**Verification commands**
+```bash
+cd mobile && npx jest mutation_error_toast components/ui --maxWorkers=4
+cd mobile && npx tsc --noEmit
+```
+
+**Do not**
+Do not change the toast's timing, dedupe key or layout; only the glyph.
+
+**Rollback**
+Revert.
+
+**Open questions**
+none
+
+### GAP-114 [CODE] setProviderFilter returns success when sealing fails, so a pause the user asked for is silently dropped
+
+| Field | Value |
+|---|---|
+| Severity | S3 Moderate |
+| Complexity | S |
+| Difficulty | D3 Specialist |
+| Risk | R2 |
+| Confidence | C1 Verified |
+| Priority score | 1.0 |
+| Agent suitability | AGENT-READY |
+| Depends on | none |
+| Blocks | none |
+| Est. agent turns | 3-5 |
+
+**Location**
+- `mobile/modules/notification_listener/android/src/main/java/expo/modules/notificationlistener/CapturePrefs.kt:195-196` (`val sealed = seal(...); if (sealed == null) { ... return }`)
+
+**Evidence**
+When no usable prefs key is available, `seal` returns null and the allowlist branch returns without writing and without throwing, so the JS caller sees success. GAP-103 narrowed this -- a deny-all now always lands, because it is a plaintext flag -- but the allowlist path is unchanged. Verified 2026-09-09.
+
+**What is wrong**
+A write that did not happen is reported as one that did.
+
+**Why it matters**
+The user pauses a provider, the UI confirms it, and capture continues from that provider. The settings row and the native state then disagree, and `paused_provider_packages` is the only readable record, so nothing detects the divergence.
+
+**Intended behavior**
+A failed filter write is reported to the caller, and the UI does not claim the pause took effect.
+
+**Proposed fix**
+Return a result from the native function and surface it, so `use_set_provider_pause` can leave the switch as it was and say the change did not save.
+
+**Implementation checklist**
+- [ ] Make `setProviderFilter` report failure across the bridge rather than returning silently.
+- [ ] In `mobile/hooks/mutations/use_set_provider_pause.ts`, do not write the settings row when the native write failed, and surface the failure.
+- [ ] Kotlin tests for the seal-failure path, and a JS test that the switch does not stick.
+
+**Acceptance criteria**
+- [ ] With sealing unavailable, pausing a provider does not report success and does not update the settings row.
+
+**Verification commands**
+```bash
+cd mobile && npx jest use_set_provider_pause privacy_screen modules --maxWorkers=1
+cd mobile && npx tsc --noEmit
+```
+**Kotlin is now verifiable.** See the "KOTLIN VERIFIED ON DEVICE" block in section 0 for the prebuild and Gradle commands; do not leave the Kotlin unrun.
+
+**Do not**
+Do not make the failure throw into the central toast without copy the user can act on.
+
+**Rollback**
+Revert.
+
+**Open questions**
+none
+
+### GAP-115 [CODE] A balance adjustment shrinks a loan percent-paid bar
+
+| Field | Value |
+|---|---|
+| Severity | S4 Minor |
+| Complexity | XS |
+| Difficulty | D2 Standard |
+| Risk | R1 |
+| Confidence | C1 Verified |
+| Priority score | 1.0 |
+| Agent suitability | AGENT-READY |
+| Depends on | none |
+| Blocks | none |
+| Est. agent turns | 2-3 |
+
+**Location**
+- `mobile/components/loans/loan_card.tsx:105` (`const paid = Math.max(0, loan.principal - outstanding);`)
+
+**Evidence**
+Progress is derived from `principal - outstanding`, and a balance adjustment raises `outstanding`, so the bar moves backwards even though the user has paid no less. A GAP-064 loose end, confirmed still open after GAP-029; verified 2026-09-09.
+
+**What is wrong**
+The bar reports remaining balance, not what has been paid.
+
+**Why it matters**
+A late fee makes a user's progress appear to go backwards, which reads as the app losing their payments.
+
+**Intended behavior**
+The bar reflects principal actually cleared.
+
+**Proposed fix**
+Derive progress from a principal-denominated paid figure. **`status.paidTotal` is the obvious choice and it is WRONG for amortized loans**, because it includes interest and would cross the basis before the last installment, painting a full bar beside an unpaid balance. GAP-029 added `principalApplied` in `mobile/lib/loans/loan_math.ts`, which is the principal-denominated figure this needs.
+
+**Implementation checklist**
+- [ ] In `loan_card.tsx`, use a principal-denominated paid figure rather than `principal - outstanding`.
+- [ ] Add tests: an adjustment does not move the bar backwards; an amortized loan reaches 100 percent only at the final installment.
+
+**Acceptance criteria**
+- [ ] Recording a balance adjustment leaves the percent-paid bar where it was.
+
+**Verification commands**
+```bash
+cd mobile && npx jest components/loans lib/loans --maxWorkers=4
+cd mobile && npx tsc --noEmit
+```
+
+**Do not**
+Do not use `status.paidTotal` -- see the Proposed fix.
+
+**Rollback**
+Revert.
+
+**Open questions**
+none
 
 ## 10. Deferred and rejected
 
@@ -8515,7 +9067,15 @@ Pass-2 deferrals (S4; each has a citation in the analyst's pass-2 notes and can 
 {"id":"GAP-104","category":"CODE","title":"The wipe failure message says the data was erased even when the database delete is what failed","severity":"S3","complexity":"XS","difficulty":"D1","risk":"R1","confidence":"C1","priority":2.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/app/(tabs)/more/privacy.tsx","mobile/app/__tests__/privacy_screen.test.tsx"]},
 {"id":"GAP-105","category":"CONTRA","title":"Limit totals are clamped to the Free tier's 90-day history floor, against limits rule 8","severity":"S3","complexity":"S","difficulty":"D2","risk":"R2","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/lib/db/repos/transactions_repo.ts","mobile/lib/db/repos/__tests__/transactions_repo.test.ts"]},
 {"id":"GAP-106","category":"CODE","title":"A fixed Goal contribution reserves once per credit, so a split payday reserves twice","severity":"S3","complexity":"S","difficulty":"D2","risk":"R2","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/lib/safe_to_spend_service.ts","mobile/lib/__tests__/safe_to_spend_service.test.ts"]},
-{"id":"GAP-107","category":"CONTRA","title":"The buffered drain stores non-financial notification text before discarding it","severity":"S3","complexity":"M","difficulty":"D3","risk":"R3","confidence":"C1","priority":0.5,"suitability":"HUMAN-FIRST","depends_on":[],"blocks":[],"files":["mobile/lib/ingest/pipeline.ts","mobile/lib/ingest/__tests__/pipeline.test.ts"]}
+{"id":"GAP-107","category":"CONTRA","title":"The buffered drain stores non-financial notification text before discarding it","severity":"S3","complexity":"M","difficulty":"D3","risk":"R3","confidence":"C1","priority":0.5,"suitability":"HUMAN-FIRST","depends_on":[],"blocks":[],"files":["mobile/lib/ingest/pipeline.ts","mobile/lib/ingest/__tests__/pipeline.test.ts"]},
+{"id":"GAP-108","category":"CONTRA","title":"Nothing can delete a transaction, so a wrongly confirmed row is permanent while the doc says it stays editable","severity":"S2","complexity":"M","difficulty":"D3","risk":"R3","confidence":"C1","priority":1.25,"suitability":"AGENT-READY","depends_on":[],"blocks":["GAP-075"],"files":["mobile/lib/db/repos/transactions_repo.ts","mobile/lib/review/resolve_actions.ts"]},
+{"id":"GAP-109","category":"SEC","title":"A pull request touching only mobile gets no secret scan at all","severity":"S3","complexity":"XS","difficulty":"D1","risk":"R1","confidence":"C1","priority":2.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":[".github/workflows/mobile-ci.yml",".github/workflows/server-ci.yml"]},
+{"id":"GAP-110","category":"CODE","title":"A payday split into two equal halves fires no payday prompt, because each credit is screened against the average","severity":"S3","complexity":"S","difficulty":"D2","risk":"R2","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/lib/income/income_service.ts","mobile/lib/income/__tests__/income_service.test.ts"]},
+{"id":"GAP-111","category":"CODE","title":"Categorization history is an unbounded listTransactions, so it silently narrows to 90 days on Free","severity":"S3","complexity":"S","difficulty":"D2","risk":"R2","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/lib/ingest/pipeline.ts","mobile/lib/db/repos/transactions_repo.ts"]},
+{"id":"GAP-112","category":"CONTRA","title":"The bill match window ignores rule 15's never-wider-than-half-the-period clamp","severity":"S3","complexity":"S","difficulty":"D2","risk":"R2","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/lib/bills/bills_service.ts","mobile/lib/bills/__tests__/bills_service.test.ts"]},
+{"id":"GAP-113","category":"CODE","title":"Every toast tone renders a warning triangle, so a neutral notice carries an alarm glyph","severity":"S4","complexity":"XS","difficulty":"D1","risk":"R1","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/components/ui/mutation_error_toast.tsx"]},
+{"id":"GAP-114","category":"CODE","title":"setProviderFilter returns success when sealing fails, so a pause the user asked for is silently dropped","severity":"S3","complexity":"S","difficulty":"D3","risk":"R2","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/modules/notification_listener/android/src/main/java/expo/modules/notificationlistener/CapturePrefs.kt","mobile/hooks/mutations/use_set_provider_pause.ts"]},
+{"id":"GAP-115","category":"CODE","title":"A balance adjustment shrinks a loan's percent-paid bar","severity":"S4","complexity":"XS","difficulty":"D2","risk":"R1","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/components/loans/loan_card.tsx"]}
 ]
 ```
 
@@ -8536,7 +9096,7 @@ Checked against the quality bar before returning:
 
 Revisions during self-audit: 9 entries revised, 6 dropped or merged.
 
-The counts above are a PASS-1 snapshot (57 entries) and were not rewritten as the file grew; the master index and the JSON appendix are the current authority, at 107 entries. GAP-100 to GAP-102 were added on 2026-09-06 and were checked against the same bar: unique IDs, every score present, priority recomputed from the stated weights (8.0, 5.0, 2.0), every checklist item naming a file, zero open questions on all three since all three are AGENT-READY, and appendix objects whose `files` lists match their checklists. GAP-100 is a CONTRA entry whose two positions are the in-app copy and `key_manager.ts`; the authority call is the code, and the blast radius is every user who switches phones.
+The counts above are a PASS-1 snapshot (57 entries) and were not rewritten as the file grew; the master index and the JSON appendix are the current authority, at 115 entries. GAP-100 to GAP-102 were added on 2026-09-06 and were checked against the same bar: unique IDs, every score present, priority recomputed from the stated weights (8.0, 5.0, 2.0), every checklist item naming a file, zero open questions on all three since all three are AGENT-READY, and appendix objects whose `files` lists match their checklists. GAP-100 is a CONTRA entry whose two positions are the in-app copy and `key_manager.ts`; the authority call is the code, and the blast radius is every user who switches phones.
 
 - Dropped to Deferred: the plan-screen query-error state (folded into the GAP-013 follow-up), the cash-leg auto-link contradiction (C2, S4), the bills conflict and auto-acknowledge pair (C2, S4), the reports interaction set, the `Date.parse` template seam, and the dead `data_wipe.ts` module. Each had a real citation but would have been a formatting-grade row above real defects because of how the formula treats XS work.
 - Merged: five wall-clock window seams into GAP-047 (one root cause); ten doc-drift pairs into GAP-045; the money glossary, katapusan wording and stale backlog note into the same entry; the docs/12 recovery overclaim and the testing-section overclaim into GAP-015.
