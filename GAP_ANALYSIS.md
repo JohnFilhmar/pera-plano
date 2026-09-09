@@ -961,6 +961,32 @@ The other three are ordinary agent work. GAP-104 is a one-line branch on a class
   at most, and possibly never.
 
 
+
+**OWNER DECISIONS, 2026-09-09.** Four questions that had blocked entries for several waves were
+put to the owner with worked examples and answered. They are recorded here as the authority; the
+affected entries carry the same text inline.
+
+1. **GAP-103, pause-all fails open: EXTEND THE NATIVE CONTRACT.** Add a real "deny all" to the
+   Kotlin side so the app can distinguish "block everything" from "no filter set", rather than
+   conflating the provider switches with the master capture switch. The two controls stay
+   independent. **This is the campaign's first deliberate Kotlin change, and Kotlin has never
+   been compiled or run in any wave** -- it needs a Gradle run or a device test before it is
+   trusted, and the entry must say so rather than claiming a green suite covers it.
+2. **GAP-022, wallet deletion: ARCHIVE ONLY.** Rename the button to "Archive" and make the UI
+   honest about what the code already does. The doc's delete-with-reassign flow is dropped, so
+   `docs/04-features/02-wallets.md` must be corrected rather than the code. Nothing is ever
+   deleted, so no transaction can be orphaned.
+3. **GAP-023, limit cadences: ONE USER ACTION CREATES ONE LIMIT.** Store only the cadence the
+   user chose; the other periods are views computed from it, not rows. This is what makes the
+   Free tier's "1 active limit" cap mean what a user would assume.
+4. **GAP-075, undo scope: RULE 10 WINS.** A queue action never deletes a committed transaction.
+   Undo stays scoped to triages that committed nothing, which is what shipped in wave 13, so
+   GAP-075's PARTIAL is now the intended end state for the queue side. **But rule 9's remedy has
+   to become real:** it says committed results "remain editable in the ledger indefinitely", and
+   `deleteTransaction` has no caller outside `mergeDuplicate`, so there is no way to remove a
+   wrongly confirmed row. **That missing ledger delete is now a gap in its own right and must be
+   filed before GAP-075 can be closed.**
+
 ## 1. Executive summary
 
 Three findings matter most.
@@ -2924,7 +2950,7 @@ Do not add a hard delete without the reassign flow. Do not rename files or symbo
 Revert the commit.
 
 **Open questions**
-1. Archive-only, or build delete-with-reassign? RESOLUTION: HUMAN REQUIRED.
+1. Archive-only, or build delete-with-reassign? **RESOLVED 2026-09-09: ARCHIVE ONLY.** Rename the button to "Archive" so the UI matches what the code does. The doc's delete-with-reassign flow is dropped, so `docs/04-features/02-wallets.md` is what changes, not the behaviour. Nothing is deleted, so no transaction can be orphaned. This releases GAP-036 and, with GAP-023, GAP-045.
 
 ### GAP-023 [CONTRA] Limits are created at four cadences at once; the doc and the Free cap describe one
 
@@ -2984,7 +3010,7 @@ Do not change derivation itself. Do not rename files or symbols to match the nam
 Revert.
 
 **Open questions**
-1. Do derived rows count toward the Free "1 active" cap? RESOLUTION: HUMAN REQUIRED.
+1. Do derived rows count toward the Free "1 active" cap? **RESOLVED 2026-09-09: THE QUESTION IS DISSOLVED -- ONE USER ACTION CREATES ONE LIMIT.** Store only the cadence the user picked; the other periods become views computed from it rather than rows, so there are no derived rows to count. That is what makes "1 active limit" mean what a user would assume. This releases GAP-045 together with GAP-022.
 
 ### GAP-024 [CONTRA] Free-tier reports show the current month only; the doc promises a 90-day window
 
