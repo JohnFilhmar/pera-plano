@@ -5,6 +5,7 @@ import {
   deleteTransaction,
   getTransaction,
   insertTransaction,
+  listFullLedger,
   listTransactions,
   reassignWalletTransactions,
   sumSpend,
@@ -347,6 +348,47 @@ test("on free the 90-day floor hides a row from listTransactions and still count
   expect((await listTransactions({})).map((row) => row.merchant)).toEqual(["recent"]);
   // And the total keeps it anyway.
   expect(await sumSpend({ from: 0, to: now + 1000 })).toBe(1000);
+});
+
+// GAP-111: the same line again, for a read that returns ROWS rather than a
+// total. `sumSpend` above proves the floor does not reach the money arithmetic;
+// the categorizer's learned suggestion is the other computation over the whole
+// record, and it needs the rows themselves to count merchants in JS.
+// `listFullLedger` is that read, and the pair below is the same "same row, same
+// instant, same tier" shape: invisible to browsing, present for counting.
+test("listFullLedger returns rows the free-tier floor hides from listTransactions", async () => {
+  const now = Date.now();
+  await insertTransaction({
+    walletId,
+    categoryId: CATEGORY_ID,
+    amount: 100,
+    direction: "out",
+    occurredAt: now - 10 * DAY,
+    merchant: "recent",
+    source: "manual",
+    confidence: 1,
+  });
+  await insertTransaction({
+    walletId,
+    categoryId: CATEGORY_ID,
+    amount: 900,
+    direction: "out",
+    occurredAt: now - 100 * DAY,
+    merchant: "ancient",
+    source: "manual",
+    confidence: 1,
+  });
+
+  __setTierForTests("free");
+  expect((await listTransactions({})).map((row) => row.merchant)).toEqual(["recent"]);
+  expect((await listFullLedger()).map((row) => row.merchant)).toEqual(["recent", "ancient"]);
+
+  // And on plus the two reads agree, which is why this gap was latent: the fix
+  // changes nothing for anyone on the shipped tier.
+  __setTierForTests("plus");
+  expect((await listFullLedger()).map((row) => row.merchant)).toEqual(
+    (await listTransactions({})).map((row) => row.merchant),
+  );
 });
 
 // ---------------------------------------------------------------------------
