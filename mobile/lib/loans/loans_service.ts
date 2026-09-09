@@ -32,8 +32,10 @@ import {
   insertTransaction,
   listTransactions,
 } from "@/lib/db/repos/transactions_repo";
+import { listUserRules } from "@/lib/db/repos/user_rules_repo";
 import { withUnitOfWork } from "@/lib/db/unit_of_work";
 import { startOfLocalDay } from "@/lib/dates";
+import { foldMerchant } from "@/lib/ingest/rule_matcher";
 import type {
   Centavos,
   EpochMs,
@@ -42,6 +44,7 @@ import type {
   LoanPayment,
   Transaction,
   TxDirection,
+  UserRuleMatcher,
 } from "@/types/domain";
 
 import { nextDue } from "./loan_math";
@@ -76,7 +79,18 @@ export type PaymentCandidate = {
    * where the name is what the user is scanning for.
    */
   counterparty: string | null;
-  /** 0..1. Above `CANDIDATE_FLOOR` to be offered at all. */
+  /**
+   * `0` to `1.5`. Above `CANDIDATE_FLOOR` to be offered at all.
+   *
+   * NOT RENORMALIZED WHEN SIGNAL (b) LANDED. Rule 8's four scoreable signals
+   * still sum to 1.0 and the taught-rule signal adds its 0.5 on top, because
+   * dividing the total through would move every existing score relative to
+   * `CANDIDATE_FLOOR` and silently change which transactions get offered —
+   * a scale change masquerading as a feature. Nothing renders this as a
+   * percentage (review_card.tsx's meter reads the INGEST confidence and says
+   * at length why it is not this number), so the scale only has to order
+   * candidates and clear a floor.
+   */
   score: number;
   /**
    * WHY this transaction was offered, in the user's words. Not in the m2b
@@ -107,6 +121,29 @@ const CANDIDATE_FLOOR = 0.35;
 
 /** Spec rule 8's weights, in its own descending order of importance. */
 const SIGNAL_WEIGHT = {
+  /**
+   * (b) an existing UserRule from a prior confirmation — the trail the user
+   * already told the app about (`mark-loan-payment`, written by
+   * `loan_match_queue`).
+   *
+   * ABOVE `counterparty`, WHICH IS THE ONLY CONSTRAINT THE SPEC STATES. Rule 8
+   * lists its signals "in descending weight" and puts (b) ahead of (c), so a
+   * taught loan has to outrank a loan that merely shares a name. 0.5 is the
+   * smallest round number that does, and it earns the second property this
+   * signal needs: on its own it clears `CANDIDATE_FLOOR`, so next month's
+   * payment on a trail the user has already confirmed is offered even when the
+   * amount drifted and the due date moved — which is the whole of flow step 4,
+   * "the next payment from the same trail matches with higher confidence".
+   *
+   * IT DOES NOT AND MUST NOT REACH AN AUTO-MATCH. There is no auto-match
+   * threshold in this module to size it against, because rule 9 permits only
+   * signal (a) to match silently and provider loan events are not modelled
+   * here; `bills_service.ts`'s own header spells out why loans were held to a
+   * stricter line than bills. A user with two open loans to one counterparty is
+   * the case: the rule fires for one of them, both stay plausible, and rule 9's
+   * second sentence gives the choice to the user.
+   */
+  rule: 0.5,
   /** (c) counterparty matches the merchant or parsed recipient. */
   counterparty: 0.4,
   /** (d) amount within ±2% of the expected installment. */
@@ -377,21 +414,112 @@ async function matchBasisFor(loan: Loan): Promise<MatchBasis | null> {
 }
 
 /**
- * Scores one transaction against one loan, 0..1, using spec rule 8's signals.
+ * A `mark-loan-payment` UserRule, reduced to the two facts the scorer reads —
+ * the same shape `transfer_detector.ts` reduces a `mark-transfer` rule to.
+ */
+type LoanPaymentRule = {
+  loanId: string;
+  matcher: UserRuleMatcher;
+};
+
+/**
+ * Every enabled trail the user has already confirmed, loaded ONCE per scoring
+ * pass rather than once per (loan, transaction) pair — `findPaymentCandidates`
+ * scores up to sixty days of ledger against one loan, and a query inside the
+ * loop would be sixty round trips to answer one question.
  *
- * Signals (a) and (b) — explicit provider loan events and an existing UserRule
- * — are not scored here because neither is modelled yet. When they arrive they
- * belong ABOVE this function, not inside it: (a) is the only signal permitted
- * to auto-match (rule 9), and mixing it into a score would let a merely
- * high-scoring suggestion become one.
+ * Disabled rules are dropped here, as `categorizer.ts` and `pipeline.ts` both
+ * drop them: the settings list keeps a switched-off rule visible so the user
+ * can switch it back on, and honouring the switch is the consumer's job.
+ */
+async function loadLoanPaymentRules(): Promise<LoanPaymentRule[]> {
+  const taught: LoanPaymentRule[] = [];
+  for (const rule of await listUserRules("mark-loan-payment")) {
+    if (!rule.isEnabled) continue;
+    // Narrowing, not a re-check: `listUserRules(kind)` already filtered, and
+    // the union needs the guard to hand back `loanId`.
+    if (rule.action.kind !== "mark-loan-payment") continue;
+    taught.push({ loanId: rule.action.loanId, matcher: rule.matcher });
+  }
+  return taught;
+}
+
+/**
+ * Does this rule's matcher describe this COMMITTED transaction?
+ *
+ * A SEPARATE TEST FROM `rule_matcher.ts`'s, and deliberately so. That one
+ * answers the matcher against a `NormalizedEvent` — a notification that has not
+ * been committed and carries a `providerKey`. This one runs after the commit,
+ * where the provider is no longer on the row and the other party may be in
+ * EITHER name field. `nameStrength` above already paid for that lesson: a
+ * provider's receive template writes the sender into `counterparty` and leaves
+ * `merchant` null, so a test keyed on `merchant` alone fires for money going
+ * out and never for money coming in — the one direction owed-to-me loans are
+ * made of.
+ *
+ * FAILS CLOSED ON WHAT IT CANNOT ANSWER. A matcher naming a `providerKey` is
+ * making a claim about a notification this function is not looking at, and a
+ * matcher with no `merchantPattern` identifies no trail at all — `rule_matcher`
+ * would read the latter as a blunt catch-all, which for this action kind means
+ * "every transaction in this direction pays this loan". Both return `false`
+ * rather than a guess; the rules `loan_match_queue` writes always carry a
+ * pattern and never a provider.
+ */
+function matcherFitsTransaction(matcher: UserRuleMatcher, transaction: Transaction): boolean {
+  if (matcher.providerKey !== undefined) return false;
+
+  const pattern = foldMerchant(matcher.merchantPattern);
+  if (pattern === null) return false;
+
+  const names = [foldMerchant(transaction.merchant), foldMerchant(transaction.counterparty)].filter(
+    (name): name is string => name !== null,
+  );
+  if (!names.some((name) => name.includes(pattern))) return false;
+
+  if (matcher.direction !== undefined && matcher.direction !== transaction.direction) return false;
+  // Inclusive bounds, compared against `undefined` rather than falsily, because
+  // `amountMin: 0` is a real floor — the same reading `rule_matcher.ts` gives.
+  if (matcher.amountMin !== undefined && transaction.amount < matcher.amountMin) return false;
+  if (matcher.amountMax !== undefined && transaction.amount > matcher.amountMax) return false;
+
+  return true;
+}
+
+/**
+ * Scores one transaction against one loan, `0` to `1.5`, using spec rule 8's
+ * signals.
+ *
+ * Signal (a) — an explicit provider loan event — is still not scored here,
+ * because provider loan events are not modelled anywhere in this codebase. It
+ * would not belong in the sum even once they are: (a) is the ONLY signal rule 9
+ * lets match silently, and folding it into a total would let a merely
+ * high-scoring suggestion inherit that permission.
+ *
+ * Signal (b) IS scored, and is only ever a score. `rules` carries what the user
+ * confirmed before; a hit adds `SIGNAL_WEIGHT.rule` and a reason, and changes
+ * nothing else. Rule 9 again: "every other combination produces a suggestion
+ * requiring confirmation", and this module has no path that records one.
  */
 function scoreCandidate(
   loan: Loan,
   transaction: Transaction,
   { expectedAmount, dueDate, outstanding }: MatchBasis,
+  rules: readonly LoanPaymentRule[],
 ): { score: number; reasons: string[] } {
   let score = 0;
   const reasons: string[] = [];
+
+  const taught = rules.some(
+    (rule) => rule.loanId === loan.id && matcherFitsTransaction(rule.matcher, transaction),
+  );
+  if (taught) {
+    score += SIGNAL_WEIGHT.rule;
+    // Names the USER'S OWN earlier decision, not the machinery behind it. "A
+    // UserRule matched" tells them nothing they can check; "you confirmed a
+    // payment like this before" is a fact they can remember doing, which is the
+    // standard the rest of this list is written to.
+    reasons.push("You confirmed a payment like this before");
+  }
 
   // Worded from the LOAN'S DIRECTION. "Paid to Kuya Ben" on a loan Ben is
   // repaying states the opposite of what happened, and the reasons list is the
@@ -497,6 +625,8 @@ export async function findPaymentCandidates(
     excludeAdjustments: true,
   });
 
+  const rules = await loadLoanPaymentRules();
+
   // One query for every claimed transaction, rather than one per candidate.
   const claimed = new Set(
     (
@@ -521,7 +651,7 @@ export async function findPaymentCandidates(
       occurredAt: transaction.occurredAt,
       merchant: transaction.merchant ?? null,
       counterparty: transaction.counterparty ?? null,
-      ...scoreCandidate(loan, transaction, basis),
+      ...scoreCandidate(loan, transaction, basis, rules),
     }))
     .filter((candidate) => includeBelowFloor || candidate.score >= CANDIDATE_FLOOR)
     .sort((a, b) => b.score - a.score || b.occurredAt - a.occurredAt)
@@ -566,7 +696,7 @@ export type LoanMatchCandidate = {
   direction: LoanDirection;
   /** What is still owed on this loan, for the card to show beside the amount. */
   outstanding: Centavos;
-  /** 0..1, the same scale and the same weights `PaymentCandidate.score` carries. */
+  /** `0` to `1.5`, the same scale and the same weights `PaymentCandidate.score` carries. */
   score: number;
   /** Why this loan was offered, in the user's words — see `PaymentCandidate.reasons`. */
   reasons: string[];
@@ -593,6 +723,7 @@ export async function findLoanMatchesForTransaction(
   }
 
   const matches: LoanMatchCandidate[] = [];
+  const rules = await loadLoanPaymentRules();
 
   // Open loans only for the scoring pass — spec rule 20 keeps a settled loan
   // visible with its history, and nothing may be suggested against it.
@@ -605,7 +736,7 @@ export async function findLoanMatchesForTransaction(
     const basis = await matchBasisFor(loan);
     if (basis === null) continue;
 
-    const { score, reasons } = scoreCandidate(loan, transaction, basis);
+    const { score, reasons } = scoreCandidate(loan, transaction, basis, rules);
     if (score < CANDIDATE_FLOOR) continue;
 
     matches.push({

@@ -35,11 +35,21 @@
 // written by the time anything here runs. `raiseLoanMatchAfterCommit` is the
 // wrapper both call sites use for exactly that reason — see its own note.
 import { listOpen, enqueue, resolve } from "@/lib/db/repos/review_queue_repo";
+import { createUserRule, listUserRules } from "@/lib/db/repos/user_rules_repo";
 import { withUnitOfWork } from "@/lib/db/unit_of_work";
 import { findLoanMatchesForTransaction } from "@/lib/loans/loans_service";
 import { getPaymentByTransaction, recordPayment } from "@/lib/db/repos/loans_repo";
+import { getTransaction } from "@/lib/db/repos/transactions_repo";
+import { foldMerchant } from "@/lib/ingest/rule_matcher";
 import type { LoanMatchCandidate } from "@/lib/loans/loans_service";
-import type { LoanPayment, ReviewItemPayload, ReviewQueueItem, Transaction } from "@/types/domain";
+import type {
+  LoanPayment,
+  ReviewItemPayload,
+  ReviewQueueItem,
+  ReviewResolution,
+  Transaction,
+  TxDirection,
+} from "@/types/domain";
 
 /** The `ReviewKind` migration 011 added, named once so no call site spells it. */
 export const LOAN_MATCH_KIND = "loan-match" as const;
@@ -186,6 +196,89 @@ export async function raiseLoanMatchAfterCommit(transaction: Transaction): Promi
 }
 
 /**
+ * The name a future notification on this trail will carry, or `null` when the
+ * transaction carried none.
+ *
+ * MERCHANT FIRST, COUNTERPARTY SECOND, because a row usually has only one of
+ * them: a provider's SEND template writes the recipient into `merchant`, its
+ * RECEIVE template writes the sender into `counterparty` and leaves `merchant`
+ * null (assets/parser_rules/seed.json). Reading `merchant` alone would teach a
+ * rule for every i-owe payment and none at all for the owed-to-me repayments
+ * that are half the feature — the same one-sided bug `loans_service.ts`'s
+ * `nameStrength` carries a paragraph about.
+ *
+ * NOT THE LOAN'S OWN `counterparty`. The user typed that ("Kuya Ben"); the
+ * trail is what the PROVIDER writes ("BEN SANTOS"), and only the second one
+ * will be in next month's notification. docs/04-features/06-loans.md flow step
+ * 4's own example says so: "transfers to JUAN D → payment on loan Juan-utang".
+ */
+function trailPattern(merchant: string | null, counterparty: string | null): string | null {
+  for (const field of [merchant, counterparty]) {
+    const trimmed = field?.trim() ?? "";
+    if (trimmed !== "") return trimmed;
+  }
+  return null;
+}
+
+/**
+ * Teaches rule 8's signal (b): "a confirmed match creates a UserRule ... so the
+ * next payment from the same trail matches with higher confidence" (flow step
+ * 4).
+ *
+ * A SCORE, NEVER A SILENT COMMIT. `loans_service.scoreCandidate` reads this
+ * back as `SIGNAL_WEIGHT.rule` and nothing else does. Rule 9 leaves auto-match
+ * to explicit provider loan events alone, and the card this rule improves is
+ * still a card — see that file's weight comment for why a taught rule may not
+ * become one.
+ *
+ * WRITES NOTHING WHEN THE TRAIL IS NAMELESS. `matcherFitsTransaction` treats a
+ * blank `merchantPattern` as fail-closed, exactly as `rule_matcher.ts` does, so
+ * a rule built from a nameless row could never fire — it would sit in the
+ * settings list implying a correction was learned when none was, which is the
+ * failure docs/09-v2-backlog.md §2b.4 calls worse than having no rule.
+ *
+ * ONE RULE PER TRAIL PER LOAN. The user confirms this month's payment and next
+ * month's, and a second identical rule would add nothing to the score (the
+ * signal fires once) while doubling a row in the settings list they have to be
+ * able to read. Checked against DISABLED rules too, deliberately: a rule the
+ * user switched off is a decision, and re-creating it on the next confirmation
+ * would overturn it silently.
+ */
+async function teachLoanPaymentRule(input: {
+  loanId: string;
+  merchant: string | null;
+  counterparty: string | null;
+  direction: TxDirection;
+  createdFrom: string;
+}): Promise<void> {
+  const pattern = trailPattern(input.merchant, input.counterparty);
+  if (pattern === null) return;
+
+  const folded = foldMerchant(pattern);
+  const taught = await listUserRules("mark-loan-payment");
+  const already = taught.some(
+    (rule) =>
+      rule.action.kind === "mark-loan-payment" &&
+      rule.action.loanId === input.loanId &&
+      foldMerchant(rule.matcher.merchantPattern) === folded,
+  );
+  if (already) return;
+
+  await createUserRule({
+    // THE DIRECTION IS PART OF THE TRAIL. Money moving the other way between
+    // the same two parties is not a payment on this loan — `recordPayment`
+    // would throw `PaymentDirectionMismatchError` on it — and a matcher that
+    // omitted it would describe a rule broader than anything that can be acted
+    // on. The scorer filters on direction before it ever reads a rule, so this
+    // buys nothing there; it buys the settings list a rule that states what it
+    // actually means.
+    matcher: { merchantPattern: pattern, direction: input.direction },
+    action: { kind: "mark-loan-payment", loanId: input.loanId },
+    createdFrom: input.createdFrom,
+  });
+}
+
+/**
  * The user picked a loan on the card: record the payment and close the item.
  *
  * ATOMIC, OR NOTHING — the same rule every other triage write keeps
@@ -244,6 +337,13 @@ export async function confirmLoanMatch(
     // loan, so a card offering a second one has been overtaken by events. The
     // existing payment is the honest return value, and leaving the item open to
     // ask again would put an unanswerable question back in front of the user.
+    //
+    // AND IT TEACHES NOTHING. The row is already claimed, possibly by a
+    // DIFFERENT loan than the one this card offered, and a rule saying "this
+    // trail pays loan X" written off a payment that went to loan Y would score
+    // every future repayment towards the wrong utang. The teaching below sits
+    // on the branch that actually records the match, where the loan in the rule
+    // is the loan the money paid.
     const existing = await getPaymentByTransaction(payload.transactionId);
     if (existing !== null) {
       await resolve(itemId, "confirmed");
@@ -251,6 +351,18 @@ export async function confirmLoanMatch(
     }
 
     const payment = await recordPayment({ loanId, transactionId: payload.transactionId });
+    // INSIDE THE SAME UNIT OF WORK as the payment and the resolve, which is
+    // what `unit_of_work.ts` exists for in its own words: "a Transaction, a
+    // UserRule and a resolved queue item, all three or none of them". A rule
+    // that survived a rolled-back payment would score a loan the user never
+    // confirmed anything against.
+    await teachLoanPaymentRule({
+      loanId,
+      merchant: payload.merchant,
+      counterparty: payload.counterparty,
+      direction: payload.direction,
+      createdFrom: itemId,
+    });
     await resolve(itemId, "confirmed");
     return payment;
   });
@@ -265,15 +377,33 @@ export async function confirmLoanMatch(
  * card would otherwise sit in the queue asking a question that is already
  * answered until it expires, offering an accept that can only fail.
  *
- * `confirmed`, not `dismissed`. The card asked "is this a payment on one of
- * your loans", the answer turned out to be yes, and a queue that recorded it as
- * a dismissal would be filing the user's own decision as a rejection.
+ * `confirmed` BY DEFAULT. The card asked "is this a payment on one of your
+ * loans", the answer turned out to be yes, and a queue that recorded it as a
+ * dismissal would be filing the user's own decision as a rejection.
+ *
+ * THE ARGUMENT EXISTS FOR THE OTHER WAY A CARD CAN STOP BEING ANSWERABLE
+ * (GAP-108): the transaction is deleted from the ledger. The question is not
+ * answered "yes" then — it is void, because the row it was about is gone — and
+ * leaving the card up would offer an accept that can only fail, since
+ * `recordPayment` would insert a `loan_payments` row pointing at nothing and
+ * take the foreign key with it.
+ *
+ * AND IT CHANGES NOTHING THAT IS STORED, WHICH THIS COMMENT WOULD OTHERWISE
+ * IMPLY. `review_queue_repo.resolve` opens with `void resolution` and its own
+ * doc says the argument "is accepted for the pinned contract §3 signature but
+ * not persisted"; all it writes is `resolved_at`. So a void card and a
+ * confirmed one are indistinguishable on disk, and this parameter states an
+ * intention at the call site rather than recording one. Nothing may be built
+ * on reading it back.
  */
-export async function closeLoanMatchesFor(transactionId: string): Promise<void> {
+export async function closeLoanMatchesFor(
+  transactionId: string,
+  resolution: ReviewResolution = "confirmed",
+): Promise<void> {
   const open = await listOpen();
   for (const item of open) {
     if (readLoanMatchPayload(item)?.transactionId === transactionId) {
-      await resolve(item.id, "confirmed");
+      await resolve(item.id, resolution);
     }
   }
 }
@@ -290,6 +420,21 @@ export async function closeLoanMatchesFor(transactionId: string): Promise<void> 
  * review queue. This one already imports both sides and is the only module
  * allowed to; reversing that would make the two a cycle, which is how the Plan
  * tab stopped rendering under Jest during m2 Task 8.
+ *
+ * IT TEACHES THE SAME RULE THE CARD DOES. Flow step 3 names both surfaces —
+ * "the user confirms or rejects from the loan detail OR the Review Queue" — and
+ * step 4's UserRule is written by the confirmation, not by which screen it was
+ * made on. Teaching from one and not the other would leave the match sheet's
+ * users permanently at the confidence they started with, and the two surfaces
+ * disagreeing about the same pair of rows is the failure `findLoanMatches...`'s
+ * "ONE SCORER, NOT TWO" note already guards from the other side.
+ *
+ * `recordManualPayment` (loans_service) deliberately teaches NOTHING, and the
+ * distinction is the trail. Both of these link a transaction the PROVIDER
+ * wrote, so the name in the rule is the name the next notification will carry.
+ * A manual payment mints its own row with `merchant: loan.counterparty` — the
+ * user's own "Kuya Ben" — and a rule built from that would match nothing a
+ * provider ever sends.
  */
 export async function recordPaymentAndCloseCards(
   loanId: string,
@@ -297,6 +442,19 @@ export async function recordPaymentAndCloseCards(
 ): Promise<LoanPayment> {
   return withUnitOfWork(async () => {
     const payment = await recordPayment({ loanId, transactionId });
+    // AFTER `recordPayment`, so the direction invariant has already been
+    // enforced: a mismatch throws and rolls the whole unit back, rather than
+    // leaving behind a rule for a match that was never legal.
+    const transaction = await getTransaction(transactionId);
+    if (transaction !== null) {
+      await teachLoanPaymentRule({
+        loanId,
+        merchant: transaction.merchant,
+        counterparty: transaction.counterparty,
+        direction: transaction.direction,
+        createdFrom: transactionId,
+      });
+    }
     await closeLoanMatchesFor(transactionId);
     return payment;
   });

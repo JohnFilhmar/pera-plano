@@ -25,7 +25,9 @@ import {
 } from "@/lib/db/repos/loans_repo";
 import { listOpen } from "@/lib/db/repos/review_queue_repo";
 import { insertTransaction } from "@/lib/db/repos/transactions_repo";
+import { listUserRules } from "@/lib/db/repos/user_rules_repo";
 import { createWallet } from "@/lib/db/repos/wallets_repo";
+import { findLoanMatchesForTransaction } from "@/lib/loans/loans_service";
 import { freshDb } from "@/test_support/db";
 import type { SQLiteDatabase } from "@/lib/db/database";
 import type { Transaction, Wallet } from "@/types/domain";
@@ -53,6 +55,8 @@ async function commit(args: {
   amount: number;
   direction?: "in" | "out";
   merchant?: string | null;
+  /** The SENDER on an inbound transfer — the only name a repayment carries. */
+  counterparty?: string | null;
   at?: number;
 }): Promise<Transaction> {
   return insertTransaction({
@@ -62,6 +66,7 @@ async function commit(args: {
     direction: args.direction ?? "in",
     occurredAt: args.at ?? NOW,
     merchant: args.merchant ?? null,
+    counterparty: args.counterparty ?? null,
     source: "manual",
     confidence: 1,
   });
@@ -481,4 +486,218 @@ test("A MATCHER FAILURE NEVER ESCAPES INTO THE COMMIT PATH", async () => {
   // device and guessing.
   expect(warn).toHaveBeenCalled();
   warn.mockRestore();
+});
+
+// ---------------------------------------------------------------------------
+// Rule 8 signal (b) — what a confirmation teaches
+// ---------------------------------------------------------------------------
+
+/** The `mark-loan-payment` rules a confirmation left behind. */
+async function taughtRules() {
+  return listUserRules("mark-loan-payment");
+}
+
+test("CONFIRMING A MATCH TEACHES ONE RULE, KEYED ON THE TRAIL THE PROVIDER WROTE", async () => {
+  // Flow step 4: "A confirmed match creates a UserRule (e.g. 'transfers to
+  // JUAN D → payment on loan Juan-utang')". Before this, every repayment was a
+  // suggestion forever — the same monthly card, at the same score, with the
+  // user's previous answer stored nowhere.
+  const loan = await utang("Ben Santos", 400000, "owed-to-me");
+  const transaction = await commit({ amount: 200000, merchant: "BEN SANTOS" });
+  const itemId = (await raiseLoanMatchSuggestion(transaction)) as string;
+
+  await confirmLoanMatch(itemId, loan.id);
+
+  const rules = await taughtRules();
+  expect(rules).toHaveLength(1);
+  expect(rules[0].action).toEqual({ kind: "mark-loan-payment", loanId: loan.id });
+  // The PROVIDER's rendering of the name, not the loan's own "Ben Santos" —
+  // only the first will be in next month's notification.
+  expect(rules[0].matcher).toEqual({ merchantPattern: "BEN SANTOS", direction: "in" });
+  // Invariant I15: traceable to the correction that produced it.
+  expect(rules[0].createdFrom).toBe(itemId);
+});
+
+test("an inbound repayment teaches from `counterparty` when there is no merchant", async () => {
+  // A provider's RECEIVE template captures the sender as `counterparty` and
+  // leaves `merchant` null (assets/parser_rules/seed.json). A teaching path
+  // reading `merchant` alone would learn every i-owe payment and no owed-to-me
+  // repayment at all — the exact one-sided failure `nameStrength` was fixed
+  // for, reintroduced one layer up.
+  const loan = await utang("Ben Santos", 400000, "owed-to-me");
+  const transaction = await commit({ amount: 200000, counterparty: "BEN SANTOS" });
+  const itemId = (await raiseLoanMatchSuggestion(transaction)) as string;
+
+  await confirmLoanMatch(itemId, loan.id);
+
+  expect((await taughtRules())[0]?.matcher.merchantPattern).toBe("BEN SANTOS");
+});
+
+test("THE SECOND MONTH'S PAYMENT SCORES HIGHER, AND IS STILL A SUGGESTION", async () => {
+  // The acceptance criterion, and the line rule 9 draws through it. Two open
+  // utangs from the same person, deliberately identical once the first payment
+  // lands: same outstanding, same name, same amount. The only thing telling
+  // them apart in September is that the user confirmed one of them in August.
+  //
+  // So the taught loan leads the card — flow step 4's "matches with higher
+  // confidence" — and the card is still raised, because rule 9 reserves
+  // auto-matching for explicit provider loan events and adds that "if two or
+  // more open loans are plausible for one Transaction, it is always a
+  // suggestion listing the candidates". A rule that silently claimed the row
+  // would pay down whichever utang the user happened to confirm first and pull
+  // the transaction out of income detection (rule 17) on the way past, neither
+  // of which announces itself.
+  const taught = await utang("Ben Santos", 400000, "owed-to-me");
+  const untaught = await utang("Ben Santos", 200000, "owed-to-me");
+
+  const august = await commit({ amount: 200000, merchant: "BEN SANTOS" });
+  const augustItem = (await raiseLoanMatchSuggestion(august)) as string;
+  await confirmLoanMatch(augustItem, taught.id);
+  // Both loans now owe exactly ₱2,000, so every signal but the rule is a tie.
+  expect(await outstandingBalance(taught.id)).toBe(await outstandingBalance(untaught.id));
+
+  const september = await commit({
+    amount: 200000,
+    merchant: "BEN SANTOS",
+    at: NOW + 30 * 86_400_000,
+  });
+  const candidates = await findLoanMatchesForTransaction(september);
+
+  expect(candidates.map((candidate) => candidate.loanId)).toEqual([taught.id, untaught.id]);
+  expect(candidates[0].score - candidates[1].score).toBeCloseTo(0.5, 10);
+  // The reason is the user's own earlier decision, not the machinery.
+  expect(candidates[0].reasons).toContain("You confirmed a payment like this before");
+
+  // NOTHING WAS RECORDED. The rule raised a score; it did not answer the
+  // question. September is still unclaimed and both balances are untouched.
+  await raiseLoanMatchAfterCommit(september);
+  expect(await loanMatchItems()).toHaveLength(1);
+  expect(await listPayments(taught.id)).toHaveLength(1);
+  expect(await listPayments(untaught.id)).toHaveLength(0);
+  expect(await outstandingBalance(taught.id)).toBe(200000);
+});
+
+test("a taught trail carries a loan that would otherwise fall under the floor", async () => {
+  // The signal has to be worth something on its own, or "matches with higher
+  // confidence" means nothing for the case it exists to serve: a borrower who
+  // sends whatever they have, whenever they have it, on a free-form utang with
+  // no due date. A single weak name token scores 0.25 and is not offered; with
+  // the trail the user already confirmed it is.
+  const loan = await utang("Kuya Ben", 1_000_000, "owed-to-me");
+  const first = await commit({ amount: 200000, merchant: "BEN SANTOS" });
+  const itemId = (await raiseLoanMatchSuggestion(first)) as string;
+  await confirmLoanMatch(itemId, loan.id);
+
+  // ₱30 of an ₱8,000 balance: under `MIN_PARTIAL_SHARE`, so the amount signal
+  // is silent and only the single-token name ("BEN") would have scored.
+  const dribble = await commit({
+    amount: 3000,
+    merchant: "BEN SANTOS",
+    at: NOW + 40 * 86_400_000,
+  });
+
+  const candidates = await findLoanMatchesForTransaction(dribble);
+  expect(candidates.map((candidate) => candidate.loanId)).toEqual([loan.id]);
+});
+
+test("confirming a second payment on the same trail writes no second rule", async () => {
+  // One rule per trail per loan. A duplicate adds nothing to the score — the
+  // signal fires once — and doubles a row in the settings list the user has to
+  // be able to read.
+  const loan = await utang("Ben Santos", 600000, "owed-to-me");
+
+  const august = await commit({ amount: 200000, merchant: "BEN SANTOS" });
+  await confirmLoanMatch((await raiseLoanMatchSuggestion(august)) as string, loan.id);
+
+  const september = await commit({
+    amount: 200000,
+    merchant: "BEN SANTOS",
+    at: NOW + 30 * 86_400_000,
+  });
+  await confirmLoanMatch((await raiseLoanMatchSuggestion(september)) as string, loan.id);
+
+  expect(await listPayments(loan.id)).toHaveLength(2);
+  expect(await taughtRules()).toHaveLength(1);
+});
+
+test("a rule the user switched off is not rewritten by the next confirmation", async () => {
+  // Disabling a rule is a decision. Re-creating it on the next confirmation
+  // would overturn that decision silently, which is the whole complaint rule
+  // 10 makes about writing rules the user did not ask for.
+  const loan = await utang("Ben Santos", 600000, "owed-to-me");
+  const august = await commit({ amount: 200000, merchant: "BEN SANTOS" });
+  await confirmLoanMatch((await raiseLoanMatchSuggestion(august)) as string, loan.id);
+
+  await db.runAsync("UPDATE user_rules SET is_enabled = 0");
+
+  const september = await commit({
+    amount: 200000,
+    merchant: "BEN SANTOS",
+    at: NOW + 30 * 86_400_000,
+  });
+  await confirmLoanMatch((await raiseLoanMatchSuggestion(september)) as string, loan.id);
+
+  const rules = await taughtRules();
+  expect(rules).toHaveLength(1);
+  expect(rules[0].isEnabled).toBe(false);
+});
+
+test("a transaction with no name at all teaches nothing", async () => {
+  // A blank `merchantPattern` fails closed in the scorer exactly as it does in
+  // `rule_matcher.ts`, so a rule built from a nameless row could never fire. It
+  // would sit in the settings list implying the confirmation was learned when
+  // nothing was — worse than having no rule (docs/09 §2b.4).
+  const loan = await utang("Ben Santos", 400000, "owed-to-me");
+  const anonymous = await commit({ amount: 200000, merchant: null });
+
+  await recordPaymentAndCloseCards(loan.id, anonymous.id);
+
+  expect(await listPayments(loan.id)).toHaveLength(1);
+  expect(await taughtRules()).toHaveLength(0);
+});
+
+test("the loan detail's own confirm teaches the same rule the card does", async () => {
+  // Flow step 3 names both surfaces — "the user confirms or rejects from the
+  // loan detail OR the Review Queue" — and step 4's rule belongs to the
+  // confirmation, not to the screen it was made on. Teaching from one only
+  // would leave match-sheet users at the confidence they started with, and
+  // leave the two surfaces disagreeing about the same pair of rows.
+  const loan = await utang("Ben Santos", 400000, "owed-to-me");
+  const transaction = await commit({ amount: 200000, merchant: "BEN SANTOS" });
+
+  await recordPaymentAndCloseCards(loan.id, transaction.id);
+
+  const rules = await taughtRules();
+  expect(rules).toHaveLength(1);
+  expect(rules[0].action).toEqual({ kind: "mark-loan-payment", loanId: loan.id });
+  expect(rules[0].createdFrom).toBe(transaction.id);
+});
+
+test("A CARD OVERTAKEN BY ANOTHER LOAN'S PAYMENT TEACHES NOTHING", async () => {
+  // The card offered two loans and the user picked one; by then the match
+  // sheet had already recorded the transaction against the OTHER. The item
+  // closes on the honest existing payment (the owner's 2026-09-05 report,
+  // above) — and must not also learn "this trail pays the loan the money did
+  // not go to", which would score every future repayment towards the wrong
+  // utang.
+  const { loan, otherLoan, transaction } = await aLoanAndAPlausibleTransaction();
+  const itemId = (await raiseLoanMatchSuggestion(transaction)) as string;
+  await recordPayment({ loanId: otherLoan.id, transactionId: transaction.id });
+
+  await confirmLoanMatch(itemId, loan.id);
+
+  expect(await taughtRules()).toHaveLength(0);
+});
+
+test("a rejected suggestion teaches nothing", async () => {
+  // Rule 10: "Rejecting a suggestion never creates a negative UserRule
+  // automatically." It must not create a positive one either.
+  const loan = await utang("Ben Santos", 400000, "owed-to-me");
+  const transaction = await commit({ amount: 200000, merchant: "BEN SANTOS" });
+  const itemId = (await raiseLoanMatchSuggestion(transaction)) as string;
+
+  await dismissLoanMatch(itemId);
+
+  expect(await taughtRules()).toHaveLength(0);
+  expect(await listPayments(loan.id)).toHaveLength(0);
 });

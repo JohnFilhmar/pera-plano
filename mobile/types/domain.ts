@@ -598,6 +598,28 @@ export type UserRuleAction =
    * could never fire, which is exactly the state it shipped in.
    */
   | { kind: "mark-transfer"; counterpartWalletId: string }
+  /**
+   * "Money on this trail pays THIS loan" — the rule a confirmed loan match
+   * teaches (docs/04-features/06-loans.md §"Flow: automatic payment matching
+   * from the ledger" step 4, read back as rule 8's signal (b)).
+   *
+   * The loan id is on the ACTION for exactly the reason the wallet is on
+   * `mark-transfer` above: the matcher can only describe the notification trail
+   * — a merchant pattern, a direction — and which loan that trail pays is not a
+   * property of the notification at all. Matcher-identifies-one-side,
+   * action-names-the-other, the shape docs/09-v2-backlog.md §2b.4 names as the
+   * worked precedent for every pairing rule.
+   *
+   * A SCORING SIGNAL, AND ONLY A SCORING SIGNAL. Loans rule 9 permits exactly
+   * one thing to auto-match — an explicit provider loan event with an
+   * unambiguous single-loan mapping — and "every other combination produces a
+   * suggestion requiring confirmation". A taught rule raises the loan's score
+   * and its rank on the card; it never records a payment on its own. Two open
+   * loans to the same counterparty is the case that makes the difference
+   * concrete: both are plausible, only one is right, and rule 9's second
+   * sentence says the user chooses.
+   */
+  | { kind: "mark-loan-payment"; loanId: string }
   | { kind: "suppress-recurring"; merchant: string }
   | { kind: "ignore" };
 
