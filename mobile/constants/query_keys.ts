@@ -71,6 +71,20 @@ export const queryKeys = {
     list: (filters?: object) => ["transactions", "list", filters] as const,
     detail: (id: string) => ["transactions", "detail", id] as const,
     /**
+     * What deleting this row would take with it — the loan payment, bill cycle
+     * or transfer link the confirmation has to name (GAP-108,
+     * `lib/transactions/delete_transaction_service.ts`).
+     *
+     * UNDER `detail(id)`, exactly as `wallets.drift` sits under its wallet's:
+     * every write that can change the answer — a confirmed loan match, a
+     * recorded bill payment, a transfer link or unlink — already invalidates
+     * `transactions.all` or a family that the detail screen refetches with, and
+     * prefix matching carries that straight through. A sibling key would need
+     * each of those mutations to remember a second one, and the failure mode is
+     * a confirmation dialog describing links that are no longer there.
+     */
+    deletionPlan: (id: string) => ["transactions", "detail", id, "deletion_plan"] as const,
+    /**
      * The Home hero's seven-bar strip (mobile-ui-revamp Part 2 Task 1) —
      * `dailySpend`'s per-day outflow totals, keyed on the window length so a
      * seven-day strip and any other window a future screen asks for cache
