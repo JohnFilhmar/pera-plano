@@ -31,7 +31,7 @@
 // lib/query_client.ts, and nothing in this file reads `error.message`, a
 // stack, or notification text. The ledger and the captures that feed it stay
 // off this surface entirely (docs/12).
-import { TriangleAlert } from "lucide-react-native";
+import { Info, TriangleAlert } from "lucide-react-native";
 import { useEffect, useSyncExternalStore } from "react";
 import { Pressable, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -44,9 +44,7 @@ import {
   type AppToastTone,
 } from "@/lib/query_client";
 
-import { registerIcon } from "./button";
-
-const AlertIcon = registerIcon(TriangleAlert);
+import { registerIcon, type IconComponent } from "./button";
 
 /**
  * The rail down the leading edge carries the tone, and it is a FILL of the
@@ -64,6 +62,22 @@ const TONE_RAIL: Record<AppToastTone, string> = {
 const TONE_ICON: Record<AppToastTone, string> = {
   failure: "text-danger dark:text-danger-dark",
   neutral: "text-fg-2 dark:text-fg-2-dark",
+};
+
+/**
+ * The glyph follows the tone. It did not before: one `TriangleAlert` was
+ * registered for the whole component, so the neutral tone — the one GAP-075's
+ * undo notice and every later non-failure message use — announced itself with
+ * an alarm triangle.
+ *
+ * NO `testID` ON THE ICON. A lucide glyph does not forward one into the
+ * rendered tree here, so an added testID is silently absent and any test
+ * written against it fails for a reason that has nothing to do with the tone.
+ * The test asserts the component TYPE instead, which is the claim anyway.
+ */
+const TONE_GLYPH: Record<AppToastTone, IconComponent> = {
+  failure: registerIcon(TriangleAlert),
+  neutral: registerIcon(Info),
 };
 
 /**
@@ -85,6 +99,8 @@ function ToastCard({ toast }: { toast: AppToast }) {
       ? { label: toast.actionLabel, run: toast.onAction }
       : undefined;
 
+  const ToneIcon = TONE_GLYPH[toast.tone];
+
   return (
     <View
       testID="app-toast"
@@ -96,7 +112,7 @@ function ToastCard({ toast }: { toast: AppToast }) {
     >
       <View testID="app-toast-rail" className={`w-1 ${TONE_RAIL[toast.tone]}`} />
       <View className="flex-1 flex-row items-start gap-3 px-3 py-3">
-        <AlertIcon size={18} className={`mt-0.5 ${TONE_ICON[toast.tone]}`} />
+        <ToneIcon size={18} className={`mt-0.5 ${TONE_ICON[toast.tone]}`} />
         <View className="flex-1 gap-0.5">
           <Text className="text-body font-semibold text-fg dark:text-fg-dark">{toast.title}</Text>
           <Text className="text-secondary text-fg-2 dark:text-fg-2-dark">{toast.body}</Text>
