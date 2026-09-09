@@ -8936,6 +8936,51 @@ Revert.
 **Open questions**
 none
 
+### GAP-116 [CODE] An onboarding provider selection that fails to seal is lost with no record and nothing to recover it from
+
+**Location**
+- `mobile/app/(onboarding)/providers.tsx:155` (calls `setProviderFilter`; writes no settings row -- grepping that file for `setSetting` or `paused_provider_packages` returns nothing)
+- `mobile/lib/bootstrap.ts:195` (`resyncProviderFilter` reads `paused_provider_packages` and nothing else), `:216`
+- `mobile/lib/db/repos/app_settings_repo.ts` (`paused_provider_packages`, the only JS-readable copy of the filter)
+
+**Evidence**
+Found by the GAP-114 agent while wiring the new rejection, and verified independently by the orchestrator on 2026-09-10: `providers.tsx` writes the allowlist across the bridge and never records it, and `resyncProviderFilter` re-asserts only what `paused_provider_packages` holds. GAP-092's own remediation note already states the first half -- "`(onboarding)/providers.tsx` writes to the bridge and never writes `paused_provider_packages`" -- as the reason its re-sync may only ever narrow.
+
+**What is wrong**
+GAP-114 made `setProviderFilter` reject when the scope did not land, which is what lets the Privacy centre refuse to record a pause it could not apply. Onboarding has no equivalent, and deliberately cannot have the same one: it catches the rejection, logs, and continues, because stranding a user mid-onboarding over a filter is the worse trade. The difference that matters is what happens next. The Privacy centre keeps a readable record that the launch re-sync re-asserts; onboarding keeps none. So a selection that fails to seal is not merely unapplied, it is UNRECOVERABLE -- there is no row for the re-sync to read, and the user has no reason to think anything went wrong.
+
+**Why it matters**
+The provider picker is where the user chooses which banks the app may read, on the one screen dedicated to asking. Failing it silently leaves capture wider than what they chose, and every later launch re-asserts nothing, so the divergence never closes on its own. It is the same class of defect GAP-114 just fixed, on the surface where the stakes are highest and the user is least equipped to notice.
+
+**Intended behavior**
+An onboarding selection that could not be stored is either recorded so the launch re-sync can re-assert it, or surfaced to the user before the flow moves on. Not silently dropped.
+
+**Proposed fix**
+Have `providers.tsx` write `paused_provider_packages` alongside its bridge call, giving `resyncProviderFilter` something to re-assert. NOTE THE TRAP GAP-092 ALREADY HIT: its checklist proposed pushing an empty allowlist for an empty paused row, which would have wiped the onboarding selection at launch, and the re-sync narrows only for that reason. Any change here has to keep that invariant intact.
+
+**Implementation checklist**
+- [ ] Record the onboarding selection in `paused_provider_packages`, in the same shape the Privacy centre writes.
+- [ ] Confirm `resyncProviderFilter`'s narrowing invariant still holds now that a row is present after onboarding.
+- [ ] Test: a selection whose seal fails is re-asserted at the next launch rather than lost.
+
+**Acceptance criteria**
+- [ ] A provider selection made during onboarding survives a failed seal, either by being re-applied at the next launch or by being reported at the time.
+
+**Verification commands**
+```bash
+cd mobile && npx jest bootstrap provider_picker providers_step privacy_screen --maxWorkers=1
+cd mobile && npx tsc --noEmit
+```
+
+**Do not**
+Do not make onboarding block or strand the user on a failed filter write; that trade was already considered and rejected on this screen. Do not push an empty allowlist for an empty paused row -- see GAP-092.
+
+**Rollback**
+Revert.
+
+**Open questions**
+Whether onboarding should surface the failure at all, or only record it for the re-sync to fix at the next launch. Owner's call.
+
 ## 10. Deferred and rejected
 
 Considered and not listed, with the reason.
@@ -9095,7 +9140,8 @@ Pass-2 deferrals (S4; each has a citation in the analyst's pass-2 notes and can 
 {"id":"GAP-112","category":"CONTRA","title":"The bill match window ignores rule 15's never-wider-than-half-the-period clamp","severity":"S3","complexity":"S","difficulty":"D2","risk":"R2","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/lib/bills/bills_service.ts","mobile/lib/bills/__tests__/bills_service.test.ts"]},
 {"id":"GAP-113","category":"CODE","title":"Every toast tone renders a warning triangle, so a neutral notice carries an alarm glyph","severity":"S4","complexity":"XS","difficulty":"D1","risk":"R1","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/components/ui/mutation_error_toast.tsx"]},
 {"id":"GAP-114","category":"CODE","title":"setProviderFilter returns success when sealing fails, so a pause the user asked for is silently dropped","severity":"S3","complexity":"S","difficulty":"D3","risk":"R2","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/modules/notification_listener/android/src/main/java/expo/modules/notificationlistener/CapturePrefs.kt","mobile/hooks/mutations/use_set_provider_pause.ts"]},
-{"id":"GAP-115","category":"CODE","title":"A balance adjustment shrinks a loan's percent-paid bar","severity":"S4","complexity":"XS","difficulty":"D2","risk":"R1","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/components/loans/loan_card.tsx"]}
+{"id":"GAP-115","category":"CODE","title":"A balance adjustment shrinks a loan's percent-paid bar","severity":"S4","complexity":"XS","difficulty":"D2","risk":"R1","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/components/loans/loan_card.tsx"]},
+{"id":"GAP-116","category":"CODE","title":"An onboarding provider selection that fails to seal is lost with no record and nothing to recover it from","severity":"S3","complexity":"S","difficulty":"D2","risk":"R2","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/app/(onboarding)/providers.tsx","mobile/lib/bootstrap.ts"]}
 ]
 ```
 
