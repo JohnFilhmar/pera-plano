@@ -8981,6 +8981,61 @@ Revert.
 **Open questions**
 Whether onboarding should surface the failure at all, or only record it for the re-sync to fix at the next launch. Owner's call.
 
+### GAP-117 [CODE] An occasional split payday never reaches the payday screen, because primaryStream bands each credit against its group's running median
+
+**Location**
+- `mobile/lib/income/candidates.ts:152` (`primaryStream`), the band at `:168` (`distance <= middle * 0.3`), and "largest group wins" at `:184`
+- `mobile/lib/income/income_service.ts:554` (`maybeEmitPayday`, which never sees the filtered credits)
+- `docs/04-features/05-goals-savings.md` income rule 4
+
+**Evidence**
+Found by the GAP-110 agent while fixing the payday prompt, and verified independently by the orchestrator on 2026-09-10 by reading `candidates.ts:152-184`. The agent's probe of the real behaviour, verbatim: with six whole kinsenas paydays of P18,500.00 and one payday arriving as two P9,250.00 halves, `stream=[6 x {"amt":1850000}]` and `matched=[the same 6 ids]` -- the two halves are absent from the stream entirely, and `averageAmount` stays 1850000.
+
+**What is wrong**
+`primaryStream` groups candidate credits by bands, and each band is 30 percent either side of that group's own running median (`:168`). Two half-sized credits therefore cannot join the full-pay group; they form a second group of their own, which then loses the "largest group wins" sort at `:184`. So for a user paid whole most of the time, the credits of a single split payday are filtered out one stage BEFORE the payday screen ever runs.
+
+GAP-110 fixed the screen (`maybeEmitPayday` now judges the per-date total, commit `808811e`) and that closes the case where an employer splits EVERY payday, because then the profile's own average is half and the halves are the stream. It cannot close this case, and no change confined to `income_service.ts` can: the credits are already gone.
+
+**Why it matters**
+This is the case GAP-110's title actually named. For a user whose pay normally lands whole, one payday arriving in two deposits produces no prompt, so no auto-allocation runs and the money Safe-to-Spend reserved against that pay is never moved. It fails silently and only for the payday that was split, which makes it the harder version to notice.
+
+A second, smaller consequence found on the way: because the stream band and rule 11's tolerance are both 30 percent of essentially the same median, any single credit outside rule 11's tolerance is already outside the stream band. The pre-existing test `maybeEmitPayday ignores a credit far from the average amount` (`mobile/lib/income/__tests__/income_service.test.ts`) therefore passes VACUOUSLY -- its P500.00 credit is banded out upstream, so the test never exercises the tolerance it is named for. It was deliberately left alone by the GAP-110 agent rather than changed as a drive-by.
+
+**Intended behavior**
+Stream banding decides "is this the same pay stream", which is a question about a payday, so it should be asked of the per-payday-date total rather than of each credit -- the same correction GAP-110 made one stage later, and `collapsePaydays` (`mobile/lib/income/paydays.ts`) already exists to express it.
+
+**Proposed fix**
+Band on the collapsed per-date totals inside `primaryStream`, keeping `CandidateEvent` as the unit it returns so downstream consumers are unaffected in shape.
+
+**BLAST RADIUS -- READ BEFORE STARTING.** This moves `averageAmount` for any user with a split payday in their history, and `averageAmount` feeds `monthlyEquivalent`, which feeds `baseFor` and therefore EVERY percent-of-income Limit, plus Safe-to-Spend. Existing users' income figures and limit headroom would change on upgrade. That is why this is not the complexity-S change GAP-110 was filed as, and why it needs an owner decision rather than an agent's judgement.
+
+**Implementation checklist**
+- [ ] Decide with the owner whether existing users' income figures may move, and whether the change needs a one-time recompute or a migration note.
+- [ ] Band `primaryStream` on per-date totals, reusing `collapsePaydays`.
+- [ ] Re-check `detectCadence`'s one-hit-per-window behaviour, which is what made the habitual case's average half in the first place.
+- [ ] Add a test: six whole paydays plus one split payday fires a prompt for the split payday's combined total.
+- [ ] Replace or re-aim the vacuous `ignores a credit far from the average amount` test so rule 11's tolerance is actually exercised.
+
+**Acceptance criteria**
+- [ ] A user paid whole most months who receives one payday as two halves gets exactly one prompt, for the combined amount.
+- [ ] `averageAmount` is unchanged for a user with no split payday in their history.
+- [ ] No test asserting rule 11's tolerance passes vacuously.
+
+**Verification commands**
+```bash
+cd mobile && npx jest lib/income safe_to_spend lib/limits --maxWorkers=4
+cd mobile && npx tsc --noEmit
+```
+
+**Do not**
+Do not widen the 30 percent band; that admits genuinely unrelated credits into the pay stream, which is the opposite failure. Do not change `averageAmount`'s meaning without the owner's decision, since limits headroom is computed from it.
+
+**Rollback**
+Revert.
+
+**Open questions**
+Whether existing users' income figures may move, and whether a recompute is owed on upgrade. Owner's call.
+
 ## 10. Deferred and rejected
 
 Considered and not listed, with the reason.
@@ -9141,7 +9196,8 @@ Pass-2 deferrals (S4; each has a citation in the analyst's pass-2 notes and can 
 {"id":"GAP-113","category":"CODE","title":"Every toast tone renders a warning triangle, so a neutral notice carries an alarm glyph","severity":"S4","complexity":"XS","difficulty":"D1","risk":"R1","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/components/ui/mutation_error_toast.tsx"]},
 {"id":"GAP-114","category":"CODE","title":"setProviderFilter returns success when sealing fails, so a pause the user asked for is silently dropped","severity":"S3","complexity":"S","difficulty":"D3","risk":"R2","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/modules/notification_listener/android/src/main/java/expo/modules/notificationlistener/CapturePrefs.kt","mobile/hooks/mutations/use_set_provider_pause.ts"]},
 {"id":"GAP-115","category":"CODE","title":"A balance adjustment shrinks a loan's percent-paid bar","severity":"S4","complexity":"XS","difficulty":"D2","risk":"R1","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/components/loans/loan_card.tsx"]},
-{"id":"GAP-116","category":"CODE","title":"An onboarding provider selection that fails to seal is lost with no record and nothing to recover it from","severity":"S3","complexity":"S","difficulty":"D2","risk":"R2","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/app/(onboarding)/providers.tsx","mobile/lib/bootstrap.ts"]}
+{"id":"GAP-116","category":"CODE","title":"An onboarding provider selection that fails to seal is lost with no record and nothing to recover it from","severity":"S3","complexity":"S","difficulty":"D2","risk":"R2","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/app/(onboarding)/providers.tsx","mobile/lib/bootstrap.ts"]},
+{"id":"GAP-117","category":"CODE","title":"An occasional split payday never reaches the payday screen, because primaryStream bands each credit against its group's running median","severity":"S3","complexity":"M","difficulty":"D3","risk":"R3","confidence":"C1","priority":0.5,"suitability":"AGENT-ASSISTED","depends_on":[],"blocks":["GAP-110"],"files":["mobile/lib/income/candidates.ts","mobile/lib/income/income_service.ts"]}
 ]
 ```
 
