@@ -220,22 +220,35 @@ async function forecastContributions(
   );
   if (payEvents.length === 0) return [];
 
-  // Each credit as it landed. A FIXED rule reserves against these, unchanged:
-  // its amount does not depend on how much arrived, only on the fact that
-  // something did.
+  // Each credit as it landed, the raw material for the collapse below.
   const credits = payEvents.map((event) => ({
-    // Dated to the pay's own day, so `evaluate`'s "counted from the start of
-    // the period" test lands on the day the money really arrived.
+    // Dated to the pay's own LOCAL day, so `evaluate`'s "counted from the start
+    // of the period" test lands on the day the money really arrived.
     date: toDateIso(new Date(event.occurredAt)),
     amount: event.amount,
   }));
 
-  // The same pay collapsed to ONE ENTRY PER DAY, which is what a percent rule
-  // takes its share of: goals rule 13 computes it "from the sum of income
-  // Transactions detected on that payday date". A salary split into two credits
-  // on one day is one payday with one combined base — 10% of the pair, not 10%
-  // twice, and not 10% of either half. Keyed rather than run-length grouped, so
-  // the sum is right whatever order the credits come back in.
+  // The same pay collapsed to ONE ENTRY PER DAY: the trigger list for BOTH rule
+  // kinds, because a payday is the unit a contribution rule is written in.
+  //
+  // A PERCENT rule takes its share of the day's combined base: goals rule 13
+  // computes it "from the sum of income Transactions detected on that payday
+  // date". A salary split into two credits on one day is one payday with one
+  // combined base, 10% of the pair, not 10% twice and not 10% of either half.
+  //
+  // A FIXED rule fires ONCE PER PAYDAY for the same reason. Its amount is a
+  // per-payday quantity in the spec, not a per-credit one: goals rule 10 makes
+  // the `contributionRule` amount the reference pace P, and rule 9 measures the
+  // required pace R over "paydays remaining", so a ₱2,000.00 rule means
+  // ₱2,000.00 each payday and the two figures are only comparable on that
+  // reading. Rule 14 then creates the planned contribution from "a payday
+  // trigger", one per payday. Reserving per credit made an employer who splits
+  // one payday into two deposits reserve the amount twice, for a transfer the
+  // user is asked to make once.
+  //
+  // Keyed rather than run-length grouped, so the sum is right whatever order
+  // the credits come back in; insertion order leaves the paydays chronological,
+  // as `listPayEventsBetween` sorted them.
   const paidOnDate = new Map<IsoDate, Centavos>();
   for (const credit of credits) {
     paidOnDate.set(credit.date, (paidOnDate.get(credit.date) ?? 0) + credit.amount);
@@ -244,11 +257,10 @@ async function forecastContributions(
 
   const contributions: PlannedContribution[] = [];
   for (const goal of goals) {
-    const triggers = goal.contributionRule?.kind === "percent" ? paydays : credits;
-    for (const trigger of triggers) {
-      const amount = contributionAmount(goal, trigger.amount);
+    for (const payday of paydays) {
+      const amount = contributionAmount(goal, payday.amount);
       if (amount <= 0) continue;
-      contributions.push({ goalId: goal.id, amount, date: trigger.date });
+      contributions.push({ goalId: goal.id, amount, date: payday.date });
     }
   }
   return contributions;

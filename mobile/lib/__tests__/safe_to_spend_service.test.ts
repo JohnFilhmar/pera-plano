@@ -272,6 +272,10 @@ test("A CYCLE PAID OUTSIDE EVERY TRACKED WALLET LEAVES THE BILLS TERM", async ()
 // Contributions — rule 6
 // ---------------------------------------------------------------------------
 test("A GOAL WITH A FIXED RULE RESERVES ON EVERY PAY THAT ACTUALLY ARRIVED", async () => {
+  // Two credits on two DATES are two paydays, so the rule reserves twice. The
+  // companion below is the same rule over two credits on ONE date, where it
+  // must reserve once; between them they pin the collapse to the date and stop
+  // it becoming "one reservation per window".
   await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
   await setManualIncome({ cadence: "kinsenas", averageAmount: 1_500_000, sourceWalletIds: [cash.id] }, NOW);
   const savings = await createWallet({ name: "GSave" });
@@ -291,6 +295,42 @@ test("A GOAL WITH A FIXED RULE RESERVES ON EVERY PAY THAT ACTUALLY ARRIVED", asy
     { goalId: goal.id, amount: 100_000, date: "2026-08-03" },
     { goalId: goal.id, amount: 100_000, date: "2026-08-10" },
   ]);
+});
+
+test("A FIXED RULE RESERVES ONCE FOR A PAYDAY SPLIT ACROSS TWO CREDITS", async () => {
+  // A fixed amount is a PER-PAYDAY figure, not a per-credit one: goals rule 10
+  // makes it the reference pace P and rule 9 measures the required pace R in
+  // "paydays remaining", and rule 14 creates one planned contribution per
+  // "payday trigger". An employer who pays a base credit and an allowance on
+  // one day has paid once, so a ₱2,000.00 rule holds ₱2,000.00 back, not
+  // ₱4,000.00 for a transfer the user is asked to make once.
+  await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
+  await setManualIncome({ cadence: "kinsenas", averageAmount: 1_300_000, sourceWalletIds: [cash.id] }, NOW);
+  const savings = await createWallet({ name: "GSave" });
+  const goal = await createGoal({
+    name: "Emergency Fund",
+    targetAmount: 5_000_000,
+    linkedWalletId: savings.id,
+    contributionRule: { kind: "fixed", amount: 200_000 },
+  });
+  // Built from local calendar parts, not millisecond offsets, and asserted
+  // below: two credits that straddled local midnight would be two paydays and
+  // would be testing something else. The suite pins TZ to Asia/Manila.
+  const base = new Date(2026, 7, 10, 9, 0).getTime();
+  const allowance = new Date(2026, 7, 10, 17, 0).getTime();
+  expect(new Date(base).toDateString()).toBe(new Date(allowance).toDateString());
+  // Both halves sit inside one `primaryStream` amount band, so the ledger hands
+  // the forecast two credits rather than dropping one.
+  await payday(700_000, base);
+  await payday(600_000, allowance);
+
+  const input = await buildSafeToSpendInput(TODAY, NOW);
+
+  expect(input.plannedContributions).toEqual([
+    { goalId: goal.id, amount: 200_000, date: "2026-08-10" },
+  ]);
+  // And the term the user actually feels: one rule amount, not two.
+  expect(computeSafeToSpend(input).contributionsTerm).toBe(200_000);
 });
 
 test("PAY THAT NEVER ARRIVED RESERVES NOTHING — rule 6a, the delayed-salary case", async () => {
