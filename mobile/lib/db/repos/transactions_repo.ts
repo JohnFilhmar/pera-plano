@@ -768,15 +768,25 @@ export async function listFullLedger(): Promise<Transaction[]> {
  * 90 days go "invisible in ledger, search, and Reports" while they "still
  * participate in Wallet balance math".
  *
- * THE CALLER IS INCOME CADENCE DETECTION. `detect` (lib/income/income_service.ts)
- * asks for a trailing 130 days so `detectCadence` can judge 120 of them, and
- * income rule 9 medians a cadence-sized window of paydays out of that — four
- * for monthly, six for kinsenas, eight for weekly. Read through
- * `listTransactions`, a Free device was handed 90 days instead — so
+ * THE FIRST CALLER IS INCOME CADENCE DETECTION. `detect`
+ * (lib/income/income_service.ts) asks for a trailing 130 days so `detectCadence`
+ * can judge 120 of them, and income rule 9 medians a cadence-sized window of
+ * paydays out of that — four for monthly, six for kinsenas, eight for weekly.
+ * Read through `listTransactions`, a Free device was handed 90 days instead — so
  * `averageAmount`, and through `monthlyEquivalent` the base of every
- * percent-of-income Limit (limits rule 10), moved with the tier. Unlike
- * recurring detection, nothing gates what income detection feeds, so nothing
- * may gate its sample. Latent today only because `MVP_TIER` is `plus`
+ * percent-of-income Limit (limits rule 10), moved with the tier. Nothing gates
+ * what income detection feeds, so nothing may gate its sample.
+ *
+ * THE SECOND IS RECURRING DETECTION (GAP-122), whose OUTPUT genuinely is
+ * tier-gated — which is why GAP-118 first answered the identical clamp by not
+ * running that pass on Free at all. Reports rule 19 overrules that: the Free
+ * locked preview owes the user "the count of detected patterns only", so a Free
+ * device has to detect, and three instances of an annual charge span about two
+ * years. The gate moved to the surface that renders the count
+ * (app/(tabs)/more/subscriptions.tsx); the sample it computes from is the same
+ * 800 days in both tiers, exactly as here.
+ *
+ * Both are latent today only because `MVP_TIER` is `plus`
  * (lib/entitlements.ts), which leaves the floor null for everyone.
  *
  * A SEPARATE FUNCTION RATHER THAN A `TxFilter` FLAG, for the reason

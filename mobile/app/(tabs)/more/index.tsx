@@ -23,7 +23,10 @@
 // `shared_budgets` is seeded "soon" and stays that way until the feature
 // exists (constants/shipped_features.ts) — so it is the one row on this hub
 // that still actually blocks a press. Subscriptions is `PlusGate` (tier
-// paywall) instead; Settings is ungated and navigates for real; About is not
+// paywall) instead, and since GAP-122 it does not block a press either — it
+// carries the locked badge but passes the tap through to a screen that shows
+// free users a count and nothing more (see its own comment below); Settings is
+// ungated and navigates for real; About is not
 // a gate or a navigating row at all — it is a static line. Four distinct row
 // behaviours through one field is more machinery than eight rows need.
 //
@@ -290,8 +293,20 @@ export default function MoreScreen() {
           than a hidden one — Free sees this exact row and its one-line
           explanation, never the merchants or amounts behind it (Reports rule
           19; see app/(tabs)/more/subscriptions.tsx for where that data lives
-          and how it stays hidden even if this gate is bypassed). */}
-      <PlusGate capability="recurring">
+          and how it stays hidden even if this gate is bypassed).
+
+          `lockedPress="passthrough"` IS THAT LAST CLAUSE TAKEN AT ITS WORD
+          (GAP-122). The Plus badge stays, in both tiers; what stops is the
+          interception, which was leaving the free branch of that screen —
+          `LockedPreview`, the count Reports rule 19 promises — unreachable
+          code. A free tap now lands on the count, which carries the same
+          UpgradeSheet one tap further on, so nothing about the upgrade path is
+          lost and the spec's own conversion surface is gained. The gate itself
+          did not move to a weaker place: the screen asks
+          `hasRecurringDetection()` before it renders anything, so merchants,
+          amounts and the locked-in total are no more reachable than before.
+          This is the ONLY row that passes its press through. */}
+      <PlusGate capability="recurring" lockedPress="passthrough">
         <Pressable
           testID="more-subscriptions"
           onPress={() => router.push("/more/subscriptions")}

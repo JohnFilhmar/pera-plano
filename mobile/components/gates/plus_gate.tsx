@@ -31,6 +31,38 @@ cssInterop(Lock, {
  */
 export const PLUS_BETA_LABEL = "PLUS · free in beta";
 
+/** The LOCKED treatment's badge: solid brand fill, on-brand ink, the word "Plus". */
+function LockedBadge() {
+  return (
+    <View
+      testID="plus-badge"
+      className="mt-1 flex-row items-center gap-1 self-start rounded-full bg-brand px-2 py-0.5 dark:bg-brand-dark"
+    >
+      <Lock size={11} className="text-on-brand dark:text-on-brand-dark" />
+      <Text className="text-badge font-bold text-on-brand dark:text-on-brand-dark">Plus</Text>
+    </View>
+  );
+}
+
+/**
+ * What a LOCKED gate does with a press.
+ *
+ * `"intercept"` — the default, and what docs/11's "PLUS" state describes: the
+ * gate swallows the press and opens the upgrade sheet, so a free tap can never
+ * run the capability's own action.
+ *
+ * `"passthrough"` — the badge renders, the press runs. For a child whose
+ * DESTINATION carries the gate instead, which today is one row: the More hub's
+ * Subscriptions entry (GAP-122). Reports rule 19 owes a free user "the count of
+ * detected patterns only", app/(tabs)/more/subscriptions.tsx is the screen that
+ * renders it, and it asks `hasRecurringDetection()` itself before it renders
+ * anything else — so intercepting here made that count unreachable code. Never
+ * reach for this to unlock a control that PERFORMS the gated action: all this
+ * branch drops is the sheet, and something past the press still has to be the
+ * thing hiding the data.
+ */
+type LockedPress = "intercept" | "passthrough";
+
 /**
  * Paid-tier gate — docs/11-mobile-app-design-prompt.md "TWO GATING STATES",
  * state 2 ("Plus"). A gated capability is fully built; content renders in
@@ -41,7 +73,9 @@ export const PLUS_BETA_LABEL = "PLUS · free in beta";
  * without reading:
  *   - LOCKED (free tier): solid brand fill, on-brand ink, the word "Plus".
  *     Pressing anywhere in the gated area intercepts the press and opens the
- *     upgrade sheet instead of running the capability's own action.
+ *     upgrade sheet instead of running the capability's own action — unless the
+ *     call site opts out with `lockedPress="passthrough"` (see that type above,
+ *     and note that the BADGE is unaffected either way).
  *   - UNLOCKED (plus tier): soft mint fill, brand-ink text, PLUS_BETA_LABEL.
  *     Purely informational — it sits beside a fully working control, never a
  *     second gate — so unlike the locked branch it must NOT intercept
@@ -54,9 +88,11 @@ export const PLUS_BETA_LABEL = "PLUS · free in beta";
 export function PlusGate({
   capability,
   children,
+  lockedPress = "intercept",
 }: {
   capability: PlusCapability;
   children: ReactNode;
+  lockedPress?: LockedPress;
 }) {
   const [sheetOpen, setSheetOpen] = useState(false);
 
@@ -90,6 +126,17 @@ export function PlusGate({
     );
   }
 
+  // Same layout as the unlocked branch above — children, then the badge below
+  // them — so a row that passes its press through does not shift between tiers.
+  if (lockedPress === "passthrough") {
+    return (
+      <View>
+        {children}
+        <LockedBadge />
+      </View>
+    );
+  }
+
   return (
     <>
       <Pressable
@@ -99,15 +146,7 @@ export function PlusGate({
         accessibilityLabel="Requires PeraPlano Plus — tap to see what's included"
       >
         <View pointerEvents="none">{children}</View>
-        <View
-          testID="plus-badge"
-          className="mt-1 flex-row items-center gap-1 self-start rounded-full bg-brand px-2 py-0.5 dark:bg-brand-dark"
-        >
-          <Lock size={11} className="text-on-brand dark:text-on-brand-dark" />
-          <Text className="text-badge font-bold text-on-brand dark:text-on-brand-dark">
-            Plus
-          </Text>
-        </View>
+        <LockedBadge />
       </Pressable>
       <UpgradeSheet
         visible={sheetOpen}

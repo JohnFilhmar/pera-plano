@@ -16,7 +16,6 @@
 // exactly as `startIngest`'s own catch in app/_layout.tsx does, because an app
 // that will not open cannot be fixed by the user at all.
 import { systemClock } from "@/lib/clock";
-import { hasRecurringDetection } from "@/lib/entitlements";
 import { onAppEvent } from "@/lib/events/app_events";
 
 import { refreshPatterns } from "./recurring_service";
@@ -35,49 +34,43 @@ const DEFAULT_DEBOUNCE_MS = 750;
  * one-line try/catch would eventually disagree with this one about what
  * "failed safely" means.
  *
- * FREE DOES NOT RUN THIS PASS AT ALL (GAP-118; owner's decision, 2026-09-10).
- * `refreshPatterns` asks for 800 days because three instances of an ANNUAL
- * charge span roughly two years, and `listTransactions` clamps that request to
- * the Free tier's 90-day browsing floor (lib/entitlements.ts) — so on Free the
- * pass paid for a full detection sweep and got back an answer no annual and few
- * monthly patterns can survive, for a surface `hasRecurringDetection()` gates
- * anyway (app/(tabs)/more/subscriptions.tsx). The answer chosen was not to
- * widen the window but to skip the work.
+ * THE PASS RUNS IN BOTH TIERS, AND THAT IS A REVERSAL (GAP-122; owner's
+ * decision, 2026-09-10, second pass — it supersedes the recurring half of
+ * GAP-118, taken the same day). GAP-118 returned early here on Free, on the
+ * premise that no Free surface could ever display the result. Reports rule 19
+ * says otherwise, and says it three times (docs/04-features/10-reports.md `:70`,
+ * `:98`, `:157`): "The Free locked preview shows the count of detected patterns
+ * only". The count of what a Free device never detected is zero, so honouring
+ * rule 19 means detecting on Free. Shown the conflict, the owner chose the spec.
  *
- * WHY THIS IS SKIPPED WHERE `sumSpend` AND `listFullLedgerBetween` ARE EXEMPTED
- * INSTEAD: recurring detection is the one computation in this app whose OUTPUT
- * is tier-gated. GAP-105, GAP-111 and GAP-118's income half all read past the
- * floor precisely because nothing gates what they feed — a limit's headroom and
- * a learned category are the same in both tiers, so their sample must be too.
- * A pattern list is not.
+ * WHAT IS TIER-GATED IS THE SURFACE, NOT THE PASS. `hasRecurringDetection()` is
+ * asked once, by the screen that owns the data
+ * (app/(tabs)/more/subscriptions.tsx), which on Free renders a count and
+ * nothing else — no merchant, no amount, no locked-in total
+ * (docs/05-monetization.md §5 rule 2: a locked preview is a labelled frame,
+ * never real gated data behind a blur). One check, at the surface, is what rule
+ * 19's "gated at the Entitlements call-site" asks for; a second check here only
+ * made the first one unreachable.
  *
- * CHECKED PER PASS, NOT PER SUBSCRIPTION, SO AN UPGRADE NEEDS NO RESTART. The
- * subscriber below stays subscribed on Free, and every production entry point
- * (here and lib/bootstrap.ts) runs through this function, so the first ledger
- * commit after the tier flips runs a full 800-day sweep with nothing to
- * re-register. `refreshPatterns` itself is left ungated for the same reason: an
- * upgrade handler that wants patterns on screen immediately (Reports rule 19's
- * "on upgrade, patterns computed from the full retained history appear
- * immediately") can call it directly instead of having to defeat a gate buried
- * inside it.
+ * AND THE SAMPLE IS NOW THE SAME IN BOTH TIERS. `refreshPatterns` reads its 800
+ * days through `listFullLedgerBetween`, which is exempt from the 90-day
+ * browsing floor (see `LEDGER_WINDOW_DAYS` in recurring_service.ts). That is
+ * load-bearing, not incidental: three instances of an ANNUAL charge span about
+ * two years, so a floor-clamped Free pass could not detect the subscription a
+ * user most wants flagged, and rule 19's teaser would understate in the one
+ * direction that costs a conversion — "we found nothing".
  *
- * SKIPPING ALSO SKIPS `decayStalePatterns`, AND THAT IS THE RIGHT WAY ROUND.
- * Entitlements gate principle 2 is that existing records keep working after a
- * downgrade; a Free period that quietly forgot the patterns a Plus period had
- * found would be the gate deleting data, which principle 1 forbids outright.
+ * `decayStalePatterns` RUNS ON FREE TOO, and it is that floor exemption rather
+ * than this guard's removal that makes it correct — its own doc in
+ * recurring_service.ts works through why.
  *
- * KNOWN CONSEQUENCE, RECORDED RATHER THAN HIDDEN. Reports rule 19
- * (docs/04-features/10-reports.md) wants the Free locked preview to show "the
- * count of detected patterns only". With this skip that count is zero for a
- * user who has never been on Plus. It costs nothing today, because the only
- * route to that screen — the More-tab row in app/(tabs)/more/index.tsx — is
- * `PlusGate`-wrapped and intercepts the press before navigation, leaving
- * `LockedPreview` unreachable on Free. Whoever makes it reachable has to pick
- * one of the two: the count, or the skipped work.
+ * NOTHING IS CHECKED PER SUBSCRIPTION EITHER, so an upgrade still needs no
+ * restart: every production entry point (here and lib/bootstrap.ts) runs through
+ * this function, and `refreshPatterns` stays ungated so an upgrade handler that
+ * wants patterns on screen immediately (rule 19's "on upgrade, patterns computed
+ * from the full retained history appear immediately") can call it directly.
  */
 export async function runRecurringPass(now: number): Promise<void> {
-  if (!hasRecurringDetection()) return;
-
   try {
     await refreshPatterns(now);
   } catch (error) {

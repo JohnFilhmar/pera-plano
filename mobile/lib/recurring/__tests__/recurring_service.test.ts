@@ -34,6 +34,7 @@ import { insertTransaction } from "@/lib/db/repos/transactions_repo";
 import { createUserRule, listUserRules } from "@/lib/db/repos/user_rules_repo";
 import { createWallet } from "@/lib/db/repos/wallets_repo";
 import { closeDatabase } from "@/lib/db/database";
+import { __setTierForTests } from "@/lib/entitlements";
 import { normalizeMerchant } from "@/lib/recurring/pattern_detector";
 import {
   dismissPattern as dismissPatternService,
@@ -57,6 +58,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  __setTierForTests(null);
   await closeDatabase();
 });
 
@@ -727,5 +729,132 @@ describe("refreshPatterns removes patterns that have gone silent past the forget
 
     expect(after.some((p) => p.id === created.id)).toBe(false);
     expect(monthlyLockedIn(after)).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The detection sample does not move with the tier (GAP-122)
+// ---------------------------------------------------------------------------
+// Reports rule 19 owes a free user "the count of detected patterns only", so a
+// free device has to detect. Read through `listTransactions`, `historyFloor()`
+// clamped the 800-day window `LEDGER_WINDOW_DAYS` asks for down to the free
+// tier's 90-day browsing floor — which cannot hold the three instances
+// `MIN_OCCURRENCES` wants of anything slower than monthly, so the annual
+// subscription a user most wants flagged was undetectable by construction and
+// the teaser would have understated in the one direction that costs a
+// conversion. `refreshPatterns` reads `listFullLedgerBetween` instead: the
+// floor is a browsing gate and this is a computation (GAP-105, GAP-111,
+// GAP-118). What stays tier-gated is the SURFACE — see
+// components/recurring/__tests__/subscriptions_screen.test.tsx.
+describe("refreshPatterns reads its full window in both tiers", () => {
+  test("ON FREE, AN ANNUAL PATTERN WHOSE EVIDENCE IS OLDER THAN 90 DAYS IS STILL DETECTED", async () => {
+    __setTierForTests("free");
+    // Charges at NOW-730, NOW-365 and NOW: three instances, two of them far
+    // outside anything a free user is allowed to BROWSE.
+    await series("AMAZON PRIME", 200_000, 3, 365);
+
+    const result = await refreshPatterns(NOW);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      merchant: "AMAZON PRIME",
+      amount: 200_000,
+      period: "annual",
+      periodDays: 365,
+    });
+  });
+
+  test("the free count is the whole count, not the fraction inside the browsing floor", async () => {
+    __setTierForTests("free");
+    await series("NETFLIX", 54_900, 3, 30);
+    await series("SPOTIFY", 14_900, 3, 30);
+    await series("AMAZON PRIME", 200_000, 3, 365);
+
+    const result = await refreshPatterns(NOW);
+
+    // Three, not the two whose evidence happens to sit inside 90 days. This is
+    // the number app/(tabs)/more/subscriptions.tsx renders to a free user.
+    expect(result).toHaveLength(3);
+  });
+
+  test("free and plus detect the identical set from the identical ledger", async () => {
+    await series("NETFLIX", 54_900, 3, 30);
+    await series("AMAZON PRIME", 200_000, 3, 365);
+
+    __setTierForTests("plus");
+    const onPlus = (await refreshPatterns(NOW)).map((p) => `${p.merchant}:${p.periodDays}`);
+
+    __setTierForTests("free");
+    const onFree = (await refreshPatterns(NOW)).map((p) => `${p.merchant}:${p.periodDays}`);
+
+    expect(onFree).toEqual(onPlus);
+    expect(onFree).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// `decayStalePatterns` on free — GAP-122's re-derived answer
+// ---------------------------------------------------------------------------
+// GAP-118 skipped the pass on free and argued that skipping decay along with it
+// was right, because a free period quietly forgetting what a plus period found
+// would be the gate deleting data (gate principle 1, docs/05-monetization.md
+// §3.1). The pass runs on free now, so the answer had to be re-derived rather
+// than inherited — and it survives only because the SAMPLE stopped moving with
+// the tier. Decay infers removal from silence, silence is measured against
+// `lastSeenAt`, and `lastSeenAt` is refreshed by the merge that reads the
+// ledger. Clamp that read and the inference breaks on exactly the cadence it
+// matters most for, which is the first test below.
+describe("decay runs on free, and the floor-exempt window is what makes that safe", () => {
+  test("ON FREE, AN ANNUAL PATTERN THAT CHARGED TODAY SURVIVES — A CLAMPED WINDOW WOULD HAVE DELETED IT", async () => {
+    __setTierForTests("free");
+    // The row a plus period left behind, last confirmed two years ago.
+    const created = await upsertPattern({
+      merchant: "AMAZON PRIME",
+      amount: 200_000,
+      periodDays: 365,
+      occurrences: 3,
+      confidence: 0.8,
+      firstSeenAt: NOW - 730 * DAY_MS,
+      lastSeenAt: NOW - 730 * DAY_MS,
+      nextExpectedAt: NOW - 365 * DAY_MS,
+      transactionIds: [],
+    });
+    // The ledger that says it is alive: charged a year ago, and again today.
+    await series("AMAZON PRIME", 200_000, 3, 365);
+
+    const result = await refreshPatterns(NOW);
+
+    // 730 days of stored silence against a 1.5 x 365 = 547.5-day threshold. Had
+    // the merge been unable to see past 90 days it could not have refreshed
+    // `lastSeenAt`, and decay would have deleted a live subscription on the
+    // strength of a window the tier chose.
+    const stored = await getPattern(created.id);
+    expect(stored).not.toBeNull();
+    expect(stored?.lastSeenAt).toBe(NOW);
+    expect(result.some((p) => p.id === created.id)).toBe(true);
+  });
+
+  test("a genuinely cancelled subscription is forgotten on free exactly as on plus", async () => {
+    // The other half: decay is not disabled on free either. A free count
+    // inflated by subscriptions the user already cancelled is rule 19's teaser
+    // lying in the other direction, and a pattern is derived data whose silent
+    // removal changes no Transaction (rule 18, domain §3.10).
+    __setTierForTests("free");
+    const created = await upsertPattern({
+      merchant: "NETFLIX",
+      amount: 54_900,
+      periodDays: 30,
+      occurrences: 6,
+      confidence: 0.9,
+      firstSeenAt: NOW - 200 * DAY_MS,
+      lastSeenAt: NOW - 46 * DAY_MS,
+      nextExpectedAt: NOW - 16 * DAY_MS,
+      transactionIds: [],
+    });
+
+    const result = await refreshPatterns(NOW);
+
+    expect(result.some((p) => p.id === created.id)).toBe(false);
+    expect(await getPattern(created.id)).toBeNull();
   });
 });

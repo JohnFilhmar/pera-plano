@@ -220,15 +220,23 @@ test("SUBSCRIPTIONS NAVIGATES TO /more/subscriptions ON PLUS", () => {
   expect(mockPush).toHaveBeenCalledWith("/more/subscriptions");
 });
 
-test("SUBSCRIPTIONS OPENS THE UPGRADE SHEET INSTEAD OF NAVIGATING ON FREE", () => {
-  // PlusGate intercepts the press itself (docs/11 "TWO GATING STATES") — a
-  // Free user never reaches the router at all.
+test("SUBSCRIPTIONS NAVIGATES ON FREE TOO, AND STILL WEARS THE PLUS BADGE", () => {
+  // INVERTED BY GAP-122. This used to assert the opposite — `mockPush` not
+  // called, `upgrade-sheet` open — because `PlusGate` intercepted the press
+  // (docs/11 "TWO GATING STATES"). Reports rule 19 promises a Free user "the
+  // count of detected patterns only", the screen behind this row is where that
+  // count renders, and interception made it unreachable code. The row now
+  // passes its press through (`lockedPress="passthrough"`); the badge, and the
+  // gate on the DATA, both stay — app/(tabs)/more/subscriptions.tsx asks
+  // `hasRecurringDetection()` before it renders anything, and the sheet is one
+  // tap further on from there.
   __setTierForTests("free");
   renderScreen(<MoreScreen />);
 
   fireEvent.press(screen.getByTestId("more-subscriptions"));
-  expect(mockPush).not.toHaveBeenCalled();
-  expect(screen.getByTestId("upgrade-sheet")).toBeTruthy();
+  expect(mockPush).toHaveBeenCalledWith("/more/subscriptions");
+  expect(screen.queryByTestId("upgrade-sheet")).toBeNull();
+  expect(screen.getByTestId("plus-badge")).toBeTruthy();
 });
 
 // ---------------------------------------------------------------------------

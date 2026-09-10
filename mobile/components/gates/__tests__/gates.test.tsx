@@ -235,6 +235,73 @@ describe("PlusGate", () => {
     expect(onPress).toHaveBeenCalledTimes(1);
   });
 
+  // `lockedPress="passthrough"` (GAP-122) — the one opt-out, for a child whose
+  // DESTINATION carries the gate. Reports rule 19 owes a free user the count of
+  // detected patterns, app/(tabs)/more/subscriptions.tsx renders it behind its
+  // own `hasRecurringDetection()` check, and interception at the More-tab row
+  // left that branch unreachable. All this drops is the sheet.
+  test("passthrough: a free press runs the child's own action instead of being swallowed", () => {
+    __setTierForTests("free");
+    const childOnPress = jest.fn();
+    render(
+      <PlusGate capability={CAPABILITY} lockedPress="passthrough">
+        <Pressable testID="open-subscriptions" onPress={childOnPress}>
+          <Text>Subscriptions</Text>
+        </Pressable>
+      </PlusGate>,
+    );
+    fireEvent.press(screen.getByTestId("open-subscriptions"));
+    expect(childOnPress).toHaveBeenCalledTimes(1);
+    // No interceptor, and therefore no sheet — the destination carries both.
+    expect(screen.queryByTestId("plus-gate")).toBeNull();
+    expect(screen.queryByTestId("upgrade-sheet")).toBeNull();
+  });
+
+  test("passthrough still wears the locked badge — the door is visibly locked", () => {
+    __setTierForTests("free");
+    render(
+      <PlusGate capability={CAPABILITY} lockedPress="passthrough">
+        <Text>Subscriptions</Text>
+      </PlusGate>,
+    );
+    expect(screen.getByTestId("plus-badge")).toBeTruthy();
+    expect(screen.getByText("Plus")).toBeTruthy();
+  });
+
+  test("passthrough changes nothing on plus", () => {
+    __setTierForTests("plus");
+    const onPress = jest.fn();
+    render(
+      <PlusGate capability={CAPABILITY} lockedPress="passthrough">
+        <Pressable testID="open-subscriptions" onPress={onPress}>
+          <Text>Subscriptions</Text>
+        </Pressable>
+      </PlusGate>,
+    );
+    fireEvent.press(screen.getByTestId("open-subscriptions"));
+    expect(onPress).toHaveBeenCalledTimes(1);
+    screen.getByText(PLUS_BETA_LABEL);
+    expect(screen.queryByText("Plus")).toBeNull();
+  });
+
+  test("THE DEFAULT IS STILL INTERCEPT — passthrough is opt-in, never inherited", () => {
+    // The regression that would matter most: a gate that silently stopped
+    // blocking because someone changed the default rather than the one call
+    // site that asked for it.
+    __setTierForTests("free");
+    const childOnPress = jest.fn();
+    render(
+      <PlusGate capability={CAPABILITY}>
+        <Pressable testID="add-wallet-btn" onPress={childOnPress}>
+          <Text>Add Wallet</Text>
+        </Pressable>
+      </PlusGate>,
+    );
+    fireEvent.press(screen.getByTestId("add-wallet-btn"));
+    expect(childOnPress).not.toHaveBeenCalled();
+    expect(screen.getByTestId("upgrade-sheet")).toBeTruthy();
+  });
+
   test("the Plus badge's background resolves to brand green, distinct from Soon's grey", () => {
     __setTierForTests("free");
     render(

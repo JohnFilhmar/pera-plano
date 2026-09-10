@@ -107,30 +107,32 @@ test("a throwing pass does not kill the subscription", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// The tier decides whether the pass runs at all (GAP-118)
+// THE TIER DOES NOT DECIDE WHETHER THE PASS RUNS (GAP-122)
 // ---------------------------------------------------------------------------
 //
-// Owner's decision, 2026-09-10: on Free, recurring detection does not run. The
-// 800-day window it asks for was being clamped to the 90-day browsing floor,
-// which cannot hold three instances of an annual charge, and the result is
-// gated out of the only surface that shows it. The pass is skipped rather than
-// exempted — the opposite call to `sumSpend` (GAP-105), the categorizer
-// (GAP-111) and income cadence detection (GAP-118's other half), for the reason
-// `runRecurringPass`'s own doc gives: this is the one computation whose output
-// is tier-gated.
+// INVERTED FROM THE GAP-118 VERSION OF THIS BLOCK, which asserted the exact
+// opposite — "ON FREE THE PASS DOES NOT RUN AT ALL", "on free a ledger commit
+// schedules nothing", "UPGRADING TO PLUS RUNS THE NEXT PASS WITH NO RESTART".
+// That skip was taken on the premise that no free surface could ever display
+// the result; Reports rule 19 (docs/04-features/10-reports.md `:70`, `:98`,
+// `:157`) says the free locked preview owes the user "the count of detected
+// patterns only", and the owner chose to honour it. A device that never runs
+// detection has nothing to count, so the pass now runs in both tiers, the
+// 800-day window is read floor-exempt in both (recurring_service.ts), and the
+// only tier check left is on the screen that renders the count
+// (app/(tabs)/more/subscriptions.tsx).
 
-test("ON FREE THE PASS DOES NOT RUN AT ALL", async () => {
+test("ON FREE THE PASS RUNS, BECAUSE RULE 19 OWES FREE A COUNT", async () => {
   __setTierForTests("free");
 
   await expect(runRecurringPass(Date.now())).resolves.toBeUndefined();
 
-  expect(mockRefresh).not.toHaveBeenCalled();
+  expect(mockRefresh).toHaveBeenCalledTimes(1);
 });
 
-test("on free a ledger commit schedules nothing", async () => {
-  // The skip has to hold at the event entry point too, not only when bootstrap
-  // calls the pass directly — a drained capture burst is where the wasted work
-  // actually was.
+test("on free a ledger commit schedules a pass, same as on plus", async () => {
+  // The event entry point matters as much as bootstrap's direct call: a drained
+  // capture burst is where a free user's first patterns actually come from.
   __setTierForTests("free");
   const stop = startRecurringLedgerSubscriber({ debounceMs: DEBOUNCE_MS });
 
@@ -138,24 +140,25 @@ test("on free a ledger commit schedules nothing", async () => {
   await settle();
   stop();
 
-  expect(mockRefresh).not.toHaveBeenCalled();
+  expect(mockRefresh).toHaveBeenCalledTimes(1);
 });
 
-test("UPGRADING TO PLUS RUNS THE NEXT PASS WITH NO RESTART", async () => {
-  // The check is per PASS, not per subscription. A subscriber that had decided
-  // at `startRecurringLedgerSubscriber` time would stay dead until the app was
-  // relaunched, and Reports rule 19 promises patterns "on upgrade".
+test("NEITHER TIER IS TREATED DIFFERENTLY, AND AN UPGRADE MID-SESSION CHANGES NOTHING HERE", async () => {
+  // No guard is left to be evaluated per pass or per subscription, so the tier
+  // flipping under a live subscriber is a non-event for this file: both commits
+  // below run a pass. What an upgrade changes is what the Subscriptions screen
+  // is allowed to render, which is that screen's own test.
   __setTierForTests("free");
   const stop = startRecurringLedgerSubscriber({ debounceMs: DEBOUNCE_MS });
 
   await emitAppEvent("ledger:committed", { transactionId: "tx-1" });
   await settle();
-  expect(mockRefresh).not.toHaveBeenCalled();
+  expect(mockRefresh).toHaveBeenCalledTimes(1);
 
   __setTierForTests("plus");
   await emitAppEvent("ledger:committed", { transactionId: "tx-2" });
   await settle();
   stop();
 
-  expect(mockRefresh).toHaveBeenCalledTimes(1);
+  expect(mockRefresh).toHaveBeenCalledTimes(2);
 });
