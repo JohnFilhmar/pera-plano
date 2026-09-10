@@ -34,6 +34,7 @@
 //    unknown income reaches `baseFor` as `null` and a percent-of-income Limit
 //    reads as **Paused — income unknown** (limits rule 12). A zero would read
 //    instead as "you have spent infinity percent of your limit".
+import { getSetting, setSetting } from "@/lib/db/repos/app_settings_repo";
 import { listLimits } from "@/lib/db/repos/limits_repo";
 import {
   getIncomeDetectionState,
@@ -92,6 +93,18 @@ export type IncomeSummary = {
    * sentence already IS what is being proposed.
    */
   suggestedChange?: { cadence: IncomeCadence; averageAmount: Centavos } | null;
+  /**
+   * Whether the user still has to be told that split paydays moved their income
+   * figure, and with it the headroom of every percent-of-income Limit
+   * (GAP-117). At most once, ever, and only for a device the change actually
+   * moved — `settleSplitPaydayNotice` owns that judgement.
+   *
+   * A FIELD ON THE SUMMARY rather than its own hook, so it arrives beside the
+   * figure it is about: the Income card already renders rule 3's dismissed
+   * suggestion and rule 13's lapse prompt off this same object, and a second
+   * query would let the notice and the number it explains render a frame apart.
+   */
+  hasSplitPaydayNotice: boolean;
 };
 
 /** Detection reads a trailing 120 days; refunds look back 7 before a credit. */
@@ -149,6 +162,8 @@ type Detection = {
   expectedNextAt: number | null;
   matchedEventIds: string[];
   stream: CandidateEvent[];
+  /** The stream credits `matchedEventIds` selected — the evidence `averageAmount` is built from. */
+  matched: CandidateEvent[];
 };
 
 /** Everything detection currently believes, computed fresh. Persists nothing. */
@@ -183,6 +198,7 @@ async function detect(now: number): Promise<Detection> {
     expectedNextAt: evidence.expectedNextAt,
     matchedEventIds: evidence.matchedEventIds,
     stream,
+    matched,
   };
 }
 
@@ -385,7 +401,83 @@ export async function refreshIncomeDetection(now: number): Promise<IncomeSummary
     await applyDetectionToProfile(detection);
   }
 
+  await settleSplitPaydayNotice({
+    previousAverage: previous.averageAmount,
+    nextAverage: keepPrevious ? null : next.averageAmount,
+    matched: detection.matched,
+    isManualOverride: profile?.isManualOverride === true,
+  });
+
   return getIncomeSummary(now);
+}
+
+/**
+ * Decides, ONCE per device, whether the user is owed GAP-117's notice — that
+ * their income figure and any percent-of-income Limit headroom changed because
+ * the app now counts a payday split across two deposits as one payday.
+ *
+ * THERE IS NO MIGRATION AND NOTHING TO RECOMPUTE, which is worth stating
+ * plainly because the owner's decision asked for "a one-time recompute on
+ * upgrade" and this is what that turns out to be. `detect` reads the ledger and
+ * recomputes the whole belief on every pass, persisting only what it derived;
+ * `refreshIncomeDetection` runs at bootstrap and on every ledger commit
+ * (lib/income/income_ledger_subscriber.ts), and it overwrites the profile
+ * itself whenever detection is confirmed and unoverridden. The new figure
+ * therefore lands on the first pass after the upgrade with no migration step,
+ * and percent-of-income Limits adopt it at their next period boundary, which is
+ * limits rule 11's own timing for automatic income drift. The only thing that
+ * genuinely needs persisting is the fact that the user has yet to be TOLD.
+ *
+ * ONLY FOR A USER WHOSE FIGURE ACTUALLY MOVED, which needs all four tests:
+ *
+ *   1. a figure existed before this pass — `previousAverage` is what the OLD
+ *      build last wrote. A device with none is a fresh install (or a user
+ *      detection never got a figure for), and nothing can have moved for them.
+ *      This is also what stops a NEW user's ordinary median drift from reading
+ *      as this upgrade's doing: their very first pass settles the question to
+ *      `done` before they have a second figure to compare.
+ *   2. this pass produced a fresh figure. A `lapsed` pass deliberately keeps the
+ *      old values (rule 13), so it is evidence of nothing and the decision waits
+ *      for a pass that recomputes.
+ *   3. the figure moved.
+ *   4. a matched payday arrived in more than one credit — the only input this
+ *      change treats differently. Without it, a figure that moved did so because
+ *      the user's pay changed, and telling them otherwise would be a lie.
+ *
+ * A DECLARED INCOME IS EXEMPT (rule 14). Detection may not touch the profile
+ * there, so neither the figure on screen nor any limit built on it moves, and a
+ * notice announcing a change that did not happen is worse than silence. Rule
+ * 14's own suggestion card is the surface for what detection now believes.
+ */
+async function settleSplitPaydayNotice(input: {
+  previousAverage: Centavos | null;
+  nextAverage: Centavos | null;
+  matched: CandidateEvent[];
+  isManualOverride: boolean;
+}): Promise<void> {
+  if ((await getSetting("income_split_payday_notice")) !== "undecided") return;
+
+  if (input.previousAverage === null) {
+    await setSetting("income_split_payday_notice", "done");
+    return;
+  }
+  // Nothing recomputed this pass, so nothing is settled by it either.
+  if (input.nextAverage === null) return;
+
+  const moved = input.nextAverage !== input.previousAverage;
+  const splitPayday = collapsePaydays(input.matched).some(
+    (payday) => payday.credits.length > 1,
+  );
+  const due = moved && splitPayday && !input.isManualOverride;
+  await setSetting("income_split_payday_notice", due ? "due" : "done");
+}
+
+/**
+ * The user has read GAP-117's notice. It never comes back — the figure it
+ * explains only moved once.
+ */
+export async function dismissSplitPaydayNotice(): Promise<void> {
+  await setSetting("income_split_payday_notice", "done");
 }
 
 /**
@@ -394,7 +486,12 @@ export async function refreshIncomeDetection(now: number): Promise<IncomeSummary
  */
 export async function getIncomeSummary(now: number): Promise<IncomeSummary> {
   void now;
-  const [profile, state] = await Promise.all([getIncomeProfile(), getIncomeDetectionState()]);
+  const [profile, state, splitPaydayNotice] = await Promise.all([
+    getIncomeProfile(),
+    getIncomeDetectionState(),
+    getSetting("income_split_payday_notice"),
+  ]);
+  const hasSplitPaydayNotice = splitPaydayNotice === "due";
 
   if (profile?.isManualOverride === true) {
     // Rule 14's suggestion under an override. The DECLARED figures are still
@@ -415,6 +512,13 @@ export async function getIncomeSummary(now: number): Promise<IncomeSummary> {
       sourceWalletIds: profile.sourceWalletIds,
       hasPendingSuggestion: suggested !== null && !alreadyDismissed,
       suggestedChange: alreadyDismissed ? null : suggested,
+      // NEVER over a declared income, for the same reason
+      // `settleSplitPaydayNotice` exempts one: the figure on this card is the
+      // user's own and did not move. `settle` already refuses to raise the
+      // notice under an override, but an override set AFTER it was raised and
+      // before the user read it would otherwise leave the notice describing a
+      // number they typed themselves.
+      hasSplitPaydayNotice: false,
     };
   }
 
@@ -433,6 +537,7 @@ export async function getIncomeSummary(now: number): Promise<IncomeSummary> {
       state.suggestionDismissedSignature !== signatureOf(state.cadence, state.averageAmount),
     // Nothing to carry: on this path the card's own figures ARE detection's.
     suggestedChange: null,
+    hasSplitPaydayNotice,
   };
 }
 
@@ -593,21 +698,33 @@ export async function maybeEmitPayday(now: number): Promise<boolean> {
       return candidate.credits.some((credit) => credit.amount >= IRREGULAR_PAYDAY_FLOOR);
     }
 
-    // THE DAY'S COMBINED PAY FIRST — a packet split into halves is one payday,
-    // and its total is the figure the band was written about. Then any single
-    // credit on the day, because that is the figure `averageAmount` itself is
-    // built from: `detectCadence` records one matched credit per expected
-    // window, so an employer who splits EVERY payday has a half-sized average,
-    // and testing only the combined total would silently stop announcing their
-    // pay altogether.
-    const looksLikePay =
-      withinBand(candidate.amount) || candidate.credits.some((credit) => withinBand(credit.amount));
+    // THE DAY'S COMBINED PAY, AND ONLY THAT. Rule 11's band is a test of "is
+    // this your pay", and the pay is what arrived on the day.
+    //
+    // GAP-110 also accepted a day where any SINGLE credit fell in the band, and
+    // that clause is gone (GAP-117). It existed for one reason, stated in its
+    // own comment: `averageAmount` was itself half a payday, because
+    // `detectCadence` recorded one matched credit per expected window and
+    // `averageAmountFor` took the median of those credits. Both of those are
+    // fixed — the average is now the median of matched PAYDAYS — so the clause
+    // no longer rescues anything, and it had turned into the mirror of the bug
+    // it was written for: a day carrying two in-band credits (a duplicated
+    // deposit, a base payment and an allowance of similar size) has a combined
+    // total nowhere near the band, and this clause announced it anyway, at
+    // twice the pay. `proposePaydayAllocations` takes its percentage of the
+    // emitted amount, so that is a real transfer of double the money.
+    const looksLikePay = withinBand(candidate.amount);
 
     // A credit on this day matched a real expected window during detection;
     // that is what `matchedEventIds` means. Re-deriving the window here would
     // be a second implementation of rule 6 that could disagree with the first.
-    // ANY credit again, for the same reason: one hit per window is recorded, so
-    // a split payday has only its first half in there.
+    //
+    // STILL `some`, and now it means what it says. GAP-110 loosened this to
+    // "any credit" to work around kinsenas recording one hit per window;
+    // `tryKinsenas` now records every credit of the matched PAYDAY, so a day is
+    // either matched entirely or not at all and `some` and `every` agree. It
+    // stays `some` because the question is about the day, not about each credit
+    // — `inScope` can legitimately hold a subset of a day's stream credits.
     return (
       looksLikePay &&
       candidate.credits.some((credit) => detection.matchedEventIds.includes(credit.transactionId))

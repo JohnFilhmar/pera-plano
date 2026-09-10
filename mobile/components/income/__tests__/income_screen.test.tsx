@@ -23,11 +23,16 @@ import { KeypadHost } from "@/components/ui/keypad_host";
 import { KeypadProvider } from "@/contexts/keypad_context";
 import { typeAmount } from "@/test_support/keypad";
 import { closeDatabase } from "@/lib/db/database";
+import { getSetting } from "@/lib/db/repos/app_settings_repo";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
-import { getIncomeDetectionState, getIncomeProfile } from "@/lib/db/repos/income_repo";
+import {
+  getIncomeDetectionState,
+  getIncomeProfile,
+  setIncomeDetectionState,
+} from "@/lib/db/repos/income_repo";
 import { insertTransaction } from "@/lib/db/repos/transactions_repo";
 import { createWallet } from "@/lib/db/repos/wallets_repo";
-import { refreshIncomeDetection } from "@/lib/income/income_service";
+import { refreshIncomeDetection, UNKNOWN_INCOME } from "@/lib/income/income_service";
 import type { IncomeSummary } from "@/lib/income/income_service";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
@@ -96,7 +101,7 @@ async function credit(amount: number, at: number): Promise<void> {
  * paydays depending on the date, which is how a detection test passes for three
  * weeks a month.
  */
-async function seedRecentKinsenas(count: number): Promise<void> {
+async function seedRecentKinsenas(count: number, splitInHalves = false): Promise<void> {
   const now = Date.now();
   const today = new Date(now);
   const anchors: number[] = [];
@@ -111,7 +116,16 @@ async function seedRecentKinsenas(count: number): Promise<void> {
     }
   }
 
-  for (const at of anchors) await credit(1850000, at);
+  for (const at of anchors) {
+    if (splitInHalves) {
+      // Two deposits, one local date — the same hour offsets the service suite
+      // uses. Kept inside the same day deliberately: a payday is a local date.
+      await credit(925000, at - 3_600_000);
+      await credit(925000, at + 3 * 3_600_000);
+    } else {
+      await credit(1850000, at);
+    }
+  }
 }
 
 beforeEach(async () => {
@@ -137,6 +151,7 @@ const summaryFor = (over: Partial<IncomeSummary>): IncomeSummary => ({
   expectedNextAt: null,
   sourceWalletIds: [],
   hasPendingSuggestion: false,
+  hasSplitPaydayNotice: false,
   ...over,
 });
 
@@ -305,6 +320,38 @@ test("DISMISSING records the signature and stops re-proposing it", async () => {
   );
   // The prompt goes away rather than being re-offered on the next render.
   await waitFor(() => expect(screen.queryByTestId("income-suggestion")).toBeNull());
+});
+
+test("THE ONE-TIME SPLIT-PAYDAY NOTICE APPEARS ON THE CARD AND STAYS DISMISSED", async () => {
+  // GAP-117's owner decision: fix it, and tell the user. The notice explains why
+  // the income figure — and the headroom of every percent-of-income Limit
+  // measured against it — moved without them touching anything.
+  //
+  // The seeded state is what the OLD build left behind: a confirmed kinsenas
+  // profile whose `averageAmount` was one HALF of the pay that arrived.
+  await seedRecentKinsenas(6, true);
+  await setIncomeDetectionState({
+    ...UNKNOWN_INCOME,
+    status: "confirmed",
+    cadence: "kinsenas",
+    averageAmount: 925000,
+    sourceWalletIds: [payroll.id],
+  });
+  await refreshIncomeDetection(Date.now());
+
+  renderScreen(<IncomeScreen />);
+  const notice = await screen.findByTestId("income-split-payday-notice");
+
+  // It explains the two things that moved, and never blocks: the card's own
+  // figure is on screen beside it.
+  expect(notice).toBeTruthy();
+  screen.getByText(/percentage of your income/);
+  screen.getByTestId("income-summary-card");
+
+  fireEvent.press(screen.getByTestId("income-split-payday-ack"));
+
+  await waitFor(() => expect(screen.queryByTestId("income-split-payday-notice")).toBeNull());
+  expect(await getSetting("income_split_payday_notice")).toBe("done");
 });
 
 test("a manual override says so, and offers switching back to automatic", async () => {

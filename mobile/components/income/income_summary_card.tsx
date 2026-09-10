@@ -40,6 +40,8 @@ export type IncomeSummaryCardProps = {
   onConfirm: () => void;
   onDismiss: () => void;
   onSetManually: () => void;
+  /** GAP-117's one-time notice has been read. */
+  onAcknowledgeSplitPayday: () => void;
   busy?: boolean;
 };
 
@@ -117,6 +119,7 @@ export function IncomeSummaryCard({
   onConfirm,
   onDismiss,
   onSetManually,
+  onAcknowledgeSplitPayday,
   busy = false,
 }: IncomeSummaryCardProps) {
   const known = summary.cadence !== null && summary.averageAmount !== null;
@@ -131,6 +134,36 @@ export function IncomeSummaryCard({
         <Text className="mt-1 text-fg-2 dark:text-fg-2-dark">
           {`That's about ${formatCentavos(summary.monthlyEquivalent ?? 0)} a month.`}
         </Text>
+      ) : null}
+
+      {/* GAP-117, once per device. It sits directly under the figure because it
+          is an explanation OF that figure: a user who opens this screen to find
+          out why their limit moved should not have to scroll past the number in
+          question to reach the answer. It blocks nothing — everything below
+          renders exactly as it otherwise would, and the button only marks the
+          notice read. */}
+      {summary.hasSplitPaydayNotice ? (
+        <View testID="income-split-payday-notice" className="mt-4">
+          <Text className="font-semibold text-fg dark:text-fg-dark">
+            Your income figure changed
+          </Text>
+          <Text className="mt-1 text-fg-2 dark:text-fg-2-dark">
+            When your pay arrives as two deposits on the same day, PeraPlano now counts it as one
+            payday instead of two smaller ones. The amount above is your full pay, not part of it.
+          </Text>
+          <Text className="mt-2 text-fg-2 dark:text-fg-2-dark">
+            Any limit you set as a percentage of your income is measured against that figure, so its
+            headroom changed to match. Nothing you set yourself was altered.
+          </Text>
+          <View className="mt-3">
+            <Button
+              title="Got it"
+              variant="secondary"
+              testID="income-split-payday-ack"
+              onPress={onAcknowledgeSplitPayday}
+            />
+          </View>
+        </View>
       ) : null}
 
       {summary.isManualOverride ? (

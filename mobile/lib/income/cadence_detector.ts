@@ -24,6 +24,7 @@ import { lastDayOfMonth, startOfLocalDay, startOfLocalDayBefore } from "@/lib/da
 import type { IncomeCadence } from "@/types/domain";
 
 import type { CandidateEvent } from "./candidates";
+import { collapsePaydays } from "./paydays";
 
 export type CadenceEvidence = {
   cadence: IncomeCadence;
@@ -146,12 +147,22 @@ function tryKinsenas(events: CandidateEvent[], now: number): Attempt | null {
   const anchors = kinsenasAnchorsBetween(from, now);
   if (anchors.length === 0) return null;
 
+  // ONE PAYDAY PER WINDOW, NOT ONE CREDIT (GAP-117). A window is matched by the
+  // pay that arrived, and a payday is a local date however many deposits it
+  // travelled in (lib/income/paydays.ts). Recording only the first credit is
+  // what left `averageAmountFor` taking the median of HALF a payday for an
+  // employer who splits every one — a figure rule 16 then doubles into every
+  // percent-of-income limit.
+  //
+  // The credits of ONE date, never every credit in the window: the 14th and the
+  // 16th both sit inside the 15th's window and are two paydays, not one.
+  const paydays = collapsePaydays(events);
   const matchedIds: string[] = [];
   const windows = anchors.map((anchor) => {
-    const hit = events.find(
-      (event) => Math.abs(dayGap(anchor, event.occurredAt)) <= PAYDAY_TOLERANCE_DAYS,
+    const hit = paydays.find(
+      (payday) => Math.abs(dayGap(anchor, payday.credits[0].occurredAt)) <= PAYDAY_TOLERANCE_DAYS,
     );
-    if (hit) matchedIds.push(hit.transactionId);
+    if (hit) matchedIds.push(...hit.credits.map((credit) => credit.transactionId));
     return { matched: hit !== undefined, closed: windowClosed(anchor, now, PAYDAY_TOLERANCE_DAYS) };
   });
 

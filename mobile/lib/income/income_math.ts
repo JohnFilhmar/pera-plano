@@ -26,15 +26,23 @@ import { startOfLocalDayBefore } from "@/lib/dates";
 import type { Centavos, IncomeCadence } from "@/types/domain";
 
 import type { CandidateEvent } from "./candidates";
+import { collapsePaydays } from "./paydays";
 
-/** Rule 9's window sizes, in events. Irregular is time-based instead. */
+/**
+ * Rule 9's window sizes, in PAYDAYS (rule 11's "matched pay event"). Irregular
+ * is time-based instead, and counts credits — its row says "primary-stream
+ * candidates", not matched pay events.
+ */
 const MEDIAN_WINDOW: Record<Exclude<IncomeCadence, "irregular">, number> = {
   kinsenas: 6,
   weekly: 8,
   monthly: 4,
 };
 
-/** Rule 9's "Minimum history" column. */
+/**
+ * Rule 9's "Minimum history" column — paydays for the three regular cadences,
+ * credits for irregular, for the same reason the window sizes above differ.
+ */
 const MINIMUM_EVENTS: Record<IncomeCadence, number> = {
   kinsenas: 2,
   weekly: 2,
@@ -109,15 +117,22 @@ export function averageAmountFor(
     return roundCentavos(total / IRREGULAR_MONTHS);
   }
 
-  if (events.length < MINIMUM_EVENTS[cadence]) return null;
+  // THE MEDIAN IS OVER PAYDAYS, NOT OVER CREDITS (GAP-117). Rule 9 says "the
+  // median of recent matched pay events", and rule 11 defines a matched pay
+  // event as a payday — which is a local date, however many deposits the pay
+  // travelled in (lib/income/paydays.ts). An employer who splits one ₱18,500
+  // packet into two ₱9,250 deposits has paid ₱18,500 once, and taking the
+  // median of the deposits reports half a salary. Rule 16 then doubles that
+  // half into the monthly-equivalent M, so every percent-of-income Limit is
+  // built on half the income the user actually has.
+  //
+  // The collapse is the identity for pay that arrives whole, so nothing moves
+  // for a user with no split payday in their history.
+  const paydays = collapsePaydays(events);
+  if (paydays.length < MINIMUM_EVENTS[cadence]) return null;
 
-  // Most recent first, then the window — copied rather than sorted in place,
-  // because the caller still holds this array.
-  const recent = [...events]
-    .sort((a, b) => b.occurredAt - a.occurredAt)
-    .slice(0, MEDIAN_WINDOW[cadence]);
-
-  return median(recent.map((event) => event.amount));
+  // `collapsePaydays` returns oldest first, so the window is the TAIL.
+  return median(paydays.slice(-MEDIAN_WINDOW[cadence]).map((payday) => payday.amount));
 }
 
 /**
