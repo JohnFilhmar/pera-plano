@@ -360,6 +360,24 @@ export type Loan = {
   counterparty: string;
   principal: Centavos;
   /**
+   * The cash that actually changed hands at the start, or `null` when there is
+   * no second figure to hold (migration 020).
+   *
+   * ONLY A FLAT LOAN HAS TWO NUMBERS. Loans rule 2 makes a flat loan's balance
+   * "total repayable minus the sum of paymentHistory[]", so `principal` there
+   * holds `installment * count` and THIS holds the ₱5,000 in loans:43's
+   * "borrowed ₱5,000.00, repay ₱6,000.00". For amortized and free-form loans
+   * `principal` already IS the amount borrowed, and this stays `null` rather
+   * than repeating it into a column that could then disagree with it.
+   *
+   * `null` ALSO MEANS "NEVER RECORDED" on a flat loan written before migration
+   * 020, and that is not recoverable — rule 4 forbids deriving a rate for 5-6,
+   * which is the only thing that could work the figure back out. Nothing may
+   * substitute `principal` for a null here: that would claim the user borrowed
+   * the total repayable.
+   */
+  amountBorrowed: Centavos | null;
+  /**
    * ANNUAL percent 0..100, and NOT informational: `lib/loans/loan_math.ts`
    * reads it per annum (`rate / 100 / 12` a month) to build every amortized
    * schedule and its installment, so a monthly figure stored here inflates

@@ -634,6 +634,9 @@ describe("money columns hold exact integer centavos, never REAL", () => {
     { table: "limits", column: "value" },
     { table: "goals", column: "target_amount" },
     { table: "loans", column: "principal" },
+    // 020's borrowed figure is a money column like any other — nullable and
+    // null in the seed template, so the override below is what exercises it.
+    { table: "loans", column: "amount_borrowed" },
     { table: "loans", column: "next_due_amount" },
     { table: "bills", column: "amount" },
     { table: "recurring_patterns", column: "amount" },

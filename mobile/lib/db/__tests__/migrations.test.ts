@@ -968,3 +968,159 @@ test("migration 012 keeps the open-queue index", async () => {
 
   expect(indexes.map((row) => row.name)).toContain("idx_review_queue_open");
 });
+
+// ---------------------------------------------------------------------------
+// 020_loan_amount_borrowed — the borrowed figure a flat loan could never store
+// (GAP-082, owner decision 2026-09-10). `loans` gains ONE nullable column, and
+// half of what makes this migration correct is what it does NOT do: a flat
+// loan already on a device keeps its total repayable in `principal` and reads
+// NULL here, because the amount borrowed was never recorded and cannot be
+// recovered — rule 4 forbids the app deriving the interest rate that is the
+// only bridge between ₱5,000 and ₱6,000. A backfill from `principal` would
+// assert the user borrowed the total repayable, false for every flat loan
+// carrying any add-on at all.
+// ---------------------------------------------------------------------------
+const V19_FLAT_LOAN_ID = "loan_v19_flat";
+
+/** The doc's 5-6 example as a v19 row: ₱6,000 repayable in six weekly ₱1,000s. */
+const V19_FLAT_SCHEDULE = JSON.stringify(
+  ["2026-08-22", "2026-08-29", "2026-09-05", "2026-09-12", "2026-09-19", "2026-09-26"].map(
+    (dueDate) => ({ dueDate, amountDue: 100_000 }),
+  ),
+);
+
+describe("020_loan_amount_borrowed upgrades a real version-19 database in place", () => {
+  /** Brings a database to 019 and seeds the flat loan a v19 device would hold. */
+  async function atVersionNineteenWithFlatLoan(
+    db: Awaited<ReturnType<typeof getDatabase>>,
+  ): Promise<void> {
+    const upToNineteen = MIGRATIONS.filter((m) => m.version <= 19);
+    expect(upToNineteen.length).toBe(19);
+    await runMigrations(db, upToNineteen);
+
+    // `principal` IS the total repayable for a flat loan (rule 2) — which is
+    // exactly why the ₱5,000 actually borrowed had nowhere to go on this build.
+    await db.runAsync(
+      `INSERT INTO loans (id, direction, counterparty, principal, interest_rate, schedule_json,
+         linked_wallet_id, next_due_date, next_due_amount, reminder_offsets_json,
+         created_at, updated_at)
+       VALUES (?, 'i-owe', 'Aling Nena', 600000, NULL, ?, NULL, '2026-08-22', 100000,
+               '[-3,0,3]', ?, ?)`,
+      [V19_FLAT_LOAN_ID, V19_FLAT_SCHEDULE, V1_TIMESTAMP, V1_TIMESTAMP],
+    );
+  }
+
+  test("a database at 019, already holding a flat loan, gains the column and keeps every value", async () => {
+    const db = await getDatabase();
+    await atVersionNineteenWithFlatLoan(db);
+
+    // Genuinely absent first, or "it is there afterwards" would prove nothing
+    // about upgrading — a freshDb() passes that assertion having never been at
+    // 019 at all.
+    const before = await db.getAllAsync<{ name: string }>("PRAGMA table_info(loans)");
+    expect(before.map((c) => c.name)).not.toContain("amount_borrowed");
+
+    // 020 ALONE. A longer list would mean something earlier was replayed over
+    // live rows; an empty one would mean the registry never got version 20.
+    expect(await runMigrations(db)).toEqual([20]);
+
+    const after = await db.getAllAsync<{ name: string }>("PRAGMA table_info(loans)");
+    expect(after.map((c) => c.name)).toContain("amount_borrowed");
+
+    const loan = await db.getFirstAsync<Record<string, unknown>>(
+      "SELECT * FROM loans WHERE id = ?",
+      [V19_FLAT_LOAN_ID],
+    );
+    expect(loan).toMatchObject({
+      id: V19_FLAT_LOAN_ID,
+      direction: "i-owe",
+      counterparty: "Aling Nena",
+      principal: 600000,
+      interest_rate: null,
+      schedule_json: V19_FLAT_SCHEDULE,
+      next_due_date: "2026-08-22",
+      next_due_amount: 100000,
+      reminder_offsets_json: "[-3,0,3]",
+      created_at: V1_TIMESTAMP,
+    });
+
+    const count = await db.getFirstAsync<{ n: number }>("SELECT COUNT(*) AS n FROM loans");
+    expect(count?.n).toBe(1);
+  });
+
+  test("THE COLUMN IS NULL ON A PRE-EXISTING FLAT LOAN, and emphatically not a copy of `principal`", async () => {
+    // The backfill decision, pinned. ₱6,000 here would read as "you borrowed
+    // the whole ₱6,000, and it cost you nothing" — a confident wrong answer
+    // where the true one is that nobody recorded it. Doc open question 3 asks
+    // whether to show "you are paying ₱1,000.00 over principal"; a backfilled
+    // column would make that figure ₱0.00 for every loan that predates this.
+    const db = await getDatabase();
+    await atVersionNineteenWithFlatLoan(db);
+    await runMigrations(db);
+
+    const loan = await db.getFirstAsync<{ borrowed: number | null; principal: number }>(
+      "SELECT amount_borrowed AS borrowed, principal FROM loans WHERE id = ?",
+      [V19_FLAT_LOAN_ID],
+    );
+    expect(loan?.borrowed).toBeNull();
+    expect(loan?.principal).toBe(600000);
+  });
+
+  test("the column is writable on a row that predates it, with integer affinity", async () => {
+    // A user who remembers what they borrowed has to be able to say so on a
+    // loan created before the app ever asked.
+    const db = await getDatabase();
+    await atVersionNineteenWithFlatLoan(db);
+    await runMigrations(db);
+
+    await db.runAsync("UPDATE loans SET amount_borrowed = ? WHERE id = ?", [
+      500000,
+      V19_FLAT_LOAN_ID,
+    ]);
+    const row = await db.getFirstAsync<{ borrowed: number; kind: string }>(
+      "SELECT amount_borrowed AS borrowed, typeof(amount_borrowed) AS kind FROM loans WHERE id = ?",
+      [V19_FLAT_LOAN_ID],
+    );
+    expect(row?.borrowed).toBe(500000);
+    // Centavos are exact integers everywhere else in this schema; a REAL
+    // affinity would silently make one money column a float.
+    expect(row?.kind).toBe("integer");
+  });
+
+  test("the `> 0` CHECK is enforced from the moment the column exists, and NULL still passes it", async () => {
+    // Zero is how "unknown" would sneak in wearing a number instead of a NULL,
+    // and every reader downstream treats NULL as "never recorded".
+    const db = await getDatabase();
+    await atVersionNineteenWithFlatLoan(db);
+    await runMigrations(db);
+
+    await expect(
+      db.runAsync("UPDATE loans SET amount_borrowed = 0 WHERE id = ?", [V19_FLAT_LOAN_ID]),
+    ).rejects.toThrow(/CHECK/i);
+    await expect(
+      db.runAsync("UPDATE loans SET amount_borrowed = -1 WHERE id = ?", [V19_FLAT_LOAN_ID]),
+    ).rejects.toThrow(/CHECK/i);
+
+    await db.runAsync("UPDATE loans SET amount_borrowed = NULL WHERE id = ?", [V19_FLAT_LOAN_ID]);
+    const row = await db.getFirstAsync<{ borrowed: number | null }>(
+      "SELECT amount_borrowed AS borrowed FROM loans WHERE id = ?",
+      [V19_FLAT_LOAN_ID],
+    );
+    expect(row?.borrowed).toBeNull();
+  });
+
+  test("every shipped version ends up recorded, and a further run applies nothing", async () => {
+    // The exactly-once guard is what keeps a second launch from crashing:
+    // re-running `ALTER TABLE ... ADD COLUMN` throws "duplicate column name".
+    const db = await getDatabase();
+    await atVersionNineteenWithFlatLoan(db);
+    await runMigrations(db);
+
+    const recorded = await db.getAllAsync<{ version: number; name: string }>(
+      "SELECT version, name FROM schema_migrations ORDER BY version",
+    );
+    expect(recorded).toEqual(MIGRATIONS.map((m) => ({ version: m.version, name: m.name })));
+    expect(await runMigrations(db)).toEqual([]);
+    expect((await db.getFirstAsync<{ n: number }>("SELECT COUNT(*) AS n FROM loans"))?.n).toBe(1);
+  });
+});

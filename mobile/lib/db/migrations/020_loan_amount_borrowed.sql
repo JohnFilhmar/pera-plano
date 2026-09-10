@@ -1,0 +1,54 @@
+-- 020_loan_amount_borrowed.sql — the second figure a flat loan has always had
+-- and has never had anywhere to put (GAP-082; owner decision 2026-09-10).
+--
+-- WHAT A FLAT LOAN IS. docs/04-features/06-loans.md:43: "enter the total amount
+-- to repay (e.g., borrowed ₱5,000.00, repay ₱6,000.00)" — TWO figures. The
+-- worked 5-6 example at :82 enters both ("`principal` ₱5,000.00 → Flat → total
+-- repayable ₱6,000.00"), and :40 has every loan take a `principal` at step 2,
+-- before its schedule type is chosen at step 3. The form asked for the borrowed
+-- one, previewed it back, refused to enable Save without it — and then dropped
+-- it on submit, because there was no column. That is the whole of GAP-082.
+--
+-- WHY `principal` CANNOT HOLD IT. Rule 2 defines a flat loan's outstanding
+-- balance as "total repayable minus the sum of paymentHistory[]", so
+-- `loans.principal` stores `installment * count` for a flat loan and every
+-- balance in the app counts down from it (`outstandingBalance` in
+-- lib/db/repos/loans_repo.ts; settled by GAP-029, closed). Storing the borrowed
+-- ₱5,000 there instead would report a ₱6,000 utang settled with ₱1,000 still
+-- owed. So the borrowed figure needs somewhere else to live, and this is it.
+--
+-- NAMED `amount_borrowed`, WITH NO "principal" IN IT ANYWHERE. The two numbers
+-- describe one loan and would otherwise be read past each other forever:
+-- `principal` here is a BALANCE BASIS — the thing the app counts down —
+-- while `amount_borrowed` is an EVENT: the cash that changed hands once, at
+-- the start, and never moves again. It reads correctly in both directions
+-- (rule 1 offers all three schedule types either way): for `i-owe` the user
+-- borrowed it, for `owed-to-me` the counterparty did. Whoever the debtor is,
+-- this is what they borrowed.
+--
+-- NULLABLE, AND DELIBERATELY NOT BACKFILLED. Every flat loan already on a
+-- device recorded only the total repayable, and the borrowed figure cannot be
+-- worked back out of it: rule 4 forbids the app deriving an interest rate for
+-- 5-6, and a rate is the only thing that could bridge the two numbers.
+-- Copying `principal` in would assert the user borrowed the total repayable —
+-- false for every flat loan carrying any add-on at all, which is all of them —
+-- and a confident wrong number is worse than an admitted unknown. NULL means
+-- "never recorded", and every reader has to treat it that way.
+--
+-- NULL ALSO MEANS "NO SEPARATE FIGURE" for amortized and free-form loans,
+-- where `principal` already IS the amount borrowed (the amortized schedule is
+-- computed from it; a free-form balance counts down from it per rule 2).
+-- Writing a second copy of that number here would be two columns able to
+-- disagree about one fact, which `updateLoan` would then have to keep in step
+-- forever. One divergence exists, so one column is added.
+--
+-- NO `CHECK (amount_borrowed <= principal)`. Repaying less than was borrowed
+-- is unusual, not impossible — a lender waiving part of it up front, a
+-- relative rounding the utang down — and a constraint that refuses a real
+-- arrangement costs the user their record of it. `> 0` is the only claim worth
+-- enforcing: zero is not a loan, and zero is how "unknown" would sneak in
+-- wearing a number instead of a NULL.
+--
+-- Never edit 001-019 — this is a new numbered migration, additive only.
+ALTER TABLE loans ADD COLUMN amount_borrowed INTEGER
+  CHECK (amount_borrowed IS NULL OR amount_borrowed > 0);

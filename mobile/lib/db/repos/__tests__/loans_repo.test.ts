@@ -152,6 +152,72 @@ test("a FLAT schedule carries no interest split", async () => {
   expect(loan.interestRate).toBeNull();
 });
 
+// ---------------------------------------------------------------------------
+// The borrowed amount — migration 020, GAP-082.
+//
+// A flat loan is the one kind with two figures: docs/04-features/06-loans.md:43
+// defines it as "borrowed ₱5,000.00, repay ₱6,000.00", and rule 2 makes only
+// the second the balance basis. `principal` therefore stays the total
+// repayable and `amountBorrowed` carries the other one — never a copy of the
+// first, and never a stand-in for it.
+// ---------------------------------------------------------------------------
+test("A FLAT LOAN ROUND-TRIPS BOTH FIGURES, and they stay different numbers", async () => {
+  const loan = await createLoan({
+    direction: "i-owe",
+    counterparty: "Aling Nena",
+    // Total repayable, per rule 2 — six ₱1,000 instalments.
+    principal: 600000,
+    amountBorrowed: 500000,
+    schedule: [
+      { dueDate: "2026-08-22", amountDue: 100000 },
+      { dueDate: "2026-08-29", amountDue: 100000 },
+    ],
+  });
+
+  expect(loan.amountBorrowed).toBe(500000);
+  const read = await getLoan(loan.id);
+  expect(read?.principal).toBe(600000);
+  expect(read?.amountBorrowed).toBe(500000);
+  // The balance still counts down from the total repayable, untouched by the
+  // new column — tracking the ₱5,000 would report this settled ₱1,000 early.
+  expect(await outstandingBalance(loan.id)).toBe(600000);
+});
+
+test("a loan created without a borrowed amount stores NULL, not its principal", async () => {
+  // Amortized and free-form loans have no second figure: `principal` already
+  // IS the amount borrowed there. A defaulted copy would be a second column
+  // able to disagree with the first.
+  const loan = await createLoan({
+    direction: "i-owe",
+    counterparty: "GLoan",
+    principal: 5000000,
+    interestRate: 12,
+  });
+
+  expect(loan.amountBorrowed).toBeNull();
+});
+
+test("updateLoan CLEARS the borrowed amount on an explicit null, and keeps it when omitted", async () => {
+  // Switching a flat loan to amortized on the edit screen submits an explicit
+  // `null`, and it has to stick: leaving the old borrowed figure behind on a
+  // loan whose `principal` now IS the borrowed figure gives two columns
+  // claiming the same fact. An OMITTED patch is a different request and must
+  // leave the stored value alone, the way `interestRate` behaves.
+  const loan = await createLoan({
+    direction: "i-owe",
+    counterparty: "Aling Nena",
+    principal: 600000,
+    amountBorrowed: 500000,
+  });
+
+  const renamed = await updateLoan(loan.id, { counterparty: "Aling Nena (Purok 3)" });
+  expect(renamed.amountBorrowed).toBe(500000);
+
+  const converted = await updateLoan(loan.id, { principal: 500000, amountBorrowed: null });
+  expect(converted.amountBorrowed).toBeNull();
+  expect(converted.principal).toBe(500000);
+});
+
 test("getLoan returns null for an unknown id", async () => {
   expect(await getLoan("no-such-loan")).toBeNull();
 });

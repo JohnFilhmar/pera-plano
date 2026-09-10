@@ -18,6 +18,7 @@ import goalSoftDeleteSql from "./migrations/016_goal_soft_delete.sql";
 import rawNotificationKeySql from "./migrations/018_raw_notification_key.sql";
 import transactionAdjustmentsSql from "./migrations/017_transaction_adjustments.sql";
 import loanMatchRejectionsSql from "./migrations/019_loan_match_rejections.sql";
+import loanAmountBorrowedSql from "./migrations/020_loan_amount_borrowed.sql";
 
 export type Migration = {
   version: number;
@@ -172,6 +173,11 @@ export const MIGRATIONS: Migration[] = [
   { version: 18, name: "raw_notification_key", sql: rawNotificationKeySql },
   // A new table and its index. No rebuild, so no `disablesForeignKeys`.
   { version: 19, name: "loan_match_rejections", sql: loanMatchRejectionsSql },
+  // One additive nullable column on `loans`, no backfill and no index — the
+  // borrowed figure a flat loan's form has always asked for and never been
+  // able to store (GAP-082). See that file's own header for why it is neither
+  // `principal` nor derivable from it. No rebuild, so no `disablesForeignKeys`.
+  { version: 20, name: "loan_amount_borrowed", sql: loanAmountBorrowedSql },
 ];
 
 /**

@@ -56,6 +56,14 @@ export type NewLoan = {
   counterparty: string;
   principal: Centavos;
   /**
+   * The cash borrowed, for the one kind of loan where that is not `principal`
+   * (migration 020). Omitted or `null` means there is no separate figure: for
+   * amortized and free-form loans `principal` already is one, and for a flat
+   * loan stored before 020 it was never recorded and cannot be derived.
+   * NEVER default this to `principal` — see `Loan.amountBorrowed`.
+   */
+  amountBorrowed?: Centavos | null;
+  /**
    * Percent, informational only (domain §3.8). Spec rule 3 requires the UNIT to
    * be explicit at entry — PH lenders commonly quote monthly add-on rates —
    * which is a screen concern; by the time it reaches here it is whatever the
@@ -111,6 +119,8 @@ type LoanRow = {
   updated_at: number;
   /** 010_soft_delete_and_derived_limits — appended by ALTER TABLE, hence last. */
   archived_at: number | null;
+  /** 020_loan_amount_borrowed — appended after `archived_at`, for the same reason. */
+  amount_borrowed: number | null;
 };
 
 /**
@@ -176,6 +186,12 @@ function rowToLoan(row: LoanRow): Loan {
     direction: row.direction as LoanDirection,
     counterparty: row.counterparty,
     principal: row.principal,
+    // Added by ALTER TABLE in migration 020, so every loan written before it
+    // reads NULL — which is exactly right for a flat loan whose borrowed
+    // amount was never asked for, and for the two kinds that never had a
+    // second figure at all. `?? null` normalizes the `undefined` a row
+    // selected by an older build would carry, the way `archived_at` does.
+    amountBorrowed: row.amount_borrowed ?? null,
     interestRate: row.interest_rate,
     schedule: row.schedule_json === null ? null : (JSON.parse(row.schedule_json) as Installment[]),
     linkedWalletId: row.linked_wallet_id,
@@ -197,14 +213,16 @@ export async function createLoan(input: NewLoan): Promise<Loan> {
   const id = newId();
 
   await db.runAsync(
-    `INSERT INTO loans (id, direction, counterparty, principal, interest_rate, schedule_json,
-       linked_wallet_id, next_due_date, next_due_amount, reminder_offsets_json, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO loans (id, direction, counterparty, principal, amount_borrowed, interest_rate,
+       schedule_json, linked_wallet_id, next_due_date, next_due_amount, reminder_offsets_json,
+       created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       input.direction,
       input.counterparty,
       input.principal,
+      input.amountBorrowed ?? null,
       input.interestRate ?? null,
       input.schedule && input.schedule.length > 0 ? JSON.stringify(input.schedule) : null,
       input.linkedWalletId ?? null,
@@ -293,6 +311,13 @@ export async function updateLoan(id: string, patch: Partial<NewLoan>): Promise<L
     direction: patch.direction ?? current.direction,
     counterparty: patch.counterparty ?? current.counterparty,
     principal: patch.principal ?? current.principal,
+    // `!== undefined`, like `interestRate` right below and NOT like
+    // `principal` right above: an explicit `null` has to CLEAR this. Switching
+    // a flat loan to amortized on the edit screen submits exactly that, and a
+    // `??` here would leave the old borrowed figure hanging off a loan whose
+    // `principal` now IS the borrowed figure — two columns claiming it.
+    amountBorrowed:
+      patch.amountBorrowed !== undefined ? patch.amountBorrowed : current.amountBorrowed,
     interestRate: patch.interestRate !== undefined ? patch.interestRate : current.interestRate,
     schedule: patch.schedule !== undefined ? patch.schedule : current.schedule,
     linkedWalletId:
@@ -309,14 +334,15 @@ export async function updateLoan(id: string, patch: Partial<NewLoan>): Promise<L
   const db = await getDatabase();
   await db.runAsync(
     `UPDATE loans
-        SET direction = ?, counterparty = ?, principal = ?, interest_rate = ?, schedule_json = ?,
-            linked_wallet_id = ?, next_due_date = ?, next_due_amount = ?, reminder_offsets_json = ?,
-            updated_at = ?
+        SET direction = ?, counterparty = ?, principal = ?, amount_borrowed = ?, interest_rate = ?,
+            schedule_json = ?, linked_wallet_id = ?, next_due_date = ?, next_due_amount = ?,
+            reminder_offsets_json = ?, updated_at = ?
       WHERE id = ?`,
     [
       merged.direction,
       merged.counterparty,
       merged.principal,
+      merged.amountBorrowed,
       merged.interestRate,
       merged.schedule && merged.schedule.length > 0 ? JSON.stringify(merged.schedule) : null,
       merged.linkedWalletId,
