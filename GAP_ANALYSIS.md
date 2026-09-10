@@ -9173,6 +9173,103 @@ Revert.
 **Open questions**
 None. The owner chose the Privacy-screen warning over an onboarding toast and over staying silent, on 2026-09-10.
 
+### GAP-120 [FEAT] The split-payday notice lives only on the Income card, but the figure it explains is noticed on the Limits screen
+
+**Location**
+- `mobile/components/income/income_summary_card.tsx:145` (the notice block, `testID="income-split-payday-notice"`)
+- `mobile/app/(tabs)/plan/income.tsx` (the only screen that renders it)
+- `mobile/components/plan/limits_panel.tsx` (an unconditional `plan-income-row` that already taps through to the income screen)
+- `mobile/lib/income/income_service.ts` (`IncomeSummary.hasSplitPaydayNotice`, the flag the caption would read)
+
+**Evidence**
+Raised by the GAP-117 agent while implementing the owner's decision, and kept out of that commit as scope rather than done as a drive-by. Verified by the orchestrator on 2026-09-10.
+
+**What is wrong**
+The owner's decision of 2026-09-10 on GAP-117 was explicitly "fix it, AND tell the user", on the grounds that a limit which doubles overnight with no explanation reads as a bug. The notice that does the telling renders on the Income card. The symptom the user actually notices is on the **Limits** screen, where headroom changed. So the explanation sits on a screen the user has no particular reason to open, and the decision is only half served.
+
+**Why it matters**
+The notice settles once per device. If it is never seen it is gone for good, and the user is left with exactly the confusion the decision existed to prevent. This is the cheapest possible completion of a choice that has already been made and paid for.
+
+**Intended behavior**
+While the notice is unresolved, the Limits surface points at the explanation.
+
+**Proposed fix**
+`limits_panel.tsx` already has a `plan-income-row` that navigates to the income screen. Give it a conditional caption while `hasSplitPaydayNotice` is true. No new navigation, no new mechanism, no second copy of the explanation -- the row is the signpost, the card keeps the text.
+
+**Implementation checklist**
+- [ ] Read `hasSplitPaydayNotice` where the limits panel already reads its income figure, not through a new query.
+- [ ] Conditional caption on the existing `plan-income-row`; no new row and no new navigation target.
+- [ ] Test: the caption appears while the notice is unresolved and disappears after it is acknowledged.
+
+**Acceptance criteria**
+- [ ] A user whose limit headroom moved can reach the explanation from the Limits screen without knowing to look at Income.
+- [ ] Nothing appears once the notice is acknowledged or was never owed.
+
+**Verification commands**
+```bash
+cd mobile && npx jest components/plan limits_panel components/income --maxWorkers=2
+cd mobile && npx tsc --noEmit
+```
+
+**Do not**
+Do not duplicate the notice text onto the Limits screen; two copies of one explanation drift. Do not add a second one-time flag -- the existing one is the source of truth.
+
+**Rollback**
+Revert.
+
+**Open questions**
+None.
+
+### GAP-121 [CONTRA] Income rules 4 and 9 describe per-credit banding and per-credit medians; the code now works per payday
+
+**Location**
+- `docs/04-features/04-income.md:65` (rule 4: "Candidates are grouped by (`walletId`, normalized `merchant`/counterparty where present, amount within +/-30% of the group's running median)")
+- `docs/04-features/04-income.md:88` (rule 9: "`averageAmount` is the median of recent matched pay events")
+- `docs/04-features/04-income.md:84` (rule 8, which the code's fallback exists to keep true)
+- `mobile/lib/income/candidates.ts:221` (`primaryStream`, now bands the payday total first and falls back to individual credits only when that total is out of band)
+- `mobile/lib/income/income_math.ts:131` (`averageAmountFor`, now medians per-payday totals)
+- `mobile/lib/income/cadence_detector.ts:159` (`tryKinsenas`, now records one payday per window rather than one credit)
+
+**Evidence**
+GAP-117 (commit `77769d8`) moved all three to operate per payday, and GAP-110 (`808811e`) had already done the same for rule 11 without touching any file under `docs/`. Verified by the orchestrator on 2026-09-10 by reading rule 4 at `:65`, rule 8 at `:84` and rule 9 at `:88`, and confirming `grep -c "running median"` finds the phrase in `04-income.md` and NOT in `05-goals-savings.md` (which GAP-117's own entry had wrongly cited as its home).
+
+**What is wrong**
+Rule 9 is arguably already satisfied: rule 11 defines a matched pay event as "a payday", so "median of recent matched pay events" reads as per-payday and the old per-credit code was the thing that disagreed. Rule 4 is the genuine divergence. It names the candidate CREDIT as the banded unit, and the code now bands the day's combined total first. Worse, the code's out-of-band-day fallback to individual credits appears nowhere in the spec, and it is load-bearing: without it a P50,000 13th-month landing on the same day as a P18,500 salary takes the salary out of the stream and breaks rule 8.
+
+**Why it matters**
+This is the documentation half of a behaviour the campaign has now deliberately changed twice, under an explicit owner decision. Left as is, the next person to implement rule 4 as written reintroduces the split-payday defect that GAP-110 and GAP-117 were spent on, and the fallback that protects rule 8 survives only as a comment in one function.
+
+**Intended behavior**
+Rules 4 and 9 name the payday as the unit, and rule 4 records the out-of-band-day fallback along with the reason it exists.
+
+**Proposed fix**
+Doc-only edit to `docs/04-features/04-income.md` rules 4 and 9. State that banding is per payday (credits sharing a local date are one candidate), and that a day whose combined total falls outside the band is re-tested credit by credit so an off-schedule bonus cannot evict the salary it landed beside -- naming rule 8 as the reason.
+
+**Implementation checklist**
+- [ ] Rewrite rule 4's banded unit as the payday, keeping the +/-30% figure unchanged.
+- [ ] Record the out-of-band-day fallback and cite rule 8 as its purpose.
+- [ ] Make rule 9's "matched pay events" unambiguous about being paydays, cross-referencing rule 11's own definition.
+- [ ] Check no other doc restates the per-credit reading (`grep -rn "running median" docs/`).
+
+**Acceptance criteria**
+- [ ] Someone implementing rules 4, 8 and 9 from the documents alone produces the behaviour now in `candidates.ts`, `cadence_detector.ts` and `income_math.ts`.
+- [ ] No code changes in this entry.
+
+**Verification commands**
+```bash
+grep -rn "running median\|matched pay events" docs/
+cd mobile && npx jest lib/income --maxWorkers=4
+```
+
+**Do not**
+DO NOT change code to match the documents. The code is the decided behaviour, settled by GAP-110, GAP-117 and the owner's decision of 2026-09-10; this entry exists to make the documents catch up. Do not change the 30% figure.
+
+**Rollback**
+Revert.
+
+**Open questions**
+None.
+
 ## 10. Deferred and rejected
 
 Considered and not listed, with the reason.
@@ -9336,7 +9433,9 @@ Pass-2 deferrals (S4; each has a citation in the analyst's pass-2 notes and can 
 {"id":"GAP-116","category":"CODE","title":"An onboarding provider selection that fails to seal is lost with no record and nothing to recover it from","severity":"S3","complexity":"S","difficulty":"D2","risk":"R2","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/app/(onboarding)/providers.tsx","mobile/lib/bootstrap.ts"]},
 {"id":"GAP-117","category":"CODE","title":"An occasional split payday never reaches the payday screen, because primaryStream bands each credit against its group's running median","severity":"S3","complexity":"M","difficulty":"D3","risk":"R3","confidence":"C1","priority":0.5,"suitability":"AGENT-ASSISTED","depends_on":[],"blocks":["GAP-110"],"files":["mobile/lib/income/candidates.ts","mobile/lib/income/income_service.ts"]},
 {"id":"GAP-118","category":"CODE","title":"Income cadence detection asks for 130 days and recurring detection for 800, and on Free both are cut to 90 by the browsing floor","severity":"S3","complexity":"M","difficulty":"D2","risk":"R2","confidence":"C1","priority":0.5,"suitability":"AGENT-ASSISTED","depends_on":[],"blocks":[],"files":["mobile/lib/income/income_service.ts","mobile/lib/recurring/recurring_service.ts"]},
-{"id":"GAP-119","category":"FEAT","title":"A provider filter that failed to seal is invisible in More > Privacy, the one screen where the user manages it","severity":"S3","complexity":"M","difficulty":"D2","risk":"R2","confidence":"C1","priority":0.5,"suitability":"AGENT-READY","depends_on":["GAP-116"],"blocks":[],"files":["mobile/app/(tabs)/more/privacy.tsx","mobile/modules/notification_listener/index.ts","mobile/lib/bootstrap.ts"]}
+{"id":"GAP-119","category":"FEAT","title":"A provider filter that failed to seal is invisible in More > Privacy, the one screen where the user manages it","severity":"S3","complexity":"M","difficulty":"D2","risk":"R2","confidence":"C1","priority":0.5,"suitability":"AGENT-READY","depends_on":["GAP-116"],"blocks":[],"files":["mobile/app/(tabs)/more/privacy.tsx","mobile/modules/notification_listener/index.ts","mobile/lib/bootstrap.ts"]},
+{"id":"GAP-120","category":"FEAT","title":"The split-payday notice lives only on the Income card, but the figure it explains is noticed on the Limits screen","severity":"S4","complexity":"XS","difficulty":"D1","risk":"R1","confidence":"C1","priority":0.8,"suitability":"AGENT-READY","depends_on":["GAP-117"],"blocks":[],"files":["mobile/components/plan/limits_panel.tsx","mobile/components/income/income_summary_card.tsx"]},
+{"id":"GAP-121","category":"CONTRA","title":"Income rules 4 and 9 describe per-credit banding and per-credit medians; the code now works per payday","severity":"S4","complexity":"XS","difficulty":"D1","risk":"R1","confidence":"C1","priority":0.8,"suitability":"AGENT-READY","depends_on":["GAP-117"],"blocks":[],"files":["docs/04-features/04-income.md"]}
 ]
 ```
 
