@@ -39,10 +39,19 @@ const DAY_MS = 86_400_000;
  * is `MIN_OCCURRENCES = 3` (pattern_detector.ts), so an ANNUAL pattern needs
  * roughly two full years of history before three instances even exist — three
  * charges a year apart span about 730 days. Rounded up with slack for a
- * charge that lands a few weeks early or late; `historyFloor()` inside
- * `listTransactions` still clamps this to whatever the current tier's
- * visibility window allows (entitlements.ts), so a Free device simply sees
- * less of it, per domain §3.10's tier note.
+ * charge that lands a few weeks early or late.
+ *
+ * NOTHING CLAMPS THIS ANY MORE, BECAUSE ON FREE THE PASS DOES NOT RUN AT ALL
+ * (GAP-118; owner's decision, 2026-09-10). It used to: `historyFloor()` inside
+ * `listTransactions` cut these 800 days down to the Free tier's 90-day browsing
+ * window (entitlements.ts), which cannot hold three instances of anything
+ * slower than monthly — the detector was asked for annual subscriptions and
+ * given a window that excludes them by construction. The decision was taken at
+ * the entry point instead of here: `runRecurringPass`
+ * (recurring_ledger_subscriber.ts) states it in full and returns early on Free,
+ * and every production caller goes through it. So every pass that reaches this
+ * constant is a Plus pass, and on Plus `historyFloor()` is null and all 800
+ * days are read.
  */
 const LEDGER_WINDOW_DAYS = 800;
 

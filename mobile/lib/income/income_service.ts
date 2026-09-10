@@ -44,7 +44,7 @@ import {
   setIncomeDetectionState,
   clearIncomeProfile,
 } from "@/lib/db/repos/income_repo";
-import { listTransactions } from "@/lib/db/repos/transactions_repo";
+import { listFullLedgerBetween, listTransactions } from "@/lib/db/repos/transactions_repo";
 import { emitAppEvent } from "@/lib/events/app_events";
 import { refreshLimitBase } from "@/lib/limits/limit_service";
 import { UNKNOWN_INCOME_DETECTION, type IncomeDetectionState } from "@/types/control";
@@ -178,13 +178,26 @@ async function detect(now: number): Promise<Detection> {
   // landed is precisely the one `maybeEmitPayday` is being asked about. The
   // symptom is a payday that only announces itself a day late.
   //
-  // `now` IS PASSED THROUGH so the tier's history floor is measured against the
-  // instant this detection pass is running at, not against whatever the wall
-  // clock says inside the repository. Everything in this file is clock-injected
-  // for the reason lib/clock.ts gives; a repository reaching for `Date.now()`
-  // behind it would put one un-pinnable instant in the middle of a pinned
-  // calculation.
-  const transactions = await listTransactions({ from, to: now + 1, now });
+  // FLOOR-EXEMPT, AND THAT IS THE WHOLE POINT OF USING THIS READ (GAP-118).
+  // `listTransactions` clamps `from` up to the tier's 90-day browsing floor, so
+  // a Free device handed this pass 90 days of the 130 it asks for — `detect`
+  // still returned a cadence, but `averageAmount` was medianed over a smaller
+  // set of paydays, and rule 16 turns that into `monthlyEquivalent` and limits
+  // rule 10 into the base of every percent-of-income Limit. A tier-dependent
+  // sample is a tier-dependent limit, and income detection is gated nowhere.
+  // Limits rule 8 is the governing sentence: totals "are always computed from
+  // the full ledger, regardless of the free tier's 90-day history view gate —
+  // data is never deleted, only the browsing view is gated". Same line GAP-105
+  // drew for `sumSpend` and GAP-111 for the categorizer.
+  //
+  // BOUNDED, NOT `listFullLedger`. That read is unfiltered by design; using it
+  // here would quietly turn "the trailing 130 days" into "everything ever", and
+  // rule 5's window is a deliberate 120 days plus the refund lookback.
+  //
+  // `now` NO LONGER GOES TO THE REPOSITORY, because nothing there measures
+  // against it any more. It stays the pinned instant every calculation below
+  // uses, which is what lib/clock.ts asks of this file.
+  const transactions = await listFullLedgerBetween({ from, to: now + 1 });
   const loanPaymentIds = new Set(await listLoanPaymentTransactionIds());
 
   const stream = primaryStream(selectCandidates(transactions, loanPaymentIds));

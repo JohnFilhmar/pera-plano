@@ -747,6 +747,59 @@ export async function listFullLedger(): Promise<Transaction[]> {
 }
 
 /**
+ * Every transaction in [from, to), newest first, with NO tier history floor and
+ * no other filter — `listFullLedger`'s exemption applied to a BOUNDED window.
+ * For a computation that asks for a specific span of the record; never for a
+ * screen, a search or a report.
+ *
+ * A SECOND FLOOR-EXEMPT READ RATHER THAN A WIDER USE OF `listFullLedger`
+ * (GAP-118). The function above is unfiltered ON PURPOSE, so handing it to a
+ * caller that asked for a window silently widens that window to the user's
+ * entire record. For income cadence detection that would replace a trailing
+ * 130 days with every credit ever recorded, moving `averageAmount` for exactly
+ * the long-lived users whose figure matters most — a change nobody decided.
+ *
+ * THE FLOOR IS A BROWSING GATE, AND THIS IS A COMPUTATION — the same line
+ * GAP-105 drew for `sumSpend` below and GAP-111 for `listFullLedger` above.
+ * Limits rule 8 (docs/04-features/03-limits.md), verbatim: "Limit totals are
+ * always computed from the full ledger, regardless of the free tier's 90-day
+ * history view gate — data is never deleted, only the browsing view is gated."
+ * docs/05-monetization.md §3.3 scopes the gate the same way: records older than
+ * 90 days go "invisible in ledger, search, and Reports" while they "still
+ * participate in Wallet balance math".
+ *
+ * THE CALLER IS INCOME CADENCE DETECTION. `detect` (lib/income/income_service.ts)
+ * asks for a trailing 130 days so `detectCadence` can judge 120 of them, and
+ * income rule 9 medians a cadence-sized window of paydays out of that — four
+ * for monthly, six for kinsenas, eight for weekly. Read through
+ * `listTransactions`, a Free device was handed 90 days instead — so
+ * `averageAmount`, and through `monthlyEquivalent` the base of every
+ * percent-of-income Limit (limits rule 10), moved with the tier. Unlike
+ * recurring detection, nothing gates what income detection feeds, so nothing
+ * may gate its sample. Latent today only because `MVP_TIER` is `plus`
+ * (lib/entitlements.ts), which leaves the floor null for everyone.
+ *
+ * A SEPARATE FUNCTION RATHER THAN A `TxFilter` FLAG, for the reason
+ * `listFullLedger` and `sumSpend` are separate functions rather than flags: a
+ * flag would hand every future caller a switch that turns the browsing gate
+ * off, and the gate is the feature. `listTransactions` keeps its floor
+ * untouched.
+ */
+export async function listFullLedgerBetween(args: {
+  from: EpochMs;
+  to: EpochMs;
+}): Promise<Transaction[]> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<TransactionRow>(
+    `SELECT * FROM transactions
+     WHERE occurred_at >= ? AND occurred_at < ?
+     ORDER BY occurred_at DESC, created_at DESC`,
+    [args.from, args.to],
+  );
+  return rows.map(rowToTransaction);
+}
+
+/**
  * Total money spent in [from, to). Counts `direction = 'out'` only and never
  * counts transfer legs (invariant I2) or balance adjustments
  * (017_transaction_adjustments). The window is exactly the one the caller

@@ -16,8 +16,9 @@ import {
   getIncomeProfile,
   setIncomeDetectionState,
 } from "@/lib/db/repos/income_repo";
-import { insertTransaction } from "@/lib/db/repos/transactions_repo";
+import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions_repo";
 import { createWallet } from "@/lib/db/repos/wallets_repo";
+import { __setTierForTests } from "@/lib/entitlements";
 import { onAppEvent } from "@/lib/events/app_events";
 import type { AppEventMap } from "@/lib/events/app_events";
 import { recomputeLimits } from "@/lib/limits/limit_service";
@@ -111,6 +112,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  __setTierForTests(null);
   await closeDatabase();
 });
 
@@ -876,4 +878,76 @@ test("a DECLARED income is exempt: neither its figure nor its limits moved", asy
   expect(summary.averageAmount).toBe(900000);
   expect(summary.hasSplitPaydayNotice).toBe(false);
   expect(await getSetting("income_split_payday_notice")).toBe("done");
+});
+
+// ---------------------------------------------------------------------------
+// The detection sample does not move with the tier (GAP-118)
+// ---------------------------------------------------------------------------
+//
+// `detect` asks for a trailing 130 days so `detectCadence` can judge 120 of
+// them, and rule 9 medians a cadence-sized window of paydays out of that —
+// four for the monthly fixture below. Read through
+// `listTransactions` it was clamped to the Free tier's 90-day BROWSING floor,
+// which is not what that floor is for: limits rule 8 says totals "are always
+// computed from the full ledger, regardless of the free tier's 90-day history
+// view gate". Nothing gates income detection, so nothing may gate its sample —
+// `averageAmount` becomes `monthlyEquivalent` (rule 16) and then the base of
+// every percent-of-income Limit (limits rule 10).
+
+/**
+ * Four monthly paydays on the 1st, rising ₱16,000 -> ₱22,000.
+ *
+ * CHOSEN SO THE FLOOR IS THE ONLY VARIABLE. May 1 is 96 days before `NOW` — in
+ * the 120-day detection window, under the 90-day floor — so on Free it was the
+ * one payday that disappeared. The cadence confirms either way (`tryMonthly`
+ * needs two qualifying gaps), and the four amounts all sit inside rule 4's ±30%
+ * band, so the ONLY thing the missing row changes is the median: four paydays
+ * median ₱19,000.00, the surviving three median ₱20,000.00.
+ */
+async function seedFourMonthlyPaydays(): Promise<void> {
+  await credit(1600000, on(2026, 4, 1)); // May 1 — 96 days back, below the free floor
+  await credit(1800000, on(2026, 5, 1)); // Jun 1
+  await credit(2000000, on(2026, 6, 1)); // Jul 1
+  await credit(2200000, on(2026, 7, 1)); // Aug 1
+}
+
+test("ON FREE, CADENCE DETECTION STILL READS ALL 130 DAYS", async () => {
+  await seedFourMonthlyPaydays();
+  __setTierForTests("free");
+
+  const summary = await refreshIncomeDetection(NOW);
+
+  expect(summary.status).toBe("confirmed");
+  expect(summary.cadence).toBe("monthly");
+  // The four-payday median. Clamped to 90 days this was ₱20,000.00 — the same
+  // ledger, the same instant, a different tier, a different income.
+  expect(summary.averageAmount).toBe(1900000);
+  expect(summary.monthlyEquivalent).toBe(1900000);
+});
+
+test("free and plus reach the same income from the same ledger", async () => {
+  await seedFourMonthlyPaydays();
+
+  __setTierForTests("plus");
+  const onPlus = await refreshIncomeDetection(NOW);
+
+  __setTierForTests("free");
+  const onFree = await refreshIncomeDetection(NOW);
+
+  expect(onFree.averageAmount).toBe(onPlus.averageAmount);
+  expect(onFree.monthlyEquivalent).toBe(onPlus.monthlyEquivalent);
+  expect(onFree.cadence).toBe(onPlus.cadence);
+});
+
+test("browsing keeps its 90-day gate while detection reads past it", async () => {
+  // The exemption is for the computation only. If this ever starts returning
+  // the May 1 row, the browsing gate itself has been removed — which is the one
+  // thing GAP-105, GAP-111 and GAP-118 all say not to do.
+  await seedFourMonthlyPaydays();
+  __setTierForTests("free");
+
+  const visible = await listTransactions({ now: NOW });
+
+  expect(visible).toHaveLength(3);
+  expect(await refreshIncomeDetection(NOW)).toMatchObject({ averageAmount: 1900000 });
 });
