@@ -59,8 +59,16 @@ function Row({
   );
 }
 
-function AutoMatchRow({ bill, estimate }: { bill: Bill; estimate: AmountEstimate }) {
-  const facts = autoMatchFacts(bill, estimate);
+function AutoMatchRow({
+  bill,
+  estimate,
+  dueDate,
+}: {
+  bill: Bill;
+  estimate: AmountEstimate;
+  dueDate: IsoDate;
+}) {
+  const facts = autoMatchFacts(bill, estimate, dueDate);
 
   if (!facts.enabled) {
     return (
@@ -138,7 +146,7 @@ export function BillRulesCard({ bill, estimate, dueDate, testID }: BillRulesCard
           valueTestID="bill-rule-reminders"
         />
 
-        <AutoMatchRow bill={bill} estimate={estimate} />
+        <AutoMatchRow bill={bill} estimate={estimate} dueDate={dueDate} />
       </View>
     </Card>
   );

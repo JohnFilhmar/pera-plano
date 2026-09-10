@@ -30,7 +30,6 @@
 import {
   ALWAYS_CONFIRM_DEVIATION_PCT,
   LADDER_THRESHOLD,
-  OVERDUE_WINDOW_DAYS,
   WINDOW_CLOSES_DAYS_AFTER,
   WINDOW_OPENS_DAYS_BEFORE,
 } from "@/constants/bills";
@@ -59,7 +58,7 @@ import type {
 
 import { estimateAmount, type AmountEstimate, type PaymentAmount } from "./amount_estimator";
 import { daysUntil, occurrencesBetween } from "./due_rules";
-import { toleranceFor } from "./rule_summary";
+import { matchWindowFor, toleranceFor } from "./rule_summary";
 
 const DAY_MS = 86_400_000;
 
@@ -301,6 +300,14 @@ function scoreCandidate(
     reasons.push(`Paid to ${bill.name}`);
   }
 
+  // DELIBERATELY NOT CLAMPED WITH THE WINDOW (GAP-112). This band RANKS what
+  // the window already admitted; it is not a second gate, and rule 15 is about
+  // the window. Clamping it would change no verdict for a clamped bill anyway —
+  // every gap the tighter window lets through is already inside 15 — while for
+  // an overdue cycle, where rule 26 stretches the close to 30 days, a band that
+  // followed the close would hand the same +0.1 to a payment 29 days late as to
+  // one 4 days late. Holding the line at 15 makes a very late transaction earn
+  // its score from the amount and the merchant instead.
   const gap = Math.abs(daysUntil(toDateIso(new Date(transaction.occurredAt)), dueDate));
   if (gap <= 3) {
     score += 0.2;
@@ -337,11 +344,15 @@ export async function findBillPaymentCandidates(
 
   const estimate = estimateAmount(bill, await paymentAmounts(bill.id));
 
-  // Rule 26 widens the close for a cycle already overdue.
+  // Rule 15's window, with its half-period clamp, and rule 26's wider close for
+  // a cycle already overdue. Both live in `matchWindowFor` (rule_summary.ts)
+  // for `toleranceFor`'s reason: the bill detail prints the window it is
+  // matching under, and a second copy of the arithmetic would drift from this
+  // one and lie to the user about what the app just did.
   const today = toDateIso(new Date(now));
-  const closesAfter = dueDate < today ? OVERDUE_WINDOW_DAYS : WINDOW_CLOSES_DAYS_AFTER;
-  const from = Date.parse(`${addDaysIso(dueDate, -WINDOW_OPENS_DAYS_BEFORE)}T00:00:00`);
-  const to = Date.parse(`${addDaysIso(dueDate, closesAfter)}T00:00:00`) + DAY_MS;
+  const matchWindow = matchWindowFor(bill.dueRule, dueDate, dueDate < today);
+  const from = Date.parse(`${addDaysIso(dueDate, -matchWindow.opensDaysBefore)}T00:00:00`);
+  const to = Date.parse(`${addDaysIso(dueDate, matchWindow.closesDaysAfter)}T00:00:00`) + DAY_MS;
 
   const transactions = await listTransactions({
     from,

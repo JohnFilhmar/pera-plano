@@ -9,6 +9,7 @@ import {
   isOverdue,
   nextOccurrence,
   occurrencesBetween,
+  periodDays,
   unadjustedOccurrence,
 } from "@/lib/bills/due_rules";
 import type { DueRule } from "@/types/domain";
@@ -373,4 +374,44 @@ test("an edited rule that no longer produces an open cycle reports the stored da
   // fabricated fact on a screen whose whole job here is transparency.
   const rule: DueRule = { kind: "day-of-month", day: 21, weekdayAdjust: "earlier" };
   expect(unadjustedOccurrence(rule, "2026-02-11")).toBe("2026-02-11");
+});
+
+// ---------------------------------------------------------------------------
+// The period a rule implies — spec rule 15's "half the bill's period" (GAP-112)
+// ---------------------------------------------------------------------------
+// `DueRule` says WHEN, never HOW OFTEN, so the number rule 15's clamp needs has
+// to come out of the schedule itself. Every expectation below is the gap the
+// rule really produces, averaged over 52 weeks — not a table someone typed.
+test("EVERY DUE RULE REPORTS THE PERIOD ITS OWN SCHEDULE PRODUCES", () => {
+  const weekly: DueRule = { kind: "every-n-weeks", n: 1, weekday: 5, anchorDate: "2026-02-20" };
+  expect(periodDays(weekly, "2026-02-20")).toBe(7);
+  expect(periodDays({ ...weekly, n: 2 }, "2026-02-20")).toBe(14);
+
+  // Twelve occurrences a year whatever the month lengths do, which is the point
+  // of averaging: the gap from a February due date to the next is 28 days and
+  // from a March one 31, and a monthly bill's window must not flinch between
+  // them. Half of 30.33 is over 15, so neither of rule 15's maxima moves.
+  expect(periodDays(DAY_15, "2026-02-15")).toBeCloseTo(30.33, 2);
+  expect(periodDays(DAY_15, "2026-03-15")).toBeCloseTo(30.33, 2);
+
+  // Katapusan, the spec's other month-shaped rule: still twelve a year.
+  expect(periodDays({ kind: "last-day-of-month" }, "2026-01-31")).toBeCloseTo(30.33, 2);
+
+  // Kinsenas-katapusan alternates 15 and 16 days; the average is neither, and
+  // half of it is the one figure both halves of the month can agree on.
+  expect(periodDays({ kind: "semi-monthly" }, "2026-02-15")).toBeCloseTo(15.17, 2);
+
+  expect(periodDays({ kind: "every-n-months", n: 3, day: 20, anchorMonth: 2 }, "2026-02-20")).toBe(
+    91,
+  );
+});
+
+test("a rule with no occurrence in a year is reported as annual, not as zero", () => {
+  // Unreachable from the create form — `dueRuleForCadence` caps n at 12 — but a
+  // migrated or hand-edited rule could produce it, and dividing by the count
+  // would hand rule 15's clamp a division by zero. Annual makes every clamp
+  // derived from it non-binding, which is the safe direction: 7 and 15 are
+  // already the maxima, so a wrong answer here can only fail to tighten.
+  const biennial: DueRule = { kind: "every-n-months", n: 24, day: 20, anchorMonth: 2 };
+  expect(periodDays(biennial, "2026-03-20")).toBe(364);
 });

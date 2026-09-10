@@ -476,6 +476,64 @@ class NotificationListenerModuleTest {
   }
 
   // =====================================================================
+  // A dropped provider filter crosses the bridge as a REJECTION (GAP-114)
+  //
+  // The bridge used to resolve whatever CapturePrefs did, so a device that
+  // could not seal the allowlist told JS the pause had been applied. JS then
+  // wrote `paused_provider_packages` -- the only readable record, since this
+  // bridge has a setter and no getter -- and the switch list reported a
+  // provider as paused while the listener went on capturing from it.
+  // =====================================================================
+
+  @Test
+  fun `setProviderFilter rejects when the allowlist could not be stored`() {
+    // A device whose prefs KEK was never created: the alias is absent, so
+    // every seal fails. Deliberately NOT a re-keyed vault -- that one seals
+    // fine and only fails to OPEN, which is a different state entirely.
+    KeyStoreBridge.vault = FakeKeyVault()
+
+    val thrown = assertThrows(ProviderFilterNotStoredException::class.java) {
+      setProviderFilter(context, listOf(gcash), denyAll = false)
+    }
+    // The `code` is the whole contract: `index.ts`'s rethrowTyped branches on
+    // it, and a rejection with any other code would reach the Privacy centre
+    // as a generic failure with no copy about what is still being captured.
+    assertEquals("ProviderFilterNotStored", thrown.code)
+    // And the message names no package: a rejection that reached a log must
+    // not disclose which banks the user holds, which is the exact disclosure
+    // sealing the filter exists to prevent.
+    assertFalse(thrown.message.orEmpty().contains(gcash))
+  }
+
+  @Test
+  fun `setProviderFilter resolves for a deny-all even when nothing can be sealed`() {
+    KeyStoreBridge.vault = FakeKeyVault()
+
+    // The plaintext flag needs no key, lands on its own, and outranks whatever
+    // stale filter is left on disk -- so the scope the user asked for IS in
+    // force, and rejecting would make JS discard a record of a block the
+    // device is genuinely applying.
+    setProviderFilter(context, emptyList(), denyAll = true)
+
+    val fresh = CapturePrefs(context)
+    assertTrue(fresh.isProviderFilterDenyAll())
+    assertFalse(fresh.shouldCapture(gcash))
+  }
+
+  @Test
+  fun `setProviderFilter resolves on the ordinary path, in both directions`() {
+    // The guard against a bridge that simply always throws, which would pass
+    // both tests above while making every provider switch in the app unusable.
+    setProviderFilter(context, listOf(gcash))
+    setProviderFilter(context, emptyList(), denyAll = true)
+    setProviderFilter(context, listOf(maya))
+
+    val fresh = CapturePrefs(context)
+    assertFalse(fresh.isProviderFilterDenyAll())
+    assertEquals(setOf(maya), fresh.getProviderFilter())
+  }
+
+  // =====================================================================
   // getListenerHealth (contract §4; plan Task 6 rule 4)
   // =====================================================================
 

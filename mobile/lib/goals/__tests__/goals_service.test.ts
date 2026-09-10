@@ -30,7 +30,7 @@ let seabank: Wallet;
 /** A payday of `amount` landing in the payroll wallet. */
 function paydayOf(amount: number): AppEventMap["income:payday"] {
   return {
-    transactionId: "tx-payday",
+    transactionIds: ["tx-payday"],
     walletId: payroll.id,
     amount,
     occurredAt: NOW,

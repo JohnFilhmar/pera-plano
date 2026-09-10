@@ -538,6 +538,26 @@ export async function listBillPayments(billId: string): Promise<BillPayment[]> {
 }
 
 /**
+ * The payment that already claims this transaction, or `null`.
+ *
+ * `bill_payments.transaction_id` is `NOT NULL UNIQUE` (001_core.sql), so there
+ * is at most one. The sibling of `loans_repo.getPaymentByTransaction`, and it
+ * exists for the same reason: a caller that is about to do something to a
+ * ledger row has to be able to ASK what already claims it, rather than learning
+ * the answer from a foreign-key failure it then has to translate for the user.
+ */
+export async function getBillPaymentByTransaction(
+  transactionId: string,
+): Promise<BillPayment | null> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<BillPaymentRow>(
+    "SELECT * FROM bill_payments WHERE transaction_id = ?",
+    [transactionId],
+  );
+  return row ? rowToPayment(row) : null;
+}
+
+/**
  * Un-matches a payment and REOPENS its cycle. NEVER deletes the transaction:
  * the money moved, and releasing it to be matched elsewhere is the entire
  * recovery path for a wrong suggestion the user confirmed — including one that

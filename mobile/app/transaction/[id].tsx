@@ -30,7 +30,7 @@
 // Global Constraints: hooks only, no repository import, no SQL. The one
 // deliberate exception to "thin screen" is the small amount of orchestration
 // above, which has nowhere else to live.
-import { useLocalSearchParams } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { ArrowLeftRight, Tag } from "lucide-react-native";
 import { useState } from "react";
 import { ScrollView, Text, TextInput, View } from "react-native";
@@ -42,10 +42,11 @@ import {
   transferFee,
 } from "@/components/transactions/transfer_link_actions";
 import { WhyRecordedPanel } from "@/components/transactions/why_recorded_panel";
-import { AmountText } from "@/components/ui/amount_text";
-import { registerIcon } from "@/components/ui/button";
+import { AmountText, formatCentavos } from "@/components/ui/amount_text";
+import { Button, registerIcon } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Chip } from "@/components/ui/chip";
+import { ConfirmDialog } from "@/components/ui/confirm_dialog";
 import { EmptyState } from "@/components/ui/empty_state";
 import { ListRow } from "@/components/ui/list_row";
 import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
@@ -53,6 +54,7 @@ import { ProviderBadge } from "@/components/ui/provider_badge";
 import { SectionHeader } from "@/components/ui/section_header";
 import { providerKeyForPackage, providerLabelForPackage } from "@/constants/providers";
 import { useCreateUserRule } from "@/hooks/mutations/use_create_user_rule";
+import { useDeleteTransaction } from "@/hooks/mutations/use_delete_transaction";
 import { useLinkTransfer } from "@/hooks/mutations/use_link_transfer";
 import { useUnlinkTransfer } from "@/hooks/mutations/use_unlink_transfer";
 import { useUpdateTransaction } from "@/hooks/mutations/use_update_transaction";
@@ -61,9 +63,10 @@ import { useCategories } from "@/hooks/queries/use_categories";
 import { useRawCapture, useRawCaptureExpiry } from "@/hooks/queries/use_raw_capture";
 import { useRuleset } from "@/hooks/queries/use_ruleset";
 import { useTransaction } from "@/hooks/queries/use_transaction";
+import { useTransactionDeletionPlan } from "@/hooks/queries/use_transaction_deletion_plan";
 import { useTransactions } from "@/hooks/queries/use_transactions";
 import { useWallets } from "@/hooks/queries/use_wallets";
-import { formatDateTime } from "@/lib/datetime";
+import { formatDate, formatDateTime } from "@/lib/datetime";
 import type { Transaction, TxSource } from "@/types/domain";
 import { usePlaceholderColor } from "@/lib/ui/placeholder";
 
@@ -135,8 +138,11 @@ export default function TransactionDetailScreen() {
   // SafeAreaProvider comment for why each surface pads its own edges.
   const insets = useSafeAreaInsets();
 
+  const router = useRouter();
+
   const [picking, setPicking] = useState(false);
   const [choosingCategory, setChoosingCategory] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [note, setNote] = useState<string | null>(null);
 
   const { data: transaction, isPending } = useTransaction(transactionId);
@@ -164,11 +170,15 @@ export default function TransactionDetailScreen() {
   const rawId = transaction?.rawNotificationId ?? null;
   const { data: capture } = useRawCapture(rawId);
   const { data: expiresAt } = useRawCaptureExpiry(rawId);
+  // What a delete would take with it, read with the row rather than on the tap
+  // — see the hook's own note.
+  const { data: deletionPlan } = useTransactionDeletionPlan(transactionId);
 
   const updateTransaction = useUpdateTransaction();
   const createUserRule = useCreateUserRule();
   const linkTransfer = useLinkTransfer();
   const unlinkTransfer = useUnlinkTransfer();
+  const deleteTransaction = useDeleteTransaction();
 
   if (isPending) {
     return (
@@ -229,6 +239,22 @@ export default function TransactionDetailScreen() {
       : transaction.direction === "in"
         ? "Income"
         : "Spending";
+
+  // WHAT THE CONFIRMATION SAYS IS REMOVED (GAP-108). Rule 9's "editable in the
+  // ledger indefinitely" is what makes rule 10's "the queue never deletes a
+  // committed row" liveable, and this is the ledger side of it. The lead names
+  // the row the way the user identifies it — amount, who, when, which wallet —
+  // and states the balance consequence, because a delete that quietly moved a
+  // balance would be the app changing a number the user never agreed to move.
+  // The rest comes from the service, which is the only thing that knows what a
+  // loan or a bill still claims.
+  const deleteSubject =
+    transaction.merchant ?? transaction.counterparty ?? category?.name ?? "this transaction";
+  const deleteConfirmBody = [
+    `${formatCentavos(transaction.amount)} ${transaction.direction === "out" ? "to" : "from"} ${deleteSubject} on ${formatDate(transaction.occurredAt)} leaves the ledger, and ${wallet?.name ?? "the wallet"}'s balance goes back to what it was before it.`,
+    ...(deletionPlan?.alsoRemoves ?? []),
+    "This cannot be undone.",
+  ].join(" ");
 
   function commitNote(): void {
     if (!transaction || note === null) return;
@@ -494,6 +520,57 @@ export default function TransactionDetailScreen() {
             onLink={link}
             onUnlink={() => {
               if (transaction.transferLinkId) unlinkTransfer.mutate(transaction.transferLinkId);
+            }}
+          />
+
+          {/* THE LEDGER'S ONE DESTRUCTIVE ACTION, and the only way back from a
+              mis-tapped Confirm in the Review Queue. Last on the screen on
+              purpose: everything above it is a way to CORRECT the row, and a
+              user who scrolls past all of them has established that none of
+              them is what they want. */}
+          <View className="px-4 pt-6">
+            <Button
+              title="Delete transaction"
+              variant="destructive"
+              testID="transaction-delete"
+              // Disabled while the plan is still loading, not merely while it
+              // refuses: a confirmation opened over an unread plan would name
+              // no link and promise a delete the service is about to refuse.
+              disabled={deletionPlan === undefined || deletionPlan.refusal !== null}
+              loading={deleteTransaction.isPending}
+              onPress={() => setConfirmingDelete(true)}
+            />
+            {/* THE REFUSAL IS RENDERED, NOT SWALLOWED. Without it the button is
+                simply dead and the user has no idea why — and the alternative,
+                letting the tap through, is the raw "FOREIGN KEY constraint
+                failed" this whole path exists to keep off the screen. The
+                sentence names the transfer and points at the unlink action
+                sitting directly above it. */}
+            {deletionPlan?.refusal ? (
+              <Text
+                testID="transaction-delete-blocked"
+                className="pt-2 text-secondary text-fg-2 dark:text-fg-2-dark"
+              >
+                {deletionPlan.refusal}
+              </Text>
+            ) : null}
+          </View>
+
+          <ConfirmDialog
+            visible={confirmingDelete}
+            title="Delete this transaction?"
+            body={deleteConfirmBody}
+            confirmLabel="Delete transaction"
+            destructive
+            onCancel={() => setConfirmingDelete(false)}
+            onConfirm={() => {
+              setConfirmingDelete(false);
+              // `mutate` with a per-call `onSuccess`, not `await mutateAsync`:
+              // the screen must only leave once the row is actually gone. A
+              // rejected delete keeps the user here with the global failure
+              // toast over it, rather than navigating back to a ledger that
+              // still holds the row they think they removed.
+              deleteTransaction.mutate(transaction.id, { onSuccess: () => router.back() });
             }}
           />
 

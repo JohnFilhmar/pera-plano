@@ -73,6 +73,7 @@ const ACTION_KINDS: ReadonlySet<string> = new Set<UserRuleAction["kind"]>([
   "set-wallet",
   "set-merchant",
   "mark-transfer",
+  "mark-loan-payment",
   "suppress-recurring",
   "ignore",
 ]);
@@ -136,6 +137,24 @@ function decodeRow(row: UserRuleRow): UserRule | null {
   if (action.kind === "mark-transfer" && typeof action.counterpartWalletId !== "string") {
     console.warn(
       `user_rules_repo: mark-transfer action on rule ${row.id} has no counterpartWalletId — skipping the rule`,
+    );
+    return null;
+  }
+
+  // THE SAME REFUSAL, ON THE OTHER PAIRING RULE. `mark-loan-payment` names a
+  // loan the matcher cannot describe, so a missing or blank `loanId` leaves a
+  // rule that matches transactions and points at nothing: it would sit in the
+  // settings list looking as though the user's confirmation had been learned
+  // while `loans_service` silently found no loan to raise. Blank is rejected
+  // alongside missing — `""` is not an id any loan has ever had, and a rule
+  // that can never fire is the failure docs/09-v2-backlog.md §2b.4 calls worse
+  // than the rule's absence.
+  if (
+    action.kind === "mark-loan-payment" &&
+    (typeof action.loanId !== "string" || action.loanId.trim() === "")
+  ) {
+    console.warn(
+      `user_rules_repo: mark-loan-payment action on rule ${row.id} names no loan — skipping the rule`,
     );
     return null;
   }

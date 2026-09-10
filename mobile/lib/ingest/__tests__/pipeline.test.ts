@@ -17,6 +17,7 @@ jest.mock("@/modules/notification_listener", () => ({
 }));
 
 import { closeDatabase } from "@/lib/db/database";
+import { __setTierForTests } from "@/lib/entitlements";
 import { addCaptureListener, drainPendingCaptures } from "@/modules/notification_listener";
 import * as parseStatsRepo from "@/lib/diagnostics/parse_stats_repo";
 import * as rawNotificationsRepo from "@/lib/db/repos/raw_notifications_repo";
@@ -177,6 +178,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  __setTierForTests(null);
   await closeDatabase();
   jest.restoreAllMocks();
 });
@@ -1173,6 +1175,58 @@ test("0.95 minus a 0.05 learned penalty still auto-commits", async () => {
   // Queue card, on rounding dust alone.
   expect(committed?.confidence).toBe(0.9);
   expect(committed?.categoryId).toBe("cat_groceries_palengke");
+  expect(await listOpen()).toHaveLength(0);
+});
+
+// GAP-111: WHAT THE APP HAS LEARNED IS NOT A BROWSING QUESTION. The history the
+// categorizer counts used to arrive through `listTransactions({})`, which clamps
+// to the free tier's 90-day view gate — so the three rows that taught the app
+// this merchant stopped being evidence the day they aged out, and a user on Free
+// would be asked to categorize a merchant they had already filed three times.
+// Limits rule 8 draws the line: "Limit totals are always computed from the full
+// ledger, regardless of the free tier's 90-day history view gate", and §8 rule 3
+// puts no window on the learned count at all.
+//
+// THE FIRST ASSERTION IS THE CONTROL. Those three rows really are past the
+// floor, so a `listTransactions({})` history would have been EMPTY here and no
+// suggestion could have fired; the test would pass vacuously without it. This is
+// the same fixture as the plus test above with one thing changed — the age of
+// the prior rows — and the outcome must not change with it.
+test("on free a merchant learned before the 90-day floor is still learned", async () => {
+  const wallet = await createWallet({ name: "BPI", openingBalance: 500000 });
+  await addMatcher(wallet.id, MESSAGES);
+  await upsertRuleset(LEARNED_BUNDLE);
+  for (const index of [1, 2, 3]) {
+    await insertTransaction({
+      walletId: wallet.id,
+      categoryId: "cat_groceries_palengke",
+      amount: 10000 + index,
+      direction: "out",
+      occurredAt: NOW - 100 * DAY,
+      merchant: "Aling Nena Store",
+      source: "notification",
+      confidence: 1,
+    });
+  }
+
+  __setTierForTests("free");
+  expect(await listTransactions({})).toHaveLength(0);
+
+  const outcome = await processCapture(
+    capture({
+      id: "cap-learned-free",
+      packageName: MESSAGES,
+      title: "TESTBANK",
+      text: "TESTBANK: Your card was debited ₱250.00 at Aling Nena Store.",
+    }),
+  );
+
+  expect(outcome.kind).toBe("committed");
+  const committed = (await ledger()).find((row) => row.amount === 25000);
+  expect(committed?.categoryId).toBe("cat_groceries_palengke");
+  // 0.90 rather than 0.95 is the proof it came from LEARNING: the merchant map
+  // and user rules cost nothing, only a learned category charges 0.05.
+  expect(committed?.confidence).toBe(0.9);
   expect(await listOpen()).toHaveLength(0);
 });
 

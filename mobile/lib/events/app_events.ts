@@ -59,11 +59,23 @@ export type AppEventMap = {
    * staleness the identifier rule above exists to prevent — inverted, because
    * here the historical figure IS the correct one. `occurredAt` likewise: an
    * allocation belongs to the payday's own instant, not to processing time.
+   *
+   * A PAYDAY, NOT A TRANSACTION. `transactionIds` is a list because one payday
+   * can arrive as several credits — an employer paying half in the morning and
+   * half in the afternoon is ordinary here — and `amount` is what they come to
+   * TOGETHER, which is the base goals rule 13 names for a percent contribution:
+   * "the sum of income Transactions detected on that payday date". A single
+   * `transactionId` could only ever name one half of that sum, and a handler
+   * reconciling the transfer (rule 14) needs all the rows it covers.
    */
   "income:payday": {
-    transactionId: string;
+    /** Every credit the payday covers, oldest first. Never empty. */
+    transactionIds: string[];
+    /** The wallet holding the largest share of the day's pay. */
     walletId: string;
+    /** The day's credits combined. */
     amount: Centavos;
+    /** When the pay finished arriving — the last credit's instant. */
     occurredAt: EpochMs;
   };
 

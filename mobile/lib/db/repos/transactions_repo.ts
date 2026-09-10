@@ -707,6 +707,46 @@ export async function listTransactions(filter: TxFilter): Promise<Transaction[]>
 }
 
 /**
+ * Every transaction ever recorded, newest first, with NO tier history floor and
+ * no other filter. For computations over the user's whole record; never for a
+ * screen, a search or a report — those are the three surfaces the floor exists
+ * to gate.
+ *
+ * THE FLOOR IS A BROWSING GATE, AND LEARNING IS A COMPUTATION (GAP-111) — the
+ * same line GAP-105 drew for `sumSpend` directly below. Limits rule 8
+ * (docs/04-features/03-limits.md), verbatim: "Limit totals are always computed
+ * from the full ledger, regardless of the free tier's 90-day history view gate
+ * — data is never deleted, only the browsing view is gated."
+ * docs/05-monetization.md §3.3 scopes the gate the same way: records older than
+ * 90 days go "invisible in ledger, search, and Reports" while they "still
+ * participate in Wallet balance math".
+ *
+ * THE CALLER IS THE CATEGORIZER'S LEARNED SUGGESTION. `resolveLearned`
+ * (lib/ingest/categorizer.ts) counts how many times this user has filed a
+ * merchant into each category and needs three of the same before it will repeat
+ * the choice, and §8 rule 3 puts no window on that count: "the same merchant
+ * categorized the same way three or more times in `history`", unqualified. Read
+ * through `listTransactions({})`, as it was, the count silently became "three
+ * times in the last 90 days" on Free — so a merchant the user had already filed
+ * the same way three times would be asked about all over again the moment those
+ * three rows aged past the view gate, a tier setting quietly deciding what the
+ * app remembers having learned. Latent today only because `MVP_TIER` is `plus`
+ * (lib/entitlements.ts), which leaves the floor null for everyone.
+ *
+ * A SEPARATE FUNCTION RATHER THAN A `TxFilter` FLAG, for the reason `sumSpend`
+ * is a separate function rather than a flag: a flag would hand every future
+ * caller a switch that turns the browsing gate off, and the gate is the
+ * feature. `listTransactions` keeps its floor untouched.
+ */
+export async function listFullLedger(): Promise<Transaction[]> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<TransactionRow>(
+    "SELECT * FROM transactions ORDER BY occurred_at DESC, created_at DESC",
+  );
+  return rows.map(rowToTransaction);
+}
+
+/**
  * Total money spent in [from, to). Counts `direction = 'out'` only and never
  * counts transfer legs (invariant I2) or balance adjustments
  * (017_transaction_adjustments). The window is exactly the one the caller

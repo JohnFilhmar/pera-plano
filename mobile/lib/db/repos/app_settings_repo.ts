@@ -177,10 +177,17 @@ export type AppSettings = {
    *
    * That re-sync only ever NARROWS, so an empty array here is left alone
    * rather than pushed as `setProviderFilter([])`. An empty row does not mean
-   * "the user wants allow-all" — it is also the fresh-install default and the
-   * state `app/(onboarding)/providers.tsx` leaves behind, since that screen
-   * writes the chosen packages straight to the bridge and never records them
-   * here. See that function for the full reasoning.
+   * "the user wants allow-all" — it is also the fresh-install default, and what
+   * an onboarding user who allowed everything or tapped Skip leaves behind. See
+   * that function for the full reasoning.
+   *
+   * `app/(onboarding)/providers.tsx` DOES write here now, indirectly (GAP-116).
+   * It has no open database of its own — it renders above the unlock gate — so
+   * it hands the complement of its allowlist to
+   * `lib/onboarding/pending_provider_pause.ts`, and
+   * `persistOnboardingProviderPause()` in lib/bootstrap.ts stores it on the
+   * first launch that can. Before that, a selection the device failed to seal
+   * had no row to be restored from at all.
    */
   paused_provider_packages: string[];
   /**

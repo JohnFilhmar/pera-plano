@@ -36,14 +36,9 @@
 import { UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { checkDuplicate } from "@/lib/ingest/dedupe_gate";
 import { getActiveRuleset } from "@/lib/db/repos/parser_rulesets_repo";
-import { getRawCapture, isRawCaptureUnreferenced } from "@/lib/db/repos/raw_notifications_repo";
-import {
-  enqueue,
-  getReviewItem,
-  listOpen,
-  reopen,
-  resolve,
-} from "@/lib/db/repos/review_queue_repo";
+import { getRawCapture } from "@/lib/db/repos/raw_notifications_repo";
+import { getReviewItem, listOpen, reopen, resolve } from "@/lib/db/repos/review_queue_repo";
+import { markCaptureAnswered } from "@/lib/review/capture_marker";
 import { setWalletOwed } from "@/lib/db/repos/wallet_traits_repo";
 import {
   deleteTransaction,
@@ -785,41 +780,20 @@ export async function mergeDuplicate(
  * Records that the dropped row's capture was answered, so the ingest pipeline
  * stops treating it as work it never finished.
  *
- * A RESOLVED CARD, BECAUSE IT IS THE ONLY DURABLE MARKER THAT NEEDS NO
- * MIGRATION — and because it is the truthful one. `review_queue_items` is
- * already the record of "this capture raised a question and the question is
- * closed"; the only unusual thing here is that the user answered it from the
- * ledger rather than from the card. It is resolved in the same unit of work
- * that creates it, so it is never open, never counted by `countOpen`, never
- * listed by `listOpen`, and never shown to anyone — and `purgeExpired` deletes
- * only UNRESOLVED rows, so it outlives the capture it protects.
- *
- * ONLY WHEN NOTHING ELSE POINTS AT THE CAPTURE. A card raised for this capture
- * already says everything this marker would say, and a second row claiming the
- * user was asked twice would be a lie about their triage history.
- * `isRawCaptureUnreferenced` is the sweep's own predicate, asked here about the
- * one id, so the marker is written exactly when its absence would cost a row.
- *
- * A MANUAL OR IMPORTED ROW HAS NO CAPTURE and needs no marker: nothing stored
- * it, so no sweep can find it.
+ * THE MECHANISM AND ITS REASONING NOW LIVE IN `lib/review/capture_marker.ts`,
+ * because the ledger has a second row-removing path since GAP-108 (the delete
+ * on transaction detail) and both need the identical marker. What stays here is
+ * the one thing that is specific to a merge: the payload says which surviving
+ * row the dropped one was merged into.
  */
 async function markCaptureMerged(dropped: Transaction, keepTransactionId: string): Promise<void> {
-  const captureId = dropped.rawNotificationId;
-  if (captureId === null) return;
-  if (!(await isRawCaptureUnreferenced(captureId))) return;
-
-  const marker = await enqueue({
-    kind: "possible-duplicate",
-    rawNotificationId: captureId,
-    payload: {
-      amount: dropped.amount,
-      direction: dropped.direction,
-      merchant: dropped.merchant,
-      walletId: dropped.walletId,
-      duplicateOfTransactionId: keepTransactionId,
-    },
+  await markCaptureAnswered(dropped.rawNotificationId, {
+    amount: dropped.amount,
+    direction: dropped.direction,
+    merchant: dropped.merchant,
+    walletId: dropped.walletId,
+    duplicateOfTransactionId: keepTransactionId,
   });
-  await resolve(marker.id, "confirmed");
 }
 
 /**

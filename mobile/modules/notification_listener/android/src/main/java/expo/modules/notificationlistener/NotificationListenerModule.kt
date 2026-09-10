@@ -71,6 +71,15 @@ import expo.modules.kotlin.modules.ModuleDefinition
  * `recreateDeviceKek` is the one function here that is NOT a taxonomy
  * source -- it is the recovery ACTION the `DeviceKeyInvalidated` rejection
  * exists to lead to. See [KeyStoreBridge.recreateDeviceKek]'s doc.
+ *
+ * ONE MORE CODE SITS OUTSIDE THAT TAXONOMY ENTIRELY:
+ * [ProviderFilterNotStoredException] -> `code == "ProviderFilterNotStored"`
+ * (GAP-114), thrown by [setProviderFilter] when the capture scope the user
+ * asked for did not reach disk. It is listed apart from the four above on
+ * purpose -- every one of those is a statement about an AUTH-GATED key and
+ * three of them are fixed by authenticating, while this one is about the
+ * UNAUTHENTICATED prefs KEK and is fixed by relaunching. Folding it in would
+ * send a user who paused a provider into the recovery-phrase flow.
  */
 class NotificationListenerModule : Module() {
 
@@ -362,13 +371,33 @@ internal fun setCaptureEnabled(context: Context, enabled: Boolean) {
  *
  * Defaulted to `false` for the same reason [CapturePrefs.setProviderFilter]
  * defaults it: a caller that names only an allowlist means only an allowlist.
+ *
+ * THROWS [ProviderFilterNotStoredException] WHEN THE SCOPE DID NOT LAND
+ * (GAP-114) -- the one function on this bridge that can fail without any
+ * Keystore key being AUTHENTICATED. [CapturePrefs.setProviderFilter] returns
+ * `false` when the allowlist could not be sealed at all (no usable prefs KEK)
+ * and no deny-all was asked for, so nothing was written and the listener keeps
+ * whatever filter it already had. Resolving anyway is what made a pause the
+ * user explicitly asked for disappear: JS wrote `paused_provider_packages` --
+ * the only readable record of the pause, since this bridge has a setter and no
+ * getter -- for a scope the device never entered, and capture continued from
+ * the provider whose switch now read "Paused".
+ *
+ * A REJECTION RATHER THAN A RETURNED FLAG, because this is the one shape a
+ * caller cannot accidentally ignore. `app/(onboarding)/providers.tsx` already
+ * handles a rejection here (it degrades to the allow-all default on purpose,
+ * see its own comment); a `false` would have sailed past its `.catch`
+ * untouched, fixing the Privacy centre and leaving the identical silence one
+ * screen away.
  */
 internal fun setProviderFilter(
   context: Context,
   packageNames: List<String>,
   denyAll: Boolean = false,
 ) {
-  CapturePrefs(context).setProviderFilter(packageNames.toSet(), denyAll)
+  if (!CapturePrefs(context).setProviderFilter(packageNames.toSet(), denyAll)) {
+    throw ProviderFilterNotStoredException()
+  }
 }
 
 /**
@@ -660,5 +689,30 @@ internal class CaptureBufferReadFailedException :
   CodedException(
     code = "CaptureBufferReadFailed",
     message = "the pending-capture buffer could not be read",
+    cause = null,
+  )
+
+/**
+ * Crosses the bridge as `code == "ProviderFilterNotStored"` -- the capture
+ * scope JS asked for is NOT the one the device is applying (GAP-114). The
+ * allowlist is sealed under the prefs KEK, and on a device where that key is
+ * unavailable [CapturePrefs.setProviderFilter] writes nothing at all rather
+ * than dropping the user to allow-all.
+ *
+ * NOT PART OF THE FOUR-CODE AUTH TAXONOMY above, and the difference matters to
+ * a caller: nothing here is waiting on a user authentication, so re-prompting
+ * for biometrics or for the recovery phrase would be the wrong response and
+ * would fail again identically. The prefs KEK is created unauthenticated at
+ * `OnCreate` ([ensurePrefsKeyOnLaunch]) and at `onListenerConnected`, so the
+ * remedy is a relaunch, which is what the JS copy tells the user.
+ *
+ * SECURITY: the message names only the failure, never a package name, so a
+ * rejection reaching a log cannot disclose which banks the user holds -- the
+ * exact disclosure sealing the filter exists to prevent.
+ */
+internal class ProviderFilterNotStoredException :
+  CodedException(
+    code = "ProviderFilterNotStored",
+    message = "the provider filter could not be stored on this device",
     cause = null,
   )

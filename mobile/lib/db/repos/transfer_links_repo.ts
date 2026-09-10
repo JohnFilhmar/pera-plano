@@ -228,3 +228,47 @@ export async function unlinkTransfer(id: string): Promise<void> {
     );
   });
 }
+
+/**
+ * Every link row naming this Transaction as a leg — ACTIVE AND DISSOLVED
+ * ALIKE, newest first.
+ *
+ * WHY THE DISSOLVED ONES ARE THE POINT. `unlinkTransfer` above dissolves rather
+ * than deletes, so a leg that has been linked and unlinked twice leaves two
+ * rows still holding `out_transaction_id`/`in_transaction_id` foreign keys onto
+ * it. Those columns are `NOT NULL` with no ON DELETE action, so they block a
+ * DELETE of the transaction exactly as an active link does — and a caller
+ * reading only `transactions.transfer_link_id` (which unlinking clears) sees an
+ * unlinked row and cannot explain why the delete failed. This is the query that
+ * shows it the rows.
+ */
+export async function listLinksForTransaction(transactionId: string): Promise<TransferLink[]> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<TransferLinkRow>(
+    `SELECT * FROM transfer_links
+      WHERE out_transaction_id = ? OR in_transaction_id = ?
+      ORDER BY created_at DESC`,
+    [transactionId, transactionId],
+  );
+  return rows.map(rowToTransferLink);
+}
+
+/**
+ * Removes a link row that has ALREADY been dissolved. Idempotent.
+ *
+ * THE ONLY DELETE IN THIS FILE, AND THE `status` GUARD IS NOT DECORATION.
+ * `unlinkTransfer`'s header explains why a broken pairing is kept as evidence;
+ * this exists for the one case where that evidence has lost its subject — a leg
+ * is leaving the ledger, and a `NOT NULL` foreign key onto a row that will not
+ * exist cannot be kept whatever it would document.
+ *
+ * AN ACTIVE LINK IS A DIFFERENT SITUATION ENTIRELY: its legs are still stamped
+ * with this id (`transactions.transfer_link_id` is itself a foreign key onto
+ * this table), so deleting it would either fail on that key or silently take a
+ * still-paired transaction out of the pairing that keeps it out of every total.
+ * The caller unlinks first, deliberately, or it does not get to delete.
+ */
+export async function deleteDissolvedLink(id: string): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync("DELETE FROM transfer_links WHERE id = ? AND status = 'dissolved'", [id]);
+}

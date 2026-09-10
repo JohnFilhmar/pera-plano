@@ -326,7 +326,7 @@ test("the payday sheet renders the amount and the date from the event", () => {
   render(
     <PaydayDetectedSheet
       payday={{
-        transactionId: "tx-1",
+        transactionIds: ["tx-1"],
         walletId: "w-1",
         amount: 1854000,
         occurredAt: on(2026, 7, 15),

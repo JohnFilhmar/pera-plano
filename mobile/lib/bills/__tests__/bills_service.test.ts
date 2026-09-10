@@ -331,6 +331,72 @@ test("AN OVERDUE CYCLE KEEPS MATCHING FOR 30 DAYS PAST DUE", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// Rule 15's half-period clamp — GAP-112
+// ---------------------------------------------------------------------------
+// Rule 15's full sentence is "opens 7 days before ... and closes 15 days after
+// it, BUT NEVER WIDER THAN HALF THE BILL'S PERIOD (so weekly bills use a
+// proportionally tighter window)". The clamp was missing, so a weekly bill's
+// window opened on the previous cycle's own due date and the two cycles
+// competed for the same payment. Bill matching writes money to a cycle, so the
+// wrong cycle winning is a wrong answer about money.
+
+/** 2026-02-20 is a Friday; weekday 5, so no cycle is ever weekend-adjusted. */
+async function weekly(): Promise<Bill> {
+  return meralco({
+    dueRule: { kind: "every-n-weeks", n: 1, weekday: 5, anchorDate: "2026-02-20" },
+  });
+}
+
+test("A WEEKLY BILL'S WINDOW IS CLAMPED TO HALF ITS PERIOD", async () => {
+  // Half of 7 days is 3.5, and "never wider than half" floors that to 3. The
+  // unclamped 7-days-before would reach the previous cycle's own due date.
+  const bill = await weekly();
+  await outflow(235000, NOW - 5 * DAY, "MERALCO TOO EARLY");
+
+  expect(await findBillPaymentCandidates(bill.id, "2026-02-20", NOW)).toEqual([]);
+
+  await outflow(235000, NOW - 2 * DAY, "MERALCO ONTIME");
+  expect((await findBillPaymentCandidates(bill.id, "2026-02-20", NOW)).length).toBe(1);
+});
+
+test("A NEIGHBOURING WEEKLY CYCLE'S PAYMENT IS NOT A CANDIDATE FOR THIS ONE", async () => {
+  // The failure the clamp exists to stop: one payment, two adjacent cycles,
+  // and — before the clamp — both of them offering it.
+  const bill = await weekly();
+  await outflow(235000, NOW - 7 * DAY, "MERALCO"); // the 13 Feb cycle's own day
+
+  const previous = await findBillPaymentCandidates(bill.id, "2026-02-13", NOW);
+  const current = await findBillPaymentCandidates(bill.id, "2026-02-20", NOW);
+
+  expect(previous.length).toBe(1);
+  expect(current).toEqual([]);
+});
+
+test("A MONTHLY BILL KEEPS THE FULL 7 DAYS BEFORE — THE CLAMP ONLY TIGHTENS", async () => {
+  // 7 and 15 are the MAXIMA, and half a monthly period is over 15, so nothing
+  // about a monthly bill moves. A clamp that narrowed the common case would be
+  // a regression dressed as a fix.
+  const bill = await meralco();
+  await outflow(235000, NOW - 7 * DAY, "MERALCO ONTIME");
+
+  expect((await findBillPaymentCandidates(bill.id, "2026-02-20", NOW)).length).toBe(1);
+});
+
+test("AN OVERDUE WEEKLY CYCLE STILL GETS RULE 26'S 30 DAYS, NOT THE CLAMPED CLOSE", async () => {
+  // Rule 26 supersedes "rule 15's CLOSE" — not rule 15 entirely. Letting the
+  // clamp survive into the overdue state would leave a monthly bill (period 30,
+  // half 15) closing at 15 days rather than 30, which is rule 26 repealed for
+  // the commonest bill there is.
+  const bill = await weekly();
+  const late = Date.parse("2026-03-15T10:00:00"); // 23 days past the 20 Feb cycle
+  await outflow(235000, late - DAY, "MERALCO LATE");
+
+  const candidates = await findBillPaymentCandidates(bill.id, "2026-02-20", late);
+
+  expect(candidates.length).toBe(1);
+});
+
+// ---------------------------------------------------------------------------
 // Confirming, and the ladder — spec rules 8 and 13
 // ---------------------------------------------------------------------------
 test("confirming a match records the payment for that due date", async () => {

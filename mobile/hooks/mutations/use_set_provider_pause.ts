@@ -22,9 +22,33 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { queryKeys } from "@/constants/query_keys";
 import { getSetting, setSetting } from "@/lib/db/repos/app_settings_repo";
-import { setProviderFilter } from "@/modules/notification_listener";
+import { MUTATION_FAILURE_DEDUPE_KEY, publishToast } from "@/lib/query_client";
+import { ProviderFilterNotStoredError, setProviderFilter } from "@/modules/notification_listener";
 
 import { invalidateKeys } from "./invalidate_keys";
+
+/**
+ * WHAT A DROPPED PAUSE SAYS, and why it does not reuse the app-wide
+ * `MUTATION_FAILURE_TOAST` (GAP-114).
+ *
+ * The generic card says the change was not recorded and to check the screen.
+ * True, and on every other screen enough. Here the fact that matters is the
+ * one it cannot say: the listener is unchanged, so the bank the user just
+ * switched off is STILL BEING READ. This is the screen that earns the
+ * notification permission, and a failure on it that does not say what is
+ * still being captured is the same silence in a nicer font.
+ *
+ * "Restart the app" IS THE REAL REMEDY, not filler. The allowlist is sealed
+ * under the listener's prefs key, and that key is created on app launch
+ * (`ensurePrefsKeyOnLaunch` in the module's `OnCreate`) and when the listener
+ * service binds -- never lazily by this write. A relaunch is therefore the one
+ * action available to the user that can change the outcome, and no biometric
+ * prompt or recovery phrase can, since the key is not auth-gated.
+ */
+export const PROVIDER_PAUSE_NOT_STORED_TOAST = {
+  title: "That switch didn't save",
+  body: "PeraPlano is still reading the same apps it was before. Restart the app, then try again.",
+} as const;
 
 export type SetProviderPauseVariables = {
   /** Every package name belonging to the provider being toggled. */
@@ -52,6 +76,15 @@ export type SetProviderPauseVariables = {
  * setter but no getter — see `AppSettings.paused_provider_packages`'s own
  * doc), so a settings write with no matching native write would tell the
  * switch list a provider is paused that is, in fact, still capturing.
+ *
+ * THAT ORDERING WAS NOT ENOUGH ON ITS OWN UNTIL GAP-114. `setProviderFilter`
+ * resolved even on a device that could not seal the allowlist and therefore
+ * wrote nothing, so "native first" was ordering a settings write behind a call
+ * that only claimed to have happened. It now rejects with
+ * `ProviderFilterNotStoredError` when the scope did not land, which is what
+ * makes the sequence below mean what it always said it meant. The switch
+ * itself needs no revert: it renders off `usePausedProviderPackages`, and a
+ * row that was never written re-renders in its previous position.
  *
  * NO EMPTY-ALLOWLIST TRAP, IN EITHER DIRECTION, and there are two of them.
  *
@@ -97,10 +130,42 @@ export function useSetProviderPause() {
       const allowed = nextPaused.length === 0 ? [] : remaining;
       const denyAll = nextPaused.length > 0 && remaining.length === 0;
 
+      // REJECTS WHEN THE SCOPE DID NOT LAND (GAP-114), which is what makes the
+      // ordering above load-bearing rather than merely tidy: this used to
+      // resolve on a device that could not seal the allowlist, so the line
+      // below recorded a pause the listener never applied.
       await setProviderFilter(allowed, denyAll);
       await setSetting("paused_provider_packages", nextPaused);
       return nextPaused;
     },
     onSuccess: () => invalidateKeys(queryClient, [queryKeys.settings.pausedProviderPackages()]),
+    /**
+     * REPLACES THE APP-WIDE CARD RATHER THAN OPTING OUT OF IT — the same
+     * `dedupeKey`, so `publishToast` swaps this copy into the entry
+     * `createMutationErrorCache` has already queued (lib/query_client.ts)
+     * instead of stacking a second one.
+     *
+     * Deliberately NOT `meta.errorToast: false`. That flag means "this hook's
+     * only caller renders a specific failure inline, and always will"
+     * (use_review_action.ts's doc), which is not true here — nothing on
+     * app/(tabs)/more/privacy.tsx prints anything for this. Replacing instead
+     * of suppressing also means the WORST case is the generic card rather than
+     * silence, which is the property that flag's warning exists to protect.
+     *
+     * ONLY the dropped-write case is reworded, because it is the only one this
+     * copy is provably true of. A `setSetting` failure lands here too, and it
+     * arrives AFTER the listener was successfully renarrowed — "PeraPlano is
+     * still reading the same apps" would be flatly false there, and telling
+     * that user to restart would fix nothing. Anything unrecognized keeps the
+     * app-wide card, which claims less.
+     */
+    onError: (error) => {
+      if (!(error instanceof ProviderFilterNotStoredError)) return;
+      publishToast({
+        tone: "failure",
+        dedupeKey: MUTATION_FAILURE_DEDUPE_KEY,
+        ...PROVIDER_PAUSE_NOT_STORED_TOAST,
+      });
+    },
   });
 }

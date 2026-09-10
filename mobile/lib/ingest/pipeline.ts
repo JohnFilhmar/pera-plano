@@ -37,6 +37,7 @@ import {
 } from "@/lib/db/repos/raw_notifications_repo";
 import {
   insertTransaction,
+  listFullLedger,
   listTransactions,
   supersedeMintedLeg,
 } from "@/lib/db/repos/transactions_repo";
@@ -549,7 +550,14 @@ async function runStages(
     return { kind: "superseded", transactionId: verdicts.dedupe.ofTransactionId };
   }
 
-  const history = await listTransactions({});
+  // THE WHOLE LEDGER, DELIBERATELY, AND NOT `listTransactions({})` (GAP-111).
+  // `categorize` uses this for one thing — counting how many times this user has
+  // already filed this merchant into each category — and §8 rule 3 sets no
+  // window on that count. An empty `TxFilter` reads as "everything" at this call
+  // site but comes back clamped to the tier's 90-day browsing floor, so on Free
+  // the app would forget a merchant it had learned. `listFullLedger` states the
+  // bound here and does not move with the tier.
+  const history = await listFullLedger();
   const category = categorize(event, rules, history);
   const confidence = applyPenalty(event.confidence, category.penalty);
 

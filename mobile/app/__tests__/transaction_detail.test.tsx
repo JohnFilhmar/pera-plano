@@ -95,7 +95,9 @@ import {
   WHY_RECORDED_TITLE,
 } from "@/components/transactions/why_recorded_panel";
 import { closeDatabase } from "@/lib/db/database";
+import { createBill, getCycle, recordBillPayment } from "@/lib/db/repos/bills_repo";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
+import { createLoan, outstandingBalance, recordPayment } from "@/lib/db/repos/loans_repo";
 import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import {
   purgeExpiredRawCaptures,
@@ -105,7 +107,7 @@ import {
 import { getTransaction, insertTransaction, sumSpend } from "@/lib/db/repos/transactions_repo";
 import { linkTransfer } from "@/lib/db/repos/transfer_links_repo";
 import { listUserRules } from "@/lib/db/repos/user_rules_repo";
-import { archiveWallet, createWallet } from "@/lib/db/repos/wallets_repo";
+import { archiveWallet, createWallet, getWallet } from "@/lib/db/repos/wallets_repo";
 import { formatDateTime } from "@/lib/datetime";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
@@ -841,6 +843,215 @@ describe("a row whose wallet has been archived", () => {
     expect(screen.getByTestId(`transfer-candidate-${inLeg.id}`)).not.toHaveTextContent(
       /Unknown wallet/,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Deleting a transaction (GAP-108) — the ledger half of review-queue rule 9,
+// "committed results remain editable in the ledger indefinitely afterward".
+//
+// Rule 10 forbids the queue from ever deleting a committed row, so this screen
+// is the ONLY way back from a mis-tapped Confirm. What is pinned here is what
+// can only be true end to end: that the confirmation names what is about to go,
+// that confirming it actually moves the wallet balance back, and that a leg the
+// database will refuse is refused ON SCREEN with a sentence naming the transfer
+// rather than as a foreign-key error the user cannot act on.
+// ---------------------------------------------------------------------------
+
+describe("deleting a transaction", () => {
+  /** The button is disabled until the deletion plan has been read. */
+  async function pressDelete(): Promise<void> {
+    await waitFor(() =>
+      expect(screen.getByTestId("transaction-delete").props.accessibilityState.disabled).toBe(
+        false,
+      ),
+    );
+    fireEvent.press(screen.getByTestId("transaction-delete"));
+    await waitFor(() => expect(screen.getByTestId("confirm-dialog")).toBeTruthy());
+  }
+
+  test("the confirmation names the row, the wallet and the balance consequence", async () => {
+    const tx = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: FOOD,
+      amount: 66_261,
+      direction: "out",
+      occurredAt: NOW,
+      merchant: "Jollibee",
+      source: "notification",
+      confidence: 0.95,
+    });
+
+    await renderDetail(tx.id);
+    await pressDelete();
+
+    // Amount, counterparty and wallet — the three things the user identifies
+    // the row by. A dialog that only said "Delete this transaction?" would be
+    // asking them to confirm from memory which row they had open.
+    expect(screen.getByTestId("confirm-dialog")).toHaveTextContent(/₱662\.61/);
+    expect(screen.getByTestId("confirm-dialog")).toHaveTextContent(/Jollibee/);
+    expect(screen.getByTestId("confirm-dialog")).toHaveTextContent(/GCash/);
+    expect(screen.getByTestId("confirm-dialog")).toHaveTextContent(
+      /balance goes back to what it was/,
+    );
+  });
+
+  test("confirming removes the row and gives the wallet its money back", async () => {
+    const before = (await getWallet(gcash.id))?.balance ?? 0;
+    const tx = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: FOOD,
+      amount: 66_261,
+      direction: "out",
+      occurredAt: NOW,
+      merchant: "Jollibee",
+      source: "notification",
+      confidence: 0.95,
+    });
+    expect((await getWallet(gcash.id))?.balance).toBe(before - 66_261);
+
+    await renderDetail(tx.id);
+    await pressDelete();
+    await act(async () => {
+      fireEvent.press(screen.getByTestId("confirm-dialog-confirm"));
+    });
+
+    // The database, not the screen: the row is what every total reads.
+    await waitFor(async () => expect(await getTransaction(tx.id)).toBeNull());
+    expect((await getWallet(gcash.id))?.balance).toBe(before);
+    expect(await sumSpend({ from: NOW - DAY_MS, to: NOW + DAY_MS })).toBe(0);
+    // And the screen leaves, because there is nothing left on it to show.
+    await waitFor(() => expect(mockBack).toHaveBeenCalled());
+  });
+
+  test("cancelling leaves the row exactly where it was", async () => {
+    const tx = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: FOOD,
+      amount: 66_261,
+      direction: "out",
+      occurredAt: NOW,
+      merchant: "Jollibee",
+      source: "notification",
+      confidence: 0.95,
+    });
+    const balance = (await getWallet(gcash.id))?.balance;
+
+    await renderDetail(tx.id);
+    await pressDelete();
+    fireEvent.press(screen.getByTestId("confirm-dialog-cancel"));
+
+    expect(await getTransaction(tx.id)).not.toBeNull();
+    expect((await getWallet(gcash.id))?.balance).toBe(balance);
+    expect(mockBack).not.toHaveBeenCalled();
+  });
+
+  test("a row matched to a loan says the loan balance goes back up", async () => {
+    const loan = await createLoan({
+      direction: "i-owe",
+      counterparty: "Juan Dela Cruz",
+      principal: 500_000,
+    });
+    const tx = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: FOOD,
+      amount: 50_000,
+      direction: "out",
+      occurredAt: NOW,
+      merchant: "JUAN D",
+      source: "notification",
+      confidence: 0.95,
+    });
+    await recordPayment({ loanId: loan.id, transactionId: tx.id });
+
+    await renderDetail(tx.id);
+    await pressDelete();
+
+    // Naming the counterparty is the point: "a loan payment is removed" gives
+    // the user no way to tell whether it is the loan they meant.
+    expect(screen.getByTestId("confirm-dialog")).toHaveTextContent(/Juan Dela Cruz/);
+
+    await act(async () => {
+      fireEvent.press(screen.getByTestId("confirm-dialog-confirm"));
+    });
+
+    await waitFor(async () => expect(await getTransaction(tx.id)).toBeNull());
+    expect(await outstandingBalance(loan.id)).toBe(500_000);
+  });
+
+  test("a row matched to a bill says the cycle goes back to unpaid", async () => {
+    const bill = await createBill({
+      name: "Meralco",
+      amount: 235_000,
+      amountMode: "estimated",
+      dueRule: { kind: "day-of-month", day: 20 },
+    });
+    const tx = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: FOOD,
+      amount: 235_000,
+      direction: "out",
+      occurredAt: NOW,
+      merchant: "MERALCO",
+      source: "notification",
+      confidence: 0.95,
+    });
+    await recordBillPayment({ billId: bill.id, dueDate: "2026-09-20", transactionId: tx.id });
+
+    await renderDetail(tx.id);
+    await pressDelete();
+
+    expect(screen.getByTestId("confirm-dialog")).toHaveTextContent(/Meralco/);
+    expect(screen.getByTestId("confirm-dialog")).toHaveTextContent(/back to unpaid/);
+
+    await act(async () => {
+      fireEvent.press(screen.getByTestId("confirm-dialog-confirm"));
+    });
+
+    await waitFor(async () => expect(await getTransaction(tx.id)).toBeNull());
+    expect(await getCycle(bill.id, "2026-09-20")).toBeNull();
+  });
+
+  test("a transfer leg refuses on screen, naming the wallet on the other side", async () => {
+    const outLeg = await insertTransaction({
+      walletId: bpi.id,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 500_000,
+      direction: "out",
+      occurredAt: NOW - 60_000,
+      merchant: "Transfer to GCash",
+      source: "notification",
+      confidence: 0.9,
+    });
+    const inLeg = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 500_000,
+      direction: "in",
+      occurredAt: NOW,
+      merchant: "Cash in from BPI",
+      source: "notification",
+      confidence: 0.9,
+    });
+    await linkTransfer(outLeg.id, inLeg.id, 0);
+
+    await renderDetail(outLeg.id);
+
+    // THE SENTENCE IS THE TEST. `transfer_links` holds two NOT NULL foreign
+    // keys onto `transactions(id)` with no ON DELETE action, so the alternative
+    // to this notice is "FOREIGN KEY constraint failed" on a toast — a message
+    // naming nothing the user can do anything about.
+    await waitFor(() =>
+      expect(screen.getByTestId("transaction-delete-blocked")).toHaveTextContent(/GCash/),
+    );
+    expect(screen.getByTestId("transaction-delete-blocked")).toHaveTextContent(
+      /Not a transfer/,
+    );
+    // And the button cannot be taken up on an offer it would have to break.
+    expect(screen.getByTestId("transaction-delete").props.accessibilityState.disabled).toBe(true);
+    fireEvent.press(screen.getByTestId("transaction-delete"));
+    expect(screen.queryByTestId("confirm-dialog")).toBeNull();
+    expect(await getTransaction(outLeg.id)).not.toBeNull();
   });
 });
 

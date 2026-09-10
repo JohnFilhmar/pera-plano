@@ -7,6 +7,7 @@
 // (a neutral tone, an action label), which are the seams GAP-075's undo
 // snackbar and GAP-079's sheets will build on.
 import { act, fireEvent, render, screen } from "@testing-library/react-native";
+import { Info, TriangleAlert } from "lucide-react-native";
 
 import {
   clearToasts,
@@ -181,6 +182,25 @@ test("the tone is carried by the rail, danger for a failure and neutral ink othe
   const [failure, neutral] = screen.getAllByTestId("app-toast-rail");
   expect(String(failure.props.className)).toContain("bg-danger");
   expect(String(neutral.props.className)).not.toContain("bg-danger");
+});
+
+test("the glyph follows the tone — a neutral notice does not carry the alarm triangle", () => {
+  render(<MutationErrorToast />);
+
+  act(() => {
+    publishToast({ tone: "failure", title: "a", body: "b", dedupeKey: "one" });
+    publishToast({ tone: "neutral", title: "c", body: "d", dedupeKey: "two" });
+  });
+
+  expect(screen.getAllByTestId("app-toast")).toHaveLength(2);
+
+  // COUNTED, NOT MERELY PRESENT. With both tones on screen there is EXACTLY
+  // ONE triangle, and it belongs to the failure. Asserting only that a
+  // triangle exists would have passed against the old code, which drew one on
+  // both cards. Queried by component type because a lucide glyph does not
+  // forward a `testID` into the rendered tree.
+  expect(screen.UNSAFE_queryAllByType(TriangleAlert)).toHaveLength(1);
+  expect(screen.UNSAFE_queryAllByType(Info)).toHaveLength(1);
 });
 
 test("the strip lets a tap through to whatever is under it — a header's back button is under this", () => {

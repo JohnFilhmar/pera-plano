@@ -378,3 +378,67 @@ test("a mark-transfer row with no counterpart wallet is dropped, not defaulted",
 
   expect(await listUserRules()).toHaveLength(0);
 });
+
+test("a mark-loan-payment rule round-trips with its loan", async () => {
+  await createUserRule({
+    matcher: { merchantPattern: "BEN SANTOS", direction: "in" },
+    action: { kind: "mark-loan-payment", loanId: "loan_ben" },
+  });
+
+  const [rule] = await listUserRules("mark-loan-payment");
+  expect(rule?.action).toEqual({ kind: "mark-loan-payment", loanId: "loan_ben" });
+  expect(rule?.matcher).toEqual({ merchantPattern: "BEN SANTOS", direction: "in" });
+});
+
+test("a mark-loan-payment row that names no loan is dropped, not defaulted", async () => {
+  // The loan id is the half the matcher cannot describe, so a missing or blank
+  // one leaves a rule that matches transactions and points at nothing: visible
+  // in the settings list, disableable, deletable, and permanently inert.
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    await insertRawRule({
+      id: "ur_no_loan",
+      matcherJson: '{"merchantPattern":"BEN SANTOS"}',
+      actionJson: '{"kind":"mark-loan-payment"}',
+    });
+    await insertRawRule({
+      id: "ur_blank_loan",
+      matcherJson: '{"merchantPattern":"BEN SANTOS"}',
+      actionJson: '{"kind":"mark-loan-payment","loanId":"  "}',
+    });
+
+    expect(await listUserRules()).toHaveLength(0);
+    expect(warn).toHaveBeenCalledTimes(2);
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+test("A ROW OF AN UNKNOWN KIND IS SKIPPED, NOT THROWN ON", async () => {
+  // THE ROLLBACK STORY FOR EVERY NEW ACTION KIND, `mark-loan-payment`
+  // included. Install a build that writes one, roll back to a build whose
+  // `ACTION_KINDS` predates it, and those rows are now unrecognized.
+  // `listUserRules` feeds the Categorizer, so a throw here would return NO
+  // rules at all and every transaction from then on would quietly lose every
+  // correction the user has ever made. The unknown row is dropped; the known
+  // ones keep replaying.
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    await insertRawRule({
+      id: "ur_from_a_newer_build",
+      matcherJson: '{"merchantPattern":"BEN SANTOS"}',
+      actionJson: '{"kind":"mark-something-not-invented-yet","loanId":"loan_ben"}',
+    });
+    await createUserRule(
+      { matcher: { merchantPattern: "GRAB" }, action: { kind: "ignore" } },
+      T0 + 1,
+    );
+
+    const rules = await listUserRules();
+    expect(rules).toHaveLength(1);
+    expect(rules[0].action.kind).toBe("ignore");
+    expect(warn).toHaveBeenCalled();
+  } finally {
+    warn.mockRestore();
+  }
+});
