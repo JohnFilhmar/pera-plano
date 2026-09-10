@@ -138,7 +138,24 @@ export function useSetProviderPause() {
       await setSetting("paused_provider_packages", nextPaused);
       return nextPaused;
     },
-    onSuccess: () => invalidateKeys(queryClient, [queryKeys.settings.pausedProviderPackages()]),
+    /**
+     * BOTH KEYS, because a successful write moves both (GAP-119). The row above
+     * is the app's record; `providerFilter` is the live read of what the
+     * listener now holds, which the Privacy centre compares the row against.
+     * Invalidating only the row would leave that comparison pairing a fresh
+     * intent with a stale effect and warning about a mismatch this very
+     * mutation had just resolved.
+     *
+     * The returned promise is what keeps the mutation PENDING until both have
+     * refetched (`invalidateKeys`'s own doc), which is also what stops the
+     * warning flickering on in the frames where one has landed and the other
+     * has not — see the screen's `providerScopeSettled`.
+     */
+    onSuccess: () =>
+      invalidateKeys(queryClient, [
+        queryKeys.settings.pausedProviderPackages(),
+        queryKeys.providerFilter.current(),
+      ]),
     /**
      * REPLACES THE APP-WIDE CARD RATHER THAN OPTING OUT OF IT — the same
      * `dedupeKey`, so `publishToast` swaps this copy into the entry

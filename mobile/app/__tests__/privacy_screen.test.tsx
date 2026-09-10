@@ -40,11 +40,17 @@
 // real one, since index.ts calls `requireNativeModule` at import time and
 // cannot be required under Jest. Identity is all that is needed: the hook and
 // the test below reach the class through this same mock.
+//
+// `getProviderFilter` joins it for GAP-119: the screen now reads the scope the
+// listener is ACTUALLY applying and compares it against the pause row it draws
+// the switches from. It is the one function here whose RESOLVED VALUE is the
+// subject of a test rather than a fixture — see the mismatch section below.
 jest.mock("@/modules/notification_listener", () => ({
   getListenerHealth: jest.fn(),
   openAccessSettings: jest.fn(),
   setCaptureEnabled: jest.fn().mockResolvedValue(undefined),
   setProviderFilter: jest.fn().mockResolvedValue(undefined),
+  getProviderFilter: jest.fn(),
   ProviderFilterNotStoredError: class ProviderFilterNotStoredError extends Error {
     readonly code = "ProviderFilterNotStored";
     constructor(message = "the provider filter could not be stored on this device") {
@@ -103,6 +109,7 @@ import { WipeIncompleteError } from "@/lib/security/wipe";
 import { freshDb } from "@/test_support/db";
 import {
   getListenerHealth,
+  getProviderFilter,
   openAccessSettings,
   ProviderFilterNotStoredError,
   setCaptureEnabled,
@@ -114,6 +121,7 @@ import type { SQLiteDatabase } from "@/lib/db/database";
 
 const mockSetCaptureEnabled = setCaptureEnabled as jest.Mock;
 const mockSetProviderFilter = setProviderFilter as jest.Mock;
+const mockGetProviderFilter = getProviderFilter as jest.MockedFunction<typeof getProviderFilter>;
 const mockExportAllData = exportAllData as jest.Mock;
 const mockGetListenerHealth = getListenerHealth as jest.MockedFunction<typeof getListenerHealth>;
 const mockOpenAccessSettings = openAccessSettings as jest.Mock;
@@ -137,6 +145,19 @@ const CHECKING_COPY = "Checking whether PeraPlano can read your notifications ri
 const DAY_MS = 24 * 60 * 60 * 1000;
 const GCASH_PACKAGE = "com.globe.gcash.android";
 const BPI_PACKAGE = "com.bpi.ng.app";
+
+// The two provider scopes this suite hands the device (GAP-119). An empty
+// allowlist with `denyAll` false is ALLOW-ALL, never deny-all — it is both the
+// fresh-install state and what a filter that cannot be decrypted reads back as.
+const ALLOW_ALL = { packageNames: [], denyAll: false };
+const ONLY_BPI = { packageNames: [BPI_PACKAGE], denyAll: false };
+
+// Quoted, not imported, for the reason this file's grant copy already gives:
+// the claim is what the reader SEES, and importing the constant would keep the
+// test green through any rewording — including a rewording back into silence.
+const SCOPE_MISMATCH_TITLE = "These switches aren't in force";
+const SCOPE_MISMATCH_BODY =
+  "PeraPlano recorded the providers below, but the notification listener still holds a different list. Close and reopen PeraPlano — every start re-applies these switches.";
 
 // Same discipline transaction_detail.test.tsx uses: the screen reads the
 // wall clock for its countdown and its capture list, so fixtures are
@@ -171,6 +192,11 @@ beforeEach(async () => {
   // Healthy by default, so every test that is not about the grant renders the
   // same screen it always did.
   mockGetListenerHealth.mockResolvedValue(HEALTHY);
+  // Allow-all by default, which pairs with the empty `paused_provider_packages`
+  // every test starts from: the app has recorded no narrowing, so there is
+  // nothing to check the listener against and the GAP-119 banner stays away
+  // from every test that is not about it.
+  mockGetProviderFilter.mockResolvedValue(ALLOW_ALL);
   db = await freshDb();
   await seedDefaultCategories();
   await upsertRuleset({
@@ -307,6 +333,9 @@ test("a provider switch calls setProviderFilter with the remaining packages", as
 
 test("resuming a paused provider clears the filter back to allow-all once nothing is paused", async () => {
   await setSetting("paused_provider_packages", [GCASH_PACKAGE]);
+  // The device is applying that pause, so this fixture is a working phone
+  // rather than one carrying the GAP-119 mismatch — which is a different test.
+  mockGetProviderFilter.mockResolvedValue(ONLY_BPI);
 
   await renderPrivacyScreen();
   await waitFor(() => expect(screen.getByTestId("provider-switch-paused-gcash")).toBeTruthy());
@@ -322,6 +351,7 @@ test("PAUSING THE LAST REMAINING PROVIDER SENDS DENY-ALL FROM THIS SCREEN", asyn
   // allow-all. Two providers exist in this ruleset, so pausing the second one
   // empties the allowlist.
   await setSetting("paused_provider_packages", [GCASH_PACKAGE]);
+  mockGetProviderFilter.mockResolvedValue(ONLY_BPI);
 
   await renderPrivacyScreen();
   await waitFor(() => expect(screen.getByTestId("provider-switch-bpi")).toBeTruthy());
@@ -360,6 +390,157 @@ test("A PAUSE THE DEVICE COULD NOT STORE LEAVES THE SWITCH ON, AND RECORDS NOTHI
   // And the only readable record is untouched, which is what keeps the next
   // launch's re-sync (lib/bootstrap.ts) from pushing a pause that never was.
   expect(await getSetting("paused_provider_packages")).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------
+// A SCOPE THE DEVICE IS NOT APPLYING IS SAID OUT LOUD HERE (GAP-119)
+//
+// The switches above render from `paused_provider_packages`, which is the app's
+// record of INTENT. GAP-116 made a failed onboarding selection durable and
+// self-healing, but only at the NEXT LAUNCH — until then capture is wider than
+// what the switches show, and this screen presented the record as though it
+// were the applied filter. The comparison behind these tests is
+// lib/privacy/provider_scope.ts; what is asserted here is that the reader
+// actually sees it, and — just as importantly — that they do NOT see it in the
+// three states where the two values are allowed to look different.
+// ---------------------------------------------------------------------------
+
+test("A FILTER THE DEVICE NEVER APPLIED IS REPORTED, ON THE SCREEN THAT SHOWS THE SWITCHES", async () => {
+  // The row says gcash is paused. The listener holds an empty allowlist, which
+  // is ALLOW-ALL — so gcash is still in scope, and this screen used to say the
+  // opposite with nothing anywhere to contradict it.
+  await setSetting("paused_provider_packages", [GCASH_PACKAGE]);
+  mockGetProviderFilter.mockResolvedValue(ALLOW_ALL);
+
+  await renderPrivacyScreen();
+
+  await waitFor(() => expect(screen.getByTestId("provider-scope-mismatch")).toBeTruthy());
+  expect(screen.getByText(SCOPE_MISMATCH_TITLE)).toBeTruthy();
+  // The remedy has to be NAMED, not implied: relaunching is the only action
+  // available to the user that can change the outcome, because the prefs key
+  // the filter is sealed under is created on launch and never lazily by a write
+  // from this screen.
+  expect(screen.getByText(SCOPE_MISMATCH_BODY)).toBeTruthy();
+  // The switch itself still reports the recorded intent. The banner is what
+  // says the intent is not in force; a row that silently flipped back would be
+  // a second, contradictory account of the same fact.
+  expect(screen.getByTestId("provider-switch-paused-gcash")).toBeTruthy();
+});
+
+test("A LAUNCH THAT RE-ASSERTED THE FILTER CLEARS IT WITH NO USER ACTION", async () => {
+  // Same recorded pause, but this device applied it: the allowlist is
+  // "everyone except gcash", which is exactly what `resyncProviderFilter`
+  // pushes at every launch. Nothing is tapped anywhere in this test — a fresh
+  // process reading agreeing values is the whole mechanism.
+  await setSetting("paused_provider_packages", [GCASH_PACKAGE]);
+  mockGetProviderFilter.mockResolvedValue(ONLY_BPI);
+
+  await renderPrivacyScreen();
+
+  await waitFor(() => expect(screen.getByTestId("provider-switch-paused-gcash")).toBeTruthy());
+  expect(screen.queryByTestId("provider-scope-mismatch")).toBeNull();
+  expect(screen.queryByText(SCOPE_MISMATCH_TITLE)).toBeNull();
+});
+
+test("a clean install is told nothing at all", async () => {
+  // TRAP 1. `paused_provider_packages` is empty on a fresh install, and it is
+  // also what onboarding leaves for a user who allowed everything or tapped
+  // Skip. The listener holds allow-all. Reading an empty row as "the filter
+  // was never applied" would show this banner to every new user forever, since
+  // no launch can make an unasserted row agree with anything.
+  expect(await getSetting("paused_provider_packages")).toEqual([]);
+
+  await renderPrivacyScreen();
+
+  await waitFor(() => expect(screen.getByTestId("provider-switch-gcash")).toBeTruthy());
+  expect(screen.queryByTestId("provider-scope-mismatch")).toBeNull();
+});
+
+test("an every-provider block that landed without its allowlist is in force, not a mismatch", async () => {
+  // TRAP 3. `CapturePrefs.setProviderFilter` writes the plaintext deny-all flag
+  // and reports SUCCESS when it could not seal the list beside it, leaving that
+  // list stale on disk — and the stale list is unreachable for as long as the
+  // flag stands. Comparing it would report a mismatch on a device applying
+  // exactly what was asked, and the next launch would fail to seal in exactly
+  // the same way, so the banner would never clear.
+  await setSetting("paused_provider_packages", [GCASH_PACKAGE, BPI_PACKAGE]);
+  mockGetProviderFilter.mockResolvedValue({
+    packageNames: [GCASH_PACKAGE, BPI_PACKAGE],
+    denyAll: true,
+  });
+
+  await renderPrivacyScreen();
+
+  await waitFor(() => expect(screen.getByTestId("provider-switch-paused-gcash")).toBeTruthy());
+  expect(screen.queryByTestId("provider-scope-mismatch")).toBeNull();
+});
+
+test("a ruleset that names no packages warns about nothing", async () => {
+  // TRAP 2. With no universe there is no "everyone else" to allow, so the
+  // expected allowlist is empty for a reason that has nothing to do with the
+  // user's choices — the same case `resyncProviderFilter` skips rather than
+  // pushing a deny-all it would be inventing. A launch cannot fix it, so a
+  // banner about it would never clear.
+  await upsertRuleset({ version: 2, providers: [], tunables: {} });
+  await setSetting("paused_provider_packages", [GCASH_PACKAGE]);
+  mockGetProviderFilter.mockResolvedValue(ALLOW_ALL);
+
+  await renderPrivacyScreen();
+
+  await waitFor(() => expect(screen.getByTestId("privacy-reassurance")).toBeTruthy());
+  expect(screen.queryByTestId("provider-scope-mismatch")).toBeNull();
+});
+
+test("a pause that lands never flashes a mismatch while the two reads catch up", async () => {
+  // The regression this guards is in the WIRING, not the comparison: a
+  // successful toggle moves the row and the listener together, so refreshing
+  // only the row would pair a fresh intent with a stale effect and accuse the
+  // app of the very failure it had just avoided.
+  mockSetProviderFilter.mockImplementationOnce(
+    async (packageNames: string[], denyAll: boolean) => {
+      mockGetProviderFilter.mockResolvedValue({ packageNames, denyAll });
+    },
+  );
+
+  await renderPrivacyScreen();
+  await waitFor(() => expect(screen.getByTestId("provider-switch-gcash")).toBeTruthy());
+
+  fireEvent(screen.getByTestId("provider-switch-gcash"), "valueChange", false);
+
+  await waitFor(() => expect(screen.getByTestId("provider-switch-paused-gcash")).toBeTruthy());
+  expect(screen.queryByTestId("provider-scope-mismatch")).toBeNull();
+});
+
+test("the warning offers no way to hide it, and outlives an unrelated change on the screen", async () => {
+  // Not hand-dismissible on purpose: it describes a LIVE mismatch, recomputed
+  // on every render from the two values themselves, so a hide control would
+  // restore exactly the silence it exists to remove.
+  await setSetting("paused_provider_packages", [GCASH_PACKAGE]);
+  mockGetProviderFilter.mockResolvedValue(ALLOW_ALL);
+
+  await renderPrivacyScreen();
+  await waitFor(() => expect(screen.getByTestId("provider-scope-mismatch")).toBeTruthy());
+
+  expect(screen.queryByTestId("provider-scope-mismatch-dismiss")).toBeNull();
+
+  // A successful, unrelated mutation re-renders the whole screen. The banner is
+  // still there afterwards, because nothing about the filter changed.
+  fireEvent(screen.getByTestId("capture-toggle-switch"), "valueChange", false);
+  await waitFor(() => expect(mockSetCaptureEnabled).toHaveBeenCalledWith(false));
+  expect(screen.getByTestId("provider-scope-mismatch")).toBeTruthy();
+});
+
+test("a bridge that cannot answer claims nothing in either direction", async () => {
+  // `retry: false`, so a rejection is final. "Cannot tell" is not "mismatch":
+  // an accusation the app has no evidence for is the same defect as the silence
+  // this entry removes, pointed the other way.
+  await setSetting("paused_provider_packages", [GCASH_PACKAGE]);
+  mockGetProviderFilter.mockRejectedValue(new Error("no such method"));
+
+  await renderPrivacyScreen();
+
+  await waitFor(() => expect(screen.getByTestId("provider-switch-paused-gcash")).toBeTruthy());
+  expect(screen.queryByTestId("provider-scope-mismatch")).toBeNull();
 });
 
 // ---------------------------------------------------------------------------

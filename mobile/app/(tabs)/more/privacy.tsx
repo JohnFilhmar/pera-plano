@@ -8,6 +8,15 @@
 // from `raw_notifications`, and every sentence is checkable against the code
 // beside it (see each component's own header for its specific claim).
 //
+// AND WHERE A SWITCH DOES NOT CONTROL CAPTURE, THIS SCREEN NOW SAYS SO
+// (GAP-119). The provider rows render from `paused_provider_packages`, which is
+// the app's RECORD of the scope, and on a device that could not seal a provider
+// filter that record is not what the listener is applying. The sentence above
+// was therefore true of the code and not always true of the phone. The banner in
+// the Providers section compares the record against a live native read of the
+// filter itself and reports the disagreement — which is what makes the claim
+// checkable rather than merely intended.
+//
 // ALL ORCHESTRATION LIVES HERE, NOT IN THE COMPONENTS. Same split
 // app/(onboarding)/providers.tsx uses against
 // components/onboarding/provider_picker.tsx: every hook, every native call,
@@ -33,10 +42,12 @@ import { useSetCaptureEnabled } from "@/hooks/mutations/use_set_capture_enabled"
 import { useSetProviderPause } from "@/hooks/mutations/use_set_provider_pause";
 import { useCaptureEnabled, usePausedProviderPackages } from "@/hooks/queries/use_capture_settings";
 import { useListenerHealth } from "@/hooks/queries/use_listener_health";
+import { useProviderFilter } from "@/hooks/queries/use_provider_filter";
 import { useRawCaptures } from "@/hooks/queries/use_raw_captures";
 import { useRuleset } from "@/hooks/queries/use_ruleset";
 import { useLock } from "@/contexts/lock_context";
 import { exportAllData } from "@/lib/privacy/data_export";
+import { compareProviderScope } from "@/lib/privacy/provider_scope";
 import { WipeIncompleteError } from "@/lib/security/wipe";
 import { openAccessSettings } from "@/modules/notification_listener";
 import type { ProviderSwitchItem } from "@/components/privacy/provider_switch_list";
@@ -74,6 +85,42 @@ const WIPE_INCOMPLETE_BODY =
 const WIPE_NOT_STARTED_BODY =
   "Nothing was erased. Your data and your recovery words are still on this phone, so you can try again.";
 
+/**
+ * The sentence GAP-119 exists to print: the switches below are the app's
+ * RECORD, and this screen used to present them as though they were what the
+ * listener holds. On a device that could not seal a provider filter the two
+ * disagree, capture is wider than the switches show, and until this banner
+ * nothing anywhere said so.
+ *
+ * IT DESCRIBES THE DISAGREEMENT, NEVER ITS CAUSE. "PeraPlano could not save
+ * this" would be a guess: the same mismatch is reachable from a ruleset that
+ * gained a provider after this launch started, where nothing failed at all.
+ * What is observed is that the recorded scope and the applied scope differ, and
+ * that is what it says.
+ *
+ * AND IT DOES NOT SAY "READING". Whether anything is being captured right now
+ * also depends on the master pause directly above it, which the capture row
+ * already reports; a banner claiming a bank is "still being read" would be
+ * flatly false to a user who has capture switched off, on the one screen whose
+ * whole job is being checkable.
+ *
+ * THE REMEDY IS REAL AND IS THE ONLY ONE (GAP-114's own reasoning). The filter
+ * is sealed under the listener's prefs key, which is created on launch and when
+ * the listener service binds — never lazily by a write from this screen — so a
+ * relaunch is the single action available to the user that can change the
+ * outcome, and `resyncProviderFilter` in lib/bootstrap.ts is what makes it one:
+ * every launch re-asserts this row.
+ *
+ * THERE IS NO DISMISS CONTROL, deliberately. This describes a live mismatch
+ * recomputed on every render from the two values themselves, so hiding it would
+ * restore exactly the silence it removes — and it needs no dismissal, because
+ * the launch that fixes the mismatch is the same launch that stops rendering
+ * it.
+ */
+const PROVIDER_SCOPE_MISMATCH_TITLE = "These switches aren't in force";
+const PROVIDER_SCOPE_MISMATCH_BODY =
+  "PeraPlano recorded the providers below, but the notification listener still holds a different list. Close and reopen PeraPlano — every start re-applies these switches.";
+
 const SmartphoneIcon = registerIcon(Smartphone);
 
 export default function PrivacyScreen() {
@@ -104,6 +151,16 @@ export default function PrivacyScreen() {
    * query (`useCaptureEnabled`) and the two can never disagree mid-write.
    */
   const { data: health } = useListenerHealth();
+  /**
+   * THE ONLY THING ON THIS SCREEN THAT KNOWS WHAT THE LISTENER ACTUALLY HOLDS
+   * (GAP-119). Every provider row above renders from `pausedPackages`, which is
+   * the app's record of intent; this is the device's report of effect, and the
+   * banner below exists for the case where they differ. Kept as a separate
+   * query rather than folded into either of them for the reason
+   * use_provider_filter.ts's own doc gives: a single source could not represent
+   * the disagreement.
+   */
+  const { data: heldFilter } = useProviderFilter();
 
   const setCaptureEnabled = useSetCaptureEnabled();
   const setProviderPause = useSetProviderPause();
@@ -161,6 +218,37 @@ export default function PrivacyScreen() {
       })),
     [providers, pausedSet],
   );
+
+  /**
+   * Whether the two reads can be compared AT ALL yet, and it is not the same
+   * question as whether they agree.
+   *
+   * NOTHING IS CLAIMED UNTIL BOTH HAVE LANDED. `heldFilter` is `undefined`
+   * while the native read is in flight AND if it rejects (`retry: false`), and
+   * either way the honest answer is that this screen cannot tell — so it says
+   * nothing, rather than warning about a comparison it has only half of.
+   *
+   * AND NOT WHILE A SWITCH IS BEING WRITTEN. A successful toggle moves the row
+   * and the listener together, and the mutation stays pending until BOTH
+   * queries have refetched (see its `onSuccess`), so this is the window in
+   * which the cache legitimately holds one new value and one old one. Reading
+   * it would flash the banner on every successful pause.
+   */
+  const providerScopeSettled =
+    heldFilter !== undefined && pausedPackages !== undefined && !setProviderPause.isPending;
+
+  const providerScopeMismatch = useMemo(() => {
+    if (!providerScopeSettled || heldFilter === undefined || pausedPackages === undefined) {
+      return false;
+    }
+    return (
+      compareProviderScope({
+        universe: allPackageNames,
+        paused: pausedPackages,
+        actual: heldFilter,
+      }) === "not_in_force"
+    );
+  }, [providerScopeSettled, heldFilter, pausedPackages, allPackageNames]);
 
   const capturedItems = useMemo(
     () =>
@@ -341,6 +429,27 @@ export default function PrivacyScreen() {
             the nearest scale entry, for the same reason as that banner's
             heading. */}
         <Text className="text-section font-semibold text-fg dark:text-fg-dark">Providers</Text>
+        {/* ABOVE the switch list, because it is about the rows underneath it —
+            a notice printed below them would be read after the reader has
+            already believed what they say. `danger` fill with `on-brand` ink is
+            the audited pairing for a solid danger surface (constants/colors.ts:
+            4.83:1 light, 6.42:1 dark); `text-surface` would be white by
+            coincidence in light mode and near-black on red in dark. Same solid
+            treatment components/home/tracking_banner.tsx gives its own
+            something-is-actually-broken state. */}
+        {providerScopeMismatch ? (
+          <View
+            testID="provider-scope-mismatch"
+            className="gap-1 rounded-2xl bg-danger p-4 dark:bg-danger-dark"
+          >
+            <Text className="text-section font-bold text-on-brand dark:text-on-brand-dark">
+              {PROVIDER_SCOPE_MISMATCH_TITLE}
+            </Text>
+            <Text className="text-body text-on-brand dark:text-on-brand-dark">
+              {PROVIDER_SCOPE_MISMATCH_BODY}
+            </Text>
+          </View>
+        ) : null}
         <ProviderSwitchList
           items={switchItems}
           onToggle={handleToggleProvider}
