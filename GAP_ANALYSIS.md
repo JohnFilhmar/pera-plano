@@ -6848,6 +6848,8 @@ Do not change how `principal` is stored until GAP-029 lands.
 Revert.
 
 **Open questions**
+
+> **OWNER DECISION (2026-09-10):** **ADD A NULLABLE COLUMN AND A MIGRATION.** The borrowed figure stays and `docs/04-features/06-loans.md` is NOT amended: `:43`'s two-figure definition of a flat loan, the worked example at `:82`, `:40`'s "every loan takes a principal" and open question 3 at `:162` all stand as written. `principal` keeps holding `installment * count` for the balance formula at `:89`; the amount actually BORROWED gets its own new nullable column. **THIS RE-SCOPES THE ENTRY:** it is not the S / 2-3-turn form tweak it was filed as. It needs a schema migration, a backfill decision for existing flat loans (the borrowed amount is unknown for them, which is exactly what nullable is for), and the form has to ask for both figures. Re-grade before dispatching.
 Raised 2026-09-10: new column for the borrowed amount, or drop the figure and amend the doc? See the blocking note under Proposed fix.
 
 ### GAP-083 [CODE] Loan first-due and goal deadline pickers floor at today, so an in-progress loan cannot be entered and an edit re-dates the whole schedule
@@ -9046,6 +9048,8 @@ Do not widen the 30 percent band; that admits genuinely unrelated credits into t
 Revert.
 
 **Open questions**
+
+> **OWNER DECISION (2026-09-10):** **FIX IT, AND TELL THE USER.** Existing users' income figures MAY move, with a one-time recompute on upgrade, and the app shows a one-time notice explaining why the income figure and any percent-of-income Limit headroom changed. A silent shift was rejected on the grounds that a limit which doubles overnight with no explanation reads as a bug, and "new data only" was rejected because it leaves the wrong figure in place indefinitely and makes two users with identical history disagree.
 Whether existing users' income figures may move, and whether a recompute is owed on upgrade. Owner's call.
 
 ### GAP-118 [CODE] Income cadence detection asks for 130 days and recurring detection for 800, and on Free both are cut to 90 by the browsing floor
@@ -9103,7 +9107,71 @@ Do not remove `historyFloor` from `listTransactions`; the browsing gate is the f
 Revert.
 
 **Open questions**
+
+> **OWNER DECISION (2026-09-10):** **SPLIT DECISION, ONE PER HALF.**
+>
+> **Recurring detection: DO NOT RUN THE PASS AT ALL ON FREE.** Do not exempt the 800-day window and do not leave it running against 90 days. `hasRecurringDetection()` already gates the only surface that displays the result (`app/(tabs)/more/subscriptions.tsx:118`), so on Free the pass spends real work on an answer that is both truncated and invisible; the right answer is not to run it. Owner's decision, 2026-09-10.
+>
+> **Income cadence detection: EXEMPT THE WINDOW, read the full 130 days regardless of tier.** NOT sent to the owner, because the precedent already decides it: this is the same computation-versus-browsing distinction settled by GAP-105 for `sumSpend` and by GAP-111 for `listFullLedger`, and unlike recurring detection it is not tier-gated anywhere, so its sample must not move with the tier. `averageAmount` feeds `monthlyEquivalent` and every percent-of-income Limit, so a tier-dependent sample is a tier-dependent limit.
 Whether recurring detection should run on Free at all, given `hasRecurringDetection()` gates only its UI. Owner's call.
+
+### GAP-119 [FEAT] A provider filter that failed to seal is invisible in More > Privacy, the one screen where the user manages it
+
+**Location**
+- `mobile/app/(tabs)/more/privacy.tsx` (the provider switch list, rendered from `paused_provider_packages`)
+- `mobile/lib/bootstrap.ts:182-192` (`persistOnboardingProviderPause`) and `:193` (`resyncProviderFilter`, which catches and logs rather than surfacing)
+- `mobile/modules/notification_listener/index.ts:519` (`setProviderFilter`, the ONLY bridged provider call) and `:246` (`ProviderFilterNotStoredError`)
+- `mobile/modules/notification_listener/android/src/main/java/expo/modules/notificationlistener/CapturePrefs.kt:151` (`fun getProviderFilter(): Set<String>` -- exists natively, NOT bridged to JS)
+
+**Evidence**
+Owner decision of 2026-09-10 on GAP-116's open question: no message during onboarding, a warning in More > Privacy instead. Verified by the orchestrator the same day: JS has no readable copy of the listener's actual filter -- `grep -rniE "export (function|const) [a-z_]*provider[a-z_]*"` over `mobile/modules/notification_listener/` returns only `setProviderFilter` at `index.ts:519` -- while the Kotlin side already implements `getProviderFilter()` at `CapturePrefs.kt:151` and simply does not expose it.
+
+**What is wrong**
+GAP-116 made an onboarding selection durable and self-healing: it is recorded, and the next launch re-asserts it. The deliberate silence during onboarding stands and is not in question here -- stranding a user mid-flow over a filter was rejected on purpose. But between a failed seal and the next launch, capture is WIDER than what the user chose, and nothing anywhere tells them. More > Privacy renders its switch rows from `paused_provider_packages`, which is the app's record of INTENT, and presents them as though they were applied.
+
+**Why it matters**
+This is the one screen dedicated to "which banks may this app read". A row reading "paused" while the listener is still capturing that provider is the privacy screen actively misstating the user's own privacy posture. GAP-114's entire point was refusing to record a scope that did not land; this carries the same principle to the surface that displays it. It is also the cheapest place to be honest, because the user is already standing in front of the switch.
+
+**Intended behavior**
+More > Privacy warns whenever what the app recorded and what the listener actually holds disagree, says that relaunching re-asserts it, and clears itself without user action once a launch succeeds. Onboarding is untouched.
+
+**Proposed fix**
+Two shapes; pick one with evidence and say why.
+
+(a) **Bridge `CapturePrefs.getProviderFilter()`** and have the Privacy screen compare the allowlist implied by the ruleset universe minus `paused_provider_packages` against what the listener really holds. Truthful by construction, introduces no new state, and self-clears the moment they agree. Costs a Kotlin bridge method plus its tests.
+
+(b) **Persist a "the last provider filter push did not land" flag** when `setProviderFilter` rejects -- both `resyncProviderFilter` and `hooks/mutations/use_set_provider_pause.ts` already catch that rejection -- and clear it on the next success. No native work, but it is a SECOND SOURCE OF TRUTH about the filter that can itself drift.
+
+The orchestrator leans (a), precisely because (b) re-introduces the class of defect GAP-114 and GAP-116 were about: a stored claim concerning the filter that nobody verified against the filter. Argue the other way if the Kotlin cost is not worth it.
+
+**Implementation checklist**
+- [ ] Choose (a) or (b) and justify it in code.
+- [ ] Show a warning in More > Privacy while recorded and actual disagree, naming the remedy (relaunch re-asserts).
+- [ ] Ensure it clears with no user action once a launch re-asserts successfully.
+- [ ] Change NOTHING in the onboarding flow.
+- [ ] Tests: a failed seal shows the warning; a successful re-assert clears it; a clean install shows nothing.
+
+**Acceptance criteria**
+- [ ] More > Privacy warns whenever the listener's filter does not match what the app recorded.
+- [ ] The warning disappears without user action after a successful re-assert.
+- [ ] Onboarding is unchanged, and no flow blocks or strands the user.
+
+**Verification commands**
+```bash
+cd mobile && npx jest privacy_screen use_set_provider_pause bootstrap provider_picker --maxWorkers=1
+cd mobile && npx tsc --noEmit
+# only if (a):
+cd mobile/android && ./gradlew :notification_listener:testDebugUnitTest
+```
+
+**Do not**
+Do not add a message to onboarding -- that trade is settled and GAP-116's "Do not" still holds. Do not block or strand the user anywhere. Do not make the warning dismissible by hand: it describes a live mismatch, and hiding it would restore exactly the silence this entry removes.
+
+**Rollback**
+Revert.
+
+**Open questions**
+None. The owner chose the Privacy-screen warning over an onboarding toast and over staying silent, on 2026-09-10.
 
 ## 10. Deferred and rejected
 
@@ -9267,7 +9335,8 @@ Pass-2 deferrals (S4; each has a citation in the analyst's pass-2 notes and can 
 {"id":"GAP-115","category":"CODE","title":"A balance adjustment shrinks a loan's percent-paid bar","severity":"S4","complexity":"XS","difficulty":"D2","risk":"R1","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/components/loans/loan_card.tsx"]},
 {"id":"GAP-116","category":"CODE","title":"An onboarding provider selection that fails to seal is lost with no record and nothing to recover it from","severity":"S3","complexity":"S","difficulty":"D2","risk":"R2","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/app/(onboarding)/providers.tsx","mobile/lib/bootstrap.ts"]},
 {"id":"GAP-117","category":"CODE","title":"An occasional split payday never reaches the payday screen, because primaryStream bands each credit against its group's running median","severity":"S3","complexity":"M","difficulty":"D3","risk":"R3","confidence":"C1","priority":0.5,"suitability":"AGENT-ASSISTED","depends_on":[],"blocks":["GAP-110"],"files":["mobile/lib/income/candidates.ts","mobile/lib/income/income_service.ts"]},
-{"id":"GAP-118","category":"CODE","title":"Income cadence detection asks for 130 days and recurring detection for 800, and on Free both are cut to 90 by the browsing floor","severity":"S3","complexity":"M","difficulty":"D2","risk":"R2","confidence":"C1","priority":0.5,"suitability":"AGENT-ASSISTED","depends_on":[],"blocks":[],"files":["mobile/lib/income/income_service.ts","mobile/lib/recurring/recurring_service.ts"]}
+{"id":"GAP-118","category":"CODE","title":"Income cadence detection asks for 130 days and recurring detection for 800, and on Free both are cut to 90 by the browsing floor","severity":"S3","complexity":"M","difficulty":"D2","risk":"R2","confidence":"C1","priority":0.5,"suitability":"AGENT-ASSISTED","depends_on":[],"blocks":[],"files":["mobile/lib/income/income_service.ts","mobile/lib/recurring/recurring_service.ts"]},
+{"id":"GAP-119","category":"FEAT","title":"A provider filter that failed to seal is invisible in More > Privacy, the one screen where the user manages it","severity":"S3","complexity":"M","difficulty":"D2","risk":"R2","confidence":"C1","priority":0.5,"suitability":"AGENT-READY","depends_on":["GAP-116"],"blocks":[],"files":["mobile/app/(tabs)/more/privacy.tsx","mobile/modules/notification_listener/index.ts","mobile/lib/bootstrap.ts"]}
 ]
 ```
 
