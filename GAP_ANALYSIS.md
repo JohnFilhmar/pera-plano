@@ -1390,7 +1390,7 @@ Priority = (severity weight x confidence weight) / complexity weight, with S1=8,
 | GAP-077 | CODE | Category correction and rule creation are two independent writes; a failed recategorise still creates the rule | S3 | S | D2 | R2 | C1 | 1.0 | AGENT-READY |
 | GAP-078 | CODE | Bare-promise writes outside mutation hooks swallow failures into dead or misleading screens | S3 | S | D2 | R2 | C1 | 1.0 | AGENT-READY |
 | GAP-079 | CODE | Sheets keep stale state and stay open after a failed write, and their confirm buttons stay tappable while pending | S3 | S | D2 | R1 | C1 | 1.0 | AGENT-READY |
-| GAP-082 | CODE | Flat loan "How much?" is required, previewed, then discarded on save | S3 | S | D2 | R2 | C1 | 1.0 | AGENT-READY |
+| GAP-082 | CODE | Flat loan "How much?" is required, previewed, then discarded on save | S3 | M | D3 | R2 | C1 | 1.0 | AGENT-READY |
 | GAP-083 | CODE | Loan first-due and goal deadline pickers floor at today, so an in-progress loan cannot be entered and an edit re-dates the whole schedule | S3 | S | D2 | R2 | C1 | 1.0 | AGENT-READY |
 | GAP-087 | CONTRA | Free tier sees a permanent "Not enough periods yet to show a trend" card instead of the Plus-locked preview the doc specifies | S3 | S | D2 | R1 | C1 | 1.0 | AGENT-READY |
 | GAP-089 | CONTRA | The Privacy centre says notifications are being read whenever the switch is on, with no access check and no fix prompt | S3 | S | D2 | R1 | C1 | 1.0 | AGENT-READY |
@@ -6800,15 +6800,15 @@ none
 | Field | Value |
 |---|---|
 | Severity | S3 Moderate |
-| Complexity | S |
-| Difficulty | D2 Standard |
+| Complexity | M |
+| Difficulty | D3 Involved |
 | Risk | R2 |
 | Confidence | C1 Verified |
 | Priority score | 1.0 |
 | Agent suitability | AGENT-READY |
 | Depends on | GAP-029 |
 | Blocks | none |
-| Est. agent turns | 2-3 |
+| Est. agent turns | 6-10 |
 
 **Location**
 - `mobile/components/loans/loan_form.tsx:544` (`principal: kind === "flat" ? installment * count : principal`), `:277-283` (`canSave` insists on `principal > 0`), `:133` (`loanFormInitialFrom` seeds the field with the stored total on edit), `:340-348` (the field and its peso preview) -- LINE NUMBERS CORRECTED 2026-09-10; the filed `:482`, `:240-246` and `:132` had all drifted, and `:482` now lands on unrelated reminder-offset markup
@@ -9401,7 +9401,7 @@ Pass-2 deferrals (S4; each has a citation in the analyst's pass-2 notes and can 
 {"id":"GAP-079","category":"CODE","title":"Sheets keep stale state and stay open after a failed write, and their confirm buttons stay tappable while pending","severity":"S3","complexity":"S","difficulty":"D2","risk":"R1","confidence":"C1","priority":1,"suitability":"AGENT-READY","depends_on":["GAP-013"],"blocks":[],"files":["mobile/components/wallets/cash_reconcile_sheet.tsx","mobile/components/wallets/archive_wallet_sheet.tsx","mobile/app/wallet/[id].tsx","mobile/components/loans/record_payment_sheet.tsx","mobile/app/wallet/new.tsx","mobile/app/wallet/[id]/edit.tsx","mobile/components/review/review_card.tsx","mobile/hooks/mutations/use_review_action.ts"]},
 {"id":"GAP-080","category":"CODE","title":"Archiving a wallet with \"move transactions\" relocates transfer legs and provider balance anchors into the destination wallet","severity":"S3","complexity":"M","difficulty":"D2","risk":"R3","confidence":"C2","priority":0.4,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/lib/db/repos/transactions_repo.ts","mobile/lib/db/repos/wallets_repo.ts","mobile/components/wallets/archive_wallet_sheet.tsx","docs/04-features/02-wallets.md","mobile/lib/db/repos/__tests__/transactions_repo.test.ts"]},
 {"id":"GAP-081","category":"CODE","title":"The due-rule picker shows an unclamped or empty value while the rule holds a clamped one, and an empty day saves as the first","severity":"S3","complexity":"XS","difficulty":"D2","risk":"R1","confidence":"C1","priority":2,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/components/bills/due_rule_picker.tsx","mobile/components/bills/bill_form.tsx","mobile/components/bills/__tests__/bill_form.test.tsx"]},
-{"id":"GAP-082","category":"CODE","title":"Flat loan \"How much?\" is required, previewed, then discarded on save","severity":"S3","complexity":"S","difficulty":"D2","risk":"R2","confidence":"C1","priority":1,"suitability":"AGENT-READY","depends_on":["GAP-029"],"blocks":[],"files":["mobile/components/loans/loan_form.tsx","mobile/components/loans/__tests__/loan_form.test.tsx"]},
+{"id":"GAP-082","category":"CODE","title":"Flat loan \"How much?\" is required, previewed, then discarded on save","severity":"S3","complexity":"M","difficulty":"D3","risk":"R2","confidence":"C1","priority":1,"suitability":"AGENT-READY","depends_on":["GAP-029"],"blocks":[],"files":["mobile/components/loans/loan_form.tsx","mobile/components/loans/__tests__/loan_form.test.tsx"]},
 {"id":"GAP-083","category":"CODE","title":"Loan first-due and goal deadline pickers floor at today, so an in-progress loan cannot be entered and an edit re-dates the whole schedule","severity":"S3","complexity":"S","difficulty":"D2","risk":"R2","confidence":"C1","priority":1,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/components/loans/loan_form.tsx","mobile/components/goals/goal_form.tsx","mobile/components/loans/__tests__/loan_form.test.tsx"]},
 {"id":"GAP-084","category":"CODE","title":"The payday allocation sheet keeps per-goal state across paydays","severity":"S3","complexity":"XS","difficulty":"D2","risk":"R1","confidence":"C1","priority":2,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/components/goals/allocation_sheet.tsx","mobile/app/_layout.tsx","mobile/components/goals/__tests__/allocation_sheet.test.tsx"]},
 {"id":"GAP-085","category":"FEAT","title":"Bill detail has no manual \"mark paid\" and omits the due rule, reminder schedule and auto-match summary the doc lists","severity":"S3","complexity":"M","difficulty":"D2","risk":"R2","confidence":"C1","priority":0.5,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/app/(tabs)/plan/bills/[id].tsx","mobile/lib/db/repos/bills_repo.ts","docs/04-features/07-bills.md","mobile/lib/bills/amount_estimator.ts","mobile/app/__tests__/bills_screen.test.tsx"]},
