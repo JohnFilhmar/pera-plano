@@ -9276,6 +9276,121 @@ Revert.
 **Open questions**
 None.
 
+### GAP-122 [CONTRA] Reports rule 19's Free pattern count cannot be shown: the pass is skipped on Free and the only route to the preview is gated shut
+
+**Location**
+- `docs/04-features/10-reports.md:98` (rule 19, verbatim below), and the same promise restated at `:70` and `:157`
+- `mobile/app/(tabs)/more/subscriptions.tsx:73` (`function LockedPreview({ count }: { count: number })`, already written and already wired at its call site as `count={patterns?.length ?? 0}`)
+- `mobile/app/(tabs)/more/index.tsx:294` (`<PlusGate capability="recurring">` wrapping the only row that navigates to that screen)
+- `mobile/lib/recurring/recurring_ledger_subscriber.ts:79` (the Free skip GAP-118 added, commit `5ccfe66`)
+- `mobile/lib/recurring/recurring_service.ts:47` (`LEDGER_WINDOW_DAYS = 800`, still read through `listTransactions` and therefore still floor-clamped on Free)
+
+**Evidence**
+Rule 19, verbatim: "**Recurring gating.** Detection surfacing is Plus, gated at the Entitlements call-site. The Free locked preview shows the count of detected patterns only -- a labeled preview frame, never real gated data behind a blur. On upgrade, patterns computed from the full retained history appear immediately."
+
+Found by the GAP-118 agent, which declined to stop on it, and verified independently by the orchestrator on 2026-09-10 by reading rule 19 at `:98`, the same promise at `:70` and `:157`, `LockedPreview` at `subscriptions.tsx:73`, and the `PlusGate` wrapper at `more/index.tsx:294`.
+
+**What is wrong**
+Three statements disagree about one feature.
+
+1. The spec says a Free user sees the COUNT of detected patterns.
+2. The code never lets a Free user reach the screen that would show it: the More-tab row is `PlusGate`-wrapped and intercepts the press before navigation, so `LockedPreview` is unreachable code on Free.
+3. As of GAP-118 the count would be zero anyway, because the detection pass no longer runs on Free.
+
+The orchestrator's own framing caused (3): GAP-118's question was put to the owner as "the results are invisible on Free anyway", which is true of the shipped build and false of the spec.
+
+**Why it matters**
+Rule 19's count is not incidental, it is the teaser: it is how a Free user learns the app has found something worth paying for, and `docs/05-monetization.md` §5 is explicit that the preview must be a labelled frame rather than blurred real data -- which is exactly what a bare count is. Leaving this alone means a documented Plus conversion surface stays dead, and the reason it is dead is now spread across three files and a skipped pass.
+
+**Intended behavior**
+A Free user's device detects recurring patterns and shows nothing but how many there are. Merchants, amounts and the total stay Plus-only.
+
+**OWNER DECISION (2026-09-10, second pass): RUN A COUNT-ONLY PASS ON FREE.** Asked once the spec conflict surfaced, the owner chose to honour rule 19 rather than amend it, and rather than deferring. This SUPERSEDES the recurring half of GAP-118's earlier decision (skip the pass on Free), which was taken on the mistaken premise that nothing on Free could ever display the result. GAP-118's income half is untouched and stands.
+
+**Proposed fix**
+1. Remove the Free skip at `recurring_ledger_subscriber.ts:79`. Keep `refreshPatterns` ungated as it already is.
+2. Exempt the 800-day window, reading through `listFullLedgerBetween` (`mobile/lib/db/repos/transactions_repo.ts:788`) exactly as GAP-118 did for income cadence detection. **This is not optional**: a count computed from a floor-clamped 90 days understates the answer, and an annual subscription -- the one a user most wants flagged -- cannot be detected inside 90 days at all, so the teaser would lie in the direction of "we found nothing".
+3. Make the More row navigate on Free. `subscriptions.tsx` already hides merchants, amounts and the total behind its own checks, and `more/index.tsx:290-293` says so in as many words: the data "stays hidden even if this gate is bypassed". The gate on this one row is what has to move, not the data hiding behind it.
+
+**Implementation checklist**
+- [ ] Delete GAP-118's Free skip and update its doc block, which currently records the opposite decision.
+- [ ] Route `refreshPatterns` through `listFullLedgerBetween` so the Free count is computed from the full 800 days.
+- [ ] Let a Free tap reach `/more/subscriptions`, where `LockedPreview` already renders.
+- [ ] Confirm `decayStalePatterns` running on Free is correct now that the pass runs there (GAP-118 skipped it deliberately; re-derive the answer rather than assuming).
+- [ ] Tests: a Free user with three detected patterns sees `3` and no merchant, amount or total; an annual pattern older than 90 days is counted; a Plus user is unaffected.
+
+**Acceptance criteria**
+- [ ] A Free user with three detected patterns sees the count and nothing else.
+- [ ] Recurring detection on Free reads its full 800-day window.
+- [ ] No merchant, amount or total is reachable on Free, asserted by test, including on the screen itself.
+- [ ] A Plus user's behaviour is unchanged.
+
+**Verification commands**
+```bash
+cd mobile && npx jest lib/recurring subscriptions more_index --maxWorkers=2
+cd mobile && npx jest lib/db/repos --maxWorkers=2
+cd mobile && npx tsc --noEmit
+```
+
+**Do not**
+Do not show merchants, amounts or the total on Free -- rule 19 says the count ONLY, and `docs/05-monetization.md` §5 forbids gated data behind a blur. Do not remove `PlusGate` from any other row. Do not amend rule 19; the owner chose to honour it.
+
+**Rollback**
+Revert. Note that reverting restores GAP-118's skip, which is no longer the decided behaviour.
+
+**Open questions**
+Rule 19 also promises that on upgrade "patterns computed from the full retained history appear immediately". There is no runtime upgrade path at all today -- `MVP_TIER` is a `const` (`mobile/lib/entitlements.ts:13`) and `__setTierForTests` is its only mutator -- so "immediately" is unimplementable and unfalsifiable until one exists. Pre-existing, out of scope here, and worth its own entry when tier switching becomes real.
+
+### GAP-123 [CODE] listPayEventsBetween takes the tier history floor, so Safe-to-Spend's contributions term truncates on Free for any window older than 90 days
+
+**Location**
+- `mobile/lib/income/income_service.ts:238` (`listPayEventsBetween`), reading through `listTransactions` at `:243` without passing `now`
+- `mobile/lib/safe_to_spend_service.ts:183` (`forecastContributions`, its only production caller, via `listPayEventsBetween`)
+- `mobile/lib/db/repos/transactions_repo.ts:666` (`listTransactions` raises `from` to `historyFloor`), `:788` (`listFullLedgerBetween`, the bounded floor-exempt read GAP-118 added)
+
+**Evidence**
+Found by the GAP-118 agent while auditing every remaining floor-clamped read, and deliberately left unfixed as out of scope. Verified by the orchestrator on 2026-09-10.
+
+**What is wrong**
+`listPayEventsBetween` is a computation over a caller-supplied window, and it reads through `listTransactions`, which clamps `from` up to the tier's 90-day browsing floor. Every caller today asks for a current-period window, so the clamp cannot bite yet. It is a latent trap rather than a live defect: the function's signature invites any window at all, and the first caller to hand it a `from` older than 90 days gets a silently truncated answer on Free with nothing at the call site to say so.
+
+This is the same family as GAP-105 (`sumSpend`), GAP-111 (`listFullLedger`) and GAP-118 (income cadence detection). Those three fixed the callers that were already asking for too much; this one is the caller that has not asked yet.
+
+**Why it matters**
+`forecastContributions` reserves real money against pay that has already arrived (goals rule 13), and a truncated pay history under-reserves, which shows the user more Safe-to-Spend than they have. Nobody would see it in review either: the call site reads as if it asked for the window it named.
+
+**Intended behavior**
+A computation reads the window it asks for, or its bound is stated where a reader can see it.
+
+**Proposed fix**
+Either read through `listFullLedgerBetween` (`transactions_repo.ts:788`), matching what GAP-118 did for cadence detection one function away, or state at `listPayEventsBetween` that its window is deliberately floor-clamped and why. The first is almost certainly right, since the function's whole job is "what pay actually landed in this range", which is a fact about the ledger and not about what the user may browse.
+
+Check whether the collapse in `forecastContributions` needs any adjustment once the read can return older rows, and confirm no browsing surface reaches `listPayEventsBetween`.
+
+**Implementation checklist**
+- [ ] Decide read-the-window versus document-the-clamp, and make it explicit either way.
+- [ ] Test with a Free entitlement (`__setTierForTests`) and a pay event older than 90 days, asserting the chosen behaviour.
+- [ ] Confirm `listPayEventsBetween` has no browsing caller.
+
+**Acceptance criteria**
+- [ ] The window `listPayEventsBetween` reads is stated in code and does not change with the tier unless that is the documented intent.
+- [ ] `listTransactions` still applies the floor for every browsing caller.
+
+**Verification commands**
+```bash
+cd mobile && npx jest lib/income safe_to_spend --maxWorkers=4
+cd mobile && npx tsc --noEmit
+```
+
+**Do not**
+Do not remove `historyFloor` from `listTransactions`. Do not reach for `listFullLedger` -- it is deliberately unbounded, and this needs a bounded read.
+
+**Rollback**
+Revert.
+
+**Open questions**
+None.
+
 ## 10. Deferred and rejected
 
 Considered and not listed, with the reason.
@@ -9441,7 +9556,9 @@ Pass-2 deferrals (S4; each has a citation in the analyst's pass-2 notes and can 
 {"id":"GAP-118","category":"CODE","title":"Income cadence detection asks for 130 days and recurring detection for 800, and on Free both are cut to 90 by the browsing floor","severity":"S3","complexity":"M","difficulty":"D2","risk":"R2","confidence":"C1","priority":0.5,"suitability":"AGENT-ASSISTED","depends_on":[],"blocks":[],"files":["mobile/lib/income/income_service.ts","mobile/lib/recurring/recurring_service.ts"]},
 {"id":"GAP-119","category":"FEAT","title":"A provider filter that failed to seal is invisible in More > Privacy, the one screen where the user manages it","severity":"S3","complexity":"M","difficulty":"D2","risk":"R2","confidence":"C1","priority":0.5,"suitability":"AGENT-READY","depends_on":["GAP-116"],"blocks":[],"files":["mobile/app/(tabs)/more/privacy.tsx","mobile/modules/notification_listener/index.ts","mobile/lib/bootstrap.ts"]},
 {"id":"GAP-120","category":"FEAT","title":"The split-payday notice lives only on the Income card, but the figure it explains is noticed on the Limits screen","severity":"S4","complexity":"XS","difficulty":"D1","risk":"R1","confidence":"C1","priority":0.8,"suitability":"AGENT-READY","depends_on":["GAP-117"],"blocks":[],"files":["mobile/components/plan/limits_panel.tsx","mobile/components/income/income_summary_card.tsx"]},
-{"id":"GAP-121","category":"CONTRA","title":"Income rules 4 and 9 describe per-credit banding and per-credit medians; the code now works per payday","severity":"S4","complexity":"XS","difficulty":"D1","risk":"R1","confidence":"C1","priority":0.8,"suitability":"AGENT-READY","depends_on":["GAP-117"],"blocks":[],"files":["docs/04-features/04-income.md"]}
+{"id":"GAP-121","category":"CONTRA","title":"Income rules 4 and 9 describe per-credit banding and per-credit medians; the code now works per payday","severity":"S4","complexity":"XS","difficulty":"D1","risk":"R1","confidence":"C1","priority":0.8,"suitability":"AGENT-READY","depends_on":["GAP-117"],"blocks":[],"files":["docs/04-features/04-income.md"]},
+{"id":"GAP-122","category":"CONTRA","title":"Reports rule 19 Free pattern count cannot be shown: the pass is skipped on Free and the only route to the preview is gated shut","severity":"S3","complexity":"S","difficulty":"D2","risk":"R2","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":["GAP-118"],"blocks":[],"files":["mobile/lib/recurring/recurring_ledger_subscriber.ts","mobile/lib/recurring/recurring_service.ts","mobile/app/(tabs)/more/index.tsx","mobile/app/(tabs)/more/subscriptions.tsx"]},
+{"id":"GAP-123","category":"CODE","title":"listPayEventsBetween takes the tier history floor, so Safe-to-Spend contributions truncate on Free for any window older than 90 days","severity":"S4","complexity":"XS","difficulty":"D2","risk":"R2","confidence":"C1","priority":0.8,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/lib/income/income_service.ts","mobile/lib/safe_to_spend_service.ts"]}
 ]
 ```
 
