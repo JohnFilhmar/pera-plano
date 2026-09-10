@@ -455,7 +455,23 @@ test("offers no share or copy affordance, and never reaches the platform share s
 
   expect(screen.queryByTestId("phrase-share-button")).toBeNull();
 
-  const tree = JSON.stringify(screen.toJSON()).toLowerCase();
+  // THE WORD LIST IS EXCLUDED, AND THAT IS NOT A LOOPHOLE. `share` and `copy`
+  // are both BIP39 words, so a phrase that legitimately contains one used to
+  // fail this assertion at random -- roughly one run in a hundred, which is
+  // how it reached CI red on a branch that had not touched this screen. The
+  // claim being made is about AFFORDANCES, and an affordance cannot live
+  // inside the generated words, so scanning them proves nothing and only adds
+  // a coin flip. Everything else on the step is still scanned in full.
+  const tree = JSON.stringify(screen.toJSON(), (_key, value) =>
+    value !== null &&
+    typeof value === "object" &&
+    (value as { props?: { testID?: string } }).props?.testID === "phrase-word-list"
+      ? undefined
+      : value,
+  ).toLowerCase();
+  // The exclusion really happened. Without this, a renamed testID would make
+  // the replacer a no-op and quietly restore the coin flip it removed.
+  expect(tree).not.toMatch(/phrase-word-/);
   expect(tree).not.toMatch(/share/);
   expect(tree).not.toMatch(/copy/);
 
