@@ -82,8 +82,7 @@ describe("the transaction-handling choice", () => {
         .numberOfLines,
     ).toBeGreaterThan(1);
     expect(
-      screen.getByText("Their amounts and details are unchanged; only the wallet moves.").props
-        .numberOfLines,
+      screen.getByText("Their amounts and details are unchanged. Transfers between these two wallets stay put.").props.numberOfLines,
     ).toBeGreaterThan(1);
   });
 

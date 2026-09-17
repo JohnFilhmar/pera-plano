@@ -167,9 +167,13 @@ export function ArchiveWalletSheet({
             <ListRow
               testID="archive-move-transactions"
               title="Move them to another wallet"
-              subtitle="Their amounts and details are unchanged; only the wallet moves."
-              // 63 characters — same sweep finding as the row above.
-              subtitleLines={3}
+              subtitle="Their amounts and details are unchanged. Transfers between these two wallets stay put."
+              // 85 characters, `Math.ceil(85 / 22)`; same sweep finding as the
+              // row above. It grew when GAP-080 added the transfer caveat, and
+              // "only the wallet moves" came out to pay for it: that clause is
+              // the imprecise one now, since a leg paired with the destination
+              // deliberately does not move at all.
+              subtitleLines={4}
               onPress={() => choose("move")}
               right={choice === "move" ? <Chip label="Selected" tone="brand" /> : undefined}
             />

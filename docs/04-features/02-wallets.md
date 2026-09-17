@@ -97,7 +97,7 @@ Manual entry exists for money the listener cannot see — cash above all, plus u
 1. "Delete" on the Wallet's detail screen opens the confirmation described in *Flow: archive a Wallet* above, and everything there applies unchanged.
 2. The one addition is an **optional move**: the user may send the Wallet's Transactions to another active Wallet first. The default moves nothing, because the Transactions stay fully visible either way and relocating years of history on a single confirm tap is not something a mis-tap should be able to do.
 3. A Wallet with **zero** Transactions takes the same path. Nothing is removed, so the empty case needs no separate one.
-4. Reassignment across a Transfer Link keeps the link intact unless both legs would land in the same Wallet — in that case the Transfer Link is dissolved and both Transactions go to the Review Queue for re-triage.
+4. Moving across a Transfer Link always keeps the link intact. A leg whose counterpart already sits in the destination is **left where it is** instead of moved, so the two legs never share a Wallet and the link keeps meaning something. Dissolving it was rejected: `transfer_link_id` is the schema's only expression of "not spending, not income" (invariant 2), so unlinking a pair would make an equal in-leg and out-leg start counting and raise both reported spend and reported income by the transfer amount. The deleted Wallet keeps those rows, and they stay visible in history like everything else it holds.
 
 ## Rules & edge cases
 

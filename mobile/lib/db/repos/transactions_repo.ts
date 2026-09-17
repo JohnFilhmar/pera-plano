@@ -623,15 +623,23 @@ export async function deleteTransaction(id: string): Promise<void> {
  * `deleteTransaction` clears it: every row has just left, so a dismissal naming
  * one of them acknowledges a drift the wallet no longer has.
  *
- * NOT HANDLED, AND KNOWN: spec rule 4 of the delete flow — a TransferLink whose
- * two legs would end up in the SAME Wallet should be dissolved and both legs
- * sent to the Review Queue for re-triage. That needs the Review Queue's write
- * path (m1c Task 10) and `unlinkTransfer`, and it is a routing decision rather
- * than a persistence one. Until it lands, moving a Wallet that holds one leg of
- * an internal transfer into the Wallet holding the other leaves a link whose
- * legs share a Wallet. It affects no total (transfer legs are excluded from
- * spend and income by invariant 2) and no balance (both legs still apply), but
- * the link is meaningless and should be re-triaged.
+ * A LEG WHOSE COUNTERPART IS ALREADY IN THE DESTINATION STAYS WHERE IT IS
+ * (GAP-080, owner's decision 2026-09-17). Moving it would put both legs of one
+ * internal transfer in a single Wallet, which is a transfer that moves no money.
+ *
+ * DISSOLVING THE LINK INSTEAD WAS REJECTED, AND IT IS THE TEMPTING WRONG
+ * ANSWER. `transfer_link_id` is this schema's ONLY expression of "not spending,
+ * not income" (017's own comment says so, and invariant 2 rests on it), so
+ * unlinking a pair makes an equal in-leg and out-leg start counting: reported
+ * spend AND reported income each rise by the transfer amount, to tidy up a link
+ * nobody sees. Skipping costs a few rows staying in a Wallet the user deleted,
+ * and that Wallet is soft-deleted rather than removed, so those rows remain
+ * fully visible in history like everything else it holds.
+ *
+ * The skip predicate is shared by the delta query and the UPDATE below for the
+ * same reason they already read inside one transaction: a delta measured over a
+ * different set than the one that moves settles both balances against a ledger
+ * that never existed.
  */
 export async function reassignWalletTransactions(
   fromWalletId: string,
@@ -645,9 +653,17 @@ export async function reassignWalletTransactions(
   await db.withTransactionAsync(async () => {
     // Read inside the transaction: the delta and the rows it describes must be
     // the same set, or the balances settle against a ledger that moved.
+    // One predicate, used by the delta below and the UPDATE after it.
+    const MOVABLE = `wallet_id = ?
+         AND (transfer_link_id IS NULL
+              OR NOT EXISTS (SELECT 1 FROM transactions sibling
+                              WHERE sibling.transfer_link_id = transactions.transfer_link_id
+                                AND sibling.id <> transactions.id
+                                AND sibling.wallet_id = ?))`;
+
     const rows = await db.getAllAsync<{ amount: number; direction: string }>(
-      "SELECT amount, direction FROM transactions WHERE wallet_id = ?",
-      [fromWalletId],
+      `SELECT amount, direction FROM transactions WHERE ${MOVABLE}`,
+      [fromWalletId, toWalletId],
     );
     if (rows.length === 0) return;
 
@@ -657,12 +673,18 @@ export async function reassignWalletTransactions(
     );
 
     await db.runAsync(
-      "UPDATE transactions SET wallet_id = ?, balance_after = NULL, computed_balance = NULL, updated_at = ? WHERE wallet_id = ?",
-      [toWalletId, now, fromWalletId],
+      `UPDATE transactions SET wallet_id = ?, balance_after = NULL, computed_balance = NULL, updated_at = ? WHERE ${MOVABLE}`,
+      [toWalletId, now, fromWalletId, toWalletId],
     );
+    // Cleared only if the dismissed row actually left. A skipped leg can stay
+    // behind and still carry the reporting `balance_after`, and dismissing a
+    // drift that is still there would hide a badge the user never acknowledged.
     await db.runAsync(
-      "UPDATE wallets SET drift_dismissed_transaction_id = NULL WHERE id = ?",
-      [fromWalletId],
+      `UPDATE wallets SET drift_dismissed_transaction_id = NULL
+        WHERE id = ?
+          AND drift_dismissed_transaction_id IS NOT NULL
+          AND drift_dismissed_transaction_id NOT IN (SELECT id FROM transactions WHERE wallet_id = ?)`,
+      [fromWalletId, fromWalletId],
     );
     await db.runAsync("UPDATE wallets SET balance = balance - ?, updated_at = ? WHERE id = ?", [
       delta,

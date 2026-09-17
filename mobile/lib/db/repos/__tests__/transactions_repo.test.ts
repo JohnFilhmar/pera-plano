@@ -1706,6 +1706,44 @@ describe("reassignWalletTransactions", () => {
     expect(await getBalanceDrift(target)).toBeNull();
   });
 
+  // GAP-080. Moving this leg would put both legs of one internal transfer in a
+  // single wallet: a transfer that moves no money, and a link meaning nothing.
+  test("a leg whose counterpart is already in the destination stays behind", async () => {
+    const out = await insertTransaction(baseTx({ amount: 500, direction: "out" }));
+    const inLeg = await insertTransaction(
+      baseTx({ amount: 500, direction: "in", walletId: target }),
+    );
+    await linkAsTransfer(out.id, inLeg.id);
+    const ordinary = await insertTransaction(baseTx({ amount: 34500, direction: "out" }));
+
+    await reassignWalletTransactions(walletId, target);
+
+    expect((await getTransaction(ordinary.id))?.walletId).toBe(target);
+    expect((await getTransaction(out.id))?.walletId).toBe(walletId);
+    // Still linked, and the legs still span two wallets, so invariant 2 keeps
+    // excluding the pair from spend and income. Dissolving the link is what
+    // would have made both start counting.
+    expect((await getTransaction(out.id))?.transferLinkId).not.toBeNull();
+  });
+
+  test("the skipped leg's effect stays on the source balance", async () => {
+    const out = await insertTransaction(baseTx({ amount: 500, direction: "out" }));
+    const inLeg = await insertTransaction(
+      baseTx({ amount: 500, direction: "in", walletId: target }),
+    );
+    await linkAsTransfer(out.id, inLeg.id);
+    await insertTransaction(baseTx({ amount: 34500, direction: "out" }));
+
+    await reassignWalletTransactions(walletId, target);
+
+    // Source opened at 100000, spent 500 on the leg it keeps and 34500 on the
+    // row that moves. Only the 34500 is handed over, so the source keeps the
+    // 500 it still holds a row for. A delta measured over rows that did NOT
+    // move would report 99000 here and -34500 there.
+    expect((await getWallet(walletId))?.balance).toBe(99500);
+    expect((await getWallet(target))?.balance).toBe(-34000);
+  });
+
   test("moving a wallet to itself changes nothing", async () => {
     await insertTransaction(baseTx({ amount: 10000, direction: "out" }));
 
