@@ -15,11 +15,12 @@ jest.mock("expo-router", () => ({
 }));
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react-native";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { ReactNode } from "react";
 
 import { KeypadHost } from "@/components/ui/keypad_host";
 import { KeypadProvider } from "@/contexts/keypad_context";
+import { setSetting } from "@/lib/db/repos/app_settings_repo";
 import { closeDatabase } from "@/lib/db/database";
 import { seedDefaultCategories } from "@/lib/db/repos/categories_repo";
 import { __setTierForTests } from "@/lib/entitlements";
@@ -135,4 +136,29 @@ test("the income row still routes to the income screen", () => {
   renderScreen(<PlanScreen />);
   fireEvent.press(screen.getByTestId("plan-income-row"));
   expect(mockPush).toHaveBeenCalledWith("/plan/income");
+});
+
+// GAP-120. The split-payday notice is on the Income card; the headroom it
+// explains moved on THIS screen. These two pin the signpost and its clearing.
+test("the income row points at the split-payday explanation while it is unread", async () => {
+  await setSetting("income_split_payday_notice", "due");
+  renderScreen(<PlanScreen />);
+
+  await waitFor(() =>
+    expect(screen.getByTestId("plan-income-row-caption")).toHaveTextContent(
+      /Your income figure changed/,
+    ),
+  );
+});
+
+test("the income row's pointer is gone once the notice has been acknowledged", async () => {
+  // "done" is what the card's "Got it" writes (dismissSplitPaydayNotice).
+  await setSetting("income_split_payday_notice", "done");
+  renderScreen(<PlanScreen />);
+
+  await waitFor(() =>
+    expect(screen.getByTestId("plan-income-row-caption")).toHaveTextContent(
+      /Powers %-of-income limits/,
+    ),
+  );
 });

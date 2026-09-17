@@ -32,6 +32,7 @@ import {
   dismissSplitPaydayNotice,
   getIncomeSummary,
   getMonthlyEquivalentIncome,
+  listPayEventsBetween,
   maybeEmitPayday,
   PAYDAY_EVENT,
   refreshIncomeDetection,
@@ -950,4 +951,30 @@ test("browsing keeps its 90-day gate while detection reads past it", async () =>
 
   expect(visible).toHaveLength(3);
   expect(await refreshIncomeDetection(NOW)).toMatchObject({ averageAmount: 1900000 });
+});
+
+test("ON FREE, THE PAY THAT ARRIVED IS READ PAST THE BROWSING FLOOR", async () => {
+  // GAP-123. Read through `listTransactions` this dropped the oldest paydays,
+  // and which ones it dropped depended on the real date the test ran, because
+  // the floor was measured from `Date.now()` rather than from the window.
+  await seedFourMonthlyPaydays();
+  __setTierForTests("free");
+
+  const arrived = await listPayEventsBetween(on(2026, 3, 1), NOW);
+
+  expect(arrived.map((event) => event.amount)).toEqual([1600000, 1800000, 2000000, 2200000]);
+});
+
+test("the pay that arrived does not change with the tier", async () => {
+  await seedFourMonthlyPaydays();
+
+  __setTierForTests("plus");
+  const onPlus = await listPayEventsBetween(on(2026, 3, 1), NOW);
+
+  __setTierForTests("free");
+  const onFree = await listPayEventsBetween(on(2026, 3, 1), NOW);
+
+  expect(onFree.map((event) => event.transactionId)).toEqual(
+    onPlus.map((event) => event.transactionId),
+  );
 });
