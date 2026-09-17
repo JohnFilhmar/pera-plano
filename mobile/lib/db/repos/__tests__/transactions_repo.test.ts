@@ -1,6 +1,6 @@
 import { closeDatabase } from "@/lib/db/database";
 import { __setTierForTests } from "@/lib/entitlements";
-import { createWallet, getWallet } from "../wallets_repo";
+import { createWallet, getBalanceDrift, getWallet } from "../wallets_repo";
 import {
   deleteTransaction,
   getTransaction,
@@ -1679,6 +1679,31 @@ describe("reassignWalletTransactions", () => {
 
     expect((await getWallet(walletId))?.balance).toBe(100000);
     expect((await getWallet(target))?.balance).toBe(0);
+  });
+
+  // GAP-080. `balance_after` is the SOURCE bank's statement about the SOURCE
+  // account. Moved as-is, it becomes the destination's newest reported figure.
+  test("the provider's balance anchors do not travel with the rows", async () => {
+    const tx = await insertTransaction(baseTx({ amount: 15000, balanceAfter: 900000 }));
+    expect((await getTransaction(tx.id))?.balanceAfter).toBe(900000);
+
+    await reassignWalletTransactions(walletId, target);
+
+    const moved = await getTransaction(tx.id);
+    expect(moved?.walletId).toBe(target);
+    expect(moved?.balanceAfter).toBeNull();
+    expect(moved?.computedBalance).toBeNull();
+  });
+
+  test("the destination shows no drift from the source's reported balance", async () => {
+    await insertTransaction(baseTx({ amount: 15000, balanceAfter: 900000 }));
+
+    await reassignWalletTransactions(walletId, target);
+
+    // Without the null-ing above, the newest row carrying a `balance_after` in
+    // `target` is one the SOURCE's provider reported, so the badge compares two
+    // different banks and cannot be cleared until this one reports again.
+    expect(await getBalanceDrift(target)).toBeNull();
   });
 
   test("moving a wallet to itself changes nothing", async () => {

@@ -607,6 +607,22 @@ export async function deleteTransaction(id: string): Promise<void> {
  * 19: invariant 5's "why was this recorded?" transparency has to survive a move,
  * or retiring a Wallet quietly destroys the provenance of its history.
  *
+ * THE PROVIDER'S BALANCE ANCHORS ARE THE ONE EXCEPTION, AND THEY DO NOT TRAVEL
+ * (GAP-080). `balance_after` is the SOURCE provider's statement about the SOURCE
+ * account at a moment, and `computed_balance` is written as its pair. Carried
+ * into another Wallet they become a claim that the DESTINATION's bank reported
+ * that figure. `getBalanceDrift` (wallets_repo.ts) takes the newest row in a
+ * wallet with a non-null `balance_after` and compares the two columns, so a
+ * moved row that happens to be the newest makes the destination compare its own
+ * ledger against a different bank's number and raise a "Balance mismatch" badge
+ * that nothing can clear until its own provider reports again. Nulling the pair
+ * is the honest answer rather than a workaround: those two columns are
+ * provenance about a WALLET, and the wallet is precisely what changed.
+ *
+ * The source's `drift_dismissed_transaction_id` is cleared for the same reason
+ * `deleteTransaction` clears it: every row has just left, so a dismissal naming
+ * one of them acknowledges a drift the wallet no longer has.
+ *
  * NOT HANDLED, AND KNOWN: spec rule 4 of the delete flow — a TransferLink whose
  * two legs would end up in the SAME Wallet should be dissolved and both legs
  * sent to the Review Queue for re-triage. That needs the Review Queue's write
@@ -641,8 +657,12 @@ export async function reassignWalletTransactions(
     );
 
     await db.runAsync(
-      "UPDATE transactions SET wallet_id = ?, updated_at = ? WHERE wallet_id = ?",
+      "UPDATE transactions SET wallet_id = ?, balance_after = NULL, computed_balance = NULL, updated_at = ? WHERE wallet_id = ?",
       [toWalletId, now, fromWalletId],
+    );
+    await db.runAsync(
+      "UPDATE wallets SET drift_dismissed_transaction_id = NULL WHERE id = ?",
+      [fromWalletId],
     );
     await db.runAsync("UPDATE wallets SET balance = balance - ?, updated_at = ? WHERE id = ?", [
       delta,
