@@ -3218,6 +3218,8 @@ Do not add a hard delete without the reassign flow. Do not rename files or symbo
 Revert the commit.
 
 **Open questions**
+
+> **OWNER DECISION (2026-09-17):** **RELABEL TO ARCHIVE AND AMEND THE DOC.** The confirm button becomes "Archive wallet" and the sheet copy says archive; `docs/04-features/02-wallets.md`'s delete-with-reassign rule is amended to describe archive-with-optional-move, which is what the code has always done. **REJECTED: BUILDING REAL DELETE-WITH-REASSIGN.** The schema's NO ACTION foreign key on `transactions.wallet_id` and invariant 4 both forbid orphan transactions, so a real delete would have to make the move MANDATORY, turning the choice the sheet deliberately defaults away from into a requirement. **ALSO REJECTED: KEEPING "Delete" AS PLAIN LANGUAGE for archiving**, since a word that means something else is what produced this entry. **THE FILE ALREADY CONTRADICTS ITSELF, AND THIS FIXES IT IN ONE DIRECTION:** `mobile/components/wallets/archive_wallet_sheet.tsx:219` renders the confirm button as "Delete wallet" while the same file's header at `:12-15` asserts "DELETE IS NOT ON OFFER, ANYWHERE". The header stays true and the button changes. No schema change and no repository change.
 1. Archive-only, or build delete-with-reassign? **RESOLVED 2026-09-09: ARCHIVE ONLY.** Rename the button to "Archive" so the UI matches what the code does. The doc's delete-with-reassign flow is dropped, so `docs/04-features/02-wallets.md` is what changes, not the behaviour. Nothing is deleted, so no transaction can be orphaned. This releases GAP-036 and, with GAP-023, GAP-045.
 
 ### GAP-023 [CONTRA] Limits are created at four cadences at once; the doc and the Free cap describe one
@@ -4666,6 +4668,8 @@ Do not delete `worktree-ai-hosting-decision` or `worktree-limits-wiring-device-h
 Branches can be restored from the reflog within the retention window; everything else is a revert.
 
 **Open questions**
+
+> **OWNER DECISION (2026-09-17):** **CREATE THE ROOT `CLAUDE.md`.** It records the repo-level conventions that ALREADY hold rather than inventing new ones: snake_case by default with the camelCase carve-out inside `mobile/` (Expo and React), lint deliberately NOT a gate (`mobile/` has no ESLint config, and the 2026-09-01 handoff records that as a known choice rather than an omission), jest per package with CI as the gate, and the campaign rule that `## 0. Remediation log` is the source of truth for what is fixed. **THIS DOES NOT DECIDE GAP-027'S OWN QUESTION AND RENAMES NOTHING.** GAP-027 asks whether existing camelCase symbols should become snake_case; this decision only settles what the file SAYS, for new code, which is exactly the dependency GAP-046 declared ("GAP-027 decision (for the CLAUDE.md rule)"). The rest of GAP-046 proceeds as filed: the stale root `HANDOFF.md`, the 1.0.0 versus 0.1.0 version mismatch, the duplicated `docs/*/uploads` copies, and the merged branches.
 none once GAP-027 is decided
 
 ### GAP-047 [CODE] Income windows and the history floor are measured in milliseconds from now rather than local days
