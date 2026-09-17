@@ -28,6 +28,29 @@ export type ListenerHealth = {
 };
 
 /**
+ * The capture scope the listener is ACTUALLY applying, read back off disk
+ * (GAP-119) — the two values `setProviderFilter` writes, in the shape it
+ * writes them.
+ *
+ * `denyAll` OUTRANKS `packageNames`, exactly as it does below the bridge: when
+ * it is `true` nothing is captured and the list beside it is unreachable, and
+ * `CapturePrefs.setProviderFilter` deliberately leaves that list STALE on a
+ * device that could not seal it (see its own doc). A reader comparing this
+ * against a recorded intent must therefore branch on the flag FIRST and never
+ * compare the list while the flag stands, or it will report a mismatch on a
+ * device that is applying precisely what was asked of it.
+ *
+ * AN EMPTY `packageNames` WITH `denyAll` FALSE IS ALLOW-ALL, never deny-all —
+ * the same asymmetry `setProviderFilter` documents, and also what a sealed
+ * filter that cannot be opened reads back as. Both mean the listener is
+ * capturing from every package, which is the honest reading either way.
+ */
+export type ProviderFilter = {
+  packageNames: string[];
+  denyAll: boolean;
+};
+
+/**
  * One package this device has actually been seen posting a notification
  * (interface contract §4; provider-selection plan Task 3) — the raw material
  * for the onboarding provider picker.
@@ -100,6 +123,9 @@ type NativeNotificationListenerModule = {
   openAccessSettings(): void;
   setCaptureEnabled(enabled: boolean): Promise<void>;
   setProviderFilter(packageNames: string[], denyAll: boolean): Promise<void>;
+  // Both fields are always written by the Kotlin `getProviderFilter`, so
+  // unlike captures and health there is no absent-value gap to close here.
+  getProviderFilter(): Promise<ProviderFilter>;
   getListenerHealth(): Promise<NativeListenerHealth>;
 
   // ---- Learned package names (provider-selection plan Task 3) ----------
@@ -518,6 +544,33 @@ export function setCaptureEnabled(enabled: boolean): Promise<void> {
  */
 export function setProviderFilter(packageNames: string[], denyAll: boolean): Promise<void> {
   return NativeNotificationListener.setProviderFilter(packageNames, denyAll).catch(rethrowTyped);
+}
+
+/**
+ * What scope the listener is applying RIGHT NOW — the counterpart
+ * `setProviderFilter` above went without (GAP-119).
+ *
+ * A LIVE READ OFF DISK, never a cached echo of the last write, and that is the
+ * whole point: the values above may not be the ones the last call asked for.
+ * `setProviderFilter` rejects when it could not seal the allowlist, and the
+ * seal can also stop OPENING later, at which point the listener falls back to
+ * capturing everything with nothing in JS the wiser.
+ *
+ * WHAT IT IS FOR, AND WHAT IT IS NOT. It exists so the Privacy centre can
+ * compare the scope the app recorded against the scope in force and say so
+ * when they differ. It is NOT a second place to read the user's pause list
+ * from: `paused_provider_packages` remains the app's record of intent, this is
+ * the device's report of effect, and collapsing the two would lose the
+ * disagreement that is the only reason to ask.
+ *
+ * NO REJECTION TAXONOMY, unlike `setProviderFilter`: the native side reads
+ * plain preferences and cannot fail in a way a caller branches on. A bridge
+ * that is missing this function entirely (an older native build under a newer
+ * JS bundle) rejects like any unknown method, so callers should treat a
+ * rejection as "cannot tell" and claim nothing.
+ */
+export function getProviderFilter(): Promise<ProviderFilter> {
+  return NativeNotificationListener.getProviderFilter();
 }
 
 /**

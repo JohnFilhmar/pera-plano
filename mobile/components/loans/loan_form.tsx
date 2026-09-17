@@ -11,6 +11,14 @@
 // an interest rate for it." A rate field on this branch would invite the user
 // to enter one and the app to show it back.
 //
+// FLAT IS THE ONE KIND WITH TWO AMOUNTS, and both are kept (migration 020,
+// GAP-082). Spec rule 1's flat type is "borrowed ₱5,000.00, repay ₱6,000.00":
+// the "How much?" box holds the borrowed one, the installment fields compute
+// the repayable one, and rule 2 makes only the second the balance basis. The
+// borrowed figure used to be asked for, previewed, gated on and then thrown
+// away at submit; it now goes to `loans.amount_borrowed`, which exists purely
+// so `principal` can go on meaning what rule 2 needs it to mean.
+//
 // OWED-TO-ME DEFAULTS TO FREE-FORM (rule 3): personal lending rarely has terms,
 // and defaulting a loan to your cousin into an amortization schedule asks a
 // question nobody agreed on.
@@ -75,6 +83,12 @@ export type LoanFormValues = {
   direction: LoanDirection;
   counterparty: string;
   principal: number;
+  /**
+   * The cash borrowed, for flat loans only — `null` everywhere else, where
+   * `principal` already is it (migration 020, GAP-082). See `Loan.
+   * amountBorrowed`; `null` here is never a stand-in for `principal`.
+   */
+  amountBorrowed: number | null;
   interestRate: number | null;
   schedule: Installment[] | null;
   nextDueDate: string | null;
@@ -103,7 +117,17 @@ export type LoanFormInitial = {
   direction?: LoanDirection;
   kind?: ScheduleKind;
   counterparty?: string;
-  /** Centavos. Converted to peso text with `pesoInputFrom`, never `String`. */
+  /**
+   * WHAT SEEDS THE "How much?" FIELD, which is not always `Loan.principal`.
+   * For a flat loan it is `Loan.amountBorrowed`, because that is the figure the
+   * user typed there (migration 020); for the other two kinds the two are the
+   * same number. Centavos — converted to peso text with `pesoInputFrom`, never
+   * `String`.
+   *
+   * `undefined` ON A FLAT LOAN IS LOAD-BEARING: it means the borrowed amount
+   * was never recorded, which is every flat loan written before 020, and the
+   * form reads it as "do not gate Save on this" rather than as "empty".
+   */
   principal?: number;
   interestRate?: number | null;
   termMonths?: number;
@@ -129,6 +153,13 @@ export type LoanFormInitial = {
  * WHY IT MATTERS THAT THIS IS RIGHT. An edit screen that seeded these wrong
  * would rebuild a DIFFERENT schedule on save, silently rewriting a repayment
  * plan the user only opened to fix a typo in the lender's name.
+ *
+ * `principal` IS THE ONE FIELD WHOSE SOURCE DEPENDS ON THE KIND. It seeds the
+ * "How much?" box, and for a flat loan that box asks what was BORROWED, not
+ * what is repayable — so it comes from `amountBorrowed` there and from
+ * `principal` for the other two (migration 020, GAP-082). Seeding it from
+ * `loan.principal` for a flat loan is the defect this closes: the field showed
+ * `installment * count` back to a user who had typed the cash they borrowed.
  */
 export function loanFormInitialFrom(loan: Loan): LoanFormInitial {
   const schedule = loan.schedule ?? [];
@@ -152,7 +183,13 @@ export function loanFormInitialFrom(loan: Loan): LoanFormInitial {
     direction: loan.direction,
     kind,
     counterparty: loan.counterparty,
-    principal: loan.principal,
+    // `?? undefined` and never `?? loan.principal`: a flat loan with no
+    // recorded borrowed amount seeds an EMPTY box, which the form then treats
+    // as the one case where the field is optional. Falling back to the
+    // principal would put the total repayable back in the borrowed box — the
+    // exact lie this change removes — and, worse, a Save would then write it
+    // to `amount_borrowed` as if the user had confirmed it.
+    principal: kind === "flat" ? (loan.amountBorrowed ?? undefined) : loan.principal,
     interestRate: loan.interestRate,
     termMonths: kind === "amortized" ? schedule.length : undefined,
     installmentAmount: kind === "flat" ? schedule[0]?.amountDue : undefined,
@@ -207,6 +244,33 @@ function seedNumber(value: number | null | undefined): string {
   return value === undefined || value === null ? "" : String(value);
 }
 
+/**
+ * What the "How much?" box is asking for, which FLAT alone has to spell out.
+ *
+ * A flat loan is the only kind with two amounts on screen at once: this one and
+ * the "₱6,000.00 in total." the installment fields compute below. An
+ * unqualified "How much?" beside that names neither, which is how the borrowed
+ * figure came to be mistaken for the total in the first place (GAP-082). The
+ * other two kinds keep the bare question, because for them there is only one
+ * number and a longer label would be noise.
+ *
+ * It flips on direction for the same reason "Who do you owe?" does: rule 1
+ * offers flat in both directions, and "how much did you borrow" is simply
+ * false on a loan owed to the user.
+ */
+function amountLabel(kind: ScheduleKind, direction: LoanDirection): string {
+  if (kind !== "flat") return "How much?";
+  return direction === "i-owe" ? "How much did you borrow?" : "How much did you lend?";
+}
+
+/**
+ * Shown in place of the peso preview on a flat loan whose borrowed amount was
+ * never recorded. Named rather than inlined so the test can assert the exact
+ * sentence a user reads.
+ */
+const BORROWED_UNRECORDED_HINT =
+  "Saved before the app asked what you borrowed. Leave it blank if you are not sure; the balance comes from the total repayable.";
+
 export function LoanForm({
   onSubmit,
   busy = false,
@@ -231,7 +295,12 @@ export function LoanForm({
     initial?.reminderOffsets ? [...initial.reminderOffsets] : [...DEFAULT_LOAN_REMINDER_OFFSETS],
   );
 
-  const principal = centavosFrom(principalText);
+  // WHAT THE "How much?" BOX HOLDS DEPENDS ON THE KIND, so this is named for
+  // the field rather than for either destination:
+  //   amortized / free-form  it IS the principal
+  //   flat                   it is the cash BORROWED, and `principal` is
+  //                          `installment * count` (loans rule 2)
+  const amountTyped = centavosFrom(principalText);
   const rate = Number(rateText) || 0;
   const term = Math.trunc(Number(termText)) || 0;
   const installment = centavosFrom(installmentText);
@@ -241,8 +310,8 @@ export function LoanForm({
   // Rule 3's LIVE preview. It is the only place the user sees what the rate and
   // term actually cost per month before committing to them.
   const preview =
-    kind === "amortized" && principal > 0 && term > 0
-      ? monthlyPayment(principal, rate, term)
+    kind === "amortized" && amountTyped > 0 && term > 0
+      ? monthlyPayment(amountTyped, rate, term)
       : null;
 
   // HOW MANY PAYMENTS THE SCHEDULE HAS ALREADY MISSED.
@@ -270,13 +339,34 @@ export function LoanForm({
     !scheduleReady || firstDueIso === "" || firstDueIso > todayIso
       ? 0
       : (kind === "amortized"
-          ? buildAmortizationSchedule(principal, rate, term, firstDueIso)
+          ? buildAmortizationSchedule(amountTyped, rate, term, firstDueIso)
           : buildFlatSchedule(installment, count, firstDueIso, interval)
         ).filter((row) => row.dueDate <= todayIso).length;
 
+  // THE ONE ROW WHERE THE AMOUNT IS OPTIONAL: a flat loan stored before
+  // migration 020, which has no borrowed figure and from which none can be
+  // worked out (loans rule 4 forbids deriving a rate for 5-6, and a rate is
+  // the only bridge between the two numbers). `loanFormInitialFrom` seeds
+  // `principal` from `amountBorrowed` for a flat loan, so `undefined` there
+  // means exactly that and nothing else.
+  //
+  // WHY NOT JUST KEEP REQUIRING IT. Blocking Save on a number the app itself
+  // never recorded means the user fixing a typo in the lender's name has to
+  // invent one, and the number in front of them is the total repayable — so
+  // the requirement would manufacture the very falsehood the nullable column
+  // exists to avoid. A NEW flat loan is still required to state it (the doc's
+  // step 2 asks for it before the schedule type is even chosen, and its worked
+  // 5-6 example enters both figures).
+  //
+  // TIED TO THE CURRENT KIND, not only the seeded one: switching this loan to
+  // amortized or free-form makes the box mean `principal` again, and
+  // `loans.principal` has a `CHECK (principal > 0)` waiting for a zero.
+  const borrowedNeverRecorded = initial?.kind === "flat" && initial.principal === undefined;
+  const borrowedOptional = kind === "flat" && borrowedNeverRecorded;
+
   const canSave =
     counterparty.trim() !== "" &&
-    principal > 0 &&
+    (amountTyped > 0 || borrowedOptional) &&
     !busy &&
     (kind === "free-form" ||
       (kind === "amortized" && term > 0 && firstDue.trim() !== "") ||
@@ -335,18 +425,34 @@ export function LoanForm({
         </View>
 
         <View className="gap-1">
-          <FieldLabel>How much?</FieldLabel>
+          {/* THE testID STAYS `loan-principal` THOUGH THE FIELD IS NOT ALWAYS
+              THE PRINCIPAL. It is the same box in the same place asking the
+              same question — how much money moved — and renaming it would
+              churn every test and route that drives this form for no gain the
+              user can see. What changed is where the answer is STORED for a
+              flat loan (migration 020), which is a save-path fact, not a
+              locator one. */}
+          <FieldLabel>{amountLabel(kind, direction)}</FieldLabel>
           <NumericField
             testID="loan-principal"
-            label="How much?"
+            label={amountLabel(kind, direction)}
             mode="peso"
             placeholder="Amount, e.g. 5000"
             value={principalText}
             onChangeText={setPrincipalText}
           />
-          <Text testID="loan-principal-preview" className="mt-2 text-fg-2 dark:text-fg-2-dark">
-            {formatCentavos(principal)}
-          </Text>
+          {borrowedOptional && principalText.trim() === "" ? (
+            // INSTEAD OF THE PREVIEW, not beside it. "₱0.00" under an empty box
+            // reads as "you borrowed nothing", which is a claim; this row is
+            // for the loans where the honest answer is that nobody knows.
+            <Text testID="loan-borrowed-unrecorded" className="mt-2 text-fg-2 dark:text-fg-2-dark">
+              {BORROWED_UNRECORDED_HINT}
+            </Text>
+          ) : (
+            <Text testID="loan-principal-preview" className="mt-2 text-fg-2 dark:text-fg-2-dark">
+              {formatCentavos(amountTyped)}
+            </Text>
+          )}
         </View>
 
         <View className="gap-2">
@@ -521,7 +627,7 @@ export function LoanForm({
             // single place either shape is computed.
             const schedule: Installment[] | null =
               kind === "amortized"
-                ? buildAmortizationSchedule(principal, rate, term, firstDue.trim()).map((row) => ({
+                ? buildAmortizationSchedule(amountTyped, rate, term, firstDue.trim()).map((row) => ({
                     dueDate: row.dueDate,
                     amountDue: row.payment,
                     principalPortion: row.principal,
@@ -541,7 +647,18 @@ export function LoanForm({
               // repayable, not the cash borrowed — spec rule 2: "Flat: total
               // repayable minus the sum of paymentHistory[]". Borrow ₱5,000 and
               // repay ₱6,000 and the app tracks ₱6,000 down to zero.
-              principal: kind === "flat" ? installment * count : principal,
+              principal: kind === "flat" ? installment * count : amountTyped,
+              // AND THE CASH BORROWED NOW HAS SOMEWHERE TO GO (migration 020,
+              // GAP-082). It used to be typed, previewed, gated on and then
+              // dropped right here.
+              //
+              // `null` RATHER THAN 0 when a legacy flat row is saved without
+              // one: unknown is not zero, `amount_borrowed` has a `> 0` CHECK
+              // that says so, and a stored 0 would claim the loan was free.
+              // `null` for the other two kinds as well — there `principal` IS
+              // the amount borrowed, and a second copy of it is a second thing
+              // to keep in step.
+              amountBorrowed: kind === "flat" && amountTyped > 0 ? amountTyped : null,
               // No rate is stored for flat or free-form, so nothing downstream can
               // display one for 5-6 (spec rule 4).
               interestRate: kind === "amortized" ? rate : null,

@@ -41,6 +41,17 @@ import { UNKNOWN_INCOME_DETECTION, type IncomeDetectionState } from "@/types/con
 // the same way `IncomeDetectionState` above is defined beside income's own.
 import type { HeldPeriod } from "@/lib/alerts/notification_policy";
 
+/**
+ * Where the one-time "your income figure moved" notice has got to (GAP-117).
+ *
+ * `undecided` — no detection pass has judged this device yet · `due` — the
+ * figure moved because split paydays are now counted as one payday, and the
+ * user has not been told · `done` — told, or judged not to apply. `done` covers
+ * both endings on purpose: the notice never returns either way, and a fourth
+ * state would only be a record of something no reader can act on.
+ */
+export type SplitPaydayNotice = "undecided" | "due" | "done";
+
 export type AppSettings = {
   onboarding_complete: boolean;
   capture_enabled: boolean;
@@ -283,6 +294,21 @@ export type AppSettings = {
    * the same step, the way `bill_reminder_ids` and its cycle keys are.
    */
   quiet_hours_held_period: HeldPeriod | null;
+  /**
+   * GAP-117's one-time notice, tracked here rather than inside
+   * `income_detection_state` even though income detection is what settles it.
+   * That value is detection's working NOTES and is rewritten wholesale on every
+   * pass (see `types/control.ts`); this one has to survive exactly as many
+   * rewrites as it takes the user to open the Income screen once.
+   *
+   * `undecided` IS THE RIGHT FRESH-INSTALL DEFAULT, and it costs a new install
+   * nothing: the first detection pass on a device with no previously stored
+   * `averageAmount` settles it to `done` before any figure exists to have
+   * moved. See `settleSplitPaydayNotice` in lib/income/income_service.ts for
+   * why that one rule is also what keeps a NEW user's ordinary median drift
+   * from being mistaken for this upgrade's effect.
+   */
+  income_split_payday_notice: SplitPaydayNotice;
 };
 
 /** Values returned by `getSetting`/`getAllSettings` for a key with no row yet. */
@@ -307,6 +333,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   quiet_hours_end_minute: 480,
   quiet_hours_held_ids: [],
   quiet_hours_held_period: null,
+  income_split_payday_notice: "undecided",
 };
 
 type SettingValueRow = { value_json: string };

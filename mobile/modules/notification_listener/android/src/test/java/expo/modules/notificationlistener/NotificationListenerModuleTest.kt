@@ -534,6 +534,84 @@ class NotificationListenerModuleTest {
   }
 
   // =====================================================================
+  // READING THE SCOPE BACK (GAP-119)
+  //
+  // This bridge had a setter and no getter, so `paused_provider_packages` --
+  // the row More > Privacy draws its provider switches from -- was an
+  // unverifiable claim. These tests are about the three answers that claim has
+  // to be checkable against, and the middle one is the whole point: a filter
+  // the device cannot open is one it is not applying, and reporting that
+  // honestly is what lets the Privacy centre stop presenting a pause the
+  // listener never entered.
+  // =====================================================================
+
+  /** The two fields the JS `ProviderFilter` promises, verbatim. Nothing else. */
+  private val providerFilterKeys = setOf("packageNames", "denyAll")
+
+  @Test
+  fun `getProviderFilter reads back the scope setProviderFilter just wrote`() {
+    setProviderFilter(context, listOf(gcash, maya, gcash))
+
+    val scope = getProviderFilter(context)
+
+    assertEquals(providerFilterKeys, scope.keys)
+    assertEquals(false, scope["denyAll"])
+    // The duplicate collapsed on the way in, so the read-back is a set's worth
+    // of names -- membership is the only question either side ever asks.
+    @Suppress("UNCHECKED_CAST")
+    val packageNames = scope["packageNames"] as List<String>
+    assertEquals(setOf(gcash, maya), packageNames.toSet())
+  }
+
+  @Test
+  fun `getProviderFilter reports allow-all for a filter the device can no longer open`() {
+    setProviderFilter(context, listOf(gcash))
+
+    // A Keystore reset, or a restore onto another device: a DIFFERENT prefs KEK
+    // is present, so sealing still works and opening what came before does not.
+    // The listener falls back to the empty set here, which it reads as ALLOW
+    // EVERY PACKAGE -- the silent fail-open `resyncProviderFilter` exists to
+    // bound and the Privacy centre now exists to report.
+    KeyStoreBridge.vault = FakeKeyVault()
+    KeyStoreBridge.ensurePrefsKek()
+
+    val scope = getProviderFilter(context)
+
+    // NOT papered over as a read error. The empty list is what `shouldCapture`
+    // itself sees, so it is the truth about what this device captures, and a
+    // getter that hid it would leave JS unable to see the one state the
+    // comparison is for.
+    assertEquals(emptyList<String>(), scope["packageNames"])
+    assertEquals(false, scope["denyAll"])
+    assertTrue(
+      "the premise: this device really is capturing everything now",
+      CapturePrefs(context).shouldCapture("com.some.bank.nobody.allowlisted"),
+    )
+  }
+
+  @Test
+  fun `getProviderFilter reports the deny-all flag beside a list it could not replace`() {
+    setProviderFilter(context, listOf(gcash, maya))
+
+    // The branch CapturePrefs.setProviderFilter reports SUCCESS for: no usable
+    // prefs KEK, so the plaintext flag lands alone and the sealed list beside
+    // it stays exactly as it was. Both are handed over, in one snapshot, so a
+    // JS caller can see that the flag is what is in force and never compare the
+    // unreachable list -- which no relaunch on this device would ever change.
+    KeyStoreBridge.vault = FakeKeyVault()
+    setProviderFilter(context, emptyList(), denyAll = true)
+
+    val scope = getProviderFilter(context)
+
+    assertEquals(true, scope["denyAll"])
+    // Still unopenable under the empty vault, so the accessor answers with the
+    // empty set -- and it does not matter, which is precisely the claim: the
+    // flag outranks it and `shouldCapture` never reaches the list at all.
+    assertEquals(emptyList<String>(), scope["packageNames"])
+    assertFalse(CapturePrefs(context).shouldCapture(gcash))
+  }
+
+  // =====================================================================
   // getListenerHealth (contract §4; plan Task 6 rule 4)
   // =====================================================================
 

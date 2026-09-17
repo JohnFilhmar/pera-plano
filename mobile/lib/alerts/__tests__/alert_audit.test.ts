@@ -87,6 +87,7 @@ function loanStatusOf(over: Partial<Omit<LoanStatus, "loan">> & { loan?: Partial
     direction: "i-owe",
     counterparty: "Aling Nena",
     principal: 600000,
+    amountBorrowed: null,
     interestRate: null,
     schedule: null,
     linkedWalletId: null,

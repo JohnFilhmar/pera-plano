@@ -104,6 +104,9 @@ const inProgressLoan: Loan = {
   direction: "i-owe",
   counterparty: "GLoan",
   principal: 5_000_000,
+  // Amortized: `principal` already IS the amount borrowed, so there is no
+  // second figure and this stays null (migration 020).
+  amountBorrowed: null,
   interestRate: 12,
   schedule: STORED_DUE_DATES.map((dueDate) => ({
     dueDate,
@@ -114,6 +117,40 @@ const inProgressLoan: Loan = {
   linkedWalletId: null,
   nextDueDate: "2026-03-15",
   nextDueAmount: 444_244,
+  reminderOffsets: [-3, 0, 3],
+  archivedAt: null,
+  createdAt: 1_000,
+  updatedAt: 1_000,
+};
+
+/**
+ * The doc's own 5-6 example as a STORED loan (06-loans.md:82): borrowed
+ * ₱5,000, repayable ₱6,000 in six weekly ₱1,000 instalments.
+ *
+ * `amountBorrowed` is null here because that is what every flat loan written
+ * before migration 020 carries; the one test that wants the recorded case
+ * overrides it. The six instalments really do sum to `principal`, so the form
+ * reconstructing count/interval/total from them lands on the stored figure
+ * rather than on a number this fixture invented.
+ */
+const FLAT_5_6_LOAN: Loan = {
+  id: "loan-flat-5-6",
+  direction: "i-owe",
+  counterparty: "Aling Nena",
+  principal: 600_000,
+  amountBorrowed: null,
+  interestRate: null,
+  schedule: [
+    "2026-08-22",
+    "2026-08-29",
+    "2026-09-05",
+    "2026-09-12",
+    "2026-09-19",
+    "2026-09-26",
+  ].map((dueDate) => ({ dueDate, amountDue: 100_000 })),
+  linkedWalletId: null,
+  nextDueDate: "2026-08-22",
+  nextDueAmount: 100_000,
   reminderOffsets: [-3, 0, 3],
   archivedAt: null,
   createdAt: 1_000,
@@ -318,17 +355,22 @@ test("an amortized loan saves a MATERIALIZED schedule with its splits", () => {
   expect(values.nextDueDate).toBe("2026-09-15");
 });
 
-test("A FLAT LOAN'S PRINCIPAL IS THE TOTAL REPAYABLE, not the cash borrowed", () => {
+test("A FLAT LOAN'S PRINCIPAL IS THE TOTAL REPAYABLE, and the cash borrowed is KEPT beside it", () => {
   // Spec rule 2: "Flat: total repayable minus the sum of paymentHistory[]."
   // Borrow ₱5,000 and repay ₱6,000 in six ₱1,000 instalments, and the app
   // tracks ₱6,000 down to zero — tracking the ₱5,000 instead would report the
   // loan settled while ₱1,000 was still owed.
+  //
+  // BOTH FIGURES SURVIVE THE SAVE (GAP-082, migration 020). The ₱5,000 used to
+  // be typed, previewed, gated on by `canSave` and then dropped on submit,
+  // which is what made docs/04-features/06-loans.md:43's own definition of a
+  // flat loan — "borrowed ₱5,000.00, repay ₱6,000.00" — unstorable.
   const { onSubmit } = renderForm();
 
   fireEvent.press(screen.getByTestId("loan-kind-flat"));
   fireEvent.changeText(screen.getByTestId("loan-counterparty"), "Aling Nena");
-  // ₱5,000 typed here and never seen again — see the GAP-082 note at the foot
-  // of this test. It is typed only because `canSave` refuses without it.
+  // The doc's worked 5-6 example at :82, entered exactly as it is written
+  // there: `principal` ₱5,000.00 → Flat → total repayable ₱6,000.00.
   typeAmount("loan-principal", "5000");
   // ₱1,000 each — the old test typed "100000" as raw centavo digits.
   typeAmount("loan-installment", "1000");
@@ -348,25 +390,132 @@ test("A FLAT LOAN'S PRINCIPAL IS THE TOTAL REPAYABLE, not the cash borrowed", ()
   // No split — the interest is already inside the stated installment.
   expect(values.schedule?.[0].interestPortion).toBeUndefined();
 
-  // ------------------------------------------------------------------------
-  // PINS A KNOWN-OPEN DEFECT — GAP-082, blocked on an owner decision. Read
-  // this before "correcting" anything below it.
-  //
-  // ₱5,000 was typed into "How much?" above, the field previewed it back, and
-  // `canSave` refused to enable Save until it was there. None of that reaches
-  // the submission: `loan_form.tsx` sends `installment * count` for a flat
-  // loan, so the borrowed figure is discarded and the edit form later reseeds
-  // the same field from the stored TOTAL REPAYABLE. The user is asked for a
-  // number, shown it, gated on it, and it is thrown away.
-  //
-  // The assertions here describe WHAT THE FORM DOES, not what it should do.
-  // Storing ₱6,000 as the principal is itself correct — loans rule 2 defines a
-  // flat loan's balance as total repayable — and GAP-082's fix is a UI one
-  // (hide or relabel the field for flat, or persist the borrowed amount
-  // separately). When it lands, the two lines below are the ones to revisit:
-  // the typed ₱5,000 should either not be askable or not be lost.
+  // The two numbers, both stored, neither standing in for the other. The
+  // preview still shows what was typed, and what was typed now arrives.
   expect(screen.getByTestId("loan-principal-preview")).toHaveTextContent("₱5,000.00");
-  expect(values.principal).not.toBe(500000);
+  expect(values.amountBorrowed).toBe(500000);
+  expect(values.principal).not.toBe(values.amountBorrowed);
+});
+
+test("A FLAT LOAN'S BORROWED FIGURE COMES BACK ON EDIT, in the box it was typed into", () => {
+  // The half of GAP-082 that lied on screen rather than losing data: the edit
+  // form reseeded "How much?" from `loan.principal`, so a user who had entered
+  // ₱5,000 borrowed reopened the loan and read ₱6,000 — the total repayable,
+  // wearing the borrowed label. Saving from there would have written ₱6,000
+  // back as the borrowed amount, laundering the lie into the database.
+  const flatLoan: Loan = { ...FLAT_5_6_LOAN, amountBorrowed: 500_000 };
+
+  const { onSubmit } = renderForm(loanFormInitialFrom(flatLoan));
+
+  screen.getByText("How much did you borrow?");
+  expect(screen.getByTestId("loan-principal-preview")).toHaveTextContent("₱5,000.00");
+  // And the repayable figure is where it belongs, computed from the
+  // installments rather than shown twice in two meanings.
+  screen.getByText("₱6,000.00 in total.");
+
+  fireEvent.press(screen.getByTestId("loan-save"));
+  const values = submitted(onSubmit);
+  expect(values.amountBorrowed).toBe(500000);
+  expect(values.principal).toBe(600000);
+});
+
+test("A LOAN OWED TO ME ASKS WHAT WAS LENT, not what was borrowed", () => {
+  // Rule 1 offers all three schedule types in both directions, and "how much
+  // did you borrow" is simply false on money the user handed out. Same
+  // direction flip the counterparty label already makes.
+  renderForm();
+
+  fireEvent.press(screen.getByTestId("loan-kind-flat"));
+  screen.getByText("How much did you borrow?");
+
+  fireEvent.press(screen.getByTestId("loan-direction-owed-to-me"));
+  // "Owed to me" resets the kind to free-form (rule 3), so pick flat again.
+  fireEvent.press(screen.getByTestId("loan-kind-flat"));
+  screen.getByText("How much did you lend?");
+});
+
+test("A NON-FLAT LOAN STORES NO SEPARATE BORROWED FIGURE", () => {
+  // For amortized and free-form loans `principal` already IS the amount
+  // borrowed (rule 2's free-form balance counts down from it; the amortized
+  // schedule is computed from it). A second copy would be a second thing to
+  // keep in step, and `updateLoan` would own that forever.
+  const { onSubmit } = renderForm();
+
+  fireEvent.changeText(screen.getByTestId("loan-counterparty"), "Aling Nena");
+  typeAmount("loan-principal", "5000");
+  fireEvent.press(screen.getByTestId("loan-save"));
+
+  const values = submitted(onSubmit);
+  expect(values.principal).toBe(500000);
+  expect(values.amountBorrowed).toBeNull();
+  // The bare question stays bare where there is only one number to name.
+  screen.getByText("How much?");
+});
+
+// ---------------------------------------------------------------------------
+// Flat loans stored before migration 020.
+//
+// They carry no borrowed amount and none can be recovered: rule 4 forbids the
+// app deriving an interest rate for 5-6, and a rate is the only thing that
+// could bridge ₱5,000 and ₱6,000. The nullable column is the honest record of
+// that. What must NOT happen is the form pressuring the user into filling the
+// hole with the only number in front of them — the total repayable — which is
+// what keeping `canSave`'s unconditional `principal > 0` would have done.
+// ---------------------------------------------------------------------------
+/** The same loan under its other name — a flat row with no borrowed figure. */
+const legacyFlatLoan: Loan = FLAT_5_6_LOAN;
+
+test("A LEGACY FLAT LOAN SHOWS AN EMPTY BOX AND SAYS WHY — never ₱0.00, never the total", () => {
+  renderForm(loanFormInitialFrom(legacyFlatLoan));
+
+  // Not seeded with `principal`: ₱6,000 in the borrowed box is the lie.
+  expect(screen.queryByTestId("loan-principal-preview")).toBeNull();
+  screen.getByText(
+    "Saved before the app asked what you borrowed. Leave it blank if you are not sure; the balance comes from the total repayable.",
+  );
+});
+
+test("A LEGACY FLAT LOAN SAVES WITHOUT ONE, and stores null rather than zero", () => {
+  // The user opened this screen to fix a typo in the lender's name. Refusing
+  // to save until they invent a borrowed amount is how the total repayable
+  // ends up recorded as the borrowed figure.
+  const { onSubmit } = renderForm(loanFormInitialFrom(legacyFlatLoan));
+
+  fireEvent.changeText(screen.getByTestId("loan-counterparty"), "Aling Nena (Purok 3)");
+  fireEvent.press(screen.getByTestId("loan-save"));
+
+  const values = submitted(onSubmit);
+  expect(values.counterparty).toBe("Aling Nena (Purok 3)");
+  // The total repayable is rebuilt from the installments and is untouched.
+  expect(values.principal).toBe(600000);
+  // NULL, not 0. `loans.amount_borrowed` carries a `> 0` CHECK precisely so a
+  // zero cannot be stored as if it meant "unknown".
+  expect(values.amountBorrowed).toBeNull();
+});
+
+test("A LEGACY FLAT LOAN THAT FILLS THE FIGURE IN STORES IT", () => {
+  // The exemption is "we will not block you", not "we will ignore you".
+  const { onSubmit } = renderForm(loanFormInitialFrom(legacyFlatLoan));
+
+  typeAmount("loan-principal", "5000");
+  // The hint gives way to the peso preview the moment there is one to show.
+  expect(screen.getByTestId("loan-principal-preview")).toHaveTextContent("₱5,000.00");
+
+  fireEvent.press(screen.getByTestId("loan-save"));
+  expect(submitted(onSubmit).amountBorrowed).toBe(500000);
+});
+
+test("SWITCHING A LEGACY FLAT LOAN TO AMORTIZED ASKS FOR THE AMOUNT AGAIN", () => {
+  // The exemption is tied to the CURRENT kind, not to the seeded one. On any
+  // other kind the box means `principal`, and `loans.principal` has a
+  // `CHECK (principal > 0)` that a blank one would hit at the repository.
+  const { onSubmit } = renderForm(loanFormInitialFrom(legacyFlatLoan));
+
+  fireEvent.press(screen.getByTestId("loan-kind-amortized"));
+  typeAmount("loan-term", "12");
+  fireEvent.press(screen.getByTestId("loan-save"));
+
+  expect(onSubmit).not.toHaveBeenCalled();
 });
 
 test("the form cannot be saved without a counterparty and an amount", () => {

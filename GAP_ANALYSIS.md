@@ -35,6 +35,8 @@ not been started. Each gap's detail entry in section 9 carries the same marker i
 
 | ID | Status | Commit | Branch | Verification | Date |
 |---|---|---|---|---|---|
+| GAP-117 | DONE | 77769d8 | worktree-gap-wave-17 | **FULL LOCAL SWEEP: 272 suites / 4,783 tests PASS**, all three chunks run sequentially by the orchestrator (125/2,704 + 113/1,569 + 34/510; sum equals `npx jest --listTests` = 272); `npx tsc --noEmit` exit 0. Agent's scoped runs: `lib/income safe_to_spend` 12 suites 223 PASS, `lib/limits lib/goals lib/events` 15/216, `components/income components/plan hooks lib/db/repos bootstrap` 25/650. **OWNER DECISION OF 2026-09-10 IMPLEMENTED: fix it AND tell the user.** **THE ENTRY'S PROPOSED FIX IS NECESSARY BUT NOT SUFFICIENT, AND ALONE WOULD HAVE SHIPPED A DEFECT.** "Band `primaryStream` on per-date totals" gets the halves into the stream, but two further layers still worked per credit: `tryKinsenas` recorded one CREDIT per expected window (`cadence_detector.ts:159`) and `averageAmountFor` medianed CREDITS (`income_math.ts:131`). With only the entry's change a habitual splitter's `averageAmount` stays at half, and rule 16 doubles that half into the monthly equivalent, so every percent-of-income Limit is still built on half the user's real income. The entry lists both only as "re-check". **A RULE 8 REGRESSION THAT PURE PER-DATE BANDING WOULD HAVE CAUSED, caught by the agent and verified by the orchestrator against the doc:** rule 8 (`docs/04-features/04-income.md:84`) says an off-schedule credit "does not break a confirmed cadence". A P50,000 13th-month landing the same local day as a P18,500 salary totals P68,500, falls outside the band, and under pure per-date banding takes the REAL SALARY out of the stream with it -- that expected window reads unmatched and `listPayEventsBetween` loses P18,500 of genuine pay from Safe-to-Spend's contributions term. Shipped instead: a day whose combined total is out of band is re-tested credit by credit (`candidates.ts:239`), which is the pre-change behaviour used ONLY as an escape hatch. **THE BAND WAS NOT WIDENED** (`BAND_TOLERANCE` unchanged at 0.3), as the entry's "Do not" requires. Also: a key's first payday seeds its group whole, or the running median would start at half a payday; and the winner is now the group with the most PAYDAYS rather than the most credits, so a stream paid in halves cannot outrank a more frequent one on deposit habit alone. **GAP-110's second `looksLikePay` clause removed** -- its premise (a halved `averageAmount`) is dead, and it had become the mirror of the bug it was written for: a day carrying two in-band credits totals nowhere near the band, yet that clause announced it AT TWICE THE PAY, and `proposePaydayAllocations` takes its percentage of the emitted amount. **THE ORCHESTRATOR'S BRIEF WAS WRONG ABOUT THIS and the agent corrected it:** the brief claimed the clause would newly accept a lone half as a whole payday; it would not ( | 2026-09-10 |
+| GAP-119 | DONE | 9804d23 | worktree-gap-wave-17 | **FULL LOCAL SWEEP: 272 suites / 4,783 tests PASS**, all three chunks run sequentially by the orchestrator (125/2,704 + 113/1,569 + 34/510; the sum equals `npx jest --listTests` = 272); `npx tsc --noEmit` exit 0. Agent's scoped runs: `jest privacy_screen use_set_provider_pause bootstrap provider_picker` 4 suites 112 PASS, `jest provider_scope` 5 PASS. **Kotlin: `:notification_listener:testDebugUnitTest` BUILD SUCCESSFUL, 173 tests across 11 suites, 0 failures 0 errors** (`NotificationListenerModuleTest tests=27`, `CapturePrefsTest tests=37`), `./gradlew --stop` run afterwards. **DESIGN (a) SHIPPED -- THE NATIVE READ WAS BRIDGED -- AND THE CASE AGAINST (b) IS STRONGER THAN THE ENTRY STATED.** The entry framed a rejection-derived flag as merely "a second source of truth that can drift". The agent showed it is STRUCTURALLY BLIND to the failure this gap is about, and the orchestrator verified every link: `openSealed` swallows every exception and returns `null` (`CapturePrefs.kt:631-637`), `getProviderFilter` maps that to `emptySet()` (`:151`), and `shouldCapture` reads an empty filter as capture-everything (`:284`). An unopenable seal is therefore a silent FAIL-OPEN with no write and nothing to reject, so a flag would record nothing in exactly the state `resyncProviderFilter` exists for. **A FOURTH TRAP, IN NEITHER THE ENTRY NOR THE ORCHESTRATOR'S BRIEF, AND IT WAS THE DANGEROUS ONE:** `CapturePrefs.setProviderFilter` (`:205-236`) deliberately REPORTS SUCCESS for a deny-all that landed when the allowlist beside it could not be resealed -- its own comment reads "A LANDED DENY-ALL IS A SUCCESS, even though the allowlist beside it is stale", because `shouldCapture` returns false before ever opening the filter. A field-by-field comparison would therefore have warned PERMANENTLY on exactly the devices GAP-103 was written for, with no relaunch able to clear it. `compareProviderScope` (`lib/privacy/provider_scope.ts:92`) branches on the deny-all flag first and never consults the held list while it stands. Verified by the orchestrator by reading the Kotlin body. Three further states stay silent so the banner can always clear, each pinned by a test: an empty `paused_provider_packages` row (the fresh-install default AND what onboarding leaves for Skip/allow-everything) and an empty ruleset universe both return `unknown`, matching the two skips `resyncProviderFilter` itself makes; a package the ruleset never heard of IS reported, but only because a successful launch converges it. `provider_filter` is deliberately excluded from `PERSISTED_QUERY_PREFIXES`, so no stale encrypted-cache value can paint a phantom mismatch at launch, and a bridge rejection is silence rather than an accusation. **ONE ACCEPTANCE CRITERION WAS NOT LITERALLY IMPLEMENTABLE AND THE DEVIATION IS DELIBERATE:** "warns whenever the listener's filter does not match what the app recorded" cannot hold, because an empty pause row, an empty universe and an unreadable bridge each make the comparison meaningless and warning on any of them is a banner that never clears. What ships is "warns whenever the app has made a checkable claim and that claim is not in force". Onboarding is unchanged and asserted so by test; the warning is deliberately not hand-dismissible, since it describes a live mismatch. **CITE CORRECTION:** the orchestrator's brief gave `lib/bootstrap.ts:193` for `resyncProviderFilter`; that line is a closing brace and the function is declared at `:259` -- the brief's cite was read before GAP-116 shifted the file. | 2026-09-10 |
 | GAP-116 | DONE | 6a6dc08 | worktree-gap-wave-16 | jest bootstrap provider_picker providers_step privacy_screen onboarding 25 suites 291 PASS (`EXIT=0`), re-run by the orchestrator on a clean machine with nothing competing; the agent's own scoped run 4 suites 109 PASS and `jest onboarding` 23 suites 233 PASS; `npx tsc --noEmit` exit 0. **CI PASS: run `34418411897` on `6a6dc08`, `completed / success`** -- the authoritative full-suite gate, because a full LOCAL sweep was attempted and KILLED by the OS for low memory (the machine had 1.01 GB free of 23.71 GB, `r5apex_dx12` holding 7.4 GB), and a killed sweep is not a PASS. **THE ENTRY'S CHECKLIST ITEM 1 WAS UNIMPLEMENTABLE AS WRITTEN and was not followed.** It said to write `paused_provider_packages` from `providers.tsx`; a `setSetting` there could only ever throw. That screen is one of the three pre-flow onboarding screens rendered above the unlock gate: `app/(onboarding)/index.tsx:58-59` says "the three pre-flow screens, none of which touches the database", and `lib/db/database.ts:365-368` returns `Promise.reject(new DatabaseLockedError())` while `dbPromise === null`; the `app_settings` table does not exist yet either, since `runMigrations` lives inside the `bootstrapApp()` that unlock fires. All verified first-hand by the orchestrator. Shipped instead: an in-memory hand-off, `mobile/lib/onboarding/pending_provider_pause.ts`, persisted by `persistOnboardingProviderPause` (`lib/bootstrap.ts:182-192`) called at `:66` BEFORE `resyncProviderFilter()` at `:73`, so the launch that first stores the row is the one that pushes it back across the bridge. **THE ORCHESTRATOR'S OWN BRIEF WAS WRONG AND THE AGENT CAUGHT IT.** The brief judged observed-but-unknown packages harmless; they are catastrophic when the user ticks ONLY packages the ruleset has never heard of (a rural bank the seed does not carry, offered from `listObservedPackages`), because `paused = universe - {unknown}` is then the ENTIRE universe, non-empty, and `resyncProviderFilter` answers `setProviderFilter([], true)` -- a deny-all blocking the one bank they asked for. Three states are therefore never recorded, each pinned by a test through a real seeded DB: an empty allowlist (Skip means ALLOW-ALL not allow-nothing, per `providers.tsx:13-19` quoting rule 2 and `CapturePrefs.shouldCapture`), everything-known-allowed (nothing to narrow), and only-unknown-allowed. **ALSO FOUND BY THE AGENT, NOT IN THE ENTRY:** `bootstrapApp()` runs on EVERY unlock, not once per process, so an uncleared record would re-write a stale onboarding choice over a pause the user had since changed in the Privacy centre; the record is therefore cleared ONLY on a successful `setSetting`, and a swallowed write leaves it pending for the next launch. AsyncStorage was rejected as the holding place despite being the only durable pre-unlock store: it is plaintext, and which banks a user has is exactly what this app keeps inside SQLCipher, so a copy there would add a `lib/security/wipe.ts` obligation. Known and accepted cost: a process death between the provider step and the first unlock loses the record, where the selection is already unrecoverable because the step never re-runs for a keyed install. The row write is deliberately the INVERSE of the Privacy centre's native-first ordering (`hooks/mutations/use_set_provider_pause.ts:72-88`): that rule stops a switch list showing a row nobody applied, but on the launch path there is nobody on screen to mislead and a record outliving a failed push is the entire point. GAP-092's narrowing invariant re-proved by four tests. **NO USER-FACING MESSAGE, left as the owner's call as the entry asks** (`PROVIDER_PAUSE_NOT_STORED_TOAST` exists to borrow copy from); the free consequence is that the Privacy centre's switch rows now show the onboarding selection for the first time, so the record is visible wherever the user looks. | 2026-09-09 |
 | GAP-111 | DONE | 55a282b | worktree-gap-wave-16 | jest lib/ingest + lib/db/repos/__tests__/transactions_repo.test.ts 15 suites 502 PASS, re-run independently by the orchestrator (scoped away from `lib/db/repos` as a whole because a concurrent agent was mid-edit on `app_settings_repo.ts`); the agent's own `jest lib/ingest lib/db/repos` 33 suites 933 PASS; `npx tsc --noEmit` exit 0. **REVERT WITNESS, NOT A CLAIM:** restoring `pipeline.ts` to `listTransactions({})` fails the new pipeline test with `Expected: "cat_groceries_palengke" / Received: "cat_uncategorized"`, so on Free a merchant filed the same way three times really was forgotten the moment those rows crossed the floor. THE ENTRY'S OPEN QUESTION -- "full ledger, or an explicit window?" -- IS ANSWERED FULL LEDGER, on two independent grounds verified first-hand: the ingest plan's §8 rule 3 (`docs/superpowers/plans/2026-08-02-mobile-ingest-m1b-pipeline.md:384`) sets no window on the learned count ("three or more times in `history`", unqualified), and `sumSpend`'s GAP-105 doc comment (`transactions_repo.ts:710-730`) already settles the principle, quoting limits rule 8: "Limit totals are always computed from the full ledger, regardless of the free tier's 90-day history view gate". Shipped as a SEPARATE FUNCTION, `listFullLedger` (`transactions_repo.ts:741`), not a `TxFilter` flag: `hooks/queries/use_transactions.ts:24` passes a caller-supplied filter straight through, so a flag would put a browsing-gate switch one prop away from the ledger screen. `listTransactions` keeps its floor untouched, as the entry's "Do not" requires. Orchestrator checked the one thing the report did not address: `listTransactions` has no default LIMIT, so `listFullLedger()` and `listTransactions({})` issue the same query on plus and the change is a genuine no-op there -- and the repo test asserts that equivalence rather than leaving it as prose. The categorizer's transfer-link and uncategorized exclusions were deliberately NOT pushed into SQL, since that would duplicate `resolveLearned`'s rules with nothing keeping the two in step. **AUDIT FINDING SPUN OUT AS GAP-118:** the agent swept every other `listTransactions` caller and found two computations still inheriting the floor -- income cadence detection asks 130 days (`income_service.ts:98`) and recurring detection asks 800 (`recurring_service.ts:47`), both cut to 90 on Free. Verified independently by the orchestrator, including that `hasRecurringDetection()` gates only the UI at `subscriptions.tsx:118` while `runRecurringPass` runs unconditionally. Correctly left unfixed here: both call sites comment that they pass `now` through BECAUSE the floor applies, so they read as decisions to review rather than oversights. One cite in the orchestrator's brief was wrong and is corrected: `resolveLearned` is DECLARED at `categorizer.ts:282` but CALLED at `:337`, not `:283`. | 2026-09-09 |
 | GAP-110 | PARTIAL | 808811e | worktree-gap-wave-16 | jest lib/income safe_to_spend 12 suites 216 PASS, jest lib/goals lib/events 3 suites 53 PASS, jest payday components/income 4 suites 31 PASS. FULL LOCAL SWEEP: 271 suites / 4,746 tests PASS; `npx tsc --noEmit` exit 0. **DELIBERATELY PARTIAL: THE ENTRY'S TITLE NAMES A CASE THAT CANNOT BE FIXED AT THIS LOCATION, AND THE DEFECT ACTUALLY FIXED IS A DIFFERENT AND WORSE ONE THE ENTRY NEVER MENTIONS.** The entry says a split payday "fires no payday prompt, because each credit is screened against the average". Both halves of that are wrong, and both were checked against running code before anything was changed. (1) HABITUAL SPLIT -- an employer who splits EVERY payday: a prompt DID fire, exactly once, but for HALF the pay. `detectCadence` records one matched credit per expected window, so `averageAmount` is itself half (probe: `averageAmount=925000` against a real payday of 1850000). Goals rule 13 makes a percent contribution's base "the sum of income Transactions detected on that payday date", so `proposePaydayAllocations` was taking its cut of half the money and capping `budget` at half. THAT is the money defect, and it is fixed. (2) OCCASIONAL SPLIT -- a history of whole paydays with one arriving halved, which is what the title describes: still not fixed, and NOT fixable in `income_service.ts`. The halves never arrive there. `primaryStream` bands each credit against its group's own running median at 30% (`lib/income/candidates.ts:168`) and then keeps the largest group (`:184`), so two half-sized credits form a second group of two and lose the sort; probe confirms `stream=[6 x 1850000]` with the halves absent and `averageAmount` unmoved. Verified independently by the orchestrator by reading `candidates.ts:152-184`. **FILED AS GAP-117** rather than smuggled in here, because banding on per-date totals moves `averageAmount`, which feeds `monthlyEquivalent`, `baseFor` and every percent-of-income Limit, so existing users' headroom would change -- an owner decision, not an agent's, and not the complexity-S change this entry was filed as. SHIPPED: `maybeEmitPayday` screens collapsed paydays, not credits; the band accepts the day's combined total OR any single credit on the day, the second clause being what keeps a habitual splitter's pay announced at all given their halved average; the collapse moved to its own module `lib/income/paydays.ts` and is now shared with `safe_to_spend_service.ts`, which had kept a private copy -- the two must agree or Safe-to-Spend reserves for a transfer the prompt never asks for, the failure GAP-106 fixed on the forecast side; `income:payday` now carries `transactionIds: string[]` and the combined `amount` (a single id can only name one half of the sum the payload reports, and every covered id must be remembered or the sibling credit re-announces the payday after a restart -- no production consumer read the old field, only tests); `walletId` names the wallet holding the largest share, since its only consumer treats it as the account a transfer leaves from. The irregular path collapses too but keeps `IRREGULAR_PAYDAY_FLOOR` per credit: with no average to compare against the floor is the only thing separating pay from noise, so summing sub-floor credits until they clear it would manufacture paydays from exactly the credits it excludes. `PAYDAY_AMOUNT_TOLERANCE` untouched at `income_service.ts:105`, as the entry's "Do not" requires. **ALSO RECORDED, NOT FIXED:** the pre-existing test `maybeEmitPayday ignores a credit far from the average amount` passes VACUOUSLY -- the stream band and rule 11's tolerance are both 30% of essentially the same median, so its P500.00 credit is banded out upstream and the test never exercises the tolerance it is named for. Left alone rather than changed as a drive-by; carried into GAP-117's checklist. | 2026-09-09 |
@@ -1388,7 +1390,7 @@ Priority = (severity weight x confidence weight) / complexity weight, with S1=8,
 | GAP-077 | CODE | Category correction and rule creation are two independent writes; a failed recategorise still creates the rule | S3 | S | D2 | R2 | C1 | 1.0 | AGENT-READY |
 | GAP-078 | CODE | Bare-promise writes outside mutation hooks swallow failures into dead or misleading screens | S3 | S | D2 | R2 | C1 | 1.0 | AGENT-READY |
 | GAP-079 | CODE | Sheets keep stale state and stay open after a failed write, and their confirm buttons stay tappable while pending | S3 | S | D2 | R1 | C1 | 1.0 | AGENT-READY |
-| GAP-082 | CODE | Flat loan "How much?" is required, previewed, then discarded on save | S3 | S | D2 | R2 | C1 | 1.0 | AGENT-READY |
+| GAP-082 | CODE | Flat loan "How much?" is required, previewed, then discarded on save | S3 | M | D3 | R2 | C1 | 1.0 | AGENT-READY |
 | GAP-083 | CODE | Loan first-due and goal deadline pickers floor at today, so an in-progress loan cannot be entered and an edit re-dates the whole schedule | S3 | S | D2 | R2 | C1 | 1.0 | AGENT-READY |
 | GAP-087 | CONTRA | Free tier sees a permanent "Not enough periods yet to show a trend" card instead of the Plus-locked preview the doc specifies | S3 | S | D2 | R1 | C1 | 1.0 | AGENT-READY |
 | GAP-089 | CONTRA | The Privacy centre says notifications are being read whenever the switch is on, with no access check and no fix prompt | S3 | S | D2 | R1 | C1 | 1.0 | AGENT-READY |
@@ -6798,15 +6800,15 @@ none
 | Field | Value |
 |---|---|
 | Severity | S3 Moderate |
-| Complexity | S |
-| Difficulty | D2 Standard |
+| Complexity | M |
+| Difficulty | D3 Involved |
 | Risk | R2 |
 | Confidence | C1 Verified |
 | Priority score | 1.0 |
 | Agent suitability | AGENT-READY |
 | Depends on | GAP-029 |
 | Blocks | none |
-| Est. agent turns | 2-3 |
+| Est. agent turns | 6-10 |
 
 **Location**
 - `mobile/components/loans/loan_form.tsx:544` (`principal: kind === "flat" ? installment * count : principal`), `:277-283` (`canSave` insists on `principal > 0`), `:133` (`loanFormInitialFrom` seeds the field with the stored total on edit), `:340-348` (the field and its peso preview) -- LINE NUMBERS CORRECTED 2026-09-10; the filed `:482`, `:240-246` and `:132` had all drifted, and `:482` now lands on unrelated reminder-offset markup
@@ -6848,6 +6850,8 @@ Do not change how `principal` is stored until GAP-029 lands.
 Revert.
 
 **Open questions**
+
+> **OWNER DECISION (2026-09-10):** **ADD A NULLABLE COLUMN AND A MIGRATION.** The borrowed figure stays and `docs/04-features/06-loans.md` is NOT amended: `:43`'s two-figure definition of a flat loan, the worked example at `:82`, `:40`'s "every loan takes a principal" and open question 3 at `:162` all stand as written. `principal` keeps holding `installment * count` for the balance formula at `:89`; the amount actually BORROWED gets its own new nullable column. **THIS RE-SCOPES THE ENTRY:** it is not the S / 2-3-turn form tweak it was filed as. It needs a schema migration, a backfill decision for existing flat loans (the borrowed amount is unknown for them, which is exactly what nullable is for), and the form has to ask for both figures. Re-grade before dispatching.
 Raised 2026-09-10: new column for the borrowed amount, or drop the figure and amend the doc? See the blocking note under Proposed fix.
 
 ### GAP-083 [CODE] Loan first-due and goal deadline pickers floor at today, so an in-progress loan cannot be entered and an edit re-dates the whole schedule
@@ -8995,6 +8999,8 @@ Whether onboarding should surface the failure at all, or only record it for the 
 
 ### GAP-117 [CODE] An occasional split payday never reaches the payday screen, because primaryStream bands each credit against its group's running median
 
+> **REMEDIATION: DONE** (2026-09-10) - commit 77769d8, branch worktree-gap-wave-17. Verification: **FULL LOCAL SWEEP: 272 suites / 4,783 tests PASS**, all three chunks run sequentially by the orchestrator (125/2,704 + 113/1,569 + 34/510; sum equals `npx jest --listTests` = 272); `npx tsc --noEmit` exit 0. Agent's scoped runs: `lib/income safe_to_spend` 12 suites 223 PASS, `lib/limits lib/goals lib/events` 15/216, `components/income components/plan hooks lib/db/repos bootstrap` 25/650. **OWNER DECISION OF 2026-09-10 IMPLEMENTED: fix it AND tell the user.** **THE ENTRY'S PROPOSED FIX IS NECESSARY BUT NOT SUFFICIENT, AND ALONE WOULD HAVE SHIPPED A DEFECT.** "Band `primaryStream` on per-date totals" gets the halves into the stream, but two further layers still worked per credit: `tryKinsenas` recorded one CREDIT per expected window (`cadence_detector.ts:159`) and `averageAmountFor` medianed CREDITS (`income_math.ts:131`). With only the entry's change a habitual splitter's `averageAmount` stays at half, and rule 16 doubles that half into the monthly equivalent, so every percent-of-income Limit is still built on half the user's real income. The entry lists both only as "re-check". **A RULE 8 REGRESSION THAT PURE PER-DATE BANDING WOULD HAVE CAUSED, caught by the agent and verified by the orchestrator against the doc:** rule 8 (`docs/04-features/04-income.md:84`) says an off-schedule credit "does not break a confirmed cadence". A P50,000 13th-month landing the same local day as a P18,500 salary totals P68,500, falls outside the band, and under pure per-date banding takes the REAL SALARY out of the stream with it -- that expected window reads unmatched and `listPayEventsBetween` loses P18,500 of genuine pay from Safe-to-Spend's contributions term. Shipped instead: a day whose combined total is out of band is re-tested credit by credit (`candidates.ts:239`), which is the pre-change behaviour used ONLY as an escape hatch. **THE BAND WAS NOT WIDENED** (`BAND_TOLERANCE` unchanged at 0.3), as the entry's "Do not" requires. Also: a key's first payday seeds its group whole, or the running median would start at half a payday; and the winner is now the group with the most PAYDAYS rather than the most credits, so a stream paid in halves cannot outrank a more frequent one on deposit habit alone. **GAP-110's second `looksLikePay` clause removed** -- its premise (a halved `averageAmount`) is dead, and it had become the mirror of the bug it was written for: a day carrying two in-band credits totals nowhere near the band, yet that clause announced it AT TWICE THE PAY, and `proposePaydayAllocations` takes its percentage of the emitted amount. **THE ORCHESTRATOR'S BRIEF WAS WRONG ABOUT THIS and the agent corrected it:** the brief claimed the clause would newly accept a lone half as a whole payday; it would not (
+
 **Location**
 - `mobile/lib/income/candidates.ts:152` (`primaryStream`), the band at `:168` (`distance <= middle * 0.3`), and "largest group wins" at `:184`
 - `mobile/lib/income/income_service.ts:554` (`maybeEmitPayday`, which never sees the filtered credits)
@@ -9046,6 +9052,8 @@ Do not widen the 30 percent band; that admits genuinely unrelated credits into t
 Revert.
 
 **Open questions**
+
+> **OWNER DECISION (2026-09-10):** **FIX IT, AND TELL THE USER.** Existing users' income figures MAY move, with a one-time recompute on upgrade, and the app shows a one-time notice explaining why the income figure and any percent-of-income Limit headroom changed. A silent shift was rejected on the grounds that a limit which doubles overnight with no explanation reads as a bug, and "new data only" was rejected because it leaves the wrong figure in place indefinitely and makes two users with identical history disagree.
 Whether existing users' income figures may move, and whether a recompute is owed on upgrade. Owner's call.
 
 ### GAP-118 [CODE] Income cadence detection asks for 130 days and recurring detection for 800, and on Free both are cut to 90 by the browsing floor
@@ -9103,7 +9111,285 @@ Do not remove `historyFloor` from `listTransactions`; the browsing gate is the f
 Revert.
 
 **Open questions**
+
+> **OWNER DECISION (2026-09-10):** **SPLIT DECISION, ONE PER HALF.**
+>
+> **Recurring detection: DO NOT RUN THE PASS AT ALL ON FREE.** Do not exempt the 800-day window and do not leave it running against 90 days. `hasRecurringDetection()` already gates the only surface that displays the result (`app/(tabs)/more/subscriptions.tsx:118`), so on Free the pass spends real work on an answer that is both truncated and invisible; the right answer is not to run it. Owner's decision, 2026-09-10.
+>
+> **Income cadence detection: EXEMPT THE WINDOW, read the full 130 days regardless of tier.** NOT sent to the owner, because the precedent already decides it: this is the same computation-versus-browsing distinction settled by GAP-105 for `sumSpend` and by GAP-111 for `listFullLedger`, and unlike recurring detection it is not tier-gated anywhere, so its sample must not move with the tier. `averageAmount` feeds `monthlyEquivalent` and every percent-of-income Limit, so a tier-dependent sample is a tier-dependent limit.
 Whether recurring detection should run on Free at all, given `hasRecurringDetection()` gates only its UI. Owner's call.
+
+### GAP-119 [FEAT] A provider filter that failed to seal is invisible in More > Privacy, the one screen where the user manages it
+
+> **REMEDIATION: DONE** (2026-09-10) - commit 9804d23, branch worktree-gap-wave-17. Verification: **FULL LOCAL SWEEP: 272 suites / 4,783 tests PASS**, all three chunks run sequentially by the orchestrator (125/2,704 + 113/1,569 + 34/510; the sum equals `npx jest --listTests` = 272); `npx tsc --noEmit` exit 0. Agent's scoped runs: `jest privacy_screen use_set_provider_pause bootstrap provider_picker` 4 suites 112 PASS, `jest provider_scope` 5 PASS. **Kotlin: `:notification_listener:testDebugUnitTest` BUILD SUCCESSFUL, 173 tests across 11 suites, 0 failures 0 errors** (`NotificationListenerModuleTest tests=27`, `CapturePrefsTest tests=37`), `./gradlew --stop` run afterwards. **DESIGN (a) SHIPPED -- THE NATIVE READ WAS BRIDGED -- AND THE CASE AGAINST (b) IS STRONGER THAN THE ENTRY STATED.** The entry framed a rejection-derived flag as merely "a second source of truth that can drift". The agent showed it is STRUCTURALLY BLIND to the failure this gap is about, and the orchestrator verified every link: `openSealed` swallows every exception and returns `null` (`CapturePrefs.kt:631-637`), `getProviderFilter` maps that to `emptySet()` (`:151`), and `shouldCapture` reads an empty filter as capture-everything (`:284`). An unopenable seal is therefore a silent FAIL-OPEN with no write and nothing to reject, so a flag would record nothing in exactly the state `resyncProviderFilter` exists for. **A FOURTH TRAP, IN NEITHER THE ENTRY NOR THE ORCHESTRATOR'S BRIEF, AND IT WAS THE DANGEROUS ONE:** `CapturePrefs.setProviderFilter` (`:205-236`) deliberately REPORTS SUCCESS for a deny-all that landed when the allowlist beside it could not be resealed -- its own comment reads "A LANDED DENY-ALL IS A SUCCESS, even though the allowlist beside it is stale", because `shouldCapture` returns false before ever opening the filter. A field-by-field comparison would therefore have warned PERMANENTLY on exactly the devices GAP-103 was written for, with no relaunch able to clear it. `compareProviderScope` (`lib/privacy/provider_scope.ts:92`) branches on the deny-all flag first and never consults the held list while it stands. Verified by the orchestrator by reading the Kotlin body. Three further states stay silent so the banner can always clear, each pinned by a test: an empty `paused_provider_packages` row (the fresh-install default AND what onboarding leaves for Skip/allow-everything) and an empty ruleset universe both return `unknown`, matching the two skips `resyncProviderFilter` itself makes; a package the ruleset never heard of IS reported, but only because a successful launch converges it. `provider_filter` is deliberately excluded from `PERSISTED_QUERY_PREFIXES`, so no stale encrypted-cache value can paint a phantom mismatch at launch, and a bridge rejection is silence rather than an accusation. **ONE ACCEPTANCE CRITERION WAS NOT LITERALLY IMPLEMENTABLE AND THE DEVIATION IS DELIBERATE:** "warns whenever the listener's filter does not match what the app recorded" cannot hold, because an empty pause row, an empty universe and an unreadable bridge each make the comparison meaningless and warning on any of them is a banner that never clears. What ships is "warns whenever the app has made a checkable claim and that claim is not in force". Onboarding is unchanged and asserted so by test; the warning is deliberately not hand-dismissible, since it describes a live mismatch. **CITE CORRECTION:** the orchestrator's brief gave `lib/bootstrap.ts:193` for `resyncProviderFilter`; that line is a closing brace and the function is declared at `:259` -- the brief's cite was read before GAP-116 shifted the file.
+
+**Location**
+- `mobile/app/(tabs)/more/privacy.tsx` (the provider switch list, rendered from `paused_provider_packages`)
+- `mobile/lib/bootstrap.ts:182-192` (`persistOnboardingProviderPause`) and `:193` (`resyncProviderFilter`, which catches and logs rather than surfacing)
+- `mobile/modules/notification_listener/index.ts:519` (`setProviderFilter`, the ONLY bridged provider call) and `:246` (`ProviderFilterNotStoredError`)
+- `mobile/modules/notification_listener/android/src/main/java/expo/modules/notificationlistener/CapturePrefs.kt:151` (`fun getProviderFilter(): Set<String>` -- exists natively, NOT bridged to JS)
+
+**Evidence**
+Owner decision of 2026-09-10 on GAP-116's open question: no message during onboarding, a warning in More > Privacy instead. Verified by the orchestrator the same day: JS has no readable copy of the listener's actual filter -- `grep -rniE "export (function|const) [a-z_]*provider[a-z_]*"` over `mobile/modules/notification_listener/` returns only `setProviderFilter` at `index.ts:519` -- while the Kotlin side already implements `getProviderFilter()` at `CapturePrefs.kt:151` and simply does not expose it.
+
+**What is wrong**
+GAP-116 made an onboarding selection durable and self-healing: it is recorded, and the next launch re-asserts it. The deliberate silence during onboarding stands and is not in question here -- stranding a user mid-flow over a filter was rejected on purpose. But between a failed seal and the next launch, capture is WIDER than what the user chose, and nothing anywhere tells them. More > Privacy renders its switch rows from `paused_provider_packages`, which is the app's record of INTENT, and presents them as though they were applied.
+
+**Why it matters**
+This is the one screen dedicated to "which banks may this app read". A row reading "paused" while the listener is still capturing that provider is the privacy screen actively misstating the user's own privacy posture. GAP-114's entire point was refusing to record a scope that did not land; this carries the same principle to the surface that displays it. It is also the cheapest place to be honest, because the user is already standing in front of the switch.
+
+**Intended behavior**
+More > Privacy warns whenever what the app recorded and what the listener actually holds disagree, says that relaunching re-asserts it, and clears itself without user action once a launch succeeds. Onboarding is untouched.
+
+**Proposed fix**
+Two shapes; pick one with evidence and say why.
+
+(a) **Bridge `CapturePrefs.getProviderFilter()`** and have the Privacy screen compare the allowlist implied by the ruleset universe minus `paused_provider_packages` against what the listener really holds. Truthful by construction, introduces no new state, and self-clears the moment they agree. Costs a Kotlin bridge method plus its tests.
+
+(b) **Persist a "the last provider filter push did not land" flag** when `setProviderFilter` rejects -- both `resyncProviderFilter` and `hooks/mutations/use_set_provider_pause.ts` already catch that rejection -- and clear it on the next success. No native work, but it is a SECOND SOURCE OF TRUTH about the filter that can itself drift.
+
+The orchestrator leans (a), precisely because (b) re-introduces the class of defect GAP-114 and GAP-116 were about: a stored claim concerning the filter that nobody verified against the filter. Argue the other way if the Kotlin cost is not worth it.
+
+**Implementation checklist**
+- [ ] Choose (a) or (b) and justify it in code.
+- [ ] Show a warning in More > Privacy while recorded and actual disagree, naming the remedy (relaunch re-asserts).
+- [ ] Ensure it clears with no user action once a launch re-asserts successfully.
+- [ ] Change NOTHING in the onboarding flow.
+- [ ] Tests: a failed seal shows the warning; a successful re-assert clears it; a clean install shows nothing.
+
+**Acceptance criteria**
+- [ ] More > Privacy warns whenever the listener's filter does not match what the app recorded.
+- [ ] The warning disappears without user action after a successful re-assert.
+- [ ] Onboarding is unchanged, and no flow blocks or strands the user.
+
+**Verification commands**
+```bash
+cd mobile && npx jest privacy_screen use_set_provider_pause bootstrap provider_picker --maxWorkers=1
+cd mobile && npx tsc --noEmit
+# only if (a):
+cd mobile/android && ./gradlew :notification_listener:testDebugUnitTest
+```
+
+**Do not**
+Do not add a message to onboarding -- that trade is settled and GAP-116's "Do not" still holds. Do not block or strand the user anywhere. Do not make the warning dismissible by hand: it describes a live mismatch, and hiding it would restore exactly the silence this entry removes.
+
+**Rollback**
+Revert.
+
+**Open questions**
+None. The owner chose the Privacy-screen warning over an onboarding toast and over staying silent, on 2026-09-10.
+
+### GAP-120 [FEAT] The split-payday notice lives only on the Income card, but the figure it explains is noticed on the Limits screen
+
+**Location**
+- `mobile/components/income/income_summary_card.tsx:145` (the notice block, `testID="income-split-payday-notice"`)
+- `mobile/app/(tabs)/plan/income.tsx` (the only screen that renders it)
+- `mobile/components/plan/limits_panel.tsx` (an unconditional `plan-income-row` that already taps through to the income screen)
+- `mobile/lib/income/income_service.ts` (`IncomeSummary.hasSplitPaydayNotice`, the flag the caption would read)
+
+**Evidence**
+Raised by the GAP-117 agent while implementing the owner's decision, and kept out of that commit as scope rather than done as a drive-by. Verified by the orchestrator on 2026-09-10.
+
+**What is wrong**
+The owner's decision of 2026-09-10 on GAP-117 was explicitly "fix it, AND tell the user", on the grounds that a limit which doubles overnight with no explanation reads as a bug. The notice that does the telling renders on the Income card. The symptom the user actually notices is on the **Limits** screen, where headroom changed. So the explanation sits on a screen the user has no particular reason to open, and the decision is only half served.
+
+**Why it matters**
+The notice settles once per device. If it is never seen it is gone for good, and the user is left with exactly the confusion the decision existed to prevent. This is the cheapest possible completion of a choice that has already been made and paid for.
+
+**Intended behavior**
+While the notice is unresolved, the Limits surface points at the explanation.
+
+**Proposed fix**
+`limits_panel.tsx` already has a `plan-income-row` that navigates to the income screen. Give it a conditional caption while `hasSplitPaydayNotice` is true. No new navigation, no new mechanism, no second copy of the explanation -- the row is the signpost, the card keeps the text.
+
+**Implementation checklist**
+- [ ] Read `hasSplitPaydayNotice` where the limits panel already reads its income figure, not through a new query.
+- [ ] Conditional caption on the existing `plan-income-row`; no new row and no new navigation target.
+- [ ] Test: the caption appears while the notice is unresolved and disappears after it is acknowledged.
+
+**Acceptance criteria**
+- [ ] A user whose limit headroom moved can reach the explanation from the Limits screen without knowing to look at Income.
+- [ ] Nothing appears once the notice is acknowledged or was never owed.
+
+**Verification commands**
+```bash
+cd mobile && npx jest components/plan limits_panel components/income --maxWorkers=2
+cd mobile && npx tsc --noEmit
+```
+
+**Do not**
+Do not duplicate the notice text onto the Limits screen; two copies of one explanation drift. Do not add a second one-time flag -- the existing one is the source of truth.
+
+**Rollback**
+Revert.
+
+**Open questions**
+None.
+
+### GAP-121 [CONTRA] Income rules 4 and 9 describe per-credit banding and per-credit medians; the code now works per payday
+
+**Location**
+- `docs/04-features/04-income.md:65` (rule 4: "Candidates are grouped by (`walletId`, normalized `merchant`/counterparty where present, amount within +/-30% of the group's running median)")
+- `docs/04-features/04-income.md:88` (rule 9: "`averageAmount` is the median of recent matched pay events")
+- `docs/04-features/04-income.md:84` (rule 8, which the code's fallback exists to keep true)
+- `mobile/lib/income/candidates.ts:221` (`primaryStream`, now bands the payday total first and falls back to individual credits only when that total is out of band)
+- `mobile/lib/income/income_math.ts:131` (`averageAmountFor`, now medians per-payday totals)
+- `mobile/lib/income/cadence_detector.ts:159` (`tryKinsenas`, now records one payday per window rather than one credit)
+
+**Evidence**
+GAP-117 (commit `77769d8`) moved all three to operate per payday, and GAP-110 (`808811e`) had already done the same for rule 11 without touching any file under `docs/`. Verified by the orchestrator on 2026-09-10 by reading rule 4 at `:65`, rule 8 at `:84` and rule 9 at `:88`, and confirming `grep -c "running median"` finds the phrase in `04-income.md` and NOT in `05-goals-savings.md` (which GAP-117's own entry had wrongly cited as its home).
+
+**What is wrong**
+Rule 9 is arguably already satisfied: rule 11 defines a matched pay event as "a payday", so "median of recent matched pay events" reads as per-payday and the old per-credit code was the thing that disagreed. Rule 4 is the genuine divergence. It names the candidate CREDIT as the banded unit, and the code now bands the day's combined total first. Worse, the code's out-of-band-day fallback to individual credits appears nowhere in the spec, and it is load-bearing: without it a P50,000 13th-month landing on the same day as a P18,500 salary takes the salary out of the stream and breaks rule 8.
+
+**Why it matters**
+This is the documentation half of a behaviour the campaign has now deliberately changed twice, under an explicit owner decision. Left as is, the next person to implement rule 4 as written reintroduces the split-payday defect that GAP-110 and GAP-117 were spent on, and the fallback that protects rule 8 survives only as a comment in one function.
+
+**Intended behavior**
+Rules 4 and 9 name the payday as the unit, and rule 4 records the out-of-band-day fallback along with the reason it exists.
+
+**Proposed fix**
+Doc-only edit to `docs/04-features/04-income.md` rules 4 and 9. State that banding is per payday (credits sharing a local date are one candidate), and that a day whose combined total falls outside the band is re-tested credit by credit so an off-schedule bonus cannot evict the salary it landed beside -- naming rule 8 as the reason.
+
+**Implementation checklist**
+- [ ] Rewrite rule 4's banded unit as the payday, keeping the +/-30% figure unchanged.
+- [ ] Record the out-of-band-day fallback and cite rule 8 as its purpose.
+- [ ] Make rule 9's "matched pay events" unambiguous about being paydays, cross-referencing rule 11's own definition.
+- [ ] Check no other doc restates the per-credit reading (`grep -rn "running median" docs/`).
+
+**Acceptance criteria**
+- [ ] Someone implementing rules 4, 8 and 9 from the documents alone produces the behaviour now in `candidates.ts`, `cadence_detector.ts` and `income_math.ts`.
+- [ ] No code changes in this entry.
+
+**Verification commands**
+```bash
+grep -rn "running median\|matched pay events" docs/
+cd mobile && npx jest lib/income --maxWorkers=4
+```
+
+**Do not**
+DO NOT change code to match the documents. The code is the decided behaviour, settled by GAP-110, GAP-117 and the owner's decision of 2026-09-10; this entry exists to make the documents catch up. Do not change the 30% figure.
+
+**Rollback**
+Revert.
+
+**Open questions**
+None.
+
+### GAP-122 [CONTRA] Reports rule 19's Free pattern count cannot be shown: the pass is skipped on Free and the only route to the preview is gated shut
+
+**Location**
+- `docs/04-features/10-reports.md:98` (rule 19, verbatim below), and the same promise restated at `:70` and `:157`
+- `mobile/app/(tabs)/more/subscriptions.tsx:73` (`function LockedPreview({ count }: { count: number })`, already written and already wired at its call site as `count={patterns?.length ?? 0}`)
+- `mobile/app/(tabs)/more/index.tsx:294` (`<PlusGate capability="recurring">` wrapping the only row that navigates to that screen)
+- `mobile/lib/recurring/recurring_ledger_subscriber.ts:79` (the Free skip GAP-118 added, commit `5ccfe66`)
+- `mobile/lib/recurring/recurring_service.ts:47` (`LEDGER_WINDOW_DAYS = 800`, still read through `listTransactions` and therefore still floor-clamped on Free)
+
+**Evidence**
+Rule 19, verbatim: "**Recurring gating.** Detection surfacing is Plus, gated at the Entitlements call-site. The Free locked preview shows the count of detected patterns only -- a labeled preview frame, never real gated data behind a blur. On upgrade, patterns computed from the full retained history appear immediately."
+
+Found by the GAP-118 agent, which declined to stop on it, and verified independently by the orchestrator on 2026-09-10 by reading rule 19 at `:98`, the same promise at `:70` and `:157`, `LockedPreview` at `subscriptions.tsx:73`, and the `PlusGate` wrapper at `more/index.tsx:294`.
+
+**What is wrong**
+Three statements disagree about one feature.
+
+1. The spec says a Free user sees the COUNT of detected patterns.
+2. The code never lets a Free user reach the screen that would show it: the More-tab row is `PlusGate`-wrapped and intercepts the press before navigation, so `LockedPreview` is unreachable code on Free.
+3. As of GAP-118 the count would be zero anyway, because the detection pass no longer runs on Free.
+
+The orchestrator's own framing caused (3): GAP-118's question was put to the owner as "the results are invisible on Free anyway", which is true of the shipped build and false of the spec.
+
+**Why it matters**
+Rule 19's count is not incidental, it is the teaser: it is how a Free user learns the app has found something worth paying for, and `docs/05-monetization.md` §5 is explicit that the preview must be a labelled frame rather than blurred real data -- which is exactly what a bare count is. Leaving this alone means a documented Plus conversion surface stays dead, and the reason it is dead is now spread across three files and a skipped pass.
+
+**Intended behavior**
+A Free user's device detects recurring patterns and shows nothing but how many there are. Merchants, amounts and the total stay Plus-only.
+
+**OWNER DECISION (2026-09-10, second pass): RUN A COUNT-ONLY PASS ON FREE.** Asked once the spec conflict surfaced, the owner chose to honour rule 19 rather than amend it, and rather than deferring. This SUPERSEDES the recurring half of GAP-118's earlier decision (skip the pass on Free), which was taken on the mistaken premise that nothing on Free could ever display the result. GAP-118's income half is untouched and stands.
+
+**Proposed fix**
+1. Remove the Free skip at `recurring_ledger_subscriber.ts:79`. Keep `refreshPatterns` ungated as it already is.
+2. Exempt the 800-day window, reading through `listFullLedgerBetween` (`mobile/lib/db/repos/transactions_repo.ts:788`) exactly as GAP-118 did for income cadence detection. **This is not optional**: a count computed from a floor-clamped 90 days understates the answer, and an annual subscription -- the one a user most wants flagged -- cannot be detected inside 90 days at all, so the teaser would lie in the direction of "we found nothing".
+3. Make the More row navigate on Free. `subscriptions.tsx` already hides merchants, amounts and the total behind its own checks, and `more/index.tsx:290-293` says so in as many words: the data "stays hidden even if this gate is bypassed". The gate on this one row is what has to move, not the data hiding behind it.
+
+**Implementation checklist**
+- [ ] Delete GAP-118's Free skip and update its doc block, which currently records the opposite decision.
+- [ ] Route `refreshPatterns` through `listFullLedgerBetween` so the Free count is computed from the full 800 days.
+- [ ] Let a Free tap reach `/more/subscriptions`, where `LockedPreview` already renders.
+- [ ] Confirm `decayStalePatterns` running on Free is correct now that the pass runs there (GAP-118 skipped it deliberately; re-derive the answer rather than assuming).
+- [ ] Tests: a Free user with three detected patterns sees `3` and no merchant, amount or total; an annual pattern older than 90 days is counted; a Plus user is unaffected.
+
+**Acceptance criteria**
+- [ ] A Free user with three detected patterns sees the count and nothing else.
+- [ ] Recurring detection on Free reads its full 800-day window.
+- [ ] No merchant, amount or total is reachable on Free, asserted by test, including on the screen itself.
+- [ ] A Plus user's behaviour is unchanged.
+
+**Verification commands**
+```bash
+cd mobile && npx jest lib/recurring subscriptions more_index --maxWorkers=2
+cd mobile && npx jest lib/db/repos --maxWorkers=2
+cd mobile && npx tsc --noEmit
+```
+
+**Do not**
+Do not show merchants, amounts or the total on Free -- rule 19 says the count ONLY, and `docs/05-monetization.md` §5 forbids gated data behind a blur. Do not remove `PlusGate` from any other row. Do not amend rule 19; the owner chose to honour it.
+
+**Rollback**
+Revert. Note that reverting restores GAP-118's skip, which is no longer the decided behaviour.
+
+**Open questions**
+Rule 19 also promises that on upgrade "patterns computed from the full retained history appear immediately". There is no runtime upgrade path at all today -- `MVP_TIER` is a `const` (`mobile/lib/entitlements.ts:13`) and `__setTierForTests` is its only mutator -- so "immediately" is unimplementable and unfalsifiable until one exists. Pre-existing, out of scope here, and worth its own entry when tier switching becomes real.
+
+### GAP-123 [CODE] listPayEventsBetween takes the tier history floor, so Safe-to-Spend's contributions term truncates on Free for any window older than 90 days
+
+**Location**
+- `mobile/lib/income/income_service.ts:238` (`listPayEventsBetween`), reading through `listTransactions` at `:243` without passing `now`
+- `mobile/lib/safe_to_spend_service.ts:183` (`forecastContributions`, its only production caller, via `listPayEventsBetween`)
+- `mobile/lib/db/repos/transactions_repo.ts:666` (`listTransactions` raises `from` to `historyFloor`), `:788` (`listFullLedgerBetween`, the bounded floor-exempt read GAP-118 added)
+
+**Evidence**
+Found by the GAP-118 agent while auditing every remaining floor-clamped read, and deliberately left unfixed as out of scope. Verified by the orchestrator on 2026-09-10.
+
+**What is wrong**
+`listPayEventsBetween` is a computation over a caller-supplied window, and it reads through `listTransactions`, which clamps `from` up to the tier's 90-day browsing floor. Every caller today asks for a current-period window, so the clamp cannot bite yet. It is a latent trap rather than a live defect: the function's signature invites any window at all, and the first caller to hand it a `from` older than 90 days gets a silently truncated answer on Free with nothing at the call site to say so.
+
+This is the same family as GAP-105 (`sumSpend`), GAP-111 (`listFullLedger`) and GAP-118 (income cadence detection). Those three fixed the callers that were already asking for too much; this one is the caller that has not asked yet.
+
+**Why it matters**
+`forecastContributions` reserves real money against pay that has already arrived (goals rule 13), and a truncated pay history under-reserves, which shows the user more Safe-to-Spend than they have. Nobody would see it in review either: the call site reads as if it asked for the window it named.
+
+**Intended behavior**
+A computation reads the window it asks for, or its bound is stated where a reader can see it.
+
+**Proposed fix**
+Either read through `listFullLedgerBetween` (`transactions_repo.ts:788`), matching what GAP-118 did for cadence detection one function away, or state at `listPayEventsBetween` that its window is deliberately floor-clamped and why. The first is almost certainly right, since the function's whole job is "what pay actually landed in this range", which is a fact about the ledger and not about what the user may browse.
+
+Check whether the collapse in `forecastContributions` needs any adjustment once the read can return older rows, and confirm no browsing surface reaches `listPayEventsBetween`.
+
+**Implementation checklist**
+- [ ] Decide read-the-window versus document-the-clamp, and make it explicit either way.
+- [ ] Test with a Free entitlement (`__setTierForTests`) and a pay event older than 90 days, asserting the chosen behaviour.
+- [ ] Confirm `listPayEventsBetween` has no browsing caller.
+
+**Acceptance criteria**
+- [ ] The window `listPayEventsBetween` reads is stated in code and does not change with the tier unless that is the documented intent.
+- [ ] `listTransactions` still applies the floor for every browsing caller.
+
+**Verification commands**
+```bash
+cd mobile && npx jest lib/income safe_to_spend --maxWorkers=4
+cd mobile && npx tsc --noEmit
+```
+
+**Do not**
+Do not remove `historyFloor` from `listTransactions`. Do not reach for `listFullLedger` -- it is deliberately unbounded, and this needs a bounded read.
+
+**Rollback**
+Revert.
+
+**Open questions**
+None.
 
 ## 10. Deferred and rejected
 
@@ -9230,7 +9516,7 @@ Pass-2 deferrals (S4; each has a citation in the analyst's pass-2 notes and can 
 {"id":"GAP-079","category":"CODE","title":"Sheets keep stale state and stay open after a failed write, and their confirm buttons stay tappable while pending","severity":"S3","complexity":"S","difficulty":"D2","risk":"R1","confidence":"C1","priority":1,"suitability":"AGENT-READY","depends_on":["GAP-013"],"blocks":[],"files":["mobile/components/wallets/cash_reconcile_sheet.tsx","mobile/components/wallets/archive_wallet_sheet.tsx","mobile/app/wallet/[id].tsx","mobile/components/loans/record_payment_sheet.tsx","mobile/app/wallet/new.tsx","mobile/app/wallet/[id]/edit.tsx","mobile/components/review/review_card.tsx","mobile/hooks/mutations/use_review_action.ts"]},
 {"id":"GAP-080","category":"CODE","title":"Archiving a wallet with \"move transactions\" relocates transfer legs and provider balance anchors into the destination wallet","severity":"S3","complexity":"M","difficulty":"D2","risk":"R3","confidence":"C2","priority":0.4,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/lib/db/repos/transactions_repo.ts","mobile/lib/db/repos/wallets_repo.ts","mobile/components/wallets/archive_wallet_sheet.tsx","docs/04-features/02-wallets.md","mobile/lib/db/repos/__tests__/transactions_repo.test.ts"]},
 {"id":"GAP-081","category":"CODE","title":"The due-rule picker shows an unclamped or empty value while the rule holds a clamped one, and an empty day saves as the first","severity":"S3","complexity":"XS","difficulty":"D2","risk":"R1","confidence":"C1","priority":2,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/components/bills/due_rule_picker.tsx","mobile/components/bills/bill_form.tsx","mobile/components/bills/__tests__/bill_form.test.tsx"]},
-{"id":"GAP-082","category":"CODE","title":"Flat loan \"How much?\" is required, previewed, then discarded on save","severity":"S3","complexity":"S","difficulty":"D2","risk":"R2","confidence":"C1","priority":1,"suitability":"AGENT-READY","depends_on":["GAP-029"],"blocks":[],"files":["mobile/components/loans/loan_form.tsx","mobile/components/loans/__tests__/loan_form.test.tsx"]},
+{"id":"GAP-082","category":"CODE","title":"Flat loan \"How much?\" is required, previewed, then discarded on save","severity":"S3","complexity":"M","difficulty":"D3","risk":"R2","confidence":"C1","priority":1,"suitability":"AGENT-READY","depends_on":["GAP-029"],"blocks":[],"files":["mobile/components/loans/loan_form.tsx","mobile/components/loans/__tests__/loan_form.test.tsx"]},
 {"id":"GAP-083","category":"CODE","title":"Loan first-due and goal deadline pickers floor at today, so an in-progress loan cannot be entered and an edit re-dates the whole schedule","severity":"S3","complexity":"S","difficulty":"D2","risk":"R2","confidence":"C1","priority":1,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/components/loans/loan_form.tsx","mobile/components/goals/goal_form.tsx","mobile/components/loans/__tests__/loan_form.test.tsx"]},
 {"id":"GAP-084","category":"CODE","title":"The payday allocation sheet keeps per-goal state across paydays","severity":"S3","complexity":"XS","difficulty":"D2","risk":"R1","confidence":"C1","priority":2,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/components/goals/allocation_sheet.tsx","mobile/app/_layout.tsx","mobile/components/goals/__tests__/allocation_sheet.test.tsx"]},
 {"id":"GAP-085","category":"FEAT","title":"Bill detail has no manual \"mark paid\" and omits the due rule, reminder schedule and auto-match summary the doc lists","severity":"S3","complexity":"M","difficulty":"D2","risk":"R2","confidence":"C1","priority":0.5,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/app/(tabs)/plan/bills/[id].tsx","mobile/lib/db/repos/bills_repo.ts","docs/04-features/07-bills.md","mobile/lib/bills/amount_estimator.ts","mobile/app/__tests__/bills_screen.test.tsx"]},
@@ -9267,7 +9553,12 @@ Pass-2 deferrals (S4; each has a citation in the analyst's pass-2 notes and can 
 {"id":"GAP-115","category":"CODE","title":"A balance adjustment shrinks a loan's percent-paid bar","severity":"S4","complexity":"XS","difficulty":"D2","risk":"R1","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/components/loans/loan_card.tsx"]},
 {"id":"GAP-116","category":"CODE","title":"An onboarding provider selection that fails to seal is lost with no record and nothing to recover it from","severity":"S3","complexity":"S","difficulty":"D2","risk":"R2","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/app/(onboarding)/providers.tsx","mobile/lib/bootstrap.ts"]},
 {"id":"GAP-117","category":"CODE","title":"An occasional split payday never reaches the payday screen, because primaryStream bands each credit against its group's running median","severity":"S3","complexity":"M","difficulty":"D3","risk":"R3","confidence":"C1","priority":0.5,"suitability":"AGENT-ASSISTED","depends_on":[],"blocks":["GAP-110"],"files":["mobile/lib/income/candidates.ts","mobile/lib/income/income_service.ts"]},
-{"id":"GAP-118","category":"CODE","title":"Income cadence detection asks for 130 days and recurring detection for 800, and on Free both are cut to 90 by the browsing floor","severity":"S3","complexity":"M","difficulty":"D2","risk":"R2","confidence":"C1","priority":0.5,"suitability":"AGENT-ASSISTED","depends_on":[],"blocks":[],"files":["mobile/lib/income/income_service.ts","mobile/lib/recurring/recurring_service.ts"]}
+{"id":"GAP-118","category":"CODE","title":"Income cadence detection asks for 130 days and recurring detection for 800, and on Free both are cut to 90 by the browsing floor","severity":"S3","complexity":"M","difficulty":"D2","risk":"R2","confidence":"C1","priority":0.5,"suitability":"AGENT-ASSISTED","depends_on":[],"blocks":[],"files":["mobile/lib/income/income_service.ts","mobile/lib/recurring/recurring_service.ts"]},
+{"id":"GAP-119","category":"FEAT","title":"A provider filter that failed to seal is invisible in More > Privacy, the one screen where the user manages it","severity":"S3","complexity":"M","difficulty":"D2","risk":"R2","confidence":"C1","priority":0.5,"suitability":"AGENT-READY","depends_on":["GAP-116"],"blocks":[],"files":["mobile/app/(tabs)/more/privacy.tsx","mobile/modules/notification_listener/index.ts","mobile/lib/bootstrap.ts"]},
+{"id":"GAP-120","category":"FEAT","title":"The split-payday notice lives only on the Income card, but the figure it explains is noticed on the Limits screen","severity":"S4","complexity":"XS","difficulty":"D1","risk":"R1","confidence":"C1","priority":0.8,"suitability":"AGENT-READY","depends_on":["GAP-117"],"blocks":[],"files":["mobile/components/plan/limits_panel.tsx","mobile/components/income/income_summary_card.tsx"]},
+{"id":"GAP-121","category":"CONTRA","title":"Income rules 4 and 9 describe per-credit banding and per-credit medians; the code now works per payday","severity":"S4","complexity":"XS","difficulty":"D1","risk":"R1","confidence":"C1","priority":0.8,"suitability":"AGENT-READY","depends_on":["GAP-117"],"blocks":[],"files":["docs/04-features/04-income.md"]},
+{"id":"GAP-122","category":"CONTRA","title":"Reports rule 19 Free pattern count cannot be shown: the pass is skipped on Free and the only route to the preview is gated shut","severity":"S3","complexity":"S","difficulty":"D2","risk":"R2","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":["GAP-118"],"blocks":[],"files":["mobile/lib/recurring/recurring_ledger_subscriber.ts","mobile/lib/recurring/recurring_service.ts","mobile/app/(tabs)/more/index.tsx","mobile/app/(tabs)/more/subscriptions.tsx"]},
+{"id":"GAP-123","category":"CODE","title":"listPayEventsBetween takes the tier history floor, so Safe-to-Spend contributions truncate on Free for any window older than 90 days","severity":"S4","complexity":"XS","difficulty":"D2","risk":"R2","confidence":"C1","priority":0.8,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/lib/income/income_service.ts","mobile/lib/safe_to_spend_service.ts"]}
 ]
 ```
 

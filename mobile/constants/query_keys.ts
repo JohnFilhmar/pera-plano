@@ -236,6 +236,25 @@ export const queryKeys = {
     current: () => ["listener_health", "current"] as const,
   },
   /**
+   * The capture scope the listener is ACTUALLY applying, read live off the
+   * device (GAP-119; `getProviderFilter` in modules/notification_listener).
+   *
+   * A SIBLING OF `settings.pausedProviderPackages`, NOT A CHILD OR A REPLACEMENT.
+   * That key holds the app's record of which providers the user paused; this one
+   * holds the device's report of what it is enforcing, and the entire reason to
+   * cache both is that they can disagree. Nesting either under the other would
+   * make one of them look like a view of the other.
+   *
+   * INVALIDATED BY `use_set_provider_pause` ALONGSIDE THAT ROW, because a
+   * successful pause moves BOTH. Refreshing only the row would pair a new
+   * intent with a stale effect and warn about a mismatch that had just been
+   * fixed.
+   */
+  providerFilter: {
+    all: ["provider_filter"] as const,
+    current: () => ["provider_filter", "current"] as const,
+  },
+  /**
    * The installed parser ruleset (lib/db/repos/parser_rulesets_repo.ts).
    *
    * Not a "settings" key: this is server-owned data the device installs and

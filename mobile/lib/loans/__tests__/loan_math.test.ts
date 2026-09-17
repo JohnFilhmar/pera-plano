@@ -19,6 +19,7 @@ function loanOf(over: Partial<Loan> = {}): Loan {
     direction: "i-owe",
     counterparty: "GLoan",
     principal: 5000000,
+    amountBorrowed: null,
     interestRate: 12,
     schedule: null,
     linkedWalletId: null,

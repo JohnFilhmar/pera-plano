@@ -6,6 +6,7 @@ import {
   getTransaction,
   insertTransaction,
   listFullLedger,
+  listFullLedgerBetween,
   listTransactions,
   reassignWalletTransactions,
   sumSpend,
@@ -388,6 +389,81 @@ test("listFullLedger returns rows the free-tier floor hides from listTransaction
   __setTierForTests("plus");
   expect((await listFullLedger()).map((row) => row.merchant)).toEqual(
     (await listTransactions({})).map((row) => row.merchant),
+  );
+});
+
+// GAP-118: the floor exemption again, this time for a computation that asks for
+// a WINDOW rather than for everything. Income cadence detection reads a trailing
+// 130 days; on Free it was handed 90, which moved `averageAmount` and with it
+// the base of every percent-of-income Limit. `listFullLedger` is the wrong tool
+// for it — unfiltered by design — so the two assertions below are the pair that
+// matters: past the floor, and still bounded.
+test("listFullLedgerBetween ignores the free-tier floor but honours its own window", async () => {
+  const now = Date.now();
+  const seed = async (merchant: string, daysAgo: number): Promise<void> => {
+    await insertTransaction({
+      walletId,
+      categoryId: CATEGORY_ID,
+      amount: 100,
+      direction: "out",
+      occurredAt: now - daysAgo * DAY,
+      merchant,
+      source: "manual",
+      confidence: 1,
+    });
+  };
+
+  await seed("recent", 10);
+  await seed("past-the-floor", 100);
+  await seed("outside-the-window", 200);
+
+  __setTierForTests("free");
+  // Browsing keeps the 90-day gate.
+  expect((await listTransactions({})).map((row) => row.merchant)).toEqual(["recent"]);
+  // The computation sees the row the floor hid, and NOT the one it never asked
+  // for — the whole difference between this and `listFullLedger`.
+  expect(
+    (await listFullLedgerBetween({ from: now - 130 * DAY, to: now + 1 })).map(
+      (row) => row.merchant,
+    ),
+  ).toEqual(["recent", "past-the-floor"]);
+  expect((await listFullLedger()).map((row) => row.merchant)).toEqual([
+    "recent",
+    "past-the-floor",
+    "outside-the-window",
+  ]);
+
+  // Same window, same rows, either tier — which is the acceptance criterion:
+  // the sample must not move when the tier does.
+  const onFree = (await listFullLedgerBetween({ from: now - 130 * DAY, to: now + 1 })).map(
+    (row) => row.merchant,
+  );
+  __setTierForTests("plus");
+  expect(
+    (await listFullLedgerBetween({ from: now - 130 * DAY, to: now + 1 })).map(
+      (row) => row.merchant,
+    ),
+  ).toEqual(onFree);
+});
+
+test("listFullLedgerBetween is half-open [from, to)", async () => {
+  // Interface contract §3, and the reason `detect` passes `to: now + 1`: the
+  // credit stamped at exactly `now` is the one it is being asked about.
+  const at = Date.now() - DAY;
+  await insertTransaction({
+    walletId,
+    categoryId: CATEGORY_ID,
+    amount: 100,
+    direction: "out",
+    occurredAt: at,
+    merchant: "boundary",
+    source: "manual",
+    confidence: 1,
+  });
+
+  expect(await listFullLedgerBetween({ from: at, to: at })).toEqual([]);
+  expect((await listFullLedgerBetween({ from: at, to: at + 1 })).map((row) => row.merchant)).toEqual(
+    ["boundary"],
   );
 });
 

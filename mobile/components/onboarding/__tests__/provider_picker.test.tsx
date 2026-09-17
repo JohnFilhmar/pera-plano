@@ -36,6 +36,12 @@ jest.mock("@/modules/notification_listener", () => ({
   // Present in the mock and asserted-against but never imported by the screen.
   // A jest.fn() that is never called is the only way to prove an absence.
   setCaptureEnabled: jest.fn(),
+  // Same reasoning, for the read GAP-119 added to the bridge. That entry's
+  // warning belongs to More > Privacy and to nowhere else: the owner's decision
+  // of 2026-09-10 rejected an onboarding message outright, and a step that
+  // started asking the device what filter it holds is one refactor away from
+  // reporting the answer here. Never called on any path through this screen.
+  getProviderFilter: jest.fn(),
 }));
 
 jest.mock("@/lib/db/repos/parser_rulesets_repo", () => ({
@@ -46,6 +52,7 @@ jest.mock("@/lib/db/repos/parser_rulesets_repo", () => ({
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
 import {
   getAppLabels,
+  getProviderFilter,
   listObservedPackages,
   setCaptureEnabled,
   setProviderFilter,
@@ -68,6 +75,7 @@ const mockListObservedPackages = listObservedPackages as jest.Mock;
 const mockGetAppLabels = getAppLabels as jest.Mock;
 const mockSetProviderFilter = setProviderFilter as jest.Mock;
 const mockSetCaptureEnabled = setCaptureEnabled as jest.Mock;
+const mockGetProviderFilter = getProviderFilter as jest.Mock;
 const mockGetActiveRuleset = getActiveRuleset as jest.Mock;
 
 const SEED: RulesetBundle = {
@@ -428,6 +436,35 @@ describe("ProvidersScreen", () => {
     });
 
     expect(mockSetCaptureEnabled).not.toHaveBeenCalled();
+  });
+
+  test("ONBOARDING SAYS NOTHING ABOUT A FILTER THAT DID NOT LAND (GAP-119)", async () => {
+    // The owner's decision of 2026-09-10: a provider selection that fails to
+    // seal is reported in More > Privacy and NOWHERE ELSE. Both alternatives --
+    // staying silent everywhere, and a toast on this step -- were considered and
+    // rejected, so this step keeps degrading quietly and carrying on, and the
+    // record it leaves behind (GAP-116) is still its whole contribution.
+    //
+    // TWO ABSENCES, because either one alone is satisfiable by a broken screen.
+    // A step that read the device's filter but printed nothing would pass the
+    // copy assertion; a step that printed a warning derived from the rejection
+    // it already catches would pass the bridge assertion.
+    mockListObservedPackages.mockResolvedValue([observed(GCASH)]);
+    mockSetProviderFilter.mockRejectedValueOnce(new Error("the provider filter could not be stored"));
+
+    await renderScreen();
+    fireEvent.press(screen.getByTestId(`provider-choice-${GCASH}`));
+    await act(async () => {
+      fireEvent.press(screen.getByTestId("provider-picker-continue-button"));
+    });
+
+    expect(mockGetProviderFilter).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("provider-scope-mismatch")).toBeNull();
+    expect(screen.queryByText(/aren't in force/i)).toBeNull();
+    expect(screen.queryByText(/Close and reopen PeraPlano/i)).toBeNull();
+    // And nothing blocks: the picker is still on screen with its controls live,
+    // exactly as before this entry.
+    expect(screen.getByTestId("provider-picker-continue-button")).toBeTruthy();
   });
 
   test("a failed filter write never strands the user in onboarding", async () => {

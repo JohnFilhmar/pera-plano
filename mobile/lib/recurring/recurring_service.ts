@@ -26,7 +26,7 @@ import {
   RecurringPatternNotFoundError,
   upsertPattern,
 } from "@/lib/db/repos/recurring_patterns_repo";
-import { listTransactions } from "@/lib/db/repos/transactions_repo";
+import { listFullLedgerBetween } from "@/lib/db/repos/transactions_repo";
 import { createUserRule, listUserRules } from "@/lib/db/repos/user_rules_repo";
 import { withUnitOfWork } from "@/lib/db/unit_of_work";
 import { detectPatterns, normalizeMerchant } from "@/lib/recurring/pattern_detector";
@@ -39,10 +39,26 @@ const DAY_MS = 86_400_000;
  * is `MIN_OCCURRENCES = 3` (pattern_detector.ts), so an ANNUAL pattern needs
  * roughly two full years of history before three instances even exist — three
  * charges a year apart span about 730 days. Rounded up with slack for a
- * charge that lands a few weeks early or late; `historyFloor()` inside
- * `listTransactions` still clamps this to whatever the current tier's
- * visibility window allows (entitlements.ts), so a Free device simply sees
- * less of it, per domain §3.10's tier note.
+ * charge that lands a few weeks early or late.
+ *
+ * NOTHING CLAMPS THIS, BECAUSE THE READ BELOW IS FLOOR-EXEMPT (GAP-122). It
+ * used to: read through `listTransactions`, `historyFloor()` cut these 800 days
+ * down to the Free tier's 90-day browsing window (entitlements.ts), which
+ * cannot hold three instances of anything slower than monthly — the detector
+ * was asked for annual subscriptions and given a window that excludes them by
+ * construction. GAP-118 answered that by not running the pass on Free at all;
+ * GAP-122 reverses that, because Reports rule 19 promises a Free user the COUNT
+ * of detected patterns and a count taken from 90 days understates it — worst of
+ * all for the annual subscription a user most wants flagged, which 90 days
+ * cannot hold at any confidence.
+ *
+ * SO `refreshPatterns` READS `listFullLedgerBetween` INSTEAD. The floor is a
+ * browsing gate and this is a computation: the same line GAP-105 drew for
+ * `sumSpend`, GAP-111 for the categorizer and GAP-118 for income cadence
+ * detection. What recurring detection has that those three do not is a
+ * tier-gated OUTPUT — and that gate lives at the surface, where
+ * app/(tabs)/more/subscriptions.tsx shows Free the count and nothing else, not
+ * in the sample this constant describes.
  */
 const LEDGER_WINDOW_DAYS = 800;
 
@@ -130,10 +146,22 @@ const MONTHLY_FACTOR: Record<RecurringPeriod, number> = {
  */
 export async function refreshPatterns(now: number): Promise<RecurringPattern[]> {
   const from = now - LEDGER_WINDOW_DAYS * DAY_MS;
-  // `now` through to the repository as well: the tier's history floor is part of
-  // this window, and a floor read from the wall clock inside a repository is one
-  // instant this otherwise clock-injected pass cannot pin (lib/clock.ts).
-  const transactions = await listTransactions({ from, to: now + 1, now });
+  // FLOOR-EXEMPT, AND THAT IS THE WHOLE POINT OF USING THIS READ (GAP-122) —
+  // see `LEDGER_WINDOW_DAYS` above for why 800 days a Free device cannot see
+  // would leave rule 19's count wrong in the worst direction.
+  //
+  // BOUNDED, NOT `listFullLedger`. That read is unfiltered by design; using it
+  // here would quietly turn "the last 800 days" into "everything ever", and the
+  // window above is a deliberate two-annual-cycles-plus-slack.
+  //
+  // `to: now + 1`, NOT `to: now`: ranges are half-open `[from, to)` everywhere
+  // in this codebase (interface contract §3), and the charge that just landed is
+  // exactly the one that may complete a cadence.
+  //
+  // `now` NO LONGER GOES TO THE REPOSITORY, because nothing there measures
+  // against it any more. It stays the pinned instant every calculation below
+  // uses, which is what lib/clock.ts asks of this file.
+  const transactions = await listFullLedgerBetween({ from, to: now + 1 });
   const detected = detectPatterns(transactions, now);
 
   const suppressRules = await listUserRules("suppress-recurring");
@@ -227,6 +255,37 @@ export async function refreshPatterns(now: number): Promise<RecurringPattern[]> 
  * the pattern's silence says nothing about whether the underlying obligation
  * is still real. If the bill itself is later archived or deleted, that is
  * bills rule 27's lifecycle to own, not this one's.
+ *
+ * THIS RUNS ON FREE, AND IT IS THE FLOOR-EXEMPT READ ABOVE THAT MAKES THAT
+ * CORRECT (GAP-122). GAP-118 skipped the whole pass on Free and argued the skip
+ * was right, because "a Free period that quietly forgot the patterns a Plus
+ * period found would be the gate deleting data", which gate principle 1
+ * (docs/05-monetization.md §3.1) forbids outright. That argument was made about
+ * a world where the pass does not run. It runs now, and the argument survives
+ * only because the SAMPLE stopped moving with the tier.
+ *
+ * Removal here is inferred from silence, and silence is measured against
+ * `lastSeenAt` — which the merge above refreshes from the ledger. Give that
+ * merge a 90-day window and the inference breaks on exactly the cadence it
+ * matters most for. An annual subscription charged at `now - 730`, `now - 365`
+ * and TODAY has one visible instance inside 90 days, never reaches
+ * `MIN_OCCURRENCES = 3`, is never upserted, and so keeps a stored `lastSeenAt`
+ * of `now - 365`; a year later that reads as 730 days of silence against a
+ * 1.5 x 365 = 547-day threshold, and the row is deleted for a subscription that
+ * charged this morning. THAT is the gate deleting data, and it is what a
+ * clamped window plus a running decay pass would actually have produced.
+ * Reading the full 800 days in both tiers takes the tier out of the calculation
+ * entirely: same evidence, same `lastSeenAt`, same verdict, which is what
+ * principle 2 — existing records keep working fully, including after a
+ * downgrade — asks for in the first place.
+ *
+ * SKIPPING IT WOULD ALSO HAVE PRESERVED NOTHING. A RecurringPattern is derived
+ * data: Reports rule 18 and domain §3.10 both say a decayed pattern is removed
+ * silently, and removing one changes no Transaction. Merging without decaying
+ * leaves a store no Plus pass would ever produce, and the first pass after an
+ * upgrade deletes those rows anyway — so the only lasting effect would be a
+ * Free count inflated by subscriptions the user has already cancelled, which is
+ * rule 19's teaser lying in the other direction.
  *
  * A DISMISSED PATTERN IS NEVER CONSIDERED. `listPatterns` below already
  * excludes every `dismissed_at IS NOT NULL` row unconditionally — the same

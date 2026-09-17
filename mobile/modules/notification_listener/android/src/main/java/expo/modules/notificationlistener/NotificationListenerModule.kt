@@ -194,6 +194,15 @@ class NotificationListenerModule : Module() {
       setProviderFilter(requireContext(), packageNames, denyAll)
     }
 
+    // THE READ-BACK THIS BRIDGE WENT WITHOUT (GAP-119). Everything above was
+    // write-only, so no JS caller could ask what scope the device is actually
+    // applying -- see [getProviderFilter] for what the Privacy centre does
+    // with the answer.
+
+    AsyncFunction("getProviderFilter") {
+      getProviderFilter(requireContext())
+    }
+
     // ---- Health (contract §4; plan Task 6 rule 4) ------------------------
 
     AsyncFunction("getListenerHealth") {
@@ -398,6 +407,45 @@ internal fun setProviderFilter(
   if (!CapturePrefs(context).setProviderFilter(packageNames.toSet(), denyAll)) {
     throw ProviderFilterNotStoredException()
   }
+}
+
+/**
+ * The capture scope the listener is ACTUALLY applying: the allowlist and the
+ * deny-all flag, as one snapshot (GAP-119).
+ *
+ * WHY IT EXISTS. [setProviderFilter] above had no counterpart, so JS held a
+ * record of the scope it had ASKED for and no way to check it. That record is
+ * `paused_provider_packages`, and it is what the Privacy centre draws its
+ * provider switches from -- so on a device where a write did not land, the one
+ * screen dedicated to "which banks may this app read" reported a pause the
+ * listener never entered, with nothing anywhere to contradict it.
+ *
+ * BOTH VALUES OR NEITHER, in one call, for the same reason
+ * [CapturePrefs.setProviderFilter] writes them in one `commit()`: the flag
+ * outranks the list, so a caller that read them separately could pair a
+ * pre-write flag with a post-write list and describe a scope the device has
+ * never been in.
+ *
+ * READ THROUGH THE EXACT ACCESSORS [CapturePrefs.shouldCapture] CONSULTS, and
+ * in the same order, which is what makes the answer the enforced scope rather
+ * than a second opinion about it. That matters most in the case JS most needs
+ * to hear about: a sealed filter that cannot be OPENED (Keystore reset,
+ * restored onto another device, a preferences file from a foreign build) reads
+ * back as the EMPTY set, and the listener genuinely captures every package on
+ * that device. Reporting the empty set here is therefore not a read failure to
+ * paper over -- it is the truth, and it is exactly the fail-open the Privacy
+ * centre has to be able to see.
+ *
+ * NO KEY, NO AUTHENTICATION, AND NEVER A REJECTION -- like every other reader
+ * on [CapturePrefs], which is a class the headless listener service calls with
+ * no catch. Nothing here can fail in a way a caller would have to branch on.
+ */
+internal fun getProviderFilter(context: Context): Map<String, Any?> {
+  val prefs = CapturePrefs(context)
+  return mapOf(
+    "denyAll" to prefs.isProviderFilterDenyAll(),
+    "packageNames" to prefs.getProviderFilter().toList(),
+  )
 }
 
 /**

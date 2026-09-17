@@ -8,11 +8,17 @@
 // The clock is pinned. Detection reads a trailing 120 days, so a live clock
 // would silently change which fixtures are in the window as the file ages.
 import { closeDatabase } from "@/lib/db/database";
+import { getSetting } from "@/lib/db/repos/app_settings_repo";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { createLimit, getLimitAlertState } from "@/lib/db/repos/limits_repo";
-import { getIncomeDetectionState, getIncomeProfile } from "@/lib/db/repos/income_repo";
-import { insertTransaction } from "@/lib/db/repos/transactions_repo";
+import {
+  getIncomeDetectionState,
+  getIncomeProfile,
+  setIncomeDetectionState,
+} from "@/lib/db/repos/income_repo";
+import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions_repo";
 import { createWallet } from "@/lib/db/repos/wallets_repo";
+import { __setTierForTests } from "@/lib/entitlements";
 import { onAppEvent } from "@/lib/events/app_events";
 import type { AppEventMap } from "@/lib/events/app_events";
 import { recomputeLimits } from "@/lib/limits/limit_service";
@@ -23,12 +29,14 @@ import {
   clearManualIncome,
   confirmDetectedIncome,
   dismissDetectedIncome,
+  dismissSplitPaydayNotice,
   getIncomeSummary,
   getMonthlyEquivalentIncome,
   maybeEmitPayday,
   PAYDAY_EVENT,
   refreshIncomeDetection,
   setManualIncome,
+  UNKNOWN_INCOME,
 } from "../income_service";
 
 /** Aug 5 2026, noon — just past a July 31 payday, before the Aug 15 one. */
@@ -56,11 +64,13 @@ async function credit(amount: number, at: number, walletId?: string): Promise<st
  * The same six kinsenas paydays, each deposited in two equal halves — an
  * employer who splits every payday, which is ordinary in this market.
  *
- * Kinsenas is scored over WINDOWS rather than events, so this still confirms.
- * What it changes is `averageAmount`: `detectCadence` records ONE matched credit
- * per expected window, so the median it feeds is ₱9,250.00 — half the real
- * payday. Any payday screen written against that figure has to cope with a day
- * whose combined pay is twice the average it is compared to.
+ * Kinsenas is scored over WINDOWS rather than events, so this confirms. And
+ * since GAP-117 it produces the SAME figures as `seedConfirmedKinsenas`:
+ * `tryKinsenas` records every credit of the payday that matched a window and
+ * `averageAmountFor` medians paydays rather than deposits, so this user's
+ * `averageAmount` is ₱18,500.00 — the pay they actually receive. It used to be
+ * ₱9,250.00, which halved the monthly equivalent and with it the headroom of
+ * every percent-of-income Limit.
  */
 async function seedHabitualSplitKinsenas(): Promise<void> {
   for (const [month, day] of [
@@ -102,6 +112,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  __setTierForTests(null);
   await closeDatabase();
 });
 
@@ -550,13 +561,20 @@ test("A PAYDAY SPLIT INTO TWO CREDITS ON ONE LOCAL DATE FIRES ONE PROMPT FOR THE
 test("credits on DIFFERENT local dates are judged separately, not added together", async () => {
   // The collapse keys on the local CALENDAR DAY, not on the expected window.
   // Aug 14 and Aug 15 both sit inside the 15th's ±3-day window, so a screen that
-  // collapsed by window would add two separate part-payments into one ₱18,500.00
-  // payday and announce a figure that never landed on any one day. Two paydays
-  // of ₱9,250.00 is the right reading, and one call announces one of them.
-  await seedHabitualSplitKinsenas();
+  // collapsed by window would add two full paydays into one ₱37,000.00 figure
+  // that never landed on any one day — and `proposePaydayAllocations` would take
+  // its percentage of it. Two paydays of ₱18,500.00 is the right reading, and
+  // one call announces one of them.
+  //
+  // RE-AIMED FOR GAP-117. It used to seed the habitual splitter and assert a
+  // ₱9,250.00 prompt, which only held because that user's `averageAmount` was
+  // itself half a payday. It no longer is, so a lone half is correctly not a
+  // payday and the fixture had to become pay that arrives whole — which tests
+  // the day-versus-window question just as directly.
+  await seedConfirmedKinsenas();
   await refreshIncomeDetection(NOW);
-  await credit(925000, on(2026, 7, 14, 16));
-  await credit(925000, on(2026, 7, 15, 9));
+  await credit(1850000, on(2026, 7, 14, 16));
+  await credit(1850000, on(2026, 7, 15, 9));
   const { seen, stop } = capturePaydays();
 
   const emitted = await maybeEmitPayday(on(2026, 7, 15, 11));
@@ -564,8 +582,60 @@ test("credits on DIFFERENT local dates are judged separately, not added together
 
   expect(emitted).toBe(true);
   expect(seen).toHaveLength(1);
-  expect(seen[0].amount).toBe(925000);
+  expect(seen[0].amount).toBe(1850000);
   expect(seen[0].transactionIds).toHaveLength(1);
+});
+
+test("SIX WHOLE PAYDAYS PLUS ONE SPLIT PAYDAY PROMPTS ONCE, FOR THE COMBINED TOTAL", async () => {
+  // GAP-117, and the case GAP-110's title named but could not reach. For a user
+  // whose pay normally lands whole, one payday arriving in two deposits used to
+  // be filtered out by `primaryStream` a stage before this screen ran: neither
+  // ₱9,250.00 half could join the ₱18,500.00 band, the pair formed a second
+  // group, and that group lost the largest-group sort. No prompt fired, so no
+  // auto-allocation ran and the money Safe-to-Spend had reserved against that
+  // pay was never moved. It failed silently, and only for the payday that was
+  // split.
+  await seedConfirmedKinsenas();
+  await refreshIncomeDetection(NOW);
+
+  const morning = await credit(925000, on(2026, 7, 15, 9));
+  const afternoon = await credit(925000, on(2026, 7, 15, 16));
+  const { seen, stop } = capturePaydays();
+
+  const first = await maybeEmitPayday(on(2026, 7, 15, 17));
+  const second = await maybeEmitPayday(on(2026, 7, 15, 18));
+  stop();
+
+  expect([first, second]).toEqual([true, false]);
+  expect(seen).toEqual([
+    {
+      transactionIds: [morning, afternoon],
+      walletId: payroll.id,
+      amount: 1850000,
+      occurredAt: on(2026, 7, 15, 16),
+    },
+  ]);
+  // And the figure every percent-of-income Limit is measured against did NOT
+  // move: the split payday is a whole payday, so the median is unchanged.
+  expect((await refreshIncomeDetection(on(2026, 7, 15, 18))).averageAmount).toBe(1850000);
+});
+
+test("A USER PAID IN HALVES EVERY TIME HAS THE WHOLE PAYDAY AS THEIR averageAmount", async () => {
+  // The blast radius GAP-117 needed an owner decision for. `detectCadence` used
+  // to record one matched CREDIT per expected window and `averageAmountFor` took
+  // the median of those, so an employer who splits every payday gave this user a
+  // ₱9,250.00 average and a ₱18,500.00 monthly equivalent — half the income they
+  // actually have, and therefore half the headroom on every percent-of-income
+  // Limit built on it. Rule 9's "matched pay events" are paydays (rule 11), not
+  // deposits.
+  await seedHabitualSplitKinsenas();
+
+  const summary = await refreshIncomeDetection(NOW);
+
+  expect(summary.status).toBe("confirmed");
+  expect(summary.cadence).toBe("kinsenas");
+  expect(summary.averageAmount).toBe(1850000);
+  expect(summary.monthlyEquivalent).toBe(3700000);
 });
 
 test("MAYBEEMITPAYDAY DOES NOT EMIT TWICE FOR THE SAME PAYDAY", async () => {
@@ -600,16 +670,62 @@ test("maybeEmitPayday does not emit outside the expected window", async () => {
   expect(seen).toEqual([]);
 });
 
-test("maybeEmitPayday ignores a credit far from the average amount", async () => {
-  // Rule 11: "its amount is within ±30% of averageAmount". A ₱500 reimbursement
-  // landing in the payroll account on the 15th is not a payday, and treating it
-  // as one would auto-allocate against it.
+test("a ₱500 reimbursement never reaches the payday screen: the pay STREAM drops it", async () => {
+  // RENAMED FOR GAP-117. This test used to be called "ignores a credit far from
+  // the average amount" and claimed to exercise rule 11's ±30% tolerance. It
+  // never did, and could not: the stream band and rule 11's tolerance are both
+  // 30% of essentially the same median, so a ₱500 credit is already outside the
+  // pay stream and `maybeEmitPayday` is handed nothing to reject. What it really
+  // asserts is where the exclusion happens, so that is what it now says — and it
+  // proves it, rather than inferring it from a silent bus.
+  //
+  // The test that does exercise rule 11 is the next one.
   await seedConfirmedKinsenas();
   await refreshIncomeDetection(NOW);
-  await credit(50000, on(2026, 7, 15));
+  const reimbursement = await credit(50000, on(2026, 7, 15));
   const { seen, stop } = capturePaydays();
 
   const emitted = await maybeEmitPayday(on(2026, 7, 15, 11));
+  stop();
+
+  expect(emitted).toBe(false);
+  expect(seen).toEqual([]);
+  // Income rule 4's band, not rule 11's: it never became evidence at all.
+  expect((await refreshIncomeDetection(on(2026, 7, 15, 11))).averageAmount).toBe(1850000);
+  expect((await getIncomeDetectionState()).matchedTransactionIds).not.toContain(reimbursement);
+});
+
+test("RULE 11'S ±30% BAND REJECTS A DAY WHOSE COMBINED PAY IS DOUBLE THE AVERAGE", async () => {
+  // Rule 11: "its amount is within ±30% of averageAmount", asked of the PAYDAY.
+  // Two ₱18,500.00 credits on one day — a duplicated deposit, or a base payment
+  // and an allowance of similar size — come to ₱37,000.00, which is not this
+  // user's pay. `proposePaydayAllocations` takes its percentage of the emitted
+  // amount, so announcing it would move double the money into a Goal.
+  //
+  // NOT VACUOUS, and the two assertions before the bus check are what prove it:
+  // both credits sit INSIDE income rule 4's stream band (each is exactly the
+  // median) and both are recorded as matched evidence for the Aug 15 window, so
+  // everything upstream of rule 11 accepted them. Only the ±30% amount test
+  // rejects the day.
+  //
+  // It is also the regression test for GAP-110's second `looksLikePay` clause,
+  // which accepted a day where any single credit fell in the band and would have
+  // emitted ₱37,000.00 here.
+  await seedConfirmedKinsenas();
+  await refreshIncomeDetection(NOW);
+  const first = await credit(1850000, on(2026, 7, 15, 9));
+  const second = await credit(1850000, on(2026, 7, 15, 16));
+
+  const summary = await refreshIncomeDetection(on(2026, 7, 15, 17));
+  const state = await getIncomeDetectionState();
+  // The median resists the doubled day, which is rule 9's whole reason for being
+  // a median — so the figure rule 11 measures against is still the real payday.
+  expect(summary.averageAmount).toBe(1850000);
+  expect(state.matchedTransactionIds).toContain(first);
+  expect(state.matchedTransactionIds).toContain(second);
+
+  const { seen, stop } = capturePaydays();
+  const emitted = await maybeEmitPayday(on(2026, 7, 15, 17));
   stop();
 
   expect(emitted).toBe(false);
@@ -669,4 +785,169 @@ test("PAYDAY_EVENT is the bus key m2 Task 1 already shipped", async () => {
   // contract; a second key would leave the goals plan subscribing to one and
   // this service publishing the other, with nothing failing anywhere.
   expect(PAYDAY_EVENT).toBe("income:payday");
+});
+
+// ---------------------------------------------------------------------------
+// The one-time "your income figure changed" notice (GAP-117, owner decision
+// 2026-09-10: fix it, and tell the user)
+// ---------------------------------------------------------------------------
+//
+// THERE IS NOTHING TO MIGRATE, which is why these tests seed a pre-upgrade
+// detection state rather than running a migration. `detect` recomputes the whole
+// belief from the ledger on every pass and `refreshIncomeDetection` rewrites the
+// profile from it, so the new figure lands on the first pass after the upgrade by
+// itself. The only thing that has to be persisted is that the user has yet to be
+// told, and `income_split_payday_notice` is that.
+
+/** The state the OLD build left behind for a user paid in halves: a half figure. */
+async function seedPreUpgradeState(averageAmount: number): Promise<void> {
+  await setIncomeDetectionState({
+    ...UNKNOWN_INCOME,
+    status: "confirmed",
+    cadence: "kinsenas",
+    averageAmount,
+    sourceWalletIds: [payroll.id],
+  });
+}
+
+test("THE NOTICE FIRES ONCE FOR A USER WHOSE FIGURE ACTUALLY MOVED", async () => {
+  await seedHabitualSplitKinsenas();
+  await seedPreUpgradeState(925000);
+
+  // The first pass after the upgrade: ₱9,250.00 becomes ₱18,500.00.
+  const upgraded = await refreshIncomeDetection(NOW);
+  expect(upgraded.averageAmount).toBe(1850000);
+  expect(upgraded.hasSplitPaydayNotice).toBe(true);
+
+  // Still pending after another pass — a detection pass must not clear a notice
+  // the user has not seen, and detection runs on every ledger commit.
+  expect((await refreshIncomeDetection(NOW)).hasSplitPaydayNotice).toBe(true);
+
+  await dismissSplitPaydayNotice();
+
+  expect((await getIncomeSummary(NOW)).hasSplitPaydayNotice).toBe(false);
+  // ONCE, EVER. Not "once per launch": the figure it explains only moved once.
+  expect((await refreshIncomeDetection(NOW)).hasSplitPaydayNotice).toBe(false);
+});
+
+test("the notice does NOT fire for a user whose figure did not move", async () => {
+  // Pay that always arrived whole is banded, matched and medianed exactly as
+  // before, so there is nothing to explain and nothing to interrupt them with.
+  await seedConfirmedKinsenas();
+  await seedPreUpgradeState(1850000);
+
+  const upgraded = await refreshIncomeDetection(NOW);
+
+  expect(upgraded.averageAmount).toBe(1850000);
+  expect(upgraded.hasSplitPaydayNotice).toBe(false);
+  expect(await getSetting("income_split_payday_notice")).toBe("done");
+});
+
+test("A FRESH INSTALL IS SETTLED BEFORE IT CAN EVER BE OWED THE NOTICE", async () => {
+  // The trap this guards. A new user's `averageAmount` moves on its own as
+  // evidence accumulates — rule 9's median walks as paydays arrive — so
+  // "the figure moved and there are split paydays" is true for a brand-new
+  // habitual splitter too, and would show them a notice about a change that
+  // never happened to them. What separates the two is that an upgrading device
+  // already had a stored figure and a fresh one did not, so the first pass on a
+  // device with no stored figure settles the question for good.
+  await seedHabitualSplitKinsenas();
+
+  const summary = await refreshIncomeDetection(NOW);
+
+  expect(summary.averageAmount).toBe(1850000);
+  expect(summary.hasSplitPaydayNotice).toBe(false);
+  // Settled, so no later pass can raise it however far the median walks.
+  expect(await getSetting("income_split_payday_notice")).toBe("done");
+});
+
+test("a DECLARED income is exempt: neither its figure nor its limits moved", async () => {
+  // Rule 14: detection never modifies a declared profile, so the figure on
+  // screen and every limit built on it are exactly where the user left them. A
+  // notice announcing a change that did not happen is worse than silence; rule
+  // 14's own suggestion card is the surface for what detection now believes.
+  await seedHabitualSplitKinsenas();
+  await setManualIncome(
+    { cadence: "kinsenas", averageAmount: 900000, sourceWalletIds: [payroll.id] },
+    NOW,
+  );
+  await seedPreUpgradeState(925000);
+
+  const summary = await refreshIncomeDetection(NOW);
+
+  expect(summary.averageAmount).toBe(900000);
+  expect(summary.hasSplitPaydayNotice).toBe(false);
+  expect(await getSetting("income_split_payday_notice")).toBe("done");
+});
+
+// ---------------------------------------------------------------------------
+// The detection sample does not move with the tier (GAP-118)
+// ---------------------------------------------------------------------------
+//
+// `detect` asks for a trailing 130 days so `detectCadence` can judge 120 of
+// them, and rule 9 medians a cadence-sized window of paydays out of that —
+// four for the monthly fixture below. Read through
+// `listTransactions` it was clamped to the Free tier's 90-day BROWSING floor,
+// which is not what that floor is for: limits rule 8 says totals "are always
+// computed from the full ledger, regardless of the free tier's 90-day history
+// view gate". Nothing gates income detection, so nothing may gate its sample —
+// `averageAmount` becomes `monthlyEquivalent` (rule 16) and then the base of
+// every percent-of-income Limit (limits rule 10).
+
+/**
+ * Four monthly paydays on the 1st, rising ₱16,000 -> ₱22,000.
+ *
+ * CHOSEN SO THE FLOOR IS THE ONLY VARIABLE. May 1 is 96 days before `NOW` — in
+ * the 120-day detection window, under the 90-day floor — so on Free it was the
+ * one payday that disappeared. The cadence confirms either way (`tryMonthly`
+ * needs two qualifying gaps), and the four amounts all sit inside rule 4's ±30%
+ * band, so the ONLY thing the missing row changes is the median: four paydays
+ * median ₱19,000.00, the surviving three median ₱20,000.00.
+ */
+async function seedFourMonthlyPaydays(): Promise<void> {
+  await credit(1600000, on(2026, 4, 1)); // May 1 — 96 days back, below the free floor
+  await credit(1800000, on(2026, 5, 1)); // Jun 1
+  await credit(2000000, on(2026, 6, 1)); // Jul 1
+  await credit(2200000, on(2026, 7, 1)); // Aug 1
+}
+
+test("ON FREE, CADENCE DETECTION STILL READS ALL 130 DAYS", async () => {
+  await seedFourMonthlyPaydays();
+  __setTierForTests("free");
+
+  const summary = await refreshIncomeDetection(NOW);
+
+  expect(summary.status).toBe("confirmed");
+  expect(summary.cadence).toBe("monthly");
+  // The four-payday median. Clamped to 90 days this was ₱20,000.00 — the same
+  // ledger, the same instant, a different tier, a different income.
+  expect(summary.averageAmount).toBe(1900000);
+  expect(summary.monthlyEquivalent).toBe(1900000);
+});
+
+test("free and plus reach the same income from the same ledger", async () => {
+  await seedFourMonthlyPaydays();
+
+  __setTierForTests("plus");
+  const onPlus = await refreshIncomeDetection(NOW);
+
+  __setTierForTests("free");
+  const onFree = await refreshIncomeDetection(NOW);
+
+  expect(onFree.averageAmount).toBe(onPlus.averageAmount);
+  expect(onFree.monthlyEquivalent).toBe(onPlus.monthlyEquivalent);
+  expect(onFree.cadence).toBe(onPlus.cadence);
+});
+
+test("browsing keeps its 90-day gate while detection reads past it", async () => {
+  // The exemption is for the computation only. If this ever starts returning
+  // the May 1 row, the browsing gate itself has been removed — which is the one
+  // thing GAP-105, GAP-111 and GAP-118 all say not to do.
+  await seedFourMonthlyPaydays();
+  __setTierForTests("free");
+
+  const visible = await listTransactions({ now: NOW });
+
+  expect(visible).toHaveLength(3);
+  expect(await refreshIncomeDetection(NOW)).toMatchObject({ averageAmount: 1900000 });
 });
