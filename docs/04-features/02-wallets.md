@@ -30,7 +30,7 @@ A Wallet is a user-named money location — bank, e-wallet, cash, credit, or sav
 | Attention — reconciliation due | A cash Wallet has a pending reconciliation prompt | Badge on that Wallet row + inline "Reconcile" action |
 | Attention — balance drift | Reported balance-after disagrees with computed balance beyond tolerance | Warning glyph on the Wallet row; tapping opens the drift explainer |
 | Attention — matcher conflict | Two matchers claim the same notification pattern | Banner linking to matcher management |
-| Archived section | ≥1 archived Wallet | Collapsed "Archived" group at list bottom; rows are read-only until unarchived |
+| Archived section | ≥1 archived Wallet | Collapsed group at list bottom, rendered as "Deleted" behind a "Show deleted" toggle; rows are read-only until restored |
 
 ### Flow: create a Wallet
 
@@ -90,11 +90,13 @@ Manual entry exists for money the listener cannot see — cash above all, plus u
 4. Guard rails before archiving: if the Wallet is a Goal's `linkedWalletId`, an active Loan's `linkedWalletId`, or in `IncomeProfile.sourceWalletIds[]`, the confirmation lists these links and asks the user to relink or accept pausing those features' automation.
 5. **Unarchive** restores everything, subject to the Free active-Wallet cap (see Free vs Plus).
 
-### Flow: delete a Wallet (guarded, per invariant 4)
+### Flow: delete a Wallet (the same flow, under the name the user sees)
 
-1. "Delete" is offered only behind the archive option, framed as the destructive path.
-2. If the Wallet has **zero** Transactions: delete immediately after confirmation.
-3. If it has Transactions, the user must choose first: **reassign** all its Transactions to another active Wallet (they keep all other fields), or **archive instead** (recommended, preselected). There is no path that deletes or orphans Transactions.
+**"Delete" is the label; archive is the mechanism** (owner, 2026-08-28: "replace the misleading button text from archive to 'delete'"). There is no hard delete anywhere in the app and none is planned: invariant 4 forbids orphan Transactions, the `NO ACTION` foreign key on `transactions.wallet_id` blocks the statement outright, and `wallets_repo` exports no `deleteWallet`. Every Plan entity uses the same wording for the same reason, through `components/plan/archived_section.tsx`. These rules keep the schema's vocabulary for the mechanism; only what is rendered says delete.
+
+1. "Delete" on the Wallet's detail screen opens the confirmation described in *Flow: archive a Wallet* above, and everything there applies unchanged.
+2. The one addition is an **optional move**: the user may send the Wallet's Transactions to another active Wallet first. The default moves nothing, because the Transactions stay fully visible either way and relocating years of history on a single confirm tap is not something a mis-tap should be able to do.
+3. A Wallet with **zero** Transactions takes the same path. Nothing is removed, so the empty case needs no separate one.
 4. Reassignment across a Transfer Link keeps the link intact unless both legs would land in the same Wallet — in that case the Transfer Link is dissolved and both Transactions go to the Review Queue for re-triage.
 
 ## Rules & edge cases
@@ -116,7 +118,7 @@ Manual entry exists for money the listener cannot see — cash above all, plus u
 15. Reconciliation prompts fire only for cash Wallets, respect snooze/opt-out per Wallet, and at most one prompt per Wallet per day.
 16. Archiving suspends matchers immediately; notifications matched by suspended matchers route to the Review Queue, never silently drop (they also remain in the raw store under the 30-day TTL like all captures, per invariant 3).
 17. Archived Wallets are excluded from Safe-to-Spend, Limit `walletFilter` options, transfer targets, and the Wallets-tab total; their Transactions remain in history and reports.
-18. Deleting a Wallet with Transactions is impossible without reassigning them (invariant 4); the flow offers reassign-or-archive and defaults to archive.
+18. There is no hard delete. What the UI calls deleting a Wallet sets `isArchived` and leaves every Transaction where it is (invariant 4); moving them to another active Wallet first is offered and defaults to off.
 19. Reassignment preserves `rawNotificationRef` on affected Transactions (invariant 5 transparency survives moves).
 20. Unarchiving is blocked on Free if it would exceed 3 active Wallets; the Wallet stays archived, nothing is deleted, and the gate message explains why.
 21. Archiving the `linkedWalletId` of an active Goal or Loan, or a Wallet in `IncomeProfile.sourceWalletIds[]`, requires acknowledging the listed impacts; those features pause their Wallet-driven automation until relinked.

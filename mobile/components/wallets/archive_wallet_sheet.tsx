@@ -9,10 +9,19 @@
 // relocate years of history into whichever wallet happened to be listed first,
 // on a single confirm tap — and a mis-tap is not consent to that.
 //
-// DELETE IS NOT ON OFFER, ANYWHERE. Invariant 4 forbids orphan Transactions, the
-// schema's NO ACTION foreign key on `transactions.wallet_id` blocks the DELETE
-// outright, and `wallets_repo` deliberately exports no `deleteWallet`. A delete
-// button here could only mislead or throw.
+// DELETE IS THE LABEL; ARCHIVE IS THE ACT (owner, 2026-08-28: "replace the
+// misleading button text from archive to 'delete'"). This sheet's confirm button
+// says "Delete wallet" and sets `isArchived`. NOTHING IS REMOVED: invariant 4
+// forbids orphan Transactions, the schema's NO ACTION foreign key on
+// `transactions.wallet_id` blocks a real DELETE outright, and `wallets_repo`
+// deliberately exports no `deleteWallet` to call.
+//
+// The word is the one people reach for when they want something gone, and the
+// promise behind it is kept by the wallet staying restorable under "Show
+// deleted" on the Wallets tab. Every Plan tab does the same through
+// components/plan/archived_section.tsx, so this file is not the odd one out.
+// The header used to read "DELETE IS NOT ON OFFER, ANYWHERE", which predates
+// that ruling and was the only false sentence in the file (GAP-022).
 //
 // It also states the two consequences a user cannot see coming — the matchers
 // stop catching, and the balance leaves the wallets total — because both are
