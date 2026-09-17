@@ -6,7 +6,7 @@ Wallets are the money locations everything else hangs off: every Transaction bel
 
 ## Purpose
 
-A Wallet is a user-named money location — bank, e-wallet, cash, credit, or savings — as defined in the [domain model](../02-domain-model.md). Wallets are where the Ingest pipeline lands its output (via `matchers[]`), where balances are kept honest (reported balance-after vs computed running balance), and the only place cash gets tracked at all (manual entry plus reconciliation prompts). Because invariant 1 says a Transaction belongs to exactly one Wallet and invariant 4 forbids orphan Transactions, Wallet deletion is deliberately constrained and archiving is the recommended path. This doc is the canonical spec for all of that; the pipeline stages that feed Wallets are specified in the [ingest pipeline doc](../03-ingest-pipeline.md).
+A Wallet is a user-named money location, as defined in the [domain model](../02-domain-model.md). Wallets are where the Ingest pipeline lands its output (via `matchers[]`), where balances are kept honest (reported balance-after vs computed running balance), and the only place cash gets tracked at all (manual entry plus reconciliation prompts). Because invariant 1 says a Transaction belongs to exactly one Wallet and invariant 4 forbids orphan Transactions, Wallet deletion is deliberately constrained and archiving is the recommended path. This doc is the canonical spec for all of that; the pipeline stages that feed Wallets are specified in the [ingest pipeline doc](../03-ingest-pipeline.md).
 
 ## User stories
 
@@ -16,7 +16,7 @@ A Wallet is a user-named money location — bank, e-wallet, cash, credit, or sav
 - As a cash spender, I want the app to periodically ask "how much cash do you actually have?", so that untracked jeepney fares and palengke runs don't silently corrupt my totals.
 - As a user closing an old bank account, I want to archive that Wallet without losing its history, so that old reports still make sense.
 - As a user who created a Wallet by mistake, I want to delete it safely, so that its few Transactions get reassigned instead of vanishing.
-- As a saver, I want a savings-type Wallet I can link a Goal to, so that goal progress reads straight from a real balance.
+- As a saver, I want to link a Goal to the Wallet my savings actually sit in, so that goal progress reads straight from a real balance.
 - As a Free-tier user, I want to know the Wallet cap before I hit it, so that the gate never feels like a surprise or a data threat.
 
 ## UX states & flows
@@ -35,7 +35,7 @@ A Wallet is a user-named money location — bank, e-wallet, cash, credit, or sav
 ### Flow: create a Wallet
 
 1. From the Wallets tab, "Add Wallet."
-2. Pick `type`: **bank · e-wallet · cash · credit · savings** (fixed set of five).
+2. There is no type to pick. The five-value `type` enum (bank, e-wallet, cash, credit, savings) was **dropped from the schema** by migration `014_drop_wallet_type.sql`, because nothing asked it and nothing read it. The two facts it stood in for are both kept: whether a balance is money the user HAS or money they OWE is `owed_balance` (migration 013, and the `owed`/`manual`/`tracked` kinds `lib/wallets/summary.ts` infers from it), and "nothing routes here" is a count over `wallet_matchers`.
 3. Name it (defaults from provider if one is selected next).
 4. Optionally attach provider matchers (skipped automatically for cash — see rules).
 5. Optionally set a starting `balance` (writes the balance directly; creates no Transaction).
@@ -101,7 +101,7 @@ Manual entry exists for money the listener cannot see — cash above all, plus u
 
 ## Rules & edge cases
 
-1. `type` is exactly one of **bank, e-wallet, cash, credit, savings**; no custom types in MVP.
+1. A Wallet has **no `type` column**. `walletKind()` (`mobile/lib/wallets/summary.ts`) infers one of `owed`, `manual` or `tracked` from `owed_balance` and the matcher count, and that is the only kind vocabulary the app has. The CSV export's `wallet_type` column carries those three values, not the retired five.
 2. Every Transaction belongs to exactly one Wallet (invariant 1); no Wallet-less or multi-Wallet Transactions exist in any flow, including deletion and reassignment.
 3. `currency` is PHP on every Wallet; no multi-currency in MVP.
 4. Cash Wallets have empty `matchers[]` and the matcher UI is hidden for them; money enters via manual entry, Transfer Links (e.g., ATM withdrawal out-leg from a bank Wallet, in-leg to cash), and reconciliation adjustments.
@@ -122,7 +122,7 @@ Manual entry exists for money the listener cannot see — cash above all, plus u
 19. Reassignment preserves `rawNotificationRef` on affected Transactions (invariant 5 transparency survives moves).
 20. Unarchiving is blocked on Free if it would exceed 3 active Wallets; the Wallet stays archived, nothing is deleted, and the gate message explains why.
 21. Archiving the `linkedWalletId` of an active Goal or Loan, or a Wallet in `IncomeProfile.sourceWalletIds[]`, requires acknowledging the listed impacts; those features pause their Wallet-driven automation until relinked.
-22. Savings-type Wallets are the only valid `linkedWalletId` for a Goal (see [Goals & Savings](./05-goals-savings.md)).
+22. Any Wallet is a valid `linkedWalletId` for a Goal, and a Wallet backs at most one live Goal (see [Goals & Savings](./05-goals-savings.md)). The savings-only restriction went with the `type` column; `goals_repo`'s `assertWalletIsFree` checks that the Wallet exists and is unclaimed, and says at its own call site why the kind is no longer its business.
 23. For credit Wallets, `balance` represents the outstanding amount owed and is displayed as an obligation, not spendable money; it is excluded from the "total across active Wallets" figure and from Safe-to-Spend inputs.
 24. A manual Transaction requires `amount` > ₱0.00, a `direction` (default `out`), and exactly one target Wallet; its timestamp defaults to now, may be backdated, and is never future-dated; `categoryId` defaults to Uncategorized; `merchant` and `note` are optional. The committed record carries `source: manual` and `confidence` 1.0, with no `rawNotificationRef`.
 25. A backdated manual Transaction recomputes the Wallet balance, Limits, Safe-to-Spend, and reports for the period containing its timestamp, but never re-fires alerts for past periods ([03-limits.md](./03-limits.md), rule 19).
@@ -183,7 +183,7 @@ Behavior at the gate (Free, cap reached): creating a new Wallet and unarchiving 
 
 ## Open questions
 
-1. **Drift tolerance value.** The threshold separating "snap silently" from "show the drift state" (a fixed peso amount, a percentage of balance, or a hybrid) needs tuning against real parser accuracy data during M1; too tight makes noise, too loose hides parser rot.
+1. ~~**Drift tolerance shape.**~~ **Settled: a fixed peso amount, and a remotely tunable one.** The threshold is `balanceDriftToleranceCentavos`, a per-ruleset tunable (`mobile/lib/ingest/ruleset_schema.ts`, `DEFAULT_TUNABLES` ships ₱1.00), so retuning it is a ruleset publish rather than an app release. Neither a percentage of balance nor a hybrid was taken. **The VALUE is still open** and still wants real parser-accuracy data: too tight makes noise, too loose hides parser rot.
 2. **Credit Wallets vs Bills overlap.** A credit Wallet's statement cycle and due date overlap conceptually with a [Bill](./07-bills.md) ("pay credit card on the 20th"). Whether the credit Wallet should auto-suggest a companion Bill, or Bills stay fully manual for credit, needs a decision before M2 to avoid double-reminding.
 3. ~~**Default reconciliation cadence.**~~ **Settled: weekly.** The scheduler ships with a 7-day cadence and the 14-day idle window above (`RECONCILE_CADENCE_MS` / `RECONCILE_IDLE_MS`, `mobile/lib/wallets/reconcile_scheduler.ts`), matching the default this document already stated. Whether the default should instead key off the user's income cadence (e.g., prompt at kinsenas boundaries when `cadence: kinsenas`) stays open for early usage data, and the constants are the one place to change it.
 4. **Sub-account discovery.** Whether the app should proactively suggest "looks like you also have GSave — create a Wallet for it?" after seeing unmatched sub-account patterns, or wait for the user to act from the Review Queue, is open; proactive suggestion is friendlier but depends on discriminator reliability from the captured corpus.

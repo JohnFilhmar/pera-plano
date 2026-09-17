@@ -76,7 +76,7 @@ Both flavors work identically for goals, because progress is derived from the Wa
 ## Rules & edge cases
 
 1. **Progress source (decided): progress = linked savings Wallet balance.** Goal progress is `linkedWalletId` Wallet `balance` measured against `targetAmount`. We deliberately do not sum tagged "contribution" transactions. Rationale: balance-based progress is self-healing (withdrawals honestly reduce progress), requires zero user classification effort, and stays correct even when a deposit arrives through a channel the parser missed and the user fixes the balance via reconciliation.
-2. A Goal's `linkedWalletId` must reference a Wallet with `type: savings`. No other Wallet type is eligible.
+2. A Goal's `linkedWalletId` must reference an existing Wallet that no other live Goal claims. **Any Wallet is eligible.** The `type: savings` requirement was dropped with the `type` column itself (migration `014_drop_wallet_type.sql`) rather than re-expressed against the inferred `owed`/`manual`/`tracked` kinds, because none of those three describes "a place savings sit": a goal-backing Wallet is whichever one the user actually saves in, and only they know which that is.
 3. **At most one active Goal per savings Wallet.** Because progress equals balance, two goals on one Wallet would double-count every peso. Users who want multiple goals create multiple savings Wallets.
 4. A savings Wallet's pre-existing balance counts toward a newly attached goal in full. Starting from zero requires a fresh Wallet (stated in the creation flow; no hidden offsets).
 5. Progress percent = balance ÷ `targetAmount`. Display floors at 0% (a negative savings balance shows 0% with an attention state) and the ring caps at 100%, while the amount line always shows true figures (e.g., "₱52,300.00 of ₱50,000.00").
@@ -128,7 +128,7 @@ Behavior at the gate — always keep data, block creation of new, never delete:
 
 ## Acceptance criteria
 
-- [ ] Creating a goal requires `name`, `targetAmount`, and a linked savings-type Wallet; `targetDate` and `contributionRule` are optional.
+- [ ] Creating a goal requires `name`, `targetAmount`, and a linked Wallet that no other live goal claims; `targetDate` and `contributionRule` are optional.
 - [ ] A savings Wallet with an active Goal cannot be selected for a second Goal; archiving it requires acknowledging the Goal impact and pauses the Goal (progress frozen) until the Wallet is unarchived or the Goal is relinked.
 - [ ] A detected transfer into the linked Wallet updates goal progress with no user action, and does not appear in spend or income totals.
 - [ ] A withdrawal from the linked Wallet reduces progress on next display.
