@@ -10,7 +10,7 @@
 //   relocate years of history into whichever wallet happened to be first in the
 //   list — and a mis-tap on a confirm button is not consent to that.
 //
-//   DELETE IS NOT OFFERED. Invariant 4 forbids orphan Transactions, and
+//   HARD DELETE IS NOT OFFERED. Invariant 4 forbids orphan Transactions, and
 //   `wallets_repo` exports no `deleteWallet` at all. A delete affordance here
 //   would be a path to a broken invariant, or a button that throws.
 import { act, fireEvent, render, screen } from "@testing-library/react-native";
@@ -151,6 +151,44 @@ describe("the transaction-handling choice", () => {
     fireEvent.press(screen.getByTestId("archive-move-transactions"));
 
     expect(screen.queryByTestId("archive-target-w-gcash")).toBeNull();
+  });
+});
+
+describe("what still uses the wallet (GAP-036)", () => {
+  // Spec archive flow step 4 and rule 21. A goal linked to a retired wallet
+  // otherwise just stops moving, and the user finds out much later, if at all.
+  test("the confirmation names every linked goal, loan and income source", () => {
+    renderSheet({
+      links: { goals: ["Emergency fund"], loans: ["Aling Nena"], isIncomeSource: true },
+    });
+
+    screen.getByTestId("archive-wallet-links");
+    screen.getByText("Goal: Emergency fund");
+    screen.getByText("Utang: Aling Nena");
+    screen.getByText("Income: one of your pay sources");
+  });
+
+  test("every linked goal is named, not just the first", () => {
+    renderSheet({
+      links: { goals: ["Emergency fund", "Bagong laptop"], loans: [], isIncomeSource: false },
+    });
+
+    screen.getByText("Goal: Emergency fund");
+    screen.getByText("Goal: Bagong laptop");
+  });
+
+  test("nothing is rendered when nothing is linked", () => {
+    renderSheet({ links: { goals: [], loans: [], isIncomeSource: false } });
+
+    expect(screen.queryByTestId("archive-wallet-links")).toBeNull();
+  });
+
+  test("a caller that has not wired the queries keeps today's sheet", () => {
+    // `links` is optional so this stays true, rather than the sheet rendering an
+    // empty "nothing uses this wallet" claim it has no evidence for.
+    renderSheet();
+
+    expect(screen.queryByTestId("archive-wallet-links")).toBeNull();
   });
 });
 

@@ -61,7 +61,7 @@
 // Transactions, the schema's NO ACTION foreign key blocks the DELETE outright,
 // and `wallets_repo` exports no `deleteWallet` to call.
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -91,6 +91,9 @@ import { useUnarchiveWallet } from "@/hooks/mutations/use_unarchive_wallet";
 import { useDismissDrift } from "@/hooks/mutations/use_dismiss_drift";
 import { useBalanceDrift } from "@/hooks/queries/use_balance_drift";
 import { useCategories } from "@/hooks/queries/use_categories";
+import { useGoals } from "@/hooks/queries/use_goals";
+import { useIncomeSummary } from "@/hooks/queries/use_income_summary";
+import { useLoans } from "@/hooks/queries/use_loans";
 import { useRuleset } from "@/hooks/queries/use_ruleset";
 import { useTransactions } from "@/hooks/queries/use_transactions";
 import { useWallet } from "@/hooks/queries/use_wallet";
@@ -245,9 +248,33 @@ export default function WalletDetailScreen() {
   const { data: transactions } = useTransactions({ walletId });
   const { data: wallets } = useWallets();
   const { data: categories } = useCategories();
+  // GAP-036. What the archive confirmation has to name before it retires this
+  // wallet. `useGoals` already excludes deleted goals and `useLoans` already
+  // excludes settled and archived ones, so "live" and "active" come for free
+  // rather than needing two new wallet-scoped repository reads.
+  const { data: goalStatuses } = useGoals();
+  const { data: loans } = useLoans();
+  const { data: income } = useIncomeSummary();
   const archiveWallet = useArchiveWallet();
   const unarchiveWallet = useUnarchiveWallet();
   const dismissDrift = useDismissDrift();
+
+  // GAP-036. Three reads, filtered to this wallet, for the archive
+  // confirmation to name. Both hooks return STATUSES rather than rows, so the
+  // goal and the loan are each one level in; a loan's `linkedWalletId` is
+  // nullable and most loans have none.
+  const walletLinks = useMemo(
+    () => ({
+      goals: (goalStatuses ?? [])
+        .filter((status) => status.goal.linkedWalletId === walletId)
+        .map((status) => status.goal.name),
+      loans: (loans ?? [])
+        .filter((status) => status.loan.linkedWalletId === walletId)
+        .map((status) => status.loan.counterparty),
+      isIncomeSource: (income?.sourceWalletIds ?? []).includes(walletId),
+    }),
+    [goalStatuses, loans, income, walletId],
+  );
 
   if (isPending) {
     return (
@@ -627,6 +654,7 @@ export default function WalletDetailScreen() {
             onDismiss={() => setArchiving(false)}
             otherWallets={wallets ?? []}
             transactionCount={(transactions ?? []).length}
+            links={walletLinks}
             busy={archiveWallet.isPending || archiveBusy}
             // The sheet stays open on a failure — `setArchiving(false)` is on
             // the success arm and stays there — so it is the one surface that
