@@ -166,8 +166,24 @@ export function LimitsPanel() {
               >
                 {monthlyIncome === null ? "Take-home" : formatCentavos(monthlyIncome)}
               </Text>
-              <Text className="text-secondary font-medium text-fg-2 dark:text-fg-2-dark">
-                Powers %-of-income limits and the period
+              {/* GAP-120. The owner's decision on GAP-117 was "fix it AND tell
+                  the user", because a limit whose headroom moves overnight with
+                  no explanation reads as a bug. The telling lives on the Income
+                  card, and the moved headroom is noticed HERE, on a screen the
+                  user opened for a different reason. This row is the signpost;
+                  the card keeps the words, so there is no second copy to drift.
+
+                  BOUND TO THE SAME FLAG THE CARD SETTLES, never a second one.
+                  `hasSplitPaydayNotice` is what the card's "Got it" clears, so
+                  this caption cannot outlive the explanation it points at, and
+                  the notice still settles exactly once per device. */}
+              <Text
+                testID="plan-income-row-caption"
+                className="text-secondary font-medium text-fg-2 dark:text-fg-2-dark"
+              >
+                {income?.hasSplitPaydayNotice === true
+                  ? "Your income figure changed. Tap to see why."
+                  : "Powers %-of-income limits and the period"}
               </Text>
             </View>
             <ChevronGlyph size={18} className="text-fg-2 dark:text-fg-2-dark" />
