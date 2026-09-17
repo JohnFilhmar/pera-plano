@@ -44,7 +44,7 @@ import {
   setIncomeDetectionState,
   clearIncomeProfile,
 } from "@/lib/db/repos/income_repo";
-import { listFullLedgerBetween, listTransactions } from "@/lib/db/repos/transactions_repo";
+import { listFullLedgerBetween } from "@/lib/db/repos/transactions_repo";
 import { emitAppEvent } from "@/lib/events/app_events";
 import { refreshLimitBase } from "@/lib/limits/limit_service";
 import { UNKNOWN_INCOME_DETECTION, type IncomeDetectionState } from "@/types/control";
@@ -240,7 +240,29 @@ export async function listPayEventsBetween(
   to: EpochMs,
 ): Promise<CandidateEvent[]> {
   const REFUND_LOOKBACK_MS = 7 * DAY_MS;
-  const transactions = await listTransactions({ from: from - REFUND_LOOKBACK_MS, to });
+
+  // FLOOR-EXEMPT, FOR THE REASON `detect` IS ONE FUNCTION UP (GAP-123). This is
+  // a computation over a window the CALLER named, not a browse, so it reads the
+  // window it was asked for. `listTransactions` would clamp `from` to the
+  // tier's 90-day floor, and it does that whether or not `now` is passed: the
+  // fallback is `filter.now ?? Date.now()`, so omitting `now` does not opt out
+  // of the gate, it only makes the gate read a LIVE wall clock. That is the
+  // sharper half of the bug. The cutoff then moved with the real date rather
+  // than with the window, so the same call over the same range returned
+  // different pay depending on when it ran, and lib/clock.ts forbids exactly
+  // that ("no engine or service under lib/ calls `Date.now()`").
+  //
+  // THE CLAMP CANNOT BITE TODAY, AND NOT FOR THE REASON THE ENTRY GIVES. The
+  // only caller is Safe-to-Spend's contributions term, which returns early
+  // unless `hasPaydayAutoAllocation()` holds (lib/safe_to_spend_service.ts),
+  // and that is Plus-only, while the floor exists only on Free. The tier that
+  // clamps never arrives here. That is a property of one caller's gate, not of
+  // this function, so the trap is closed here rather than written down for the
+  // next caller to find.
+  //
+  // BOUNDED, NOT `listFullLedger`: the window is the caller's, and the
+  // unbounded read would quietly turn it into the whole ledger.
+  const transactions = await listFullLedgerBetween({ from: from - REFUND_LOOKBACK_MS, to });
   const loanPaymentIds = new Set(await listLoanPaymentTransactionIds());
 
   return primaryStream(selectCandidates(transactions, loanPaymentIds))
