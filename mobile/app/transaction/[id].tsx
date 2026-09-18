@@ -501,6 +501,41 @@ export default function TransactionDetailScreen() {
             </Card>
           </View>
 
+          {/* GAP-061. The fields above that are NOT editable in place — amount,
+              direction, wallet and merchant — are editable here, which is what
+              makes docs/07's right-to-rectification row true. Category and note
+              keep their own inline controls: they are the two a user changes
+              casually and often, and sending them through a route would be a
+              step backwards for both.
+
+              ON A TRANSFER LEG THIS IS A SENTENCE, NOT A BUTTON (owner's
+              ruling, 2026-09-18). The two legs are one movement described
+              twice, so editing one alone would leave the pair contradicting
+              itself with nothing to detect it. The unlink that resolves it is
+              already on this screen, in TransferLinkActions below. */}
+          <View className="px-4 pt-6">
+            {isTransfer ? (
+              <Text
+                testID="transaction-edit-transfer-note"
+                className="text-center text-fg-2 dark:text-fg-2-dark"
+              >
+                Linked as a transfer. Unlink it below to change the amount, direction or wallet.
+              </Text>
+            ) : (
+              <Button
+                title="Edit transaction"
+                variant="secondary"
+                testID="transaction-edit"
+                onPress={() =>
+                  router.push({
+                    pathname: "/transaction/[id]/edit",
+                    params: { id: transaction.id },
+                  })
+                }
+              />
+            )}
+          </View>
+
           {/* RULE 2. The app's honesty mechanism — see the component's header. */}
           <WhyRecordedPanel
             source={transaction.source}

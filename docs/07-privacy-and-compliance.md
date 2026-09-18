@@ -187,7 +187,7 @@ Stance:
 1. **Context of origin.** These names were already delivered to the user's own device by the provider; PeraPlano introduces no new disclosure. The user's own record-keeping of who paid them is classic personal/household processing.
 2. **Minimize anyway.** Only the short counterparty label needed for the `merchant` field, Categorizer matching, and Loan `paymentHistory[]` matching is retained in structured form. Everything else in the raw text disappears with the 30-day purge.
 3. **On-device by default.** Third-party names sit on the user's device; they reach company infrastructure only inside an encrypted Plus backup of the user's own ledger, where the company acts as PIC for the user's data, not as a collector of the third party's.
-4. **User-editable.** Counterparty and `merchant` labels can be edited or removed by the user at any time; UserRules can rename them permanently.
+4. **User-editable.** Counterparty and `merchant` labels can be edited or removed by the user at any time; UserRules can rename them permanently. The two are one field on screen, because Transaction detail renders `merchant` falling back to `counterparty`. **Removing the label therefore clears BOTH columns**, since clearing only `merchant` would let the parser's raw counterparty surface in its place and the deleted name would reappear. Relabelling clears neither: it sets `merchant` and leaves `counterparty` as the parser's own record of what the notification said, which loan payment matching reads.
 5. **Never used beyond the user's ledger.** Third-party names are never aggregated across users, never used for matching between users, never in telemetry.
 
 ---
@@ -202,7 +202,7 @@ Stance:
 | Transparency screen ("why was this recorded?") | For any auto-committed Transaction, shows the parsed fields side-by-side with the captured raw text via `rawNotificationRef` while retained | Transaction detail |
 | Parser diagnostics | Per-provider parse activity and success view; shows what the pipeline is doing without exposing other users' anything (it is all local) | More → Settings |
 | Review Queue | Confirm/correct every low-confidence parse; corrections become UserRules | Transactions tab (badge) |
-| Edit anything | Every parsed field — `amount`, `direction`, `walletId`, `categoryId`, `merchant`, `note` — is user-editable | Transaction detail |
+| Edit anything | Every parsed field — `amount`, `direction`, `walletId`, `categoryId`, `merchant`, `note` — is user-editable. `categoryId` and `note` are edited in place; the rest open the edit screen. A leg of a linked transfer has to be unlinked first, because both legs describe one movement and changing one alone would leave the pair contradicting itself | Transaction detail |
 | Export everything | CSV export of the ledger plus full structured export of all configuration entities | More → Settings → Privacy (available on all tiers as a data-portability right; the §8 matrix Export row refers only to the Plus-gated Reports CSV convenience export — see [04-features/10-reports.md](04-features/10-reports.md)) |
 | Wipe everything | Deletes all on-device data and, if backup was enabled, server copies; confirmation flow states exactly what will be destroyed | More → Settings → Privacy |
 | Cloud backup toggle (Plus) | Off by default; enabling states what syncs; disabling deletes server copies within 30 days | More → Settings → Privacy |
