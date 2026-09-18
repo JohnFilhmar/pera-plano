@@ -21,7 +21,9 @@ import {
   clearOnboardingProviderPause,
   pendingOnboardingProviderPause,
 } from "@/lib/onboarding/pending_provider_pause";
+import { sweepOrphanedAttachments } from "@/lib/support/attachments";
 import { purgeOldSupportReports } from "@/lib/support/outbox_runner";
+import { listAllAttachmentFileUris } from "@/lib/support/support_reports_repo";
 import { runRecurringPass } from "@/lib/recurring/recurring_ledger_subscriber";
 import { checkForRulesetUpdate } from "@/services/parser_rules";
 import { sendParseStats } from "@/services/telemetry";
@@ -142,6 +144,27 @@ async function runRetention(now: number): Promise<void> {
   // raw-capture purge that threw could skip it silently, and this is the pass
   // that unlinks the largest files this app writes.
   await purgeOldSupportReports(now);
+
+  // Attachment files no row points at, and decrypted temp files a killed
+  // process left behind (GAP-072). AFTER the purge above, so files it has just
+  // unlinked are not counted twice, and after the rows it deleted are already
+  // gone from the reference list.
+  //
+  // THE READ AND THE SWEEP ARE IN ONE TRY, AND THAT IS THE WHOLE POINT. The
+  // sweep deletes everything the list does not name, so a failed read must
+  // never reach it as an empty list — that would unlink the attachments of
+  // every report still waiting to send. Throwing out of the read skips the
+  // sweep entirely, which is the correct failure: a leaked file costs
+  // kilobytes, and a swept queue costs the user their evidence.
+  try {
+    const referenced = await listAllAttachmentFileUris();
+    const { removed } = await sweepOrphanedAttachments(referenced);
+    if (removed > 0) {
+      console.warn(`[support] swept ${removed} orphaned attachment file(s)`);
+    }
+  } catch {
+    // Housekeeping only — never worth failing a launch over.
+  }
 }
 
 /**
