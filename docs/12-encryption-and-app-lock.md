@@ -171,8 +171,15 @@ What the stricter setting would have bought is narrow: protection against code *
 
 **What happens while locked:**
 - The DEK is cleared from memory and the database handle is closed.
+- **The in-memory query cache is emptied.** Closing the database ends the app's ability to read a row; it does nothing about the rows already read. Balances, merchant names and amounts the user looked at before locking are plain JavaScript objects in React Query's cache, and its 30-minute `gcTime` outlives any lock, so leaving them there kept the ledger in memory under a screen that says it is locked and repainted it on unlock before any refetch resolved.
 - The listener keeps capturing to the encrypted buffer (§6). Tracking never stops because the app is locked.
 - The app's own notifications still fire, with **amount-free copy while the keyguard is on**. See §7a.
+
+**When the app enters that state: two mechanisms, and only one of them is a guarantee.**
+
+A five-minute timer is armed when the app goes to the background and cancelled when it comes back, so an app left in the background reaches the locked state above without waiting for the user to return. It is **best effort and nothing is allowed to depend on it**: a timer only fires while Android still schedules this process's JS thread, so Doze, a background process kill, or an OEM's own reaper skips it silently. What the timer does cover, and the check below cannot, is a wall clock moved backwards, because it counts elapsed time rather than subtracting two readings of the clock.
+
+The **guarantee** is the check on the return to the foreground: if five minutes or more have passed since the app backgrounded, it locks before rendering anything. That check is what the trigger above describes, and it holds whether or not the timer ever ran.
 
 **Failure handling:** repeated biometric failure falls through to device credential. There is no app-specific lockout counter — the platform already rate-limits, and adding a second one only creates a way to lock a legitimate user out of their own data.
 

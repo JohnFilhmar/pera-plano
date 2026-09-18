@@ -197,6 +197,10 @@ export function LockProvider({ children }: { children: ReactNode }) {
   // window measured "from when the app backgrounded, not from last
   // interaction" (docs §7) true by construction rather than by care.
   const backgroundedAtRef = useRef<number | null>(null);
+  // The armed background re-lock, or null when foregrounded or not armed.
+  // Held in a ref rather than state because arming it must not re-render the
+  // whole tree on every trip to the background.
+  const backgroundTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -217,16 +221,35 @@ export function LockProvider({ children }: { children: ReactNode }) {
 
   /**
    * The composite teardown (task-9-brief rule 4 / contract §10): clears the
-   * cache key, closes the database handle, and zeroes the in-memory DEK.
-   * Order: cache key first (cheap, synchronous), then await the database
-   * close (SQLCipher's page cache must not survive), and the DEK last —
-   * never scrub key material before everything that might still need it
-   * has finished. Nothing here depends on the DEK still being valid, so this
-   * ordering is a safety margin, not a strict requirement.
+   * cache key, closes the database handle, empties the in-memory query cache,
+   * and zeroes the in-memory DEK. Order: cache key first (cheap, synchronous),
+   * then await the database close (SQLCipher's page cache must not survive),
+   * and the DEK last — never scrub key material before everything that might
+   * still need it has finished. Nothing here depends on the DEK still being
+   * valid, so this ordering is a safety margin, not a strict requirement.
+   *
+   * WHY `queryClient.clear()` IS PART OF THE TEARDOWN. Closing the database
+   * ends the app's ability to READ a row; it does nothing about the rows
+   * already read. Every decrypted balance, merchant name and amount the user
+   * looked at before backgrounding sits in the query cache as plain
+   * JavaScript objects, with a 30-minute `gcTime` that outlives the lock, so
+   * a "locked" app still held the ledger in memory and — the visible half of
+   * the same bug — repainted it on unlock, before any refetch resolved.
+   *
+   * It is safe to run after `clearCacheEncryptionKey()` above. `clear()`
+   * makes the persister attempt one throttled write with no key, and
+   * cache_cipher.ts's `serialize` rejects with `CacheCipherKeyMissingError`
+   * rather than writing anything, which @tanstack/query-async-storage-persister
+   * swallows into a no-op when no `retry` is configured. The stored blob is
+   * left as it was: encrypted, and holding only the two families
+   * `PERSISTED_QUERY_PREFIXES` allows. It also does not wake
+   * `installSafeToSpendCascade`, which subscribes to `invalidate` actions
+   * only, so nothing tries to refetch against the handle just closed.
    */
   const lockNow = useCallback(async () => {
     QueryCache.clearCacheEncryptionKey();
     await Database.closeDatabase();
+    QueryCache.queryClient.clear();
     KeyManager.lock();
     setStatus("locked");
     setErrorMessage(null);
@@ -257,12 +280,42 @@ export function LockProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    const cancelBackgroundTimer = () => {
+      if (backgroundTimerRef.current === null) return;
+      clearTimeout(backgroundTimerRef.current);
+      backgroundTimerRef.current = null;
+    };
+
     const subscription = AppState.addEventListener("change", (next: AppStateStatus) => {
       if (next === "background") {
         backgroundedAtRef.current = Date.now();
+        cancelBackgroundTimer();
+        if (statusRef.current !== "unlocked") return; // nothing to tear down
+        // TWO MECHANISMS, AND BOTH ARE NEEDED. This timer is what makes the
+        // app actually REACH the state docs §7 calls locked — DEK zeroed,
+        // database closed, cache emptied — while it is still in the
+        // background, instead of carrying all three until the user happens to
+        // come back. It is best effort by nature: a timer only fires while
+        // Android still schedules this process's JS thread, so Doze, a
+        // background process kill or an OEM's own reaper silently skips it.
+        // That is why the elapsed-time check on the "active" transition below
+        // stays exactly as it was, and remains the guarantee.
+        //
+        // The timer also covers the one case that check cannot. It counts
+        // elapsed time, while the check below subtracts two `Date.now()`
+        // readings, so a wall clock moved backwards past the five minutes
+        // makes that subtraction small (or negative) and skips the re-lock
+        // for as long as the clock stays there. A pending timer does not care
+        // what the clock says.
+        backgroundTimerRef.current = setTimeout(() => {
+          backgroundTimerRef.current = null;
+          if (statusRef.current !== "unlocked") return;
+          void lockNow();
+        }, FIVE_MINUTES_MS);
         return;
       }
       if (next !== "active") return;
+      cancelBackgroundTimer();
 
       if (statusRef.current === "needs_device_lock") {
         void recheckDeviceLock();
@@ -277,7 +330,10 @@ export function LockProvider({ children }: { children: ReactNode }) {
         void lockNow();
       }
     });
-    return () => subscription.remove();
+    return () => {
+      subscription.remove();
+      cancelBackgroundTimer();
+    };
   }, [lockNow, recheckDeviceLock]);
 
   /**

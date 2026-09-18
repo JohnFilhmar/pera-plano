@@ -65,9 +65,16 @@ jest.mock("@/lib/db/database", () => ({
   closeDatabase: jest.fn(),
 }));
 
+// `queryClient` is a stub object rather than the real client for the same
+// reason the two key functions are jest.fn()s: every describe above asserts
+// WHICH teardown steps lockNow() ran and in what order, and the real client
+// would drag its persister and the cache cipher into all of them. The last
+// describe in this file is the one that routes back to the real module, and
+// it never reads `queryClient`.
 jest.mock("@/lib/query_client", () => ({
   setCacheEncryptionKey: jest.fn(),
   clearCacheEncryptionKey: jest.fn(),
+  queryClient: { clear: jest.fn() },
 }));
 
 // `WipeIncompleteError` is redeclared here rather than imported from the real
@@ -198,6 +205,7 @@ const mockUnlockDatabase = Database.unlockDatabase as jest.Mock;
 const mockCloseDatabase = Database.closeDatabase as jest.Mock;
 const mockSetCacheEncryptionKey = QueryCache.setCacheEncryptionKey as jest.Mock;
 const mockClearCacheEncryptionKey = QueryCache.clearCacheEncryptionKey as jest.Mock;
+const mockQueryClientClear = QueryCache.queryClient.clear as jest.Mock;
 const mockWipeAndStartOver = wipeAndStartOver as jest.Mock;
 const mockIsDeviceSecure = isDeviceSecure as jest.Mock;
 
@@ -1138,6 +1146,102 @@ describe("background timeout", () => {
     expect(mockCloseDatabase).not.toHaveBeenCalled();
     expect(mockKeyManagerLock).not.toHaveBeenCalled();
     nowSpy.mockRestore();
+  });
+
+  // GAP-030. Every test above drives the re-lock through a RETURN to the
+  // foreground, which is the only way the app used to reach it: for the whole
+  // background stay the DEK, the open database handle and every decrypted row
+  // stayed in memory, and docs §7's "what happens while locked" described a
+  // state the app had not entered yet.
+  test("five minutes in the background re-locks on its own, with no return to the foreground", async () => {
+    const result = await arriveAtUnlocked();
+    // Enabled only now: arriveAtUnlocked() above waits on real promises
+    // through waitFor, which fake timers would stall.
+    jest.useFakeTimers();
+    try {
+      act(() => emitAppState("background"));
+      // Still unlocked one millisecond short of the window, which is what
+      // makes the assertion after it about the timer and not about
+      // backgrounding alone.
+      await act(async () => {
+        jest.advanceTimersByTime(5 * 60 * 1000 - 1);
+        await Promise.resolve();
+      });
+      expect(result.current.status).toBe("unlocked");
+      expect(mockKeyManagerLock).not.toHaveBeenCalled();
+
+      await act(async () => {
+        jest.advanceTimersByTime(1);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(result.current.status).toBe("locked");
+      expect(mockClearCacheEncryptionKey).toHaveBeenCalledTimes(1);
+      expect(mockCloseDatabase).toHaveBeenCalledTimes(1);
+      expect(mockKeyManagerLock).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  // GAP-030's other half. Closing the database ends the app's ability to read
+  // a row; the rows it already read are plain objects in the query cache with
+  // a gcTime that outlives the lock, so a "locked" app kept the ledger in
+  // memory and repainted it on unlock before any refetch resolved.
+  test("locking empties the in-memory query cache, after the database is closed and before the DEK is zeroed", async () => {
+    const result = await arriveAtUnlocked();
+    const nowSpy = jest.spyOn(Date, "now");
+    const t0 = 1_700_000_000_000;
+    nowSpy.mockReturnValue(t0);
+
+    act(() => emitAppState("background"));
+    nowSpy.mockReturnValue(t0 + 6 * 60 * 1000);
+    await act(async () => {
+      emitAppState("active");
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(result.current.status).toBe("locked"));
+    nowSpy.mockRestore();
+
+    expect(mockQueryClientClear).toHaveBeenCalledTimes(1);
+    expect(mockCloseDatabase.mock.invocationCallOrder[0]).toBeLessThan(
+      mockQueryClientClear.mock.invocationCallOrder[0],
+    );
+    expect(mockQueryClientClear.mock.invocationCallOrder[0]).toBeLessThan(
+      mockKeyManagerLock.mock.invocationCallOrder[0],
+    );
+  });
+
+  // The timer must not outlive the trip to the background that armed it, or a
+  // user who comes back at minute four, keeps using the app and never
+  // backgrounds it again is re-locked mid-session at minute five.
+  test("returning to the foreground inside the window disarms the timer entirely", async () => {
+    const result = await arriveAtUnlocked();
+    const nowSpy = jest.spyOn(Date, "now");
+    const t0 = 1_700_000_000_000;
+    nowSpy.mockReturnValue(t0);
+
+    act(() => emitAppState("background"));
+    nowSpy.mockReturnValue(t0 + 4 * 60 * 1000);
+    act(() => emitAppState("active"));
+    expect(result.current.status).toBe("unlocked");
+    nowSpy.mockRestore();
+
+    jest.useFakeTimers();
+    try {
+      await act(async () => {
+        jest.advanceTimersByTime(10 * 60 * 1000);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(result.current.status).toBe("unlocked");
+      expect(mockKeyManagerLock).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 
