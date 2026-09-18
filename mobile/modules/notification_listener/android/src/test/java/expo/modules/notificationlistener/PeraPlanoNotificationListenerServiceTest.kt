@@ -818,6 +818,128 @@ class PeraPlanoNotificationListenerServiceTest {
   }
 
   @Suppress("DEPRECATION") // the only StatusBarNotification constructor apps can call
+  // =====================================================================
+  // THE SHADE AT BIND TIME (GAP-125).
+  //
+  // The observed list is written only by onNotificationPosted, so it was
+  // EMPTY at the instant the user granted notification access and filled only
+  // from what posted afterwards. The onboarding provider picker runs seconds
+  // later and its whole subject is "apps we've seen", so it had nothing to
+  // show on a fresh install. recordObservedFrom is the catch-up.
+  //
+  // Tested through the pure companion function rather than through a bound
+  // service, for the reason the class doc gives about handlePosted:
+  // `activeNotifications` belongs to a bound NotificationListenerService, and
+  // a test that had to bind one could only assert that binding works. The
+  // wiring itself is covered by the real-service test at the end.
+  // =====================================================================
+
+  @Test
+  fun `recordObservedFrom records every package already sitting in the shade`() {
+    val active = arrayOf(
+      statusBarNotification(gcash, notification(title = sampleTitle, text = sampleText)),
+      statusBarNotification(maya, notification(title = sampleTitle, text = sampleText)),
+    )
+
+    PeraPlanoNotificationListenerService.recordObservedFrom(active, prefs, capturedAt)
+
+    assertEquals(
+      setOf(gcash, maya),
+      prefs.listObservedPackages().map { it.packageName }.toSet(),
+    )
+  }
+
+  @Test
+  fun `a snapshot is stamped with the post time, not with the moment of the bind`() {
+    // A notification posted three hours ago is not a sighting that just
+    // happened. Stamping it "now" would sort it above genuinely recent posts
+    // and reorder the picker on a lie -- and the list is capped, so the
+    // ordering decides what survives.
+    val active = arrayOf(statusBarNotification(gcash, notification(title = sampleTitle, text = sampleText)))
+
+    PeraPlanoNotificationListenerService.recordObservedFrom(active, prefs, capturedAt)
+
+    val observed = prefs.listObservedPackages().single()
+    assertEquals(postedAt, observed.lastSeenAt)
+    assertNotEquals(capturedAt, observed.lastSeenAt)
+    assertEquals(1, observed.count)
+  }
+
+  @Test
+  fun `a package already observed is neither re-counted nor re-stamped`() {
+    // THE TEST THAT RULES OUT A LOOP OVER recordObservedPackage, which is the
+    // obvious implementation and the wrong one: it INCREMENTS count on every
+    // call, so every rebind would inflate the count of everything already
+    // known -- and count is exactly the signal the picker uses to separate a
+    // bank the user actually uses from a one-off.
+    prefs.recordObservedPackage(gcash, capturedAt)
+    val before = prefs.listObservedPackages().single()
+
+    PeraPlanoNotificationListenerService.recordObservedFrom(
+      arrayOf(statusBarNotification(gcash, notification(title = sampleTitle, text = sampleText))),
+      prefs,
+      capturedAt + 1,
+    )
+
+    val after = prefs.listObservedPackages().single()
+    assertEquals(before.count, after.count)
+    assertEquals(before.lastSeenAt, after.lastSeenAt)
+  }
+
+  @Test
+  fun `the latest post wins when one package is in the shade twice`() {
+    val active = arrayOf(
+      statusBarNotification(gcash, notification(title = sampleTitle, text = sampleText), postTime = postedAt),
+      statusBarNotification(gcash, notification(title = sampleTitle, text = sampleText), postTime = postedAt + 900),
+    )
+
+    PeraPlanoNotificationListenerService.recordObservedFrom(active, prefs, capturedAt)
+
+    assertEquals(postedAt + 900, prefs.listObservedPackages().single().lastSeenAt)
+  }
+
+  @Test
+  fun `a post time of zero is recorded as seen now rather than sorted to the bottom`() {
+    // Not a real instant. Letting it through would make that package the
+    // first thing dropped at the cap, which silently loses an app the picker
+    // exists to offer.
+    val active = arrayOf(
+      statusBarNotification(gcash, notification(title = sampleTitle, text = sampleText), postTime = 0L),
+    )
+
+    PeraPlanoNotificationListenerService.recordObservedFrom(active, prefs, capturedAt)
+
+    assertEquals(capturedAt, prefs.listObservedPackages().single().lastSeenAt)
+  }
+
+  @Test
+  fun `an empty shade records nothing, and neither does a missing one`() {
+    PeraPlanoNotificationListenerService.recordObservedFrom(emptyArray(), prefs, capturedAt)
+    assertEquals(emptyList<ObservedPackage>(), prefs.listObservedPackages())
+
+    PeraPlanoNotificationListenerService.recordObservedFrom(null, prefs, capturedAt)
+    assertEquals(emptyList<ObservedPackage>(), prefs.listObservedPackages())
+  }
+
+  @Test
+  fun `onListenerConnected still reports the binding when the shade cannot be read`() {
+    // Through a REAL service instance, because the seam tests above cannot
+    // catch a recordActiveNotifications that was never wired into the
+    // callback -- the same gap the posted flow has its own real-service test
+    // for.
+    //
+    // Robolectric binds no NotificationManager, so `activeNotifications`
+    // either throws or answers with nothing; this asserts the outcome that
+    // must hold either way. Reporting the binding is plan rule 4 and the
+    // health screen reads it, so a snapshot that failed must never be able to
+    // take that down with it.
+    val service = Robolectric.buildService(PeraPlanoNotificationListenerService::class.java).get()
+
+    service.onListenerConnected()
+
+    assertTrue(prefs.isListenerConnected())
+  }
+
   private fun statusBarNotification(
     packageName: String,
     notification: Notification,

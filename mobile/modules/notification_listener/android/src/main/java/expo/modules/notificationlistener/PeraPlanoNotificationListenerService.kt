@@ -43,6 +43,15 @@ import java.util.UUID
  * arrives about once a second, and a prefs write per arrival is main-thread
  * I/O with no end to it. See the comment on the call itself.
  *
+ * AND THE SAME THING HAPPENS ONCE PER BIND, FROM THE SHADE (GAP-125).
+ * [onListenerConnected] hands whatever is already posted to
+ * [CapturePrefs.recordObservedPackages]. Without it the observed list starts
+ * EMPTY at the instant the user grants access and fills only from what posts
+ * afterwards -- so the onboarding picker, which runs seconds later and whose
+ * whole subject is "apps we've seen", had nothing to show. Names only, exactly
+ * as above: [recordObservedFrom] reads the package name and the post time off
+ * each [StatusBarNotification] and touches nothing else on it.
+ *
  * TESTABILITY: [extractCapture] is a pure companion function and [handlePosted]
  * takes its [CapturePrefs] and its buffer `File` as parameters, so the whole
  * flow is exercisable with no running Android `Service` at all (plan rule 1).
@@ -83,6 +92,7 @@ class PeraPlanoNotificationListenerService : NotificationListenerService() {
     // the plaintext-to-sealed migration, which needs the prefs KEK.
     ensureKeysReady()
     recordConnection(this, true)
+    recordActiveNotifications(this)
   }
 
   override fun onListenerDisconnected() {
@@ -156,6 +166,30 @@ class PeraPlanoNotificationListenerService : NotificationListenerService() {
     }
   }
 
+  /**
+   * Records every package already sitting in the shade at bind time
+   * (GAP-125).
+   *
+   * AFTER [recordConnection], NOT BEFORE. Reporting the binding is plan rule 4
+   * and the health screen reads it; this is a convenience for one onboarding
+   * screen, and it must not be able to delay or displace the thing that says
+   * the listener is alive.
+   *
+   * WRAPPED, like its two neighbours. `activeNotifications` throws when the
+   * listener is not currently connected, and Android can tear this service
+   * down around the callback, so the one thing this must never do is take the
+   * bind down with it. A failure here costs a fuller picker on a first run and
+   * nothing else -- the list still fills from live posts exactly as before.
+   */
+  private fun recordActiveNotifications(context: Context) {
+    try {
+      recordObservedFrom(activeNotifications, CapturePrefs(context), System.currentTimeMillis())
+    } catch (error: Exception) {
+      // Message deliberately omitted -- see the class doc's SECURITY note.
+      Log.e(TAG, "could not record the active notifications: ${error.javaClass.simpleName}")
+    }
+  }
+
   companion object {
 
     private const val TAG = "PeraPlanoListener"
@@ -224,6 +258,51 @@ class PeraPlanoNotificationListenerService : NotificationListenerService() {
         // `package|id|tag|user`, none of which is notification text.
         notificationKey = sbn.key,
       )
+    }
+
+    /**
+     * Turns the shade into the observed-package list (GAP-125), as a pure
+     * companion function so it runs with no `Service` attached -- the same
+     * seam [handlePosted] uses, and for the same reason: `activeNotifications`
+     * is a property of a bound service, and a test that had to bind one could
+     * only assert that binding works.
+     *
+     * NAMES AND TIMES ONLY. `packageName` and `postTime` are read off each
+     * delivery and nothing else is touched, so this stays on the same side of
+     * the mirror rule as [CapturePrefs.recordObservedPackage]: the rule is
+     * about notification CONTENT, and the whole point of the picker is to
+     * offer packages the user has not selected yet.
+     *
+     * ONGOING TILES COUNT HERE, unlike on the posted path. There the
+     * `isOngoing` flag exists to stop a tile re-posting once a second from
+     * paying for a write each time; this runs once per bind, so there is no
+     * re-post to suppress -- and a bank's persistent tile can be the only
+     * thing it has posted, which makes it exactly the evidence the picker
+     * wants.
+     *
+     * THE LATEST POST WINS for a package that appears twice, because the list
+     * is capped and sorted by recency: taking whichever entry the array
+     * happened to list last would drop the wrong one at the cap.
+     *
+     * `nowMillis` is a FALLBACK, not the value used. A `postTime` of zero or
+     * less is not a real instant, and letting it through would sort that
+     * package to the bottom and make it the first thing dropped at the cap --
+     * so an app with a broken post time is recorded as seen now rather than
+     * silently discarded.
+     */
+    internal fun recordObservedFrom(
+      active: Array<StatusBarNotification>?,
+      prefs: CapturePrefs,
+      nowMillis: Long,
+    ) {
+      val sightings = active.orEmpty()
+        .filter { it.packageName != null && it.packageName.isNotEmpty() }
+        .groupBy { it.packageName }
+        .mapValues { (_, posts) ->
+          posts.maxOf { if (it.postTime > 0L) it.postTime else nowMillis }
+        }
+
+      prefs.recordObservedPackages(sightings)
     }
 
     /**

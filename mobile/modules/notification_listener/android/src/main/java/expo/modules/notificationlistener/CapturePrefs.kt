@@ -449,6 +449,67 @@ class CapturePrefs(context: Context) {
   }
 
   /**
+   * Adds packages this device has never observed before, in ONE write
+   * (GAP-125).
+   *
+   * WHY THIS EXISTS RATHER THAN A LOOP OVER [recordObservedPackage]. The
+   * caller is the listener's connect callback, handing over everything already
+   * sitting in the notification shade, and that differs from a live post on
+   * both counts that matter here.
+   *
+   *  - **Cost.** [recordObservedPackage] re-reads the whole list, re-seals it
+   *    and `commit()`s once per call, measured at 3,848 us. A shade holding
+   *    forty notifications would be forty re-reads and forty fsyncs on the
+   *    bind thread, and the list caps at [MAX_OBSERVED_PACKAGES] = 100. This
+   *    is one read, one seal and one commit however many arrive.
+   *  - **Correctness, which is the stronger reason.** [recordObservedPackage]
+   *    INCREMENTS `count` on every call, and the shade is not new evidence
+   *    about a package already counted when it posted. A loop would inflate
+   *    the count of everything already known, every time the listener rebinds
+   *    -- and `count` is exactly the signal the picker uses to tell a bank the
+   *    user actually uses from a one-off.
+   *
+   * ADD-ONLY, FOR THE SAME REASON. A package already on the list is left
+   * completely untouched: not re-counted, and not re-stamped with a later
+   * `lastSeenAt`, because a notification posted three hours ago is not a
+   * sighting that just happened and moving it to the top would reorder the
+   * picker on a lie. That also makes a rebind free: nothing new means nothing
+   * added, and the early return below means no write at all.
+   *
+   * `sightings` maps a package name to when it was actually seen, which the
+   * caller takes from `sbn.postTime` rather than from the clock, so the cap
+   * below keeps the most recent rather than whichever the array listed first.
+   */
+  fun recordObservedPackages(sightings: Map<String, Long>) {
+    if (sightings.isEmpty()) return
+
+    val existing = listObservedPackages()
+    val known = existing.mapTo(mutableSetOf()) { it.packageName }
+
+    val added = sightings
+      // Empty names are ignored for the same reason the single-package path
+      // ignores them: a blank entry would occupy one of the bounded slots
+      // below while naming nothing the picker could offer.
+      .filterKeys { it.isNotEmpty() && it !in known }
+      .map { (packageName, seenAt) ->
+        ObservedPackage(packageName = packageName, count = 1, lastSeenAt = seenAt)
+      }
+
+    // NO WRITE AT ALL when there is nothing new, which is the normal case on
+    // every rebind after the first. Returning before `seal` also means a
+    // reconnect costs nothing rather than 3,848 us to store what is already
+    // there.
+    if (added.isEmpty()) return
+
+    val merged = (added + existing)
+      .sortedByDescending { it.lastSeenAt }
+      .take(MAX_OBSERVED_PACKAGES)
+
+    val sealed = seal(encodeObservedPackages(merged)) ?: return
+    write { it.putString(KEY_OBSERVED_PACKAGES_SEALED, sealed) }
+  }
+
+  /**
    * Every package this device has seen post a notification, **newest-first**
    * -- the list the onboarding provider picker offers alongside the seed
    * catalogue (plan Task 4).
