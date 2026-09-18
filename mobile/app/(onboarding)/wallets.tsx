@@ -81,6 +81,7 @@ import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { ProviderBadge } from "@/components/ui/provider_badge";
 import { useCreateWallet } from "@/hooks/mutations/use_create_wallet";
 import { useSetWalletMatchers } from "@/hooks/mutations/use_set_wallet_matchers";
+import { useAllWalletMatchers } from "@/hooks/queries/use_all_wallet_matchers";
 import { useRuleset } from "@/hooks/queries/use_ruleset";
 import { useWallets } from "@/hooks/queries/use_wallets";
 import { canCreateWallet } from "@/lib/entitlements";
@@ -92,7 +93,7 @@ import { getAppLabels, listObservedPackages } from "@/modules/notification_liste
 import type { ProviderChoice } from "@/lib/ingest/provider_catalogue";
 import type { ProviderRuleset } from "@/lib/ingest/ruleset_types";
 import type { ObservedPackage } from "@/modules/notification_listener";
-import type { NewWalletMatcher } from "@/types/domain";
+import type { NewWalletMatcher, Wallet, WalletMatcher } from "@/types/domain";
 
 const CASH_KEY = "cash";
 
@@ -169,6 +170,55 @@ function matchersForChoice(
   return provider ? matchersForProvider(provider, undefined) : [{ packageName: choice.packageName }];
 }
 
+/** The names and provider packages a non-archived Wallet already holds. */
+type ClaimedIdentity = { names: Set<string>; packages: Set<string> };
+
+/**
+ * What the wallets on this device already lay claim to.
+ *
+ * ONBOARDING RUNS MORE THAN ONCE (GAP-067), so a second pass re-proposes
+ * providers the first pass already created, and re-creating them is not merely
+ * untidy. `createWallet` throws `DuplicateNameError` on the first name
+ * collision and `submit` abandons every proposal after it; and `setMatchers`
+ * MOVES a claimed pair rather than duplicating it
+ * (lib/db/repos/wallet_matchers_repo.ts's own "MOVE, NOT DUPLICATE"), so a
+ * wallet the user had renamed would silently hand the provider it was catching
+ * to a fresh empty one -- no error, and nothing on any screen saying why the
+ * money stopped arriving.
+ *
+ * Names fold to lower case because `createWallet`'s collision check is
+ * `COLLATE NOCASE`. Matching any more loosely than the repository does would
+ * refuse a wallet it would have accepted.
+ */
+function claimedByExistingWallets(
+  wallets: Wallet[] | undefined,
+  matchers: WalletMatcher[] | undefined,
+): ClaimedIdentity {
+  // `useWallets()` excludes archived rows already; filtered again for the same
+  // reason `submit`'s cap count does it -- an archived wallet holds neither a
+  // name nor a package any more, and both are free to be claimed afresh.
+  const active = (wallets ?? []).filter((wallet) => !wallet.isArchived);
+  const activeIds = new Set(active.map((wallet) => wallet.id));
+  return {
+    names: new Set(active.map((wallet) => wallet.name.trim().toLowerCase())),
+    packages: new Set(
+      (matchers ?? [])
+        .filter((matcher) => activeIds.has(matcher.walletId))
+        .map((matcher) => matcher.packageName),
+    ),
+  };
+}
+
+/** Whether `name`, or any package in `matchers`, is already spoken for. */
+function alreadyClaimed(
+  name: string,
+  matchers: readonly NewWalletMatcher[],
+  claimed: ClaimedIdentity,
+): boolean {
+  if (claimed.names.has(name.trim().toLowerCase())) return true;
+  return matchers.some((matcher) => claimed.packages.has(matcher.packageName));
+}
+
 function proposalFor(choice: ProviderChoice, included: boolean): WalletProposal {
   return {
     key: choice.packageName,
@@ -239,6 +289,10 @@ export default function WalletsScreen({
   const router = useRouter();
   const { data: ruleset } = useRuleset();
   const { data: existingWallets } = useWallets();
+  // Whose provider packages are already spoken for -- see
+  // `claimedByExistingWallets`. A whole-table read, the same one the matcher
+  // picker makes for the same question.
+  const { data: existingMatchers } = useAllWalletMatchers();
   const createWallet = useCreateWallet();
   const setMatchers = useSetWalletMatchers();
 
@@ -328,14 +382,53 @@ export default function WalletsScreen({
       );
       const suggestedOnly = choices.filter((choice) => !choice.seen);
 
-      setProposals([...observedChoices.map((choice) => proposalFor(choice, true)), CASH_PROPOSAL]);
+      // NOT AN UNCONDITIONAL `true` ANY MORE (GAP-067). A proposal whose name
+      // or whose provider packages a non-archived Wallet already holds starts
+      // unticked, so a second pass through onboarding shows the user what is
+      // already set up instead of offering to build it again.
+      //
+      // BEST-EFFORT, DELIBERATELY. The two queries behind `claimed` are NOT
+      // added to this effect's gate above: a query that never resolves would
+      // wedge the screen on its loading skeleton for good, which costs the
+      // whole install, where a stale tick costs one wallet the user can add
+      // from the Wallets tab. `submit` repeats the check against fresh data
+      // and is the half that actually guarantees the writes are idempotent.
+      const claimed = claimedByExistingWallets(existingWallets, existingMatchers);
+      // Derived once and read twice below, because the seed and the matcher map
+      // have to agree about which packages a proposal is about to claim.
+      const observedMatchers = new Map(
+        observedChoices.map(
+          (choice) => [choice.packageName, matchersForChoice(choice, ruleset)] as const,
+        ),
+      );
+      setProposals([
+        ...observedChoices.map((choice) =>
+          proposalFor(
+            choice,
+            !alreadyClaimed(
+              defaultNameFor(choice),
+              observedMatchers.get(choice.packageName) ?? [],
+              claimed,
+            ),
+          ),
+        ),
+        // The cash wallet is still always PRESENT -- "plus a cash wallet
+        // checked by default" is about the proposal existing, and a user who
+        // wants a second one renames this row. It is only pre-TICKED when there
+        // is not a cash wallet already, which is the same second-pass rule
+        // every other proposal now follows.
+        {
+          ...CASH_PROPOSAL,
+          included: !claimed.names.has(CASH_PROPOSAL.name.toLowerCase()),
+        },
+      ]);
       // Every OBSERVED proposal now carries its provider's FULL package list
       // too, the same as a quick-added one — seeing sms_relay via ONE package
       // must not leave the created wallet matching only that one.
       setPendingMatchers((current) => {
         const next = { ...current };
-        for (const choice of observedChoices) {
-          next[choice.packageName] = matchersForChoice(choice, ruleset);
+        for (const [packageName, matchers] of observedMatchers) {
+          next[packageName] = matchers;
         }
         return next;
       });
@@ -406,9 +499,39 @@ export default function WalletsScreen({
     // must not double-count nor under-count what is already there.
     let runningCount = (existingWallets ?? []).filter((wallet) => !wallet.isArchived).length;
     let wouldExceedCap = false;
+    // READ HERE, NOT TAKEN FROM THE SEED ABOVE (GAP-067). By the time the user
+    // taps Continue both queries have had the whole step to resolve, so this is
+    // the authoritative answer where the seed was only the best one available
+    // at mount; and the user can tick a row back on themselves, which the seed
+    // cannot know about at all.
+    const claimed = claimedByExistingWallets(existingWallets, existingMatchers);
 
     try {
       for (const proposal of included) {
+        // Both quick-added AND observed proposals carry their provider's FULL
+        // package list in `pendingMatchers` now (see the init effect above,
+        // and `matchersForChoice`'s own doc for why observed joined quick-add
+        // here) — so the only proposal left to reach this fallback is CASH,
+        // whose `packageName` is `null` and whose matcher list is correctly
+        // empty. A non-cash proposal missing from `pendingMatchers` would be a
+        // bug upstream, not a case this fallback is meant to paper over; per-
+        // package fallback is exactly the failure lib/wallets/matchers.ts:48-53
+        // exists to prevent (a provider whose SMS arrive via a second app
+        // silently stops being tracked), so this stays a safety net for cash
+        // alone, not a second matching path for observed providers.
+        const matchers =
+          pendingMatchers[proposal.key] ??
+          (proposal.packageName ? [{ packageName: proposal.packageName }] : []);
+
+        // ALREADY SET UP, SO THERE IS NOTHING TO DO (GAP-067). Skipping is not
+        // merely tidier than letting the writes run: `createWallet` throws
+        // `DuplicateNameError` on the name, which the catch below turns into
+        // "Some wallets couldn't be saved" and which abandons every proposal
+        // after this one; and `setMatchers` would take the provider away from
+        // the wallet already catching it. Neither failure is one the user could
+        // diagnose, and both are avoidable by not asking.
+        if (alreadyClaimed(proposal.name, matchers, claimed)) continue;
+
         // Rule 2: checked ONLY to decide whether to explain the cap
         // afterward. Creation below runs unconditionally — the cap never
         // blocks a wallet the user asked for during this setup.
@@ -430,20 +553,6 @@ export default function WalletsScreen({
           // here.
           openingBalance: centavosFrom(proposal.openingBalanceText),
         });
-        // Both quick-added AND observed proposals carry their provider's FULL
-        // package list in `pendingMatchers` now (see the init effect above,
-        // and `matchersForChoice`'s own doc for why observed joined quick-add
-        // here) — so the only proposal left to reach this fallback is CASH,
-        // whose `packageName` is `null` and whose matcher list is correctly
-        // empty. A non-cash proposal missing from `pendingMatchers` would be a
-        // bug upstream, not a case this fallback is meant to paper over; per-
-        // package fallback is exactly the failure lib/wallets/matchers.ts:48-53
-        // exists to prevent (a provider whose SMS arrive via a second app
-        // silently stops being tracked), so this stays a safety net for cash
-        // alone, not a second matching path for observed providers.
-        const matchers =
-          pendingMatchers[proposal.key] ??
-          (proposal.packageName ? [{ packageName: proposal.packageName }] : []);
         if (matchers.length > 0) {
           await setMatchers.mutateAsync({ walletId: wallet.id, matchers });
         }

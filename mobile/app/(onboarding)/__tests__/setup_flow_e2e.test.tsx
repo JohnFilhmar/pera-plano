@@ -120,7 +120,12 @@ function HomeStub() {
   return <Text testID="home-stub">home</Text>;
 }
 
-function renderFlow() {
+/**
+ * `initialUrl` so a test can re-enter the flow PART WAY THROUGH, which is what
+ * a second pass actually looks like: the user is returned to the start of the
+ * numbered flow with rows from the first pass already in the database.
+ */
+function renderFlow(initialUrl = "/(onboarding)/welcome") {
   return renderRouter(
     {
       _layout: TestRoot,
@@ -136,7 +141,7 @@ function renderFlow() {
       "(onboarding)/done": DoneScreen,
       "(tabs)/index": HomeStub,
     },
-    { initialUrl: "/(onboarding)/welcome" },
+    { initialUrl },
   );
 }
 
@@ -418,4 +423,90 @@ test("a user who skips everything skippable still reaches the end, and onboardin
   await waitFor(() => expect(screen.getByTestId("home-stub")).toBeTruthy());
   expect(screen.queryByTestId("done-step-intro")).toBeNull();
   expect(screen.queryByTestId("onboarding-frame")).toBeNull();
+});
+
+// ---------------------------------------------------------------------------
+// A SECOND PASS OVER THE STEPS THAT WRITE (GAP-067).
+//
+// Onboarding progress is deliberately not persisted, so the flow restarts, and
+// the last four steps write real rows. Until this test the second pass was
+// destructive in two different ways at once. `createWallet` throws
+// `DuplicateNameError` on a name a non-archived Wallet already holds, and
+// `submit` abandons every remaining proposal on the first throw, so the user
+// met "Some wallets couldn't be saved" about wallets that were already saved.
+// Worse and quieter, `setMatchers` MOVES a claimed pair rather than
+// duplicating it, so a provider would have been taken off the wallet already
+// catching it. And `first_limit` inserted the chosen scope unconditionally,
+// leaving two active limits at one cadence feeding one Safe-to-Spend figure.
+//
+// IT DRIVES THE FLOW TWICE OVER ONE DATABASE, because that is the only shape
+// that can catch any of it: every per-screen suite starts from an empty
+// database, which is exactly the state in which all three defects are invisible.
+// ---------------------------------------------------------------------------
+
+test("a second pass over the wallet and limit steps writes nothing twice", async () => {
+  const first = renderFlow();
+
+  await walkToAccess();
+  pressPrimary();
+  await returnFromAccessSettings();
+  await waitFor(() => expect(screen.getByTestId("battery-explainer")).toBeTruthy());
+
+  pressPrimary();
+  await waitFor(() => expect(screen.getByTestId("quick-wallet-list")).toBeTruthy());
+  pressPrimary();
+  await waitFor(() => expect(screen.getByTestId("income-quick-form-intro")).toBeTruthy());
+
+  typeAmount("income-quick-amount", "12000");
+  fireEvent.press(screen.getByTestId("income-quick-save"));
+  await waitFor(() => expect(screen.getByTestId("first-limit-form-intro")).toBeTruthy());
+
+  typeAmount("first-limit-amount", "10000");
+  fireEvent.press(screen.getByTestId("first-limit-save"));
+  await waitFor(() => expect(screen.getByTestId("alerts-step-intro")).toBeTruthy());
+
+  expect((await listWallets()).map((wallet) => wallet.name).sort()).toEqual(["Cash", "GCash"]);
+  expect(await listLimits()).toHaveLength(4);
+
+  // The restart. Nothing is torn down in the database — only the screens.
+  first.unmount();
+  renderFlow("/(onboarding)/wallets");
+  await waitFor(() => expect(screen.getByTestId("quick-wallet-list")).toBeTruthy());
+
+  // Both proposals are still OFFERED, and neither is pre-ticked: the step says
+  // what is already set up rather than offering to build it a second time.
+  await waitFor(() =>
+    expect(
+      screen.getByTestId(`wallet-proposal-toggle-${GCASH}`).props.accessibilityState.checked,
+    ).toBe(false),
+  );
+  expect(
+    screen.getByTestId("wallet-proposal-toggle-cash").props.accessibilityState.checked,
+  ).toBe(false);
+
+  // AND TICKING ONE BACK ON STILL WRITES NOTHING. The seed is only what the
+  // screen offers on arrival; `submit`'s own check is what makes the pass
+  // idempotent, and a user tapping the row back on is the only way to reach it.
+  fireEvent.press(screen.getByTestId(`wallet-proposal-toggle-${GCASH}`));
+  pressPrimary();
+  await waitFor(() => expect(screen.getByTestId("income-quick-form-intro")).toBeTruthy());
+  expect((await listWallets()).map((wallet) => wallet.name).sort()).toEqual(["Cash", "GCash"]);
+
+  pressSkip();
+  await waitFor(() => expect(screen.getByTestId("first-limit-form-intro")).toBeTruthy());
+
+  // The same cadence, a different figure. One limit at that scope, carrying
+  // what the user just typed — not a second one beside the old.
+  typeAmount("first-limit-amount", "20000");
+  fireEvent.press(screen.getByTestId("first-limit-save"));
+  await waitFor(() => expect(screen.getByTestId("alerts-step-intro")).toBeTruthy());
+
+  const limits = await listLimits();
+  expect(limits).toHaveLength(4);
+  expect(limits.filter((limit) => limit.scope === "monthly")).toHaveLength(1);
+
+  const entered = limits.filter((limit) => limit.derivedFrom === null);
+  expect(entered).toHaveLength(1);
+  expect(entered[0].scope).toBe("monthly");
+  expect(entered[0].value).toBe(2_000_000);
 });
