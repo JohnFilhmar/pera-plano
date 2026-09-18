@@ -109,6 +109,7 @@ export type LockStatus =
   | "authenticating" // a device-key unlock attempt is in flight
   | "needs_recovery" // the device Keystore key was permanently invalidated
   | "needs_device_lock" // needs_recovery, but the device ALSO has no screen lock right now (docs §5a) -- recreateDeviceKek() cannot make a new auth-gated key without one, so this runs before rewrapAfterInvalidation is ever attempted
+  | "storage_error" // getKeyState() REJECTED, so the app knows neither whether keys exist nor whether this device was ever set up (GAP-034, docs §11a) -- distinct from "locked", which means the keys are there and simply have not been unwrapped yet
   | "unlocked"; // the DEK is in memory, the database is open, the cache key is set
 
 type LockContextValue = {
@@ -123,6 +124,8 @@ type LockContextValue = {
   keysProvisioned: () => void;
   /** The §11a escape hatch. Callers (RecoveryUnlockForm) own the double-confirmation UI; this only runs the actual destruction once invoked. NEVER REJECTS — its one call site fires it as `void onWipe()`, so a failure reported by rejection would be an unhandled promise on the one screen where a silent failure is most dangerous. Every outcome lands in `status`/`errorMessage` instead. */
   wipeAndStartOver: () => Promise<void>;
+  /** The "storage_error" screen's "Try again": re-reads the key state and routes on the result. Never rejects, for the same reason wipeAndStartOver does not. */
+  retryKeyState: () => Promise<void>;
 };
 
 const LockContext = createContext<LockContextValue | null>(null);
@@ -202,22 +205,65 @@ export function LockProvider({ children }: { children: ReactNode }) {
   // whole tree on every trip to the background.
   const backgroundTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  /**
+   * THE COLD-START KEY-STATE READ, and the retry the §11a screen runs.
+   *
+   * A REJECTION IS NOT "locked" (GAP-034). It used to be, with a "Couldn't
+   * check your device. Try again." message, and the two states are not the
+   * same thing at all: "locked" means the keys are on this device and simply
+   * have not been unwrapped yet, so it renders an Unlock button whose unwrap
+   * reads the very SecureStore that just threw. On a persistent failure (some
+   * OEM Keystore states) that button failed forever with generic copy, and
+   * the wipe affordance existed only under "needs_recovery" — so the app was
+   * bricked with no route out but uninstalling, which docs §11a exists to
+   * forbid.
+   *
+   * @param shouldApply Read after the await, so the mount effect can drop a
+   *   result that arrived after unmount. The user-driven retry passes nothing
+   *   and always applies.
+   * @returns Whether the read succeeded. Returned rather than inferred from
+   *   `status` afterwards, because `statusRef` is assigned during render and
+   *   a caller resuming from this await has not necessarily re-rendered yet.
+   */
+  const checkKeyState = useCallback(
+    async (shouldApply: () => boolean = () => true): Promise<boolean> => {
+      try {
+        const state = await KeyManager.getKeyState();
+        if (!shouldApply()) return true;
+        setStatus(state === "uninitialized" ? "needs_onboarding" : "locked");
+        setErrorMessage(null);
+        return true;
+      } catch {
+        if (shouldApply()) {
+          setStatus("storage_error");
+          // The screen this lands on explains the situation in full, so a
+          // second line of failure copy above its own explanation would say
+          // nothing the user is not already reading. A FAILED RETRY sets one
+          // (below), because then the user needs to know the tap did anything.
+          setErrorMessage(null);
+        }
+        return false;
+      }
+    },
+    [],
+  );
+
+  /** The §11a screen's "Try again": the same read, with copy for the case
+   * where it fails a second time and the screen would otherwise look inert. */
+  const retryKeyState = useCallback(async () => {
+    const ok = await checkKeyState();
+    if (!ok) {
+      setErrorMessage("Still no answer from secure storage. Try restarting your phone.");
+    }
+  }, [checkKeyState]);
+
   useEffect(() => {
     let cancelled = false;
-    KeyManager.getKeyState()
-      .then((state) => {
-        if (cancelled) return;
-        setStatus(state === "uninitialized" ? "needs_onboarding" : "locked");
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setStatus("locked");
-        setErrorMessage("Couldn't check your device. Try again.");
-      });
+    void checkKeyState(() => !cancelled);
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [checkKeyState]);
 
   /**
    * The composite teardown (task-9-brief rule 4 / contract §10): clears the
@@ -546,8 +592,9 @@ export function LockProvider({ children }: { children: ReactNode }) {
       submitRecoveryPhrase,
       keysProvisioned,
       wipeAndStartOver,
+      retryKeyState,
     }),
-    [status, errorMessage, unlock, submitRecoveryPhrase, keysProvisioned, wipeAndStartOver],
+    [status, errorMessage, unlock, submitRecoveryPhrase, keysProvisioned, wipeAndStartOver, retryKeyState],
   );
 
   return <LockContext.Provider value={value}>{children}</LockContext.Provider>;

@@ -255,6 +255,16 @@ The alternative — a permanent lock screen pointing at support — was rejected
 
 The wipe needs no authentication gate. Someone who cannot decrypt the data also cannot read it, so a wipe destroys but never leaks.
 
+### The second way in: secure storage that will not answer
+
+There is a way to reach §11a without losing anything. `getKeyState()` can **reject** rather than return, when the device's secure storage fails a read, which some OEM Keystore states do persistently. The app then knows neither whether this device has keys nor whether it has ever been set up.
+
+**That is not the same answer as "locked" and must never be rendered as one.** "Locked" means the keys are here and simply have not been unwrapped yet, so it renders an Unlock button, and that button's unwrap reads the very storage that just failed. Treating a rejection as "locked" produced exactly the bricked app the section above rejects: an unlock that failed forever with generic copy, and no wipe affordance, because that one lived only behind the recovery-phrase screen.
+
+**The rejection gets its own state and its own screen.** It leads with **Try again**, because a read that failed once may only have failed once and the other control on that screen is irreversible. Behind the same double confirmation, it offers the same wipe. The wipe still works here: `wipeAndStartOver` deletes the database **before** it touches the keys, so even when `wipeKeys()` then fails on the same broken storage, the data is gone and the user is told so rather than left guessing.
+
+**The recovery phrase is deliberately not offered on this screen.** The phrase unlocks a second copy of the DEK that is kept in the same secure storage that is not responding, so the recovery path reads and writes exactly what just threw. Offering the field would send a user for their paper copy to watch a second failure, under an explanation ("your screen lock was removed or reset") that is not true of their phone.
+
 ## 12. Open questions
 
 1. **Backup key rotation.** If a user changes their recovery phrase, every previously uploaded vault blob becomes undecryptable. Either re-upload on rotation, or version the blobs and keep the old key wrapped. Decide when cloud backup is implemented, not before.

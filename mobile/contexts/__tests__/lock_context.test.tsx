@@ -282,6 +282,77 @@ describe("cold start", () => {
 
     await waitFor(() => expect(result.current.status).toBe("locked"));
   });
+
+  // GAP-034. A REJECTION AND "locked" ARE NOT THE SAME ANSWER, and mapping the
+  // first onto the second is what bricked the app: "locked" renders an Unlock
+  // button whose unwrap reads the same SecureStore that just threw, so a
+  // persistent failure (some OEM Keystore states) failed forever with generic
+  // copy, and the only wipe affordance lived under "needs_recovery".
+  test("a REJECTED getKeyState goes to storage_error, never to locked", async () => {
+    mockGetKeyState.mockRejectedValue(new Error("SecureStore unavailable"));
+
+    const { result } = renderHook(() => useLock(), { wrapper });
+
+    await waitFor(() => expect(result.current.status).toBe("storage_error"));
+    // The screen owns the explanation, so there is nothing to say above it
+    // until a retry has also failed.
+    expect(result.current.errorMessage).toBeNull();
+    expect(mockUnlockWithDeviceKey).not.toHaveBeenCalled();
+  });
+
+  test("retryKeyState recovers from storage_error when the read starts working again", async () => {
+    mockGetKeyState.mockRejectedValueOnce(new Error("SecureStore unavailable"));
+
+    const { result } = renderHook(() => useLock(), { wrapper });
+    await waitFor(() => expect(result.current.status).toBe("storage_error"));
+
+    mockGetKeyState.mockResolvedValue("locked");
+    await act(async () => {
+      await result.current.retryKeyState();
+    });
+
+    expect(result.current.status).toBe("locked");
+    expect(result.current.errorMessage).toBeNull();
+  });
+
+  test("a first-run device whose key state only became readable on the retry still reaches onboarding, not the lock screen", async () => {
+    mockGetKeyState.mockRejectedValueOnce(new Error("SecureStore unavailable"));
+
+    const { result } = renderHook(() => useLock(), { wrapper });
+    await waitFor(() => expect(result.current.status).toBe("storage_error"));
+
+    mockGetKeyState.mockResolvedValue("uninitialized");
+    await act(async () => {
+      await result.current.retryKeyState();
+    });
+
+    expect(result.current.status).toBe("needs_onboarding");
+  });
+
+  test("a retry that fails again stays on storage_error and says so, so the button is not silently inert", async () => {
+    mockGetKeyState.mockRejectedValue(new Error("SecureStore unavailable"));
+
+    const { result } = renderHook(() => useLock(), { wrapper });
+    await waitFor(() => expect(result.current.status).toBe("storage_error"));
+
+    await act(async () => {
+      await result.current.retryKeyState();
+    });
+
+    expect(result.current.status).toBe("storage_error");
+    expect(result.current.errorMessage).toMatch(/Still no answer from secure storage/);
+  });
+
+  test("retryKeyState never rejects, whatever getKeyState throws", async () => {
+    mockGetKeyState.mockRejectedValue(new Error("SecureStore unavailable"));
+
+    const { result } = renderHook(() => useLock(), { wrapper });
+    await waitFor(() => expect(result.current.status).toBe("storage_error"));
+
+    await act(async () => {
+      await expect(result.current.retryKeyState()).resolves.toBeUndefined();
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
