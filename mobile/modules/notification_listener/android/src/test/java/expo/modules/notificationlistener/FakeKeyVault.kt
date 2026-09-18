@@ -68,6 +68,15 @@ internal class FakeKeyVault : KeyVault {
     }
   }
 
+  // Unconditionally overwrites, like recreateAesKey above and for the same
+  // reason: AndroidKeyVault deletes the alias and regenerates, and the
+  // observable effect is a keypair that is not the previous one. Tests rely on
+  // that being observable -- a capture sealed under the old public half must
+  // stop opening after this runs.
+  override fun recreateRsaKeyPair(alias: String) {
+    keyPairs[alias] = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
+  }
+
   override fun getAesKey(alias: String): SecretKey =
     secretKeys[alias] ?: error("secret key has not been created")
 

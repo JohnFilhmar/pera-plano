@@ -12,6 +12,16 @@
 // regression test — that test enumerates every key below by name, so adding
 // a fifth header of any name breaks it on purpose.
 //
+// THE ONE THING THAT COULD BREAK THIS PROMISE FROM OUTSIDE THIS FILE is the
+// OTA update client (GAP-028). `expo-updates` is a dependency here, and when
+// its system is enabled it makes its OWN request to u.expo.dev on every launch,
+// carrying an EAS client identifier this file has no say over -- a correlatable
+// id leaving the device, from a library rather than from any call site. It is
+// switched off (`updates.enabled: false` in app.json, pinned by a test in
+// modules/notification_listener/__tests__/app_plugin.test.ts), which is what
+// keeps the paragraph above true of the whole app and not merely of this file.
+// See docs/OTA_RUNBOOK.md before changing that.
+//
 // Every value below is read from Expo's/React Native's own runtime constants
 // (never a hardcoded string), so it can't drift from what actually shipped.
 import { Platform } from "react-native";

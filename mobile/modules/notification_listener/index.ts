@@ -112,6 +112,7 @@ type NativeNotificationListenerModule = {
   unwrapWithDeviceKek(blobB64: string): Promise<string>;
   isDeviceKeyUsable(): Promise<boolean>;
   recreateDeviceKek(): Promise<void>;
+  recreateCaptureKeyPair(): Promise<void>;
   drainPendingCaptures(): Promise<NativeRawCapture[]>;
   clearCaptureBuffer(): Promise<void>;
   isDeviceSecure(): Promise<boolean>;
@@ -366,6 +367,26 @@ export function isDeviceKeyUsable(): Promise<boolean> {
  */
 export function recreateDeviceKek(): Promise<void> {
   return NativeNotificationListener.recreateDeviceKek();
+}
+
+/**
+ * Rotates the capture keypair after the old one has been permanently
+ * invalidated (GAP-059).
+ *
+ * DESTRUCTIVE IN A WAY `recreateDeviceKek` IS NOT. The device KEK only wraps
+ * the DEK, and the DEK comes back from the recovery phrase, so that rotation
+ * loses nothing. A capture sealed to the old public half has no second copy
+ * anywhere: its private half is gone and the ciphertext goes with it. Call this
+ * only once the buffered captures are understood to be lost, and say so by
+ * calling `clearCaptureBuffer` after it.
+ *
+ * Skipping it is worse, which is why it exists. Recovery used to recreate the
+ * device KEK and stop there, leaving `getCapturePublicKey()` returning the DEAD
+ * pair's public half, so every capture sealed AFTER a successful recovery was
+ * unopenable too and nothing on screen said so.
+ */
+export function recreateCaptureKeyPair(): Promise<void> {
+  return NativeNotificationListener.recreateCaptureKeyPair();
 }
 
 /**

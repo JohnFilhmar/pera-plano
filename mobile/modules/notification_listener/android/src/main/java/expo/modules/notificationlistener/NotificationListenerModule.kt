@@ -134,6 +134,12 @@ class NotificationListenerModule : Module() {
       KeyStoreBridge.recreateDeviceKek()
     }
 
+    // ---- Recovery: rotate a permanently-invalidated capture keypair ------
+
+    AsyncFunction("recreateCaptureKeyPair") {
+      KeyStoreBridge.recreateCaptureKeyPair()
+    }
+
     // ---- Decrypting drain of the buffered-while-dead queue ---------------
 
     AsyncFunction("drainPendingCaptures") {

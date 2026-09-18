@@ -90,7 +90,7 @@ Google Play treats notification access (`NotificationListenerService`) as sensit
 3. **Review evidence pack.** Submission includes: a screen-recorded video of the full flow (disclosure → grant → first auto-tracked transaction → transparency screen showing the captured text → pause → wipe), annotated screenshots, the privacy notice, and the PIA summary (§2.6).
 4. **Voluntary, not coerced.** The permission is skippable; the app degrades to manual entry rather than blocking. This is visible in the review video and materially strengthens the "user choice" dimension of review.
 5. **Staged rollout.** The declaration is exercised first on internal and closed testing tracks to surface policy objections before any public launch date is committed.
-6. **Re-declaration discipline.** Any release that changes what the listener touches re-triggers an internal policy review before submission.
+6. **Re-declaration discipline.** Any release that changes what the listener touches re-triggers an internal policy review before submission. **This is why over-the-air updates are off** (`updates.enabled: false`, GAP-028): an OTA publish reaches installed devices without a store submission, so it is a route around this rule by construction. Shipping through the store is what makes the rule enforceable. See [OTA_RUNBOOK.md](./OTA_RUNBOOK.md) before re-enabling.
 
 ### 3.2 What PeraPlano deliberately does not request
 
