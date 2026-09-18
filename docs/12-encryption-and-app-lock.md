@@ -183,6 +183,10 @@ The **guarantee** is the check on the return to the foreground: if five minutes 
 
 **Failure handling:** repeated biometric failure falls through to device credential. There is no app-specific lockout counter — the platform already rate-limits, and adding a second one only creates a way to lock a legitimate user out of their own data.
 
+**The screen itself is guarded, app-wide, whether locked or not.** `FLAG_SECURE` is set once at root mount and never released (`lib/privacy/capture_guard.ts`; owner's call, 2026-09-08), so the system screenshot, screen recording, casting and **the Recents thumbnail** all come back blank. The lock alone could never cover this: Android captures the task thumbnail at the moment the app goes to the background, which is inside the five-minute window while the app is still unlocked, so Safe-to-Spend, balances and the ledger would otherwise sit in the app switcher for anyone holding the phone. §4 puts that phone in scope.
+
+The guard is **best effort, not a wall**: it stops the system, not a second phone's camera, and some OEM builds honour it incompletely. **Development builds are exempt** so the docs/13 walkthrough and bug reports can still carry screenshots; preview and production are both guarded, preview especially, since that is the build handed to other people. The visible cost is the blank Recents thumbnail, which is the flag working rather than a bug.
+
 ## 7a. Alert copy on the lock screen
 
 Limit alerts, bill reminders and loan reminders fire whether or not the phone is unlocked, and Android renders them on the lock screen where anyone nearby can read them. A notification reading *"You've spent ₱8,400 of your ₱10,000 limit"* on a phone face-up on a desk or in a jeepney undoes the encryption work in the most visible way possible.
