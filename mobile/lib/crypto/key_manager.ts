@@ -331,6 +331,20 @@ export async function rewrapAfterInvalidation(phrase: string[]): Promise<Uint8Ar
   const newDeviceWrapB64 = await NotificationListener.wrapWithDeviceKek(bytesToBase64(recoveredDek));
   await SecureStore.setItemAsync(STORAGE_KEYS.deviceWrap, newDeviceWrapB64);
 
+  // THE CAPTURE KEYPAIR IS INVALIDATED BY THE SAME EVENT AND WAS NOT BEING
+  // REPLACED (GAP-059). Removing the device screen lock kills every key created
+  // with `setUserAuthenticationRequired(true)`, which is the device KEK AND the
+  // capture pair. Recreating only the KEK made this function report a
+  // successful recovery while `getCapturePublicKey()` still returned the dead
+  // pair's public half, so the listener kept sealing captures nothing could
+  // ever open, each drain quietly discarded the batch, and the listener-health
+  // card went on saying everything was fine.
+  //
+  // AFTER the re-wrap above, deliberately. If this throws, the DEK is already
+  // safely wrapped under the new device key and the recovery holds; reversed,
+  // a failure here would strand a recovered DEK with no wrap on disk.
+  await NotificationListener.recreateCaptureKeyPair();
+
   dek = recoveredDek;
   return recoveredDek;
 }
@@ -400,4 +414,14 @@ export async function wipeKeys(): Promise<void> {
     SecureStore.deleteItemAsync(STORAGE_KEYS.recoveryWrap),
     SecureStore.deleteItemAsync(STORAGE_KEYS.recoverySalt),
   ]);
+
+  // A WIPE MUST NOT LEAVE THE NEXT INSTALL ON THE OLD KEY MATERIAL (GAP-059).
+  // Nothing above touches the capture keypair, so "wipe and start over" used to
+  // start over on whatever pair was already in the Keystore -- including a dead
+  // one, if the wipe is what the user reached for after an invalidation, which
+  // is the likeliest way to arrive here.
+  //
+  // Nothing is lost that was not already lost: every buffered capture was
+  // sealed under a DEK this function has just deleted the wraps for.
+  await NotificationListener.recreateCaptureKeyPair();
 }

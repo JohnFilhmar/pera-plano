@@ -90,6 +90,17 @@ internal interface KeyVault {
   /** Ensures an RSA keypair for [alias] exists, generating one if absent. Idempotent, never rotates. */
   fun getOrCreateRsaKeyPair(alias: String)
 
+  /**
+   * Deletes [alias] if present and generates a fresh RSA keypair in its place.
+   *
+   * The counterpart of [recreateAesKey], and destructive in the same way: every
+   * capture ever sealed under the old public half becomes permanently
+   * unopenable. That is acceptable only where the old PRIVATE half is already
+   * gone, which is the one situation this exists for (GAP-059) -- a key
+   * invalidated by the user removing the device screen lock.
+   */
+  fun recreateRsaKeyPair(alias: String)
+
   /** Fetches an AES key created by [getOrCreateAesKey]. Throws if [alias] doesn't exist. */
   fun getAesKey(alias: String): SecretKey
 
@@ -372,6 +383,24 @@ internal object AndroidKeyVault : KeyVault {
         }
       }
     }
+  }
+
+  override fun recreateRsaKeyPair(alias: String) = synchronized(lock) {
+    val keyStore = keyStore()
+    // Guarded exactly like recreateAesKey: deleteEntry on an absent alias
+    // throws on some providers.
+    if (keyStore.containsAlias(alias)) {
+      keyStore.deleteEntry(alias)
+    }
+    // DELEGATES RATHER THAN COPYING THE SPEC, which is the whole reason this
+    // is three lines and recreateAesKey needed a shared generateAesKey helper.
+    // The KeyGenParameterSpec above runs to some sixty lines of deliberate
+    // choices (both OAEP digests authorized, StrongBox fallback, a 10-second
+    // auth window sized for a 500-record drain); a second copy is how a
+    // recreated key silently becomes weaker than one created on first run.
+    // `synchronized` is reentrant, so re-taking the same lock keeps the delete
+    // and the regenerate atomic against a concurrent getOrCreateRsaKeyPair.
+    getOrCreateRsaKeyPair(alias)
   }
 
   override fun getAesKey(alias: String): SecretKey =

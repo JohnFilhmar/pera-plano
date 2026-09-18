@@ -1,5 +1,6 @@
 package expo.modules.notificationlistener
 
+import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.UserNotAuthenticatedException
 import java.io.File
 import java.nio.file.Files
@@ -414,24 +415,23 @@ class CaptureBufferTest {
   // A PERMANENTLY INVALIDATED capture private key -- the state removing the
   // device screen lock leaves behind (docs §5).
   //
-  // READ THIS BEFORE "FIXING" THE TEST BELOW. It asserts what this code does
-  // TODAY, and what it does today is lose the buffer. It is a defect record,
-  // not a guarantee: GAP-059 is the entry that changes this behaviour, and
-  // when it lands this test MUST go red and be rewritten to assert the new
-  // contract (drain rethrows, the file survives, JS decides whether to
-  // clear). Do not weaken it to keep the suite green; a red test here is the
-  // fix landing correctly.
+  // THIS TEST WAS INVERTED BY GAP-059, WHICH IS WHAT ITS PREDECESSOR ASKED FOR.
+  // It used to pin the defect: openAll's `catch (error: Exception)` swallowed
+  // KeyPermanentlyInvalidatedException (it extends InvalidKeyException) into
+  // the per-line skip-and-count path, drain deleted the file afterwards, and a
+  // device whose key had died silently discarded every buffered capture and
+  // resolved `[]` while the health card kept reporting a working listener. The
+  // old test asserted exactly that, with a comment saying it must go red and be
+  // rewritten when the fix landed. This is that rewrite.
   //
-  // Why it is pinned rather than left unwritten: openAll's `catch (error:
-  // Exception)` swallows KeyPermanentlyInvalidatedException (it extends
-  // InvalidKeyException) into the per-line skip-and-count path, and drain
-  // then deletes the file -- so a device whose key died silently discards
-  // every buffered capture and resolves `[]`. Nothing in this suite noticed,
-  // because nothing in this suite had ever produced a dead key.
+  // The contract now matches the auth case one test above: a failure that is
+  // not per-line aborts the whole drain BEFORE the delete, so the file survives
+  // and JS decides what happens next. It cannot decide anything about captures
+  // that have already been deleted.
   // ---------------------------------------------------------------------
 
   @Test
-  fun `a dead capture key currently costs the whole buffer and resolves empty -- pinned until GAP-059`() {
+  fun `a dead capture key aborts the drain and leaves the buffer on disk (GAP-059)`() {
     CaptureBuffer.append(file, record(1))
     CaptureBuffer.append(file, record(2))
     assertEquals(2, CaptureBuffer.size(file))
@@ -441,25 +441,22 @@ class CaptureBufferTest {
     KeyStoreBridge.vault = InvalidatedPrivateKeyVault(fakeVault)
     assertEquals(3, CaptureBuffer.append(file, record(3)))
 
-    val drained = CaptureBuffer.drain(file)
+    assertThrows(KeyPermanentlyInvalidatedException::class.java) {
+      CaptureBuffer.drain(file)
+    }
 
-    // DEFECT, PINNED. Every one of the three is unrecoverable ciphertext and
-    // is reported as though the buffer had been empty all along.
-    assertTrue(
-      "GAP-059: a dead key is swallowed as a per-line skip, so drain resolves empty",
-      drained.isEmpty(),
-    )
-    assertFalse(
-      "GAP-059: and the file is deleted afterwards, so the captures are gone for good",
-      file.exists(),
-    )
-
-    // NOT the auth case, and that distinction is the load-bearing half of
-    // this test. UserNotAuthenticatedException aborts the drain with the
-    // file intact (the test above); this exception is a sibling of it in the
-    // same Keystore family and gets the opposite treatment. If a future
-    // change accidentally routed the two together, one of these two tests
-    // fails whichever way it went.
-    assertEquals(0, CaptureBuffer.size(file))
+    // THE FILE IS THE POINT. These captures are unopenable either way -- their
+    // private key is gone and nothing brings it back -- but losing them
+    // silently and losing them after telling JS are different products. JS
+    // clears the buffer explicitly through clearCaptureBuffer once it has
+    // recreated the keypair, so the loss is a decision rather than an accident.
+    //
+    // THE SAME TREATMENT AS THE AUTH CASE, and that shared treatment is the
+    // load-bearing half of this test now. Both are Keystore-family failures
+    // about the KEY rather than about one line, both abort, both leave the
+    // file. If a future change routed either back into the per-line skip, one
+    // of these two tests fails whichever way it went.
+    assertTrue("a drain that aborts on a dead key must not touch the file", file.exists())
+    assertEquals(3, CaptureBuffer.size(file))
   }
 }

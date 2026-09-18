@@ -697,6 +697,17 @@ This is the point of the entire encryption plan. Each line is falsifiable.
 - [ ] `isDeviceKeyUsable()` goes false; the app detects it on next unlock, prompts for the
       recovery words, requires a screen lock to be set again, and restores access to the **same
       ledger with no data loss** → `________________`
+- [ ] **AND CAPTURE STILL WORKS AFTERWARDS.** With the listener enabled, trigger one new bank or
+      e-wallet notification AFTER the recovery above, then open the app and confirm the
+      transaction lands in the ledger or the Review Queue → `________________`
+
+> The second box is the one that was missing, and it is why GAP-059 shipped. Removing the screen
+> lock invalidates every key created with `setUserAuthenticationRequired(true)`, which is the device
+> KEK **and** the capture keypair. Recovery only ever recreated the KEK, so the first box could pass
+> while `getCapturePublicKey()` still handed back the dead pair's public half: the listener went on
+> sealing captures nothing could open, every drain discarded its batch and resolved empty,
+> `lastCaptureAt` kept advancing, and the listener-health card kept reporting a working listener.
+> Silent, permanent, and invisible to a checklist that stops at "the ledger is still there".
 
 ### Enroll an additional fingerprint
 - [ ] **The key must SURVIVE.** → `________________`

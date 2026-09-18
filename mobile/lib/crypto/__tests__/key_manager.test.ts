@@ -37,6 +37,7 @@ jest.mock("@/modules/notification_listener", () => ({
   unwrapWithDeviceKek: jest.fn(),
   isDeviceKeyUsable: jest.fn(),
   recreateDeviceKek: jest.fn(),
+  recreateCaptureKeyPair: jest.fn(),
 }));
 
 // Tracks every Uint8Array expo-crypto has ever generated, via a closure the
@@ -353,6 +354,43 @@ describe("rewrapAfterInvalidation", () => {
     simulateDeviceKeyInvalidated();
 
     await expect(rewrapAfterInvalidation(TEST_PHRASE)).resolves.toBeInstanceOf(Uint8Array);
+  });
+
+  it("MUST also replace the capture keypair, which the same event invalidated", async () => {
+    // GAP-059. Removing the device screen lock kills EVERY key created with
+    // `setUserAuthenticationRequired(true)`, and that is the device KEK and the
+    // capture keypair, not just the KEK. Recovery used to rotate the KEK and
+    // stop, so it reported success while `getCapturePublicKey()` still returned
+    // the dead pair's public half. The listener then sealed every new capture
+    // to a key nothing could open, each drain discarded the batch, and the
+    // health card kept saying the listener was fine. Silent and permanent.
+    //
+    // Asserted as a CALL rather than through the fake bridge, deliberately:
+    // unlike the KEK there is nothing downstream in this file that would fail
+    // if the pair stayed dead, which is precisely the property that let this
+    // ship. Nothing failing is the bug.
+    wireDefaultNativeBridge();
+    await initializeKeys(TEST_PHRASE);
+    lock();
+    simulateDeviceKeyInvalidated();
+    (NotificationListener.recreateCaptureKeyPair as jest.Mock).mockClear();
+
+    await rewrapAfterInvalidation(TEST_PHRASE);
+
+    expect(NotificationListener.recreateCaptureKeyPair).toHaveBeenCalledTimes(1);
+  });
+
+  it("replaces the capture keypair on a wipe, so the next install starts clean", async () => {
+    // Same reasoning from the other direction: a wipe is the likeliest thing a
+    // user reaches for AFTER an invalidation, so "start over" must not start
+    // over on the dead pair that sent them there.
+    wireDefaultNativeBridge();
+    await initializeKeys(TEST_PHRASE);
+    (NotificationListener.recreateCaptureKeyPair as jest.Mock).mockClear();
+
+    await wipeKeys();
+
+    expect(NotificationListener.recreateCaptureKeyPair).toHaveBeenCalledTimes(1);
   });
 
   it("leaves the DEK unlocked in memory immediately after a successful recovery", async () => {
