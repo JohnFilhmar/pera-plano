@@ -709,6 +709,26 @@ This is the point of the entire encryption plan. Each line is falsifiable.
 > `lastCaptureAt` kept advancing, and the listener-health card kept reporting a working listener.
 > Silent, permanent, and invisible to a checklist that stops at "the ledger is still there".
 
+### Grant notification access with the shade already full (GAP-125)
+- [ ] Before granting, leave at least one bank or e-wallet notification sitting in the shade.
+      Complete onboarding as far as the provider picker and confirm that app is listed under
+      **"Apps we've seen"**, not merely under "Common in the Philippines" → `________________`
+- [ ] **AND THE COUNT IS NOT INFLATED BY A REBIND.** Reboot the phone (which rebinds the listener),
+      reopen the picker from More > Privacy, and confirm the same app has not climbed the list
+      relative to the others → `________________`
+
+> This is the acceptance criterion GAP-091 could not meet on its own and the reason that entry was
+> logged PARTIAL. The picker's whole premise is that the device can say which banking apps this
+> person actually uses; until `onListenerConnected` took a snapshot, the observed list was empty at
+> the moment access was granted and the picker offered nothing but unverified seed guesses.
+>
+> The second box guards the implementation rather than the feature. The obvious version of this fix
+> is a loop over `recordObservedPackage`, which increments `count` on every call — so every rebind
+> would inflate the count of every package already known, and `count` is what orders the list. The
+> shipped recorder is add-only and a unit test pins it, but the unit test runs on Robolectric and
+> **nothing in CI compiles or tests a line of Kotlin**, so this box is the only check that a real
+> reboot on a real phone behaves the same way.
+
 ### Enroll an additional fingerprint
 - [ ] **The key must SURVIVE.** → `________________`
 
