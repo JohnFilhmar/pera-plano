@@ -6089,6 +6089,8 @@ Revert.
 **Open questions**
 - Cursor or doc amendment? (Wave 0.)
 
+> **OWNER DECISION (2026-09-18):** **PERSIST AN `onboarding_step` SETTING.** The doc amendment was rejected. What settled it was the loop rather than the principle: the access and battery steps are CONSECUTIVE and both hand off to system Settings, the background re-lock fires after five minutes away, and the restart mechanism is not the one this entry names. Keys exist by then, so a relock sets `locked` rather than `needs_onboarding`; on unlock `app/index.tsx` sees `onboarding_complete` false, routes to the group, and `app/(onboarding)/index.tsx:148` redirected unconditionally to "welcome". A user could therefore lose the flow twice in a row, on two adjacent screens. The three costs `onboarding_state.ts`'s header raised against a cursor are each answered: the cursor is one `app_settings` row; "abandoned" versus "mid-step" is not a distinction worth drawing, since resuming at the recorded step is right for both once the writing steps are idempotent; and a value from a version this build does not know reads back as "welcome", which is exactly the old behaviour. The cursor is written in the route group's LAYOUT off the pathname, one place for all ten steps and one that records a back navigation too. `OnboardingFrame` would have been the other single place and is not eligible: it lives in `components/`, which may not reach a repository.
+
 ### GAP-068 [SEC] No secure-window flag anywhere, so the ledger is visible in the Recents thumbnail and screenshots while unlocked
 
 > **REMEDIATION: DONE** (2026-09-18) - commit c29d38d, branch worktree-gap-wave-22. Verification: **CI ON c29d38d, GREEN, read from the completed run:** mobile-ci 35305120125, 9 of 9 jobs success. server-ci did NOT fire, and that is correct rather than a miss: contrary to what the wave 21 handoff recorded, server-ci.yml IS path-filtered, on both push and pull_request through a YAML anchor covering server, docker-compose, the two workflow files and docs/07. mobile-ci still has NO gradle job, so nothing in this run gates a single line of Kotlin. CLOSED ON EVIDENCE, MOSTLY ALREADY DONE. The entry's own evidence line says a grep for FLAG_SECURE or preventScreenCapture returns nothing at HEAD; that has not been true since 2026-09-08, when an owner's call took the guard app-wide. lib/privacy/capture_guard.ts sets FLAG_SECURE once at root mount via applyCaptureGuard, called unconditionally from app/_layout.tsx:360 before bootstrap and regardless of lock state, and NEVER released, which is stricter than this entry proposed on both axes it named: it is app-wide rather than background-only, and it covers the locked screens too. It fails towards protection, since shouldPreventCapture returns true for undefined and for any unrecognised variant and only the exact string "development" opts out, and it has its own suite at lib/privacy/__tests__/capture_guard.test.ts. The entry's "decide app-wide versus background-only with the owner" is therefore already answered and needs no new question; background-only would also have been the weaker choice technically, because Android captures the task thumbnail as the activity backgrounds and a flag set from a JS AppState event races that snapshot. The one checklist item genuinely outstanding was the documentation, and it is what this commit adds: docs/12 section 7 said nothing about screen capture or the Recents thumbnail, so the part of the threat model the lock cannot cover by itself went unrecorded. The entry's "do not" about the support report screen is worth knowing rather than acting on: report_problem.tsx attaches through useSupportAttachmentDraft and an AttachmentStrip rather than by taking a screenshot in place, so the app-wide flag does not block the attach itself; what it does cost is the user's ability to take a fresh screenshot of PeraPlano to attach, which is the accepted cost of the 2026-09-08 call and why development builds are exempt. RESIDUAL, and it is the acceptance criterion: nobody has backgrounded the app and looked at the Recents thumbnail on the A54 since the guard landed. Docs-only change, so no test or typecheck bearing on it.
@@ -7545,6 +7547,10 @@ Revert.
 
 **Open questions**
 - Confirm the target order with the owner before moving the step.
+
+> **OWNER DECISION (2026-09-18):** **MOVE THE STEP INTO THE RESERVED SLOT, after "battery".** Confirmed against docs step 6 and against `ONBOARDING_STEPS`, which has always listed `providers` at that index without routing it. The code's own justification for the early position is void rather than merely outweighed: `app/(onboarding)/index.tsx` said the picker runs there because it is the first step that writes something the listener will act on, and the listener acts on nothing before the grant.
+>
+> **AND A SECOND DECISION ON THE SAME DAY, ONCE THE MOVE WAS BUILT: RECORD THIS ENTRY PARTIAL RATHER THAN ADD KOTLIN.** The acceptance criterion does NOT follow from the move, and that was found by reading the native source rather than by trusting the entry. `observed_packages` is written in exactly one place, `onNotificationPosted` (`PeraPlanoNotificationListenerService.kt:287`); `onListenerConnected` (`:81`) records the connection and takes no snapshot, and there is no `getActiveNotifications()` call anywhere in the module. So the observed list is empty at the instant access is granted and fills only from notifications posted afterwards. Moving the picker two screens later changes "always empty" to "empty unless something posted in the last few seconds", which is strictly better and still not the criterion. The snapshot that would close it is Kotlin, and `mobile-ci.yml` has no gradle job, so it would ship gated only by a local run; the owner chose to file it separately as **GAP-125** rather than fold ungated native work into this wave.
 
 ### GAP-092 [CODE] The native provider filter has no getter and no launch re-sync, so an unopenable sealed filter silently becomes allow-all
 
@@ -9620,6 +9626,69 @@ Revert. Note that reverting restores a 1.17%-per-run false failure.
 **Open questions**
 None. Whether the other suites in GAP-052's flaky set have causes this concrete is a separate question, and this entry is not evidence either way.
 
+### GAP-125 [CODE] The listener records no observed packages until a notification arrives, so the provider picker is near-empty even in its corrected position
+
+| Field | Value |
+|---|---|
+| Severity | S3 Moderate |
+| Complexity | S |
+| Difficulty | D2 Standard |
+| Risk | R2 |
+| Confidence | C1 Verified |
+| Priority score | 1.0 |
+| Agent suitability | AGENT-ASSISTED |
+| Depends on | none |
+| Blocks | none |
+| Est. agent turns | 3-5 |
+
+**Location**
+- `mobile/modules/notification_listener/android/src/main/java/expo/modules/notificationlistener/PeraPlanoNotificationListenerService.kt:81-86` (`onListenerConnected`: keys, then `recordConnection`, and nothing else)
+- `mobile/modules/notification_listener/android/src/main/java/expo/modules/notificationlistener/PeraPlanoNotificationListenerService.kt:287` (`prefs.recordObservedPackage(...)`, the ONLY writer of the observed list, inside `onNotificationPosted`)
+- `mobile/app/(onboarding)/providers.tsx` (the picker, whose "Apps we've seen" group reads the list)
+- `docs/04-features/01-onboarding.md` (step 6's acceptance criterion: the picker lists a provider under "Apps we've seen")
+
+**Evidence**
+`observed_packages` is written in exactly one place, `onNotificationPosted`, so it accumulates only from notifications posted while the listener is bound. `onListenerConnected` calls `ensureKeysReady()` and `recordConnection(this, true)`; there is no `getActiveNotifications()` call anywhere in the module. So the list is empty at the instant Notification Access is granted and fills only afterwards, one posted notification at a time.
+
+**What is wrong**
+GAP-091 moved the picker from before the grant to two screens after it, which changed the list from ALWAYS empty to empty-unless-something-posted-in-the-last-few-seconds. On a fresh install the user grants access, taps through the battery step, and arrives at the picker within seconds. Nothing has necessarily posted in that window, so "Apps we've seen" is usually still empty and every tile is an unverified seed guess.
+
+**Why it matters**
+It is the residual on GAP-091 and the reason that entry is PARTIAL. The picker's whole premise is that the device can say which banking apps this person actually uses; without a snapshot it can only say so for someone who lingers. The seed catalogue's names are unverified (seven were invented from app names), so an empty observed group leaves the user choosing from guesses on the screen that decides what gets tracked.
+
+**Authority**
+docs/04-features/01-onboarding.md step 6's acceptance criterion.
+
+**Blast radius**
+One Kotlin method and the observed-package list. **Nothing in CI compiles or tests a line of Kotlin:** `mobile-ci.yml`'s jobs are `typecheck`, `jest` (sharded), a shard aggregator and `secret-scan`, with no gradle job, so this change is gated only by a local gradle run and by the device.
+
+**Proposed fix**
+In `onListenerConnected`, after `ensureKeysReady()`, iterate `activeNotifications` and call `prefs.recordObservedPackage` for each, passing `isOngoing` the same way `onNotificationPosted` does so a foreground-service tile still counts as a first sighting. `recordObservedPackage` already distinguishes a first sighting from a re-post, so the snapshot cannot inflate counts. `activeNotifications` throws if the service is not connected, so it belongs inside the connected callback and needs the same try/catch discipline `recordConnection` uses.
+
+**Implementation checklist**
+- [ ] In `PeraPlanoNotificationListenerService.kt`, snapshot `activeNotifications` in `onListenerConnected` and record each package.
+- [ ] Wrap it so a throw cannot stop the service binding, the way `recordConnection` already is.
+- [ ] In `PeraPlanoNotificationListenerServiceTest.kt`, add a case asserting a connect with active notifications records their packages, and one asserting a failure to read them still leaves the listener connected.
+- [ ] Run the Kotlin tests locally through gradle, since CI has no job that would.
+- [ ] Re-check GAP-091's acceptance criterion on the A54 and record it in `docs/13-on-device-verification.md`.
+
+**Acceptance criteria**
+- [ ] On a fresh install with a bank notification already in the shade, the provider picker lists that app under "Apps we've seen" without waiting for a new notification.
+
+**Verification commands**
+```bash
+cd mobile/android && ./gradlew :notification_listener:testDebugUnitTest
+```
+
+**Do not**
+Do not capture notification TEXT from the snapshot. `recordObservedPackage` takes the package name and nothing else, and that boundary is what keeps the observed list inside what the privacy doc promises. Do not treat this as closing GAP-050: that entry is about captures lost across a reconnect, which is the buffer and the drain, not the observed list.
+
+**Rollback**
+Revert; the observed list simply goes back to filling from live notifications only.
+
+**Open questions**
+- None. The snapshot is additive and the behaviour it changes has a test.
+
 ## 10. Deferred and rejected
 
 Considered and not listed, with the reason.
@@ -9788,7 +9857,8 @@ Pass-2 deferrals (S4; each has a citation in the analyst's pass-2 notes and can 
 {"id":"GAP-121","category":"CONTRA","title":"Income rules 4 and 9 describe per-credit banding and per-credit medians; the code now works per payday","severity":"S4","complexity":"XS","difficulty":"D1","risk":"R1","confidence":"C1","priority":0.8,"suitability":"AGENT-READY","depends_on":["GAP-117"],"blocks":[],"files":["docs/04-features/04-income.md"]},
 {"id":"GAP-122","category":"CONTRA","title":"Reports rule 19 Free pattern count cannot be shown: the pass is skipped on Free and the only route to the preview is gated shut","severity":"S3","complexity":"S","difficulty":"D2","risk":"R2","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":["GAP-118"],"blocks":[],"files":["mobile/lib/recurring/recurring_ledger_subscriber.ts","mobile/lib/recurring/recurring_service.ts","mobile/app/(tabs)/more/index.tsx","mobile/app/(tabs)/more/subscriptions.tsx"]},
 {"id":"GAP-123","category":"CODE","title":"listPayEventsBetween takes the tier history floor, so Safe-to-Spend contributions truncate on Free for any window older than 90 days","severity":"S4","complexity":"XS","difficulty":"D2","risk":"R2","confidence":"C1","priority":0.8,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/lib/income/income_service.ts","mobile/lib/safe_to_spend_service.ts"]},
-{"id":"GAP-124","category":"TEST","title":"The recovery-phrase affordance test scanned the generated words, so a phrase containing the BIP39 word share or copy failed it at random","severity":"S3","complexity":"XS","difficulty":"D1","risk":"R1","confidence":"C1","priority":1.6,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/components/onboarding/__tests__/recovery_phrase.test.tsx","mobile/lib/crypto/wordlist.ts","mobile/components/onboarding/phrase_display.tsx"]}
+{"id":"GAP-124","category":"TEST","title":"The recovery-phrase affordance test scanned the generated words, so a phrase containing the BIP39 word share or copy failed it at random","severity":"S3","complexity":"XS","difficulty":"D1","risk":"R1","confidence":"C1","priority":1.6,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/components/onboarding/__tests__/recovery_phrase.test.tsx","mobile/lib/crypto/wordlist.ts","mobile/components/onboarding/phrase_display.tsx"]},
+{"id":"GAP-125","category":"CODE","title":"The listener records no observed packages until a notification arrives, so the provider picker is near-empty even in its corrected position","severity":"S3","complexity":"S","difficulty":"D2","risk":"R2","confidence":"C1","priority":1.0,"suitability":"AGENT-ASSISTED","depends_on":[],"blocks":[],"files":["mobile/modules/notification_listener/android/src/main/java/expo/modules/notificationlistener/PeraPlanoNotificationListenerService.kt","mobile/modules/notification_listener/android/src/test/java/expo/modules/notificationlistener/PeraPlanoNotificationListenerServiceTest.kt","mobile/app/(onboarding)/providers.tsx","docs/04-features/01-onboarding.md","docs/13-on-device-verification.md"]}
 ]
 ```
 
