@@ -5045,6 +5045,27 @@ From the 2026-09-01 handoff, which ran the full suite twice against `ef4c578` an
 > `gates.test.tsx:91` typecheck error is confirmed still present on master as of 2026-09-06,
 > unchanged, the only error `npx tsc --noEmit` reports.
 
+> **THE TYPECHECK HALF IS FIXED; THE FLAKE HALF IS NOT REFUTED. Measured 2026-09-18, wave 22.**
+> `gates.test.tsx:91` now reads `const rootType = Array.isArray(tree) ? "fragment" : tree?.type;`,
+> which is exactly the union narrowing this entry's checklist asks for, and its own comment says
+> the narrowing IS part of the assertion. `npx tsc --noEmit` exits 0 with no errors at all, run
+> repeatedly this wave. Master's own CI agrees: mobile-ci `35303217820` on `6e1abff` has
+> `typecheck` success and all six `jest` shards success, as do the two runs before it.
+>
+> **A FULL LOCAL SWEEP WAS ALSO GREEN, AND THAT PROVES ALMOST NOTHING HERE.** `npx jest
+> --runInBand --ci` on `worktree-gap-wave-22` ran 273 suites and 4853 tests with zero failures in
+> 2,317 s, and all four named suites passed: `review_queue` (61.1 s), `home_screen` (52.6 s),
+> `bills_screen` (37.6 s), `transactions_screen` (32.2 s). By this entry's OWN characterisation
+> those tests are load-sensitive and pass on an idle machine, so a single sequential run on an
+> idle machine is the condition under which they are expected to pass. **It is not evidence that
+> the flakiness is gone**, and nobody should close this entry on it. What it does establish is a
+> clean baseline: there is no longer any test failing CONSISTENTLY, so whoever takes this is
+> chasing the load-sensitive `waitFor` behaviour alone, starting from the `review_queue:738`
+> repro pinned above.
+>
+> Scope note: the sweep ran on wave 22's branch rather than bare master. That branch is master
+> plus three additive lock fixes, none of which touch any suite named here.
+
 **What is wrong**
 A suite that is red on clean master trains everyone to re-run, which is how a real failure gets waved through (the root `HANDOFF.md` said the same on 2026-08-18). The typecheck error makes `npm run typecheck` a non-gate.
 
