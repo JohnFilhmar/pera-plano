@@ -40,33 +40,36 @@ jest.mock("../recovery_phrase", () => ({
   },
 }));
 
-// Faked for the same reason as the two above — this file's only subject is the
-// SEQUENCING. It is also the one child that MUST be mocked rather than merely
-// ought to be: app/(onboarding)/providers.tsx imports
-// @/modules/notification_listener, whose value side calls requireNativeModule
-// at module load and throws under Jest.
-let capturedOnProvidersDone: (() => void) | undefined;
-jest.mock("../providers", () => ({
-  __esModule: true,
-  default: (props: { onDone?: () => void }) => {
-    capturedOnProvidersDone = props.onDone;
-    const { Text } = require("react-native");
-    return <Text testID="fake-providers">providers</Text>;
-  },
-}));
+// THE PROVIDER PICKER IS NOT MOCKED HERE ANY MORE, BECAUSE IT IS NOT HERE
+// (GAP-091). It used to be this sequencer's third child and had to be faked --
+// app/(onboarding)/providers.tsx imports @/modules/notification_listener, whose
+// value side calls requireNativeModule at module load and throws under Jest. It
+// is a numbered step now, after "battery", so this file no longer reaches it at
+// all; its own suite is components/onboarding/__tests__/provider_picker.test.tsx.
 
 import { act, render, screen, waitFor } from "@testing-library/react-native";
 import { getKeyState } from "@/lib/crypto/key_manager";
+import { closeDatabase } from "@/lib/db/database";
+import { recordOnboardingStep } from "@/lib/onboarding/onboarding_state";
+import { freshDb } from "@/test_support/db";
 import OnboardingIndexScreen from "../index";
 
 const mockGetKeyState = getKeyState as jest.Mock;
 
-beforeEach(() => {
+// A REAL DATABASE NOW, FOR ONE READ (GAP-067). The already-keyed branch resumes
+// at the recorded step instead of always redirecting to "welcome", and mocking
+// that read away would leave the branch this file exists to pin asserted
+// against a stub of itself.
+beforeEach(async () => {
+  await freshDb();
   capturedHref = undefined;
   capturedOnSecure = undefined;
   capturedOnPhraseDone = undefined;
-  capturedOnProvidersDone = undefined;
   jest.clearAllMocks();
+});
+
+afterEach(async () => {
+  await closeDatabase();
 });
 
 /** Walks the flow as a fresh install does: device lock, then the phrase. */
@@ -147,22 +150,14 @@ test("keys already unlocked: also continues into the numbered flow, never re-sho
 });
 
 // ---------------------------------------------------------------------------
-// The provider step (provider-selection plan Task 4) — the first of the steps
-// that "actually belong after the phrase". Completing it now continues into
-// the numbered flow (m3c-onboarding-client plan Task 2) rather than falling
-// through to /(tabs) — see this file's header for the redirect target.
+// Where this sequencer STOPS (GAP-091). It ran a third pre-flow screen, the
+// provider picker, between the phrase and the numbered flow -- which is before
+// notification access is granted, so the picker's whole subject ("apps we've
+// seen") was empty on every fresh install. It is a numbered step now, and this
+// sequencer's only job is the two unskippable screens that make keys exist.
 // ---------------------------------------------------------------------------
 
-test("the provider picker never renders before the recovery phrase is captured", async () => {
-  await advanceToPhraseStep();
-
-  // Ordering matters for the same reason the device lock leads: the picker
-  // writes to native prefs, and a user who abandons onboarding before the
-  // phrase would have a configured listener and no way back to their data.
-  expect(screen.queryByTestId("fake-providers")).toBeNull();
-});
-
-test("once the recovery phrase is captured, advances to the provider picker", async () => {
+test("the phrase is the last thing this sequencer runs, and it hands straight to the numbered flow", async () => {
   await advanceToPhraseStep();
   expect(capturedOnPhraseDone).toBeDefined();
 
@@ -170,22 +165,68 @@ test("once the recovery phrase is captured, advances to the provider picker", as
     capturedOnPhraseDone!();
   });
 
-  await waitFor(() => expect(screen.getByTestId("fake-providers")).toBeTruthy());
+  await waitFor(() => expect(screen.getByTestId("fake-redirect")).toBeTruthy());
+  expect(capturedHref).toBe("/(onboarding)/welcome");
   expect(screen.queryByTestId("fake-recovery-phrase")).toBeNull();
-  expect(screen.queryByTestId("fake-redirect")).toBeNull();
 });
 
-test("completing the provider step continues into the numbered flow's first screen", async () => {
-  await advanceToPhraseStep();
+test("the handoff callback fires once the keys exist, with no third screen in between", async () => {
+  // app/lock.tsx supplies `onKeysReady` and is branch 1 by definition: there is
+  // no navigator for a Redirect to move, so the callback is the real forward
+  // action and a screen rendered after it would strand a first-run user.
+  const onKeysReady = jest.fn();
+  mockGetKeyState.mockResolvedValue("uninitialized");
+
+  render(<OnboardingIndexScreen onKeysReady={onKeysReady} />);
+  await waitFor(() => expect(screen.getByTestId("fake-device-lock")).toBeTruthy());
+  await act(async () => {
+    capturedOnSecure!();
+  });
+  await waitFor(() => expect(screen.getByTestId("fake-recovery-phrase")).toBeTruthy());
+
   await act(async () => {
     capturedOnPhraseDone!();
   });
-  await waitFor(() => expect(screen.getByTestId("fake-providers")).toBeTruthy());
-  expect(capturedOnProvidersDone).toBeDefined();
 
-  await act(async () => {
-    capturedOnProvidersDone!();
-  });
+  await waitFor(() => expect(onKeysReady).toHaveBeenCalledTimes(1));
+  expect(screen.queryByTestId("fake-redirect")).toBeNull();
+});
+
+// ---------------------------------------------------------------------------
+// Resuming (GAP-067). The already-keyed branch used to redirect to "welcome"
+// unconditionally, which is what turned an interrupted run into a loop: the
+// access and battery steps both hand off to system Settings, five minutes there
+// trips the background re-lock, and coming back threw away every finished step.
+// ---------------------------------------------------------------------------
+
+test("an interrupted run resumes at the step it reached, not at welcome", async () => {
+  await recordOnboardingStep("battery");
+  mockGetKeyState.mockResolvedValue("locked");
+
+  render(<OnboardingIndexScreen />);
+
+  await waitFor(() => expect(screen.getByTestId("fake-redirect")).toBeTruthy());
+  expect(capturedHref).toBe("/(onboarding)/battery");
+});
+
+test("the redirect never renders once at welcome before correcting itself", async () => {
+  await recordOnboardingStep("income");
+  mockGetKeyState.mockResolvedValue("unlocked");
+
+  render(<OnboardingIndexScreen />);
+
+  // A first render at "welcome" would ALREADY HAVE NAVIGATED -- a Redirect is
+  // not a suggestion -- so the resume target has to be read before the step
+  // flips rather than filled in afterwards. Every href this screen ever
+  // produced is captured, so a two-step correction is visible here.
+  await waitFor(() => expect(screen.getByTestId("fake-redirect")).toBeTruthy());
+  expect(capturedHref).toBe("/(onboarding)/income");
+});
+
+test("a fresh install with nothing recorded still starts at welcome", async () => {
+  mockGetKeyState.mockResolvedValue("locked");
+
+  render(<OnboardingIndexScreen />);
 
   await waitFor(() => expect(screen.getByTestId("fake-redirect")).toBeTruthy());
   expect(capturedHref).toBe("/(onboarding)/welcome");

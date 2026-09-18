@@ -33,6 +33,10 @@ jest.mock("@/modules/notification_listener", () => ({
   listObservedPackages: jest.fn(),
   getAppLabels: jest.fn(),
   setProviderFilter: jest.fn(),
+  // Read on mount since GAP-091 moved this step after the access grant: docs
+  // rule 8 skips the picker entirely for a user who declined, because matchers
+  // would have nothing to match.
+  isAccessGranted: jest.fn(),
   // Present in the mock and asserted-against but never imported by the screen.
   // A jest.fn() that is never called is the only way to prove an absence.
   setCaptureEnabled: jest.fn(),
@@ -49,10 +53,29 @@ jest.mock("@/lib/db/repos/parser_rulesets_repo", () => ({
   upsertRuleset: jest.fn(),
 }));
 
+// THE STEP NAVIGATES ITSELF NOW (GAP-091), so the no-prop path reaches
+// `router.push` -- which throws outside a navigator rather than no-opping, and
+// took every case below with it. Mocked rather than worked around with an
+// `onDone` on each render, because where this step goes next is worth an
+// assertion of its own.
+const mockPushedRoutes: string[] = [];
+// ONE OBJECT, NOT ONE PER CALL. The real `useRouter()` is stable across
+// renders, and a mock that is not would make anything depending on its identity
+// re-run on every render -- which is a render loop, not a failed assertion, and
+// reads as an unexplained 30-second timeout.
+const mockRouter = {
+  push: (href: string) => {
+    mockPushedRoutes.push(href);
+  },
+  back: jest.fn(),
+};
+jest.mock("expo-router", () => ({ useRouter: () => mockRouter }));
+
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
 import {
   getAppLabels,
   getProviderFilter,
+  isAccessGranted,
   listObservedPackages,
   setCaptureEnabled,
   setProviderFilter,
@@ -76,6 +99,7 @@ const mockGetAppLabels = getAppLabels as jest.Mock;
 const mockSetProviderFilter = setProviderFilter as jest.Mock;
 const mockSetCaptureEnabled = setCaptureEnabled as jest.Mock;
 const mockGetProviderFilter = getProviderFilter as jest.Mock;
+const mockIsAccessGranted = isAccessGranted as jest.Mock;
 const mockGetActiveRuleset = getActiveRuleset as jest.Mock;
 
 const SEED: RulesetBundle = {
@@ -107,6 +131,7 @@ function choice(overrides: Partial<ProviderChoice> & { packageName: string }): P
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockPushedRoutes.length = 0;
   // A module-level singleton, not a mock — `jest.clearAllMocks()` cannot reach
   // it, and a record left behind by one test would be read as another's.
   clearOnboardingProviderPause();
@@ -115,6 +140,9 @@ beforeEach(() => {
   mockSetProviderFilter.mockResolvedValue(undefined);
   mockSetCaptureEnabled.mockResolvedValue(undefined);
   mockGetActiveRuleset.mockResolvedValue(SEED);
+  // The step only renders for a user who granted access, so that is the
+  // default every existing case here was written against.
+  mockIsAccessGranted.mockResolvedValue(true);
 });
 
 /** Renders the route and waits out its initial load. */
@@ -802,4 +830,70 @@ describe("ProvidersScreen — real app names", () => {
 
   expect(screen.getByTestId(`provider-name-${GCASH}`).props.children).toBe("GCash");
 });
+});
+
+// ---------------------------------------------------------------------------
+// ProvidersScreen — its place in the flow (GAP-091).
+//
+// The step used to run in app/(onboarding)/index.tsx's pre-flow sequencer,
+// between the recovery phrase and "welcome", which is BEFORE notification
+// access is granted. The listener has observed nothing until it is bound, so
+// "Apps we've seen" was empty on every fresh install and could not be anything
+// else. It is a numbered step now, after "battery", and it both navigates
+// itself and knows when it should not run at all.
+// ---------------------------------------------------------------------------
+
+describe("ProvidersScreen — its place in the numbered flow", () => {
+  test("continuing advances to the wallet step, with no onDone supplied", async () => {
+    await renderScreen();
+
+    fireEvent.press(screen.getByTestId("provider-picker-continue-button"));
+
+    await waitFor(() => expect(mockPushedRoutes).toEqual(["/(onboarding)/wallets"]));
+  });
+
+  test("skipping advances the same way", async () => {
+    await renderScreen();
+
+    fireEvent.press(screen.getByTestId("provider-picker-skip-button"));
+
+    await waitFor(() => expect(mockPushedRoutes).toEqual(["/(onboarding)/wallets"]));
+  });
+
+  test("onDone still wins over the router, which is what the step suites drive", async () => {
+    const onDone = jest.fn();
+    await renderScreen({ onDone });
+
+    fireEvent.press(screen.getByTestId("provider-picker-skip-button"));
+
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(mockPushedRoutes).toEqual([]);
+  });
+
+  test("a user who declined access never sees the picker at all", async () => {
+    // docs rule 8: "provider picker is skipped too if access was declined,
+    // since matchers would have nothing to match". Unimplementable until this
+    // step ran after the grant -- there was no answer to ask for before it.
+    mockIsAccessGranted.mockResolvedValue(false);
+
+    render(<ProvidersScreen />);
+
+    await waitFor(() => expect(mockPushedRoutes).toEqual(["/(onboarding)/wallets"]));
+    expect(screen.queryByTestId("provider-picker")).toBeNull();
+    // Nothing was written on the way past: allow-all is already the on-disk
+    // default, and a user who may grant access later from Settings must not be
+    // left with a filter they never chose.
+    expect(mockSetProviderFilter).not.toHaveBeenCalled();
+  });
+
+  test("a bridge that cannot answer about access still shows the picker", async () => {
+    // The assumption that costs less when wrong: an unnecessary picker is one
+    // skippable screen, where a wrongly skipped one silently removes a choice.
+    mockIsAccessGranted.mockRejectedValue(new Error("bridge is gone"));
+
+    await renderScreen();
+
+    expect(screen.getByTestId("provider-picker")).toBeTruthy();
+    expect(mockPushedRoutes).toEqual([]);
+  });
 });

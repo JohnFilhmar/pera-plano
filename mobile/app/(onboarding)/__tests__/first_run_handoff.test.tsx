@@ -151,17 +151,9 @@ jest.mock("../recovery_phrase", () => ({
   },
 }));
 
-jest.mock("../providers", () => ({
-  __esModule: true,
-  default: ({ onDone }: { onDone?: () => void }) => {
-    const { Text } = require("react-native");
-    return (
-      <Text testID="fake-providers" onPress={onDone}>
-        providers
-      </Text>
-    );
-  },
-}));
+// THE PROVIDER PICKER IS NOT A PRE-FLOW SCREEN ANY MORE (GAP-091), so there is
+// nothing to fake for it here: it is a numbered step, reached after the unlock
+// this file is about, and it runs after notification access rather than before.
 
 import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
 import { renderRouter, screen } from "expo-router/testing-library";
@@ -218,10 +210,14 @@ function renderApp(initialUrl = "/") {
   );
 }
 
-/** Walks the three pre-flow screens the way a first-run user does. Flipping
+/** Walks the two pre-flow screens the way a first-run user does. Flipping
  * `getKeyState` to "unlocked" at the phrase step is not a convenience: that is
  * literally what happens on the device, since performInitializeKeys() assigns
- * key_manager's in-memory `dek` on success (see its own comment). */
+ * key_manager's in-memory `dek` on success (see its own comment).
+ *
+ * TWO, NOT THREE (GAP-091). The provider picker was the third and is now a
+ * numbered step; what this file is about -- the hand-off from the last pre-flow
+ * screen to the lock gate -- is unchanged except for which screen is last. */
 async function walkPreFlow() {
   await waitFor(() => expect(screen.getByTestId("fake-device-lock")).toBeTruthy());
   fireEvent.press(screen.getByTestId("fake-device-lock"));
@@ -229,9 +225,6 @@ async function walkPreFlow() {
   await waitFor(() => expect(screen.getByTestId("fake-recovery-phrase")).toBeTruthy());
   fireEvent.press(screen.getByTestId("fake-recovery-phrase"));
   mockGetKeyState.mockResolvedValue("unlocked");
-
-  await waitFor(() => expect(screen.getByTestId("fake-providers")).toBeTruthy());
-  fireEvent.press(screen.getByTestId("fake-providers"));
 }
 
 beforeEach(async () => {
@@ -277,11 +270,11 @@ test("the pre-flow hands off to the lock gate, which auto-fires its own unlock -
   renderFirstRunShell();
   await walkPreFlow();
 
-  // THE DEFECT. Before the fix this is where a first session ended: the
-  // provider screen simply stayed on screen, because the `<Redirect>` that
+  // THE DEFECT. Before the fix this is where a first session ended: the last
+  // pre-flow screen simply stayed on screen, because the `<Redirect>` that
   // replaced it had no navigator to move and nothing else was wired up.
   await waitFor(() => expect(screen.getByTestId("unlock-prompt")).toBeTruthy());
-  expect(screen.queryByTestId("fake-providers")).toBeNull();
+  expect(screen.queryByTestId("fake-recovery-phrase")).toBeNull();
   // Handed TO a REAL gate, and task-6-brief.md means the gate does not just
   // sit there either: UnlockPrompt auto-fires the moment it mounts, so the
   // freshly-keyed device unlocks itself without the user tapping anything.
