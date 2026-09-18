@@ -153,7 +153,11 @@ function permissionNames(manifest: AndroidManifest): string[] {
 }
 
 function readAppJson(): {
-  expo: { plugins: unknown[]; android: { permissions: string[]; allowBackup: boolean } };
+  expo: {
+    plugins: unknown[];
+    android: { permissions: string[]; allowBackup: boolean };
+    updates: { enabled: boolean };
+  };
 } {
   return JSON.parse(readFileSync(APP_JSON, "utf8"));
 }
@@ -317,6 +321,25 @@ describe("notification listener config plugin", () => {
     // docs/07 says raw notification text "never leaves the phone under any
     // configuration". This attribute is what makes that sentence true.
     expect(readAppJson().expo.android.allowBackup).toBe(false);
+  });
+
+  it("keeps the updates system off, so nothing contacts Expo at launch", () => {
+    // GAP-028. `expo-updates` is a dependency and `updates.url` is set, but
+    // nothing in this app has ever called `Updates.*`. Left enabled with no
+    // `checkAutomatically`, the library default has the client contact
+    // u.expo.dev on EVERY launch, carrying runtime version, platform, channel
+    // and an EAS client identifier.
+    //
+    // That is a network egress with a persistent id, and docs/07's lifecycle
+    // table presents itself as the complete list of what leaves the device.
+    // It is also a way for a JS-only change to alter what the listener reads
+    // AFTER a Play policy review, which is exactly what docs/07 §3.1 rule 6's
+    // re-declaration discipline exists to prevent.
+    //
+    // The url is deliberately left in place beside this flag: it is the EAS
+    // project binding, it does nothing while the system is off, and deleting it
+    // would only make re-enabling harder to do correctly.
+    expect(readAppJson().expo.updates.enabled).toBe(false);
   });
 
   it("is registered in app.json alongside the existing plugins", () => {
