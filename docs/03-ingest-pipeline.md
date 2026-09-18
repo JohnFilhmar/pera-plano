@@ -333,7 +333,7 @@ Parser rot is a top product risk: providers change notification wording silently
 ### 11.2 Versioning and update discipline
 
 1. Every ruleset carries a version. Every parse records the pack version that produced it (§4, rule 5), so a regression introduced by version N is traceable and reversible.
-2. Updates are fetched by the app and applied atomically — a device is always on exactly one coherent ruleset version. Verification of a bundle's integrity and authenticity before activation is **intended, not yet built**; see the amendment below.
+2. Updates are fetched by the app and applied atomically — a device is always on exactly one coherent ruleset version. A bundle's integrity and authenticity are verified before activation: an Ed25519 signature over the raw response body, checked against a public key shipped in the app.
 3. Rulesets are data only. No update can deliver executable logic; the update channel can change *what patterns are matched*, never *what the app does*.
 4. Staged rollout — **intended, not yet built**: a new ruleset version is to reach a small percentage of devices first, with parse-success telemetry (aggregate counts only) gating wider rollout and a regression triggering rollback to the prior version. See the amendment below.
 5. The app always embeds a known-good ruleset so it works fully offline and on first run; remote updates are an improvement channel, not a dependency.
@@ -341,11 +341,19 @@ Parser rot is a top product risk: providers change notification wording silently
 
 > **MVP amendment (2026-09-05) — what rules 2 and 4 actually amount to today.** The update client is `mobile/services/parser_rules.ts`: a once-a-day `GET /v1/parser_rules?since_version=N`, a size cap applied to the raw body before `JSON.parse` ever sees it, and full schema validation (`mobile/lib/ingest/ruleset_schema.ts`) before anything is written, so an invalid bundle is discarded in memory and never stored. There is also no server behind that URL yet — `server/` is scheduled after the mobile MVP — so every request today answers as "nothing to install".
 >
-> **What that bounds is a bundle's shape, never its origin.** No signature is checked and no key ships with the app, so the only thing standing behind a bundle is TLS to a host the owner controls. Rule 2's integrity-and-authenticity clause is therefore unmet. Its atomicity clause does hold: `upsertRuleset` installs in one guarded INSERT that can never downgrade a device, and `getActiveRuleset` resolves exactly one version.
+> **Rule 2 is now met (2026-09-18, GAP-043).** `mobile/lib/ingest/ruleset_signature.ts` verifies an **Ed25519 signature over the raw response body** against a public key compiled into the app, and `parser_rules.ts` runs that check after the size cap and **before anything is parsed**. The signature is **detached, in the `X-Ruleset-Signature` response header**, rather than a field inside the JSON: signing a field would mean the two sides agreeing on a byte-exact re-serialization of everything else — key order, number formatting, escaping — and every one of those is a place to disagree and to talk a verifier into checking something other than what it parsed. The bytes verified are the bytes parsed.
+>
+> **It fails closed, including when the header is simply absent.** There is deliberately no "unsigned bundles are allowed while the server is being built" allowance, because that is exactly what would still be switched on the day the server went live. **The client ships first on purpose:** an install that goes out without verification accepts unsigned bundles forever and no later server change can reach it, so the build that ships before the server exists is the one that has to already know the key.
+>
+> **Rotation costs a store release, and that is accepted.** A second trusted key, or a rotation bundle signed by the current key, would each remove that cost and each widen the surface the check exists to narrow, so neither ships until there is a server to need one. Losing the private key does not endanger any user's data; it ends the update channel until the next release. **The server side owes exactly one thing:** sign the response body with the matching private key and send the hex signature in that header.
+>
+> Rule 2's atomicity clause held already: `upsertRuleset` installs in one guarded INSERT that can never downgrade a device, and `getActiveRuleset` resolves exactly one version.
 >
 > **Rule 4 is absent outright.** There is no rollout bucket, no `rollout_percent` in the bundle schema, and no telemetry gate between a fetch and activation — the first device to ask gets the new version. The only rollback that exists is local and read-time: a stored payload that will not decode falls back to the previous good version (`mobile/lib/db/repos/parser_rulesets_repo.ts`), which covers a corrupt row rather than a bad ruleset that parses cleanly and matches wrongly.
 >
-> Closing both is tracked as **GAP-043** in `GAP_ANALYSIS.md`, which also owns rewriting this section once a mechanism is chosen and shipped. Until then, treat rules 2 and 4 as design intent.
+> **Rule 4 is still absent, and deferring it was the owner's call (2026-09-18).** There is no rollout bucket, no `rollout_percent` in the bundle schema, and no telemetry gate between a fetch and activation. A staged rollout needs a server to stage FROM: with nothing emitting `rollout_percent`, the gate would ship untested against any real producer and be tuned blind. It is additive to the schema and can be built alongside the server. The only rollback that exists remains local and read-time — a stored payload that will not decode falls back to the previous good version (`mobile/lib/db/repos/parser_rulesets_repo.ts`) — which covers a corrupt row rather than a bad ruleset that parses cleanly and matches wrongly.
+>
+> Rule 4 is tracked as **GAP-043** in `GAP_ANALYSIS.md`, which also owns rewriting this paragraph once a rollout mechanism ships. Until then, treat rule 4 as design intent.
 
 ### 11.3 Corpus discipline
 
