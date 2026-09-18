@@ -29,6 +29,10 @@ import { apiClient } from "@/services/api";
 import { getSetting, setSetting } from "@/lib/db/repos/app_settings_repo";
 import { getActiveVersion, upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { MAX_RESPONSE_CHARS, parseRulesetBundle } from "@/lib/ingest/ruleset_schema";
+import {
+  RULESET_SIGNATURE_HEADER,
+  verifyRulesetSignature,
+} from "@/lib/ingest/ruleset_signature";
 
 /**
  * How often `checkForRulesetUpdate` is allowed to make a network request.
@@ -101,6 +105,7 @@ export async function checkForRulesetUpdate(
 
   let status: number;
   let data: unknown;
+  let signatureHeader: string | null = null;
   try {
     const response = await apiClient.get<unknown>("/v1/parser_rules", {
       params: { since_version: currentVersion },
@@ -112,6 +117,10 @@ export async function checkForRulesetUpdate(
     });
     status = response.status;
     data = response.data;
+    const header = (response.headers as Record<string, unknown> | undefined)?.[
+      RULESET_SIGNATURE_HEADER
+    ];
+    signatureHeader = typeof header === "string" ? header : null;
   } catch {
     // A real network failure — no HTTP response reached us at all
     // (services/api.ts's response interceptor). Silent, like every other
@@ -130,6 +139,30 @@ export async function checkForRulesetUpdate(
   if (status !== 200) {
     // A 404 is a normal answer here, not an error (services/api.ts) — and so
     // is any other non-200 status: none of them carry a bundle to install.
+    return { updated: false, version: currentVersion };
+  }
+
+  // AUTHENTICITY, BEFORE A SINGLE BYTE IS PARSED (GAP-043, docs/03 §11.2 rule
+  // 2). The cap in `decodeBody` is a denial-of-service control and the schema
+  // below is a shape control; neither says anything about ORIGIN, and until
+  // this existed the only thing standing behind a bundle was TLS to a host the
+  // owner controls. The type and size guards are repeated here rather than
+  // borrowed from `decodeBody` so that verification genuinely runs FIRST: a
+  // verifier that only sees what a parser already accepted is checking the
+  // wrong artefact, and hashing an uncapped body would hand back the very cost
+  // the cap exists to refuse.
+  //
+  // FAILS CLOSED, INCLUDING WHEN THE HEADER IS SIMPLY ABSENT. There is no
+  // allowance for unsigned bundles while the server is being built, because an
+  // allowance like that is what would still be in place the day it went live.
+  if (
+    typeof data !== "string" ||
+    data.length > MAX_RESPONSE_CHARS ||
+    !verifyRulesetSignature(data, signatureHeader)
+  ) {
+    console.warn(
+      "[parser_rules] discarding a ruleset bundle that is unsigned or fails signature verification — keeping the current version",
+    );
     return { updated: false, version: currentVersion };
   }
 

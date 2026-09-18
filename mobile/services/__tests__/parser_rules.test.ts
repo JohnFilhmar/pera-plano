@@ -5,6 +5,30 @@
 // transport — so no test ever opens a socket. The server this hits does not
 // exist yet (see services/api.ts's header); offline is this app's normal
 // operating condition, not a test-only stand-in for one.
+// GAP-043 — THE SIGNATURE CHECK IS MOCKED HERE, AND ONLY HERE. Every fixture
+// below is a body this file invents, and no test can produce a valid signature
+// under the shipped public key, because that needs the private half and it is
+// not in this repository. The real Ed25519 path is tested against a generated
+// keypair in lib/ingest/__tests__/ruleset_signature.test.ts; what THIS file is
+// for is the fetch path's behaviour on either side of that verdict, so the
+// verdict is what gets controlled.
+//
+// DEFAULTS TO TRUE so every pre-existing test below goes on asserting exactly
+// what it always did. The two tests that set it false are the new ones, and
+// they are the reason the flag exists.
+let mockSignatureValid = true;
+jest.mock("@/lib/ingest/ruleset_signature", () => ({
+  ...jest.requireActual<typeof import("@/lib/ingest/ruleset_signature")>(
+    "@/lib/ingest/ruleset_signature",
+  ),
+  verifyRulesetSignature: (...args: unknown[]) => {
+    mockSignatureCalls.push(args as [string, string | null | undefined]);
+    return mockSignatureValid;
+  },
+}));
+
+const mockSignatureCalls: [string, string | null | undefined][] = [];
+
 import type { AxiosAdapter } from "axios";
 
 import { closeDatabase } from "@/lib/db/database";
@@ -14,6 +38,7 @@ import {
   upsertRuleset,
 } from "@/lib/db/repos/parser_rulesets_repo";
 import { MAX_RESPONSE_CHARS } from "@/lib/ingest/ruleset_schema";
+import { RULESET_SIGNATURE_HEADER } from "@/lib/ingest/ruleset_signature";
 import type { ProviderRuleset, ProviderTemplate } from "@/lib/ingest/ruleset_types";
 import { freshDb } from "@/test_support/db";
 import type { SQLiteDatabase } from "@/lib/db/database";
@@ -26,6 +51,8 @@ const originalAdapter = apiClient.defaults.adapter;
 
 beforeEach(async () => {
   db = await freshDb();
+  mockSignatureValid = true;
+  mockSignatureCalls.length = 0;
 });
 
 afterEach(async () => {
@@ -70,6 +97,22 @@ function provider(overrides: Partial<ProviderRuleset> = {}): ProviderRuleset {
  * oversized cases below are written.
  */
 function respondWith(status: number, data: unknown): AxiosAdapter {
+  const body = typeof data === "string" ? data : JSON.stringify(data);
+  // A well-formed-looking signature header on every response, so the header
+  // PLUMBING is exercised by every test here even though the verdict itself is
+  // mocked. `respondWithoutSignature` below is the one that leaves it off.
+  return async (config) => ({
+    data: body,
+    status,
+    statusText: "",
+    headers: { [RULESET_SIGNATURE_HEADER]: "ab".repeat(64) },
+    config,
+  });
+}
+
+/** A server that sends a bundle and no signature at all — what an attacker who
+ * can serve the endpoint but does not hold the key is left with. */
+function respondWithoutSignature(status: number, data: unknown): AxiosAdapter {
   const body = typeof data === "string" ? data : JSON.stringify(data);
   return async (config) => ({ data: body, status, statusText: "", headers: {}, config });
 }
@@ -381,4 +424,93 @@ test("a bundle that only retunes thresholds inside their ranges still installs",
   expect(active!.tunables.prefilledThreshold).toBe(0.7);
   // Untouched keys still come from DEFAULT_TUNABLES.
   expect(active!.tunables.reviewFloorThreshold).toBe(0.5);
+});
+
+// ---------------------------------------------------------------------------
+// GAP-043 — authenticity. docs/03 §11.2 rule 2.
+// ---------------------------------------------------------------------------
+
+// THE BUNDLE IN THIS TEST IS PERFECTLY VALID. It has a higher version, a
+// well-formed provider and passes every schema check in the file — which is
+// exactly the point: shape was never the thing in question. This is the bundle
+// a compromised server, or a compromised TLS chain, would serve.
+test("a schema-valid bundle that fails signature verification is NOT installed", async () => {
+  await upsertRuleset({ version: 1, providers: [provider({ providerKey: "installed" })] });
+  mockSignatureValid = false;
+  apiClient.defaults.adapter = respondWith(200, {
+    version: 2,
+    providers: [provider({ providerKey: "attacker" })],
+  });
+
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    const result = await checkForRulesetUpdate(1_000);
+
+    expect(result).toEqual({ updated: false, version: 1 });
+    // Failing CLOSED: the device keeps parsing with what it already had, and
+    // does not fall back to no rules.
+    const active = await getActiveRuleset();
+    expect(active!.version).toBe(1);
+    expect(active!.providers.map((p) => p.providerKey)).toEqual(["installed"]);
+    expect(await rowCount()).toBe(1);
+    expect(warn).toHaveBeenCalled();
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+// No allowance for "unsigned while the server is being built": an allowance
+// like that is what would still be switched on the day it went live.
+test("a bundle with no signature header at all is refused", async () => {
+  await upsertRuleset({ version: 1, providers: [provider({ providerKey: "installed" })] });
+  mockSignatureValid = false;
+  apiClient.defaults.adapter = respondWithoutSignature(200, {
+    version: 2,
+    providers: [provider({ providerKey: "unsigned" })],
+  });
+
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    const result = await checkForRulesetUpdate(1_000);
+
+    expect(result).toEqual({ updated: false, version: 1 });
+    expect((await getActiveRuleset())!.version).toBe(1);
+    // The header genuinely arrived as absent rather than as some default.
+    expect(mockSignatureCalls.at(-1)?.[1]).toBeNull();
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+// Verification has to see the RAW text, byte for byte, because that is what is
+// parsed a moment later. A verifier handed a re-serialized object would be
+// checking a different artefact from the one that gets installed.
+test("the signature is checked against the exact raw body, before anything is parsed", async () => {
+  await upsertRuleset({ version: 1, providers: [provider({ providerKey: "installed" })] });
+  const bundle = { version: 2, providers: [provider({ providerKey: "new" })] };
+  const raw = JSON.stringify(bundle);
+  apiClient.defaults.adapter = respondWith(200, raw);
+
+  await checkForRulesetUpdate(1_000);
+
+  expect(mockSignatureCalls).toHaveLength(1);
+  expect(mockSignatureCalls[0][0]).toBe(raw);
+  expect(mockSignatureCalls[0][1]).toBe("ab".repeat(64));
+});
+
+// The cap is a denial-of-service control and runs first; verification must not
+// be handed an uncapped body to hash.
+test("an oversized body is refused without the signature ever being checked", async () => {
+  await upsertRuleset({ version: 1, providers: [provider({ providerKey: "installed" })] });
+  apiClient.defaults.adapter = respondWith(200, "x".repeat(MAX_RESPONSE_CHARS + 1));
+
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    const result = await checkForRulesetUpdate(1_000);
+
+    expect(result).toEqual({ updated: false, version: 1 });
+    expect(mockSignatureCalls).toHaveLength(0);
+  } finally {
+    warn.mockRestore();
+  }
 });

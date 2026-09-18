@@ -1100,3 +1100,72 @@ describe("system-bar clearance", () => {
     });
   });
 });
+
+// GAP-061. docs/07's right-to-rectification row and its "Edit anything" table
+// row both claim every parsed field is user-editable here. Until this landed the
+// screen edited category and note and nothing else, so the compliance statement
+// had no code behind it.
+describe("editing a transaction", () => {
+  test("an ordinary row offers the editor, addressed at the row's own id", async () => {
+    const tx = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: FOOD,
+      amount: 66_261,
+      direction: "out",
+      occurredAt: NOW,
+      merchant: "Jollibee",
+      source: "notification",
+      confidence: 0.9,
+    });
+
+    await renderDetail(tx.id);
+
+    fireEvent.press(screen.getByTestId("transaction-edit"));
+    expect(mockPush).toHaveBeenCalledWith({
+      pathname: "/transaction/[id]/edit",
+      params: { id: tx.id },
+    });
+    // The sentence that replaces the button on a linked leg must not be here.
+    expect(screen.queryByTestId("transaction-edit-transfer-note")).toBeNull();
+  });
+
+  // The owner's ruling, 2026-09-18. Both legs describe ONE movement, and
+  // `transfer_link_id` is the schema's only expression of "not spending, not
+  // income" — so a leg edited alone leaves the pair contradicting itself with
+  // nothing anywhere to detect it, because both legs stay out of spend and
+  // income totals either way.
+  test("a linked transfer leg offers a sentence pointing at unlink, and no editor at all", async () => {
+    const outLeg = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 500_000,
+      direction: "out",
+      occurredAt: NOW - 60_000,
+      merchant: "Transfer out",
+      source: "notification",
+      confidence: 0.9,
+    });
+    const inLeg = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 500_000,
+      direction: "in",
+      occurredAt: NOW,
+      merchant: "Transfer in",
+      source: "notification",
+      confidence: 0.9,
+    });
+    await linkTransfer(outLeg.id, inLeg.id, 0);
+
+    await renderDetail(outLeg.id);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("transaction-edit-transfer-note")).toHaveTextContent(/Unlink/),
+    );
+    // Not merely disabled: there is no route out of this screen into the
+    // editor, so nothing can be pressed into producing one.
+    expect(screen.queryByTestId("transaction-edit")).toBeNull();
+    mockPush.mockClear();
+    expect(mockPush).not.toHaveBeenCalled();
+  });
+});
