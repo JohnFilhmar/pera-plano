@@ -21,6 +21,15 @@
 // that makes it dangerous, and nothing downstream gets a second idea of what
 // the allowlist meant.
 //
+// THE SCREEN CAN NOW PERSIST IT ITSELF, AND USUALLY DOES (GAP-091). The step
+// moved into the numbered flow, where the database IS open, so
+// `persistPendingProviderPause()` below runs on the screen and the row lands in
+// the same session the user chose in -- which is what the Privacy centre reads
+// back, and it would otherwise have shown stale switches until the next launch,
+// since `bootstrapApp()` has already run by then. The hand-off through this
+// module is kept rather than replaced: it is still what survives a write that
+// fails, and `bootstrapApp()` still drains it on the next launch.
+//
 // IN MEMORY, NOT IN AsyncStorage. The only durable store available before the
 // database opens is the plaintext one contexts/theme_context.tsx uses, and
 // which banks a user chose is precisely the kind of fact this app keeps inside
@@ -28,6 +37,8 @@
 // the first unlock — and that selection is unrecoverable either way, because
 // app/(onboarding)/index.tsx does not re-run the provider step for an install
 // that already has keys.
+
+import { setSetting } from "@/lib/db/repos/app_settings_repo";
 
 let pending: string[] | null = null;
 
@@ -94,6 +105,36 @@ export function recordOnboardingProviderPause(allowlist: string[], universe: str
 /** What `lib/bootstrap.ts` has still to persist, or `null` when there is nothing. */
 export function pendingOnboardingProviderPause(): string[] | null {
   return pending;
+}
+
+/**
+ * Moves the record into `paused_provider_packages`, if there is one.
+ *
+ * TWO CALLERS, ONE BODY. `app/(onboarding)/providers.tsx` calls it as the user
+ * leaves the step, and `bootstrapApp()` calls it on every launch. The second is
+ * not redundant: it is what recovers a selection whose first write failed, and
+ * it is the only caller that can run at all when the step was reached before
+ * the database was open.
+ *
+ * FAILURES ARE SWALLOWED, and the record is dropped only once the write has
+ * actually resolved: a pass that could not store the selection leaves it for
+ * the next one rather than losing it to the very failure this hand-off exists
+ * for. Clearing at all is what keeps a later pass from re-writing a stale
+ * onboarding choice over a pause the user has since changed in the Privacy
+ * centre.
+ */
+export async function persistPendingProviderPause(): Promise<void> {
+  const paused = pendingOnboardingProviderPause();
+  if (paused === null) return;
+  try {
+    await setSetting("paused_provider_packages", paused);
+    clearOnboardingProviderPause();
+  } catch (error) {
+    console.error(
+      "the onboarding provider selection could not be recorded; it stays pending for the next launch",
+      error,
+    );
+  }
 }
 
 /**

@@ -1,9 +1,22 @@
 // app/(onboarding)/providers.tsx — the onboarding step that turns the seed's
 // guesses and the listener's learned package names into a filter the user
 // actually chose (provider-selection plan Task 4; docs/04-features/01-onboarding.md
-// step 6). Reached from app/(onboarding)/index.tsx once the recovery phrase is
-// captured; skippable, like every onboarding step except the device lock and
-// the phrase.
+// step 6). Reached from app/(onboarding)/battery.tsx; advances to wallets.tsx;
+// skippable, like every onboarding step except the device lock and the phrase.
+//
+// IT IS A NUMBERED STEP NOW, NOT A PRE-FLOW ONE (GAP-091). It used to run in
+// app/(onboarding)/index.tsx's own sequencer, straight after the recovery
+// phrase and before "welcome" -- which is BEFORE notification access is
+// granted. The listener has observed nothing until it is bound, so
+// `listObservedPackages()` returned an empty list on every fresh install and
+// this screen's whole subject, "Apps we've seen", could never have anything in
+// it. It now occupies the slot ONBOARDING_STEPS always reserved for it, after
+// "battery", where docs step 6 puts it.
+//
+// IT NAVIGATES ITSELF, like every other routed step. `onDone` is kept and still
+// takes precedence, because the step suites drive this screen directly and
+// assert on it -- see app/(onboarding)/wallets.tsx's header for the same
+// arrangement and the silent no-op that made it necessary.
 //
 // Same split device_lock.tsx uses: components/onboarding/provider_picker.tsx is
 // purely presentational, and everything that crosses the native bridge or
@@ -42,10 +55,16 @@
 // allowlist as "every provider paused" would hand every user who taps Skip
 // exactly the deny-all the paragraph above refuses.
 // lib/onboarding/pending_provider_pause.ts owns that inversion and the empty
-// case. There is no open database on this screen, so the record is handed to
-// the first launch that has one.
+// case. There IS an open database on this screen now that it runs inside the
+// numbered flow, so the record is persisted here rather than waiting for the
+// next launch -- `bootstrapApp()` has already run by this point, so waiting
+// would have left the Privacy switches stale until the app was restarted, and
+// the wallets step reads the same row one screen later. The hand-off through
+// that module is kept regardless: it is what survives a write that fails, and
+// the launch drain still recovers it.
 // ---------------------------------------------------------------------------
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "expo-router";
 import { Text, View } from "react-native";
 
 import { ProviderPicker } from "@/components/onboarding/provider_picker";
@@ -54,8 +73,16 @@ import { getActiveRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { applyAppLabels, buildProviderChoices } from "@/lib/ingest/provider_catalogue";
 import { SEED_BUNDLE } from "@/lib/ingest/seed_rules";
 import { DEFAULT_TRAIT_SIGNALS, DEFAULT_TUNABLES } from "@/lib/ingest/ruleset_types";
-import { recordOnboardingProviderPause } from "@/lib/onboarding/pending_provider_pause";
-import { getAppLabels, listObservedPackages, setProviderFilter } from "@/modules/notification_listener";
+import {
+  persistPendingProviderPause,
+  recordOnboardingProviderPause,
+} from "@/lib/onboarding/pending_provider_pause";
+import {
+  getAppLabels,
+  isAccessGranted,
+  listObservedPackages,
+  setProviderFilter,
+} from "@/modules/notification_listener";
 
 import type { ProviderChoice } from "@/lib/ingest/provider_catalogue";
 import type { ObservedPackage } from "@/modules/notification_listener";
@@ -129,6 +156,7 @@ async function loadBundle(): Promise<RulesetBundle> {
 }
 
 export default function ProvidersScreen({ onDone }: { onDone?: () => void } = {}) {
+  const router = useRouter();
   const [choices, setChoices] = useState<ProviderChoice[] | null>(null);
   const [busy, setBusy] = useState(false);
   // Same double-tap discipline as recovery_phrase.tsx's initializingRef and
@@ -143,9 +171,28 @@ export default function ProvidersScreen({ onDone }: { onDone?: () => void } = {}
   // change. Starts empty, which records nothing rather than something wrong;
   // it is always set by the time a tile is tappable, since the same
   // `if (!cancelled)` block below publishes both it and `choices`.
+  // The catalogue is built ONCE, however often this component re-renders. The
+  // effect below has to depend on `advance` -- it is what a declined access
+  // grant calls -- and `advance` is only as stable as `useRouter()`, which is
+  // one identity change away from re-running a bridge round trip on every
+  // render. Same discipline as app/(onboarding)/wallets.tsx's own
+  // `initializedRef`, for the same reason.
+  const initializedRef = useRef(false);
   const universeRef = useRef<string[]>([]);
 
+  // nextStep("providers") === "wallets" (lib/onboarding/onboarding_state.ts),
+  // hardcoded so the literal matches a real file for expo-router to resolve.
+  const advance = useCallback(() => {
+    if (onDone) {
+      onDone();
+      return;
+    }
+    router.push("/(onboarding)/wallets");
+  }, [onDone, router]);
+
   useEffect(() => {
+    if (initializedRef.current) return;
+    initializedRef.current = true;
     let cancelled = false;
     // THREE STEPS, AND THE THIRD CANNOT BE PARALLELISED WITH THE OTHER TWO:
     // the label lookup is keyed on the package list, and the package list is
@@ -154,6 +201,23 @@ export default function ProvidersScreen({ onDone }: { onDone?: () => void } = {}
     // later, which would flicker a stale brand across the screen for exactly
     // as long as it takes to read it.
     (async () => {
+      // SKIPPED ENTIRELY WHEN ACCESS WAS DECLINED (docs rule 8: "provider
+      // picker is skipped too if access was declined, since matchers would have
+      // nothing to match"). Only reachable now that this step runs AFTER the
+      // grant -- before the move there was no answer to ask for at this point
+      // in the flow, which is why the rule had never been implemented.
+      //
+      // A BRIDGE FAILURE SHOWS THE PICKER. "Granted" is the assumption that
+      // costs less when wrong: an unnecessary picker is one skippable screen,
+      // where a wrongly skipped one silently removes a choice the user was
+      // promised and cannot get back inside this flow.
+      const granted = await isAccessGranted().catch(() => true);
+      if (cancelled) return;
+      if (!granted) {
+        advance();
+        return;
+      }
+
       const [observed, bundle] = await Promise.all([loadObserved(), loadBundle()]);
       const catalogue = buildProviderChoices(observed, bundle);
       const labels = await loadAppLabels(catalogue.map((choice) => choice.packageName));
@@ -164,7 +228,7 @@ export default function ProvidersScreen({ onDone }: { onDone?: () => void } = {}
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [advance]);
 
   const commit = useCallback(
     (packageNames: string[]) => {
@@ -215,13 +279,20 @@ export default function ProvidersScreen({ onDone }: { onDone?: () => void } = {}
           // across the bridge as soon as there is a database to hold it.
           console.error("setProviderFilter failed; the listener keeps its existing filter", error);
         })
+        // AWAITED BEFORE MOVING ON (GAP-091), and after the `.catch` rather
+        // than inside a `.then` on the raw call, so a failed push still writes
+        // the row -- that is the whole point of the record. The wallets step
+        // reads it on the very next screen to know which providers the user
+        // actually kept, so navigating first would race it. The call swallows
+        // its own failures and always resolves.
+        .then(() => persistPendingProviderPause())
         .finally(() => {
           writeInFlightRef.current = false;
           setBusy(false);
-          onDone?.();
+          advance();
         });
     },
-    [onDone],
+    [advance],
   );
 
   const handleSkip = useCallback(() => commit([]), [commit]);

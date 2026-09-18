@@ -4,16 +4,19 @@
 // (lib/onboarding/onboarding_state.ts). Reached from access.tsx; advances to
 // wallets.tsx.
 //
-// ADVANCES TO wallets.tsx, NOT app/(onboarding)/providers.tsx, EVEN THOUGH
-// `nextStep("battery")` LITERALLY RETURNS `"providers"`. That name in
-// ONBOARDING_STEPS is reserved, not routed (onboarding_state.ts's own header
-// and task-3-report.md's Decision 5): app/(onboarding)/providers.tsx already
-// ran once, earlier in this same session, inside app/(onboarding)/index.tsx's
-// pre-flow sequencer, where its `onDone` prop was wired. Pushing here a
-// second time mounts it fresh with no props -- `onDone` is `undefined`, so
-// `commit()`'s `.finally(() => onDone?.())` silently does nothing and the
-// user is stranded with no forward action. Skip straight to the next
-// actually-rendered numbered-flow screen instead.
+// ADVANCES TO providers.tsx, WHICH `nextStep("battery")` HAS ALWAYS SAID
+// (GAP-091). It used to skip past it to wallets.tsx, because the picker ran
+// once already in app/(onboarding)/index.tsx's pre-flow sequencer and mounting
+// it again here left it with no `onDone` and no forward action. The picker has
+// moved into this flow and navigates itself, so the reserved slot is a real
+// route now and the detour is gone.
+//
+// WHY IT HAD TO MOVE. The picker's whole subject is "apps we've seen", and the
+// listener has seen nothing until notification access is granted -- which is
+// the step two before this one. Running before the grant meant
+// `listObservedPackages()` returned an empty list on every fresh install, so
+// the picker offered nothing but seed guesses and the wallets step, deriving
+// from the same empty list moments later, proposed a cash wallet alone.
 //
 // REUSES oem_guidance.tsx RATHER THAN DUPLICATING IT (rule 4: "shows the
 // matching guidance from oem_guidance ... rather than generic advice").
@@ -59,12 +62,11 @@ import { openBatterySettings } from "@/lib/onboarding/battery_settings";
 export default function BatteryScreen({ brand }: { brand?: string | null } = {}) {
   const router = useRouter();
 
-  // NOT nextStep("battery") ("providers" -- see this file's header: that
-  // name is reserved, not a second rendering of app/(onboarding)/providers.tsx).
+  // nextStep("battery") === "providers" (lib/onboarding/onboarding_state.ts).
   // Hardcoded, like every other routed step in this task: the literal has to
   // match a real file for expo-router to resolve it.
   const advance = useCallback(() => {
-    router.push("/(onboarding)/wallets");
+    router.push("/(onboarding)/providers");
   }, [router]);
 
   const handlePrimary = useCallback(() => {

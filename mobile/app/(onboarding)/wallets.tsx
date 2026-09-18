@@ -4,20 +4,32 @@
 // plus a cash Wallet checked by default, all editable inline before the user
 // commits with a single tap.
 //
-// WHERE THE PROPOSALS COME FROM, AND WHY NOT FROM app/(onboarding)/providers.tsx
-// DIRECTLY. The obvious design — hand the exact packages ticked on the
-// provider-picker screen straight to this one — is not reachable in this
-// codebase today: providers.tsx runs BEFORE the database ever unlocks (its own
-// header comment), `setProviderFilter` is a write-only native call with no
-// paired getter (`CapturePrefs.getProviderFilter()` is never wired to an
-// AsyncFunction — see hooks/queries/use_capture_settings.ts's own doc for the
-// same gap on the native side), and this screen needs `createWallet`/
-// `setMatchers`, both of which need a live QueryClient and an unlocked
-// database that provably do not exist yet at providers.tsx's mount time. There
-// is therefore no in-memory OR durable channel between the two screens today.
-// Rather than invent one (a new persisted setting, or a native getter) outside
-// this task's file list, this screen re-derives candidates the SAME way
-// providers.tsx does — `listObservedPackages()` plus the active ruleset,
+// WHERE THE PROPOSALS COME FROM. The candidates are re-derived the same way
+// providers.tsx derives them, and the user's own choices on that screen are
+// then subtracted.
+//
+// THE CHANNEL BETWEEN THE TWO SCREENS EXISTS NOW (GAP-091), and this paragraph
+// used to explain at length why it could not. Every reason it gave was true of
+// the OLD step order: providers.tsx ran above the unlock gate with no database,
+// so it could not persist anything, and `setProviderFilter` is a write-only
+// native call with no paired getter (`CapturePrefs.getProviderFilter()` is
+// never wired to an AsyncFunction — see hooks/queries/use_capture_settings.ts's
+// own doc for the same gap on the native side), so nothing could be read back
+// either. Moving the step into the numbered flow gave it an open database, and
+// it now writes `paused_provider_packages` before it navigates here. That row
+// is the channel, and it is not a new invention: it is the same row the Privacy
+// centre's switches read and `lib/bootstrap.ts` re-asserts on every launch.
+//
+// SUBTRACTED, NOT SUBSTITUTED. This screen still re-derives from
+// `listObservedPackages()` rather than rendering the picker's allowlist
+// directly, because the two questions differ: the picker asks which providers
+// to CAPTURE, and an allowlist entry for an app that has never posted anything
+// is not evidence the user holds an account there. What the row is used for is
+// the one thing re-deriving cannot know — that the user was shown a provider
+// and said no. Proposing a wallet for it one screen later would be the flow
+// contradicting itself.
+//
+// So this screen derives candidates the SAME way providers.tsx does — `listObservedPackages()` plus the active ruleset,
 // through the shared, pure `buildProviderChoices` — and proposes a Wallet for
 // every OBSERVED provider the ruleset actually RECOGNISES (`seen: true &&
 // suggested: true`), not merely `seen: true`. `buildProviderChoices`
@@ -81,6 +93,7 @@ import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { ProviderBadge } from "@/components/ui/provider_badge";
 import { useCreateWallet } from "@/hooks/mutations/use_create_wallet";
 import { useSetWalletMatchers } from "@/hooks/mutations/use_set_wallet_matchers";
+import { usePausedProviderPackages } from "@/hooks/queries/use_capture_settings";
 import { useAllWalletMatchers } from "@/hooks/queries/use_all_wallet_matchers";
 import { useRuleset } from "@/hooks/queries/use_ruleset";
 import { useWallets } from "@/hooks/queries/use_wallets";
@@ -293,6 +306,8 @@ export default function WalletsScreen({
   // `claimedByExistingWallets`. A whole-table read, the same one the matcher
   // picker makes for the same question.
   const { data: existingMatchers } = useAllWalletMatchers();
+  // What the user turned DOWN on the provider step, one screen ago (GAP-091).
+  const { data: pausedPackages } = usePausedProviderPackages();
   const createWallet = useCreateWallet();
   const setMatchers = useSetWalletMatchers();
 
@@ -377,9 +392,28 @@ export default function WalletsScreen({
       // RECOGNISED observed provider (`suggested: true`) is a real proposal;
       // `lib/ingest/provider_catalogue.ts` itself is untouched — this is a
       // filter at the call site, not a change to what it emits.
+      // THE PROVIDER STEP'S ANSWER, SUBTRACTED BEFORE THE DEDUPE (GAP-091).
+      // Order matters: `dedupeByProvider` keeps the FIRST package it sees for
+      // each provider, so filtering afterwards could drop a provider the user
+      // KEPT -- they ticked its second package, the dedupe kept its first, and
+      // the first is the one recorded as paused. Filtering first lets the
+      // package they actually ticked become the survivor.
+      //
+      // AN EMPTY ROW FILTERS NOTHING, which is not an edge case but the common
+      // path: "the user ticked nothing" and "the user tapped Skip" both mean
+      // capture everything, and lib/onboarding/pending_provider_pause.ts
+      // records nothing paused for either. Treating an empty row as "everything
+      // is paused" would propose no wallets at all to most users.
+      const paused = new Set(pausedPackages ?? []);
+      const kept =
+        paused.size === 0 ? choices : choices.filter((choice) => !paused.has(choice.packageName));
       const observedChoices = dedupeByProvider(
-        choices.filter((choice) => choice.seen && choice.suggested),
+        kept.filter((choice) => choice.seen && choice.suggested),
       );
+      // NOT FILTERED, unlike the proposals above. These are the "Also have one
+      // of these?" chips, and adding one takes a deliberate tap -- so a user who
+      // changes their mind about a provider they skipped still has a way back,
+      // and nothing is created for them that they did not ask for twice.
       const suggestedOnly = choices.filter((choice) => !choice.seen);
 
       // NOT AN UNCONDITIONAL `true` ANY MORE (GAP-067). A proposal whose name

@@ -26,9 +26,13 @@
 //      "THE NUMBERED FLOW" below), same as the fresh-install path once its
 //      own pre-flow steps are done.
 //
-// THE PROVIDER STEP (provider-selection plan Task 4) is the first of "the
-// steps that actually belong after the phrase" to exist. It runs in the
-// FRESH-INSTALL sequence only -- branch 1 above.
+// THE PROVIDER STEP IS NO LONGER ONE OF THESE (GAP-091). It ran here, in the
+// fresh-install sequence, between the phrase and the numbered flow -- which is
+// BEFORE notification access is granted, and the listener has observed nothing
+// until it is. So the picker's "Apps we've seen" was empty on every fresh
+// install and could not be anything else. It now sits in the numbered flow at
+// the slot ONBOARDING_STEPS always reserved for it, after "battery", which is
+// also where docs/04-features/01-onboarding.md step 6 puts it.
 //
 // THE NUMBERED FLOW (m3c-onboarding-client plan Task 2; docs
 // §04-features/01-onboarding.md) is lib/onboarding/onboarding_state.ts's nine
@@ -82,15 +86,8 @@ import { readOnboardingStep } from "@/lib/onboarding/onboarding_state";
 import type { OnboardingStep } from "@/lib/onboarding/onboarding_state";
 import DeviceLockScreen from "./device_lock";
 import RecoveryPhraseScreen from "./recovery_phrase";
-import ProvidersScreen from "./providers";
 
-type Step =
-  | "checking"
-  | "device_lock"
-  | "recovery_phrase"
-  | "providers"
-  | "done"
-  | "already_keyed";
+type Step = "checking" | "device_lock" | "recovery_phrase" | "done" | "already_keyed";
 
 export default function OnboardingIndexScreen({
   onKeysReady,
@@ -142,12 +139,7 @@ export default function OnboardingIndexScreen({
   }, []);
 
   const handleSecure = useCallback(() => setStep("recovery_phrase"), []);
-  // The provider picker runs AFTER the phrase, never before: it is the first
-  // step that writes anything the listener will act on, and a user who
-  // abandoned onboarding earlier would be left with a configured listener and
-  // no recovery words for the data it goes on to collect.
-  const handlePhraseDone = useCallback(() => setStep("providers"), []);
-  const handleProvidersDone = useCallback(() => setStep("done"), []);
+  const handlePhraseDone = useCallback(() => setStep("done"), []);
 
   // Both terminal steps mean the same thing to a caller: this sequencer has
   // nothing left to run and the keys it exists to create are on the device.
@@ -179,9 +171,5 @@ export default function OnboardingIndexScreen({
     return <DeviceLockScreen onSecure={handleSecure} />;
   }
 
-  if (step === "recovery_phrase") {
-    return <RecoveryPhraseScreen onDone={handlePhraseDone} />;
-  }
-
-  return <ProvidersScreen onDone={handleProvidersDone} />;
+  return <RecoveryPhraseScreen onDone={handlePhraseDone} />;
 }

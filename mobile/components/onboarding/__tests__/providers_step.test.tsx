@@ -51,6 +51,7 @@ import { KeypadHost } from "@/components/ui/keypad_host";
 import { KeypadProvider } from "@/contexts/keypad_context";
 import { listObservedPackages } from "@/modules/notification_listener";
 import { closeDatabase } from "@/lib/db/database";
+import { setSetting } from "@/lib/db/repos/app_settings_repo";
 import { __setTierForTests } from "@/lib/entitlements";
 import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { listMatchers } from "@/lib/db/repos/wallet_matchers_repo";
@@ -316,5 +317,65 @@ describe("the free-tier wallet cap during onboarding", () => {
 
     await waitFor(async () => expect(await listWallets()).toHaveLength(5));
     expect(screen.queryByTestId("wallet-cap-note")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WHAT THE PROVIDER STEP TURNED DOWN (GAP-091).
+//
+// The picker moved into the numbered flow, one screen ahead of this one, and
+// writes `paused_provider_packages` before it navigates here -- the complement
+// of what the user ticked. Before that there was no channel between the two
+// screens at all, so this one re-derived from the observed list and proposed a
+// wallet for every recognised provider on it, including the ones the user had
+// just said no to: the flow contradicting itself one screen apart.
+// ---------------------------------------------------------------------------
+
+describe("the provider step's answer", () => {
+  test("a provider the user declined is not proposed as a wallet", async () => {
+    // The row the picker leaves behind when the user ticks GCash and not Maya.
+    await setSetting("paused_provider_packages", [MAYA]);
+
+    await renderReady([GCASH, MAYA]);
+
+    expect(screen.getByTestId(`wallet-proposal-${GCASH}`)).toBeTruthy();
+    expect(screen.queryByTestId(`wallet-proposal-${MAYA}`)).toBeNull();
+    // Cash is not a provider choice and is never filtered by this.
+    expect(screen.getByTestId("wallet-proposal-cash")).toBeTruthy();
+  });
+
+  test("declining it does not create its wallet either, not merely hide the row", async () => {
+    await setSetting("paused_provider_packages", [MAYA]);
+    await renderReady([GCASH, MAYA]);
+
+    fireEvent.press(screen.getByTestId("onboarding-primary-button"));
+
+    await waitFor(async () =>
+      expect((await listWallets()).map((wallet) => wallet.name).sort()).toEqual(["Cash", "GCash"]),
+    );
+  });
+
+  test("an empty row filters nothing, because that is what ticking nothing means", async () => {
+    // NOT AN EDGE CASE, THE COMMON PATH. "Ticked nothing" and "tapped Skip"
+    // both mean capture everything, and the picker records nothing paused for
+    // either -- so reading an empty row as "everything is paused" would propose
+    // no wallets at all to most users.
+    await setSetting("paused_provider_packages", []);
+
+    await renderReady([GCASH, MAYA]);
+
+    expect(screen.getByTestId(`wallet-proposal-${GCASH}`)).toBeTruthy();
+    expect(screen.getByTestId(`wallet-proposal-${MAYA}`)).toBeTruthy();
+  });
+
+  test("a declined provider stays offered as an add-another chip", async () => {
+    // The chips take a deliberate tap, so nothing is created for a user who did
+    // not ask twice -- and someone who changes their mind still has a way back
+    // without leaving onboarding.
+    await setSetting("paused_provider_packages", [MAYA]);
+
+    await renderReady([GCASH]);
+
+    expect(screen.getByTestId(`wallet-add-${MAYA}`)).toBeTruthy();
   });
 });

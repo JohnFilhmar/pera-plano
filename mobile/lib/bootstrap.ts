@@ -17,10 +17,7 @@ import { purgeExpiredRawCaptures } from "@/lib/db/repos/raw_notifications_repo";
 import { getActiveRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { runIncomePass } from "@/lib/income/income_ledger_subscriber";
 import { seedParserRules } from "@/lib/ingest/seed_rules";
-import {
-  clearOnboardingProviderPause,
-  pendingOnboardingProviderPause,
-} from "@/lib/onboarding/pending_provider_pause";
+import { persistPendingProviderPause } from "@/lib/onboarding/pending_provider_pause";
 import { sweepOrphanedAttachments } from "@/lib/support/attachments";
 import { purgeOldSupportReports } from "@/lib/support/outbox_runner";
 import { listAllAttachmentFileUris } from "@/lib/support/support_reports_repo";
@@ -61,11 +58,16 @@ export async function bootstrapApp(): Promise<BootstrapResult> {
   await runMigrations(db);
   await seedDefaultCategories();
   await seedParserRules();
-  // The onboarding provider step's own selection, which had no open database
-  // to write itself into (GAP-116). BEFORE the re-sync below, so the launch
-  // that first stores the row is also the one that pushes it back across the
-  // bridge.
-  await persistOnboardingProviderPause();
+  // The onboarding provider step's own selection (GAP-116). BEFORE the re-sync
+  // below, so the launch that first stores the row is also the one that pushes
+  // it back across the bridge.
+  //
+  // NO LONGER THE ONLY PLACE THIS HAPPENS (GAP-091). The step moved into the
+  // numbered flow, where the database is open, so it normally persists its own
+  // selection and there is nothing pending by the time this runs. It stays
+  // because it is what recovers a write that failed on the screen, and because
+  // an install that reached the step before the move still has to be drained.
+  await persistPendingProviderPause();
   // The per-provider pause list, pushed back across the bridge (GAP-092).
   // AFTER the ruleset seed, because the allowlist it builds is "every package
   // the installed ruleset knows about, minus the paused ones" and there is no
@@ -167,54 +169,14 @@ async function runRetention(now: number): Promise<void> {
   }
 }
 
-/**
- * Moves the onboarding provider step's selection into
- * `paused_provider_packages` (GAP-116).
- *
- * WHY THAT SCREEN CANNOT WRITE IT ITSELF. `app/(onboarding)/providers.tsx` is
- * one of the three pre-flow screens app/lock.tsx renders from
- * "needs_onboarding", ABOVE the unlock gate: the database is not open there and
- * these migrations have not run, so a `setSetting` on that screen could do
- * nothing but throw. It hands the value to
- * lib/onboarding/pending_provider_pause.ts instead — already inverted into the
- * paused shape hooks/mutations/use_set_provider_pause.ts writes, so there is no
- * arithmetic here and no second idea of what the allowlist meant — and this is
- * the first moment in the process with a schema to put it in.
- *
- * WHAT WAS ACTUALLY LOST WITHOUT IT. `setProviderFilter` rejects when the scope
- * did not seal (GAP-114), and that screen deliberately logs and continues
- * rather than stranding a first-run user over a filter. With no row, that
- * selection was not merely unapplied but unrecoverable: nothing for the re-sync
- * below to read, nothing for the Privacy switches to show, and no second pass
- * through the step, since app/(onboarding)/index.tsx does not re-run it for an
- * install that already has keys.
- *
- * THE ROW IS WRITTEN BEFORE THE PUSH, not after a successful one — the inverse
- * of the Privacy centre's ordering, and the same trade `resyncProviderFilter`
- * already makes below. On the launch path a record that outlives a failed push
- * is exactly what lets the NEXT launch retry it, and there is nobody on screen
- * for the disagreement to mislead in the meantime.
- *
- * FAILURES ARE SWALLOWED, like the passes around it, and the record is dropped
- * only once the write has actually resolved: a launch that could not store the
- * selection retries on the next one instead of losing it to the very failure
- * this function exists for. Clearing at all is what keeps a second
- * `bootstrapApp()` in the same process from re-writing a stale onboarding
- * choice over a pause the user has since changed in the Privacy centre.
- */
-async function persistOnboardingProviderPause(): Promise<void> {
-  const paused = pendingOnboardingProviderPause();
-  if (paused === null) return;
-  try {
-    await setSetting("paused_provider_packages", paused);
-    clearOnboardingProviderPause();
-  } catch (error) {
-    console.error(
-      "the onboarding provider selection could not be recorded; it stays pending for the next launch",
-      error,
-    );
-  }
-}
+// `persistPendingProviderPause` (GAP-116) USED TO LIVE HERE, with a long note
+// on why the provider step could not write its own selection: it ran above the
+// unlock gate, where `getDatabase()` rejects and the `app_settings` table does
+// not exist yet. GAP-091 moved that step into the numbered flow, where the
+// database IS open, so the reasoning no longer holds and the body moved to
+// lib/onboarding/pending_provider_pause.ts, beside the inversion rule it
+// depends on and within reach of both callers. What is still true of the call
+// above, and is the reason it stays, is written there.
 
 /**
  * Re-asserts the native provider allowlist from `paused_provider_packages`,

@@ -30,6 +30,10 @@ jest.mock("@/modules/notification_listener", () => ({
   listObservedPackages: jest.fn(),
   isAccessGranted: jest.fn(),
   openAccessSettings: jest.fn(),
+  // The provider picker joined this flow as a numbered step (GAP-091), and
+  // these two are what it reaches for.
+  getAppLabels: jest.fn(),
+  setProviderFilter: jest.fn(),
 }));
 
 // ONLY `requestAlertPermission` IS REPLACED (GAP-003). The alerts step raises
@@ -62,9 +66,11 @@ import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
 import {
+  getAppLabels,
   isAccessGranted,
   listObservedPackages,
   openAccessSettings,
+  setProviderFilter,
 } from "@/modules/notification_listener";
 import type { ObservedPackage } from "@/modules/notification_listener";
 
@@ -73,6 +79,7 @@ import WelcomeScreen from "../welcome";
 import HowItWorksScreen from "../how_it_works";
 import AccessScreen from "../access";
 import BatteryScreen from "../battery";
+import ProvidersScreen from "../providers";
 import WalletsScreen from "../wallets";
 import IncomeScreen from "../income";
 import FirstLimitScreen from "../first_limit";
@@ -82,6 +89,8 @@ import DoneScreen from "../done";
 const mockIsAccessGranted = isAccessGranted as jest.Mock;
 const mockListObservedPackages = listObservedPackages as jest.Mock;
 const mockOpenAccessSettings = openAccessSettings as jest.Mock;
+const mockGetAppLabels = getAppLabels as jest.Mock;
+const mockSetProviderFilter = setProviderFilter as jest.Mock;
 const mockRequestAlertPermission = requestAlertPermission as jest.Mock;
 
 const GCASH = "com.globe.gcash.android";
@@ -135,6 +144,7 @@ function renderFlow(initialUrl = "/(onboarding)/welcome") {
       "(onboarding)/how_it_works": HowItWorksScreen,
       "(onboarding)/access": AccessScreen,
       "(onboarding)/battery": BatteryScreen,
+      "(onboarding)/providers": ProvidersScreen,
       "(onboarding)/wallets": WalletsScreen,
       "(onboarding)/income": IncomeScreen,
       "(onboarding)/first_limit": FirstLimitScreen,
@@ -198,6 +208,8 @@ beforeEach(async () => {
   ]);
   mockIsAccessGranted.mockResolvedValue(true);
   mockRequestAlertPermission.mockResolvedValue(true);
+  mockGetAppLabels.mockResolvedValue({});
+  mockSetProviderFilter.mockResolvedValue(undefined);
 
   // react-native's AppState/Linking are spied on the REAL module rather than
   // replaced with jest.mock("react-native", ...) — see
@@ -260,9 +272,14 @@ test("a user who taps through every step reaches the end, and onboarding actuall
   // actually catches people.
   await waitFor(async () => expect(await getSetting("onboarding_step")).toBe("battery"));
 
-  // 4. battery -> 5. wallets (NOT the provider picker — that name in
-  // ONBOARDING_STEPS is reserved, not routed).
+  // 4. battery -> 5. providers. The slot ONBOARDING_STEPS always reserved is a
+  // real route now (GAP-091); it used to be skipped straight past to wallets.
   pressPrimary();
+  await waitFor(() => expect(screen.getByTestId("provider-picker")).toBeTruthy());
+
+  // 5. providers -> 6. wallets. Ticking nothing means capture everything, so
+  // the wallet proposals below are unaffected by the choice made here.
+  fireEvent.press(screen.getByTestId("provider-picker-continue-button"));
   await waitFor(() => expect(screen.getByTestId("quick-wallet-list")).toBeTruthy());
 
   // 5. wallets -> 6. income. THE DEFECT THIS FILE WAS WRITTEN FOR: this tap
@@ -403,6 +420,11 @@ test("a user who skips everything skippable still reaches the end, and onboardin
   await waitFor(() => expect(screen.getByTestId("battery-explainer")).toBeTruthy());
 
   pressSkip();
+  await waitFor(() => expect(screen.getByTestId("provider-picker")).toBeTruthy());
+
+  // The picker has its own skip affordance rather than the frame's, because it
+  // is not wrapped in OnboardingFrame -- see app/(onboarding)/providers.tsx.
+  fireEvent.press(screen.getByTestId("provider-picker-skip-button"));
   await waitFor(() => expect(screen.getByTestId("quick-wallet-list")).toBeTruthy());
 
   pressSkip();
@@ -468,6 +490,8 @@ test("a second pass over the wallet and limit steps writes nothing twice", async
   await waitFor(() => expect(screen.getByTestId("battery-explainer")).toBeTruthy());
 
   pressPrimary();
+  await waitFor(() => expect(screen.getByTestId("provider-picker")).toBeTruthy());
+  fireEvent.press(screen.getByTestId("provider-picker-continue-button"));
   await waitFor(() => expect(screen.getByTestId("quick-wallet-list")).toBeTruthy());
   pressPrimary();
   await waitFor(() => expect(screen.getByTestId("income-quick-form-intro")).toBeTruthy());
