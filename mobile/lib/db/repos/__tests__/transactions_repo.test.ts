@@ -1,6 +1,6 @@
 import { closeDatabase } from "@/lib/db/database";
 import { __setTierForTests } from "@/lib/entitlements";
-import { createWallet, getWallet } from "../wallets_repo";
+import { createWallet, getBalanceDrift, getWallet } from "../wallets_repo";
 import {
   deleteTransaction,
   getTransaction,
@@ -1679,6 +1679,69 @@ describe("reassignWalletTransactions", () => {
 
     expect((await getWallet(walletId))?.balance).toBe(100000);
     expect((await getWallet(target))?.balance).toBe(0);
+  });
+
+  // GAP-080. `balance_after` is the SOURCE bank's statement about the SOURCE
+  // account. Moved as-is, it becomes the destination's newest reported figure.
+  test("the provider's balance anchors do not travel with the rows", async () => {
+    const tx = await insertTransaction(baseTx({ amount: 15000, balanceAfter: 900000 }));
+    expect((await getTransaction(tx.id))?.balanceAfter).toBe(900000);
+
+    await reassignWalletTransactions(walletId, target);
+
+    const moved = await getTransaction(tx.id);
+    expect(moved?.walletId).toBe(target);
+    expect(moved?.balanceAfter).toBeNull();
+    expect(moved?.computedBalance).toBeNull();
+  });
+
+  test("the destination shows no drift from the source's reported balance", async () => {
+    await insertTransaction(baseTx({ amount: 15000, balanceAfter: 900000 }));
+
+    await reassignWalletTransactions(walletId, target);
+
+    // Without the null-ing above, the newest row carrying a `balance_after` in
+    // `target` is one the SOURCE's provider reported, so the badge compares two
+    // different banks and cannot be cleared until this one reports again.
+    expect(await getBalanceDrift(target)).toBeNull();
+  });
+
+  // GAP-080. Moving this leg would put both legs of one internal transfer in a
+  // single wallet: a transfer that moves no money, and a link meaning nothing.
+  test("a leg whose counterpart is already in the destination stays behind", async () => {
+    const out = await insertTransaction(baseTx({ amount: 500, direction: "out" }));
+    const inLeg = await insertTransaction(
+      baseTx({ amount: 500, direction: "in", walletId: target }),
+    );
+    await linkAsTransfer(out.id, inLeg.id);
+    const ordinary = await insertTransaction(baseTx({ amount: 34500, direction: "out" }));
+
+    await reassignWalletTransactions(walletId, target);
+
+    expect((await getTransaction(ordinary.id))?.walletId).toBe(target);
+    expect((await getTransaction(out.id))?.walletId).toBe(walletId);
+    // Still linked, and the legs still span two wallets, so invariant 2 keeps
+    // excluding the pair from spend and income. Dissolving the link is what
+    // would have made both start counting.
+    expect((await getTransaction(out.id))?.transferLinkId).not.toBeNull();
+  });
+
+  test("the skipped leg's effect stays on the source balance", async () => {
+    const out = await insertTransaction(baseTx({ amount: 500, direction: "out" }));
+    const inLeg = await insertTransaction(
+      baseTx({ amount: 500, direction: "in", walletId: target }),
+    );
+    await linkAsTransfer(out.id, inLeg.id);
+    await insertTransaction(baseTx({ amount: 34500, direction: "out" }));
+
+    await reassignWalletTransactions(walletId, target);
+
+    // Source opened at 100000, spent 500 on the leg it keeps and 34500 on the
+    // row that moves. Only the 34500 is handed over, so the source keeps the
+    // 500 it still holds a row for. A delta measured over rows that did NOT
+    // move would report 99000 here and -34500 there.
+    expect((await getWallet(walletId))?.balance).toBe(99500);
+    expect((await getWallet(target))?.balance).toBe(-34000);
   });
 
   test("moving a wallet to itself changes nothing", async () => {

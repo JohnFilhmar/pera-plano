@@ -375,13 +375,13 @@ Dashed lines are derived or pipeline relationships (no stored foreign key on bot
 
 ### 3.6 IncomeProfile
 
-**Purpose.** The user's income rhythm — detected from the ledger or declared during onboarding. It feeds percent-of-income Limits and payday auto-allocation (Plus). "Kinsenas/katapusan" is the PH semi-monthly payday pattern: kinsenas = payday on the 15th, katapusan = payday at month-end (the 30th), so salaries land on the 15th and 30th.
+**Purpose.** The user's income rhythm — detected from the ledger or declared during onboarding. It feeds percent-of-income Limits and payday auto-allocation (Plus). "Kinsenas/katapusan" is the PH semi-monthly payday pattern: kinsenas = payday on the 15th, katapusan = payday at month-end, which is the LAST CALENDAR DAY and not the 30th: February pays on the 28th and a 31-day month pays on the 31st (`mobile/lib/bills/due_rules.ts` says so at the `semi-monthly` case, and income rule 6 anchors the window the same way).
 
 **Fields.**
 
 | Field | Type | Semantics |
 |---|---|---|
-| `cadence` | `enum: kinsenas (15th/30th) \| weekly \| monthly \| irregular` | The pay rhythm. `irregular` covers gig income, sari-sari store proceeds, mixed sources. |
+| `cadence` | `enum: kinsenas (15th/katapusan) \| weekly \| monthly \| irregular` | The pay rhythm. "15th/30th" is a common shorthand for kinsenas and it is imprecise: katapusan is the last calendar day. `irregular` covers gig income, sari-sari store proceeds, mixed sources. |
 | `averageAmount` | `money` | Average income **per pay event**. Monthly-equivalent income is derived: kinsenas × 2, weekly × ~4.33, monthly × 1; `irregular` uses a trailing 90-day average. Derivation details in [04-features/04-income.md](./04-features/04-income.md). |
 | `sourceWalletIds[]` | `list<ref<Wallet>>` | The Wallets where income lands. Detection watches `in`-direction, non-transfer-linked Transactions in these Wallets. |
 | `isManualOverride` | `bool` | True when the user declared or edited the values; detection then stops overwriting them until the user re-enables automatic detection. |
@@ -488,7 +488,7 @@ Dashed lines are derived or pipeline relationships (no stored foreign key on bot
 |---|---|---|
 | `name` | `text` | e.g., "Meralco", "Apartment rent". |
 | `amount` | `money`, with mode `fixed \| estimated` | The expected peso value each cycle. `fixed` = identical every cycle (rent). `estimated` = expected value recalculated after each matched payment (e.g., the average of the last 3 matched cycles) — right for utilities that vary month to month. |
-| `dueRule` | recurrence rule | When the Bill falls due: day-of-month (e.g., every 20th; months lacking that day use the last day), semi-monthly (on the 15th and 30th, aligning with kinsenas), every N weeks, or last-day-of-month. |
+| `dueRule` | recurrence rule | When the Bill falls due: day-of-month (e.g., every 20th; months lacking that day use the last day), semi-monthly (the 15th and the last calendar day, aligning with kinsenas), every N weeks, or last-day-of-month. |
 | `reminderOffsets[]` | `list<offset>` | When to remind, relative to the due date — e.g., 3 days before and on the due date. Reminders use the app's own notifications (POST_NOTIFICATIONS runtime permission on Android 13+). |
 | `autoMatchRule` | match rule | Criteria that link the paying Transaction from the ledger: merchant pattern + amount tolerance (± a percentage or peso band) + a date window around the due date. A match marks the cycle paid. |
 | `categoryId` | `ref<Category>` | The category matched payments belong to (typically Bills & Utilities). |
@@ -658,7 +658,7 @@ The canonical five (I1–I5) are locked; I6 onward are their necessary consequen
 | I7 | A Transfer Link has exactly two legs — one `in`, one `out` — in different Wallets; a Transaction belongs to at most one Transfer Link. |
 | I8 | The category tree is acyclic; Uncategorized always exists and cannot be hidden or deleted; system categories are never deleted; no deletion leaves a dangling `categoryId` anywhere. |
 | I9 | Exactly one IncomeProfile exists; a `percent-of-income` Limit deactivates (with explanation) when the IncomeProfile has no usable values. |
-| I10 | A Goal's `linkedWalletId` is a `savings` Wallet, and a savings Wallet backs at most one Goal. |
+| I10 | A Goal's `linkedWalletId` is an existing Wallet, and a Wallet backs at most one LIVE Goal. The `savings` half went with the `type` column (migration 014); the one-goal half is enforced by a partial unique index over live rows (migration 016), so a deleted Goal releases its Wallet. |
 | I11 | Limit alert thresholds (50% / 80% / 100%) each fire at most once per period. |
 | I12 | A Transaction appears in at most one Loan's `paymentHistory[]`, with direction consistent with the Loan's direction; a Transaction matches at most one Bill cycle. |
 | I13 | Review Queue items are not Transactions and are excluded from every total until confirmed. |

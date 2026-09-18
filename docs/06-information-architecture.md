@@ -100,7 +100,7 @@ The answer to one question: *"Can I spend right now?"*
 - **Hero:** the Safe-to-Spend number for today (Lucide `Navigation` icon), floored at ₱0 with a "you're over by ₱X" state when negative (formula and states in [04-features/09-safe-to-spend.md](04-features/09-safe-to-spend.md)). Free tier shows today only; the end-of-period projection area is a Plus surface.
 - **Alert strip:** active limit-threshold alerts (50/80/100%), Bills due soon, Loans due — tap-through to detail.
 - **Listener-health banner:** appears only when tracking was interrupted ("tracking was interrupted" recovery entry, §4.8) or Notification Access is missing.
-- **Recurring summary (Plus):** the "₱X/month locked in" card summarizing acknowledged RecurringPatterns, tapping through to Reports → Recurring & subscriptions; Free sees a locked preview with the detection count only ([04-features/10-reports.md](04-features/10-reports.md)).
+- **Recurring summary (Plus):** the "₱X/month locked in" card summarizing acknowledged RecurringPatterns, tapping through to More → Subscriptions, its own screen rather than a Reports section; Free sees a locked preview with the detection count only ([04-features/10-reports.md](04-features/10-reports.md)).
 - **Recent activity:** last few committed Transactions with a "see all" link to Transactions.
 
 ### 3.2 Transactions
@@ -124,7 +124,7 @@ The rules hub — everything the user sets, in one place: Limits, Goals, Loans, 
 
 ### 3.5 More
 
-- **Reports:** basic monthly (free); trends, comparisons, custom ranges, and the Recurring & subscriptions section ("₱X/month locked in") (Plus). [04-features/10-reports.md](04-features/10-reports.md).
+- **Reports:** basic monthly (free); trends, comparisons and custom ranges (Plus). Recurring & subscriptions ("₱X/month locked in") is NOT a section here: it is its own screen at More → Subscriptions. [04-features/10-reports.md](04-features/10-reports.md).
 - **Export:** CSV (Plus). Distinct from the never-gated privacy takeout inside Settings.
 - **Settings → Privacy:** pause listening (global or per provider), view exactly what was captured, export everything, wipe everything ([04-features/11-settings-privacy.md](04-features/11-settings-privacy.md)).
 - **Settings → Diagnostics:** parser diagnostics, listener health, parser-corpus version.

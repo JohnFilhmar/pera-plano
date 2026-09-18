@@ -9,10 +9,19 @@
 // relocate years of history into whichever wallet happened to be listed first,
 // on a single confirm tap — and a mis-tap is not consent to that.
 //
-// DELETE IS NOT ON OFFER, ANYWHERE. Invariant 4 forbids orphan Transactions, the
-// schema's NO ACTION foreign key on `transactions.wallet_id` blocks the DELETE
-// outright, and `wallets_repo` deliberately exports no `deleteWallet`. A delete
-// button here could only mislead or throw.
+// DELETE IS THE LABEL; ARCHIVE IS THE ACT (owner, 2026-08-28: "replace the
+// misleading button text from archive to 'delete'"). This sheet's confirm button
+// says "Delete wallet" and sets `isArchived`. NOTHING IS REMOVED: invariant 4
+// forbids orphan Transactions, the schema's NO ACTION foreign key on
+// `transactions.wallet_id` blocks a real DELETE outright, and `wallets_repo`
+// deliberately exports no `deleteWallet` to call.
+//
+// The word is the one people reach for when they want something gone, and the
+// promise behind it is kept by the wallet staying restorable under "Show
+// deleted" on the Wallets tab. Every Plan tab does the same through
+// components/plan/archived_section.tsx, so this file is not the odd one out.
+// The header used to read "DELETE IS NOT ON OFFER, ANYWHERE", which predates
+// that ruling and was the only false sentence in the file (GAP-022).
 //
 // It also states the two consequences a user cannot see coming — the matchers
 // stop catching, and the balance leaves the wallets total — because both are
@@ -28,6 +37,29 @@ import type { Wallet } from "@/types/domain";
 
 import { WalletIcon } from "./wallet_icon";
 
+/**
+ * What still reads this wallet, for the archive confirmation to name.
+ *
+ * GATHERED BY THE SCREEN, not by this sheet. The sheet is presentational and
+ * already takes `transactionCount` and `otherWallets` the same way, and the
+ * three sources here (`useGoals`, `useLoans`, `useIncomeSummary`) are queries
+ * the screen can hold open instead of a sheet mounting three of its own the
+ * moment it becomes visible.
+ *
+ * NAMES RATHER THAN ROWS, because naming them is the whole job (spec archive
+ * flow step 4: "the confirmation lists these links"). Passing `Goal[]` and
+ * `Loan[]` would hand this file two domain shapes it would only read one field
+ * from each.
+ */
+export type WalletLinks = {
+  /** Names of live goals whose `linkedWalletId` is this wallet. */
+  goals: readonly string[];
+  /** Counterparties of active loans linked to this wallet. */
+  loans: readonly string[];
+  /** Whether the wallet is in `IncomeProfile.sourceWalletIds[]`. */
+  isIncomeSource: boolean;
+};
+
 export type ArchiveWalletSheetProps = {
   wallet: Wallet;
   visible: boolean;
@@ -35,6 +67,12 @@ export type ArchiveWalletSheetProps = {
   /** Active wallets the transactions could move to; the subject is filtered out. */
   otherWallets: readonly Wallet[];
   transactionCount: number;
+  /**
+   * Goals, loans and income sources still pointing at this wallet. Omitted
+   * means "nothing does", so a caller that has not wired the queries yet keeps
+   * today's sheet rather than rendering an empty accusation.
+   */
+  links?: WalletLinks | null;
   /** `null` means "leave them attached to the archived wallet" — the default. */
   onArchive: (moveTransactionsTo: string | null) => void;
   /**
@@ -69,6 +107,7 @@ export function ArchiveWalletSheet({
   onDismiss,
   otherWallets,
   transactionCount,
+  links = null,
   onArchive,
   busy = false,
   errorMessage = null,
@@ -89,6 +128,15 @@ export function ArchiveWalletSheet({
     setTarget(null);
     setShowError(false);
   }, [visible]);
+
+  // ONE FLAT LIST, because naming them is the job and grouping three goals
+  // under a "Goals" subheading buys a heading per kind for no extra meaning.
+  // The kind prefix carries it, and an empty list renders nothing at all.
+  const linkLines = [
+    ...(links?.goals ?? []).map((name) => `Goal: ${name}`),
+    ...(links?.loans ?? []).map((who) => `Utang: ${who}`),
+    ...(links?.isIncomeSource === true ? ["Income: one of your pay sources"] : []),
+  ];
 
   const hasTransactions = transactionCount > 0;
   const destinations = otherWallets.filter(
@@ -137,6 +185,32 @@ export function ArchiveWalletSheet({
           lost.
         </Text>
 
+        {/* GAP-036. Spec archive flow step 4 and rule 21: a wallet backing a
+            goal, an active loan or income detection has to say so here, and ask
+            the user to relink or accept the pause. Without it a goal linked to
+            a retired wallet just stops moving, and the user learns why a week
+            later, if ever.
+
+            ABOVE THE TRANSACTIONS QUESTION, deliberately. This is a
+            consequence to read before choosing anything; the question below is
+            the choice itself. */}
+        {linkLines.length > 0 ? (
+          <View testID="archive-wallet-links" className="gap-1">
+            <Text className="text-row font-semibold text-fg dark:text-fg-dark">
+              Still using this wallet
+            </Text>
+            {linkLines.map((line) => (
+              <Text key={line} className="text-body text-fg-2 dark:text-fg-2-dark">
+                {line}
+              </Text>
+            ))}
+            <Text className="text-body text-fg-2 dark:text-fg-2-dark">
+              Their automation pauses until you point them at another wallet. Nothing you set up
+              is deleted.
+            </Text>
+          </View>
+        ) : null}
+
         {hasTransactions ? (
           <View className="gap-1">
             <Text className="text-row font-semibold text-fg dark:text-fg-dark">
@@ -158,9 +232,13 @@ export function ArchiveWalletSheet({
             <ListRow
               testID="archive-move-transactions"
               title="Move them to another wallet"
-              subtitle="Their amounts and details are unchanged; only the wallet moves."
-              // 63 characters — same sweep finding as the row above.
-              subtitleLines={3}
+              subtitle="Their amounts and details are unchanged. Transfers between these two wallets stay put."
+              // 85 characters, `Math.ceil(85 / 22)`; same sweep finding as the
+              // row above. It grew when GAP-080 added the transfer caveat, and
+              // "only the wallet moves" came out to pay for it: that clause is
+              // the imprecise one now, since a leg paired with the destination
+              // deliberately does not move at all.
+              subtitleLines={4}
               onPress={() => choose("move")}
               right={choice === "move" ? <Chip label="Selected" tone="brand" /> : undefined}
             />
