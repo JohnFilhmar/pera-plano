@@ -24,12 +24,29 @@
 // measured in minutes — a 40MB video attached to a bug report is not evidence,
 // it is a report that never sends.
 import * as FileSystem from "expo-file-system/legacy";
+// THE ONE PLACE THIS APP USES THE SDK 54 FILE API, and only for the two
+// operations the legacy one cannot do without ruining them: reading and writing
+// raw BYTES. The legacy API's only binary form is a base64 string, and
+// base64ing an 8 MB screenshot in order to encrypt it would build a ~11 MB
+// string on the JS thread and then decode it a byte at a time. Everything else
+// here — directory creation, stat, unlink, listing — stays on the legacy API
+// alongside `lib/privacy/data_export.ts` and `lib/reports/csv_export.ts`, so
+// this is a deliberate two-call exception rather than the start of a migration.
+import { File } from "expo-file-system";
 
+import {
+  decryptAttachmentBytes,
+  encryptAttachmentBytes,
+} from "@/lib/crypto/attachment_cipher";
 import { newId } from "@/lib/ids";
 import type { NewSupportReportAttachment } from "@/types/support";
 
 /** Where persisted attachments live. One directory, created on first use. */
 const ATTACHMENT_DIR_NAME = "support_attachments";
+
+/** Where a decrypted attachment lives for the length of one upload. In the
+ * CACHE directory so Android reclaims it even if this app never runs again. */
+const TEMP_DIR_NAME = "support_attachments_tmp";
 
 /** At most this many files on one report. */
 export const MAX_SUPPORT_ATTACHMENTS = 5;
@@ -139,10 +156,135 @@ export async function persistSupportAttachment(
   // A fresh UUID, never the picked file's own name: two screenshots taken a
   // second apart are both "Screenshot_20260828-101500.png" on some devices,
   // and the second copy would silently overwrite the first.
-  const fileUri = `${directory}${newId()}.${extensionFor(source.mimeType)}`;
-  await FileSystem.copyAsync({ from: source.uri, to: fileUri });
+  //
+  // `.enc`, AND THE ORIGINAL EXTENSION IS DELIBERATELY NOT KEPT (GAP-072). The
+  // bytes on disk are ciphertext, so naming the file `.png` would be a lie that
+  // some future gallery scanner or share-sheet handler would act on. The MIME
+  // type the upload needs is carried on the ROW instead, which is where it
+  // already was.
+  const fileUri = `${directory}${newId()}.enc`;
+  // COPY THEN ENCRYPT IS NOT AN OPTION — that would write the plaintext to
+  // durable storage first and delete it after, which is the exact window this
+  // entry exists to close. The bytes go from the picker's cache file straight
+  // into memory, through GCM, and only the ciphertext is ever written here.
+  const plaintext = await new File(source.uri).bytes();
+  const sealed = await encryptAttachmentBytes(plaintext);
+  plaintext.fill(0);
+  new File(fileUri).write(sealed);
 
+  // `byteSize` stays the PLAINTEXT size, because it is what the caps were
+  // measured against and what the user is told. The file on disk is larger by
+  // the nonce and the GCM tag, which is 28 bytes and not worth a second field.
   return { fileUri, mimeType: source.mimeType, byteSize };
+}
+
+/**
+ * Decrypts an attachment to a plaintext temp file and returns its URI, for the
+ * one moment the upload genuinely needs a readable file.
+ *
+ * WHY A FILE AT ALL. React Native's `FormData` takes `{ uri, name, type }` and
+ * streams from disk; there is no byte-array form, and base64ing an 8 MB
+ * screenshot into a JSON body would inflate it by a third and build the whole
+ * string on the JS thread. So the plaintext window is real, and the honest
+ * thing is to make it as short as possible rather than to pretend it is not
+ * there: `cleanupDecryptedAttachments` below is called on every send outcome,
+ * success or failure, and the launch sweep collects whatever a process kill
+ * stranded.
+ *
+ * The temp files go in the CACHE directory on purpose. It is the one place
+ * Android reclaims on its own, so even a device that never opens the app again
+ * eventually loses them.
+ */
+export async function decryptAttachmentToTempFile(fileUri: string): Promise<string> {
+  const cacheDirectory = FileSystem.cacheDirectory;
+  if (!cacheDirectory) {
+    throw new Error("support attachments: expo-file-system reports no cache directory");
+  }
+  const directory = `${cacheDirectory}${TEMP_DIR_NAME}/`;
+  await FileSystem.makeDirectoryAsync(directory, { intermediates: true });
+
+  const sealed = await new File(fileUri).bytes();
+  const plaintext = decryptAttachmentBytes(sealed);
+  const tempUri = `${directory}${newId()}`;
+  new File(tempUri).write(plaintext);
+  plaintext.fill(0);
+  return tempUri;
+}
+
+/**
+ * Unlinks decrypted temp files. Best effort and never throws, for the same
+ * reason `deleteSupportAttachmentFiles` is: it runs on the success path of a
+ * send the server has already acknowledged, and a failed unlink must not turn a
+ * delivered report into a redelivered one.
+ */
+export async function cleanupDecryptedAttachments(tempUris: readonly string[]): Promise<void> {
+  for (const tempUri of tempUris) {
+    try {
+      await FileSystem.deleteAsync(tempUri, { idempotent: true });
+    } catch (error: unknown) {
+      console.warn("[support] could not delete a decrypted attachment", tempUri, error);
+    }
+  }
+}
+
+/**
+ * Unlinks every file in the attachment directory that no row points at, and
+ * every decrypted temp file left behind by a killed process.
+ *
+ * WHY THIS HAS TO EXIST (GAP-072). `discardDraft` is the ordinary teardown and
+ * it is best-effort by design: a process killed on the report screen leaks the
+ * files it had already copied, and before this there was no sweep at all, so
+ * they stayed until the app was uninstalled. The temp files above make the same
+ * problem sharper, because those are PLAINTEXT.
+ *
+ * NEVER THROWS, and never deletes a file it was not given the full picture for:
+ * the caller reads the referenced URIs from the database, so a read that failed
+ * would arrive here as an empty list and wipe the queue's own attachments. That
+ * is why a caller that cannot produce the list must not call this at all,
+ * rather than call it with nothing — see `runRetention`.
+ *
+ * @param referencedUris Every `file_uri` currently held by a support report row.
+ */
+export async function sweepOrphanedAttachments(
+  referencedUris: readonly string[],
+): Promise<{ removed: number }> {
+  let removed = 0;
+  const referenced = new Set(referencedUris);
+
+  const documentDirectory = FileSystem.documentDirectory;
+  const cacheDirectory = FileSystem.cacheDirectory;
+
+  const sweep = async (directory: string, keep: Set<string> | null): Promise<void> => {
+    let names: string[];
+    try {
+      names = await FileSystem.readDirectoryAsync(directory);
+    } catch {
+      // The directory has never been created, which is the common case on a
+      // device that never filed a report.
+      return;
+    }
+    for (const name of names) {
+      const uri = `${directory}${name}`;
+      if (keep !== null && keep.has(uri)) continue;
+      try {
+        await FileSystem.deleteAsync(uri, { idempotent: true });
+        removed += 1;
+      } catch (error: unknown) {
+        console.warn("[support] could not sweep an orphaned attachment", uri, error);
+      }
+    }
+  };
+
+  if (documentDirectory) {
+    await sweep(`${documentDirectory}${ATTACHMENT_DIR_NAME}/`, referenced);
+  }
+  if (cacheDirectory) {
+    // `null`, not an empty set: a decrypted temp file is NEVER referenced by a
+    // row, so every one of them that survives a send is garbage by definition.
+    await sweep(`${cacheDirectory}${TEMP_DIR_NAME}/`, null);
+  }
+
+  return { removed };
 }
 
 /**

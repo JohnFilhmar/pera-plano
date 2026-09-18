@@ -79,7 +79,31 @@ jest.mock("expo-file-system/legacy", () => ({
   deleteAsync: jest.fn(async () => undefined),
   writeAsStringAsync: jest.fn(async () => undefined),
   readAsStringAsync: jest.fn(async () => ""),
+  readDirectoryAsync: jest.fn(async () => []),
   getInfoAsync: jest.fn(async () => ({ exists: true, size: 0 })),
+}));
+
+// The SDK 54 `File` API, which `lib/support/attachments.ts` uses for the two
+// operations the legacy API cannot do without ruining them — reading and
+// writing raw bytes (GAP-072). Same disposition as the legacy mock above:
+// INERT, so a suite that only wanted to render a screen does not die at module
+// load, and a suite that cares registers its own factory. `bytes()` returning
+// empty is deliberately useless rather than plausible — a suite that needs real
+// bytes has to say so, instead of silently passing against zeros.
+jest.mock("expo-file-system", () => ({
+  // A plain field rather than a `public readonly` parameter property:
+  // babel-plugin-jest-hoist reads the parameter's type annotation as an
+  // out-of-scope variable reference and refuses the whole factory.
+  File: class {
+    uri: string;
+    constructor(uri: string) {
+      this.uri = uri;
+    }
+    async bytes(): Promise<Uint8Array> {
+      return new Uint8Array();
+    }
+    write(): void {}
+  },
 }));
 
 // react-native-keyboard-controller (app/_layout.tsx's KeyboardProvider) reads

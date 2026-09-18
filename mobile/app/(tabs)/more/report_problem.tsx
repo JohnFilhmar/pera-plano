@@ -108,18 +108,31 @@ export default function ReportProblemScreen() {
             </View>
           }
           onSubmit={(values) => {
+            const attachments = draft.attachments;
+            // RELEASED BEFORE THE INSERT, NOT AFTER IT (GAP-072). Releasing in
+            // `.then()` left a window: leaving the screen while the insert was
+            // still in flight fired the unmount teardown, which DELETED the
+            // files — and the row that landed a moment later pointed at them.
+            // Every send attempt then failed inside FormData, was mapped to the
+            // generic "No connection", and the report retried forever with a
+            // reason that named the wrong thing entirely.
+            //
+            // The order is now "hand the files over, then write the row that
+            // owns them", and the failure path hands them back. A process
+            // killed between the two leaks files with no row, which is exactly
+            // what the launch sweep in lib/bootstrap.ts collects.
+            draft.releaseDraft();
             void submit
-              .mutateAsync({ ...values, attachments: draft.attachments })
+              .mutateAsync({ ...values, attachments })
               .then(() => {
-                // The rows own the files from here — release, never discard.
-                draft.releaseDraft();
                 setSubmittedCount((count) => count + 1);
               })
               .catch((error: unknown) => {
                 // The LOCAL write failed, which is a different and much rarer
                 // thing than a failed send: the database is locked or full.
-                // Nothing was queued, so the draft keeps its files and the
+                // Nothing was queued, so the draft takes its files back and the
                 // user keeps their text.
+                draft.adoptDraft(attachments);
                 console.error("[support] could not queue the report", error);
               });
           }}

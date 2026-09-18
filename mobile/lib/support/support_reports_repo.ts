@@ -393,6 +393,22 @@ export async function deleteSupportReport(id: string): Promise<string[]> {
  * thing it promises. Rejected rows survive too: they are waiting on a
  * decision only the user can make.
  */
+/**
+ * Every attachment file URI any row still points at (GAP-072).
+ *
+ * THE INPUT TO THE LAUNCH SWEEP, and the reason it is a plain full-table read
+ * with no status filter: the sweep unlinks whatever this does NOT return, so a
+ * clause that accidentally excluded a status would delete the files of reports
+ * still waiting to send. Rows are the authority here, not statuses.
+ */
+export async function listAllAttachmentFileUris(): Promise<string[]> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<{ file_uri: string }>(
+    "SELECT file_uri FROM support_report_attachments",
+  );
+  return rows.map((row) => row.file_uri);
+}
+
 export async function purgeSentSupportReports(cutoff: EpochMs): Promise<string[]> {
   const db = await getDatabase();
   const rows = await db.getAllAsync<{ file_uri: string }>(

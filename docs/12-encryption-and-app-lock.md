@@ -57,6 +57,16 @@ What this design defends against, honestly scoped:
 
 Naming the last three matters. A design that claims to stop them would be lying.
 
+### Support attachments were not ciphertext until 2026-09-18
+
+**A screenshot attached to a problem report was copied verbatim into the app sandbox**, from the offline problem-reporting feature's first commit until **2026-09-18**. It sat there as a plain `.png` for as long as the report was queued, which on a phone with no signal is indefinitely. The content is exactly what the rest of this design encrypts: screenshots of bank and e-wallet notifications, carrying amounts, balances and counterparty names.
+
+They are now **AES-256-GCM under the DEK**, written as `<uuid>.enc` and never as the picked file's own type, and the bytes go from the picker's cache file straight through the cipher, so the plaintext is never written to durable storage at all (`lib/support/attachments.ts`, `lib/crypto/attachment_cipher.ts`).
+
+**One window is left, and it is named rather than hidden.** React Native's `FormData` streams a file from a path and has no byte-array form, so an upload needs a readable file. The sender decrypts to the **cache** directory, uploads, and unlinks on every outcome including a throw; a launch sweep collects whatever a killed process stranded. So the plaintext exists for the length of one request, in the one directory Android reclaims on its own, instead of for the length of a queue.
+
+**CSV exports and the full data export are deliberately NOT covered by this.** They write plaintext to a location the user chooses through the share sheet, which is the entire point of an export, and they leave the sandbox the moment they are written. Nothing in this table claims otherwise.
+
 ### The second row was not true of every file until 2026-08-14
 
 **The notification listener's provider filter was stored in plaintext**, from the listener's first commit until the provider-selection plan sealed it on **2026-08-14**. So was `last_capture_at`. Both sat in `shared_prefs/peraplano_capture_prefs.xml`, app-private but entirely unencrypted, beside a database and a capture buffer this table has always correctly described as ciphertext. Anything that could read app-private storage could read them with a single `cat`, and what it got back was a list of every bank and e-wallet the user had selected — the same disclosure the ledger encryption exists to prevent, in a smaller and much easier file.
@@ -213,6 +223,7 @@ The **Status** column is the difference between a design and a shipped guarantee
 | The entire SQLite database — all 19 tables, indexes, and the write-ahead log | SQLCipher, AES-256, keyed by the DEK | **Implemented** in `mobile/lib/db/database.ts` (`OpSqlite.open({ encryptionKey })`). Not yet confirmed on a device: docs/13 Part 4 |
 | The notification capture buffer | Per-line RSA-OAEP + AES-256-GCM envelope (§6) | **Implemented** in `CaptureEnvelope.kt` |
 | The listener's provider filter, last-capture timestamp and observed-package list | AES-256-GCM under KEK-prefs — a Keystore key requiring **no** authentication (§6a). Plaintext until 2026-08-14 | **Implemented** in `KeyStoreBridge.kt` (`sealPrefsValue` / `openPrefsValue`) |
+| Support-report attachments waiting in the outbox | AES-256-GCM under the DEK, written as `<uuid>.enc`. Plaintext until 2026-09-18 | **Implemented** in `lib/crypto/attachment_cipher.ts`. Decrypted to a cache-directory temp file for the length of one upload only — see §4 |
 | The persisted React Query cache in AsyncStorage | AES-256-GCM with a key wrapped the same way as the DEK | **Implemented** in `mobile/lib/crypto/cache_cipher.ts` |
 | The cloud backup blob | AES-256-GCM under a key derived from the recovery phrase — **not** the device Keystore key, which cannot travel | **Planned.** No backup code exists anywhere in the app; nothing writes, uploads or reads such a blob |
 | Server-side storage | The vault column holds client-encrypted bytes; Postgres disk encryption is defense in depth, not the protection | **Planned.** See §9: there is no such server |

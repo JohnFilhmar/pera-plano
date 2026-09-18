@@ -77,6 +77,14 @@ jest.mock("@/lib/query_client", () => ({
   queryClient: { clear: jest.fn() },
 }));
 
+// GAP-072 added a second consumer of the DEK on exactly the same lifecycle.
+// Mocked for the same reason the query cache is: these tests assert WHICH
+// teardown steps ran and in what order, not what AES does.
+jest.mock("@/lib/crypto/attachment_cipher", () => ({
+  setAttachmentKey: jest.fn(),
+  clearAttachmentKey: jest.fn(),
+}));
+
 // `WipeIncompleteError` is redeclared here rather than imported from the real
 // module, the same shape the key_manager factory above uses: this factory IS
 // the module lock_context.tsx imports, so the class the test throws and the
@@ -186,6 +194,7 @@ import { authenticateAsync } from "expo-local-authentication";
 import type { PersistedClient } from "@tanstack/react-query-persist-client";
 import * as KeyManager from "@/lib/crypto/key_manager";
 import * as Database from "@/lib/db/database";
+import * as AttachmentCipher from "@/lib/crypto/attachment_cipher";
 import * as QueryCache from "@/lib/query_client";
 import { wipeAndStartOver, WipeIncompleteError } from "@/lib/security/wipe";
 import {
@@ -206,6 +215,8 @@ const mockCloseDatabase = Database.closeDatabase as jest.Mock;
 const mockSetCacheEncryptionKey = QueryCache.setCacheEncryptionKey as jest.Mock;
 const mockClearCacheEncryptionKey = QueryCache.clearCacheEncryptionKey as jest.Mock;
 const mockQueryClientClear = QueryCache.queryClient.clear as jest.Mock;
+const mockSetAttachmentKey = AttachmentCipher.setAttachmentKey as jest.Mock;
+const mockClearAttachmentKey = AttachmentCipher.clearAttachmentKey as jest.Mock;
 const mockWipeAndStartOver = wipeAndStartOver as jest.Mock;
 const mockIsDeviceSecure = isDeviceSecure as jest.Mock;
 
@@ -1254,6 +1265,33 @@ describe("background timeout", () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  // GAP-072. The support outbox's attachment files are encrypted under the same
+  // DEK, so the key holding it has to die with the cache key. A lock that
+  // scrubbed one and not the other would leave a live copy of the DEK in
+  // whichever module was forgotten, which is the whole point of the teardown.
+  test("locking scrubs the attachment key too, not only the query cache's", async () => {
+    const result = await arriveAtUnlocked();
+    expect(mockSetAttachmentKey).toHaveBeenCalledWith(DEK);
+
+    const nowSpy = jest.spyOn(Date, "now");
+    const t0 = 1_700_000_000_000;
+    nowSpy.mockReturnValue(t0);
+    act(() => emitAppState("background"));
+    nowSpy.mockReturnValue(t0 + 6 * 60 * 1000);
+    await act(async () => {
+      emitAppState("active");
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(result.current.status).toBe("locked"));
+    nowSpy.mockRestore();
+
+    // Both keys, or neither — the pairing IS the assertion.
+    expect(mockClearAttachmentKey).toHaveBeenCalledTimes(1);
+    expect(mockClearCacheEncryptionKey).toHaveBeenCalledTimes(1);
   });
 
   // GAP-030's other half. Closing the database ends the app's ability to read

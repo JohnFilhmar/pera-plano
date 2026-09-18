@@ -15,6 +15,15 @@
 // DatabaseLockedError. Both unlock() and submitRecoveryPhrase() below run all
 // three, in order, before ever reporting "unlocked".
 //
+// GAP-072 ADDED A FOURTH KEY TO THE SAME LIFECYCLE, not a fourth step to that
+// ordered sequence: `setAttachmentKey(dek)` sits immediately after the cache
+// key on both unlock paths, and `clearAttachmentKey()` beside every
+// `clearCacheEncryptionKey()`. It is deliberately NOT ordered against the
+// database — support attachments are files, and nothing about opening or
+// closing SQLCipher affects them — so it is pinned to the cache key purely so
+// the two cannot drift apart: a lock that scrubbed one and not the other would
+// leave a live DEK copy in whichever module was forgotten.
+//
 // WHY COLD START NEVER TRUSTS AN IN-MEMORY DEK: key_manager.getKeyState() can
 // report "unlocked" if something already populated its module-level `dek`
 // this same process (there is no such caller yet, but nothing prevents one
@@ -88,6 +97,7 @@ import {
 } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import * as LocalAuthentication from "expo-local-authentication";
+import * as AttachmentCipher from "@/lib/crypto/attachment_cipher";
 import * as KeyManager from "@/lib/crypto/key_manager";
 import * as Database from "@/lib/db/database";
 import * as QueryCache from "@/lib/query_client";
@@ -294,6 +304,7 @@ export function LockProvider({ children }: { children: ReactNode }) {
    */
   const lockNow = useCallback(async () => {
     QueryCache.clearCacheEncryptionKey();
+    AttachmentCipher.clearAttachmentKey();
     await Database.closeDatabase();
     QueryCache.queryClient.clear();
     KeyManager.lock();
@@ -443,6 +454,7 @@ export function LockProvider({ children }: { children: ReactNode }) {
       const dek = await KeyManager.unlockWithDeviceKey();
       await Database.unlockDatabase(dek);
       QueryCache.setCacheEncryptionKey(dek);
+      AttachmentCipher.setAttachmentKey(dek);
       setStatus("unlocked");
     } catch (error) {
       if (error instanceof DeviceKeyMissingError) {
@@ -518,6 +530,7 @@ export function LockProvider({ children }: { children: ReactNode }) {
 
       await Database.unlockDatabase(dek);
       QueryCache.setCacheEncryptionKey(dek);
+      AttachmentCipher.setAttachmentKey(dek);
       setStatus("unlocked");
     } catch (error) {
       if (error instanceof KeyManager.RecoveryUnlockFailedError) {
@@ -556,6 +569,7 @@ export function LockProvider({ children }: { children: ReactNode }) {
       // destroy every piece of key material. lockNow() above already does
       // this on the ordinary lock path; the wipe path needs it too.
       QueryCache.clearCacheEncryptionKey();
+      AttachmentCipher.clearAttachmentKey();
       setErrorMessage(null);
       setStatus("needs_onboarding");
     } catch (error) {
@@ -569,6 +583,7 @@ export function LockProvider({ children }: { children: ReactNode }) {
         // rendered by app/lock.tsx above the onboarding pre-flow — is the only
         // part that differs.
         QueryCache.clearCacheEncryptionKey();
+        AttachmentCipher.clearAttachmentKey();
         setErrorMessage(WIPE_INCOMPLETE_MESSAGE);
         setStatus("needs_onboarding");
       } else {
