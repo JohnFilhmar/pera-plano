@@ -127,9 +127,49 @@ test("an attachment is sent as a file part with its own mime type", () => {
     }),
   );
 
+  // THE NAME COMES FROM THE MIME TYPE NOW, NOT FROM THE PATH (GAP-072). The
+  // stored file is AES-GCM ciphertext called `<uuid>.enc`, and what actually
+  // uploads is a decrypted temp file with no extension at all, so reading
+  // either path would put `.enc` or nothing in front of whoever opens the
+  // ticket. The row's `mimeType` is authoritative and always was — the old
+  // `.png` in the path was itself derived from it.
   expect(parts).toContainEqual([
     "attachments",
-    { uri: "file:///docs/support_attachments/shot.png", name: "shot.png", type: "image/png" },
+    {
+      uri: "file:///docs/support_attachments/shot.png",
+      name: "attachment-1.png",
+      type: "image/png",
+    },
+  ]);
+});
+
+// The uri a part carries is the DECRYPTED temp file, never the ciphertext the
+// row points at — uploading the latter would send the server an unreadable
+// blob and look like a successful delivery.
+test("an explicit upload uri replaces the row's own, positionally", () => {
+  const parts = supportReportParts(
+    fixture({
+      attachments: [
+        {
+          id: "att-1",
+          reportId: "r",
+          fileUri: "file:///docs/support_attachments/aaaa.enc",
+          mimeType: "image/jpeg",
+          byteSize: 4096,
+          createdAt: NOW,
+        },
+      ],
+    }),
+    ["file:///cache/support_attachments_tmp/plain-1"],
+  );
+
+  expect(parts).toContainEqual([
+    "attachments",
+    {
+      uri: "file:///cache/support_attachments_tmp/plain-1",
+      name: "attachment-1.jpg",
+      type: "image/jpeg",
+    },
   ]);
 });
 
