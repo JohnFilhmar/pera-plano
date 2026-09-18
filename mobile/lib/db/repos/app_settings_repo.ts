@@ -40,6 +40,7 @@ import { UNKNOWN_INCOME_DETECTION, type IncomeDetectionState } from "@/types/con
 // beside the rule that reads it (IA §6.2 rule 7) rather than duplicated here,
 // the same way `IncomeDetectionState` above is defined beside income's own.
 import type { HeldPeriod } from "@/lib/alerts/notification_policy";
+import type { OnboardingStep } from "@/lib/onboarding/onboarding_state";
 
 /**
  * Where the one-time "your income figure moved" notice has got to (GAP-117).
@@ -54,6 +55,22 @@ export type SplitPaydayNotice = "undecided" | "due" | "done";
 
 export type AppSettings = {
   onboarding_complete: boolean;
+  /**
+   * How far through the numbered flow the user has got, so a run that is
+   * interrupted resumes where it stopped rather than at "welcome" (GAP-067).
+   *
+   * THE TYPE IS THE CONTRACT, NOT A GUARANTEE ABOUT THE ROW. Every setting is
+   * stored as JSON and this one is written by whichever app version was
+   * installed at the time, so a value outside `ONBOARDING_STEPS` is reachable
+   * after a downgrade or a renamed step. `readOnboardingStep` validates what
+   * it reads and falls back to the first step; nothing else should read this
+   * key directly.
+   *
+   * Meaningless once `onboarding_complete` is true, and deliberately not
+   * cleared: `app/index.tsx` routes on the flag first, so the stale value is
+   * never read again.
+   */
+  onboarding_step: OnboardingStep;
   capture_enabled: boolean;
   telemetry_enabled: boolean;
   /**
@@ -314,6 +331,7 @@ export type AppSettings = {
 /** Values returned by `getSetting`/`getAllSettings` for a key with no row yet. */
 export const DEFAULT_SETTINGS: AppSettings = {
   onboarding_complete: false,
+  onboarding_step: "welcome",
   capture_enabled: true,
   telemetry_enabled: true,
   cash_reconcile_prompt_at: null,

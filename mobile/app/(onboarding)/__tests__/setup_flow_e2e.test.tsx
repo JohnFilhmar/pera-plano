@@ -54,6 +54,7 @@ import { typeAmount } from "@/test_support/keypad";
 import { requestAlertPermission } from "@/lib/alerts/alerts_service";
 import { closeDatabase } from "@/lib/db/database";
 import { getSetting } from "@/lib/db/repos/app_settings_repo";
+import { stepFromPathname } from "@/lib/onboarding/onboarding_state";
 import { getIncomeProfile } from "@/lib/db/repos/income_repo";
 import { listLimits } from "@/lib/db/repos/limits_repo";
 import { listWallets } from "@/lib/db/repos/wallets_repo";
@@ -252,6 +253,13 @@ test("a user who taps through every step reaches the end, and onboarding actuall
   });
   await waitFor(() => expect(screen.getByTestId("battery-explainer")).toBeTruthy());
 
+  // THE RESUME CURSOR IS BEING WRITTEN AS THE USER MOVES (GAP-067), by
+  // app/(onboarding)/_layout.tsx off the pathname. This is the point in the
+  // flow where it matters most: "access" and "battery" are the two steps that
+  // hand off to system Settings, so they are where the background re-lock
+  // actually catches people.
+  await waitFor(async () => expect(await getSetting("onboarding_step")).toBe("battery"));
+
   // 4. battery -> 5. wallets (NOT the provider picker — that name in
   // ONBOARDING_STEPS is reserved, not routed).
   pressPrimary();
@@ -343,6 +351,13 @@ test("skipping the access step and then going back to it leaves it able to move 
 
   pressBack();
   await waitFor(() => expect(screen.getByTestId("access-explainer")).toBeTruthy());
+
+  // AND THE CURSOR FOLLOWED THEM BACK. `router.push` leaves the pushing screen
+  // mounted underneath, so a mount effect on the screen itself would never fire
+  // again on the way back and the cursor would keep pointing at the deeper
+  // step -- which is why it is written from the pathname in the layout.
+  expect(stepFromPathname("/access")).toBe("access");
+  await waitFor(async () => expect(await getSetting("onboarding_step")).toBe("access"));
 
   // THE REGRESSION: this second skip used to do nothing at all.
   pressSkip();

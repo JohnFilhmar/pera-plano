@@ -57,16 +57,28 @@ jest.mock("../providers", () => ({
 
 import { act, render, screen, waitFor } from "@testing-library/react-native";
 import { getKeyState } from "@/lib/crypto/key_manager";
+import { closeDatabase } from "@/lib/db/database";
+import { recordOnboardingStep } from "@/lib/onboarding/onboarding_state";
+import { freshDb } from "@/test_support/db";
 import OnboardingIndexScreen from "../index";
 
 const mockGetKeyState = getKeyState as jest.Mock;
 
-beforeEach(() => {
+// A REAL DATABASE NOW, FOR ONE READ (GAP-067). The already-keyed branch resumes
+// at the recorded step instead of always redirecting to "welcome", and mocking
+// that read away would leave the branch this file exists to pin asserted
+// against a stub of itself.
+beforeEach(async () => {
+  await freshDb();
   capturedHref = undefined;
   capturedOnSecure = undefined;
   capturedOnPhraseDone = undefined;
   capturedOnProvidersDone = undefined;
   jest.clearAllMocks();
+});
+
+afterEach(async () => {
+  await closeDatabase();
 });
 
 /** Walks the flow as a fresh install does: device lock, then the phrase. */
@@ -186,6 +198,46 @@ test("completing the provider step continues into the numbered flow's first scre
   await act(async () => {
     capturedOnProvidersDone!();
   });
+
+  await waitFor(() => expect(screen.getByTestId("fake-redirect")).toBeTruthy());
+  expect(capturedHref).toBe("/(onboarding)/welcome");
+});
+
+// ---------------------------------------------------------------------------
+// Resuming (GAP-067). The already-keyed branch used to redirect to "welcome"
+// unconditionally, which is what turned an interrupted run into a loop: the
+// access and battery steps both hand off to system Settings, five minutes there
+// trips the background re-lock, and coming back threw away every finished step.
+// ---------------------------------------------------------------------------
+
+test("an interrupted run resumes at the step it reached, not at welcome", async () => {
+  await recordOnboardingStep("battery");
+  mockGetKeyState.mockResolvedValue("locked");
+
+  render(<OnboardingIndexScreen />);
+
+  await waitFor(() => expect(screen.getByTestId("fake-redirect")).toBeTruthy());
+  expect(capturedHref).toBe("/(onboarding)/battery");
+});
+
+test("the redirect never renders once at welcome before correcting itself", async () => {
+  await recordOnboardingStep("income");
+  mockGetKeyState.mockResolvedValue("unlocked");
+
+  render(<OnboardingIndexScreen />);
+
+  // A first render at "welcome" would ALREADY HAVE NAVIGATED -- a Redirect is
+  // not a suggestion -- so the resume target has to be read before the step
+  // flips rather than filled in afterwards. Every href this screen ever
+  // produced is captured, so a two-step correction is visible here.
+  await waitFor(() => expect(screen.getByTestId("fake-redirect")).toBeTruthy());
+  expect(capturedHref).toBe("/(onboarding)/income");
+});
+
+test("a fresh install with nothing recorded still starts at welcome", async () => {
+  mockGetKeyState.mockResolvedValue("locked");
+
+  render(<OnboardingIndexScreen />);
 
   await waitFor(() => expect(screen.getByTestId("fake-redirect")).toBeTruthy());
   expect(capturedHref).toBe("/(onboarding)/welcome");

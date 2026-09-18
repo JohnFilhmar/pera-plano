@@ -40,10 +40,17 @@
 // app/index.tsx's own history (see that file's and app/lock.tsx's header
 // comments). onboarding_state.ts's own header explains why landing BOTH
 // branches on "welcome" specifically is correct rather than merely
-// convenient: onboarding progress is not persisted, so an already-keyed user
-// who never finished the numbered flow restarts it at the top exactly the
-// same way a freshly-provisioned one does -- there is no OTHER correct
-// resume point for either.
+// convenient: a freshly-provisioned user has no recorded step yet, and
+// "welcome" is both the first step and what `readOnboardingStep` returns when
+// there is nothing usable to resume from.
+//
+// THE ALREADY-KEYED BRANCH NO LONGER LANDS ON "welcome" UNCONDITIONALLY
+// (GAP-067). It did, and that is what made an interrupted run a loop rather
+// than a pause: the access and battery steps both send the user into system
+// Settings, five minutes there trips the background re-lock, and on the way
+// back this redirect threw away every step they had finished. It now resumes at
+// the recorded step. See lib/onboarding/onboarding_state.ts's header for why
+// the "progress is not persisted" reasoning was reversed.
 //
 // ORDERING (task-10-brief rule 1 / docs §5a): device-lock renders FIRST and
 // unconditionally, for every entry above. Nothing here calls generatePhrase()
@@ -71,6 +78,8 @@
 import { Redirect } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import { getKeyState } from "@/lib/crypto/key_manager";
+import { readOnboardingStep } from "@/lib/onboarding/onboarding_state";
+import type { OnboardingStep } from "@/lib/onboarding/onboarding_state";
 import DeviceLockScreen from "./device_lock";
 import RecoveryPhraseScreen from "./recovery_phrase";
 import ProvidersScreen from "./providers";
@@ -87,13 +96,31 @@ export default function OnboardingIndexScreen({
   onKeysReady,
 }: { onKeysReady?: () => void } = {}) {
   const [step, setStep] = useState<Step>("checking");
+  // Where the numbered flow resumes. `null` until the read below answers, which
+  // is also the only state the Redirect below can be reached in without one --
+  // it falls back to "welcome", the pre-GAP-067 behaviour.
+  const [resumeAt, setResumeAt] = useState<OnboardingStep | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     getKeyState()
-      .then((state) => {
+      .then(async (state) => {
         if (cancelled) return;
-        setStep(state === "uninitialized" ? "device_lock" : "already_keyed");
+        if (state === "uninitialized") {
+          setStep("device_lock");
+          return;
+        }
+        // READ BEFORE THE STEP IS SET, so the Redirect never renders once with
+        // "welcome" and then again with the real target -- the first one would
+        // already have navigated.
+        //
+        // A read that throws falls back to "welcome" rather than propagating:
+        // the `.catch` below would send an already-keyed user to "device_lock",
+        // which re-runs the key check rather than the flow they were in.
+        const resume = await readOnboardingStep().catch<OnboardingStep>(() => "welcome");
+        if (cancelled) return;
+        setResumeAt(resume);
+        setStep("already_keyed");
       })
       // "device_lock", NOT A STUCK "checking". Without this catch a rejecting
       // bridge left the step at "checking" forever, and "checking" renders
@@ -145,7 +172,7 @@ export default function OnboardingIndexScreen({
     // no navigator for a Redirect to move -- rendering one would be the same
     // no-op this file's header describes. Without one, this component was
     // reached by routing, so the Redirect is the real forward action.
-    return onKeysReady ? null : <Redirect href="/(onboarding)/welcome" />;
+    return onKeysReady ? null : <Redirect href={`/(onboarding)/${resumeAt ?? "welcome"}`} />;
   }
 
   if (step === "device_lock") {
