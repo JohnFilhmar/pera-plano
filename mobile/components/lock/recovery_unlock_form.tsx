@@ -7,9 +7,11 @@
 //    change (removing a screen lock) reads like the app is broken or
 //    compromised, not like a protection working as designed.
 // 2. Offer the §11a "wipe and start over" escape hatch for a user who cannot
-//    produce their words — behind a DOUBLE confirmation that names exactly
-//    what is destroyed, because one confirmation alone must destroy nothing
-//    (a single mis-tap must never be irreversible).
+//    produce their words. The hatch itself now lives in
+//    wipe_and_start_over.tsx, which GAP-034 gave a second caller, and it
+//    still carries the DOUBLE confirmation for the reason its own header
+//    gives. Only the two sentences that are about a lost RECOVERY PHRASE
+//    rather than about destruction are passed in from here.
 //
 // Local pre-validation (normalizePhrase + validatePhrase) rejects a
 // malformed phrase BEFORE calling onSubmitPhrase at all — see
@@ -34,30 +36,11 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { usePreventScreenCapture } from "expo-screen-capture";
 import { normalizePhrase, validatePhrase } from "@/lib/crypto/recovery_phrase";
 import { usePlaceholderColor } from "@/lib/ui/placeholder";
-
-type WipeStep = "hidden" | "confirm1" | "confirm2";
+import { WipeAndStartOver } from "./wipe_and_start_over";
 
 /** This surface's own prevent/allow key -- see phrase_display.tsx's header
  * for why the three phrase surfaces must not share one. */
 const CAPTURE_GUARD_KEY = "recovery-phrase-unlock";
-
-/**
- * Touch target (design F1 sweep). "Forgot your recovery words?" and both
- * "Cancel" links carry no padding class and no size guarantee — the same
- * bare-Pressable shape as `app/wallet/[id].tsx`'s "Edit". Unlike that
- * control, or `ISOLATED_LINK_HIT_SLOP`'s five call sites, each of these three
- * sits directly BELOW another Pressable in a `gap-*` column ("Unlock" above
- * "Forgot…", each wipe step's own "…continue" button above its "Cancel") —
- * a full-strength slop on that shared edge would reach into the button
- * above it, the vertical version of the mis-tap bug `CHIP_HIT_SLOP`'s own
- * comment documents fixing on the horizontal axis. TOP is capped at half the
- * relevant gap so the two controls' touch regions meet at the gap's midpoint
- * rather than overlap; BOTTOM, LEFT and RIGHT have no neighbour to collide
- * with, so they take the same generous, unstyled-text-safe value
- * `ISOLATED_LINK_HIT_SLOP` documents deriving.
- */
-const FORGOT_LINK_HIT_SLOP = { top: 8, bottom: 16, left: 16, right: 16 }; // gap-4 (16px) above, halved
-const WIPE_CANCEL_HIT_SLOP = { top: 6, bottom: 16, left: 16, right: 16 }; // gap-3 (12px) above, halved
 
 export function RecoveryUnlockForm({
   errorMessage,
@@ -73,7 +56,6 @@ export function RecoveryUnlockForm({
   const placeholderColor = usePlaceholderColor();
   const [rawInput, setRawInput] = useState("");
   const [validationError, setValidationError] = useState<string | null>(null);
-  const [wipeStep, setWipeStep] = useState<WipeStep>("hidden");
   // Rendered by app/lock.tsx OUTSIDE the router's Stack, so no navigator above
   // it clears the system bars. This one grows: the two-step wipe confirmation
   // pushes the column toward Android's navigation bar.
@@ -144,74 +126,15 @@ export function RecoveryUnlockForm({
         <Text className="font-semibold text-surface dark:text-surface-dark">Unlock</Text>
       </Pressable>
 
-      {wipeStep === "hidden" ? (
-        <Pressable
-          testID="forgot-phrase-link"
-          accessibilityRole="button"
-          accessibilityLabel="Forgot your recovery words?"
-          onPress={() => setWipeStep("confirm1")}
-          hitSlop={FORGOT_LINK_HIT_SLOP}
-        >
-          <Text className="text-center text-fg-2 underline dark:text-fg-2-dark">
-            Forgot your recovery words?
-          </Text>
-        </Pressable>
-      ) : null}
-
-      {wipeStep === "confirm1" ? (
-        <View testID="wipe-confirm-1" className="w-full gap-3 rounded-lg border border-danger p-4 dark:border-danger-dark">
-          <Text className="text-center text-fg dark:text-fg-dark">
-            Without your recovery words, this data cannot be recovered — not by us, not by
-            support, not ever. Your only remaining option is to wipe this device's PeraPlano data
-            and start over from scratch.
-          </Text>
-          <Pressable
-            testID="wipe-confirm-1-continue"
-            onPress={() => setWipeStep("confirm2")}
-            accessibilityRole="button"
-            className="min-h-[44px] justify-center rounded-lg bg-danger px-4 py-3 dark:bg-danger-dark"
-          >
-            <Text className="text-center font-semibold text-surface dark:text-surface-dark">
-              I understand — continue
-            </Text>
-          </Pressable>
-          <Pressable
-            testID="wipe-confirm-1-cancel"
-            onPress={() => setWipeStep("hidden")}
-            accessibilityRole="button"
-            hitSlop={WIPE_CANCEL_HIT_SLOP}
-          >
-            <Text className="text-center text-fg-2 dark:text-fg-2-dark">Cancel</Text>
-          </Pressable>
-        </View>
-      ) : null}
-
-      {wipeStep === "confirm2" ? (
-        <View testID="wipe-confirm-2" className="w-full gap-3 rounded-lg border border-danger p-4 dark:border-danger-dark">
-          <Text className="text-center font-semibold text-danger dark:text-danger-dark">
-            This will permanently delete every transaction, wallet, and setting on this device.
-            This cannot be undone.
-          </Text>
-          <Pressable
-            testID="wipe-confirm-2-continue"
-            onPress={() => void onWipe()}
-            accessibilityRole="button"
-            className="min-h-[44px] justify-center rounded-lg bg-danger px-4 py-3 dark:bg-danger-dark"
-          >
-            <Text className="text-center font-semibold text-surface dark:text-surface-dark">
-              Wipe and start over
-            </Text>
-          </Pressable>
-          <Pressable
-            testID="wipe-confirm-2-cancel"
-            onPress={() => setWipeStep("hidden")}
-            accessibilityRole="button"
-            hitSlop={WIPE_CANCEL_HIT_SLOP}
-          >
-            <Text className="text-center text-fg-2 dark:text-fg-2-dark">Cancel</Text>
-          </Pressable>
-        </View>
-      ) : null}
+      <WipeAndStartOver
+        triggerLabel="Forgot your recovery words?"
+        firstConfirmMessage={
+          "Without your recovery words, this data cannot be recovered — not by us, not by " +
+          "support, not ever. Your only remaining option is to wipe this device's PeraPlano data " +
+          "and start over from scratch."
+        }
+        onWipe={onWipe}
+      />
     </View>
   );
 }

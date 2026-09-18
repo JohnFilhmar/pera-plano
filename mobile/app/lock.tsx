@@ -22,13 +22,21 @@ import { Text, View } from "react-native";
 import OnboardingIndexScreen from "./(onboarding)/index";
 import { DeviceLockExplainer } from "@/components/onboarding/device_lock_explainer";
 import { RecoveryUnlockForm } from "@/components/lock/recovery_unlock_form";
+import { StorageErrorScreen } from "@/components/lock/storage_error_screen";
 import { UnlockPrompt } from "@/components/lock/unlock_prompt";
 import { useLock } from "@/contexts/lock_context";
 import { openSecuritySettings } from "@/modules/notification_listener";
 
 export default function LockScreen() {
-  const { status, errorMessage, unlock, submitRecoveryPhrase, keysProvisioned, wipeAndStartOver } =
-    useLock();
+  const {
+    status,
+    errorMessage,
+    unlock,
+    submitRecoveryPhrase,
+    keysProvisioned,
+    wipeAndStartOver,
+    retryKeyState,
+  } = useLock();
 
   if (status === "checking") {
     return null;
@@ -77,6 +85,22 @@ export default function LockScreen() {
     // (app/(onboarding)/device_lock.tsx) — see lock_context.tsx's header
     // comment for why this is rendered directly rather than via navigation.
     return <DeviceLockExplainer onOpenSettings={openSecuritySettings} />;
+  }
+
+  if (status === "storage_error") {
+    // docs §11a's other unrecoverable state (GAP-034): getKeyState() rejected,
+    // so the app cannot tell whether this device has keys at all. Deliberately
+    // NOT RecoveryUnlockForm — the recovery path reads the same SecureStore
+    // that just threw, so the phrase is a dead route and offering it would
+    // send the user for their paper copy to watch a second failure. See the
+    // screen's own header.
+    return (
+      <StorageErrorScreen
+        errorMessage={errorMessage}
+        onRetry={retryKeyState}
+        onWipe={wipeAndStartOver}
+      />
+    );
   }
 
   if (status === "needs_recovery") {

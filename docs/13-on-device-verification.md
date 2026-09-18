@@ -48,7 +48,7 @@
 > | Part 3 switches / drain-empties | **NOT RUN** — need the JS bridge; blocked |
 > | Part 4 database unreadable / ledger / re-lock | **NOT RUN** — need onboarding; blocked |
 > | Battery-manager 2 h idle | **NOT RUN** — and this device is Samsung, not one of the four target OEMs |
-> | Part 5 (screen lock, fingerprint, no-lock device) | **DEFERRED — no free device available** |
+> | Part 5 (screen lock, fingerprint, no-lock device, Recents thumbnail, background re-lock) | **DEFERRED — no free device available.** The last two boxes were added later, for GAP-068 and GAP-030, and need only the A54 rather than a second device |
 >
 > ### Deferred, and what that does and does not block
 >
@@ -691,7 +691,7 @@ This is the point of the entire encryption plan. Each line is falsifiable.
 
 ---
 
-## Part 5 — Three platform behaviours only a human changing phone settings can prove
+## Part 5 — Five platform behaviours only a human with the phone can prove
 
 ### Remove the screen lock
 - [ ] `isDeviceKeyUsable()` goes false; the app detects it on next unlock, prompts for the
@@ -719,6 +719,27 @@ This is the point of the entire encryption plan. Each line is falsifiable.
 ### A device with no screen lock at all
 - [ ] Onboarding refuses to proceed and routes to security settings, rather than failing at key
       generation with an opaque error → `________________`
+
+### The app switcher, while unlocked (GAP-068)
+- [ ] Unlock, open Home so a real Safe-to-Spend figure is on screen, background the app, open
+      Recents, and confirm the thumbnail shows **nothing** → `________________`
+
+> This is GAP-068's whole acceptance criterion and it has never been looked at. `FLAG_SECURE` is
+> set app-wide at root mount (`lib/privacy/capture_guard.ts`) and the flag is what blanks the
+> thumbnail, so the check is one glance. **Use a preview or production build.** Development builds
+> are deliberately exempt, so a dev build showing the ledger in Recents proves nothing and is not a
+> failure.
+
+### The background re-lock, with no return to the app (GAP-030)
+- [ ] Unlock, background the app WITHOUT killing it, leave the phone alone for six minutes, then
+      reopen: the app asks to unlock again, and the figures that appear afterwards are the ones a
+      fresh read produces rather than the ones that were on screen before → `________________`
+
+> The foreground check alone would also produce an unlock prompt here, so this box is not proof on
+> its own that the timer fired. What it does prove is the half a unit test cannot: that Android on
+> the A54 still schedules this process's JS thread for long enough in the background for the timer
+> to be worth having. **If the app re-locks, note whether the phone was charging**, since Doze
+> behaves differently, and it is the on-battery case that matters.
 
 ---
 

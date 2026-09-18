@@ -171,10 +171,21 @@ What the stricter setting would have bought is narrow: protection against code *
 
 **What happens while locked:**
 - The DEK is cleared from memory and the database handle is closed.
+- **The in-memory query cache is emptied.** Closing the database ends the app's ability to read a row; it does nothing about the rows already read. Balances, merchant names and amounts the user looked at before locking are plain JavaScript objects in React Query's cache, and its 30-minute `gcTime` outlives any lock, so leaving them there kept the ledger in memory under a screen that says it is locked and repainted it on unlock before any refetch resolved.
 - The listener keeps capturing to the encrypted buffer (§6). Tracking never stops because the app is locked.
 - The app's own notifications still fire, with **amount-free copy while the keyguard is on**. See §7a.
 
+**When the app enters that state: two mechanisms, and only one of them is a guarantee.**
+
+A five-minute timer is armed when the app goes to the background and cancelled when it comes back, so an app left in the background reaches the locked state above without waiting for the user to return. It is **best effort and nothing is allowed to depend on it**: a timer only fires while Android still schedules this process's JS thread, so Doze, a background process kill, or an OEM's own reaper skips it silently. What the timer does cover, and the check below cannot, is a wall clock moved backwards, because it counts elapsed time rather than subtracting two readings of the clock.
+
+The **guarantee** is the check on the return to the foreground: if five minutes or more have passed since the app backgrounded, it locks before rendering anything. That check is what the trigger above describes, and it holds whether or not the timer ever ran.
+
 **Failure handling:** repeated biometric failure falls through to device credential. There is no app-specific lockout counter — the platform already rate-limits, and adding a second one only creates a way to lock a legitimate user out of their own data.
+
+**The screen itself is guarded, app-wide, whether locked or not.** `FLAG_SECURE` is set once at root mount and never released (`lib/privacy/capture_guard.ts`; owner's call, 2026-09-08), so the system screenshot, screen recording, casting and **the Recents thumbnail** all come back blank. The lock alone could never cover this: Android captures the task thumbnail at the moment the app goes to the background, which is inside the five-minute window while the app is still unlocked, so Safe-to-Spend, balances and the ledger would otherwise sit in the app switcher for anyone holding the phone. §4 puts that phone in scope.
+
+The guard is **best effort, not a wall**: it stops the system, not a second phone's camera, and some OEM builds honour it incompletely. **Development builds are exempt** so the docs/13 walkthrough and bug reports can still carry screenshots; preview and production are both guarded, preview especially, since that is the build handed to other people. The visible cost is the blank Recents thumbnail, which is the flag working rather than a bug.
 
 ## 7a. Alert copy on the lock screen
 
@@ -247,6 +258,16 @@ A user can reach a state where the data is mathematically gone: they removed the
 The alternative — a permanent lock screen pointing at support — was rejected. Support genuinely cannot help, so it generates tickets that can only be answered with "it's gone", and it leaves a bricked app on the phone whose only remaining escape is uninstalling, which loses the same data *plus* the notification-access grant and every setting, while looking like a crash rather than a protection working as designed.
 
 The wipe needs no authentication gate. Someone who cannot decrypt the data also cannot read it, so a wipe destroys but never leaks.
+
+### The second way in: secure storage that will not answer
+
+There is a way to reach §11a without losing anything. `getKeyState()` can **reject** rather than return, when the device's secure storage fails a read, which some OEM Keystore states do persistently. The app then knows neither whether this device has keys nor whether it has ever been set up.
+
+**That is not the same answer as "locked" and must never be rendered as one.** "Locked" means the keys are here and simply have not been unwrapped yet, so it renders an Unlock button, and that button's unwrap reads the very storage that just failed. Treating a rejection as "locked" produced exactly the bricked app the section above rejects: an unlock that failed forever with generic copy, and no wipe affordance, because that one lived only behind the recovery-phrase screen.
+
+**The rejection gets its own state and its own screen.** It leads with **Try again**, because a read that failed once may only have failed once and the other control on that screen is irreversible. Behind the same double confirmation, it offers the same wipe. The wipe still works here: `wipeAndStartOver` deletes the database **before** it touches the keys, so even when `wipeKeys()` then fails on the same broken storage, the data is gone and the user is told so rather than left guessing.
+
+**The recovery phrase is deliberately not offered on this screen.** The phrase unlocks a second copy of the DEK that is kept in the same secure storage that is not responding, so the recovery path reads and writes exactly what just threw. Offering the field would send a user for their paper copy to watch a second failure, under an explanation ("your screen lock was removed or reset") that is not true of their phone.
 
 ## 12. Open questions
 

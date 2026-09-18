@@ -40,6 +40,18 @@ jest.mock("@/components/lock/recovery_unlock_form", () => ({
   },
 }));
 
+jest.mock("@/components/lock/storage_error_screen", () => ({
+  StorageErrorScreen: (props: {
+    errorMessage: string | null;
+    onRetry: () => void;
+    onWipe: () => void;
+  }) => {
+    capturedStorageErrorProps = props;
+    const { Text } = require("react-native");
+    return <Text testID="fake-storage-error-screen">storage-error-screen</Text>;
+  },
+}));
+
 jest.mock("@/components/onboarding/device_lock_explainer", () => ({
   DeviceLockExplainer: (props: { onOpenSettings: () => void }) => {
     capturedDeviceLockExplainerProps = props;
@@ -60,6 +72,9 @@ import LockScreen from "../lock";
 let capturedUnlockPromptProps: { isAuthenticating: boolean; errorMessage: string | null } | undefined;
 let capturedRecoveryFormProps: { errorMessage: string | null } | undefined;
 let capturedDeviceLockExplainerProps: { onOpenSettings: () => void } | undefined;
+let capturedStorageErrorProps:
+  | { errorMessage: string | null; onRetry: () => void; onWipe: () => void }
+  | undefined;
 
 const mockUseLock = useLock as jest.Mock;
 
@@ -70,6 +85,7 @@ function baseLockValue(overrides: Partial<ReturnType<typeof useLock>> = {}) {
     unlock: jest.fn(),
     submitRecoveryPhrase: jest.fn(),
     wipeAndStartOver: jest.fn(),
+    retryKeyState: jest.fn(),
     ...overrides,
   };
 }
@@ -78,6 +94,7 @@ beforeEach(() => {
   capturedUnlockPromptProps = undefined;
   capturedRecoveryFormProps = undefined;
   capturedDeviceLockExplainerProps = undefined;
+  capturedStorageErrorProps = undefined;
   jest.clearAllMocks();
 });
 
@@ -129,6 +146,39 @@ test('"needs_recovery" renders RecoveryUnlockForm, not UnlockPrompt', () => {
   expect(screen.getByTestId("fake-recovery-form")).toBeTruthy();
   expect(screen.queryByTestId("fake-unlock-prompt")).toBeNull();
   expect(capturedRecoveryFormProps?.errorMessage).toBe("wrong words");
+});
+
+// GAP-034. A rejected getKeyState() used to land on "locked", which renders
+// UnlockPrompt -- an Unlock button whose unwrap reads the same SecureStore
+// that just threw, failing forever with generic copy and no route out, since
+// the wipe affordance lived only under "needs_recovery".
+test('"storage_error" renders StorageErrorScreen, not UnlockPrompt and not RecoveryUnlockForm', () => {
+  mockUseLock.mockReturnValue(baseLockValue({ status: "storage_error" }));
+  render(<LockScreen />);
+  expect(screen.getByTestId("fake-storage-error-screen")).toBeTruthy();
+  expect(screen.queryByTestId("fake-unlock-prompt")).toBeNull();
+  // The recovery path reads the same storage that failed, so the phrase form
+  // is deliberately NOT the screen for this state.
+  expect(screen.queryByTestId("fake-recovery-form")).toBeNull();
+});
+
+test('"storage_error" wires both routes out: the retry and the wipe', () => {
+  const retryKeyState = jest.fn();
+  const wipeAndStartOver = jest.fn();
+  mockUseLock.mockReturnValue(
+    baseLockValue({
+      status: "storage_error",
+      errorMessage: "Still no answer from secure storage. Try restarting your phone.",
+      retryKeyState,
+      wipeAndStartOver,
+    }),
+  );
+  render(<LockScreen />);
+  expect(capturedStorageErrorProps?.onRetry).toBe(retryKeyState);
+  expect(capturedStorageErrorProps?.onWipe).toBe(wipeAndStartOver);
+  expect(capturedStorageErrorProps?.errorMessage).toBe(
+    "Still no answer from secure storage. Try restarting your phone.",
+  );
 });
 
 test('"needs_device_lock" renders DeviceLockExplainer, wired to openSecuritySettings -- not RecoveryUnlockForm or UnlockPrompt', () => {
