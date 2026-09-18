@@ -152,7 +152,9 @@ function permissionNames(manifest: AndroidManifest): string[] {
   );
 }
 
-function readAppJson(): { expo: { plugins: unknown[]; android: { permissions: string[] } } } {
+function readAppJson(): {
+  expo: { plugins: unknown[]; android: { permissions: string[]; allowBackup: boolean } };
+} {
   return JSON.parse(readFileSync(APP_JSON, "utf8"));
 }
 
@@ -291,6 +293,30 @@ describe("notification listener config plugin", () => {
 
     const manifest = await applyPlugin(prebuiltManifest());
     expect(listenerServices(manifest)).toHaveLength(1);
+  });
+
+  it("disables Android Auto Backup, so nothing reaches Google Drive", () => {
+    // GAP-093. Left at its default this is `true`, and Auto Backup then uploads
+    // the app's shared_prefs.
+    //
+    // THE LEDGER AND THE SEALED BUFFER WERE ALREADY SPARED, which is not
+    // obvious and is why this needs a test rather than a comment:
+    // expo-secure-store's config plugin merges `secure_store_backup_rules` and
+    // `secure_store_data_extraction_rules` into the manifest, and both read
+    // `<include domain="sharedpref" path="."/>`. One `<include>` turns Android's
+    // rules allowlist-only, so `files/` and `databases/` never travelled.
+    //
+    // WHAT DID TRAVEL WAS WORSE THAN CIPHERTEXT. CapturePrefs keeps three of its
+    // six values unsealed, `capture_enabled` among them, beside a sealed
+    // provider filter whose Keystore key does NOT travel. A restored install
+    // therefore came back with capture ON and a filter `openSealed` cannot
+    // open; it returns null, `getProviderFilter` maps that to an empty set, and
+    // `shouldCapture` reads an empty filter as capture-everything. Silently,
+    // for every app on the device.
+    //
+    // docs/07 says raw notification text "never leaves the phone under any
+    // configuration". This attribute is what makes that sentence true.
+    expect(readAppJson().expo.android.allowBackup).toBe(false);
   });
 
   it("is registered in app.json alongside the existing plugins", () => {

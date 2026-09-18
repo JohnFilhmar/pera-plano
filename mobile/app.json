@@ -10,6 +10,7 @@
     "newArchEnabled": true,
     "android": {
       "package": "com.filldev.peraplano",
+      "allowBackup": false,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#F7FAF7"
