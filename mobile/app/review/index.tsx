@@ -393,6 +393,26 @@ export const REVIEW_UNDO_TITLE = "Cleared from your review queue.";
  */
 export const REVIEW_UNDO_BODY = "Nothing in your ledger changed. Undo puts the card back.";
 
+export const REVIEW_EDIT_TITLE = "Added to your ledger.";
+/**
+ * THE OTHER HALF OF RULE 9, and the half that had never been built (GAP-075).
+ *
+ * Rule 9 promises two things: a ten-second take-back, and that "committed
+ * results remain editable in the ledger indefinitely afterward". Wave 13 built
+ * the take-back for the four triages whose entire write was `resolved_at` and
+ * stopped, because undoing a CONFIRM means deleting the Transaction it wrote
+ * and rule 10 is unqualified: "committed transactions are never deleted by any
+ * queue action". The two rules sit twelve words apart.
+ *
+ * OWNER'S RULING (2026-09-19): RULE 10 WINS AND RULE 9 IS ALREADY SATISFIED BY
+ * ITS OWN SECOND CLAUSE. So a triage that committed offers Edit rather than
+ * Undo, on the same strip and inside the same ten seconds, and the ledger keeps
+ * every row. The wording says what did happen rather than what did not, because
+ * "nothing changed" would be false here and it is the one sentence the undo
+ * offer leans on.
+ */
+export const REVIEW_EDIT_BODY = "Tap Edit to change the details, or find it in the ledger any time.";
+
 export const REVIEW_UNDO_LATE_TITLE = "Too late to undo.";
 /**
  * The offer is a `setTimeout` in a mounted component, and Android freezes JS
@@ -426,6 +446,26 @@ export const REVIEW_UNDO_LATE_BODY = "That card stays cleared, and your ledger i
  * later gets no undo until someone decides it deserves one; the failure mode is
  * a missing affordance, not an undo that half-reverses a write.
  */
+/**
+ * Whether this triage's outcome is one editable row, so the offer can point at
+ * it (GAP-075).
+ *
+ * CONFIRM AND CORRECT ONLY, which is what rule 8 and rule 12 are about: a
+ * proposed Transaction committed as it stood, or committed with the user's
+ * changes. Both go through `correctItem`, and both answer "which row did this
+ * leave behind" with exactly one id.
+ *
+ * NOT THE OTHER COMMITTING ACTIONS, and that is a limit rather than an
+ * oversight. A transfer confirm writes a PAIR, a merge keeps one row and drops
+ * another, and a link joins two that already existed — none of them has a
+ * single row that is "the result", and sending the user to edit half of a pair
+ * would be worse than sending them nowhere. Their remedy stays the ledger's own
+ * screens, which rule 9's second clause is equally true of.
+ */
+function offersEdit(action: ReviewAction): boolean {
+  return action.kind === "confirm" || action.kind === "correct";
+}
+
 function undoableItemId(action: ReviewAction): string | null {
   switch (action.kind) {
     case "dismiss":
@@ -509,7 +549,7 @@ export default function ReviewQueueScreen() {
       triage.mutate(
         { kind: "undo", itemId },
         {
-          onSuccess: (reopened) => {
+          onSuccess: ({ reopened }) => {
             if (reopened) return;
             publishToast({
               tone: "neutral",
@@ -524,10 +564,53 @@ export default function ReviewQueueScreen() {
     [triage],
   );
 
+  /**
+   * Commits a triage and offers to edit what it wrote (GAP-075).
+   *
+   * THE SAME STRIP AND THE SAME KEY as the undo offer, so only one is ever on
+   * screen: rule 9's subject is singular, and a queue being swept clears
+   * several cards in seconds. A second triage replaces the first offer and
+   * restarts its ten seconds, which is the behaviour the shared `dedupeKey`
+   * already bought for undo.
+   *
+   * NO OFFER WHEN THERE IS NO ROW TO OPEN. `correctItem` answers `null` when it
+   * resolved a card without leaving a Transaction behind, and an Edit button
+   * that opens nothing is worse than no button. The triage still succeeded, so
+   * nothing else changes.
+   *
+   * ON SUCCESS ONLY, for the same reason the undo offer is: a triage that
+   * failed left the card where it was, and offering to edit a row it did not
+   * write would sit on top of the inline failure banner saying the opposite.
+   */
+  const commitWithEditOffer = useCallback(
+    (action: ReviewAction): void => {
+      triage.mutate(action, {
+        onSuccess: ({ transactionId }) => {
+          if (transactionId === null) return;
+          publishToast({
+            tone: "neutral",
+            title: REVIEW_EDIT_TITLE,
+            body: REVIEW_EDIT_BODY,
+            dedupeKey: REVIEW_UNDO_TOAST_KEY,
+            durationMs: UNDO_WINDOW_MS,
+            actionLabel: "Edit",
+            onAction: () => router.push(`/transaction/${transactionId}/edit`),
+          });
+        },
+      });
+    },
+    [router, triage],
+  );
+
   const dispatch = useCallback(
     (action: ReviewAction | "correct", item: ReviewQueueItem): void => {
       if (action === "correct") {
         setCorrecting(item.id);
+        return;
+      }
+
+      if (offersEdit(action)) {
+        commitWithEditOffer(action);
         return;
       }
 
@@ -557,7 +640,7 @@ export default function ReviewQueueScreen() {
           }),
       });
     },
-    [takeUndo, triage],
+    [commitWithEditOffer, takeUndo, triage],
   );
 
   /**
@@ -580,7 +663,10 @@ export default function ReviewQueueScreen() {
    * sheet through "Change the details" and tick the box that says so.
    */
   function recordAutofill(item: ReviewQueueItem, proposal: AutofillCommit): void {
-    triage.mutate({
+    // THROUGH THE SAME OFFER AS EVERY OTHER CORRECTION (GAP-075). This path
+    // commits a Transaction exactly as the sheet's save does, so the row it
+    // leaves behind is as editable as any other and the user gets told so.
+    commitWithEditOffer({
       kind: "correct",
       itemId: item.id,
       patch: {
