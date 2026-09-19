@@ -6583,12 +6583,18 @@ Add `reopen(id)` to the repo, an `undo` action in the hook that reopens and, for
 - [ ] Tests in `mobile/app/__tests__/review_queue.test.tsx` for undo of each kind.
 
 **Acceptance criteria**
-- [ ] Undo within ten seconds restores the item and removes the committed row.
+- [ ] ~~Undo within ten seconds restores the item and removes the committed row.~~ **OVERRULED, see the decision below.** The second half asks for exactly what spec rule 10 forbids, so this line could never have been ticked without amending the document this entry cites. Replaced by: a triage that committed one Transaction offers an affordance within ten seconds that opens that row for editing, and removes nothing.
 
 **Verification commands**
 ```bash
 cd mobile && npm test -- review_queue resolve_actions
 ```
+
+> **OWNER DECISION (2026-09-19):** **RULE 10 WINS, RULE 9 IS SATISFIED BY ITS OWN SECOND CLAUSE, AND NO RULE TEXT CHANGES.** The two rules sit twelve words apart in `docs/04-features/08-review-queue.md` — rule 9 at `:118` promises the ten-second affordance, rule 10 at `:119` says "committed transactions are never deleted by any queue action" with no qualification. Undoing a confirm means deleting the Transaction it wrote, so both cannot hold as written. The alternative put to the owner was a carve-out in rule 10 permitting a delete inside the undo window, which buys a truer "undo" at the cost of the single guarantee this queue makes about the ledger; it was rejected. **A committing triage therefore offers Edit rather than Undo**, on the same strip, inside the same ten seconds, opening the row in the ledger — which is rule 9's own "remain editable in the ledger indefinitely afterward", made reachable at the moment the user would want it.
+>
+> **SCOPED TO CONFIRM AND CORRECT, and that is a limit rather than an oversight.** Both commit one proposed Transaction and both answer "which row did this leave behind" with exactly one id. A transfer confirm writes a PAIR, a merge keeps one row and drops another, and a link joins two that already existed; none has a single row that is "the result", and opening half of a pair would be worse than opening nothing. Those keep the ledger's own screens, which rule 9's second clause is equally true of. **Nothing further is owed on this entry.**
+>
+> **THE TRAP THE OLD DESIGN CARRIED IS NOW THE RIGHT ANSWER.** Wave 13 recorded that `correctItem` resolves onto a PRE-EXISTING Transaction when one already holds the movement (the GAP-012 branch) and returns that row's id, so a delete-what-was-returned undo would have destroyed the other ingest channel's row. Under an Edit the same id is exactly what is wanted: it names whichever row now holds the movement.
 
 **Do not**
 Do not undo by re-running ingest; reverse the specific writes.
