@@ -119,6 +119,18 @@ so a card triaged days later would re-anchor the balance to a stale figure.
 10. Dismissing is never destructive to the ledger: only held (uncommitted) records can be discarded; committed transactions are never deleted by any queue action.
 11. If a Wallet referenced by a queued item is archived before triage, the triage flow asks the user to pick a target Wallet (consistent with the no-orphan-transactions invariant in [../02-domain-model.md](../02-domain-model.md)).
 
+#### As shipped — 2026-09-19 (`app/review/index.tsx`, `hooks/mutations/use_review_action.ts`)
+
+**Rules 9 and 10 disagreed, and rule 9 was only half built.** Rule 9 promises a ten-second undo affordance; rule 10, twelve words later, is unqualified — "committed transactions are never deleted by any queue action". Undoing a confirm means deleting the Transaction it wrote, so the two cannot both be honoured as written. What shipped in the first pass was the undo for the four triages whose entire write is `resolved_at`: the low-confidence and unknown-provider rejects, "Same transaction" on a duplicate whose twin was never committed, and "Not a loan payment". Every committing triage offered nothing at all. Filed as GAP-075.
+
+> **OWNER DECISION (2026-09-19): rule 10 wins, and no rule text changes.** Rule 9's own second clause is the remedy for a committed triage — results "remain editable in the ledger indefinitely afterward" — so the affordance exists for those too; it says **Edit** and opens the ledger row, inside the same ten seconds and on the same strip. The alternative considered and rejected was a carve-out in rule 10 permitting a delete inside the undo window, which buys a truer "undo" at the cost of the one guarantee the queue makes about the ledger.
+
+**Confirm and correct only.** Both commit one proposed Transaction and both answer "which row did this leave behind" with exactly one id. A transfer confirm writes a pair, a merge keeps one row and drops another, and a link joins two that already existed; none has a single row that is "the result", and sending the user to edit half of a pair would be worse than sending them nowhere. Those keep the ledger's own screens, which rule 9's second clause is equally true of.
+
+**The row it opens is read back from the commit, not from the card.** `correctItem` resolves onto a PRE-EXISTING Transaction when one already holds the movement, and returns that row's id. Under the delete-flavoured undo that was a trap — it would have destroyed the other ingest channel's row. Under an Edit it is exactly right: the id names whichever row now holds the movement.
+
+**One offer at a time.** The Edit and Undo offers share a dedupe key, so a second triage replaces the first and restarts its ten seconds rather than stacking a second button over a list that has already moved.
+
 ### UserRule creation and replay
 
 12. **Every correction creates a UserRule.** The mapping is:

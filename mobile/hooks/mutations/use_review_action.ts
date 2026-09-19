@@ -113,34 +113,65 @@ export type ReviewAction =
   | { kind: "undo"; itemId: string };
 
 /**
- * `true` when the action did its work; `false` ONLY when an `undo` declined.
+ * What a triage did, for the affordance the screen offers straight afterwards.
  *
- * Every other case here either succeeds or throws, so the boolean is about the
- * one action that has a third answer: an offer taken too late, or on a card
- * whose thirty days ran out while the notice was on screen. `undoResolution`
- * returns that as a refusal rather than an error because nothing went wrong and
- * "Try again" is not the advice — the caller says so in its own words instead.
+ * WAS A BARE `boolean` UNTIL GAP-075. It carried one fact -- whether an `undo`
+ * declined -- and threw away the other one the screen now needs: `correctItem`
+ * and `confirmItem` already RETURN the id of the Transaction they committed,
+ * and that value went nowhere. Rule 9's remedy for a committed triage is that
+ * it "remains editable in the ledger", and an Edit affordance cannot open a row
+ * it was never told about.
+ *
+ * `transactionId` IS NULL FOR EVERY ACTION THAT COMMITTED NOTHING, which is
+ * most of them, and null is the honest answer rather than a missing case: a
+ * dismissal, a wallet-kind answer and a loan match all leave the ledger's rows
+ * exactly as they were, so there is nothing for an Edit to open.
+ *
+ * IT IS ALSO NULL FOR THE COMMITTING ACTIONS THAT DO NOT PRODUCE ONE ROW TO
+ * EDIT. A transfer confirm writes a pair, a merge drops one row and keeps
+ * another, and a link joins two that already existed; "the row this triage
+ * committed" is not a question any of those has a single answer to, and
+ * guessing one would send the user to edit half of a pair. Those keep the
+ * ledger's own screens as their remedy.
  */
-async function run(action: ReviewAction): Promise<boolean> {
+export type ReviewActionOutcome = {
+  /** `false` ONLY when an `undo` declined: an offer taken too late, or a card
+   * whose thirty days ran out while the notice was on screen. `undoResolution`
+   * returns that as a refusal rather than an error because nothing went wrong
+   * and "Try again" is not the advice — the caller says so in its own words. */
+  readonly reopened: boolean;
+  /** The Transaction a confirm or a correction left behind, or `null`. */
+  readonly transactionId: string | null;
+};
+
+/** Everything but `undo` and the two committing actions answers the same way. */
+const DID_IT: ReviewActionOutcome = { reopened: true, transactionId: null };
+
+async function run(action: ReviewAction): Promise<ReviewActionOutcome> {
   switch (action.kind) {
     case "confirm":
-      await confirmItem(action.itemId);
-      return true;
+      // THE RETURNED ID IS KEPT NOW (GAP-075). It can be a row this triage did
+      // NOT write: `correctItem`'s GAP-012 branch resolves onto a pre-existing
+      // Transaction when one already holds the movement, and returns that row's
+      // id. Under the delete-flavoured undo the entry proposed, that was a trap
+      // — it would have destroyed the other ingest channel's row. Under an Edit
+      // it is exactly right: the row the id names is the one that now holds the
+      // movement, which is the row the user means.
+      return { reopened: true, transactionId: await confirmItem(action.itemId) };
     case "confirm-loan-match":
       // `confirmLoanMatch` wraps `recordPayment` and `resolve` in one unit of
       // work — the direction invariant (`PaymentDirectionMismatchError`) and
       // the one-transaction-one-loan invariant both live in that repository
       // call, and nothing here may reach past it.
       await confirmLoanMatch(action.itemId, action.loanId);
-      return true;
+      return DID_IT;
     case "correct":
-      await correctItem(action.itemId, action.patch);
-      return true;
+      return { reopened: true, transactionId: await correctItem(action.itemId, action.patch) };
     case "dismiss":
       // Straight to the repository: there is no ledger consequence to make
       // atomic with it, and `resolve` is already idempotent on a double tap.
       await resolve(action.itemId, "dismissed");
-      return true;
+      return DID_IT;
     case "dismiss-loan-match":
       // Not a bare `resolve`: loans rule 10's rejection COUNTER ("repeated
       // rejections for the same merchant surface a one-time prompt") needs a
@@ -148,10 +179,10 @@ async function run(action: ReviewAction): Promise<boolean> {
       // loans module gives it nowhere to live. `dismissLoanMatch` is a
       // pass-through today and exists for exactly that reason.
       await dismissLoanMatch(action.itemId);
-      return true;
+      return DID_IT;
     case "confirm-transfer":
       await confirmAsTransfer(action.itemId);
-      return true;
+      return DID_IT;
     case "confirm-one-sided-transfer":
       await confirmOneSidedTransfer(
         action.itemId,
@@ -159,26 +190,26 @@ async function run(action: ReviewAction): Promise<boolean> {
         action.feeAmount,
         Date.now(),
       );
-      return true;
+      return DID_IT;
     case "answer-wallet-kind":
       await answerWalletKind(action.itemId, action.owed);
-      return true;
+      return DID_IT;
     case "ignore-provider":
       await ignoreProvider(action.itemId, action.packageName);
-      return true;
+      return DID_IT;
     case "link-transfer":
       await linkAsTransfer(action.itemId, action.outTransactionId, action.inTransactionId);
-      return true;
+      return DID_IT;
     case "merge":
       await mergeDuplicate(action.itemId, action.keepTransactionId, action.dropTransactionId);
-      return true;
+      return DID_IT;
     case "undo":
       // The ONLY case whose answer is not "it is done". Every guard lives in
       // `undoResolution`, including the one that refuses a card whose triage
       // committed — asked of the ledger rather than of the action kind, so it
       // holds even if a future caller offers undo somewhere this file does not
       // know about.
-      return undoResolution(action.itemId);
+      return { reopened: await undoResolution(action.itemId), transactionId: null };
   }
 }
 

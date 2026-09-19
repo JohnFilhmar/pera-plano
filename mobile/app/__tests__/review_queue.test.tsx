@@ -20,7 +20,7 @@
 // The empty state is asserted as a REWARD, with the spec's own wording. "All
 // caught up." is the one empty state in this app that should feel good.
 jest.mock("expo-router", () => ({
-  useRouter: () => ({ back: () => mockBack() }),
+  useRouter: () => mockRouter,
 }));
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -54,11 +54,18 @@ import ReviewQueueScreen, {
   REVIEW_EMPTY_TITLE,
   REVIEW_UNDO_BODY,
   REVIEW_UNDO_LATE_TITLE,
+  REVIEW_EDIT_BODY,
+  REVIEW_EDIT_TITLE,
   REVIEW_UNDO_TITLE,
   sortOldestFirst,
 } from "../review/index";
 
 const mockBack = jest.fn();
+const mockPush = jest.fn();
+// ONE OBJECT, NOT ONE PER CALL. The real `useRouter()` is stable across
+// renders, and a mock that is not would make anything depending on its identity
+// rebuild on every render.
+const mockRouter = { back: () => mockBack(), push: (href: string) => mockPush(href) };
 
 const NOW = Date.now();
 const MINUTE = 60 * 1000;
@@ -829,7 +836,14 @@ describe("taking back a triage", () => {
     expect(await listUserRules()).toEqual([]);
   });
 
-  test("confirming offers NO undo — rule 10 keeps the committed row", async () => {
+  test("confirming offers EDIT, never undo — rule 10 keeps the committed row", async () => {
+    // GAP-075, and the owner's ruling of 2026-09-19. This used to assert NO
+    // offer at all, which was the honest read of the code at the time: undoing
+    // a confirm means deleting the Transaction it wrote, and rule 10 is
+    // unqualified. What it missed is rule 9's own second clause, twelve words
+    // after the promise it could not keep — committed results "remain editable
+    // in the ledger indefinitely afterward". So the offer exists; it just does
+    // the other thing.
     const queued = await enqueueAt(NOW - HOUR, {
       kind: "low-confidence",
       payload: gatedPayload({ walletId }),
@@ -840,10 +854,60 @@ describe("taking back a triage", () => {
 
     await waitFor(async () => expect(await listTransactions({})).toHaveLength(1));
     await waitFor(async () => expect(await countOpen()).toBe(0));
-    // No offer at all, rather than an offer that fails when it is taken: an
-    // undo the user can see and press is a promise, and this one cannot be
-    // kept without deleting a row rule 10 protects.
-    expect(screen.queryByTestId("app-toast")).toBeNull();
+
+    expect(await screen.findByText(REVIEW_EDIT_TITLE)).toBeTruthy();
+    expect(screen.getByText(REVIEW_EDIT_BODY)).toBeTruthy();
+    // THE WORD MATTERS, not just the presence of a button. An offer labelled
+    // Undo that edits instead would be the same broken promise read backwards.
+    expect(screen.queryByText(REVIEW_UNDO_TITLE)).toBeNull();
+    expect(screen.getByTestId("app-toast-action")).toBeTruthy();
+    expect(screen.getByText("Edit")).toBeTruthy();
+  });
+
+  test("taking the edit offer opens the row the confirm actually wrote", async () => {
+    const queued = await enqueueAt(NOW - HOUR, {
+      kind: "low-confidence",
+      payload: gatedPayload({ walletId }),
+    });
+
+    await renderScreenWithNotices();
+    fireEvent.press(await screen.findByTestId(`review-primary-${queued.id}`));
+    await waitFor(async () => expect(await listTransactions({})).toHaveLength(1));
+
+    const [committed] = await listTransactions({});
+    fireEvent.press(await screen.findByTestId("app-toast-action"));
+
+    // THE ID IS READ BACK FROM THE LEDGER, not from the payload: `correctItem`
+    // can resolve onto a PRE-EXISTING row when one already holds the movement,
+    // and the offer has to open whichever row now does.
+    expect(mockPush).toHaveBeenCalledWith(`/transaction/${committed.id}/edit`);
+    // Rule 10, asserted where it would break: taking the offer must not remove
+    // anything.
+    expect(await listTransactions({})).toHaveLength(1);
+  });
+
+  test("the edit offer replaces an undo offer rather than stacking beside it", async () => {
+    // Rule 9's subject is singular, and a queue being swept clears several
+    // cards in seconds. The two offers share one dedupe key for that reason, so
+    // the second triage takes the strip over.
+    const first = await enqueueAt(NOW - HOUR, {
+      kind: "low-confidence",
+      payload: gatedPayload({ walletId }),
+    });
+    const second = await enqueueAt(NOW - HOUR, {
+      kind: "low-confidence",
+      payload: gatedPayload({ walletId }),
+    });
+
+    await renderScreenWithNotices();
+    // The reject writes nothing but `resolved_at`, so it is one of the four
+    // triages that still offer a real undo.
+    fireEvent.press(await screen.findByTestId(`review-reject-${first.id}`));
+    expect(await screen.findByText(REVIEW_UNDO_TITLE)).toBeTruthy();
+
+    fireEvent.press(await screen.findByTestId(`review-primary-${second.id}`));
+
+    expect(await screen.findByText(REVIEW_EDIT_TITLE)).toBeTruthy();
     expect(screen.queryByText(REVIEW_UNDO_TITLE)).toBeNull();
   });
 
