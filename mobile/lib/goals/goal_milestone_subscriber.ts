@@ -1,4 +1,4 @@
-// lib/goals/goal_milestone_subscriber.ts — goals rule 12's notifications
+// lib/goals/goal_milestone_subscriber.ts: goals rule 12's notifications
 // (GAP-055): "Milestone notifications fire when progress first crosses 25%,
 // 50%, 75%, and 100%. Each milestone fires at most once per goal lifetime."
 //
