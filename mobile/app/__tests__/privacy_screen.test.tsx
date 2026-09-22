@@ -870,7 +870,12 @@ test("the erase runs the lock context's full start-over — key material include
   // lock gate. Nothing else is asserted about the destination here — that
   // belongs to the lock context's suite, not the screen's.
   expect(mockReplace).not.toHaveBeenCalled();
-  expect(screen.getByTestId("wipe-confirm-erase").props.accessibilityState.busy).toBe(false);
+  // WAITED FOR, NOT READ. The spinner clears in the handler's `finally`, after
+  // the call the wait above saw, and at nine workers the render that shows it
+  // landed after a bare read (GAP-052).
+  await waitFor(() =>
+    expect(screen.getByTestId("wipe-confirm-erase").props.accessibilityState.busy).toBe(false),
+  );
 });
 
 test("cancelling the first confirmation wipes nothing", async () => {
