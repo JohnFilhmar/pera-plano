@@ -506,7 +506,7 @@ test("a payday's planned contribution shows on the goal, and skipping it there t
 
   fireEvent.press(screen.getByTestId("goal-skip-payday"));
 
-  await waitFor(() => expect(screen.queryByTestId("goal-detail-card-planned")).toBeNull());
+  await waitFor(() => expect(screen.queryByTestId("goal-detail-card-planned")).not.toBeOnTheScreen());
   const [decision] = await listContributionDecisions("2000-01-01", "2100-01-01");
   expect(decision).toMatchObject({ goalId: goal.id, decision: "skipped" });
 });

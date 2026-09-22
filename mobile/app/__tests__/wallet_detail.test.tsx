@@ -856,7 +856,7 @@ describe("dismissing a balance drift", () => {
   async function dismissTheVisibleDrift(): Promise<void> {
     await screen.findByTestId("wallet-detail-drift");
     fireEvent.press(screen.getByTestId("wallet-detail-dismiss-drift"));
-    await waitFor(() => expect(screen.queryByTestId("wallet-detail-drift")).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId("wallet-detail-drift")).not.toBeOnTheScreen());
   }
 
   test("the action is offered beside the other wallet actions when a drift is showing", async () => {

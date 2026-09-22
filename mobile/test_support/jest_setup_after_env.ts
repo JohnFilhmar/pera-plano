@@ -36,4 +36,14 @@ jest.mock("react-native-safe-area-context", () => {
 // condition holds, so a passing test is no slower; only a genuinely hung one
 // waits the full budget. Jest's own `testTimeout` (package.json) sits above it
 // so the more specific RNTL failure message wins.
+//
+// WHAT A POLL RECEIVES MATTERS MORE THAN THE BUDGET (GAP-052). Every failed
+// poll builds its error message, and a message that prints an element walks
+// the whole component tree through that element's React fiber: 0.9 to 7.6
+// seconds per failed poll on the review queue, measured, against milliseconds
+// for a string or a number. A polled assertion therefore receives a primitive
+// or uses RNTL's own matchers, which print only the element's props:
+// `expect(screen.queryByTestId(id)).not.toBeOnTheScreen()` rather than
+// `.toBeNull()`, and a list of test IDs rather than
+// `expect(screen.getAllByTestId(id)).toHaveLength(n)`.
 configure({ asyncUtilTimeout: 15_000 });

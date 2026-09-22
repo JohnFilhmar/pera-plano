@@ -165,7 +165,7 @@ test("A SKIPPED ALERTS GRANT RAISES THE ONE-SHOT DIALOG, AND THE ROW GOES QUIET 
   fireEvent.press(button);
 
   await waitFor(() => expect(mockRequestAlertPermission).toHaveBeenCalledTimes(1));
-  await waitFor(() => expect(screen.queryByTestId("permissions-turn-on-alerts")).toBeNull());
+  await waitFor(() => expect(screen.queryByTestId("permissions-turn-on-alerts")).not.toBeOnTheScreen());
   expect(stateLabel("permissions-alerts")).toBe("On");
 });
 

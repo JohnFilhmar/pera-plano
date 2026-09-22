@@ -175,7 +175,7 @@ describe("DeviceLockScreen", () => {
       await Promise.resolve();
     });
 
-    await waitFor(() => expect(screen.queryByTestId("device-lock-explainer")).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId("device-lock-explainer")).not.toBeOnTheScreen());
     expect(mockIsDeviceSecure).toHaveBeenCalledTimes(2);
   });
 

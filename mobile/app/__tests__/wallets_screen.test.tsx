@@ -279,7 +279,7 @@ describe("Show archived", () => {
     await screen.findByText("Closed BDO");
     fireEvent.press(screen.getByTestId("wallets-archived-toggle"));
 
-    await waitFor(() => expect(screen.queryByText("Closed BDO")).toBeNull());
+    await waitFor(() => expect(screen.queryByText("Closed BDO")).not.toBeOnTheScreen());
     expect(screen.getByText("BPI")).toBeTruthy();
   });
 

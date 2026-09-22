@@ -360,7 +360,7 @@ describe("FirstLimitScreen", () => {
     await renderScreen();
 
     await waitFor(() =>
-      expect(screen.queryByTestId("first-limit-no-income-note")).toBeNull(),
+      expect(screen.queryByTestId("first-limit-no-income-note")).not.toBeOnTheScreen(),
     );
 
     fireEvent.press(screen.getByTestId("first-limit-basis-percent"));

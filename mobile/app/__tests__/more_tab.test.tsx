@@ -355,7 +355,7 @@ describe("the Settings screen", () => {
     await waitFor(async () => expect(await getSetting("quiet_hours_enabled")).toBe(false));
     // Two steppers that change nothing while the window is off are worse than
     // none — the setting they edit is not being consulted.
-    await waitFor(() => expect(screen.queryByTestId("settings-quiet-hours-start-row")).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId("settings-quiet-hours-start-row")).not.toBeOnTheScreen());
   });
 
   test("stepping the start time persists minutes from midnight, not a label", async () => {

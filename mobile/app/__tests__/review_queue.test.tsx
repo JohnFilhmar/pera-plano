@@ -159,6 +159,20 @@ async function renderScreenWithNotices(): Promise<void> {
   await waitFor(() => expect(screen.getByTestId("review-queue-screen")).toBeTruthy());
 }
 
+/**
+ * The rendered cards' test IDs, in screen order.
+ *
+ * STRINGS, NOT ELEMENTS, because `waitFor` polls this and every failed poll
+ * prints what it received. An element carries its React fiber, so printing one
+ * walks the component tree: 0.9 to 7.6 seconds per failed poll on this screen,
+ * measured, against under 30 ms for the same check on strings. A filter wait
+ * polling elements spent 12 of its 14 seconds formatting error messages it
+ * then threw away, and lost its budget under load (GAP-052).
+ */
+function cardIds(): string[] {
+  return screen.queryAllByTestId(/^review-card-/).map((node) => String(node.props.testID));
+}
+
 let walletId: string;
 
 beforeEach(async () => {
@@ -223,7 +237,7 @@ describe("the review queue screen", () => {
 
     await renderScreen();
 
-    await waitFor(() => expect(screen.getAllByTestId(/^review-card-/)).toHaveLength(3));
+    await waitFor(() => expect(cardIds()).toHaveLength(3));
     expect(screen.getAllByTestId(/^review-card-/).map((node) => node.props.testID)).toEqual([
       `review-card-${first.id}`,
       `review-card-${second.id}`,
@@ -243,7 +257,7 @@ describe("the review queue screen", () => {
 
     await renderScreen();
 
-    await waitFor(() => expect(screen.getAllByTestId(/^review-card-/)).toHaveLength(2));
+    await waitFor(() => expect(cardIds()).toHaveLength(2));
     expect(screen.getByTestId(`review-reason-${low.id}`)).toHaveTextContent(
       GATE_REASONS.lowConfidence,
     );
@@ -288,7 +302,7 @@ describe("the review queue screen", () => {
 
     await renderScreen();
 
-    await waitFor(() => expect(screen.getAllByTestId(/^review-card-/)).toHaveLength(1));
+    await waitFor(() => expect(cardIds()).toHaveLength(1));
     expect(screen.getByTestId(`review-card-${live.id}`)).toBeTruthy();
   });
 
@@ -346,7 +360,7 @@ describe("triaging from the queue", () => {
       source: "notification",
       confidence: 1,
     });
-    await waitFor(() => expect(screen.queryByTestId(`review-card-${queued.id}`)).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId(`review-card-${queued.id}`)).not.toBeOnTheScreen());
   });
 
   // The owner's 2026-09-01 device report: a ₱1,000 withdrawal acknowledged, the
@@ -385,7 +399,7 @@ describe("triaging from the queue", () => {
     fireEvent.press(await screen.findByTestId(`review-primary-${queued.id}`));
     fireEvent.press(await screen.findByTestId("review-action-error-dismiss"));
 
-    await waitFor(() => expect(screen.queryByTestId("review-action-error")).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId("review-action-error")).not.toBeOnTheScreen());
   });
 
   test("Correct opens the sheet, and saving a fix teaches the pipeline", async () => {
@@ -409,7 +423,7 @@ describe("triaging from the queue", () => {
     const [rule] = await listUserRules();
     expect(rule.action).toEqual({ kind: "set-category", categoryId: "cat_transport" });
     expect((await listTransactions({}))[0].categoryId).toBe("cat_transport");
-    await waitFor(() => expect(screen.queryByTestId(`review-card-${queued.id}`)).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId(`review-card-${queued.id}`)).not.toBeOnTheScreen());
   });
 
   test("Not money discards the capture without touching the ledger", async () => {
@@ -679,7 +693,7 @@ describe("the queue is paged", () => {
     fireEvent.press(screen.getByTestId("review-queue-load-more"));
 
     // Nothing left to ask for — the second page arrived and covered the rest.
-    await waitFor(() => expect(screen.queryByTestId("review-queue-load-more")).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId("review-queue-load-more")).not.toBeOnTheScreen());
     // Page one is still there — this is "show more", not "next page".
     expect(screen.getByTestId(`review-card-${items[0].id}`)).toBeTruthy();
     // And the queue never fell back to its loading state on the way.
@@ -690,7 +704,7 @@ describe("the queue is paged", () => {
     await seedQueue(3);
     await renderScreen();
 
-    await waitFor(() => expect(screen.getAllByTestId(/^review-card-/)).toHaveLength(3));
+    await waitFor(() => expect(cardIds()).toHaveLength(3));
     expect(screen.queryByTestId("review-queue-load-more")).toBeNull();
     expect(screen.queryByTestId("review-backlog-banner")).toBeNull();
   });
@@ -720,18 +734,16 @@ describe("the queue is filterable by kind", () => {
   test("a kind chip narrows the list, and pressing it again restores the queue", async () => {
     const { parse, unknown } = await seedTwoKinds();
     await renderScreen();
-    await waitFor(() => expect(screen.getAllByTestId(/^review-card-/)).toHaveLength(2));
+    await waitFor(() => expect(cardIds()).toHaveLength(2));
 
     fireEvent.press(screen.getByTestId("review-filter-chip-unknown-provider"));
 
-    // A chip press is a NEW DATABASE READ, not a re-render of loaded rows (the
-    // filter is part of the query — see use_review_queue_page.ts), so these
-    // waits have to outlast a real round trip. `waitFor`'s 1 s default is
-    // enough on an idle machine and not enough on one running the whole suite
-    // in parallel, where this read has queued behind 200 other test databases.
-    await waitFor(() => expect(screen.getAllByTestId(/^review-card-/)).toHaveLength(1), {
-      timeout: 10_000,
-    });
+    // A chip press is a NEW DATABASE READ, not a re-render of loaded rows,
+    // because the filter is part of the query in use_review_queue_page.ts.
+    // Until it lands, the previous filter's two cards stay up as placeholder
+    // data, so this wait fails at least one poll before it passes. That is why
+    // it polls `cardIds()`.
+    await waitFor(() => expect(cardIds()).toHaveLength(1));
     expect(screen.getByTestId(`review-card-${unknown.id}`)).toBeTruthy();
     expect(screen.queryByTestId(`review-card-${parse.id}`)).toBeNull();
     // The narrowing NEVER passes through the loading skeleton — see
@@ -742,9 +754,7 @@ describe("the queue is filterable by kind", () => {
     // A SELECTED CHIP IS ITS OWN REMOVAL AFFORDANCE — there is no separate
     // clear control, so this press has to be the way back.
     fireEvent.press(screen.getByTestId("review-filter-chip-unknown-provider"));
-    await waitFor(() => expect(screen.getByTestId(`review-card-${parse.id}`)).toBeTruthy(), {
-      timeout: 10_000,
-    });
+    await waitFor(() => expect(screen.getByTestId(`review-card-${parse.id}`)).toBeTruthy());
   });
 
   test("the chips count what is waiting", async () => {
@@ -762,36 +772,29 @@ describe("the queue is filterable by kind", () => {
     await enqueueAt(NOW - HOUR, { kind: "low-confidence", payload: gatedPayload() });
     await renderScreen();
 
-    await waitFor(() => expect(screen.getAllByTestId(/^review-card-/)).toHaveLength(1));
+    await waitFor(() => expect(cardIds()).toHaveLength(1));
     expect(screen.queryByTestId("review-filter-bar")).toBeNull();
   });
 
   test("EMPTYING A FILTER IS NOT 'All caught up.' — the reward is never shown over a hidden queue", async () => {
     const { parse, unknown } = await seedTwoKinds();
     await renderScreen();
-    await waitFor(() => expect(screen.getAllByTestId(/^review-card-/)).toHaveLength(2));
+    await waitFor(() => expect(cardIds()).toHaveLength(2));
 
     fireEvent.press(screen.getByTestId("review-filter-chip-unknown-provider"));
-    // Same round trip, same headroom as above.
-    await waitFor(() => expect(screen.getAllByTestId(/^review-card-/)).toHaveLength(1), {
-      timeout: 10_000,
-    });
+    await waitFor(() => expect(cardIds()).toHaveLength(1));
 
     // "Not money" — the last unknown-provider item leaves the queue while the
     // low-confidence one is still waiting one chip away.
     fireEvent.press(await screen.findByTestId(`review-secondary-${unknown.id}`));
 
-    await waitFor(() => expect(screen.getByTestId("review-queue-empty-filtered")).toBeTruthy(), {
-      timeout: 10_000,
-    });
+    await waitFor(() => expect(screen.getByTestId("review-queue-empty-filtered")).toBeTruthy());
     expect(screen.queryByTestId("review-queue-empty")).toBeNull();
     expect(screen.queryByText(REVIEW_EMPTY_TITLE)).toBeNull();
     // And the way out is on screen, because the chip that caused this is the
     // only one still selected.
     fireEvent.press(screen.getByText("Show all"));
-    await waitFor(() => expect(screen.getByTestId(`review-card-${parse.id}`)).toBeTruthy(), {
-      timeout: 10_000,
-    });
+    await waitFor(() => expect(screen.getByTestId(`review-card-${parse.id}`)).toBeTruthy());
   });
 });
 

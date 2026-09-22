@@ -262,7 +262,7 @@ test("THE ALERTS ROW ASKS THE OS WHEN THE PERMISSION IS MISSING AND ANDROID WILL
 
   await waitFor(() => expect(mockRequestAlertPermission).toHaveBeenCalledTimes(1));
   // Granting removes the row — there is nothing left for it to offer.
-  await waitFor(() => expect(screen.queryByTestId("more-turn-on-alerts")).toBeNull());
+  await waitFor(() => expect(screen.queryByTestId("more-turn-on-alerts")).not.toBeOnTheScreen());
 });
 
 test("THE ALERTS ROW OPENS SETTINGS INSTEAD OF ASKING AGAIN ONCE ANDROID IS DONE PROMPTING", async () => {

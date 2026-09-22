@@ -440,7 +440,7 @@ test("the percent field says what the percentage comes to, once income is known"
   renderScreen(<NewLimitScreen />);
 
   fireEvent.press(screen.getByTestId("limit-basis-percent"));
-  await waitFor(() => expect(screen.queryByTestId("limit-percent-blocked")).toBeNull());
+  await waitFor(() => expect(screen.queryByTestId("limit-percent-blocked")).not.toBeOnTheScreen());
 
   typeAmount("limit-percent", "20");
 

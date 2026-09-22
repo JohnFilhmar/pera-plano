@@ -76,7 +76,7 @@ async function settled(): Promise<void> {
   // time on its own. The wait is starved of event-loop time, not waiting on a
   // slow query — so the fix is a budget that survives the worst observed
   // scheduling, not a faster read.
-  await waitFor(() => expect(screen.queryByTestId("ledger-list-loading")).toBeNull(), {
+  await waitFor(() => expect(screen.queryByTestId("ledger-list-loading")).not.toBeOnTheScreen(), {
     timeout: 30_000,
   });
 }
@@ -305,7 +305,7 @@ describe("search", () => {
 
     fireEvent.changeText(screen.getByTestId("filter-search"), "angkas");
 
-    await waitFor(() => expect(screen.queryByText("Jollibee")).toBeNull());
+    await waitFor(() => expect(screen.queryByText("Jollibee")).not.toBeOnTheScreen());
     expect(screen.getByText("Angkas")).toBeTruthy();
   });
 });
@@ -435,7 +435,7 @@ describe("the review queue entry point", () => {
     // An empty queue advertising itself is the opposite of the reward state the
     // spec asks for ("absence of work is the reward"), and a row that is always
     // there is a row the user stops seeing on the day it matters.
-    await waitFor(() => expect(screen.queryByTestId("review-queue-entry")).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId("review-queue-entry")).not.toBeOnTheScreen());
   });
 
   test("appears with the open count once something needs review", async () => {
