@@ -311,7 +311,10 @@ test("the gate it hands off to is the real one: a refused authentication leaves 
   fireEvent.press(screen.getByTestId("unlock-button"));
 
   await waitFor(() => expect(mockAuthenticateAsync).toHaveBeenCalledTimes(2));
-  expect(screen.getByTestId("unlock-error")).toBeTruthy();
+  // WAITED FOR, NOT READ. `unlock()` clears the first error before it calls
+  // authenticateAsync and sets the second only after that call settles, so
+  // the render showing it can land after a bare read (GAP-052).
+  await waitFor(() => expect(screen.getByTestId("unlock-error")).toBeTruthy());
   expect(screen.getByTestId("unlock-prompt")).toBeTruthy();
   expect(mockUnlockWithDeviceKey).not.toHaveBeenCalled();
 });
