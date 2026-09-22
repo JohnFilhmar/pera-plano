@@ -225,6 +225,14 @@ describe("every notification routes to its documented destination when tapped", 
     });
   });
 
+  test("a goal milestone opens that goal's detail (docs/06 §6.1: Goal updates → Goal detail)", () => {
+    expect(resolveAlertRoute({ kind: "goalMilestone", goalId: "g-1", milestone: 50 })).toEqual({
+      pathname: "/plan/goals/[id]",
+      params: { id: "g-1" },
+    });
+    expect(resolveAlertRoute({ kind: "goalMilestone", goalId: 7 })).toBe("/");
+  });
+
   test("payday summary opens Home", () => {
     expect(resolveAlertRoute({ kind: "paydaySummary" })).toBe("/");
   });

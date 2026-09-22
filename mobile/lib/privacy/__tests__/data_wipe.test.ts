@@ -215,6 +215,12 @@ async function seedOneRowPerTable(): Promise<void> {
      VALUES ('rej1', 'loan1', 'tx_loan', ?)`,
     [NOW],
   );
+  // 023_contribution_decisions.sql (GAP-056), on the goal seeded above.
+  await db.runAsync(
+    `INSERT INTO contribution_decisions (goal_id, payday_date, decision, decided_at)
+     VALUES ('goal1', '2026-08-10', 'skipped', ?)`,
+    [NOW],
+  );
   await setSetting("capture_enabled", false);
 }
 
@@ -259,6 +265,7 @@ test("listWipeableTables enumerates every data table this test seeds — nothing
     "support_reports",
     "support_report_attachments",
     "loan_match_rejections",
+    "contribution_decisions",
   ];
 
   for (const table of seeded) {

@@ -168,7 +168,7 @@ test("TAKING THE SUGGESTION FROM THE SCREEN UPDATES THE PROFILE AND KEEPS THE OV
   await waitFor(async () => expect((await getIncomeProfile())?.averageAmount).toBe(DETECTED));
   expect((await getIncomeProfile())?.isManualOverride).toBe(true);
   // Answered, so it stops asking.
-  await waitFor(() => expect(screen.queryByTestId("income-suggestion")).toBeNull());
+  await waitFor(() => expect(screen.queryByTestId("income-suggestion")).not.toBeOnTheScreen());
 });
 
 test("dismissing it from the screen keeps the declared figure", async () => {
@@ -179,7 +179,7 @@ test("dismissing it from the screen keeps the declared figure", async () => {
 
   fireEvent.press(screen.getByTestId("income-dismiss"));
 
-  await waitFor(() => expect(screen.queryByTestId("income-suggestion")).toBeNull());
+  await waitFor(() => expect(screen.queryByTestId("income-suggestion")).not.toBeOnTheScreen());
   expect((await getIncomeProfile())?.averageAmount).toBe(DECLARED);
   expect((await getIncomeProfile())?.isManualOverride).toBe(true);
 });

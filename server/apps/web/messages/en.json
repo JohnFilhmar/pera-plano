@@ -526,7 +526,7 @@
         "rows": [
           [
             "1",
-            "Raw notification text (target of rawNotificationRef), including unknown-bin captures",
+            "Raw notification text (target of rawNotificationRef), including unknown-bin captures; for a non-money notification drained from the native buffer, only its app and its times",
             "Posted by other apps; captured by the listener",
             "Encrypted on-device only",
             "30-day TTL, then purged (domain invariant)",

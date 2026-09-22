@@ -256,6 +256,7 @@ export default function PrivacyScreen() {
         capture,
         providerName: providerLabelForPackage(providers, capture.packageName),
         expiresAt: capture.expiresAt,
+        bodyDiscarded: capture.bodyDiscarded,
       })),
     [captures, providers],
   );

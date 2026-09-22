@@ -9,6 +9,12 @@
 // EVERY ROW IS EDITABLE, because the proposal is a suggestion about money the
 // user is about to move by hand. If they move ₱1,800 instead of ₱2,000, the
 // ledger has to record ₱1,800 or it is simply wrong.
+//
+// THREE WAYS OUT, AND ONLY TWO OF THEM DECIDE ANYTHING (GAP-056, goals rule
+// 14). "Record these" records the checked rows and skips the unchecked ones,
+// which already say "Skipped". "Skip this payday" skips them all. "Not now"
+// decides nothing: the user may still move the money in their bank app, which
+// completes the contribution on its own, so it stays pending.
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 
@@ -27,7 +33,10 @@ export type AllocationSheetProps = {
   /** The payday the proposals came out of — the ceiling the total is shown against. */
   paydayAmount: Centavos;
   onDismiss: () => void;
-  onConfirm: (accepted: AllocationProposal[]) => void;
+  /** The checked rows to record, and the unchecked ones, which the user skipped. */
+  onConfirm: (accepted: AllocationProposal[], declined: AllocationProposal[]) => void;
+  /** "Skip this payday": every proposal, skipped. */
+  onSkip: () => void;
   busy?: boolean;
 };
 
@@ -74,6 +83,7 @@ export function AllocationSheet({
   paydayAmount,
   onDismiss,
   onConfirm,
+  onSkip,
   busy = false,
 }: AllocationSheetProps) {
   // Keyed by goal id, seeded from the proposals.
@@ -103,6 +113,11 @@ export function AllocationSheet({
     .map((proposal) => ({ proposal, row: rowFor(proposal) }))
     .filter(({ row }) => row.checked && centavosFrom(row.text) > 0)
     .map(({ proposal, row }) => ({ ...proposal, amount: centavosFrom(row.text) }));
+
+  // A SKIP IS AN UNCHECKED ROW AND NOTHING ELSE. A checked row cleared to
+  // zero still reads "Included", so it is neither recorded nor skipped, and its
+  // contribution stays pending.
+  const declined = proposals.filter((proposal) => !rowFor(proposal).checked);
 
   const total = accepted.reduce((sum, proposal) => sum + proposal.amount, 0);
   const overPayday = total > paydayAmount;
@@ -194,9 +209,19 @@ export function AllocationSheet({
           testID="allocation-confirm"
           disabled={accepted.length === 0 || overPayday || busy}
           loading={busy}
-          onPress={() => onConfirm(accepted)}
+          onPress={() => onConfirm(accepted, declined)}
+        />
+        <Button
+          title="Skip this payday"
+          variant="secondary"
+          testID="allocation-skip-payday"
+          disabled={busy}
+          onPress={onSkip}
         />
         <Button title="Not now" variant="ghost" testID="allocation-skip" onPress={onDismiss} />
+        <Text className="text-center text-fg-2 dark:text-fg-2-dark">
+          Not now keeps these planned. Skipping lets Safe-to-Spend count them as spendable again.
+        </Text>
       </View>
     </BottomSheet>
   );

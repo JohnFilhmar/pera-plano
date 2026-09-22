@@ -139,7 +139,7 @@ describe("ReviewCountBadge", () => {
 
     // Wait for the read to actually resolve before asserting absence, or this
     // passes on the pending frame and would keep passing with a broken count.
-    await waitFor(() => expect(screen.queryByTestId("review-badge")).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId("review-badge")).not.toBeOnTheScreen());
     expect(screen.queryByTestId("review-badge")).toBeNull();
   });
 });

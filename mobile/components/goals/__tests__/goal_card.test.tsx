@@ -291,3 +291,25 @@ describe("the reached beat", () => {
     expect(screen.queryByTestId("goal-reached-mark")).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Pending allocation (GAP-056, the goals spec's states table): "the card shows
+// '₱X planned this payday' until matched, recorded, skipped, or expired".
+// ---------------------------------------------------------------------------
+test("a pending payday contribution shows what is still planned", () => {
+  renderCard({
+    name: "Emergency Fund",
+    progress: progressOf(),
+    targetDate: null,
+    plannedThisPayday: 150000,
+    testID: "card",
+  });
+
+  expect(screen.getByTestId("card-planned")).toHaveTextContent("₱1,500.00 planned this payday");
+});
+
+test("no pending contribution, no planned line", () => {
+  renderCard({ name: "Emergency Fund", progress: progressOf(), targetDate: null, testID: "card" });
+
+  expect(screen.queryByTestId("card-planned")).toBeNull();
+});

@@ -436,7 +436,7 @@ test("REJECTING A MATCH RECORDS NOTHING AND STOPS OFFERING IT", async () => {
   // against a real database, and under the full suite's parallelism that has
   // overrun a second. It passes in ~2s in isolation and timed out at 103s of
   // suite load — starved of event-loop time, not waiting on a slow query.
-  await waitFor(() => expect(screen.queryByTestId("bill-open-matches")).toBeNull(), {
+  await waitFor(() => expect(screen.queryByTestId("bill-open-matches")).not.toBeOnTheScreen(), {
     timeout: 30_000,
   });
   expect(await listBillPayments(bill.id)).toEqual([]);

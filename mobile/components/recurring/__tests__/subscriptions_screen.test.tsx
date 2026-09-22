@@ -163,7 +163,7 @@ test("dismiss removes the card", async () => {
   const dismissButton = await screen.findByTestId(`pattern-card-${pattern.id}-dismiss`);
   fireEvent.press(dismissButton);
 
-  await waitFor(() => expect(screen.queryByTestId(`pattern-card-${pattern.id}`)).toBeNull());
+  await waitFor(() => expect(screen.queryByTestId(`pattern-card-${pattern.id}`)).not.toBeOnTheScreen());
   expect(await listPatterns()).toHaveLength(0);
 });
 

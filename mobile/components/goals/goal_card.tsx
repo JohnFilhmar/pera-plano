@@ -39,7 +39,7 @@ import { useTheme } from "@/contexts/theme_context";
 import { formatDate } from "@/lib/datetime";
 import { parseDateIso } from "@/lib/dates";
 import type { GoalProgress } from "@/lib/goals/goal_math";
-import type { ContributionRule } from "@/types/domain";
+import type { Centavos, ContributionRule } from "@/types/domain";
 
 const PartyGlyph = registerIcon(PartyPopper);
 
@@ -57,6 +57,12 @@ export type GoalCardProps = {
    * both screens instead of only appearing after a tap into detail.
    */
   contributionRule?: ContributionRule | null;
+  /**
+   * What is still planned from the latest payday while that contribution is
+   * pending: the goals spec's "Pending allocation" state (GAP-056). `null` or
+   * absent when nothing is waiting.
+   */
+  plannedThisPayday?: Centavos | null;
   testID?: string;
 };
 
@@ -86,6 +92,7 @@ export function GoalCard({
   progress,
   targetDate,
   contributionRule,
+  plannedThisPayday,
   testID,
 }: GoalCardProps) {
   const { resolved } = useTheme();
@@ -213,6 +220,14 @@ export function GoalCard({
                 />
               )}
             </View>
+          )}
+          {(plannedThisPayday ?? null) === null ? null : (
+            <Text
+              testID={testID === undefined ? undefined : `${testID}-planned`}
+              className="mt-2 text-fg dark:text-fg-dark"
+            >
+              {`${formatCentavos(plannedThisPayday ?? 0)} planned this payday`}
+            </Text>
           )}
         </View>
       </View>

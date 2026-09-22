@@ -463,13 +463,17 @@ describe("useBalanceDrift", () => {
       expect(client.getQueryState(queryKeys.wallets.drift(walletB.id))?.status).toBe("success");
     });
 
-    expect(result.current[walletA.id]).toEqual({
-      reported: 900_000,
-      computed: 80_000,
-      drift: 820_000,
-      reportingTransactionId: report.id,
-      dismissedTransactionId: null,
-    });
+    // The cache settles before the render that carries it, so the mapped value
+    // is waited for too: at nine workers a bare read still saw `null` (GAP-052).
+    await waitFor(() =>
+      expect(result.current[walletA.id]).toEqual({
+        reported: 900_000,
+        computed: 80_000,
+        drift: 820_000,
+        reportingTransactionId: report.id,
+        dismissedTransactionId: null,
+      }),
+    );
     expect(result.current[walletB.id]).toBeNull();
   });
 

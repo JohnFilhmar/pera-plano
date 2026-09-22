@@ -319,7 +319,7 @@ test("DISMISSING records the signature and stops re-proposing it", async () => {
     expect((await getIncomeDetectionState()).suggestionDismissedSignature).not.toBeNull(),
   );
   // The prompt goes away rather than being re-offered on the next render.
-  await waitFor(() => expect(screen.queryByTestId("income-suggestion")).toBeNull());
+  await waitFor(() => expect(screen.queryByTestId("income-suggestion")).not.toBeOnTheScreen());
 });
 
 test("THE ONE-TIME SPLIT-PAYDAY NOTICE APPEARS ON THE CARD AND STAYS DISMISSED", async () => {
@@ -350,7 +350,7 @@ test("THE ONE-TIME SPLIT-PAYDAY NOTICE APPEARS ON THE CARD AND STAYS DISMISSED",
 
   fireEvent.press(screen.getByTestId("income-split-payday-ack"));
 
-  await waitFor(() => expect(screen.queryByTestId("income-split-payday-notice")).toBeNull());
+  await waitFor(() => expect(screen.queryByTestId("income-split-payday-notice")).not.toBeOnTheScreen());
   expect(await getSetting("income_split_payday_notice")).toBe("done");
 });
 

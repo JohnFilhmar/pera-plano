@@ -83,8 +83,13 @@ import { SchemaTooNewError } from "@/lib/db/migrations";
 import { applyCaptureGuard } from "@/lib/privacy/capture_guard";
 import { startSupportOutboxSubscriber } from "@/lib/support/outbox_runner";
 import { useApplyAllocations } from "@/hooks/mutations/use_apply_allocations";
+import { useSkipAllocations } from "@/hooks/mutations/use_skip_allocations";
 import { usePaydayAllocations } from "@/hooks/use_payday_allocations";
 import { BILL_HORIZON_DAYS } from "@/hooks/queries/use_bills";
+import {
+  runGoalMilestonePass,
+  startGoalMilestoneSubscriber,
+} from "@/lib/goals/goal_milestone_subscriber";
 import { startIncomeLedgerSubscriber } from "@/lib/income/income_ledger_subscriber";
 import { startPaydayNotificationSubscriber } from "@/lib/income/payday_notification_subscriber";
 import { startLimitLedgerSubscriber } from "@/lib/limits/limit_ledger_subscriber";
@@ -210,6 +215,7 @@ function PaydaySheets() {
   const { payday, proposals, paydayAmount, acknowledgePayday, dismissAllocations } =
     usePaydayAllocations();
   const applyAllocations = useApplyAllocations();
+  const skipAllocations = useSkipAllocations();
 
   return (
     <>
@@ -221,11 +227,27 @@ function PaydaySheets() {
         visible={proposals.length > 0}
         proposals={proposals}
         paydayAmount={paydayAmount}
-        busy={applyAllocations.isPending}
+        busy={applyAllocations.isPending || skipAllocations.isPending}
         onDismiss={dismissAllocations}
-        onConfirm={async (accepted) => {
+        onSkip={async () => {
+          try {
+            await skipAllocations.mutateAsync(proposals);
+          } catch {
+            // Same reasoning as `onConfirm` below: the toast is already up,
+            // and the sheet stays open for the retry.
+            return;
+          }
+          dismissAllocations();
+        }}
+        onConfirm={async (accepted, declined) => {
           try {
             await applyAllocations.mutateAsync(accepted);
+            // Recorded transfers emit no `ledger:committed` (only ingest does),
+            // so a milestone they crossed would wait for the next commit or
+            // launch without this pass (GAP-055).
+            void runGoalMilestonePass();
+            // The unchecked rows already read "Skipped" (GAP-056).
+            if (declined.length > 0) await skipAllocations.mutateAsync(declined);
           } catch {
             // THE CATCH IS FOR THE REJECTION, NOT FOR THE MESSAGE. `onConfirm`
             // is typed `=> void` and AllocationSheet calls it without holding
@@ -514,6 +536,14 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
   useEffect(() => {
     if (bootstrapState !== "ready") return;
     return startSubscriber("cash reconcile prompts", startReconcilePromptSubscriber);
+  }, [bootstrapState]);
+
+  // Goal milestone notifications (goals rule 12, GAP-055). A launch pass and a
+  // debounced pass per ledger commit, the shape the cash reconcile prompts above
+  // use; `runGoalMilestonePass` swallows its own failures.
+  useEffect(() => {
+    if (bootstrapState !== "ready") return;
+    return startSubscriber("goal milestones", startGoalMilestoneSubscriber);
   }, [bootstrapState]);
 
   // Recurring-pattern detection re-runs on ledger commits, debounced (M3 Part

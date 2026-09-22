@@ -7,8 +7,10 @@
 //   known         → tagged with a provider identity and handed to the Parser.
 //   unknown       → retained in the unknown-bin, where §3 rule 4 SHOWS THE RAW
 //                   TEXT to the user in the Review Queue so they can flag it.
-//   not_financial → dropped on the spot. Never stored, never displayed, never
-//                   counted (§1 principle 2, §3 rule 3 "data minimization").
+//   not_financial → dropped on the spot. Its text is never stored or displayed
+//                   (§1 principle 2, §3 rule 3 "data minimization"). One the
+//                   drain hands over leaves only its app and times, so a miss
+//                   stays findable in the Privacy centre (GAP-107).
 //
 // The two error directions are not symmetric, and the whole design below falls
 // out of that:

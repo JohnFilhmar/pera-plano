@@ -16,15 +16,21 @@
 // assert that after proposing, the transaction table is still empty.
 import { getDatabase } from "@/lib/db/database";
 import { UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
+import {
+  decideContribution,
+  listContributionDecisions,
+} from "@/lib/db/repos/contribution_decisions_repo";
 import { listGoals } from "@/lib/db/repos/goals_repo";
 import { insertTransaction } from "@/lib/db/repos/transactions_repo";
 import { linkTransfer } from "@/lib/db/repos/transfer_links_repo";
 import { withUnitOfWork } from "@/lib/db/unit_of_work";
+import { toDateIso } from "@/lib/dates";
 import { hasPaydayAutoAllocation } from "@/lib/entitlements";
 import type { AppEventMap } from "@/lib/events/app_events";
-import type { Centavos, Goal } from "@/types/domain";
+import type { Centavos, Goal, IsoDate } from "@/types/domain";
 
 import { computeGoalProgress, type GoalPaceInputs, type GoalProgress } from "./goal_math";
+import { plannedAmountFor } from "./planned_contributions";
 
 /** The payday the income service published (`income:payday`). */
 export type PaydayEvent = AppEventMap["income:payday"];
@@ -45,6 +51,11 @@ export type AllocationProposal = {
   requested: Centavos;
   fromWalletId: string;
   toWalletId: string;
+  /**
+   * The local day the pay landed: with `goalId`, the key a recording or a
+   * skip is filed under (GAP-056, goals rule 14).
+   */
+  paydayDate: IsoDate;
 };
 
 /**
@@ -85,17 +96,6 @@ function byDeadline(a: GoalStatus, b: GoalStatus): number {
   return a.goal.targetDate.localeCompare(b.goal.targetDate);
 }
 
-/** What one rule asks for out of this payday. */
-function requestedFor(goal: Goal, paydayAmount: Centavos): Centavos {
-  const rule = goal.contributionRule;
-  if (rule === null) return 0;
-  if (rule.kind === "fixed") return rule.amount;
-  // `percent` is a PLAIN percentage (10 means 10%), unlike `Limit.value`, which
-  // types/domain.ts documents as percent × 100. The absence of that note on
-  // ContributionRule is the difference; do not "fix" one to match the other.
-  return Math.round((paydayAmount * rule.percent) / 100);
-}
-
 /**
  * What the user might move into their goals out of this payday. WRITES NOTHING.
  *
@@ -111,6 +111,7 @@ export async function proposePaydayAllocations(
   if (!hasPaydayAutoAllocation()) return [];
 
   const statuses = (await listGoalStatuses(now)).sort(byDeadline);
+  const paydayDate = toDateIso(new Date(event.occurredAt));
 
   let budget = event.amount;
   const proposals: AllocationProposal[] = [];
@@ -121,7 +122,7 @@ export async function proposePaydayAllocations(
     // Complete, Raise target or Keep as-is, none of which is "keep allocating".
     if (progress.remaining <= 0) continue;
 
-    const requested = requestedFor(goal, event.amount);
+    const requested = plannedAmountFor(goal, event.amount);
     if (requested <= 0) continue;
 
     // Two ceilings: what the goal still needs, and what is left of the payday.
@@ -137,6 +138,7 @@ export async function proposePaydayAllocations(
       requested,
       fromWalletId: event.walletId,
       toWalletId: goal.linkedWalletId,
+      paydayDate,
     });
     budget -= amount;
   }
@@ -148,21 +150,33 @@ export async function proposePaydayAllocations(
  * Records the moves the user says they made. Returns the created transfer-link
  * ids, in the order the proposals were given.
  *
+ * A RETRY NEVER RECORDS A MOVE TWICE. The sheet stays open after a failed
+ * confirm so the user can retry with the same proposals, and any of them already
+ * recorded for its payday (an earlier proposal of the same confirm that
+ * committed before a later one threw) is passed over and contributes no id.
+ *
  * COMMITS ITS ARGUMENT, never a freshly re-derived list. The allocation sheet
  * lets the user uncheck rows and edit amounts (Task 4 rule 6); re-deriving here
  * would silently commit the proposals they declined.
  *
- * ONE TRANSACTION PER PROPOSAL (rule 6): both legs and the link, or nothing. A
- * half-applied allocation shows money leaving the payroll wallet and never
- * arriving, which is the single worst thing a ledger can say.
+ * ONE TRANSACTION PER PROPOSAL (rule 6): both legs, the link and the
+ * recorded decision, or nothing. A half-applied allocation shows money leaving
+ * the payroll wallet and never arriving, which is the single worst thing a
+ * ledger can say.
+ *
+ * THE DECISION IS WHAT KEEPS A LATE RECORDING COMPLETE (GAP-056, goals rule
+ * 14b). The in-leg alone would complete the payday's contribution only inside
+ * rule 14a's three days, so a recording made later would read as never made.
  */
 export async function applyAllocations(
   proposals: AllocationProposal[],
   now: number,
 ): Promise<string[]> {
   const linkIds: string[] = [];
+  const recorded = await recordedContributions(proposals);
 
   for (const proposal of proposals) {
+    if (recorded.has(`${proposal.goalId}|${proposal.paydayDate}`)) continue;
     const linkId = await withUnitOfWork(async () => {
       const out = await insertTransaction({
         walletId: proposal.fromWalletId,
@@ -191,6 +205,12 @@ export async function applyAllocations(
       // fee to record here. `detectedBy: "manual"` because the USER made this
       // move; the app is recording it, not detecting it.
       const link = await linkTransfer(out.id, inLeg.id, 0, { detectedBy: "manual" });
+      await decideContribution({
+        goalId: proposal.goalId,
+        paydayDate: proposal.paydayDate,
+        decision: "recorded",
+        now,
+      });
       return link.id;
     });
 
@@ -198,4 +218,36 @@ export async function applyAllocations(
   }
 
   return linkIds;
+}
+
+/** Goal-and-payday keys among `proposals` whose contribution is already recorded. */
+async function recordedContributions(proposals: AllocationProposal[]): Promise<Set<string>> {
+  if (proposals.length === 0) return new Set();
+  const dates = proposals.map((proposal) => proposal.paydayDate).sort();
+  const rows = await listContributionDecisions(dates[0], dates[dates.length - 1]);
+  return new Set(
+    rows
+      .filter((row) => row.decision === "recorded")
+      .map((row) => `${row.goalId}|${row.paydayDate}`),
+  );
+}
+
+/**
+ * Records that the user skipped these goals' contributions for this payday
+ * (GAP-056, goals rule 14c): "this payday only; the rule stays active".
+ *
+ * WRITES NO TRANSACTION. Skipping is a decision about money that stays where
+ * it is; Safe-to-Spend then releases whatever of the plan never moved (goals
+ * rule 15).
+ *
+ * @param skipped - Each goal and the payday it skips. A proposal fits as it is.
+ * @param now - When the user decided.
+ */
+export async function skipAllocations(
+  skipped: ReadonlyArray<{ goalId: string; paydayDate: IsoDate }>,
+  now: number,
+): Promise<void> {
+  for (const { goalId, paydayDate } of skipped) {
+    await decideContribution({ goalId, paydayDate, decision: "skipped", now });
+  }
 }

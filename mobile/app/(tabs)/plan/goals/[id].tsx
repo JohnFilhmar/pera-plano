@@ -12,7 +12,9 @@ import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { queryKeys } from "@/constants/query_keys";
 import { invalidateKeys } from "@/hooks/mutations/invalidate_keys";
 import { useDeleteGoal } from "@/hooks/mutations/use_delete_goal";
+import { useSkipAllocations } from "@/hooks/mutations/use_skip_allocations";
 import { useGoals } from "@/hooks/queries/use_goals";
+import { usePendingContributions } from "@/hooks/queries/use_pending_contributions";
 import { useWallets } from "@/hooks/queries/use_wallets";
 import { completeGoal } from "@/lib/db/repos/goals_repo";
 
@@ -23,6 +25,8 @@ export default function GoalDetailScreen() {
   const { data: statuses } = useGoals();
   const { data: wallets } = useWallets();
   const remove = useDeleteGoal();
+  const { data: pendingContributions } = usePendingContributions();
+  const skip = useSkipAllocations();
 
   // Inline rather than a `use_complete_goal.ts` beside `use_delete_goal.ts`:
   // this is the only screen that can reach the action, and the two mutations
@@ -58,6 +62,9 @@ export default function GoalDetailScreen() {
   }
 
   const wallet = (wallets ?? []).find((candidate) => candidate.id === status.goal.linkedWalletId);
+  const pending =
+    (pendingContributions ?? []).find((contribution) => contribution.goalId === status.goal.id) ??
+    null;
 
   // The two states the spec's states table offers Complete on: Reached
   // ("card offers Complete, Raise target, or Keep as-is") and Past due ("Move
@@ -78,7 +85,27 @@ export default function GoalDetailScreen() {
         progress={status.progress}
         targetDate={status.goal.targetDate}
         contributionRule={status.goal.contributionRule}
+        plannedThisPayday={pending?.outstanding ?? null}
       />
+
+      {/* Goals flow step 4's "Skip this payday" (GAP-056). Moving the money in
+          the bank app needs no button here: a transfer into this goal's
+          account within three days completes the contribution by itself. */}
+      {pending === null ? null : (
+        <>
+          <Button
+            title="Skip this payday"
+            variant="secondary"
+            testID="goal-skip-payday"
+            loading={skip.isPending}
+            onPress={() => skip.mutate([{ goalId: pending.goalId, paydayDate: pending.paydayDate }])}
+          />
+          <Text className="text-center text-fg-2 dark:text-fg-2-dark">
+            Skipping lets Safe-to-Spend count this payday's plan as spendable again. The rule stays on
+            for your next payday.
+          </Text>
+        </>
+      )}
 
       <Card>
         <View className="flex-row items-center justify-between">

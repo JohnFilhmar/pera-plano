@@ -15,7 +15,7 @@ flowchart TD
     A[Notification capture\nNotificationListenerService] --> B[SourceRouter]
     B -->|known provider| C[Parser]
     B -->|unknown, money-like| RQ[Review Queue]
-    B -->|unknown, not money-like| X[Dropped — never stored]
+    B -->|unknown, not money-like| X[Dropped, text never stored]
     C --> D[Normalizer]
     D --> E[DedupeGate]
     E -->|duplicate| S[Suppressed]
@@ -31,7 +31,7 @@ flowchart TD
 Design principles that govern every stage:
 
 1. **Conservative by default.** When the pipeline is unsure, it asks (Review Queue) rather than guesses. A wrong auto-committed Transaction corrupts totals and destroys trust; a Review Queue item costs one tap.
-2. **Never lose money-like signal.** Anything that might be a transaction is retained (encrypted, on-device, 30-day TTL) even when it cannot be parsed. Anything that is clearly not money-related is dropped immediately and never stored.
+2. **Never lose money-like signal.** Anything that might be a transaction is retained (encrypted, on-device, 30-day TTL) even when it cannot be parsed. Anything that is clearly not money-related is dropped immediately, and its text is never stored. A notification that arrives while the app is running leaves nothing behind. One drained from the native buffer after the app was closed leaves a minimal record, its app and its times and nothing else, under the same 30-day TTL, so a miss by the money-signal heuristic can still be found in the Privacy centre (owner decision 2026-09-09, GAP-107).
 3. **Corrections become rules.** Every user correction in the Review Queue produces a **UserRule** that replays on future notifications. Parser gaps become training data instead of bug reports.
 4. **Raw text never leaves the phone.** Only structured, committed Transaction records ever sync (and only if the user enables cloud backup, a Plus feature). Telemetry about the pipeline is aggregate counts only — never content.
 5. **No true backfill exists.** Android provides no API to replay notifications that were posted and dismissed while the listener was down. On reconnection, the listener can read a snapshot of notifications still present in the status bar and feed them through the normal pipeline as a partial catch-up; anything dismissed or auto-cancelled during the gap is permanently gone. The mitigation for the truly lost remainder is reconciliation (§12.4), not replay.
@@ -77,7 +77,7 @@ Design principles that govern every stage:
 
 1. Routing is by source package name matched against the provider catalogue (§10). Package names in the catalogue are indicative and must be verified at implementation.
 2. **SMS-relay sub-route:** notifications posted by the default SMS app are inspected for known bank sender-ID prefixes ("BPI", "BDO", "MB", "LBP", and the rest of the catalogue's SMS-capable providers). A match routes the event to that bank's Parser rules with channel = SMS-via-Messages. The app never reads SMS directly (§12.2).
-3. **Unknown-bin pre-filter (data minimization):** an event from an unknown package is retained only if it is money-like — its text contains a currency marker (₱, "PHP", "Php") or an amount-shaped pattern. Everything else is dropped immediately and never stored. This keeps chat messages, social notifications, and other private content out of the app entirely.
+3. **Unknown-bin pre-filter (data minimization):** an event from an unknown package is retained only if it is money-like — its text contains a currency marker (₱, "PHP", "Php") or an amount-shaped pattern. Everything else is dropped immediately and its text is never stored. This keeps chat messages, social notifications, and other private content out of the app entirely. A notification drained from the native buffer keeps only its app and its times, as principle 2 describes.
 4. Unknown-bin items are stored encrypted on-device with the same 30-day TTL as all raw notification text, and surface in a collapsed "Other captured notifications" area of the Review Queue where the user can flag "this is a money notification." A flag sends only the package name and a parse-gap signal (never content) so the team can prioritize new parser coverage.
 5. Super-app packages (Shopee carrying ShopeePay, Grab carrying GrabPay) route to their provider's Parser, which is responsible for rejecting the high volume of non-transactional (marketing) notifications those apps emit.
 
@@ -88,7 +88,7 @@ Design principles that govern every stage:
 | Provider ships under a variant package name (regional build, rebrand) | Money notifications land in unknown-bin | Money-like pre-filter retains them; user flag + remote-updatable routing table (§11) adds the package without an app release |
 | Default SMS app differs by OEM or user choice | Bank SMS relay missed | Routing table lists common default SMS app packages; unknown-bin catches the rest via sender-ID text in a money-like notification |
 | Marketing push from a money app | Parser load and false-positive risk | Parser template classification drops non-transactional events (§4) |
-| Money notification without a currency marker | Dropped by pre-filter | Accepted residual risk; tracked as an open question (§14) |
+| Money notification without a currency marker | Dropped by pre-filter | Accepted residual risk; tracked as an open question (§14). One drained from the native buffer leaves its app and time in the Privacy centre, so the miss can be found (principle 2) |
 
 ---
 

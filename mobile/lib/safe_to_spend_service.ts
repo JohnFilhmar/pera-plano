@@ -12,12 +12,10 @@
 // mocks nothing in its tests.
 import { listBillStatuses } from "@/lib/bills/bills_service";
 import { listCategories, listCategoryRefs } from "@/lib/db/repos/categories_repo";
-import { listGoals } from "@/lib/db/repos/goals_repo";
 import { countOpen } from "@/lib/db/repos/review_queue_repo";
 import { addDaysIso } from "@/lib/dates";
-import { hasPaydayAutoAllocation } from "@/lib/entitlements";
-import { getIncomeSummary, listPayEventsBetween } from "@/lib/income/income_service";
-import { collapsePaydays } from "@/lib/income/paydays";
+import { listPaydayContributions, reservedFor } from "@/lib/goals/planned_contributions";
+import { getIncomeSummary } from "@/lib/income/income_service";
 import { expandCategoryIds } from "@/lib/limits/limit_engine";
 import { getLimitStatuses } from "@/lib/limits/limit_service";
 import { limitFilterLabel } from "@/lib/limits/limit_label";
@@ -30,7 +28,7 @@ import {
   type SafeToSpendResult,
   type UpcomingBill,
 } from "@/lib/safe_to_spend";
-import type { Centavos, Goal, IsoDate } from "@/types/domain";
+import type { Centavos, IsoDate } from "@/types/domain";
 
 /**
  * Assembles every term the engine needs.
@@ -169,113 +167,27 @@ async function unresolvedBills(now: number, horizonDays: number): Promise<Upcomi
 // Goal contributions — rule 6
 // ---------------------------------------------------------------------------
 /**
- * Scheduled contributions falling inside the window.
+ * The goal contributions term's rows: every planned contribution from pay that
+ * landed inside the window, at what it still reserves.
  *
- * A FORECAST OF SCHEDULED RULES ONLY. Rule 6: "Manual, unscheduled Goal
- * contributions are not forecast; they simply appear as spend/transfers when
- * they happen." So a goal with no `contributionRule` contributes nothing, and
- * neither does one whose cadence the app cannot project — guessing a date would
- * reserve money on a day the user was never going to move it.
- *
- * PLUS ONLY, asked through `hasPaydayAutoAllocation` — the same question
- * `proposePaydayAllocations` asks, so the forecast and the prompt cannot
- * disagree about a tier.
+ * WHICH CONTRIBUTIONS EXIST, AND WHAT EACH ONE HOLDS BACK, ARE THE GOALS
+ * FEATURE'S TO SAY (lib/goals/planned_contributions.ts), because the payday
+ * prompt asks the user to make exactly these transfers and the two must agree.
+ * A contribution is built from pay that ARRIVED (rule 6b), never projected; it
+ * is Plus only; and a skipped one leaves the term except for what had already
+ * moved (rule 6, goals rule 15). This function only reshapes them for the
+ * engine, and drops a row that reserves nothing.
  */
 async function forecastContributions(
   windowStart: IsoDate,
   today: IsoDate,
 ): Promise<PlannedContribution[]> {
-  // Payday auto-allocation is a Plus capability (docs/05-monetization.md §3.2):
-  // on free the `contributionRule` is RETAINED but no prompt ever fires, so
-  // nothing is ever allocated. Reserving against it anyway would hold money back
-  // for a transfer the user is never asked to make — docs/04-features/09 puts it
-  // as "the Goal-contributions term is effectively ₱0 for free users".
-  if (!hasPaydayAutoAllocation()) return [];
-
-  // Achieved goals are excluded: the spec's Reached card offers Complete, Raise
-  // target or Keep as-is, and none of those is "keep reserving money for it".
-  const goals = (await listGoals({ includeAchieved: false })).filter(
-    (goal) => goal.contributionRule !== null,
-  );
-  if (goals.length === 0) return [];
-
-  // THE PAY THAT ACTUALLY ARRIVED, not the paydays a cadence predicts.
-  //
-  // This used to project kinsenas/weekly anchors across the window and reserve
-  // a contribution on each. That reserved money against dates nothing had
-  // happened on: the owner's 2026-09-01 report was ₱2,500 held against a
-  // payday that came and went with no pay, pinning Safe-to-Spend at ₱0.00 for
-  // a week. Delayed salary is ordinary, not exceptional, and a rule that
-  // assumes pay lands "spot on the date" is wrong for most of the people this
-  // app is for.
-  //
-  // Reserving from the ARRIVAL also needs no expiry rule. Nothing is reserved
-  // until money lands, so there is no stale reservation to time out — the case
-  // an expiry heuristic existed to clean up simply never occurs.
-  //
-  // BOUNDED AT TODAY. A payday later this period has not happened yet, and
-  // reserving against it would be the same guess in a shorter form.
-  const payEvents = await listPayEventsBetween(
-    Date.parse(`${windowStart}T00:00:00`),
-    Date.parse(`${today}T23:59:59.999`),
-  );
-  if (payEvents.length === 0) return [];
-
-  // The pay collapsed to ONE ENTRY PER LOCAL DAY: the trigger list for BOTH
-  // rule kinds, because a payday is the unit a contribution rule is written in.
-  // Dated to the pay's own LOCAL day, so `evaluate`'s "counted from the start of
-  // the period" test lands on the day the money really arrived.
-  //
-  // A PERCENT rule takes its share of the day's combined base: goals rule 13
-  // computes it "from the sum of income Transactions detected on that payday
-  // date". A salary split into two credits on one day is one payday with one
-  // combined base, 10% of the pair, not 10% twice and not 10% of either half.
-  //
-  // A FIXED rule fires ONCE PER PAYDAY for the same reason. Its amount is a
-  // per-payday quantity in the spec, not a per-credit one: goals rule 10 makes
-  // the `contributionRule` amount the reference pace P, and rule 9 measures the
-  // required pace R over "paydays remaining", so a ₱2,000.00 rule means
-  // ₱2,000.00 each payday and the two figures are only comparable on that
-  // reading. Rule 14 then creates the planned contribution from "a payday
-  // trigger", one per payday. Reserving per credit made an employer who splits
-  // one payday into two deposits reserve the amount twice, for a transfer the
-  // user is asked to make once.
-  //
-  // SHARED WITH THE PAYDAY PROMPT (`lib/income/paydays.ts`). The prompt asks the
-  // user to make the transfer this term is holding money back for, so the two
-  // have to agree about what one payday is; two collapses written separately
-  // would eventually disagree, and the symptom would be money reserved for a
-  // transfer nobody was ever asked to make.
-  const paydays = collapsePaydays(payEvents);
-
-  const contributions: PlannedContribution[] = [];
-  for (const goal of goals) {
-    for (const payday of paydays) {
-      const amount = contributionAmount(goal, payday.amount);
-      if (amount <= 0) continue;
-      contributions.push({ goalId: goal.id, amount, date: payday.date });
-    }
-  }
-  return contributions;
+  const contributions = await listPaydayContributions({ from: windowStart, to: today });
+  return contributions
+    .map((contribution) => ({
+      goalId: contribution.goalId,
+      amount: reservedFor(contribution),
+      date: contribution.paydayDate,
+    }))
+    .filter((contribution) => contribution.amount > 0);
 }
-
-/** A fixed rule's own amount, or a percent rule's share of the pay that landed. */
-function contributionAmount(goal: Goal, paydayAmount: Centavos): Centavos {
-  const rule = goal.contributionRule;
-  if (rule === null) return 0;
-  if (rule.kind === "fixed") return rule.amount;
-  // Percent OF THE PAY THAT ARRIVED (goals rule 13), never of the profile
-  // average. `IncomeProfile.averageAmount` is a smoothed trailing figure of
-  // what pay USUALLY is, so taking a cut of it reserves the wrong peso amount
-  // on exactly the paydays that differ: a thirteenth-month pay reserves too
-  // little, a short or half payday reserves more than actually came in.
-  // Goals rule 16 keeps the average as the fallback base for the payday
-  // PROMPT; it has no place here, because this term reserves nothing at all
-  // until money lands (safe-to-spend rule 6b).
-  //
-  // `percent` is a PLAIN percentage (10 means 10%), matching `requestedFor` in
-  // lib/goals/goals_service.ts and unlike `Limit.value`, which types/domain.ts
-  // documents as percent × 100.
-  return Math.round((paydayAmount * rule.percent) / 100);
-}
-

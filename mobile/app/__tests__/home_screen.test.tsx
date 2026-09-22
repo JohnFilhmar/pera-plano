@@ -300,7 +300,7 @@ test("THE WATCHING CARD CLEARS ONCE A TRANSACTION LANDS, WITHOUT A MANUAL PULL",
   const tx = await spend(200_000, systemClock.now() - 60_000);
   await emitAppEvent("ledger:committed", { transactionId: tx.id });
 
-  await waitFor(() => expect(screen.queryByTestId("home-empty")).toBeNull(), {
+  await waitFor(() => expect(screen.queryByTestId("home-empty")).not.toBeOnTheScreen(), {
     timeout: 30_000,
   });
 });

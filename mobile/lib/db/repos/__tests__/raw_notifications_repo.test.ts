@@ -9,6 +9,7 @@ import { closeDatabase } from "@/lib/db/database";
 import { createWallet } from "../wallets_repo";
 import { enqueue } from "../review_queue_repo";
 import {
+  discardRawCaptureBody,
   findReplayCapture,
   getRawCapture,
   getRawCaptureExpiry,
@@ -18,6 +19,7 @@ import {
   listUnprocessedRawCaptures,
   purgeExpiredRawCaptures,
   RAW_CAPTURE_TTL_MS,
+  storeDiscardedCapture,
   storeRawCapture,
 } from "../raw_notifications_repo";
 import { freshDb } from "@/test_support/db";
@@ -464,4 +466,117 @@ test("findReplayCapture never matches a capture against itself", async () => {
   await storeRawCapture(stored, NOW);
 
   expect(await findReplayCapture(stored, WINDOW_MS)).toBe(null);
+});
+
+// ---------------------------------------------------------------------------
+// The minimal record (GAP-107, owner decision 2026-09-09). A capture the router
+// judges not money-related keeps its app and its times and none of its text.
+// It is settled rather than stranded: nothing is left that any stage could
+// read, so the recovery sweep has nothing to come back for.
+// ---------------------------------------------------------------------------
+
+const CHAT_SLOT = "com.friend.chat|7|thread-ana|0";
+
+function chat(overrides: Partial<RawCapture> = {}): RawCapture {
+  return capture({
+    id: "cap-chat",
+    packageName: "com.friend.chat",
+    title: "Ana",
+    text: "Kain tayo mamaya!",
+    subText: null,
+    bigText: null,
+    notificationKey: CHAT_SLOT,
+    ...overrides,
+  });
+}
+
+test("storeDiscardedCapture keeps the app and the times and none of the text", async () => {
+  const original = chat();
+
+  expect(await storeDiscardedCapture(original, NOW)).toBe("cap-chat");
+
+  expect(await getRawCapture("cap-chat")).toEqual({
+    ...original,
+    title: null,
+    text: null,
+    subText: null,
+    bigText: null,
+    // The slot key goes with the text. Its tag is the posting app's own label
+    // for the notification, and a chat app puts the conversation there.
+    notificationKey: null,
+  });
+  // The same thirty days as every other row, counted from the store.
+  expect(await getRawCaptureExpiry("cap-chat")).toBe(NOW + THIRTY_DAYS_MS);
+});
+
+test("a discarded capture is settled: the recovery sweep never offers it", async () => {
+  await storeDiscardedCapture(chat(), NOW);
+  await storeRawCapture(capture({ id: "cap-stranded" }), NOW);
+
+  // Nothing points at either row. Only the one with text is work; re-running
+  // the other on every launch for thirty days is the churn GAP-048 removed for
+  // muted packages, and it would crowd real stranded captures out of the limit.
+  const rows = await listUnprocessedRawCaptures(NOW, 10);
+  expect(rows.map((row) => row.id)).toEqual(["cap-stranded"]);
+});
+
+test("listRawCaptures says which rows kept their text", async () => {
+  await storeRawCapture(capture({ id: "kept", capturedAt: NOW - 1_000 }), NOW);
+  await storeDiscardedCapture(chat({ id: "trimmed", capturedAt: NOW }), NOW);
+
+  const rows = await listRawCaptures(NOW);
+
+  expect(rows.map((row) => [row.id, row.bodyDiscarded])).toEqual([
+    ["trimmed", true],
+    ["kept", false],
+  ]);
+});
+
+test("discardRawCaptureBody strips a stored capture nothing points at, and settles it", async () => {
+  // A row an earlier build's drain stored whole before routing it.
+  await storeRawCapture(chat({ id: "cap-legacy" }), NOW - 1_000);
+
+  await discardRawCaptureBody("cap-legacy", NOW);
+
+  expect(await getRawCapture("cap-legacy")).toEqual({
+    ...chat({ id: "cap-legacy" }),
+    title: null,
+    text: null,
+    subText: null,
+    bigText: null,
+    notificationKey: null,
+  });
+  expect(await listUnprocessedRawCaptures(NOW, 10)).toEqual([]);
+  // Discarding is not a store: the deletion date the Privacy centre shows for
+  // this row does not move.
+  expect(await getRawCaptureExpiry("cap-legacy")).toBe(NOW - 1_000 + THIRTY_DAYS_MS);
+});
+
+test("discardRawCaptureBody leaves a capture a committed transaction points at untouched", async () => {
+  const wallet = await createWallet({ name: "GCash" });
+  await storeRawCapture(capture({ id: "cap-committed" }), NOW);
+  await insertTransaction({
+    walletId: wallet.id,
+    categoryId: CATEGORY_ID,
+    amount: 50000,
+    direction: "out",
+    occurredAt: NOW,
+    source: "notification",
+    confidence: 0.95,
+    rawNotificationId: "cap-committed",
+  });
+
+  await discardRawCaptureBody("cap-committed", NOW);
+
+  // "Why was this recorded?" shows this text for that transaction.
+  expect(await getRawCapture("cap-committed")).toEqual(capture({ id: "cap-committed" }));
+});
+
+test("the database refuses text on a row whose body was discarded", async () => {
+  await storeDiscardedCapture(chat(), NOW);
+
+  // The promise is held by the schema, not by every later writer remembering it.
+  await expect(
+    db.runAsync("UPDATE raw_notifications SET text = 'Kain tayo mamaya!' WHERE id = 'cap-chat'"),
+  ).rejects.toThrow(/CHECK/i);
 });

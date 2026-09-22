@@ -115,7 +115,7 @@ test("A SCOPE THE TIER CAN NO LONGER HONOR EXPLAINS ITSELF RATHER THAN FAILING S
     fireEvent.press(screen.getByTestId("range-picker-year-prev"));
   }
   fireEvent.press(screen.getByTestId(`range-picker-month-${LAST_MONTH}`));
-  await waitFor(() => expect(screen.queryByTestId("reports-truncated-notice")).toBeNull(), {
+  await waitFor(() => expect(screen.queryByTestId("reports-truncated-notice")).not.toBeOnTheScreen(), {
     timeout: 30_000,
   });
 

@@ -9,7 +9,7 @@ import { closeDatabase } from "@/lib/db/database";
 import type { SQLiteDatabase } from "@/lib/db/database";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { insertTransaction } from "@/lib/db/repos/transactions_repo";
-import { createWallet, getWallet } from "@/lib/db/repos/wallets_repo";
+import { archiveWallet, createWallet, getWallet } from "@/lib/db/repos/wallets_repo";
 import { freshDb } from "@/test_support/db";
 import type { Wallet } from "@/types/domain";
 
@@ -21,7 +21,9 @@ import {
   unarchiveGoal,
   GoalNotFoundError,
   getGoal,
+  listGoalMilestoneStates,
   listGoals,
+  raiseGoalMilestone,
   updateGoal,
   WalletAlreadyHasGoalError,
   LinkedWalletNotFoundError,
@@ -445,3 +447,40 @@ async function fundWallet(walletId: string, amount: number): Promise<void> {
     confidence: 1,
   });
 }
+
+// ---------------------------------------------------------------------------
+// Milestones (GAP-055, goals rule 12). The column is a high-water mark: the
+// repository only ever raises it, and the pass in
+// lib/goals/goal_milestone_subscriber.ts decides when.
+// ---------------------------------------------------------------------------
+test("a new goal starts at the milestone its wallet already meets, so old progress is never announced", async () => {
+  await fundWallet(savings.id, 300000); // ₱3,000 of ₱5,000: 60%
+  const goal = await createGoal({ name: "Phone", targetAmount: 500000, linkedWalletId: savings.id });
+
+  expect(await listGoalMilestoneStates()).toEqual([
+    { goalId: goal.id, goalName: "Phone", targetAmount: 500000, balance: 300000, milestoneReached: 50 },
+  ]);
+});
+
+test("raiseGoalMilestone only ever raises, and says whether it did", async () => {
+  const goal = await createGoal({ name: "Phone", targetAmount: 500000, linkedWalletId: savings.id });
+
+  expect(await raiseGoalMilestone(goal.id, 50)).toBe(true);
+  // A second pass racing the first loses, which is what stops a double post.
+  expect(await raiseGoalMilestone(goal.id, 50)).toBe(false);
+  expect(await raiseGoalMilestone(goal.id, 25)).toBe(false);
+
+  const [state] = await listGoalMilestoneStates();
+  expect(state.milestoneReached).toBe(50);
+});
+
+test("listGoalMilestoneStates leaves out deleted goals and goals whose wallet is archived", async () => {
+  const live = await createGoal({ name: "Phone", targetAmount: 500000, linkedWalletId: savings.id });
+  const deleted = await createGoal({ name: "Trip", targetAmount: 500000, linkedWalletId: otherSavings.id });
+  await archiveGoal(deleted.id);
+  // Rule 18: a goal on an archived wallet is paused, its progress frozen.
+  await createGoal({ name: "Tuition", targetAmount: 500000, linkedWalletId: spending.id });
+  await archiveWallet(spending.id);
+
+  expect((await listGoalMilestoneStates()).map((state) => state.goalId)).toEqual([live.id]);
+});

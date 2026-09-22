@@ -101,7 +101,11 @@ import { closeDatabase } from "@/lib/db/database";
 import { getSetting, setSetting } from "@/lib/db/repos/app_settings_repo";
 import { seedDefaultCategories } from "@/lib/db/repos/categories_repo";
 import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
-import { storeRawCapture, RAW_CAPTURE_TTL_MS } from "@/lib/db/repos/raw_notifications_repo";
+import {
+  storeDiscardedCapture,
+  storeRawCapture,
+  RAW_CAPTURE_TTL_MS,
+} from "@/lib/db/repos/raw_notifications_repo";
 import { listDataTableNames } from "@/lib/db/table_names";
 import { exportAllData } from "@/lib/privacy/data_export";
 import { queryClient as appQueryClient } from "@/lib/query_client";
@@ -587,6 +591,31 @@ test("the captured list renders real rows newest first", async () => {
   expect(screen.getByTestId("captured-item-text-older")).toHaveTextContent(/You sent PHP 100 to Juan/);
 });
 
+test("a capture stored without its text renders the note, read back from the database", async () => {
+  // GAP-107, end to end: the flag travels from `raw_notifications` through
+  // the hook and the screen's own mapping into the card.
+  await storeDiscardedCapture(
+    {
+      id: "trimmed",
+      packageName: "com.example.chat",
+      title: "Ana",
+      text: "Kain tayo mamaya!",
+      subText: null,
+      bigText: null,
+      postedAt: NOW,
+      capturedAt: NOW,
+    },
+    NOW,
+  );
+
+  await renderPrivacyScreen();
+
+  await waitFor(() => expect(screen.getByTestId("captured-item-trimmed")).toBeTruthy());
+  const body = screen.getByTestId("captured-item-text-trimmed");
+  expect(body).toHaveTextContent(/kept only the app and the time/);
+  expect(body).not.toHaveTextContent(/Kain tayo/);
+});
+
 test("the countdown renders the correct remaining days for a pinned clock", async () => {
   // Stored 18 days before NOW: the 30-day TTL puts its expiry 12 days from
   // NOW — the exact fixture transaction_detail.test.tsx uses for the same
@@ -841,7 +870,12 @@ test("the erase runs the lock context's full start-over — key material include
   // lock gate. Nothing else is asserted about the destination here — that
   // belongs to the lock context's suite, not the screen's.
   expect(mockReplace).not.toHaveBeenCalled();
-  expect(screen.getByTestId("wipe-confirm-erase").props.accessibilityState.busy).toBe(false);
+  // WAITED FOR, NOT READ. The spinner clears in the handler's `finally`, after
+  // the call the wait above saw, and at nine workers the render that shows it
+  // landed after a bare read (GAP-052).
+  await waitFor(() =>
+    expect(screen.getByTestId("wipe-confirm-erase").props.accessibilityState.busy).toBe(false),
+  );
 });
 
 test("cancelling the first confirmation wipes nothing", async () => {

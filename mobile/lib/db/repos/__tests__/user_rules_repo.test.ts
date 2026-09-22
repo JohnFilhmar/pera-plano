@@ -442,3 +442,44 @@ test("A ROW OF AN UNKNOWN KIND IS SKIPPED, NOT THROWN ON", async () => {
     warn.mockRestore();
   }
 });
+
+// ---------------------------------------------------------------------------
+// Every field is validated, not cast (GAP-057). The hand checks above covered
+// the kinds and fields a crash had already been seen on; a known kind missing
+// its own field still decoded, and was then cast into a UserRuleAction.
+// ---------------------------------------------------------------------------
+test("an action missing the field its kind needs is dropped, not cast", async () => {
+  // A set-category rule with no category decoded, and then carried `undefined`
+  // into insertTransaction's NOT NULL category column on every match.
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    await insertRawRule({
+      id: "rule_no_category",
+      matcherJson: '{"merchantPattern":"SHOPEE"}',
+      actionJson: '{"kind":"set-category"}',
+    });
+
+    expect(await listUserRules()).toEqual([]);
+    expect(warn).toHaveBeenCalled();
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+test("a matcher field of the wrong type is dropped, not cast", async () => {
+  // `merchantPattern` is trimmed at match time; a number there throws inside
+  // the categorizer instead of failing this one rule.
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    await insertRawRule({
+      id: "rule_numeric_pattern",
+      matcherJson: '{"merchantPattern":42}',
+      actionJson: '{"kind":"set-category","categoryId":"cat_shopping"}',
+    });
+
+    expect(await listUserRules()).toEqual([]);
+    expect(warn).toHaveBeenCalled();
+  } finally {
+    warn.mockRestore();
+  }
+});

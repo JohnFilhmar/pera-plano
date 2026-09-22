@@ -1020,9 +1020,12 @@ describe("020_loan_amount_borrowed upgrades a real version-19 database in place"
     const before = await db.getAllAsync<{ name: string }>("PRAGMA table_info(loans)");
     expect(before.map((c) => c.name)).not.toContain("amount_borrowed");
 
-    // 020 ALONE. A longer list would mean something earlier was replayed over
-    // live rows; an empty one would mean the registry never got version 20.
-    expect(await runMigrations(db)).toEqual([20]);
+    // 020 AND WHATEVER FOLLOWS IT, nothing at or below 019. An earlier version
+    // in the list would mean something was replayed over live rows; a list not
+    // starting at 20 would mean the registry never got it.
+    const applied = await runMigrations(db);
+    expect(applied[0]).toBe(20);
+    expect(applied).toEqual(MIGRATIONS.filter((m) => m.version > 19).map((m) => m.version));
 
     const after = await db.getAllAsync<{ name: string }>("PRAGMA table_info(loans)");
     expect(after.map((c) => c.name)).toContain("amount_borrowed");
@@ -1122,5 +1125,230 @@ describe("020_loan_amount_borrowed upgrades a real version-19 database in place"
     expect(recorded).toEqual(MIGRATIONS.map((m) => ({ version: m.version, name: m.name })));
     expect(await runMigrations(db)).toEqual([]);
     expect((await db.getFirstAsync<{ n: number }>("SELECT COUNT(*) AS n FROM loans"))?.n).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 021_raw_notification_body_discarded: the minimal record (GAP-107, owner
+// decision 2026-09-09). `raw_notifications` gains one nullable column. A row
+// already on the device keeps its text and reads NULL, because nothing about
+// it was discarded; the recovery sweep strips such a row later only if the
+// router still calls it not money-related.
+// ---------------------------------------------------------------------------
+describe("021_raw_notification_body_discarded upgrades a real version-20 database in place", () => {
+  /** Brings a database to 020 and seeds a capture the old drain stored whole. */
+  async function atVersionTwentyWithCapture(
+    db: Awaited<ReturnType<typeof getDatabase>>,
+  ): Promise<void> {
+    const upToTwenty = MIGRATIONS.filter((m) => m.version <= 20);
+    expect(upToTwenty.length).toBe(20);
+    await runMigrations(db, upToTwenty);
+
+    await db.runAsync(
+      `INSERT INTO raw_notifications (id, package_name, title, text, sub_text, big_text,
+         posted_at, captured_at, expires_at, notification_key)
+       VALUES ('cap_v20', 'com.friend.chat', 'Ana', 'Kain tayo mamaya!', NULL, NULL, ?, ?, ?, NULL)`,
+      [V1_TIMESTAMP, V1_TIMESTAMP, V1_TIMESTAMP + 30 * 24 * 60 * 60 * 1000],
+    );
+  }
+
+  test("a database at 020, already holding a capture, gains the column and keeps the text", async () => {
+    const db = await getDatabase();
+    await atVersionTwentyWithCapture(db);
+
+    const before = await db.getAllAsync<{ name: string }>("PRAGMA table_info(raw_notifications)");
+    expect(before.map((c) => c.name)).not.toContain("body_discarded_at");
+
+    const applied = await runMigrations(db);
+    expect(applied[0]).toBe(21);
+    expect(applied).toEqual(MIGRATIONS.filter((m) => m.version > 20).map((m) => m.version));
+
+    const after = await db.getAllAsync<{ name: string }>("PRAGMA table_info(raw_notifications)");
+    expect(after.map((c) => c.name)).toContain("body_discarded_at");
+
+    const row = await db.getFirstAsync<{ text: string | null; body_discarded_at: number | null }>(
+      "SELECT text, body_discarded_at FROM raw_notifications WHERE id = 'cap_v20'",
+    );
+    expect(row).toEqual({ text: "Kain tayo mamaya!", body_discarded_at: null });
+  });
+
+  test("a row marked discarded cannot carry text, and one with text cannot be marked", async () => {
+    const db = await getDatabase();
+    await atVersionTwentyWithCapture(db);
+    await runMigrations(db);
+
+    await expect(
+      db.runAsync("UPDATE raw_notifications SET body_discarded_at = ? WHERE id = 'cap_v20'", [
+        V1_TIMESTAMP,
+      ]),
+    ).rejects.toThrow(/CHECK/i);
+    await expect(
+      db.runAsync(
+        `INSERT INTO raw_notifications (id, package_name, title, text, sub_text, big_text,
+           posted_at, captured_at, expires_at, notification_key, body_discarded_at)
+         VALUES ('cap_new', 'com.friend.chat', NULL, NULL, NULL, NULL, ?, ?, ?, 'com.friend.chat|7|x|0', ?)`,
+        [V1_TIMESTAMP, V1_TIMESTAMP, V1_TIMESTAMP, V1_TIMESTAMP],
+      ),
+    ).rejects.toThrow(/CHECK/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 022_goal_milestone: the high-water mark goals rule 12 needs (GAP-055). Every
+// goal already on a device starts at the milestone its wallet already meets, or
+// the first commit after the update would announce weeks-old progress.
+// ---------------------------------------------------------------------------
+describe("022_goal_milestone upgrades a real version-21 database in place", () => {
+  /** Brings a database to 021 with three goals at 10%, 60% and 110% of target. */
+  async function atVersionTwentyOneWithGoals(
+    db: Awaited<ReturnType<typeof getDatabase>>,
+  ): Promise<void> {
+    const upToTwentyOne = MIGRATIONS.filter((m) => m.version <= 21);
+    expect(upToTwentyOne.length).toBe(21);
+    await runMigrations(db, upToTwentyOne);
+
+    for (const [id, balance] of [
+      ["w_low", 50_000],
+      ["w_mid", 300_000],
+      ["w_full", 550_000],
+    ] as const) {
+      await db.runAsync(
+        `INSERT INTO wallets (id, name, balance, currency, is_archived, created_at, updated_at)
+         VALUES (?, ?, ?, 'PHP', 0, ?, ?)`,
+        [id, id, balance, V1_TIMESTAMP, V1_TIMESTAMP],
+      );
+      await db.runAsync(
+        `INSERT INTO goals (id, name, target_amount, target_date, linked_wallet_id,
+           contribution_rule_json, archived_at, created_at, updated_at)
+         VALUES (?, ?, 500000, NULL, ?, NULL, NULL, ?, ?)`,
+        [`g_${id}`, `goal ${id}`, id, V1_TIMESTAMP, V1_TIMESTAMP],
+      );
+    }
+  }
+
+  test("each existing goal starts at the milestone its wallet already meets", async () => {
+    const db = await getDatabase();
+    await atVersionTwentyOneWithGoals(db);
+
+    const applied = await runMigrations(db);
+    expect(applied[0]).toBe(22);
+    expect(applied).toEqual(MIGRATIONS.filter((m) => m.version > 21).map((m) => m.version));
+
+    const rows = await db.getAllAsync<{ id: string; milestone_reached: number }>(
+      "SELECT id, milestone_reached FROM goals ORDER BY id",
+    );
+    expect(rows).toEqual([
+      { id: "g_w_full", milestone_reached: 100 },
+      { id: "g_w_low", milestone_reached: 0 },
+      { id: "g_w_mid", milestone_reached: 50 },
+    ]);
+  });
+
+  test("the column holds only the five values rule 12 names", async () => {
+    const db = await getDatabase();
+    await atVersionTwentyOneWithGoals(db);
+    await runMigrations(db);
+
+    await expect(
+      db.runAsync("UPDATE goals SET milestone_reached = 30 WHERE id = 'g_w_low'"),
+    ).rejects.toThrow(/CHECK/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 023_contribution_decisions: what the user decided about one payday's planned
+// goal contribution (GAP-056, goals rule 14). Recorded or skipped, keyed by goal
+// and payday, because every other state is derived from the ledger.
+// ---------------------------------------------------------------------------
+describe("023_contribution_decisions", () => {
+  test("a database at 022 gains the table and nothing else changes", async () => {
+    const db = await getDatabase();
+    await runMigrations(db, MIGRATIONS.filter((m) => m.version <= 22));
+
+    const applied = await runMigrations(db);
+    expect(applied[0]).toBe(23);
+    expect(applied).toEqual(MIGRATIONS.filter((m) => m.version > 22).map((m) => m.version));
+
+    const columns = await db.getAllAsync<{ name: string }>(
+      "PRAGMA table_info(contribution_decisions)",
+    );
+    expect(columns.map((c) => c.name)).toEqual(["goal_id", "payday_date", "decision", "decided_at"]);
+  });
+
+  test("a decision is recorded or skipped and nothing else, once per goal and payday", async () => {
+    const db = await freshDb();
+    await db.runAsync(
+      `INSERT INTO wallets (id, name, balance, currency, is_archived, created_at, updated_at)
+       VALUES ('w_gsave', 'GSave', 0, 'PHP', 0, ?, ?)`,
+      [V1_TIMESTAMP, V1_TIMESTAMP],
+    );
+    await db.runAsync(
+      `INSERT INTO goals (id, name, target_amount, linked_wallet_id, created_at, updated_at)
+       VALUES ('g_fund', 'Fund', 500000, 'w_gsave', ?, ?)`,
+      [V1_TIMESTAMP, V1_TIMESTAMP],
+    );
+
+    await expect(
+      db.runAsync(
+        "INSERT INTO contribution_decisions (goal_id, payday_date, decision, decided_at) VALUES ('g_fund', '2026-08-10', 'later', 0)",
+      ),
+    ).rejects.toThrow(/CHECK/i);
+
+    await db.runAsync(
+      "INSERT INTO contribution_decisions (goal_id, payday_date, decision, decided_at) VALUES ('g_fund', '2026-08-10', 'skipped', 0)",
+    );
+    await expect(
+      db.runAsync(
+        "INSERT INTO contribution_decisions (goal_id, payday_date, decision, decided_at) VALUES ('g_fund', '2026-08-10', 'recorded', 0)",
+      ),
+    ).rejects.toThrow(/UNIQUE|PRIMARY/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 024_review_resolution: how a card was answered (GAP-057). A card resolved
+// before this migration keeps NULL, because nothing recorded the answer.
+// ---------------------------------------------------------------------------
+describe("024_review_resolution", () => {
+  async function atVersionTwentyThreeWithResolvedCard(
+    db: Awaited<ReturnType<typeof getDatabase>>,
+  ): Promise<void> {
+    await runMigrations(db, MIGRATIONS.filter((m) => m.version <= 23));
+    await db.runAsync(
+      `INSERT INTO review_queue_items (id, kind, payload_json, raw_notification_id, created_at, expires_at, resolved_at)
+       VALUES ('rq_old', 'low-confidence', '{}', NULL, ?, ?, ?)`,
+      [V1_TIMESTAMP, V1_TIMESTAMP + 1, V1_TIMESTAMP],
+    );
+    await db.runAsync(
+      `INSERT INTO review_queue_items (id, kind, payload_json, raw_notification_id, created_at, expires_at, resolved_at)
+       VALUES ('rq_open', 'low-confidence', '{}', NULL, ?, ?, NULL)`,
+      [V1_TIMESTAMP, V1_TIMESTAMP + 1],
+    );
+  }
+
+  test("a database at 023 gains the column, and a card resolved before it reads NULL", async () => {
+    const db = await getDatabase();
+    await atVersionTwentyThreeWithResolvedCard(db);
+
+    const applied = await runMigrations(db);
+    expect(applied[0]).toBe(24);
+
+    const row = await db.getFirstAsync<{ resolved_at: number; resolution: string | null }>(
+      "SELECT resolved_at, resolution FROM review_queue_items WHERE id = 'rq_old'",
+    );
+    expect(row).toEqual({ resolved_at: V1_TIMESTAMP, resolution: null });
+  });
+
+  test("a resolution needs a resolved time, and is one of the two answers", async () => {
+    const db = await getDatabase();
+    await atVersionTwentyThreeWithResolvedCard(db);
+    await runMigrations(db);
+
+    await expect(
+      db.runAsync("UPDATE review_queue_items SET resolution = 'dismissed' WHERE id = 'rq_open'"),
+    ).rejects.toThrow(/CHECK/i);
+    await expect(
+      db.runAsync("UPDATE review_queue_items SET resolution = 'maybe' WHERE id = 'rq_old'"),
+    ).rejects.toThrow(/CHECK/i);
   });
 });
