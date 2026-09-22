@@ -14,11 +14,10 @@
 // sketch was drafted from the ingest pipeline's vocabulary without
 // reconciling it against what Tasks 7-8 actually shipped, and the
 // coordinator ruled to implement against the shipped types as-is (see
-// task-13-report.md, "Escalation"). The table has no column to record which
-// resolution outcome closed an item — only `resolved_at` — because that
-// evidence lives in whatever row the caller's own action produces (the
-// Transaction, the TransferLink, the UserRule); this repo's `resolve` only
-// marks the item closed.
+// task-13-report.md, "Escalation"). Migration 024 gave the table a
+// `resolution` column, so it now records which of the two answers closed an
+// item (GAP-057). The richer evidence still lives in whatever row the caller's
+// own action produces: the Transaction, the TransferLink, the UserRule.
 import { REVIEW_KINDS } from "@/constants/review_kinds";
 import { getDatabase } from "@/lib/db/database";
 import { reviewQueueItemToRow, rowToReviewQueueItem, type ReviewQueueItemRow } from "@/lib/db/mappers";
@@ -421,16 +420,14 @@ export async function countOpen(): Promise<number> {
 }
 
 /**
- * Marks an item resolved (rule 3). `resolution` is accepted for the pinned
- * contract §3 signature but not persisted — see the file-header note on why
- * there is no column for it.
+ * Marks an item resolved (rule 3), and records which answer resolved it
+ * (migration 024, GAP-057).
  *
  * Idempotent by construction: resolving an id that is missing or already
  * resolved is a silent no-op — never an error, never a second write — so a
  * double-tap in the triage UI can't overwrite the original `resolved_at`.
  */
 export async function resolve(id: string, resolution: ReviewResolution): Promise<void> {
-  void resolution;
   const db = await getDatabase();
   const existing = await db.getFirstAsync<{ resolved_at: number | null }>(
     "SELECT resolved_at FROM review_queue_items WHERE id = ?",
@@ -439,7 +436,11 @@ export async function resolve(id: string, resolution: ReviewResolution): Promise
   if (!existing || existing.resolved_at !== null) {
     return;
   }
-  await db.runAsync("UPDATE review_queue_items SET resolved_at = ? WHERE id = ?", [Date.now(), id]);
+  await db.runAsync("UPDATE review_queue_items SET resolved_at = ?, resolution = ? WHERE id = ?", [
+    Date.now(),
+    resolution,
+    id,
+  ]);
 }
 
 /**
@@ -474,7 +475,9 @@ export async function resolve(id: string, resolution: ReviewResolution): Promise
 export async function reopen(id: string): Promise<boolean> {
   const db = await getDatabase();
   const result = await db.runAsync(
-    "UPDATE review_queue_items SET resolved_at = NULL WHERE id = ? AND resolved_at IS NOT NULL",
+    // Both columns, together: migration 024's CHECK refuses a resolution on a
+    // card that is open again.
+    "UPDATE review_queue_items SET resolved_at = NULL, resolution = NULL WHERE id = ? AND resolved_at IS NOT NULL",
     [id],
   );
   return result.changes > 0;

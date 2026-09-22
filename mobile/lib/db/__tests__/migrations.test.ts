@@ -1304,3 +1304,51 @@ describe("023_contribution_decisions", () => {
     ).rejects.toThrow(/UNIQUE|PRIMARY/i);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 024_review_resolution: how a card was answered (GAP-057). A card resolved
+// before this migration keeps NULL, because nothing recorded the answer.
+// ---------------------------------------------------------------------------
+describe("024_review_resolution", () => {
+  async function atVersionTwentyThreeWithResolvedCard(
+    db: Awaited<ReturnType<typeof getDatabase>>,
+  ): Promise<void> {
+    await runMigrations(db, MIGRATIONS.filter((m) => m.version <= 23));
+    await db.runAsync(
+      `INSERT INTO review_queue_items (id, kind, payload_json, raw_notification_id, created_at, expires_at, resolved_at)
+       VALUES ('rq_old', 'low-confidence', '{}', NULL, ?, ?, ?)`,
+      [V1_TIMESTAMP, V1_TIMESTAMP + 1, V1_TIMESTAMP],
+    );
+    await db.runAsync(
+      `INSERT INTO review_queue_items (id, kind, payload_json, raw_notification_id, created_at, expires_at, resolved_at)
+       VALUES ('rq_open', 'low-confidence', '{}', NULL, ?, ?, NULL)`,
+      [V1_TIMESTAMP, V1_TIMESTAMP + 1],
+    );
+  }
+
+  test("a database at 023 gains the column, and a card resolved before it reads NULL", async () => {
+    const db = await getDatabase();
+    await atVersionTwentyThreeWithResolvedCard(db);
+
+    const applied = await runMigrations(db);
+    expect(applied[0]).toBe(24);
+
+    const row = await db.getFirstAsync<{ resolved_at: number; resolution: string | null }>(
+      "SELECT resolved_at, resolution FROM review_queue_items WHERE id = 'rq_old'",
+    );
+    expect(row).toEqual({ resolved_at: V1_TIMESTAMP, resolution: null });
+  });
+
+  test("a resolution needs a resolved time, and is one of the two answers", async () => {
+    const db = await getDatabase();
+    await atVersionTwentyThreeWithResolvedCard(db);
+    await runMigrations(db);
+
+    await expect(
+      db.runAsync("UPDATE review_queue_items SET resolution = 'dismissed' WHERE id = 'rq_open'"),
+    ).rejects.toThrow(/CHECK/i);
+    await expect(
+      db.runAsync("UPDATE review_queue_items SET resolution = 'maybe' WHERE id = 'rq_old'"),
+    ).rejects.toThrow(/CHECK/i);
+  });
+});

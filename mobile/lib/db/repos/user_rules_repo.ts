@@ -29,6 +29,8 @@
 // kinds are three ACTION kinds — `set-category`, `set-wallet`, `ignore`. The
 // filter below is therefore keyed on `UserRuleAction["kind"]`, which covers all
 // six shipped actions rather than the three the plan happened to name.
+import { z } from "zod";
+
 import { getDatabase } from "@/lib/db/database";
 import { newId } from "@/lib/ids";
 import type { EpochMs, UserRule, UserRuleAction, UserRuleMatcher } from "@/types/domain";
@@ -67,16 +69,39 @@ type UserRuleRow = {
   updated_at: number;
 };
 
-/** Every action kind types/domain.ts ships, for validating what came off disk. */
-const ACTION_KINDS: ReadonlySet<string> = new Set<UserRuleAction["kind"]>([
-  "set-category",
-  "set-wallet",
-  "set-merchant",
-  "mark-transfer",
-  "mark-loan-payment",
-  "suppress-recurring",
-  "ignore",
-]);
+/**
+ * The matcher column's shape, validated field by field (GAP-057). Unknown keys
+ * are dropped rather than refused: they mean nothing to `matcherApplies`.
+ */
+const userRuleMatcherSchema = z.object({
+  providerKey: z.string().optional(),
+  merchantPattern: z.string().optional(),
+  direction: z.enum(["in", "out"]).optional(),
+  amountMin: z.number().optional(),
+  amountMax: z.number().optional(),
+}) satisfies z.ZodType<UserRuleMatcher>;
+
+/**
+ * The action column's shape: one variant per kind types/domain.ts ships, each
+ * carrying the field that kind acts on (GAP-057).
+ *
+ * `mark-loan-payment`'s loan id has to be non-blank as well as present. `""`
+ * is not an id any loan has ever had, and a rule that matches transactions and
+ * points at nothing is the failure docs/09-v2-backlog.md §2b.4 calls worse
+ * than the rule's absence.
+ */
+const userRuleActionSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("set-category"), categoryId: z.string() }),
+  z.object({ kind: z.literal("set-wallet"), walletId: z.string() }),
+  z.object({ kind: z.literal("set-merchant"), merchant: z.string() }),
+  z.object({ kind: z.literal("mark-transfer"), counterpartWalletId: z.string() }),
+  z.object({
+    kind: z.literal("mark-loan-payment"),
+    loanId: z.string().refine((loanId) => loanId.trim() !== ""),
+  }),
+  z.object({ kind: z.literal("suppress-recurring"), merchant: z.string() }),
+  z.object({ kind: z.literal("ignore") }),
+]) satisfies z.ZodType<UserRuleAction>;
 
 /** `JSON.parse` that answers `undefined` instead of throwing. */
 function parseJson(text: string): unknown {
@@ -85,10 +110,6 @@ function parseJson(text: string): unknown {
   } catch {
     return undefined;
   }
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**
@@ -106,63 +127,36 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * once, with nothing on screen to explain it. Dropping the single bad row costs
  * that one rule and keeps the rest replaying.
  *
- * `null` and arrays are rejected alongside parse failures: `JSON.parse("null")`
- * succeeds, and a null matcher only fails later, at match time, inside the
- * pipeline. An action is additionally required to carry a known `kind` — a
- * kindless action reaches the categorizer's `action.kind` comparison as
- * `undefined` and matches nothing, which looks exactly like a rule that simply
- * never fires.
+ * EVERY FIELD IS VALIDATED, NOT CAST (GAP-057). The checks here used to cover
+ * what a crash had already been seen on, and then cast the rest. A known kind
+ * missing its own field still decoded, and a `set-category` rule with no
+ * category handed insertTransaction `undefined` on every capture it matched.
+ * The schemas above refuse any row the domain types cannot describe: `null`,
+ * an array, an unknown kind, a missing field, a field of the wrong type.
+ * REFUSED, NEVER DEFAULTED: a default would be a guess about where the user's
+ * money went, repeated on every notification the rule matched.
  *
  * The corruption is logged rather than swallowed: a rule that silently stops
  * applying is its own debugging nightmare, and this is the one place the app
  * can notice.
  */
 function decodeRow(row: UserRuleRow): UserRule | null {
-  const matcher = parseJson(row.matcher_json);
-  if (!isPlainObject(matcher)) {
+  const matcher = userRuleMatcherSchema.safeParse(parseJson(row.matcher_json));
+  if (!matcher.success) {
     console.warn(`user_rules_repo: unusable matcher_json on rule ${row.id} — skipping the rule`);
     return null;
   }
 
-  const action = parseJson(row.action_json);
-  if (!isPlainObject(action) || typeof action.kind !== "string" || !ACTION_KINDS.has(action.kind)) {
+  const action = userRuleActionSchema.safeParse(parseJson(row.action_json));
+  if (!action.success) {
     console.warn(`user_rules_repo: unusable action_json on rule ${row.id} — skipping the rule`);
-    return null;
-  }
-
-  // REJECTED, NOT DEFAULTED. A default here would be a guess about where the
-  // user's money went, and the rule would then silently propose the wrong
-  // wallet on every future notification it matched. Dropping the row costs one
-  // rule; guessing costs the user's trust in every card it produces.
-  if (action.kind === "mark-transfer" && typeof action.counterpartWalletId !== "string") {
-    console.warn(
-      `user_rules_repo: mark-transfer action on rule ${row.id} has no counterpartWalletId — skipping the rule`,
-    );
-    return null;
-  }
-
-  // THE SAME REFUSAL, ON THE OTHER PAIRING RULE. `mark-loan-payment` names a
-  // loan the matcher cannot describe, so a missing or blank `loanId` leaves a
-  // rule that matches transactions and points at nothing: it would sit in the
-  // settings list looking as though the user's confirmation had been learned
-  // while `loans_service` silently found no loan to raise. Blank is rejected
-  // alongside missing — `""` is not an id any loan has ever had, and a rule
-  // that can never fire is the failure docs/09-v2-backlog.md §2b.4 calls worse
-  // than the rule's absence.
-  if (
-    action.kind === "mark-loan-payment" &&
-    (typeof action.loanId !== "string" || action.loanId.trim() === "")
-  ) {
-    console.warn(
-      `user_rules_repo: mark-loan-payment action on rule ${row.id} names no loan — skipping the rule`,
-    );
     return null;
   }
 
   return {
     id: row.id,
-    matcher: matcher as UserRuleMatcher,
-    action: action as unknown as UserRuleAction,
+    matcher: matcher.data,
+    action: action.data,
     priority: row.priority,
     isEnabled: row.is_enabled === 1,
     createdFrom: row.created_from,

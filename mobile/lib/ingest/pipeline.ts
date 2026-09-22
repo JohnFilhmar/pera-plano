@@ -872,10 +872,14 @@ async function commit(
   recentRows: Transaction[],
   bundle: RulesetBundle,
 ): Promise<PipelineOutcome> {
+  // `auto_commit` requires a resolved wallet (`walletId === null` is one of the
+  // gate's hard routes), so this cannot happen. Thrown rather than cast, so a
+  // gate change that broke that promise fails here instead of writing a NULL
+  // wallet (GAP-057).
+  if (event.walletId === null) throw new Error("commit reached without a resolved wallet");
+  const walletId = event.walletId;
   const row = await insertTransaction({
-    // `auto_commit` requires a resolved wallet, so this cannot be null here —
-    // `walletId === null` is one of the gate's hard routes.
-    walletId: event.walletId as string,
+    walletId,
     categoryId: categoryId === "" ? UNCATEGORIZED_ID : categoryId,
     amount: event.amount,
     direction: event.direction,

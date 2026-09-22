@@ -1,5 +1,7 @@
 // lib/db/mappers.ts — row (snake_case) <-> domain (camelCase). The foundation
 // covers the aggregates its repos use; feature plans extend THIS file for theirs.
+import { z } from "zod";
+
 import type {
   Category,
   Limit,
@@ -202,11 +204,44 @@ export type ReviewQueueItemRow = {
   resolved_at: number | null;
 };
 
+/**
+ * The review payload column's shape (GAP-057). Loose, because a payload is
+ * whatever the stage that raised the card put in it (review_queue_repo's
+ * `enqueue` doc). Only the fields triage reads by name are typed, and one of
+ * the wrong type is dropped on its own rather than costing the card all its
+ * details.
+ */
+const reviewItemPayloadSchema = z.looseObject({
+  referenceNo: z.string().nullable().optional().catch(undefined),
+  balanceAfter: z.number().nullable().optional().catch(undefined),
+  occurredAt: z.number().optional().catch(undefined),
+  channel: z.enum(["push", "sms"]).optional().catch(undefined),
+  providerKey: z.string().optional().catch(undefined),
+}) satisfies z.ZodType<ReviewItemPayload>;
+
+/**
+ * A stored payload, decoded. One that is not a JSON object degrades to an
+ * empty payload, logged, so a single corrupt card cannot take every open card
+ * down with it: it stays listed and dismissible.
+ */
+function decodeReviewPayload(json: string, id: string): ReviewItemPayload {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    parsed = undefined;
+  }
+  const result = reviewItemPayloadSchema.safeParse(parsed);
+  if (result.success) return result.data;
+  console.warn(`mappers: unusable payload_json on review item ${id}; listing it without details`);
+  return {};
+}
+
 export function rowToReviewQueueItem(row: ReviewQueueItemRow): ReviewQueueItem {
   return {
     id: row.id,
     kind: row.kind as ReviewKind,
-    payload: JSON.parse(row.payload_json) as ReviewItemPayload,
+    payload: decodeReviewPayload(row.payload_json, row.id),
     rawNotificationId: row.raw_notification_id,
     createdAt: row.created_at,
     expiresAt: row.expires_at,

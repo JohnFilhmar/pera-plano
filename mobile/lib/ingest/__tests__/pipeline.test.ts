@@ -1636,6 +1636,29 @@ test("a money-like capture from the same unknown app keeps its text and raises i
   expect(await listOpenReviewItems()).toHaveLength(1);
 });
 
+test("a stored rule whose action is missing its category does not stop the capture committing (GAP-057)", async () => {
+  // The entry's acceptance criterion: "A malformed user_rules.action_json row
+  // does not crash ingest." An unparseable one never did; a known kind missing
+  // its field decoded, matched every outgoing capture, and handed
+  // insertTransaction no category.
+  const wallet = await createWallet({ name: "GCash", openingBalance: 900000 });
+  await addMatcher(wallet.id, GCASH);
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  await db.runAsync(
+    `INSERT INTO user_rules (id, matcher_json, action_json, priority, is_enabled, created_from,
+       applied_count, last_applied_at, created_at, updated_at)
+     VALUES ('rule_no_category', '{"direction":"out"}', '{"kind":"set-category"}', 0, 1, NULL, 0, NULL, ?, ?)`,
+    [NOW, NOW],
+  );
+
+  const outcome = await processCapture(gcashSend("cap-bad-rule"));
+
+  expect(outcome.kind).toBe("committed");
+  const [row] = await ledger();
+  expect(row.categoryId).not.toBeUndefined();
+  warn.mockRestore();
+});
+
 test("a replayed batch after a crash re-commits nothing", async () => {
   const wallet = await createWallet({ name: "GCash", openingBalance: 900000 });
   await addMatcher(wallet.id, GCASH);

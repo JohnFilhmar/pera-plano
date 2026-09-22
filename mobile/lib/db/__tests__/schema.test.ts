@@ -83,6 +83,8 @@ test("review_queue_items and raw_notifications match contract §3 columns", asyn
   const rq = await db.getAllAsync<{ name: string }>("PRAGMA table_info(review_queue_items)");
   expect(rq.map((c) => c.name)).toEqual([
     "id", "kind", "payload_json", "raw_notification_id", "created_at", "expires_at", "resolved_at",
+    // 024 (GAP-057): which answer closed the card.
+    "resolution",
   ]);
   const rn = await db.getAllAsync<{ name: string }>("PRAGMA table_info(raw_notifications)");
   // `notification_key` is LAST because migration 018 added it with ALTER TABLE,

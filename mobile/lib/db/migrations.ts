@@ -22,6 +22,7 @@ import loanAmountBorrowedSql from "./migrations/020_loan_amount_borrowed.sql";
 import rawNotificationBodyDiscardedSql from "./migrations/021_raw_notification_body_discarded.sql";
 import goalMilestoneSql from "./migrations/022_goal_milestone.sql";
 import contributionDecisionsSql from "./migrations/023_contribution_decisions.sql";
+import reviewResolutionSql from "./migrations/024_review_resolution.sql";
 
 export type Migration = {
   version: number;
@@ -192,6 +193,10 @@ export const MIGRATIONS: Migration[] = [
   // A new table, nothing rebuilt, so no `disablesForeignKeys`: the user's
   // recorded-or-skipped decision about a payday's goal contribution (GAP-056).
   { version: 23, name: "contribution_decisions", sql: contributionDecisionsSql },
+  // One additive nullable column on `review_queue_items`, tied to
+  // `resolved_at` by a CHECK: which answer closed a card (GAP-057). No
+  // rebuild, so no `disablesForeignKeys`.
+  { version: 24, name: "review_resolution", sql: reviewResolutionSql },
 ];
 
 /**

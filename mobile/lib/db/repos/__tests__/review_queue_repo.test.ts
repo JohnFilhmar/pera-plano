@@ -779,3 +779,62 @@ describe("reopen", () => {
     expect(await countOpen()).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// The resolution is kept (GAP-057). "Dismissed" and "confirmed" used to be
+// indistinguishable in the table, because `resolve` accepted the value and
+// dropped it.
+// ---------------------------------------------------------------------------
+test("resolve records whether the card was confirmed or dismissed", async () => {
+  const dismissed = await enqueue({ kind: "low-confidence", payload: {} });
+  const confirmed = await enqueue({ kind: "low-confidence", payload: {} });
+
+  await resolve(dismissed.id, "dismissed");
+  await resolve(confirmed.id, "confirmed");
+
+  const rows = await db.getAllAsync<{ id: string; resolution: string | null }>(
+    "SELECT id, resolution FROM review_queue_items",
+  );
+  expect(new Map(rows.map((row) => [row.id, row.resolution]))).toEqual(
+    new Map([
+      [dismissed.id, "dismissed"],
+      [confirmed.id, "confirmed"],
+    ]),
+  );
+});
+
+test("reopening a card clears its resolution along with its resolved time", async () => {
+  const item = await enqueue({ kind: "low-confidence", payload: {} });
+  await resolve(item.id, "dismissed");
+
+  expect(await reopen(item.id)).toBe(true);
+
+  const row = await db.getFirstAsync<{ resolved_at: number | null; resolution: string | null }>(
+    "SELECT resolved_at, resolution FROM review_queue_items WHERE id = ?",
+    [item.id],
+  );
+  expect(row).toEqual({ resolved_at: null, resolution: null });
+});
+
+test("a stored payload that is not a JSON object lists as empty instead of failing the queue", async () => {
+  // Decoded at the boundary (GAP-057). Before, one corrupt row threw out of
+  // JSON.parse and took every open card down with it.
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    const good = await enqueue({ kind: "low-confidence", payload: { amount: 100 } });
+    const broken = await enqueue({ kind: "low-confidence", payload: {} });
+    await db.runAsync("UPDATE review_queue_items SET payload_json = ? WHERE id = ?", [
+      "{not json",
+      broken.id,
+    ]);
+
+    const open = await listOpen();
+
+    expect(open.map((item) => item.id).sort()).toEqual([good.id, broken.id].sort());
+    expect(open.find((item) => item.id === broken.id)?.payload).toEqual({});
+    expect(open.find((item) => item.id === good.id)?.payload).toEqual({ amount: 100 });
+    expect(warn).toHaveBeenCalled();
+  } finally {
+    warn.mockRestore();
+  }
+});
