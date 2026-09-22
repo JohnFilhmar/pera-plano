@@ -209,6 +209,11 @@ describe("normalizePhrase", () => {
   });
 });
 
+// NO PER-TEST TIMEOUTS. Each test runs two real Argon2id derivations, measured
+// at 2.6 to 4.4 s on an idle machine and past 10 s under nine workers, and the
+// package's 30 s testTimeout is their budget. The 10 s overrides these tests
+// used to carry were written when Jest's default was 5 s; once package.json
+// raised it, they cut the budget to a third (GAP-052).
 describe("deriveRecoveryKey", () => {
   const saltA = new Uint8Array(16).fill(1);
   const saltB = new Uint8Array(16).fill(2);
@@ -219,21 +224,21 @@ describe("deriveRecoveryKey", () => {
 
     expect(keyOne.length).toBe(32);
     expect(Buffer.from(keyOne)).toEqual(Buffer.from(keyTwo));
-  }, 10000);
+  });
 
   it("derives a different key for a different salt", async () => {
     const keyOne = await deriveRecoveryKey(ZERO_ENTROPY_PHRASE, saltA);
     const keyTwo = await deriveRecoveryKey(ZERO_ENTROPY_PHRASE, saltB);
 
     expect(Buffer.from(keyOne)).not.toEqual(Buffer.from(keyTwo));
-  }, 10000);
+  });
 
   it("derives a completely different key when one word changes", async () => {
     const keyOne = await deriveRecoveryKey(ZERO_ENTROPY_PHRASE, saltA);
     const keyTwo = await deriveRecoveryKey(WRONG_COMBINATION_PHRASE, saltA);
 
     expect(Buffer.from(keyOne)).not.toEqual(Buffer.from(keyTwo));
-  }, 10000);
+  });
 
   // THE FLOOR IS ASSERTED AGAINST THE PARAMETERS, NOT AGAINST A CLOCK.
   //
