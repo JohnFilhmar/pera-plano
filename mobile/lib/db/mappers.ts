@@ -11,6 +11,7 @@ import type {
   ReviewItemPayload,
   ReviewKind,
   ReviewQueueItem,
+  ReviewResolution,
   Transaction,
   TxDirection,
   TxSource,
@@ -202,6 +203,8 @@ export type ReviewQueueItemRow = {
   created_at: number;
   expires_at: number | null;
   resolved_at: number | null;
+  /** Migration 024. Which answer closed the item; only `resolve` writes it. */
+  resolution: ReviewResolution | null;
 };
 
 /**
@@ -258,6 +261,9 @@ export function reviewQueueItemToRow(item: ReviewQueueItem): ReviewQueueItemRow 
     created_at: item.createdAt,
     expires_at: item.expiresAt,
     resolved_at: item.resolvedAt,
+    // The domain item carries no resolution, and this mapper only ever writes a
+    // NEW item (`enqueue`), which has none. `resolve` records it (GAP-057).
+    resolution: null,
   };
 }
 
