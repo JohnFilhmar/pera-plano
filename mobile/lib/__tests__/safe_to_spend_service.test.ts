@@ -12,6 +12,7 @@ import {
   skipCycle,
 } from "@/lib/db/repos/bills_repo";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
+import { decideContribution } from "@/lib/db/repos/contribution_decisions_repo";
 import { createGoal } from "@/lib/db/repos/goals_repo";
 import { createLimit, updateLimit } from "@/lib/db/repos/limits_repo";
 import { enqueue } from "@/lib/db/repos/review_queue_repo";
@@ -436,6 +437,84 @@ test("A PERCENT RULE TAKES ONE SHARE OF A PAYDAY SPLIT ACROSS TWO CREDITS", asyn
   // One reservation of 10% of ₱13,000.00 — not two.
   expect(input.plannedContributions).toEqual([
     { goalId: goal.id, amount: 130_000, date: "2026-08-10" },
+  ]);
+});
+
+test("SKIPPING A CONTRIBUTION RELEASES IT FROM THE TERM THE SAME DAY (GAP-056)", async () => {
+  // The entry's acceptance criterion. Safe-to-spend rule 6: "skipped and
+  // expired contributions leave the term".
+  await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
+  await setManualIncome({ cadence: "kinsenas", averageAmount: 1_500_000, sourceWalletIds: [cash.id] }, NOW);
+  const savings = await createWallet({ name: "GSave" });
+  const goal = await createGoal({
+    name: "Emergency Fund",
+    targetAmount: 5_000_000,
+    linkedWalletId: savings.id,
+    contributionRule: { kind: "fixed", amount: 100_000 },
+  });
+  await payday(1_500_000, new Date(2026, 7, 10, 9, 0).getTime());
+  const before = computeSafeToSpend(await buildSafeToSpendInput(TODAY, NOW));
+  expect(before.contributionsTerm).toBe(100_000);
+
+  await decideContribution({ goalId: goal.id, paydayDate: "2026-08-10", decision: "skipped", now: NOW });
+
+  const input = await buildSafeToSpendInput(TODAY, NOW);
+  const after = computeSafeToSpend(input);
+  expect(input.plannedContributions).toEqual([]);
+  expect(after.contributionsTerm).toBe(0);
+  // The whole-period figure the per-day number is spread from rises by the skipped amount.
+  const available = (result: typeof before) =>
+    result.headroom - result.billsTerm - result.contributionsTerm;
+  expect(available(after) - available(before)).toBe(100_000);
+});
+
+test("A PARTIAL MOVE BEFORE A SKIP STAYS RESERVED; ONLY THE REST IS RELEASED (rule 15)", async () => {
+  await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
+  await setManualIncome({ cadence: "kinsenas", averageAmount: 1_500_000, sourceWalletIds: [cash.id] }, NOW);
+  const savings = await createWallet({ name: "GSave" });
+  const goal = await createGoal({
+    name: "Emergency Fund",
+    targetAmount: 5_000_000,
+    linkedWalletId: savings.id,
+    contributionRule: { kind: "fixed", amount: 100_000 },
+  });
+  await payday(1_500_000, new Date(2026, 7, 10, 9, 0).getTime());
+  await insertTransaction({
+    walletId: savings.id,
+    categoryId: UNCATEGORIZED_ID,
+    amount: 30_000,
+    direction: "in",
+    occurredAt: new Date(2026, 7, 11, 9, 0).getTime(),
+    source: "manual",
+    confidence: 1,
+  });
+
+  await decideContribution({ goalId: goal.id, paydayDate: "2026-08-10", decision: "skipped", now: NOW });
+
+  const input = await buildSafeToSpendInput(TODAY, NOW);
+  expect(input.plannedContributions).toEqual([
+    { goalId: goal.id, amount: 30_000, date: "2026-08-10" },
+  ]);
+});
+
+test("A CONTRIBUTION RECORDED AS MADE STAYS RESERVED FOR THE PERIOD (rule 6)", async () => {
+  // The transfer never touched the limit's headroom (rule 6a), so releasing a
+  // completed contribution would hand saved money back as spendable.
+  await createLimit({ scope: "monthly", basis: "fixed", value: 1_500_000 });
+  await setManualIncome({ cadence: "kinsenas", averageAmount: 1_500_000, sourceWalletIds: [cash.id] }, NOW);
+  const savings = await createWallet({ name: "GSave" });
+  const goal = await createGoal({
+    name: "Emergency Fund",
+    targetAmount: 5_000_000,
+    linkedWalletId: savings.id,
+    contributionRule: { kind: "fixed", amount: 100_000 },
+  });
+  await payday(1_500_000, new Date(2026, 7, 10, 9, 0).getTime());
+  await decideContribution({ goalId: goal.id, paydayDate: "2026-08-10", decision: "recorded", now: NOW });
+
+  const input = await buildSafeToSpendInput(TODAY, NOW);
+  expect(input.plannedContributions).toEqual([
+    { goalId: goal.id, amount: 100_000, date: "2026-08-10" },
   ]);
 });
 

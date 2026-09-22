@@ -27,6 +27,7 @@ const EMERGENCY: AllocationProposal = {
   requested: 200000,
   fromWalletId: "w-payroll",
   toWalletId: "w-gsave",
+  paydayDate: "2026-08-15",
 };
 
 const TRAVEL: AllocationProposal = {
@@ -36,6 +37,7 @@ const TRAVEL: AllocationProposal = {
   requested: 300000, // trimmed by rule 3's cap
   fromWalletId: "w-payroll",
   toWalletId: "w-seabank",
+  paydayDate: "2026-08-15",
 };
 
 // NumericField (inside each row's amount field) throws without a
@@ -58,6 +60,7 @@ const TRAVEL: AllocationProposal = {
 function renderSheet(over: Partial<Parameters<typeof AllocationSheet>[0]> = {}) {
   const onConfirm = jest.fn();
   const onDismiss = jest.fn();
+  const onSkip = jest.fn();
   render(
     <KeypadProvider>
       <KeypadHost />
@@ -67,11 +70,12 @@ function renderSheet(over: Partial<Parameters<typeof AllocationSheet>[0]> = {}) 
         paydayAmount={1850000}
         onConfirm={onConfirm}
         onDismiss={onDismiss}
+        onSkip={onSkip}
         {...over}
       />
     </KeypadProvider>,
   );
-  return { onConfirm, onDismiss };
+  return { onConfirm, onDismiss, onSkip };
 }
 
 test("lists every proposal and totals them against the payday", () => {
@@ -275,6 +279,7 @@ function sheetTree(proposals: AllocationProposal[], onConfirm: jest.Mock) {
         paydayAmount={1850000}
         onConfirm={onConfirm}
         onDismiss={jest.fn()}
+        onSkip={jest.fn()}
       />
     </KeypadProvider>
   );
@@ -320,4 +325,39 @@ test("a re-render with the same proposals leaves the user's edits alone", () => 
   fireEvent.press(screen.getByTestId("allocation-confirm"));
   const accepted = onConfirm.mock.calls[0][0] as AllocationProposal[];
   expect(accepted.find((proposal) => proposal.goalId === EMERGENCY.goalId)?.amount).toBe(150000);
+});
+
+// ---------------------------------------------------------------------------
+// Skipping (GAP-056, goals rule 14c). "Not now" leaves the payday's
+// contributions pending, because the user may still move the money in their
+// bank app. Skipping is its own button, and an unchecked row is a skip too:
+// the row already says "Skipped".
+// ---------------------------------------------------------------------------
+test("Skip this payday skips every proposal and records nothing", () => {
+  const { onConfirm, onDismiss, onSkip } = renderSheet();
+
+  fireEvent.press(screen.getByTestId("allocation-skip-payday"));
+
+  expect(onSkip).toHaveBeenCalledTimes(1);
+  expect(onConfirm).not.toHaveBeenCalled();
+  expect(onDismiss).not.toHaveBeenCalled();
+});
+
+test("confirm hands the unchecked rows back as declined", () => {
+  const { onConfirm } = renderSheet();
+
+  fireEvent.press(screen.getByTestId(`allocation-toggle-${TRAVEL.goalId}`)); // uncheck
+  fireEvent.press(screen.getByTestId("allocation-confirm"));
+
+  const declined = onConfirm.mock.calls[0][1] as AllocationProposal[];
+  expect(declined.map((proposal) => proposal.goalId)).toEqual([TRAVEL.goalId]);
+});
+
+test("Not now dismisses without skipping", () => {
+  const { onDismiss, onSkip } = renderSheet();
+
+  fireEvent.press(screen.getByTestId("allocation-skip"));
+
+  expect(onDismiss).toHaveBeenCalledTimes(1);
+  expect(onSkip).not.toHaveBeenCalled();
 });

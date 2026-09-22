@@ -83,6 +83,7 @@ import { SchemaTooNewError } from "@/lib/db/migrations";
 import { applyCaptureGuard } from "@/lib/privacy/capture_guard";
 import { startSupportOutboxSubscriber } from "@/lib/support/outbox_runner";
 import { useApplyAllocations } from "@/hooks/mutations/use_apply_allocations";
+import { useSkipAllocations } from "@/hooks/mutations/use_skip_allocations";
 import { usePaydayAllocations } from "@/hooks/use_payday_allocations";
 import { BILL_HORIZON_DAYS } from "@/hooks/queries/use_bills";
 import { startGoalMilestoneSubscriber } from "@/lib/goals/goal_milestone_subscriber";
@@ -211,6 +212,7 @@ function PaydaySheets() {
   const { payday, proposals, paydayAmount, acknowledgePayday, dismissAllocations } =
     usePaydayAllocations();
   const applyAllocations = useApplyAllocations();
+  const skipAllocations = useSkipAllocations();
 
   return (
     <>
@@ -222,11 +224,23 @@ function PaydaySheets() {
         visible={proposals.length > 0}
         proposals={proposals}
         paydayAmount={paydayAmount}
-        busy={applyAllocations.isPending}
+        busy={applyAllocations.isPending || skipAllocations.isPending}
         onDismiss={dismissAllocations}
-        onConfirm={async (accepted) => {
+        onSkip={async () => {
+          try {
+            await skipAllocations.mutateAsync(proposals);
+          } catch {
+            // Same reasoning as `onConfirm` below: the toast is already up,
+            // and the sheet stays open for the retry.
+            return;
+          }
+          dismissAllocations();
+        }}
+        onConfirm={async (accepted, declined) => {
           try {
             await applyAllocations.mutateAsync(accepted);
+            // The unchecked rows already read "Skipped" (GAP-056).
+            if (declined.length > 0) await skipAllocations.mutateAsync(declined);
           } catch {
             // THE CATCH IS FOR THE REJECTION, NOT FOR THE MESSAGE. `onConfirm`
             // is typed `=> void` and AllocationSheet calls it without holding

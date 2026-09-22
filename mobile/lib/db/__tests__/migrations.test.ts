@@ -1254,3 +1254,53 @@ describe("022_goal_milestone upgrades a real version-21 database in place", () =
     ).rejects.toThrow(/CHECK/i);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 023_contribution_decisions: what the user decided about one payday's planned
+// goal contribution (GAP-056, goals rule 14). Recorded or skipped, keyed by goal
+// and payday, because every other state is derived from the ledger.
+// ---------------------------------------------------------------------------
+describe("023_contribution_decisions", () => {
+  test("a database at 022 gains the table and nothing else changes", async () => {
+    const db = await getDatabase();
+    await runMigrations(db, MIGRATIONS.filter((m) => m.version <= 22));
+
+    const applied = await runMigrations(db);
+    expect(applied[0]).toBe(23);
+    expect(applied).toEqual(MIGRATIONS.filter((m) => m.version > 22).map((m) => m.version));
+
+    const columns = await db.getAllAsync<{ name: string }>(
+      "PRAGMA table_info(contribution_decisions)",
+    );
+    expect(columns.map((c) => c.name)).toEqual(["goal_id", "payday_date", "decision", "decided_at"]);
+  });
+
+  test("a decision is recorded or skipped and nothing else, once per goal and payday", async () => {
+    const db = await freshDb();
+    await db.runAsync(
+      `INSERT INTO wallets (id, name, balance, currency, is_archived, created_at, updated_at)
+       VALUES ('w_gsave', 'GSave', 0, 'PHP', 0, ?, ?)`,
+      [V1_TIMESTAMP, V1_TIMESTAMP],
+    );
+    await db.runAsync(
+      `INSERT INTO goals (id, name, target_amount, linked_wallet_id, created_at, updated_at)
+       VALUES ('g_fund', 'Fund', 500000, 'w_gsave', ?, ?)`,
+      [V1_TIMESTAMP, V1_TIMESTAMP],
+    );
+
+    await expect(
+      db.runAsync(
+        "INSERT INTO contribution_decisions (goal_id, payday_date, decision, decided_at) VALUES ('g_fund', '2026-08-10', 'later', 0)",
+      ),
+    ).rejects.toThrow(/CHECK/i);
+
+    await db.runAsync(
+      "INSERT INTO contribution_decisions (goal_id, payday_date, decision, decided_at) VALUES ('g_fund', '2026-08-10', 'skipped', 0)",
+    );
+    await expect(
+      db.runAsync(
+        "INSERT INTO contribution_decisions (goal_id, payday_date, decision, decided_at) VALUES ('g_fund', '2026-08-10', 'recorded', 0)",
+      ),
+    ).rejects.toThrow(/UNIQUE|PRIMARY/i);
+  });
+});

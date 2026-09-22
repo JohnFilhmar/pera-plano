@@ -170,6 +170,8 @@ export const queryKeys = {
     /** The deleted tail — see `limits.archived` for why it is its own key. */
     archived: () => ["goals", "archived"] as const,
     detail: (id: string) => ["goals", "detail", id] as const,
+    /** Planned payday contributions still waiting on the user (GAP-056). */
+    pendingContributions: () => ["goals", "pending_contributions"] as const,
   },
   loans: {
     all: ["loans"] as const,

@@ -51,7 +51,9 @@ import { KeypadHost } from "@/components/ui/keypad_host";
 import { KeypadProvider } from "@/contexts/keypad_context";
 import { ThemeProvider } from "@/contexts/theme_context";
 import { closeDatabase } from "@/lib/db/database";
-import { seedDefaultCategories } from "@/lib/db/repos/categories_repo";
+import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
+import { listContributionDecisions } from "@/lib/db/repos/contribution_decisions_repo";
+import { insertTransaction } from "@/lib/db/repos/transactions_repo";
 import { createGoal, getGoal, listGoals } from "@/lib/db/repos/goals_repo";
 import { setWalletOwed } from "@/lib/db/repos/wallet_traits_repo";
 import { createWallet, getWallet } from "@/lib/db/repos/wallets_repo";
@@ -460,4 +462,46 @@ test("a goal still in progress is NOT offered Mark complete", async () => {
 
   await screen.findByTestId("goal-delete");
   expect(screen.queryByTestId("goal-complete")).toBeNull();
+});
+
+// ---------------------------------------------------------------------------
+// Pending allocation (GAP-056). The goals spec's states table: "the card shows
+// '₱X planned this payday' until matched, recorded, skipped, or expired", and
+// flow step 4 offers "Skip this payday".
+// ---------------------------------------------------------------------------
+test("a payday's planned contribution shows on the goal, and skipping it there takes it off", async () => {
+  const payroll = await createWallet({ name: "BPI Payroll" });
+  const goal = await createGoal({
+    name: "Emergency Fund",
+    targetAmount: 5_000_000,
+    linkedWalletId: gsave.id,
+    contributionRule: { kind: "fixed", amount: 200_000 },
+  });
+  // Pay that landed an hour ago: safe-to-spend rule 6b builds every
+  // contribution from pay that actually arrived.
+  await insertTransaction({
+    walletId: payroll.id,
+    categoryId: UNCATEGORIZED_ID,
+    amount: 1_500_000,
+    direction: "in",
+    occurredAt: Date.now() - 60 * 60 * 1000,
+    merchant: "ACME PAYROLL",
+    source: "notification",
+    confidence: 0.9,
+  });
+  mockParams = { id: goal.id };
+
+  renderScreen(<GoalDetailScreen />);
+
+  await waitFor(() =>
+    expect(screen.getByTestId("goal-detail-card-planned")).toHaveTextContent(
+      "₱2,000.00 planned this payday",
+    ),
+  );
+
+  fireEvent.press(screen.getByTestId("goal-skip-payday"));
+
+  await waitFor(() => expect(screen.queryByTestId("goal-detail-card-planned")).toBeNull());
+  const [decision] = await listContributionDecisions("2000-01-01", "2100-01-01");
+  expect(decision).toMatchObject({ goalId: goal.id, decision: "skipped" });
 });

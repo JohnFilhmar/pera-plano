@@ -21,6 +21,7 @@ import loanMatchRejectionsSql from "./migrations/019_loan_match_rejections.sql";
 import loanAmountBorrowedSql from "./migrations/020_loan_amount_borrowed.sql";
 import rawNotificationBodyDiscardedSql from "./migrations/021_raw_notification_body_discarded.sql";
 import goalMilestoneSql from "./migrations/022_goal_milestone.sql";
+import contributionDecisionsSql from "./migrations/023_contribution_decisions.sql";
 
 export type Migration = {
   version: number;
@@ -188,6 +189,9 @@ export const MIGRATIONS: Migration[] = [
   // current progress: the milestone high-water mark goals rule 12 needs
   // (GAP-055). No rebuild, so no `disablesForeignKeys`.
   { version: 22, name: "goal_milestone", sql: goalMilestoneSql },
+  // A new table, nothing rebuilt, so no `disablesForeignKeys`: the user's
+  // recorded-or-skipped decision about a payday's goal contribution (GAP-056).
+  { version: 23, name: "contribution_decisions", sql: contributionDecisionsSql },
 ];
 
 /**
