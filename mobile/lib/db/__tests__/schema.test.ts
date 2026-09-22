@@ -37,6 +37,9 @@ const MIGRATED_TABLES = [
   // to a specific transaction against a specific loan, so the same rows are
   // not re-scored on the next visit.
   "loan_match_rejections",
+  // 023_contribution_decisions records what the user decided about a payday's
+  // planned goal contribution, recorded or skipped (GAP-056).
+  "contribution_decisions",
 ];
 
 const EXPECTED_TABLES = [...CORE_TABLES, ...MIGRATED_TABLES].sort();
@@ -89,6 +92,8 @@ test("review_queue_items and raw_notifications match contract §3 columns", asyn
   expect(rn.map((c) => c.name)).toEqual([
     "id", "package_name", "title", "text", "sub_text", "big_text", "posted_at", "captured_at", "expires_at",
     "notification_key",
+    // 021 (GAP-107): set only on a minimal record, whose text and slot key are NULL.
+    "body_discarded_at",
   ]);
 });
 
@@ -177,6 +182,9 @@ type SeedIds = {
   loanId: string;
   billId: string;
   supportReportId: string;
+  /** A goal on its own wallet, so the template `goals` row can still claim the seed wallet. */
+  goalWalletId: string;
+  goalId: string;
 };
 
 /** Seeds one valid parent row per referenceable table. Returns their ids for use by VALID_ROWS. */
@@ -196,6 +204,8 @@ async function seedParents(db: SQLiteDatabase): Promise<SeedIds> {
     loanId: "seed_loan",
     billId: "seed_bill",
     supportReportId: "seed_support_report",
+    goalWalletId: "seed_goal_wallet",
+    goalId: "seed_goal",
   };
 
   await insertRow(db, "wallets", {
@@ -205,6 +215,14 @@ async function seedParents(db: SQLiteDatabase): Promise<SeedIds> {
   await insertRow(db, "categories", {
     id: ids.categoryId, name: "Seed Category", parent_id: null, icon: "circle",
     is_system: 0, is_hidden: 0, created_at: now, updated_at: now,
+  });
+  await insertRow(db, "wallets", {
+    id: ids.goalWalletId, name: "Seed Goal Wallet", balance: 0,
+    currency: "PHP", is_archived: 0, created_at: now, updated_at: now,
+  });
+  await insertRow(db, "goals", {
+    id: ids.goalId, name: "Seed Goal", target_amount: 1000, target_date: null,
+    linked_wallet_id: ids.goalWalletId, contribution_rule_json: null, created_at: now, updated_at: now,
   });
   await insertRow(db, "raw_notifications", {
     id: ids.rawNotificationId, package_name: "com.example", title: null, text: null,
@@ -385,6 +403,10 @@ function buildValidRows(ids: SeedIds, now: number): Record<string, Row> {
       id: "row_loan_match_rejections", loan_id: ids.loanId,
       transaction_id: ids.freeTxId, created_at: now,
     },
+    // 023. Keyed by goal and payday, so the pair is the row's whole identity.
+    contribution_decisions: {
+      goal_id: ids.goalId, payday_date: "2026-08-10", decision: "skipped", decided_at: now,
+    },
   };
 }
 
@@ -410,6 +432,7 @@ describe("every valid template row actually inserts", () => {
 describe("foreign keys are enforced on every FK column in the schema", () => {
   const FK_COLUMNS: Array<{ table: string; column: string }> = [
     { table: "wallet_matchers", column: "wallet_id" },
+    { table: "contribution_decisions", column: "goal_id" },
     { table: "categories", column: "parent_id" },
     { table: "transactions", column: "wallet_id" },
     { table: "transactions", column: "category_id" },
