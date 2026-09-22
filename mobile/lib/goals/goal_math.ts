@@ -30,7 +30,7 @@
 // keeping them out here is what lets every case above be a fixture.
 import { lastDayOfMonth, parseDateIso, startOfLocalDay } from "@/lib/dates";
 import { kinsenasAnchorsBetween } from "@/lib/income/cadence_detector";
-import type { Centavos, Goal, IncomeCadence } from "@/types/domain";
+import type { Centavos, Goal, GoalMilestone, IncomeCadence } from "@/types/domain";
 
 /** Rule 10's four states, plus the no-deadline case rule 10 also names. */
 export type GoalPace = "no_deadline" | "on_track" | "behind" | "reached" | "past_due";
@@ -215,4 +215,24 @@ export function computeGoalProgress(
     periodLabel: label,
     daysRemaining,
   };
+}
+
+/**
+ * The highest milestone (goals rule 12) a balance meets against a target: 25,
+ * 50, 75 or 100 percent, or 0 below a quarter.
+ *
+ * Integer arithmetic on centavos, so a target that does not divide evenly is
+ * never a float comparison, and a negative balance is simply 0. Migration
+ * 022's backfill computes the same thresholds in SQL.
+ *
+ * @param balance - The linked wallet's balance, in centavos. May be negative.
+ * @param target - The goal's target, in centavos. Always positive (001_core.sql's CHECK).
+ * @returns The milestone met.
+ */
+export function milestoneFor(balance: Centavos, target: Centavos): GoalMilestone {
+  if (balance * 100 >= target * 100) return 100;
+  if (balance * 100 >= target * 75) return 75;
+  if (balance * 100 >= target * 50) return 50;
+  if (balance * 100 >= target * 25) return 25;
+  return 0;
 }

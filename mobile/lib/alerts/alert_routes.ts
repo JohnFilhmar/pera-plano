@@ -30,6 +30,7 @@ export type AlertRouteData =
   | { kind: "limitAlerts"; limitIds: string[] }
   | { kind: "billReminder"; billId: string; dueDate: string }
   | { kind: "loanReminder"; loanId: string }
+  | { kind: "goalMilestone"; goalId: string; milestone: number }
   | { kind: "paydaySummary" }
   | { kind: "trackingInterrupted" }
   | { kind: "coalescedUpdates" };
@@ -48,8 +49,8 @@ const HOME_ROUTE: Href = "/";
  * Resolves a tapped notification's `data` to the screen it should open,
  * per IA §6.1's deep-link table:
  * "Limit alerts → Limit breach view; Bill reminders → Bill detail; Loan
- * reminders → Loan detail; Listener health → recovery screen; Payday summary
- * → Home."
+ * reminders → Loan detail; Goal updates → Goal detail; Listener health →
+ * recovery screen; Payday summary → Home."
  *
  * A COALESCED LIMIT ALERT WITH MORE THAN ONE LIMIT HAS NO SINGLE "breach
  * view" TO OPEN. `limitAlertsCopy` (alert_copy.ts) already draws this same
@@ -85,6 +86,11 @@ export function resolveAlertRoute(data: unknown): Href {
       const { loanId } = data as { loanId?: unknown };
       if (typeof loanId !== "string") return HOME_ROUTE;
       return { pathname: "/plan/loans/[id]", params: { id: loanId } };
+    }
+    case "goalMilestone": {
+      const { goalId } = data as { goalId?: unknown };
+      if (typeof goalId !== "string") return HOME_ROUTE;
+      return { pathname: "/plan/goals/[id]", params: { id: goalId } };
     }
     case "paydaySummary":
       return HOME_ROUTE;

@@ -344,6 +344,12 @@ export type Goal = {
   updatedAt: EpochMs;
 };
 
+/**
+ * A goal progress milestone (goals rule 12): the highest of 25, 50, 75 and 100
+ * percent of `targetAmount` a balance meets, or 0 below a quarter.
+ */
+export type GoalMilestone = 0 | 25 | 50 | 75 | 100;
+
 // ---------- Loan ----------
 export type LoanDirection = "i-owe" | "owed-to-me";
 

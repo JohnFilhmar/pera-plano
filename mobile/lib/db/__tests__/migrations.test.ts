@@ -1192,3 +1192,65 @@ describe("021_raw_notification_body_discarded upgrades a real version-20 databas
     ).rejects.toThrow(/CHECK/i);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 022_goal_milestone: the high-water mark goals rule 12 needs (GAP-055). Every
+// goal already on a device starts at the milestone its wallet already meets, or
+// the first commit after the update would announce weeks-old progress.
+// ---------------------------------------------------------------------------
+describe("022_goal_milestone upgrades a real version-21 database in place", () => {
+  /** Brings a database to 021 with three goals at 10%, 60% and 110% of target. */
+  async function atVersionTwentyOneWithGoals(
+    db: Awaited<ReturnType<typeof getDatabase>>,
+  ): Promise<void> {
+    const upToTwentyOne = MIGRATIONS.filter((m) => m.version <= 21);
+    expect(upToTwentyOne.length).toBe(21);
+    await runMigrations(db, upToTwentyOne);
+
+    for (const [id, balance] of [
+      ["w_low", 50_000],
+      ["w_mid", 300_000],
+      ["w_full", 550_000],
+    ] as const) {
+      await db.runAsync(
+        `INSERT INTO wallets (id, name, balance, currency, is_archived, created_at, updated_at)
+         VALUES (?, ?, ?, 'PHP', 0, ?, ?)`,
+        [id, id, balance, V1_TIMESTAMP, V1_TIMESTAMP],
+      );
+      await db.runAsync(
+        `INSERT INTO goals (id, name, target_amount, target_date, linked_wallet_id,
+           contribution_rule_json, archived_at, created_at, updated_at)
+         VALUES (?, ?, 500000, NULL, ?, NULL, NULL, ?, ?)`,
+        [`g_${id}`, `goal ${id}`, id, V1_TIMESTAMP, V1_TIMESTAMP],
+      );
+    }
+  }
+
+  test("each existing goal starts at the milestone its wallet already meets", async () => {
+    const db = await getDatabase();
+    await atVersionTwentyOneWithGoals(db);
+
+    const applied = await runMigrations(db);
+    expect(applied[0]).toBe(22);
+    expect(applied).toEqual(MIGRATIONS.filter((m) => m.version > 21).map((m) => m.version));
+
+    const rows = await db.getAllAsync<{ id: string; milestone_reached: number }>(
+      "SELECT id, milestone_reached FROM goals ORDER BY id",
+    );
+    expect(rows).toEqual([
+      { id: "g_w_full", milestone_reached: 100 },
+      { id: "g_w_low", milestone_reached: 0 },
+      { id: "g_w_mid", milestone_reached: 50 },
+    ]);
+  });
+
+  test("the column holds only the five values rule 12 names", async () => {
+    const db = await getDatabase();
+    await atVersionTwentyOneWithGoals(db);
+    await runMigrations(db);
+
+    await expect(
+      db.runAsync("UPDATE goals SET milestone_reached = 30 WHERE id = 'g_w_low'"),
+    ).rejects.toThrow(/CHECK/i);
+  });
+});

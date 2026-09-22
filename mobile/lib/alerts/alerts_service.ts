@@ -84,7 +84,7 @@ import { isKeyguardLocked } from "@/modules/notification_listener";
 import type { EpochMs } from "@/types/domain";
 
 import { coalescedUpdatesAlertCopy, selectAlertCopy, type AlertCopy } from "./alert_copy";
-import { CHANNEL_LIMITS, CHANNEL_REMINDERS, type AlertChannel } from "./channels";
+import { CHANNEL_GOALS, CHANNEL_LIMITS, CHANNEL_REMINDERS, type AlertChannel } from "./channels";
 import {
   EMPTY_BURST,
   isWithinQuietHours,
@@ -96,7 +96,7 @@ import {
 } from "./notification_policy";
 
 /**
- * Creates both channels. Idempotent — Android treats a repeat call as a
+ * Creates every channel. Idempotent — Android treats a repeat call as a
  * no-op for everything except name and description, so calling it on every
  * launch is both safe and the only way a fresh install gets its channels.
  */
@@ -112,6 +112,12 @@ export async function ensureNotificationChannels(): Promise<void> {
     name: "Due-date reminders",
     // Quiet. A bill due in three days does not need to interrupt anything, and
     // a reminder that behaves like an alarm is a reminder the user turns off.
+    importance: Notifications.AndroidImportance.DEFAULT,
+  });
+  await Notifications.setNotificationChannelAsync(CHANNEL_GOALS, {
+    name: "Goal updates",
+    // Default. A milestone is good news, not something to stop the user for
+    // (docs/06 §6.1).
     importance: Notifications.AndroidImportance.DEFAULT,
   });
 }

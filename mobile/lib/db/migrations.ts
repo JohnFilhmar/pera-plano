@@ -20,6 +20,7 @@ import transactionAdjustmentsSql from "./migrations/017_transaction_adjustments.
 import loanMatchRejectionsSql from "./migrations/019_loan_match_rejections.sql";
 import loanAmountBorrowedSql from "./migrations/020_loan_amount_borrowed.sql";
 import rawNotificationBodyDiscardedSql from "./migrations/021_raw_notification_body_discarded.sql";
+import goalMilestoneSql from "./migrations/022_goal_milestone.sql";
 
 export type Migration = {
   version: number;
@@ -183,6 +184,10 @@ export const MIGRATIONS: Migration[] = [
   // no backfill and no index: the minimal record a non-money buffered capture
   // leaves (GAP-107). No rebuild, so no `disablesForeignKeys`.
   { version: 21, name: "raw_notification_body_discarded", sql: rawNotificationBodyDiscardedSql },
+  // One additive column on `goals` with a CHECK, backfilled from each goal's
+  // current progress: the milestone high-water mark goals rule 12 needs
+  // (GAP-055). No rebuild, so no `disablesForeignKeys`.
+  { version: 22, name: "goal_milestone", sql: goalMilestoneSql },
 ];
 
 /**

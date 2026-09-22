@@ -85,6 +85,7 @@ import { startSupportOutboxSubscriber } from "@/lib/support/outbox_runner";
 import { useApplyAllocations } from "@/hooks/mutations/use_apply_allocations";
 import { usePaydayAllocations } from "@/hooks/use_payday_allocations";
 import { BILL_HORIZON_DAYS } from "@/hooks/queries/use_bills";
+import { startGoalMilestoneSubscriber } from "@/lib/goals/goal_milestone_subscriber";
 import { startIncomeLedgerSubscriber } from "@/lib/income/income_ledger_subscriber";
 import { startPaydayNotificationSubscriber } from "@/lib/income/payday_notification_subscriber";
 import { startLimitLedgerSubscriber } from "@/lib/limits/limit_ledger_subscriber";
@@ -514,6 +515,14 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
   useEffect(() => {
     if (bootstrapState !== "ready") return;
     return startSubscriber("cash reconcile prompts", startReconcilePromptSubscriber);
+  }, [bootstrapState]);
+
+  // Goal milestone notifications (goals rule 12, GAP-055). A launch pass and a
+  // debounced pass per ledger commit, the shape the cash reconcile prompts above
+  // use; `runGoalMilestonePass` swallows its own failures.
+  useEffect(() => {
+    if (bootstrapState !== "ready") return;
+    return startSubscriber("goal milestones", startGoalMilestoneSubscriber);
   }, [bootstrapState]);
 
   // Recurring-pattern detection re-runs on ledger commits, debounced (M3 Part
