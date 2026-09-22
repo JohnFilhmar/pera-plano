@@ -101,7 +101,11 @@ import { closeDatabase } from "@/lib/db/database";
 import { getSetting, setSetting } from "@/lib/db/repos/app_settings_repo";
 import { seedDefaultCategories } from "@/lib/db/repos/categories_repo";
 import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
-import { storeRawCapture, RAW_CAPTURE_TTL_MS } from "@/lib/db/repos/raw_notifications_repo";
+import {
+  storeDiscardedCapture,
+  storeRawCapture,
+  RAW_CAPTURE_TTL_MS,
+} from "@/lib/db/repos/raw_notifications_repo";
 import { listDataTableNames } from "@/lib/db/table_names";
 import { exportAllData } from "@/lib/privacy/data_export";
 import { queryClient as appQueryClient } from "@/lib/query_client";
@@ -585,6 +589,31 @@ test("the captured list renders real rows newest first", async () => {
   // own doc for why the title is included alongside the text.
   expect(screen.getByTestId("captured-item-text-newer")).toHaveTextContent(/You received PHP 200/);
   expect(screen.getByTestId("captured-item-text-older")).toHaveTextContent(/You sent PHP 100 to Juan/);
+});
+
+test("a capture stored without its text renders the note, read back from the database", async () => {
+  // GAP-107, end to end: the flag travels from `raw_notifications` through
+  // the hook and the screen's own mapping into the card.
+  await storeDiscardedCapture(
+    {
+      id: "trimmed",
+      packageName: "com.example.chat",
+      title: "Ana",
+      text: "Kain tayo mamaya!",
+      subText: null,
+      bigText: null,
+      postedAt: NOW,
+      capturedAt: NOW,
+    },
+    NOW,
+  );
+
+  await renderPrivacyScreen();
+
+  await waitFor(() => expect(screen.getByTestId("captured-item-trimmed")).toBeTruthy());
+  const body = screen.getByTestId("captured-item-text-trimmed");
+  expect(body).toHaveTextContent(/kept only the app and the time/);
+  expect(body).not.toHaveTextContent(/Kain tayo/);
 });
 
 test("the countdown renders the correct remaining days for a pinned clock", async () => {

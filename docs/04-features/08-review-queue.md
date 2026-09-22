@@ -86,7 +86,7 @@ These tools also work outside the queue, directly on committed transactions — 
 ### What lands in the queue
 
 1. **Low-confidence parse** — the ConfidenceGate routes any parse below the auto-commit threshold; the Transaction is held uncommitted until triaged.
-2. **Unknown provider** — the SourceRouter's unknown-bin captures notifications from unrecognized packages **only if** they pass the money-signal heuristic: the text contains a currency marker or amount-shaped pattern (e.g., `₱`, `PHP`, `1,234.56`). Non-matching notifications are discarded immediately and never stored — a data-minimization requirement, not an optimization (see [../07-privacy-and-compliance.md](../07-privacy-and-compliance.md)).
+2. **Unknown provider** — the SourceRouter's unknown-bin captures notifications from unrecognized packages **only if** they pass the money-signal heuristic: the text contains a currency marker or amount-shaped pattern (e.g., `₱`, `PHP`, `1,234.56`). Non-matching notifications are discarded immediately and their text is never stored — a data-minimization requirement, not an optimization (see [../07-privacy-and-compliance.md](../07-privacy-and-compliance.md)). One that arrived while the app was closed leaves only its app and its times, for the Privacy centre ([../03-ingest-pipeline.md](../03-ingest-pipeline.md) §1 principle 2).
 3. **Ambiguous transfer** — a TransferDetector candidate pair below the auto-link threshold (amounts near-equal but outside tight fee tolerance, or timing at the window's edge). Both legs are committed; only the pairing is queued.
 4. **Suspected duplicate** — a DedupeGate near-match (same amount, close timestamps, but no shared reference number). The first record commits; the twin is held uncommitted.
 5. Held items (types 1 and 4) are **not** counted in wallet balances, Limits, reports, or Safe-to-Spend until confirmed — the accepted simplification stated in [09-safe-to-spend.md](09-safe-to-spend.md). Balance drift from long-held items is caught by cash reconciliation prompts ([02-wallets.md](02-wallets.md)).
@@ -226,7 +226,7 @@ Gate behavior follows the standard rule: keep data, block creation of new, never
 - [ ] "Same transaction" discards the held twin and never removes a committed record; "Different" commits the twin.
 - [ ] "It's a transfer" creates a Transfer Link and both legs immediately leave spend/income totals; "Unlink transfer" restores them; Limits and Safe-to-Spend recompute in both directions.
 - [ ] Merge, split (within the 30-day raw TTL), link, and unlink all work from the ledger without a queue item present.
-- [ ] Only money-signal notifications from unknown packages are retained; a non-matching notification from an unknown package is verifiably never stored.
+- [ ] Only money-signal notifications from unknown packages are retained with their text; a non-matching notification from an unknown package verifiably never has its text stored.
 - [ ] The flag flow ("This is a money notification") commits a Transaction with `rawNotificationRef`, creates a source→Wallet UserRule, and the next capture from that source arrives pre-filled.
 - [ ] The badge counts actionable items (unknown sources grouped per source app), caps at 99+, and updates only on resolution, expiry, or arrival — not on merely opening the queue.
 - [ ] No per-item push notification is ever sent; the daily digest fires at most once per day and only under its trigger conditions.

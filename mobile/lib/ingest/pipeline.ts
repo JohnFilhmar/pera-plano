@@ -28,11 +28,13 @@ import { getActiveRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { recordParseResult } from "@/lib/diagnostics/parse_stats_repo";
 import { getSetting } from "@/lib/db/repos/app_settings_repo";
 import {
+  discardRawCaptureBody,
   findReplayCapture,
   getRawCapture,
   hasRawCapture,
   isRawCaptureUnreferenced,
   listUnprocessedRawCaptures,
+  storeDiscardedCapture,
   storeRawCapture,
 } from "@/lib/db/repos/raw_notifications_repo";
 import {
@@ -1155,12 +1157,21 @@ export async function startIngest(): Promise<() => void> {
     // pipeline could ever have produced is the `unknown-provider` card the user
     // muted. A `known` provider is never touched, whatever rules exist.
     //
-    // ONLY THE DISMISSAL, not the router's `not_financial` verdict, even though
-    // `processStored` discards those too. The money-signal test is a heuristic
-    // whose false negatives lose a transaction silently (source_router.ts's
-    // asymmetry note), and the stored row is what makes such a miss findable in
-    // the Privacy centre; the dismissal is not a heuristic, it is the user's own
-    // standing instruction about that package.
+    // A `not_financial` VERDICT IS TRIMMED HERE, NOT DROPPED (GAP-107, owner
+    // decision 2026-09-09). The money-signal test is a heuristic whose false
+    // negatives lose a transaction silently (source_router.ts's asymmetry note),
+    // so dropping the capture would take a missed transaction's only trace with
+    // it. Storing it whole, which this drain did until GAP-107, broke docs/03 §1
+    // principle 2 instead: on an install whose provider filter admits every app,
+    // a friend's message sat in `raw_notifications` for thirty days. So the row
+    // keeps the app and the two times and none of the text, and it never reaches
+    // the stages, because nothing is left in it that any of them could read. The
+    // dismissal is still dropped outright: it is not a heuristic, it is the
+    // user's own standing instruction about that package.
+    //
+    // WITH NO USABLE RULESET NOTHING CAN BE ROUTED, so that batch is stored
+    // whole as before; the recovery sweep trims its non-money rows once a
+    // ruleset exists (see `processStored`).
     //
     // ONE `listUserRules` FOR THE WHOLE BATCH, for the same reason the ruleset
     // above is read once: nothing in this pass can change the table.
@@ -1168,10 +1179,14 @@ export async function startIngest(): Promise<() => void> {
     const loadDrainRules = (): Promise<UserRule[]> => Promise.resolve(drainRules);
 
     const admitted: RawCapture[] = [];
+    const trimmed = new Set<string>();
     for (const capture of ordered) {
       if (drainBundle !== null) {
         const decision = await preflight(capture, drainBundle, loadDrainRules);
-        if (decision.kind === "drop" && decision.reason === "unknown-provider") continue;
+        if (decision.kind === "drop") {
+          if (decision.reason === "unknown-provider") continue;
+          trimmed.add(capture.id);
+        }
       }
       admitted.push(capture);
     }
@@ -1198,6 +1213,10 @@ export async function startIngest(): Promise<() => void> {
         // no JS was alive, so every edit an app made to a notification over
         // those hours is sitting in it as a separate record with its own id.
         if (replayWindowMs !== null && (await findReplayCapture(capture, replayWindowMs)) !== null) {
+          continue;
+        }
+        if (trimmed.has(capture.id)) {
+          await storeDiscardedCapture(capture, storedAt);
           continue;
         }
         await storeRawCapture(capture, storedAt);
@@ -1283,10 +1302,15 @@ async function recoverUnprocessed(now: number): Promise<void> {
  * this branch is normally unreachable. It is still needed for the recovery
  * sweep, whose captures were stored in an earlier session — possibly before the
  * mute existed. Those few rows then point at neither a Transaction nor a card
- * and stay on `listUnprocessedRawCaptures` until their TTL expires, exactly as
- * the `not_financial` return above has always left its own; the sweep re-runs
- * them, re-drops them and writes nothing, which is why it is affordable HERE
- * and not affordable for a whole drained batch.
+ * and stay on `listUnprocessedRawCaptures` until their TTL expires; the sweep
+ * re-runs them, re-drops them and writes nothing, which is why it is affordable
+ * HERE and not affordable for a whole drained batch.
+ *
+ * A `not_financial` ROW IS TRIMMED INSTEAD (GAP-107). The drain now stores
+ * one already trimmed, so a row reaching this branch was stored whole by an
+ * earlier build, or by a drain that had no ruleset to route with. Reducing it
+ * to its minimal record honours docs/03 §1 principle 2 late rather than never,
+ * and settles the row, so the sweep stops coming back for it.
  *
  * THE PAUSE SWITCH IS NOT RE-ASKED PER CAPTURE, DELIBERATELY. `startIngest` is
  * this function's only caller, through the drain loop and `recoverUnprocessed`,
@@ -1304,7 +1328,10 @@ async function processStored(capture: RawCapture, now: number): Promise<void> {
     if (bundle === null) return;
 
     const decision = await preflight(capture, bundle, listUserRules);
-    if (decision.kind === "drop") return;
+    if (decision.kind === "drop") {
+      if (decision.reason === "not_financial") await discardRawCaptureBody(capture.id, now);
+      return;
+    }
     if (decision.kind === "unknown") {
       await queue("unknown-provider", capture.id, {
         amount: null,

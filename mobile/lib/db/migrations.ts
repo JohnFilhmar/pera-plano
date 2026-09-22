@@ -19,6 +19,7 @@ import rawNotificationKeySql from "./migrations/018_raw_notification_key.sql";
 import transactionAdjustmentsSql from "./migrations/017_transaction_adjustments.sql";
 import loanMatchRejectionsSql from "./migrations/019_loan_match_rejections.sql";
 import loanAmountBorrowedSql from "./migrations/020_loan_amount_borrowed.sql";
+import rawNotificationBodyDiscardedSql from "./migrations/021_raw_notification_body_discarded.sql";
 
 export type Migration = {
   version: number;
@@ -178,6 +179,10 @@ export const MIGRATIONS: Migration[] = [
   // able to store (GAP-082). See that file's own header for why it is neither
   // `principal` nor derivable from it. No rebuild, so no `disablesForeignKeys`.
   { version: 20, name: "loan_amount_borrowed", sql: loanAmountBorrowedSql },
+  // One additive nullable column on `raw_notifications`, guarded by a CHECK,
+  // no backfill and no index: the minimal record a non-money buffered capture
+  // leaves (GAP-107). No rebuild, so no `disablesForeignKeys`.
+  { version: 21, name: "raw_notification_body_discarded", sql: rawNotificationBodyDiscardedSql },
 ];
 
 /**

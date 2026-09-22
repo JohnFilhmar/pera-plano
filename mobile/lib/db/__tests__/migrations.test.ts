@@ -1020,9 +1020,12 @@ describe("020_loan_amount_borrowed upgrades a real version-19 database in place"
     const before = await db.getAllAsync<{ name: string }>("PRAGMA table_info(loans)");
     expect(before.map((c) => c.name)).not.toContain("amount_borrowed");
 
-    // 020 ALONE. A longer list would mean something earlier was replayed over
-    // live rows; an empty one would mean the registry never got version 20.
-    expect(await runMigrations(db)).toEqual([20]);
+    // 020 AND WHATEVER FOLLOWS IT, nothing at or below 019. An earlier version
+    // in the list would mean something was replayed over live rows; a list not
+    // starting at 20 would mean the registry never got it.
+    const applied = await runMigrations(db);
+    expect(applied[0]).toBe(20);
+    expect(applied).toEqual(MIGRATIONS.filter((m) => m.version > 19).map((m) => m.version));
 
     const after = await db.getAllAsync<{ name: string }>("PRAGMA table_info(loans)");
     expect(after.map((c) => c.name)).toContain("amount_borrowed");
@@ -1122,5 +1125,70 @@ describe("020_loan_amount_borrowed upgrades a real version-19 database in place"
     expect(recorded).toEqual(MIGRATIONS.map((m) => ({ version: m.version, name: m.name })));
     expect(await runMigrations(db)).toEqual([]);
     expect((await db.getFirstAsync<{ n: number }>("SELECT COUNT(*) AS n FROM loans"))?.n).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 021_raw_notification_body_discarded: the minimal record (GAP-107, owner
+// decision 2026-09-09). `raw_notifications` gains one nullable column. A row
+// already on the device keeps its text and reads NULL, because nothing about
+// it was discarded; the recovery sweep strips such a row later only if the
+// router still calls it not money-related.
+// ---------------------------------------------------------------------------
+describe("021_raw_notification_body_discarded upgrades a real version-20 database in place", () => {
+  /** Brings a database to 020 and seeds a capture the old drain stored whole. */
+  async function atVersionTwentyWithCapture(
+    db: Awaited<ReturnType<typeof getDatabase>>,
+  ): Promise<void> {
+    const upToTwenty = MIGRATIONS.filter((m) => m.version <= 20);
+    expect(upToTwenty.length).toBe(20);
+    await runMigrations(db, upToTwenty);
+
+    await db.runAsync(
+      `INSERT INTO raw_notifications (id, package_name, title, text, sub_text, big_text,
+         posted_at, captured_at, expires_at, notification_key)
+       VALUES ('cap_v20', 'com.friend.chat', 'Ana', 'Kain tayo mamaya!', NULL, NULL, ?, ?, ?, NULL)`,
+      [V1_TIMESTAMP, V1_TIMESTAMP, V1_TIMESTAMP + 30 * 24 * 60 * 60 * 1000],
+    );
+  }
+
+  test("a database at 020, already holding a capture, gains the column and keeps the text", async () => {
+    const db = await getDatabase();
+    await atVersionTwentyWithCapture(db);
+
+    const before = await db.getAllAsync<{ name: string }>("PRAGMA table_info(raw_notifications)");
+    expect(before.map((c) => c.name)).not.toContain("body_discarded_at");
+
+    const applied = await runMigrations(db);
+    expect(applied[0]).toBe(21);
+    expect(applied).toEqual(MIGRATIONS.filter((m) => m.version > 20).map((m) => m.version));
+
+    const after = await db.getAllAsync<{ name: string }>("PRAGMA table_info(raw_notifications)");
+    expect(after.map((c) => c.name)).toContain("body_discarded_at");
+
+    const row = await db.getFirstAsync<{ text: string | null; body_discarded_at: number | null }>(
+      "SELECT text, body_discarded_at FROM raw_notifications WHERE id = 'cap_v20'",
+    );
+    expect(row).toEqual({ text: "Kain tayo mamaya!", body_discarded_at: null });
+  });
+
+  test("a row marked discarded cannot carry text, and one with text cannot be marked", async () => {
+    const db = await getDatabase();
+    await atVersionTwentyWithCapture(db);
+    await runMigrations(db);
+
+    await expect(
+      db.runAsync("UPDATE raw_notifications SET body_discarded_at = ? WHERE id = 'cap_v20'", [
+        V1_TIMESTAMP,
+      ]),
+    ).rejects.toThrow(/CHECK/i);
+    await expect(
+      db.runAsync(
+        `INSERT INTO raw_notifications (id, package_name, title, text, sub_text, big_text,
+           posted_at, captured_at, expires_at, notification_key, body_discarded_at)
+         VALUES ('cap_new', 'com.friend.chat', NULL, NULL, NULL, NULL, ?, ?, ?, 'com.friend.chat|7|x|0', ?)`,
+        [V1_TIMESTAMP, V1_TIMESTAMP, V1_TIMESTAMP, V1_TIMESTAMP],
+      ),
+    ).rejects.toThrow(/CHECK/i);
   });
 });

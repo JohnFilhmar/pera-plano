@@ -1550,6 +1550,92 @@ test("a paused app runs no recovery sweep either", async () => {
   expect(await isRawCaptureUnreferenced("swept-while-paused")).toBe(true);
 });
 
+// ---------------------------------------------------------------------------
+// A non-money capture drained from the buffer keeps no text (GAP-107, owner
+// decision 2026-09-09). The live path has always dropped one before storing
+// anything. The drain stored the whole notification and discarded it only
+// afterwards, so on an install whose provider filter admits every app a
+// friend's message sat in `raw_notifications` for thirty days. The decision
+// was neither option the entry offered: keep the app and the times and nothing
+// else, so a missed transaction can still be found in the Privacy centre.
+// ---------------------------------------------------------------------------
+
+test("a non-money capture in the buffered batch keeps its app and times and none of its text", async () => {
+  await createWallet({ name: "GCash" });
+  const message = capture({
+    id: "buf-chat",
+    packageName: CHAT,
+    title: "Ana",
+    text: "Kain tayo mamaya!",
+    notificationKey: `${CHAT}|7|thread-ana|0`,
+    postedAt: NOW - 5 * MINUTE,
+    capturedAt: NOW - 5 * MINUTE,
+  });
+  mockDrain.mockResolvedValue([message]);
+
+  const stop = await startIngest();
+  await __awaitIngestIdle();
+  stop();
+
+  expect(await getRawCapture("buf-chat")).toEqual({
+    ...message,
+    title: null,
+    text: null,
+    subText: null,
+    bigText: null,
+    notificationKey: null,
+  });
+  expect(await listOpenReviewItems()).toHaveLength(0);
+  expect(await ledger()).toHaveLength(0);
+});
+
+test("a trimmed capture is settled, so the next launch's recovery sweep leaves it alone", async () => {
+  await createWallet({ name: "GCash" });
+  mockDrain.mockResolvedValue([
+    capture({ id: "buf-chat", packageName: CHAT, title: "Ana", text: "Kain tayo mamaya!" }),
+  ]);
+
+  const stop = await startIngest();
+  await __awaitIngestIdle();
+  stop();
+
+  // Nothing points at the row, which is what the sweep calls stranded work.
+  // Offering it on every launch for thirty days would fill the sweep's
+  // oldest-first limit with chat and starve the real stranded captures.
+  expect(await rawNotificationsRepo.listUnprocessedRawCaptures(NOW + MINUTE, 100)).toEqual([]);
+});
+
+test("the recovery sweep strips the text from a non-money capture an earlier build stored whole", async () => {
+  await createWallet({ name: "GCash" });
+  // What the drain wrote before GAP-107: the whole message, never referenced.
+  const legacy = capture({ id: "swept-chat", packageName: CHAT, title: "Ana", text: "Kain tayo mamaya!" });
+  await storeRawCapture(legacy, NOW - DAY);
+  mockDrain.mockResolvedValue([]);
+
+  const stop = await startIngest();
+  await __awaitIngestIdle();
+  stop();
+
+  expect(await getRawCapture("swept-chat")).toEqual({ ...legacy, title: null, text: null });
+  expect(await rawNotificationsRepo.listUnprocessedRawCaptures(NOW + MINUTE, 100)).toEqual([]);
+});
+
+test("a money-like capture from the same unknown app keeps its text and raises its card", async () => {
+  // The trim is for what the router calls not money-related, and nothing else:
+  // an unknown app's money-like capture is exactly what the user must see.
+  await createWallet({ name: "GCash" });
+  mockDrain.mockResolvedValue([
+    capture({ id: "buf-pautang", packageName: CHAT, title: "Ana", text: "Pautang naman ₱200.00" }),
+  ]);
+
+  const stop = await startIngest();
+  await __awaitIngestIdle();
+  stop();
+
+  expect(await getRawCapture("buf-pautang")).toMatchObject({ text: "Pautang naman ₱200.00" });
+  expect(await listOpenReviewItems()).toHaveLength(1);
+});
+
 test("a replayed batch after a crash re-commits nothing", async () => {
   const wallet = await createWallet({ name: "GCash", openingBalance: 900000 });
   await addMatcher(wallet.id, GCASH);

@@ -9,6 +9,8 @@
 //     table is not part of any backup payload.
 //   - Every row carries `expires_at` from the moment it is written, and
 //     `purgeExpiredRawCaptures` (run at bootstrap) is what keeps the promise.
+//   - A capture the router judges not money-related keeps no text at all:
+//     `storeDiscardedCapture` writes its app and its times only (GAP-107).
 //   - The row id IS the `RawCapture.id` the native buffer assigned. That is not
 //     a shortcut: pipeline rule 11 makes the at-least-once native drain safe by
 //     asking "have I already seen this capture?", and this table is where the
@@ -41,6 +43,8 @@ type RawNotificationRow = {
   captured_at: number;
   /** Migration 018. NULL on every row stored before it — see `RawCapture.notificationKey`. */
   notification_key: string | null;
+  /** Migration 021. Set only on a minimal record, which `storeDiscardedCapture` writes. */
+  body_discarded_at: number | null;
 };
 
 function rowToRawCapture(row: RawNotificationRow): RawCapture {
@@ -58,8 +62,9 @@ function rowToRawCapture(row: RawNotificationRow): RawCapture {
 }
 
 /**
- * A `RawCapture` plus the ONE extra fact the Privacy centre's captured list
- * needs to render its countdown: when this row expires.
+ * A `RawCapture` plus the two facts the Privacy centre's captured list needs
+ * and the native contract does not carry: when this row expires, and whether
+ * its text was kept at all.
  *
  * A SEPARATE TYPE, not a widened `RawCapture` — same reasoning as
  * `getRawCaptureExpiry`'s own doc: `RawCapture` is interface-contract §4, the
@@ -68,11 +73,19 @@ function rowToRawCapture(row: RawNotificationRow): RawCapture {
  * only on this side of that boundary, for callers that already need the
  * expiry alongside the text (m3b Task 6) and would otherwise pay a second
  * per-row query for it.
+ *
+ * `bodyDiscarded` IS TRUE FOR A MINIMAL RECORD (GAP-107). Its text fields are
+ * null because the router judged the notification not money-related, not
+ * because the notification was blank, and the list has to say which.
  */
-export type StoredRawCapture = RawCapture & { expiresAt: EpochMs };
+export type StoredRawCapture = RawCapture & { expiresAt: EpochMs; bodyDiscarded: boolean };
 
 function rowToStoredRawCapture(row: RawNotificationRow & { expires_at: number }): StoredRawCapture {
-  return { ...rowToRawCapture(row), expiresAt: row.expires_at };
+  return {
+    ...rowToRawCapture(row),
+    expiresAt: row.expires_at,
+    bodyDiscarded: row.body_discarded_at !== null,
+  };
 }
 
 /**
@@ -150,6 +163,84 @@ export async function storeRawCapture(capture: RawCapture, now: number): Promise
     ],
   );
   return capture.id;
+}
+
+/**
+ * Persists the minimal record of a capture the router judged not money-related:
+ * its app and its two times, and none of its text (GAP-107, owner decision
+ * 2026-09-09).
+ *
+ * WHY A RECORD AT ALL. The money-signal test is a heuristic, and its false
+ * negatives lose a transaction silently (source_router.ts's asymmetry note).
+ * With this row the miss can still be found in the Privacy centre as
+ * "something arrived from this app at this time and was ignored". Without the
+ * text, the privacy principle holds for the content, which is what it is about.
+ *
+ * THE SLOT KEY GOES WITH THE TEXT. Its tag is the posting app's own label for
+ * the notification, and a chat app puts the conversation there. Migration
+ * 021's CHECK refuses a marked row that carries either.
+ *
+ * Idempotent with the same first-write-wins rule as `storeRawCapture`, and the
+ * same thirty days, counted from `now`.
+ *
+ * @param capture - The capture as the native buffer handed it over. Only its
+ *   id, package and times are written.
+ * @param now - The store time. The row expires thirty days after it, and it is
+ *   recorded as the discard time.
+ * @returns The capture's own id.
+ */
+export async function storeDiscardedCapture(capture: RawCapture, now: number): Promise<string> {
+  const db = await getDatabase();
+  await db.runAsync(
+    `INSERT OR IGNORE INTO raw_notifications
+       (id, package_name, posted_at, captured_at, expires_at, body_discarded_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [
+      capture.id,
+      capture.packageName,
+      capture.postedAt,
+      capture.capturedAt,
+      now + RAW_CAPTURE_TTL_MS,
+      now,
+    ],
+  );
+  return capture.id;
+}
+
+/**
+ * Reduces a stored capture nothing points at to its minimal record: every text
+ * field and the slot key cleared, and the row marked, which also settles it for
+ * the recovery sweep (GAP-107).
+ *
+ * FOR ROWS STORED WHOLE BEFORE ANYTHING ROUTED THEM. The drain now routes before
+ * it stores, so a non-money capture arrives here already trimmed. A row an
+ * earlier build's drain stored with its text is found by the recovery sweep
+ * instead, and the sweep calls this once the router has said what it is.
+ *
+ * NEVER A ROW ANYTHING POINTS AT. "Why was this recorded?" shows a committed
+ * Transaction's text from this table and a Review Queue card shows its own, so
+ * a referenced row keeps its text whatever the caller believes. The guard is
+ * the same pair of `EXISTS` clauses `isRawCaptureUnreferenced` asks.
+ *
+ * `expires_at` DOES NOT MOVE. Discarding is not a store, and the deletion date
+ * the Privacy centre shows must not change under the user.
+ *
+ * @param id - The capture's id. An unknown, referenced or already-trimmed id
+ *   changes nothing.
+ * @param now - Recorded as the discard time.
+ */
+export async function discardRawCaptureBody(id: string, now: number): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync(
+    `UPDATE raw_notifications
+     SET title = NULL, text = NULL, sub_text = NULL, big_text = NULL,
+         notification_key = NULL, body_discarded_at = ?
+     WHERE id = ?
+       AND body_discarded_at IS NULL
+       AND NOT EXISTS (SELECT 1 FROM transactions WHERE raw_notification_id = ?)
+       AND NOT EXISTS (SELECT 1 FROM review_queue_items WHERE raw_notification_id = ?)`,
+    [now, id, id, id],
+  );
 }
 
 /**
@@ -251,6 +342,11 @@ export async function hasRawCapture(id: string): Promise<boolean> {
  * The first wants the column, and the column wants a migration, so it is
  * recorded here rather than left for the next reader to rediscover.
  *
+ * ONE KIND OF DELIBERATE IGNORE HAS ITS COLUMN NOW. A minimal record (GAP-107)
+ * points at neither table either, but it holds nothing any stage could read, so
+ * offering it on every launch for thirty days would crowd real stranded
+ * captures out of the limit. `body_discarded_at` settles it.
+ *
  * BOUNDED BY `expires_at`, exactly as `listRawCaptures` is and for the same
  * reason: `purgeExpiredRawCaptures` only runs at bootstrap, so a long session
  * holds rows whose 30 days ran out hours ago. Reprocessing one would be the app
@@ -270,6 +366,7 @@ export async function listUnprocessedRawCaptures(
   const rows = await db.getAllAsync<RawNotificationRow>(
     `SELECT * FROM raw_notifications
      WHERE expires_at > ?
+       AND body_discarded_at IS NULL
        AND NOT EXISTS (
          SELECT 1 FROM transactions WHERE transactions.raw_notification_id = raw_notifications.id
        )
