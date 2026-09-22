@@ -361,3 +361,15 @@ test("Not now dismisses without skipping", () => {
   expect(onDismiss).toHaveBeenCalledTimes(1);
   expect(onSkip).not.toHaveBeenCalled();
 });
+
+test("a checked row cleared to zero is neither recorded nor skipped (review fix)", () => {
+  // Its chip still reads "Included", so skipping it would contradict the screen.
+  const { onConfirm } = renderSheet();
+
+  clearAmount(`allocation-amount-${EMERGENCY.goalId}`);
+  fireEvent.press(screen.getByTestId("allocation-confirm"));
+
+  const [accepted, declined] = onConfirm.mock.calls[0] as [AllocationProposal[], AllocationProposal[]];
+  expect(accepted.map((proposal) => proposal.goalId)).toEqual([TRAVEL.goalId]);
+  expect(declined).toEqual([]);
+});

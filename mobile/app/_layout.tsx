@@ -86,7 +86,10 @@ import { useApplyAllocations } from "@/hooks/mutations/use_apply_allocations";
 import { useSkipAllocations } from "@/hooks/mutations/use_skip_allocations";
 import { usePaydayAllocations } from "@/hooks/use_payday_allocations";
 import { BILL_HORIZON_DAYS } from "@/hooks/queries/use_bills";
-import { startGoalMilestoneSubscriber } from "@/lib/goals/goal_milestone_subscriber";
+import {
+  runGoalMilestonePass,
+  startGoalMilestoneSubscriber,
+} from "@/lib/goals/goal_milestone_subscriber";
 import { startIncomeLedgerSubscriber } from "@/lib/income/income_ledger_subscriber";
 import { startPaydayNotificationSubscriber } from "@/lib/income/payday_notification_subscriber";
 import { startLimitLedgerSubscriber } from "@/lib/limits/limit_ledger_subscriber";
@@ -239,6 +242,10 @@ function PaydaySheets() {
         onConfirm={async (accepted, declined) => {
           try {
             await applyAllocations.mutateAsync(accepted);
+            // Recorded transfers emit no `ledger:committed` (only ingest does),
+            // so a milestone they crossed would wait for the next commit or
+            // launch without this pass (GAP-055).
+            void runGoalMilestonePass();
             // The unchecked rows already read "Skipped" (GAP-056).
             if (declined.length > 0) await skipAllocations.mutateAsync(declined);
           } catch {

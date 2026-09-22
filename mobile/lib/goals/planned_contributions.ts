@@ -132,7 +132,10 @@ export async function listPaydayContributions(range: {
     ]),
   );
 
-  // ONE READ covering every payday's match window.
+  // ONE READ covering every payday's match window. ponytail: it is the whole
+  // window's ledger, beside the read listPayEventsBetween already makes, and an
+  // annual limit's window is the year to date; narrow it to inflows into the
+  // goals' wallets if Safe-to-Spend's recompute cost ever shows.
   const ledger = await listFullLedgerBetween({
     from: parseDateIso(paydays[0].date).getTime(),
     to: parseDateIso(addDaysIso(paydays[paydays.length - 1].date, MATCH_WINDOW_DAYS)).getTime(),
@@ -195,8 +198,22 @@ export async function listPendingContributions(now: EpochMs): Promise<PendingCon
     null,
   );
 
+  // A goal cannot be waiting on pay that landed before it existed: one created
+  // today must not ask about last week's payday.
+  const createdOn = new Map(
+    (await listGoals({ includeAchieved: false })).map((goal) => [
+      goal.id,
+      toDateIso(new Date(goal.createdAt)),
+    ]),
+  );
+
   return contributions
-    .filter((contribution) => contribution.paydayDate === latest && contribution.status === "pending")
+    .filter(
+      (contribution) =>
+        contribution.paydayDate === latest &&
+        contribution.status === "pending" &&
+        contribution.paydayDate >= (createdOn.get(contribution.goalId) ?? contribution.paydayDate),
+    )
     .map((contribution) => ({
       goalId: contribution.goalId,
       paydayDate: contribution.paydayDate,

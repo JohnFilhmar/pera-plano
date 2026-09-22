@@ -103,6 +103,24 @@ const userRuleActionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("ignore") }),
 ]) satisfies z.ZodType<UserRuleAction>;
 
+/**
+ * What `satisfies` cannot see, checked at compile time: a kind added to
+ * UserRuleAction, or a field added to UserRuleMatcher, that the schemas above do
+ * not know. Either would be dropped silently on read, and every rule carrying it
+ * with it.
+ */
+type SameMembers<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+const actionKindsCovered: SameMembers<
+  z.infer<typeof userRuleActionSchema>["kind"],
+  UserRuleAction["kind"]
+> = true;
+const matcherFieldsCovered: SameMembers<
+  keyof z.infer<typeof userRuleMatcherSchema>,
+  keyof UserRuleMatcher
+> = true;
+void actionKindsCovered;
+void matcherFieldsCovered;
+
 /** `JSON.parse` that answers `undefined` instead of throwing. */
 function parseJson(text: string): unknown {
   try {

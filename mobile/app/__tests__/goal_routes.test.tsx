@@ -471,12 +471,17 @@ test("a goal still in progress is NOT offered Mark complete", async () => {
 // ---------------------------------------------------------------------------
 test("a payday's planned contribution shows on the goal, and skipping it there takes it off", async () => {
   const payroll = await createWallet({ name: "BPI Payroll" });
+  // Created two days earlier, so the pay below always lands after the goal
+  // existed, even when this runs just past midnight.
+  const earlier = Date.now() - 2 * 24 * 60 * 60 * 1000;
+  const clock = jest.spyOn(Date, "now").mockReturnValue(earlier);
   const goal = await createGoal({
     name: "Emergency Fund",
     targetAmount: 5_000_000,
     linkedWalletId: gsave.id,
     contributionRule: { kind: "fixed", amount: 200_000 },
   });
+  clock.mockRestore();
   // Pay that landed an hour ago: safe-to-spend rule 6b builds every
   // contribution from pay that actually arrived.
   await insertTransaction({

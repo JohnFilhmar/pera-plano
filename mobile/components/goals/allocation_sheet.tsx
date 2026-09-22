@@ -114,9 +114,10 @@ export function AllocationSheet({
     .filter(({ row }) => row.checked && centavosFrom(row.text) > 0)
     .map(({ proposal, row }) => ({ ...proposal, amount: centavosFrom(row.text) }));
 
-  const declined = proposals.filter(
-    (proposal) => !accepted.some((row) => row.goalId === proposal.goalId),
-  );
+  // A SKIP IS AN UNCHECKED ROW AND NOTHING ELSE. A checked row cleared to
+  // zero still reads "Included", so it is neither recorded nor skipped, and its
+  // contribution stays pending.
+  const declined = proposals.filter((proposal) => !rowFor(proposal).checked);
 
   const total = accepted.reduce((sum, proposal) => sum + proposal.amount, 0);
   const overPayday = total > paydayAmount;

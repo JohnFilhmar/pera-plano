@@ -453,3 +453,38 @@ test("skipAllocations records a skip for each proposal it is given", async () =>
   // And a skip writes nothing to the ledger: the app never moves money.
   expect(await listTransactions({})).toEqual([]);
 });
+
+test("a retry after a partial failure records each contribution once (review fix)", async () => {
+  // The sheet stays open after a failed confirm (app/_layout.tsx) with the same
+  // proposals, and the toast invites a retry. The proposal that already
+  // committed must not be recorded a second time.
+  await createGoal({
+    name: "Emergency",
+    targetAmount: 5000000,
+    linkedWalletId: gsave.id,
+    contributionRule: { kind: "fixed", amount: 200000 },
+  });
+  await createGoal({
+    name: "Travel",
+    targetAmount: 2000000,
+    linkedWalletId: seabank.id,
+    contributionRule: { kind: "fixed", amount: 100000 },
+  });
+  const proposals = await proposePaydayAllocations(paydayOf(1850000), NOW);
+  const realLink = transferLinksRepo.linkTransfer;
+  let calls = 0;
+  const link = jest
+    .spyOn(transferLinksRepo, "linkTransfer")
+    .mockImplementation(async (...args: Parameters<typeof realLink>) => {
+      calls += 1;
+      if (calls === 2) throw new Error("link failed");
+      return realLink(...args);
+    });
+  await expect(applyAllocations(proposals, NOW)).rejects.toThrow("link failed");
+  link.mockRestore();
+
+  await applyAllocations(proposals, NOW);
+
+  // One out-leg and one in-leg per goal, never a second pair for the first.
+  expect(await listTransactions({})).toHaveLength(4);
+});

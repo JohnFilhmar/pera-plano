@@ -16,7 +16,10 @@
 // assert that after proposing, the transaction table is still empty.
 import { getDatabase } from "@/lib/db/database";
 import { UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
-import { decideContribution } from "@/lib/db/repos/contribution_decisions_repo";
+import {
+  decideContribution,
+  listContributionDecisions,
+} from "@/lib/db/repos/contribution_decisions_repo";
 import { listGoals } from "@/lib/db/repos/goals_repo";
 import { insertTransaction } from "@/lib/db/repos/transactions_repo";
 import { linkTransfer } from "@/lib/db/repos/transfer_links_repo";
@@ -147,6 +150,11 @@ export async function proposePaydayAllocations(
  * Records the moves the user says they made. Returns the created transfer-link
  * ids, in the order the proposals were given.
  *
+ * A RETRY NEVER RECORDS A MOVE TWICE. The sheet stays open after a failed
+ * confirm so the user can retry with the same proposals, and any of them already
+ * recorded for its payday (an earlier proposal of the same confirm that
+ * committed before a later one threw) is passed over and contributes no id.
+ *
  * COMMITS ITS ARGUMENT, never a freshly re-derived list. The allocation sheet
  * lets the user uncheck rows and edit amounts (Task 4 rule 6); re-deriving here
  * would silently commit the proposals they declined.
@@ -165,8 +173,10 @@ export async function applyAllocations(
   now: number,
 ): Promise<string[]> {
   const linkIds: string[] = [];
+  const recorded = await recordedContributions(proposals);
 
   for (const proposal of proposals) {
+    if (recorded.has(`${proposal.goalId}|${proposal.paydayDate}`)) continue;
     const linkId = await withUnitOfWork(async () => {
       const out = await insertTransaction({
         walletId: proposal.fromWalletId,
@@ -208,6 +218,18 @@ export async function applyAllocations(
   }
 
   return linkIds;
+}
+
+/** Goal-and-payday keys among `proposals` whose contribution is already recorded. */
+async function recordedContributions(proposals: AllocationProposal[]): Promise<Set<string>> {
+  if (proposals.length === 0) return new Set();
+  const dates = proposals.map((proposal) => proposal.paydayDate).sort();
+  const rows = await listContributionDecisions(dates[0], dates[dates.length - 1]);
+  return new Set(
+    rows
+      .filter((row) => row.decision === "recorded")
+      .map((row) => `${row.goalId}|${row.paydayDate}`),
+  );
 }
 
 /**

@@ -35,14 +35,21 @@ beforeEach(async () => {
     { cadence: "kinsenas", averageAmount: 1_500_000, sourceWalletIds: [payroll.id] },
     NOW,
   );
-  goalId = (
-    await createGoal({
-      name: "Emergency Fund",
-      targetAmount: 5_000_000,
-      linkedWalletId: gsave.id,
-      contributionRule: { kind: "fixed", amount: 200_000 },
-    })
-  ).id;
+  // Created on July 1, before every fixture payday: createGoal stamps the
+  // clock, and a goal cannot be waiting on pay that landed before it existed.
+  const clock = jest.spyOn(Date, "now").mockReturnValue(new Date(2026, 6, 1, 9, 0).getTime());
+  try {
+    goalId = (
+      await createGoal({
+        name: "Emergency Fund",
+        targetAmount: 5_000_000,
+        linkedWalletId: gsave.id,
+        contributionRule: { kind: "fixed", amount: 200_000 },
+      })
+    ).id;
+  } finally {
+    clock.mockRestore();
+  }
 });
 
 afterEach(async () => {
@@ -194,4 +201,22 @@ test("the free tier plans nothing (payday auto-allocate is Plus)", async () => {
 
   expect(await listPaydayContributions(AUGUST)).toEqual([]);
   expect(await listPendingContributions(NOW)).toEqual([]);
+});
+
+test("a goal created after the pay landed is not waiting on that payday (review fix)", async () => {
+  await pay(1_500_000, aug(10));
+  const vault = await createWallet({ name: "Vault" });
+  const clock = jest.spyOn(Date, "now").mockReturnValue(aug(11));
+  try {
+    await createGoal({
+      name: "Phone",
+      targetAmount: 1_000_000,
+      linkedWalletId: vault.id,
+      contributionRule: { kind: "fixed", amount: 100_000 },
+    });
+  } finally {
+    clock.mockRestore();
+  }
+
+  expect((await listPendingContributions(NOW)).map((pending) => pending.goalId)).toEqual([goalId]);
 });

@@ -258,6 +258,17 @@ export async function updateGoal(id: string, patch: Partial<NewGoal>): Promise<G
     ],
   );
 
+  // A RELINK RE-BASES PROGRESS ON A BALANCE THE USER JUST CHOSE, which the edit
+  // flow's own confirmation says, so what that wallet already holds is not
+  // announced, the same as at creation (rule 4). The mark still never falls.
+  if (merged.linkedWalletId !== current.linkedWalletId) {
+    const wallet = await db.getFirstAsync<{ balance: number }>(
+      "SELECT balance FROM wallets WHERE id = ?",
+      [merged.linkedWalletId],
+    );
+    await raiseGoalMilestone(id, milestoneFor(wallet?.balance ?? 0, merged.targetAmount));
+  }
+
   const updated = await getGoal(id);
   if (updated === null) throw new GoalNotFoundError(id);
   return updated;

@@ -152,6 +152,32 @@ test("progress the wallet already held when the goal was created is not announce
   expect(announced()).toEqual([75]);
 });
 
+test("moving a goal to a wallet already past a milestone does not announce it (review fix)", async () => {
+  // The edit flow says progress re-bases on the new wallet's balance, which the
+  // user just chose: the same reason creation baselines (rule 4).
+  const goalId = await emergencyFund();
+  const vault = await createWallet({ name: "SeaBank" });
+  const deposit = (amount: number) =>
+    insertTransaction({
+      walletId: vault.id,
+      categoryId: UNCATEGORIZED_ID,
+      amount,
+      direction: "in",
+      occurredAt: Date.now(),
+      source: "manual",
+      confidence: 1,
+    });
+  await deposit(3_000_000); // 60% of the target
+
+  await updateGoal(goalId, { linkedWalletId: vault.id });
+  await runGoalMilestonePass();
+  expect(mockPost).not.toHaveBeenCalled();
+
+  await deposit(900_000); // 78%
+  await runGoalMilestonePass();
+  expect(announced()).toEqual([75]);
+});
+
 test("a reconciliation that crosses a milestone announces it, like any other change to the balance", async () => {
   // The entry said "do not fire on manual balance corrections". The spec says
   // otherwise twice: rule 21 forbids only a RE-fire after a reconciliation, and
