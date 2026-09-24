@@ -222,6 +222,116 @@ describe("verification before activation", () => {
 
     expect(signals.map((signal) => signal?.aborted)).toEqual([true]);
   });
+
+  test("an error status is refused before a byte is written, even when its length matches", async () => {
+    // Without a status check a 404 page of the right length is appended to the
+    // .part and only the digest notices, after the data is already spent.
+    const files = createFakeFiles(10 * 1024 * 1024 * 1024);
+    const append = jest.spyOn(files, "append");
+    const { fetchLike } = createFakeFetch(() => respond(new Uint8Array(WEIGHTS.length), 404));
+    const downloader = createDownloader({
+      fetch: fetchLike,
+      files,
+      modelsDir: MODELS_DIR,
+      isMetered: NEVER_METERED,
+    });
+
+    await expect(downloader.download(SPEC)).rejects.toThrow(/HTTP 404/);
+    expect(append).not.toHaveBeenCalled();
+  });
+
+  test("onVerifying fires once, after the last byte is on disk", async () => {
+    // Tier 2 takes long enough to hash that the screen has to say so, and it
+    // can only say so if it is told when hashing starts.
+    const files = createFakeFiles(10 * 1024 * 1024 * 1024);
+    const { fetchLike } = createFakeFetch(() => respond(WEIGHTS, 200));
+    const downloader = createDownloader({
+      fetch: fetchLike,
+      files,
+      modelsDir: MODELS_DIR,
+      isMetered: NEVER_METERED,
+    });
+    const partSizes: number[] = [];
+
+    await downloader.download(SPEC, {
+      onVerifying: () => {
+        partSizes.push(files.files.get(`${MODELS_DIR}${SPEC.id}.gguf.part`)?.length ?? -1);
+      },
+    });
+
+    expect(partSizes).toEqual([WEIGHTS.length]);
+  });
+
+  test("hashing hands the JS thread back while it runs", async () => {
+    // `for await` resumes as a microtask, and a chain of microtasks never lets a
+    // timer, a touch or a frame in. Without a real yield, hashing 1.1 GB holds
+    // the thread for the whole digest (docs/13 Gate 7).
+    const files = createFakeFiles(10 * 1024 * 1024 * 1024);
+    let timerFired = false;
+    const timerFiredAtRead: boolean[] = [];
+    // Pieces far smaller than the downloader asks for, so one file takes many reads.
+    files.readChunks = async function* (path) {
+      const bytes = files.files.get(path) ?? new Uint8Array(0);
+      for (let at = 0; at < bytes.length; at += 64) {
+        timerFiredAtRead.push(timerFired);
+        yield bytes.subarray(at, at + 64);
+      }
+    };
+    const { fetchLike } = createFakeFetch(() => respond(WEIGHTS, 200));
+    const downloader = createDownloader({
+      fetch: fetchLike,
+      files,
+      modelsDir: MODELS_DIR,
+      isMetered: NEVER_METERED,
+    });
+
+    await downloader.download(SPEC, {
+      onVerifying: () => {
+        setTimeout(() => {
+          timerFired = true;
+        }, 0);
+      },
+    });
+
+    expect(await downloader.stateOf(SPEC)).toBe("ready");
+    expect(timerFiredAtRead.some(Boolean)).toBe(true);
+  });
+});
+
+describe("one transfer per model", () => {
+  test("two screens starting the same download share one transfer instead of corrupting one .part", async () => {
+    // Each screen builds its own downloader. Two appenders on one .part make a
+    // file the digest rejects, which throws away every byte the user paid for.
+    const files = createFakeFiles(10 * 1024 * 1024 * 1024);
+    const { fetchLike, calls } = createFakeFetch(() => respond(WEIGHTS, 200));
+    const deps = { fetch: fetchLike, files, modelsDir: MODELS_DIR, isMetered: NEVER_METERED };
+    const hub = createDownloader(deps);
+    const modelsScreen = createDownloader(deps);
+
+    await Promise.all([hub.download(SPEC), modelsScreen.download(SPEC)]);
+
+    expect(calls).toHaveLength(1);
+    expect(files.files.get(`${MODELS_DIR}${SPEC.id}.gguf`)).toEqual(WEIGHTS);
+  });
+
+  test("a failed attempt does not block the next one", async () => {
+    // The guard is only as good as its cleanup. A refusal that left its entry
+    // behind would turn every later tap into the same refusal.
+    const files = createFakeFiles(10 * 1024 * 1024 * 1024);
+    const { fetchLike, calls } = createFakeFetch(() => respond(WEIGHTS, 200));
+    const downloader = createDownloader({
+      fetch: fetchLike,
+      files,
+      modelsDir: MODELS_DIR,
+      isMetered: async () => true,
+    });
+
+    await expect(downloader.download(SPEC)).rejects.toThrow(/mobile data/i);
+    await downloader.download(SPEC, { allowMetered: true });
+
+    expect(calls).toHaveLength(1);
+    expect(await downloader.stateOf(SPEC)).toBe("ready");
+  });
 });
 
 describe("resume", () => {
@@ -291,6 +401,48 @@ describe("resume", () => {
 
     // Concatenating would produce 5096 bytes and a digest mismatch. The bytes
     // must be exactly the file.
+    expect(files.files.get(`${MODELS_DIR}${SPEC.id}.gguf`)).toEqual(WEIGHTS);
+  });
+
+  test("a .part already at full length is verified with no request, even on mobile data", async () => {
+    // A kill during verification leaves every byte on disk. It needs a hash,
+    // not a request, and not a prompt to spend data on zero bytes.
+    const files = createFakeFiles(10 * 1024 * 1024 * 1024);
+    files.files.set(`${MODELS_DIR}${SPEC.id}.gguf.part`, Uint8Array.from(WEIGHTS));
+    const { fetchLike, calls } = createFakeFetch(() => respond(new Uint8Array(0), 416));
+    const downloader = createDownloader({
+      fetch: fetchLike,
+      files,
+      modelsDir: MODELS_DIR,
+      isMetered: async () => true,
+    });
+
+    await downloader.download(SPEC);
+
+    expect(calls).toHaveLength(0);
+    expect(files.files.get(`${MODELS_DIR}${SPEC.id}.gguf`)).toEqual(WEIGHTS);
+  });
+
+  test("a .part longer than the model is discarded and downloaded fresh", async () => {
+    // It cannot be a prefix of the model. Asking to resume past the end earns a
+    // 416 from the CDN, on every retry, forever.
+    const files = createFakeFiles(10 * 1024 * 1024 * 1024);
+    const overlong = new Uint8Array(WEIGHTS.length + 100);
+    overlong.set(WEIGHTS, 0);
+    files.files.set(`${MODELS_DIR}${SPEC.id}.gguf.part`, overlong);
+    const { fetchLike, calls } = createFakeFetch((_url, range) =>
+      range === null ? respond(WEIGHTS, 200) : respond(new Uint8Array(0), 416),
+    );
+    const downloader = createDownloader({
+      fetch: fetchLike,
+      files,
+      modelsDir: MODELS_DIR,
+      isMetered: NEVER_METERED,
+    });
+
+    await downloader.download(SPEC);
+
+    expect(calls.map((call) => call.range)).toEqual([null]);
     expect(files.files.get(`${MODELS_DIR}${SPEC.id}.gguf`)).toEqual(WEIGHTS);
   });
 });

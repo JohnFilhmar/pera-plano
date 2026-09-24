@@ -38,6 +38,16 @@ export const FREE_SPACE_SLACK_BYTES = 500 * 1024 * 1024;
 /** Hashing reads the file back in pieces; a 1.1 GB `Uint8Array` is not an option. */
 const HASH_CHUNK_BYTES = 1024 * 1024;
 
+/**
+ * Hashing hands the JS thread back after this many pieces. `for await` resumes
+ * as a microtask, and a chain of microtasks never lets a timer, a touch or a
+ * frame in, so without a real yield the digest holds the thread for its whole
+ * run.
+ */
+// ponytail: a fixed slice of 4 MiB. If docs/13 Gate 7 still shows jank or too
+// long a digest, spec §6 risk 8's native digest replaces this loop.
+const YIELD_EVERY_PIECES = 4;
+
 /** Hugging Face answers a pinned URL with a 302 to a CDN host. One hop is normal, five is a loop. */
 const MAX_REDIRECTS = 5;
 
@@ -101,6 +111,8 @@ export type DownloadOptions = {
   /** The user was asked, in a sentence containing the size, and said yes. */
   allowMetered?: boolean;
   onProgress?: (received: number, total: number) => void;
+  /** Called once, when every byte is on disk and hashing starts. */
+  onVerifying?: () => void;
 };
 
 export class MeteredNetworkError extends Error {}
@@ -108,6 +120,20 @@ export class InsufficientSpaceError extends Error {}
 export class VerificationError extends Error {}
 export class ContentLengthError extends Error {}
 export class RedirectError extends Error {}
+export class HttpStatusError extends Error {}
+
+/**
+ * Transfers in progress, keyed by the model's final path. Module scope on
+ * purpose: each screen builds its own downloader, and two of them appending to
+ * one `.part` make a file the digest rejects, which throws away every byte the
+ * user already paid for.
+ */
+const inFlight = new Map<string, Promise<void>>();
+
+/** Resolves on a later macrotask, so whatever is already queued on the JS thread runs first. */
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
 
 /**
  * Decimal GB, because that is what a data plan is sold in.
@@ -131,6 +157,11 @@ export type Downloader = {
   stateOf(spec: ModelSpec): Promise<DownloadState>;
   /** The path to load, or null. A `.part` is never a candidate. */
   loadCandidatePath(spec: ModelSpec): Promise<string | null>;
+  /**
+   * Gets the model onto disk and verified, resuming any `.part`. A call for a
+   * model whose transfer is already running joins that transfer instead of
+   * starting another, and its own options are ignored.
+   */
   download(spec: ModelSpec, opts?: DownloadOptions): Promise<void>;
   remove(spec: ModelSpec): Promise<void>;
 };
@@ -179,26 +210,33 @@ export function createDownloader(deps: DownloaderDeps): Downloader {
     throw new RedirectError(`too many redirects starting at ${url}`);
   }
 
-  /** Hashes the file AS WRITTEN TO DISK, in pieces. */
+  /** Hashes the file AS WRITTEN TO DISK, in pieces, yielding the JS thread between slices. */
   async function digestOnDisk(path: string): Promise<string> {
     const hasher = sha256.create();
+    let pieces = 0;
     for await (const chunk of deps.files.readChunks(path, HASH_CHUNK_BYTES)) {
       hasher.update(chunk);
+      pieces += 1;
+      if (pieces % YIELD_EVERY_PIECES === 0) await yieldToEventLoop();
     }
     return bytesToHex(hasher.digest());
   }
 
-  async function download(spec: ModelSpec, opts: DownloadOptions = {}): Promise<void> {
-    if ((await stateOf(spec)) === "ready") return;
-
-    await deps.files.ensureDir(deps.modelsDir);
-
+  /**
+   * Appends the bytes the `.part` is missing from `offset` on, refusing before
+   * the first byte whenever the transfer cannot or must not finish.
+   */
+  async function fetchRemainder(
+    spec: ModelSpec,
+    offset: number,
+    opts: DownloadOptions,
+  ): Promise<void> {
     const part = partPath(spec);
-    let offset = (await deps.files.exists(part)) ? await deps.files.size(part) : 0;
+    let start = offset;
 
     // BOTH REFUSALS HAPPEN BEFORE THE FIRST BYTE. A check that runs after 2 GB
     // has already landed is not a check.
-    const needed = spec.bytes - offset + FREE_SPACE_SLACK_BYTES;
+    const needed = spec.bytes - start + FREE_SPACE_SLACK_BYTES;
     if ((await deps.files.freeSpace()) < needed) {
       throw new InsufficientSpaceError(
         `not enough free space for ${spec.id}: needs ${needed} bytes including slack`,
@@ -209,7 +247,7 @@ export function createDownloader(deps: DownloaderDeps): Downloader {
       throw new MeteredNetworkError(meteredConfirmation(spec));
     }
 
-    const headers: Record<string, string> = offset > 0 ? { Range: `bytes=${offset}-` } : {};
+    const headers: Record<string, string> = start > 0 ? { Range: `bytes=${start}-` } : {};
     // Aborted the moment this attempt is done with the network, however it
     // ends. `expo/fetch` keeps pulling a body nobody reads, so a response
     // abandoned on a refusal below would otherwise still arrive in full.
@@ -217,24 +255,33 @@ export function createDownloader(deps: DownloaderDeps): Downloader {
     try {
       const response = await fetchFollowing(spec.url, headers, transfer.signal);
 
-      if (offset > 0 && response.status === 200) {
+      if (start > 0 && response.status === 200) {
         // The server ignored the Range and is sending the whole file. Appending
         // would concatenate a prefix onto a complete file and fail verification
         // for a reason no log would explain. Start clean.
         await deps.files.remove(part);
-        offset = 0;
+        start = 0;
+      }
+
+      // A 404 or 500 page of the right length would otherwise land in the
+      // .part, and only the digest would notice, after the data was spent.
+      const expectedStatus = start > 0 ? 206 : 200;
+      if (response.status !== expectedStatus) {
+        throw new HttpStatusError(
+          `HTTP ${response.status} for ${spec.id}, expected ${expectedStatus}`,
+        );
       }
 
       // Rejects the common failure early instead of after streaming gigabytes.
       const contentLength = Number(response.headers.get("content-length"));
-      const expected = spec.bytes - offset;
+      const expected = spec.bytes - start;
       if (!Number.isFinite(contentLength) || contentLength !== expected) {
         throw new ContentLengthError(
           `content-length ${contentLength} for ${spec.id}, expected ${expected}`,
         );
       }
 
-      let received = offset;
+      let received = start;
       for await (const chunk of response.body) {
         await deps.files.append(part, chunk);
         received += chunk.length;
@@ -243,8 +290,31 @@ export function createDownloader(deps: DownloaderDeps): Downloader {
     } finally {
       transfer.abort();
     }
+  }
+
+  // One attempt at getting the model onto disk and verified: trust the .part
+  // only as far as it can be a prefix, fetch what is missing, then hash.
+  async function runDownload(spec: ModelSpec, opts: DownloadOptions): Promise<void> {
+    if ((await stateOf(spec)) === "ready") return;
+
+    await deps.files.ensureDir(deps.modelsDir);
+
+    const part = partPath(spec);
+    let offset = (await deps.files.exists(part)) ? await deps.files.size(part) : 0;
+
+    if (offset > spec.bytes) {
+      // Longer than the model, so it cannot be a prefix of it. Resuming past
+      // the end earns a 416 from the CDN on every retry.
+      await deps.files.remove(part);
+      offset = 0;
+    }
+
+    // A .part already at full length was killed during verification. It needs
+    // a hash, not a request, and not a prompt to spend data on zero bytes.
+    if (offset < spec.bytes) await fetchRemainder(spec, offset, opts);
 
     assertTransition("downloading", "verifying");
+    opts.onVerifying?.();
 
     if ((await digestOnDisk(part)) !== spec.sha256) {
       // Back to `absent`, and the partial is DELETED rather than kept for a
@@ -258,6 +328,20 @@ export function createDownloader(deps: DownloaderDeps): Downloader {
     assertTransition("verifying", "ready");
     // The atomic activation step.
     await deps.files.rename(part, finalPath(spec));
+  }
+
+  function download(spec: ModelSpec, opts: DownloadOptions = {}): Promise<void> {
+    // Checked and claimed synchronously, before any await, so a second tap in
+    // the same tick cannot slip past the guard.
+    const key = finalPath(spec);
+    const running = inFlight.get(key);
+    if (running !== undefined) return running;
+
+    const attempt = runDownload(spec, opts).finally(() => {
+      inFlight.delete(key);
+    });
+    inFlight.set(key, attempt);
+    return attempt;
   }
 
   async function remove(spec: ModelSpec): Promise<void> {
