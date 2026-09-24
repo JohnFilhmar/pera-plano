@@ -23,10 +23,19 @@ them.
 `snake_case` by default: files, directories, database columns, API field names, query and
 route params.
 
-`mobile/` is the carve-out, because it is React. Variables, functions, hooks and object
-keys are `camelCase`; non-component files are `camelCase`, so `useAuth.ts` rather than
-`use_auth.ts`; components and their files are `PascalCase`. Expo Router's own file
-conventions win wherever they apply, and route params stay `snake_case` (`[user_id]`).
+The React code is the carve-out, and that means `mobile/` and `server/apps/web`, both of
+which are React apps. Inside them, variables, functions, hooks, parameters and object
+keys are `camelCase`. Everything outside them keeps the default, so a new function in
+`server/libs/` is `snake_case`.
+
+**FILENAMES ARE `snake_case` EVERYWHERE, COMPONENTS INCLUDED.** `limit_card.tsx`, never
+`LimitCard.tsx`; `use_listener_health.ts`, never `useListenerHealth.ts`. This is the one
+place the repo deliberately parts company with the global React convention, and it is
+not an oversight to tidy up: not one of the app's 734 TypeScript files carries an
+uppercase letter in its name. `PascalCase` applies to SYMBOLS only, meaning components,
+types, interfaces and classes, so `export function LimitCard()` lives in
+`limit_card.tsx`. Expo Router's own file conventions win wherever they apply, and route
+params stay `snake_case` (`[user_id]`).
 
 Match the surrounding file. Renaming to the convention is its own task, never a side
 effect of an unrelated change.

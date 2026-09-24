@@ -158,7 +158,7 @@ counterpart wallet carried on a `mark-transfer` action that the transfer detecto
 
 13. A plain confirmation ("Looks right" with no field changed) creates no rule — it instead feeds the learned-suggestion signal that raises future confidence for that pattern.
 14. Within the Categorizer, a matching UserRule outranks the shipped merchant map and learned suggestions — a user's correction must always stick, or the queue teaches the user that triage is pointless.
-15. Rule conflicts resolve by specificity first (exact-merchant rule beats pattern rule), then recency (newest wins). The losing rule is kept but inactive for that match.
+15. Rule conflicts resolve by **recency**: the newest matching rule wins, and the first match per action type is the one applied ([../02-domain-model.md](../02-domain-model.md) §3.11). The losing rule is kept and is simply not picked, never mutated. Specificity does NOT enter into it, and the earlier wording saying it did was corrected on 2026-09-24 (GAP-025) rather than built: every matcher is a substring test, so there is no exact-merchant kind to outrank a pattern, and nothing in the app shows the user which rule fired, so a specificity ranking would change which rule won with no explanation anyone could see.
 16. All UserRules are listed, disableable, and deletable under parser diagnostics in [11-settings-privacy.md](11-settings-privacy.md). Deleting a rule stops future replays but never reverts transactions it already changed.
 17. Retroactive replay is always opt-in per rule, is limited to retained history, and requires preview above 10 affected transactions (see the flow above).
 

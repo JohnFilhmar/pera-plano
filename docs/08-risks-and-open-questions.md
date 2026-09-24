@@ -251,6 +251,14 @@ counts from the in-app Free-vs-Plus table entirely rather than publish a number 
 wrong (`components/gates/upgrade_sheet.tsx`'s `CAPABILITY_COPY` header carries the reasoning).
 The table cannot state a quantity again until this is settled.
 
+**CLOSED 2026-09-24 (GAP-026): the board was corrected to 1, the code did not move.** The two
+binding sources, [05-monetization.md](05-monetization.md) §2 and
+[01-mvp-scope.md](01-mvp-scope.md) §5, already said 1 and so did `lib/entitlements.ts`; the
+board was the only source saying 3, in two places, a light copy and a dark one. Three shipped
+cap-reached screens also spell the number out in words already (`Free keeps one goal`, and the
+same for limits and loans), so moving the code to 3 would have been four edits and three
+user-visible sentences, not one constant.
+
 **Owner:** whoever settles [05-monetization.md](05-monetization.md) §2, the canonical tier
 matrix. The decision is a pricing one, not an engineering one — either the code's caps move to
 3, or the design board's "3 each" is corrected to 1.
