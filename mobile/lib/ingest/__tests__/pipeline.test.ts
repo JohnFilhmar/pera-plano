@@ -543,16 +543,25 @@ test("an unknown provider with a money signal is queued", async () => {
   expect(await getRawCapture("cap-unknown")).not.toBeNull();
 });
 
-test("an unknown provider with no money signal is ignored and nothing is stored", async () => {
+test("an unknown provider with no money signal leaves its app and time, and none of its text", async () => {
+  // OWNER'S RULING, 2026-09-24: the live path keeps the same minimal record the
+  // buffered drain keeps, so the Privacy centre can account for a notification
+  // whichever way it arrived. §1 principle 2 / §3 rule 3 are untouched: no part
+  // of a private message reaches the database, only the app and the times.
   await createWallet({ name: "GCash" });
+  const chat = capture({ id: "cap-chat", packageName: CHAT, title: "Ana", text: "Kain tayo mamaya!" });
 
-  const outcome = await processCapture(
-    capture({ id: "cap-chat", packageName: CHAT, title: "Ana", text: "Kain tayo mamaya!" }),
-  );
+  const outcome = await processCapture(chat);
 
   expect(outcome).toEqual({ kind: "ignored", reason: "not_financial" });
-  // §1 principle 2 / §3 rule 3: a private message never touches the database.
-  expect(await getRawCapture("cap-chat")).toBeNull();
+  expect(await getRawCapture("cap-chat")).toEqual({
+    ...chat,
+    title: null,
+    text: null,
+    subText: null,
+    bigText: null,
+    notificationKey: null,
+  });
   expect(await listOpen()).toHaveLength(0);
   expect(await ledger()).toHaveLength(0);
 });

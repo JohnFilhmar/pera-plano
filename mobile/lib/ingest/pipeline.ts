@@ -387,10 +387,12 @@ async function markCaptureQueuedTwin(
  * happen before any parsing:
  *
  *   1. The pause switch, so a paused app does no work and stores nothing.
- *   2. `preflight` — routing, so a private chat message is dropped before it
- *      can be persisted (§1 principle 2 — non-financial text never touches the
- *      database), plus the muted-source rule for the same reason. Shared with
- *      `processStored` so the two entry points cannot drift apart again.
+ *   2. `preflight` — routing, so a private chat message never has its TEXT
+ *      persisted (§1 principle 2), plus the muted-source rule, which stores
+ *      nothing at all. Shared with `processStored` so the two entry points
+ *      cannot drift apart again. Since the owner's ruling of 2026-09-24 a
+ *      non-money capture does leave the app and the times behind, the same
+ *      minimal record the drain leaves; only the text is refused.
  *   3. The replay check, because `drainPendingCaptures` is at-least-once by
  *      design and the same batch can come back after a crash.
  *
@@ -417,7 +419,10 @@ export async function processCapture(
   // `processStored` also calls — the reason is carried out verbatim rather
   // than folded into a single "ignored", see `Preflight`.
   const decision = await preflight(capture, bundle, listUserRules);
-  if (decision.kind === "drop") {
+  // A MUTED SOURCE LEAVES NOTHING AT ALL, and that is the one drop that still
+  // returns here. The user said this package is not money, so PeraPlano has
+  // nothing to account for; the drain skips such a capture for the same reason.
+  if (decision.kind === "drop" && decision.reason === "unknown-provider") {
     return { kind: "ignored", reason: decision.reason };
   }
 
@@ -437,6 +442,20 @@ export async function processCapture(
   // it is bounded to the twin window.
   if ((await findReplayCapture(capture, bundle.tunables.dedupeTwinWindowMs)) !== null) {
     return { kind: "ignored", reason: "duplicate" };
+  }
+
+  // NOT MONEY, SO THE RECORD IS THE APP AND THE TIMES AND NOTHING ELSE (owner's
+  // ruling, 2026-09-24). Both paths now leave the same trace, where the live one
+  // used to leave none: a user looking at the Privacy centre for a notification
+  // they watched arrive found nothing if the app happened to be open. None of the
+  // text is stored either way, which is what §1 principle 2 actually forbids.
+  //
+  // AFTER THE TWO DUPLICATE CHECKS, matching the drain's order. An app that edits
+  // its notification redelivers it under a fresh id, and the checks above are
+  // what keep one notification from becoming several rows.
+  if (decision.kind === "drop") {
+    await storeDiscardedCapture(capture, now);
+    return { kind: "ignored", reason: decision.reason };
   }
 
   await storeRawCapture(capture, now);
