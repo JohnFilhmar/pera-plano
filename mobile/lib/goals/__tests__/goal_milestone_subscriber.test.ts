@@ -3,6 +3,12 @@
 // 100%. Each milestone fires at most once per goal lifetime, so balance dips and
 // recoveries cannot re-trigger them."
 //
+// TWO OWNER RULINGS OF 2026-09-24 SHAPE WHAT FOLLOWS, and both reverse what the
+// first build did. A change that crosses several milestones announces EACH of
+// them, where Limits announce only the highest (docs/06 §6.2 rule 2), and a goal
+// created on or moved onto a wallet that already sits past a milestone announces
+// the level it STARTS at, where the first build stayed silent.
+//
 // Against the real migrations through freshDb(). Only the transport is mocked:
 // alerts_service imports expo-notifications and the native listener, and the
 // question here is what the pass decides to post, not how Android draws it.
@@ -75,14 +81,16 @@ async function until(condition: () => boolean, timeoutMs = 5_000): Promise<void>
 
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-test("crossing half the target posts one Goal update on the goals channel, routed to that goal", async () => {
+test("crossing half the target posts a Goal update on the goals channel, routed to that goal", async () => {
   const goalId = await emergencyFund();
   await move(2_500_000);
 
   await runGoalMilestonePass();
 
-  expect(mockPost).toHaveBeenCalledTimes(1);
-  const [input] = mockPost.mock.calls[0];
+  // Two, because one deposit from nothing to half the target crosses 25 as well.
+  // The 50 percent alert is the second, and it is the one this test is about.
+  expect(announced()).toEqual([25, 50]);
+  const [input] = mockPost.mock.calls[1];
   expect(input.channel).toBe(CHANNEL_GOALS);
   expect(input.data).toEqual({ kind: "goalMilestone", goalId, milestone: 50 });
   // docs/06 §6.1's illustrative text, in the app's integer-peso format.
@@ -102,7 +110,7 @@ test("A DIP AND A RE-CROSS POST NOTHING MORE", async () => {
   await move(300_000); // 54%
   await runGoalMilestonePass();
 
-  expect(announced()).toEqual([50]);
+  expect(announced()).toEqual([25, 50]);
 });
 
 test("each milestone is announced once, in order, as the balance climbs", async () => {
@@ -116,8 +124,10 @@ test("each milestone is announced once, in order, as the balance climbs", async 
   expect(announced()).toEqual([25, 50, 75, 100]);
 });
 
-test("one change that crosses several milestones announces only the highest, and the lower ones never follow", async () => {
-  // The rule limits already follow, docs/06 §6.2 rule 2.
+test("one change that crosses several milestones announces each of them, lowest first", async () => {
+  // Owner's ruling, 2026-09-24. Limits announce only the highest (docs/06 §6.2
+  // rule 2); goals announce every level the change passed. Ascending, so the
+  // highest is the most recent notification in the shade.
   await emergencyFund();
   await move(4_000_000); // 80%: past 25, 50 and 75 at once
   await runGoalMilestonePass();
@@ -126,7 +136,20 @@ test("one change that crosses several milestones announces only the highest, and
   await move(1_000_000); // 60%
   await runGoalMilestonePass();
 
-  expect(announced()).toEqual([75]);
+  expect(announced()).toEqual([25, 50, 75]);
+});
+
+test("nothing to complete in one transfer announces all four, and the coalescer is what thins them", async () => {
+  // Owner's ruling, 2026-09-24: the burst is NOT capped here. Four alerts inside
+  // five minutes is exactly what docs/06 §6.2 rule 6 collapses into one summary,
+  // and lib/alerts/alerts_service.ts is where that happens, under its own tests.
+  // This pass's job is to decide what is announced, so it announces four.
+  await emergencyFund();
+  await move(TARGET);
+
+  await runGoalMilestonePass();
+
+  expect(announced()).toEqual([25, 50, 75, 100]);
 });
 
 test("raising the target never re-announces a milestone the goal already passed (rule 20)", async () => {
@@ -138,23 +161,27 @@ test("raising the target never re-announces a milestone the goal already passed 
   await move(2_500_000); // 51% of the new target
   await runGoalMilestonePass();
 
-  expect(announced()).toEqual([50]);
+  expect(announced()).toEqual([25, 50]);
 });
 
-test("progress the wallet already held when the goal was created is not announced (rule 4)", async () => {
-  await move(3_000_000); // ₱30,000 saved before the goal exists: 60%
+test("a goal created on a wallet already past a milestone announces where it starts, and nothing below", async () => {
+  // Owner's ruling, 2026-09-24. ₱30,000 against a ₱50,000 target is past 25 and
+  // 50, and only 50 is announced: the level the goal begins at, not a history of
+  // levels the money crossed before the goal existed.
+  await move(3_000_000); // 60%
   await emergencyFund();
   await runGoalMilestonePass();
-  expect(mockPost).not.toHaveBeenCalled();
+  expect(announced()).toEqual([50]);
 
   await move(900_000); // 78%
   await runGoalMilestonePass();
-  expect(announced()).toEqual([75]);
+  expect(announced()).toEqual([50, 75]);
 });
 
-test("moving a goal to a wallet already past a milestone does not announce it (review fix)", async () => {
+test("moving a goal onto a wallet already past a milestone announces where it lands", async () => {
   // The edit flow says progress re-bases on the new wallet's balance, which the
-  // user just chose: the same reason creation baselines (rule 4).
+  // user just chose, so a relink reads like a creation: it announces the level it
+  // lands on and nothing below (owner's ruling, 2026-09-24).
   const goalId = await emergencyFund();
   const vault = await createWallet({ name: "SeaBank" });
   const deposit = (amount: number) =>
@@ -171,11 +198,11 @@ test("moving a goal to a wallet already past a milestone does not announce it (r
 
   await updateGoal(goalId, { linkedWalletId: vault.id });
   await runGoalMilestonePass();
-  expect(mockPost).not.toHaveBeenCalled();
+  expect(announced()).toEqual([50]);
 
   await deposit(900_000); // 78%
   await runGoalMilestonePass();
-  expect(announced()).toEqual([75]);
+  expect(announced()).toEqual([50, 75]);
 });
 
 test("a reconciliation that crosses a milestone announces it, like any other change to the balance", async () => {
@@ -188,7 +215,7 @@ test("a reconciliation that crosses a milestone announces it, like any other cha
 
   await runGoalMilestonePass();
 
-  expect(announced()).toEqual([50]);
+  expect(announced()).toEqual([25, 50]);
 });
 
 test("a deleted goal, and a goal whose wallet is archived, announce nothing", async () => {
@@ -235,6 +262,29 @@ test("the subscriber checks at launch, then once after a burst of commits", asyn
   expect(listed).toHaveBeenCalledTimes(2);
   expect(announced()).toEqual([25, 50]);
   listed.mockRestore();
+});
+
+test("a goal created past a milestone announces it without waiting for a ledger commit", async () => {
+  // The immediacy half of the 2026-09-24 ruling. `goals:changed` is what the
+  // create and edit mutations emit, and it has to reach the pass: neither of the
+  // other wake-ups, a launch and a ledger commit, happens when a goal is created.
+  // `insertTransaction` emits nothing by itself, so the only wake-up here is the
+  // event this test sends.
+  const stop = startGoalMilestoneSubscriber({ debounceMs: 5 });
+  try {
+    await pause(50); // the launch pass, over an empty database
+    expect(mockPost).not.toHaveBeenCalled();
+
+    await move(3_000_000); // ₱30,000 of ₱50,000, so the goal starts at 50%
+    const goalId = await emergencyFund();
+
+    await emitAppEvent("goals:changed", { goalId });
+
+    await until(() => mockPost.mock.calls.length > 0);
+    expect(announced()).toEqual([50]);
+  } finally {
+    stop();
+  }
 });
 
 test("teardown cancels a pass still waiting to fire", async () => {

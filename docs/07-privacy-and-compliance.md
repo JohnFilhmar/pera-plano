@@ -2,7 +2,16 @@
 
 This document defines PeraPlano's privacy posture and regulatory compliance plan: obligations under the Philippine Data Privacy Act of 2012 (RA 10173) and the National Privacy Commission (NPC), the Google Play policy obligations attached to notification access and finance-adjacent apps, the full data lifecycle (what data exists, where it lives, how long it is kept, and whether it ever leaves the device), the data-minimization stance, the treatment of third-party personal data that appears inside notifications, and the complete list of user-facing privacy controls. It expands §10 of the master planning context and is the source of truth for the privacy notice, the Play Data safety form, and store-review submissions. Genuinely undecided items are tracked in [08-risks-and-open-questions.md](08-risks-and-open-questions.md).
 
-**Status:** Draft v1 · 2026-08-02
+**Status:** Draft v1.1 · 2026-09-24
+
+**What changed in v1.1, and why it is recorded here.** §4's lifecycle table row 1 now
+states that a non-money notification keeps only its app and its times, on both ingest
+paths (owner decisions 2026-09-09 and 2026-09-24). §2's rule requires a notice revision in
+the same release, and the published notice carries the same sentence, held there by a
+drift test. §2.6 requires the PIA to be revisited whenever §4 changes: no PIA exists yet,
+so what this records is an input the first one has to cover, alongside the retention
+question in [08-risks-and-open-questions.md](08-risks-and-open-questions.md) §2. Editing §4
+is an owner decision, and both edits were made on the owner's instruction.
 
 ---
 
@@ -148,7 +157,7 @@ If cloud backup ships with a sign-in identity, Play's account-deletion policy ap
 
 | # | Data | Where it originates | Where it is stored | Retention | Ever leaves the device? |
 |---|---|---|---|---|---|
-| 1 | Raw notification text (target of `rawNotificationRef`), including unknown-bin captures; for a non-money notification drained from the native buffer, only its app and its times | Posted by other apps; captured by the listener | Encrypted on-device only | **30-day TTL, then purged** (domain invariant) | **Never.** Not in backups, not in telemetry, not in support flows. |
+| 1 | Raw notification text (target of `rawNotificationRef`), including unknown-bin captures; for a non-money notification, only its app and its times | Posted by other apps; captured by the listener | Encrypted on-device only | **30-day TTL, then purged** (domain invariant) | **Never.** Not in backups, not in telemetry, not in support flows. |
 | 2 | Committed Transaction records (structured fields only) | Ingest pipeline auto-commit, Review Queue confirmation, manual entry, recurring rules, import | Encrypted on-device | Kept until the user deletes or wipes. Free-tier History gating limits the *visible* window to 90 days; **data is never deleted at the gate** (see §8). | Only if the user enables cloud backup (Plus); encrypted in transit and at rest. |
 | 3 | Configuration entities: Wallet, Limit, Goal, Loan, Bill, Category, RecurringPattern, UserRule, IncomeProfile | User setup and pipeline learning | Encrypted on-device | Until user deletes or wipes | Same as row 2 — only with opt-in Plus backup. |
 | 4 | Entitlements state (`tier: free \| plus`) | Purchase state managed by Google Play; evaluated locally | On-device flag | While the app is installed | Purchase processing is handled by Google Play per its own policies; PeraPlano stores no payment instrument data. |
@@ -169,7 +178,7 @@ Lifecycle invariants (restating the domain invariants that bind this table):
 ## 5. Data minimization stance
 
 1. **Extract, then discard.** The Normalizer keeps only structured fields (`amount`, `direction`, `merchant`, reference number, balance-after when present, `timestamp`); raw text exists solely to power the transparency screen and re-parsing during its 30-day window.
-2. **Unknown-bin is not a dragnet.** Notifications from unrecognized packages are captured only so the user can flag "this is a money notification" in the Review Queue; they follow the same on-device-only, 30-day-purge rules as row 1 of the lifecycle table. A notification that is not money-like keeps no text at all. If it arrived while the app was closed, its app and its times stay for the same 30 days so a missed transaction can be found in the Privacy centre (owner decision 2026-09-09).
+2. **Unknown-bin is not a dragnet.** Notifications from unrecognized packages are captured only so the user can flag "this is a money notification" in the Review Queue; they follow the same on-device-only, 30-day-purge rules as row 1 of the lifecycle table. A notification that is not money-like keeps no text at all. Its app and its times stay for the same 30 days so a missed transaction can be found in the Privacy centre, on either path (owner decision 2026-09-09, extended to notifications that arrive while the app is open on 2026-09-24). A package the user has muted keeps nothing at all.
 3. **Telemetry counts, never content.** Parse-success telemetry is aggregate counters only. A parser failure report contains the provider identity and a failure class — never the text that failed to parse.
 4. **No enrichment.** PeraPlano does not look up, buy, or infer additional data about users or their counterparties from any external source.
 5. **Collection follows function.** Every field in the domain model exists because a shipped feature reads it; fields are not collected speculatively. Adding a field to any synced entity requires a lifecycle-table update, a Data safety form review, and a privacy-notice check in the same release.

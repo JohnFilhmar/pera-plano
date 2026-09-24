@@ -45,7 +45,16 @@ jest.mock("@/modules/notification_listener", () => ({
   setProviderFilter: jest.fn(async () => undefined),
 }));
 
+// The notification CHANNELS, mocked at the same boundary and for the same
+// reason: this file asserts that a launch creates them, not how. Only the one
+// export bootstrap uses is defined, so a second one would fail loudly here
+// rather than silently no-op (GAP-127).
+jest.mock("@/lib/alerts/alerts_service", () => ({
+  ensureNotificationChannels: jest.fn(async () => undefined),
+}));
+
 import { AppState } from "react-native";
+import { ensureNotificationChannels } from "@/lib/alerts/alerts_service";
 import { closeDatabase, getDatabase, unlockDatabase } from "@/lib/db/database";
 import {
   __resetBootstrapForTests,
@@ -147,6 +156,23 @@ afterEach(async () => {
   await closeDatabase();
   getSpy.mockRestore();
   postSpy.mockRestore();
+});
+
+test("bootstrapApp creates the notification channels, without which every alert is dropped", async () => {
+  // FOUND ON A DEVICE, NOT IN A TEST (GAP-127). `ensureNotificationChannels`
+  // existed and was tested, and nothing in the app ever called it, so the
+  // `goals`, `limits` and `reminders` channels were never created on a real
+  // phone. Android drops a notification posted to a channel that does not
+  // exist: the alarm fires, expo-notifications logs "will not trigger in the
+  // future, removing", and nothing reaches the shade. Every limit threshold,
+  // bill reminder and goal milestone this app has ever posted died there.
+  //
+  // AWAITED INSIDE BOOTSTRAP rather than fired from a layout effect, because
+  // the subscribers that post are started the moment bootstrap reports ready,
+  // and a channel created in a racing effect can lose to the first alert.
+  await bootstrapApp();
+
+  expect(ensureNotificationChannels).toHaveBeenCalled();
 });
 
 test("bootstrapApp runs migrations then seeds categories (15 rows present afterward)", async () => {

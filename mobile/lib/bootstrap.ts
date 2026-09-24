@@ -8,6 +8,7 @@
 // a pure read) so bootstrapApp() itself is safe to call on every launch
 // (brief's ordering-hazard rule 3).
 import { AppState, type AppStateStatus } from "react-native";
+import { ensureNotificationChannels } from "@/lib/alerts/alerts_service";
 import { getDatabase } from "@/lib/db/database";
 import { runMigrations } from "@/lib/db/migrations";
 import { getSetting, setSetting } from "@/lib/db/repos/app_settings_repo";
@@ -68,6 +69,25 @@ export async function bootstrapApp(): Promise<BootstrapResult> {
   // because it is what recovers a write that failed on the screen, and because
   // an install that reached the step before the move still has to be drained.
   await persistPendingProviderPause();
+  // THE NOTIFICATION CHANNELS, BEFORE ANYTHING CAN POST (GAP-127). Android
+  // drops a notification whose channel does not exist, silently: the alarm
+  // fires, expo-notifications logs "will not trigger in the future, removing",
+  // and the shade stays empty. `ensureNotificationChannels` existed and had its
+  // own tests from the day alerts shipped, and nothing ever called it, so every
+  // limit threshold, bill reminder and goal milestone this app posted on a real
+  // phone died there. Found on a device on 2026-09-24, never in a suite, since
+  // every alert test mocks the transport and creates the channels itself.
+  //
+  // AWAITED, AND HERE RATHER THAN IN A LAYOUT EFFECT, because the subscribers
+  // that post are started the moment this function reports ready; a channel
+  // created in a racing effect can lose to the first alert of the launch.
+  // Swallowed like the other non-essential startup work below: a phone that
+  // cannot create channels still has an app worth opening.
+  try {
+    await ensureNotificationChannels();
+  } catch (error) {
+    console.warn("notification channels could not be created; alerts will not appear", error);
+  }
   // The per-provider pause list, pushed back across the bridge (GAP-092).
   // AFTER the ruleset seed, because the allowlist it builds is "every package
   // the installed ruleset knows about, minus the paused ones" and there is no
