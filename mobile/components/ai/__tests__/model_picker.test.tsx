@@ -179,10 +179,12 @@ test("a running transfer shows its bytes while the disk still says absent, then 
   // for the whole 1.1 GB.
   const stateLine = () => String(screen.getByTestId(`model-card-${TIER_TWO.id}-state`).props.children);
 
+  // A whole percent, not tenths of a GB: on slow mobile data 0.1 GB can take
+  // over ten minutes, and a line that does not move for that long reads as stuck.
   renderPicker({
     progress: { [TIER_TWO.id]: { phase: "downloading", received: 400_000_000, total: TIER_TWO.bytes } },
   });
-  expect(stateLine()).toBe("0.4 GB of 1.1 GB downloaded");
+  expect(stateLine()).toBe("36% of 1.1 GB downloaded");
 
   renderPicker({
     progress: { [TIER_TWO.id]: { phase: "verifying", received: TIER_TWO.bytes, total: TIER_TWO.bytes } },

@@ -89,11 +89,16 @@ const STATE_LINE: Record<DownloadState, string> = {
   active: "Ready on this phone, and in use",
 };
 
-/** What the card says about the file right now. A running transfer outranks the disk. */
+/**
+ * What the card says about the file right now. A running transfer outranks the
+ * disk, and counts in whole percent: on slow mobile data 0.1 GB can take over
+ * ten minutes, and a line that does not move for that long reads as stuck.
+ */
 function stateLine(state: DownloadState, progress: TransferProgress | null): string {
   if (progress === null) return STATE_LINE[state];
   if (progress.phase === "verifying") return "Checking the file";
-  return `${formatSize(progress.received)} of ${formatSize(progress.total)} downloaded`;
+  const percent = progress.total > 0 ? Math.floor((progress.received / progress.total) * 100) : 0;
+  return `${percent}% of ${formatSize(progress.total)} downloaded`;
 }
 
 const ACTION_LABEL: Partial<Record<DownloadState, string>> = {

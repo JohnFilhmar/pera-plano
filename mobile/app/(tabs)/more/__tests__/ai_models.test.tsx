@@ -238,7 +238,7 @@ test("a fresh download shows its bytes as they land, then the checksum step", as
   const stateLine = () => String(screen.getByTestId(`model-card-${TIER_ONE.id}-state`).props.children);
 
   fireEvent.press(await screen.findByTestId(`model-card-${TIER_ONE.id}-action`));
-  await waitFor(() => expect(stateLine()).toBe("0.0 GB of 0.4 GB downloaded"));
+  await waitFor(() => expect(stateLine()).toBe("0% of 0.4 GB downloaded"));
 
   releaseBody();
   await waitFor(() => expect(stateLine()).toBe("Checking the file"));
