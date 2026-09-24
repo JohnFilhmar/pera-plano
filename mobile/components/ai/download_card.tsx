@@ -40,11 +40,24 @@ import {
 } from "@/lib/ai/downloader";
 import type { DownloadState } from "@/lib/ai/downloader";
 
+/**
+ * A transfer in flight, held by the screen that started it. The disk says
+ * nothing until the end: a fresh download stays `absent` until the final
+ * rename, so without this the card would read "Not on this phone yet" for a
+ * whole 1.1 GB transfer and never show the checksum step at all.
+ */
+export type TransferProgress = {
+  /** `verifying` from the moment every byte is on disk and hashing starts. */
+  phase: "downloading" | "verifying";
+  received: number;
+  total: number;
+};
+
 export type DownloadCardProps = {
   spec: ModelSpec;
   state: DownloadState;
-  /** Live byte counts while a transfer is running, or null between runs. */
-  progress?: { received: number; total: number } | null;
+  /** The live transfer, or null when none is running. It outranks `state`. */
+  progress?: TransferProgress | null;
   /** This phone's own measured decode rate (§2.5), or null if never measured. */
   measuredTps?: number | null;
   /**
@@ -75,6 +88,13 @@ const STATE_LINE: Record<DownloadState, string> = {
   ready: "Ready on this phone",
   active: "Ready on this phone, and in use",
 };
+
+/** What the card says about the file right now. A running transfer outranks the disk. */
+function stateLine(state: DownloadState, progress: TransferProgress | null): string {
+  if (progress === null) return STATE_LINE[state];
+  if (progress.phase === "verifying") return "Checking the file";
+  return `${formatSize(progress.received)} of ${formatSize(progress.total)} downloaded`;
+}
 
 const ACTION_LABEL: Partial<Record<DownloadState, string>> = {
   absent: "Download",
@@ -151,9 +171,7 @@ export function DownloadCard({
       </Text>
 
       <Text testID={`${testID}-state`} className="mt-2 text-secondary text-fg-2 dark:text-fg-2-dark">
-        {progress && state === "downloading"
-          ? `${formatSize(progress.received)} of ${formatSize(progress.total)} downloaded`
-          : STATE_LINE[state]}
+        {stateLine(state, progress)}
       </Text>
 
       {/* The device's own number or none at all — never §2.1's table. */}

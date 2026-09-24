@@ -29,6 +29,7 @@ import { ChatSurface, type SurfacePhase } from "@/components/ai/chat_surface";
 import { ModelPicker } from "@/components/ai/model_picker";
 import { registerIcon } from "@/components/ui/button";
 import { ListRow } from "@/components/ui/list_row";
+import { useModelDownload } from "@/hooks/use_model_download";
 import { MODEL_CATALOGUE, type ModelSpec } from "@/lib/ai/catalogue";
 import { AI_DISCLAIMER_STORAGE_KEY } from "@/lib/ai/disclaimer";
 import { createDownloader, type DownloadState } from "@/lib/ai/downloader";
@@ -185,13 +186,7 @@ export default function AiAssistantScreen() {
     void refresh();
   }, [refresh]);
 
-  const handleDownload = useCallback(
-    async (spec: ModelSpec, allowMetered: boolean) => {
-      await downloader.download(spec, { allowMetered });
-      await refresh();
-    },
-    [downloader, refresh],
-  );
+  const { transfers, download: handleDownload } = useModelDownload(downloader, refresh);
 
   const handleDelete = useCallback(
     async (spec: ModelSpec) => {
@@ -224,6 +219,7 @@ export default function AiAssistantScreen() {
           <ModelPicker
             readTotalRam={readTotalRam}
             states={states}
+            progress={transfers}
             onDownload={handleDownload}
             onDelete={handleDelete}
           />

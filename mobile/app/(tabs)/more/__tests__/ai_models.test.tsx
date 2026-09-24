@@ -196,6 +196,59 @@ test("confirming the mobile-data prompt is what lets the request out", async () 
   await screen.findByText(/could not be completed/);
 });
 
+test("a fresh download shows its bytes as they land, then the checksum step", async () => {
+  // The disk says `absent` for the whole transfer, so everything the card
+  // shows before the end comes from the download's own callbacks.
+  let releaseBody = () => {};
+  let releaseHash = () => {};
+  const bodyGate = new Promise<void>((resolve) => {
+    releaseBody = resolve;
+  });
+  const hashGate = new Promise<void>((resolve) => {
+    releaseHash = resolve;
+  });
+
+  const files = {
+    ...fakeFileStore(),
+    // Nothing here hashes to a catalogue digest, so this ends in the honest
+    // checksum refusal once the test lets it finish.
+    readChunks: async function* (): AsyncGenerator<Uint8Array> {
+      await hashGate;
+    },
+  };
+  const fetchFake = jest.fn(
+    async (): Promise<HttpResponse> => ({
+      status: 200,
+      headers: { get: (name) => (name === "content-length" ? String(TIER_ONE.bytes) : null) },
+      body: (async function* () {
+        yield new Uint8Array(1024);
+        await bodyGate;
+        yield new Uint8Array(1024);
+      })(),
+    }),
+  );
+  const info = jest.spyOn(console, "info").mockImplementation(() => undefined);
+  renderScreen({ files, fetch: fetchFake });
+  const stateLine = () => String(screen.getByTestId(`model-card-${TIER_ONE.id}-state`).props.children);
+
+  fireEvent.press(await screen.findByTestId(`model-card-${TIER_ONE.id}-action`));
+  await waitFor(() => expect(stateLine()).toBe("0.0 GB of 0.4 GB downloaded"));
+
+  releaseBody();
+  await waitFor(() => expect(stateLine()).toBe("Checking the file"));
+
+  releaseHash();
+  await screen.findByText(/did not match its checksum/);
+  expect(stateLine()).toBe("Not on this phone yet");
+
+  // docs/13 Gate 7: the checksum step started, and a file that failed it is
+  // never logged as verified.
+  expect(info.mock.calls.map(([line]) => line)).toEqual([
+    `[ai_download] {"event":"verify_start","id":"${TIER_ONE.id}"}`,
+  ]);
+  info.mockRestore();
+});
+
 test("delete asks first — cancelling reclaims nothing", async () => {
   const { files } = renderScreen({ files: fakeFileStore({ [FINAL_PATH]: TIER_ONE.bytes }) });
 

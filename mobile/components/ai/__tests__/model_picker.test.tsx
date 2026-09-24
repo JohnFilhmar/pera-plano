@@ -24,6 +24,7 @@ import { MODEL_CATALOGUE } from "@/lib/ai/catalogue";
 import { MeteredNetworkError } from "@/lib/ai/downloader";
 import type { DownloadState } from "@/lib/ai/downloader";
 
+import type { TransferProgress } from "../download_card";
 import { ModelPicker } from "../model_picker";
 
 const GIB = 1024 * 1024 * 1024;
@@ -42,6 +43,7 @@ type PickerOverrides = {
   readTotalRam?: () => number;
   states?: Record<string, DownloadState>;
   measuredTps?: Record<string, number>;
+  progress?: Record<string, TransferProgress>;
   onDownload?: (spec: (typeof MODEL_CATALOGUE)[number], allowMetered: boolean) => Promise<void>;
   onDelete?: (spec: (typeof MODEL_CATALOGUE)[number]) => Promise<void>;
 };
@@ -52,6 +54,7 @@ function renderPicker(overrides: PickerOverrides = {}) {
       readTotalRam={overrides.readTotalRam ?? (() => RAM_EVERYTHING)}
       states={overrides.states ?? {}}
       measuredTps={overrides.measuredTps}
+      progress={overrides.progress}
       onDownload={overrides.onDownload ?? noop}
       onDelete={overrides.onDelete ?? noop}
     />,
@@ -168,6 +171,23 @@ test("the speed shown is the number this phone measured", () => {
   // Exactly one, because the unmeasured tier still shows no figure — one
   // model's measurement never speaks for the other.
   expect(screen.queryAllByText(/tokens\/second/)).toHaveLength(1);
+});
+
+test("a running transfer shows its bytes while the disk still says absent, then the checksum step", () => {
+  // A fresh download is `absent` on disk until the final rename, so the live
+  // transfer has to outrank the disk or the card says "Not on this phone yet"
+  // for the whole 1.1 GB.
+  const stateLine = () => String(screen.getByTestId(`model-card-${TIER_TWO.id}-state`).props.children);
+
+  renderPicker({
+    progress: { [TIER_TWO.id]: { phase: "downloading", received: 400_000_000, total: TIER_TWO.bytes } },
+  });
+  expect(stateLine()).toBe("0.4 GB of 1.1 GB downloaded");
+
+  renderPicker({
+    progress: { [TIER_TWO.id]: { phase: "verifying", received: TIER_TWO.bytes, total: TIER_TWO.bytes } },
+  });
+  expect(stateLine()).toBe("Checking the file");
 });
 
 test("an absent model offers a download, a downloaded one offers a delete", () => {

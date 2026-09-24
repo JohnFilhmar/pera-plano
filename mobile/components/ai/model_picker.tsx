@@ -24,7 +24,7 @@ import type { DownloadState } from "@/lib/ai/downloader";
 import { offeredModels } from "@/lib/ai/ram_gate";
 import type { RamReader } from "@/lib/ai/ram_gate";
 
-import { DownloadCard } from "./download_card";
+import { DownloadCard, type TransferProgress } from "./download_card";
 
 export type ModelPickerProps = {
   readTotalRam: RamReader;
@@ -32,7 +32,8 @@ export type ModelPickerProps = {
   catalogue?: readonly ModelSpec[];
   /** Per-model download state, keyed by `ModelSpec.id`. Absent means `absent`. */
   states: Readonly<Record<string, DownloadState>>;
-  progress?: Readonly<Record<string, { received: number; total: number }>>;
+  /** Transfers in flight, keyed by `ModelSpec.id`. Absent means none is running. */
+  progress?: Readonly<Record<string, TransferProgress>>;
   /** This phone's own measured decode rates (§2.5). Never a §2.1 estimate. */
   measuredTps?: Readonly<Record<string, number>>;
   onDownload: (spec: ModelSpec, allowMetered: boolean) => Promise<void>;

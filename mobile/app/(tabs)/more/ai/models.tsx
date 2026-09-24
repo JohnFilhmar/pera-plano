@@ -21,18 +21,13 @@
 //   having a prepaid load spent on a guess. `METERED_NOTE` says so in the
 //   dialog rather than letting the copy assert a network fact it does not know.
 //
-//   THE BYTE TRANSFER IS NOT WIRED, AND SAYS SO OUT LOUD. `createDownloader`
-//   streams a response body into an appendable file, and neither half exists
-//   in this app's dependencies today: React Native's `fetch` does not expose a
-//   streaming body, and `expo-file-system/legacy` — this repo's file API — has
-//   no append and no positional write. Both are therefore explicit throws
-//   rather than silent no-ops, because a no-op `append` would let an EMPTY
-//   file reach verification, and the digest mismatch would be reported as a
-//   corrupt download of a file that was never fetched. Everything the legacy
-//   API genuinely supports (state, size, delete, the atomic rename, free
-//   space) is implemented, so the screen shows the real disk. The transfer
-//   itself lands with the streaming pair (`expo/fetch` plus a writable file
-//   handle) or in `llama_bridge` — one dependency decision, not a UI change.
+//   THE BYTE TRANSFER STREAMS. `createProductionDeps` reads the response body
+//   through `expo/fetch` as it arrives and appends it with the SDK 54 `File`
+//   API (`lib/ai/model_transfer.ts`); the legacy store covers state, size,
+//   delete, the atomic rename and free space. `useModelDownload` holds each
+//   transfer in this screen's state while it runs, because the disk says
+//   nothing until the final rename: the card shows bytes as they land, then
+//   the checksum step, and the disk is read again once `download()` settles.
 //
 // DELETE IS MIRRORED IN More → Settings → Privacy (Task 25). Two entry points,
 // one behaviour: "downloading gigabytes with no visible way to reclaim them is
@@ -41,6 +36,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 
 import { ModelPicker } from "@/components/ai/model_picker";
+import { useModelDownload } from "@/hooks/use_model_download";
 import { MODEL_CATALOGUE } from "@/lib/ai/catalogue";
 import type { ModelSpec } from "@/lib/ai/catalogue";
 import { createDownloader } from "@/lib/ai/downloader";
@@ -75,7 +71,6 @@ export default function AiModelsScreen({ deps, readTotalRam }: AiModelsScreenPro
   const downloader = useMemo(() => createDownloader(downloaderDeps), [downloaderDeps]);
 
   const [states, setStates] = useState<Record<string, DownloadState>>({});
-  const [progress, setProgress] = useState<Record<string, { received: number; total: number }>>({});
 
   // Read from DISK on every settle, never remembered: the `.part` that decides
   // "resumable" survives a process kill, and a state cached in memory would
@@ -92,31 +87,11 @@ export default function AiModelsScreen({ deps, readTotalRam }: AiModelsScreenPro
     void refresh();
   }, [refresh]);
 
-  const handleDownload = useCallback(
-    async (spec: ModelSpec, allowMetered: boolean) => {
-      try {
-        await downloader.download(spec, {
-          allowMetered,
-          onProgress: (received, total) =>
-            setProgress((current) => ({ ...current, [spec.id]: { received, total } })),
-        });
-      } finally {
-        // Runs on the refusals too — a metered or free-space refusal leaves a
-        // `.part` exactly as it was, and the card must keep saying so.
-        await refresh();
-      }
-    },
-    [downloader, refresh],
-  );
+  const { transfers, download: handleDownload } = useModelDownload(downloader, refresh);
 
   const handleDelete = useCallback(
     async (spec: ModelSpec) => {
       await downloader.remove(spec);
-      setProgress((current) => {
-        const next = { ...current };
-        delete next[spec.id];
-        return next;
-      });
       await refresh();
     },
     [downloader, refresh],
@@ -143,7 +118,7 @@ export default function AiModelsScreen({ deps, readTotalRam }: AiModelsScreenPro
       <ModelPicker
         readTotalRam={readTotalRam ?? readDeviceTotalRam}
         states={states}
-        progress={progress}
+        progress={transfers}
         onDownload={handleDownload}
         onDelete={handleDelete}
         meteredNote={METERED_NOTE}
