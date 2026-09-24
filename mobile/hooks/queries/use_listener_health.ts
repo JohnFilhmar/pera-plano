@@ -6,10 +6,13 @@ import { getSetting } from "@/lib/db/repos/app_settings_repo";
 import { getListenerHealth } from "@/modules/notification_listener";
 
 export type TrackingHealth = {
-  /** The listener's own three facts. */
+  /** The listener's own facts. */
   granted: boolean;
   serviceConnected: boolean;
   lastCaptureAt: number | null;
+  /** Waiting in the buffer, and thrown away by its cap (GAP-051). */
+  pendingCaptures: number;
+  evictedCaptures: number;
   /** The user's own switch — distinct from a fault (spec: paused vs interrupted). */
   captureEnabled: boolean;
 };

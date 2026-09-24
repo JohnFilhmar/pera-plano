@@ -38,6 +38,16 @@ function lastCaptureLabel(lastCaptureAt: number | null): string {
 }
 
 /**
+ * "4 captures were dropped", "1 capture was dropped" (GAP-051).
+ *
+ * The verb agrees as well as the noun. A plain `capture(s)` suffix reads as
+ * machine output in the one sentence on this card that reports real loss.
+ */
+function evictedSentence(count: number): string {
+  return count === 1 ? "1 capture was dropped" : `${count} captures were dropped`;
+}
+
+/**
  * The board's "Everything's listening" headline, generalised to its two
  * unhealthy equivalents from the SAME two booleans this card already reads —
  * no new data. Ordered by severity: a revoked permission is worse than a
@@ -56,7 +66,7 @@ export function HealthCard({ health, onOpenAccessSettings, testID }: HealthCardP
     return <View testID={testID ?? "health-card-loading"} />;
   }
 
-  const { granted, serviceConnected, lastCaptureAt } = health;
+  const { granted, serviceConnected, lastCaptureAt, pendingCaptures, evictedCaptures } = health;
   const healthy = granted && serviceConnected;
 
   return (
@@ -96,6 +106,19 @@ export function HealthCard({ health, onOpenAccessSettings, testID }: HealthCardP
         >
           {lastCaptureLabel(lastCaptureAt)}
         </Text>
+        {/* Only when something IS waiting. A permanent "0 waiting" line is the
+            kind of fixture a reader learns to skip, which is exactly the habit
+            that would make the dropped-capture banner below invisible too. */}
+        {pendingCaptures > 0 ? (
+          <Text
+            testID="health-card-pending"
+            className="text-center text-secondary text-fg-2 dark:text-fg-2-dark"
+          >
+            {pendingCaptures === 1
+              ? "1 capture waiting to be read"
+              : `${pendingCaptures} captures waiting to be read`}
+          </Text>
+        ) : null}
       </View>
 
       {/* The two live permission facts, rule 1 — always shown, regardless of
@@ -159,6 +182,33 @@ export function HealthCard({ health, onOpenAccessSettings, testID }: HealthCardP
               Open notification access settings
             </Text>
           </Pressable>
+        </View>
+      ) : null}
+
+      {/* GAP-051. The native buffer is capped at 500 sealed records and drops
+          the oldest to take a new one, which used to be entirely silent. Amber
+          rather than the red above: the loss is real but it is HISTORY, while
+          the red banner is a fault still happening. `bg-warn` + `text-fg` is
+          the pair components/home/safe_to_spend_hero.tsx already proved
+          against AA on this exact fill — `warn-ink` is tuned for warn's soft
+          tint and measures 1.4-2.2:1 on the solid one (constants/colors.ts).
+
+          NO DISMISS. Nothing can un-drop a capture, so there is no state in
+          which this stops being true; it clears only when the buffer it
+          describes is wiped. */}
+      {evictedCaptures > 0 ? (
+        <View
+          testID="health-card-evicted"
+          className="mt-4 gap-2 rounded-lg bg-warn px-4 py-3 dark:bg-warn-dark"
+        >
+          <Text className="font-semibold text-fg dark:text-on-brand-dark">
+            {evictedSentence(evictedCaptures)}
+          </Text>
+          <Text className="text-fg dark:text-on-brand-dark">
+            PeraPlano can hold 500 unread notifications. These were pushed out before the app could
+            read them, so they never reached your ledger and cannot be recovered. Opening the app
+            more often stops it happening again.
+          </Text>
         </View>
       ) : null}
     </Card>

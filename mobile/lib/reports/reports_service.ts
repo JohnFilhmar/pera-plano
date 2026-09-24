@@ -13,10 +13,11 @@
 // TWO GATES, NOT ONE, AND THEY DO DIFFERENT JOBS. This file is the tier
 // call-site docs/05-monetization.md §4 means by "gated call-sites ask a
 // question here": it decides WHICH RANGE a Free user is even allowed to ask
-// for (current month only; `customAllowed` is always false). It does NOT
-// separately enforce the 90-day visibility floor — `listTransactions`
-// (lib/db/repos/transactions_repo.ts) already clamps every read to
-// `historyWindowDays()` on its own, keyed off the same `getTier()`. Reimplementing
+// for (any month inside the history window; `customAllowed` is always false).
+// It reads `historyWindowDays()` to build that month list, which is the
+// BROWSING half of the gate, and it does NOT clamp the reads themselves —
+// `listTransactions` (lib/db/repos/transactions_repo.ts) already clamps every
+// read to the same value, keyed off the same `getTier()`. Reimplementing
 // that clamp here would be a second place deciding the same question, exactly
 // what rule 4 forbids. The two gates are complementary: this one picks the
 // month, that one picks how far back inside it a Free read may actually see
@@ -29,8 +30,8 @@
 // task's hook (mirrors buildSafeToSpendInput's `today`/`now` parameters).
 import { listCategories } from "@/lib/db/repos/categories_repo";
 import { listTransactions } from "@/lib/db/repos/transactions_repo";
-import { addMonthsClampedIso, endOfLocalDay, parseDateIso } from "@/lib/dates";
-import { getTier, type Tier } from "@/lib/entitlements";
+import { addDaysIso, addMonthsClampedIso, endOfLocalDay, parseDateIso } from "@/lib/dates";
+import { getTier, historyWindowDays, type Tier } from "@/lib/entitlements";
 import { periodForScope } from "@/lib/period";
 import {
   categoryBreakdown,
@@ -91,6 +92,9 @@ const TOP_MERCHANTS_LIMIT = 5;
  */
 const AVAILABLE_MONTHS_PLUS = 12;
 
+/** A bound on the Free month scan, so a window measured in years cannot build a list no picker can show. */
+const MAX_FREE_SCOPE_MONTHS = 13;
+
 /** `'2026-08-31'` → `'2026-08'`. Safe on any `IsoDate` — always zero-padded. */
 function monthKey(iso: IsoDate): string {
   return iso.slice(0, 7);
@@ -120,13 +124,46 @@ function trailingMonths(today: IsoDate, count: number): DateRange[] {
 }
 
 /**
+ * The months a Free user may open: every one whose FIRST DAY is still inside
+ * the history window (`historyWindowDays`), newest first.
+ *
+ * MEASURED FROM THE FIRST DAY, NOT THE LAST. On 2026-08-15 the floor is
+ * 2026-05-17, so June through August qualify and May does not, at 106 days
+ * back. Measuring from a month's last day would admit a month whose early
+ * weeks are already past the floor, which is the line the free tier draws.
+ *
+ * THE WINDOW IS A BROWSING GATE, NOT A COMPUTATION ONE (the repo's CLAUDE.md
+ * says so, and safe-to-spend rule 6b depends on it): this bounds which months
+ * the picker offers, never what a figure is computed from.
+ *
+ * @param today - The user's local today.
+ * @returns Month keys, newest first. Empty on Plus, which has no window.
+ */
+function freeMonthKeys(today: IsoDate): string[] {
+  const windowDays = historyWindowDays();
+  if (windowDays === null) return [];
+
+  const floor = addDaysIso(today, -windowDays);
+  const keys: string[] = [];
+  // Bounded rather than `while (true)`: a window someone later sets to years
+  // would otherwise build a list no picker can show.
+  for (let monthsBack = 0; monthsBack < MAX_FREE_SCOPE_MONTHS; monthsBack++) {
+    const firstDay = `${monthKey(addMonthsClampedIso(today, -monthsBack))}-01`;
+    if (firstDay < floor) break;
+    keys.push(monthKey(firstDay));
+  }
+  return keys;
+}
+
+/**
  * Resolves what the caller asked for into what they are actually allowed to
  * see (rule 1).
  *
- * FREE sees the current month, full stop — a request for a different month,
- * OR a custom range at all (`customAllowed` is always false for Free), both
- * silently clamp to the current month rather than throwing: a user tapping
- * "last month" on a locked screen should see an explanation
+ * FREE browses the history window one month at a time (owner's ruling,
+ * 2026-09-24): a month inside the window is served verbatim, and anything
+ * else — an older month, or a custom range at all, since `customAllowed` is
+ * always false for Free — silently clamps to the current month rather than
+ * throwing. A user tapping a locked period should see an explanation
  * (`truncatedByTier`), not a crash.
  *
  * PLUS gets exactly what it asked for: the named month's calendar range, or
@@ -138,8 +175,10 @@ function resolveScope(
   tier: Tier,
 ): { range: DateRange; truncatedByTier: boolean } {
   if (tier === "free") {
-    const isCurrentMonth = scope.kind === "month" && scope.month === monthKey(today);
-    return { range: calendarMonthOf(today), truncatedByTier: !isCurrentMonth };
+    if (scope.kind === "month" && freeMonthKeys(today).includes(scope.month)) {
+      return { range: calendarMonthOf(`${scope.month}-01`), truncatedByTier: false };
+    }
+    return { range: calendarMonthOf(today), truncatedByTier: true };
   }
 
   if (scope.kind === "custom") {
@@ -211,13 +250,13 @@ export async function getReport(scope: ReportScope, today: IsoDate): Promise<Rep
 }
 
 /**
- * What a period picker may offer: Free gets exactly the current month with
- * custom ranges off; Plus gets a trailing 12-month list with custom ranges
- * on (rule 1).
+ * What a period picker may offer: Free gets every month inside the history
+ * window with custom ranges off; Plus gets a trailing 12-month list with
+ * custom ranges on (rule 1).
  */
 export async function availableScopes(today: IsoDate): Promise<AvailableScopes> {
   if (getTier() === "free") {
-    return { months: [monthKey(today)], customAllowed: false };
+    return { months: freeMonthKeys(today), customAllowed: false };
   }
   return {
     months: trailingMonths(today, AVAILABLE_MONTHS_PLUS).map((range) => monthKey(range.from)),

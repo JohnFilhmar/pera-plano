@@ -205,14 +205,16 @@ describe("the Settings screen", () => {
     renderScreen(<SettingsScreen />);
 
     const toggle = await screen.findByTestId("settings-telemetry-toggle");
-    expect(toggle.props.value).toBe(true); // telemetry_enabled defaults to true
+    // OFF UNTIL ASKED (owner's ruling, 2026-09-24, GAP-021): diagnostics are
+    // processed on consent, so the row starts off and the user turns it ON.
+    expect(toggle.props.value).toBe(false);
 
-    fireEvent(toggle, "valueChange", false);
+    fireEvent(toggle, "valueChange", true);
 
-    await waitFor(async () => expect(await getSetting("telemetry_enabled")).toBe(false));
+    await waitFor(async () => expect(await getSetting("telemetry_enabled")).toBe(true));
     // The screen's own read reflects the write too, not only the repo directly.
     await waitFor(() =>
-      expect(screen.getByTestId("settings-telemetry-toggle").props.value).toBe(false),
+      expect(screen.getByTestId("settings-telemetry-toggle").props.value).toBe(true),
     );
   });
 
@@ -225,7 +227,7 @@ describe("the Settings screen", () => {
     // merchants. If this text ever stops being true, the copy is what has to
     // change to match the implementation — never the other way around.
     const subtitle = screen.getByText(
-      "When on, PeraPlano shares only counts of successful and failed notification parses, per provider. Never notification content, amounts, or merchant names.",
+      "Off unless you turn it on. When on, PeraPlano shares only counts of successful and failed notification parses, per provider. Never notification content, amounts, or merchant names.",
     );
 
     // fix-round-1: `getByText` alone passed against this exact bug — RNTL
@@ -246,12 +248,14 @@ describe("the Settings screen", () => {
 
     const toggle = await screen.findByTestId("settings-telemetry-toggle");
     // Positive assertion first — the switch is really there and really
-    // checked (telemetry_enabled's real default) — before the prop checks
-    // below, so this cannot pass against a Switch that failed to render.
-    expect(toggle.props.value).toBe(true);
+    // unchecked (telemetry_enabled's real default since GAP-021) — before the
+    // prop checks below, so this cannot pass against a Switch that failed to
+    // render. The state has to track the value: a row announcing "checked"
+    // while nothing is being sent is the accessibility version of a lie.
+    expect(toggle.props.value).toBe(false);
     expect(toggle.props.accessibilityRole).toBe("switch");
     expect(toggle.props.accessibilityLabel).toBe("Share anonymous parser health");
-    expect(toggle.props.accessibilityState).toEqual({ checked: true });
+    expect(toggle.props.accessibilityState).toEqual({ checked: false });
   });
 
   test("the subscription-forget multiplier defaults to 1.5, clamps to the floor at 1, and persists", async () => {

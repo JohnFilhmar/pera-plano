@@ -15,6 +15,8 @@ function health(overrides: Partial<TrackingHealth> = {}): TrackingHealth {
     serviceConnected: true,
     lastCaptureAt: null,
     captureEnabled: true,
+    pendingCaptures: 0,
+    evictedCaptures: 0,
     ...overrides,
   };
 }
@@ -66,6 +68,34 @@ test("a disconnected-but-granted service shows the fact plainly, with no revoked
 
   screen.getByText("Disconnected");
   expect(screen.queryByTestId("health-card-revoked-warning")).toBeNull();
+});
+
+test("captures waiting to be read are shown as a plain figure", () => {
+  render(<HealthCard health={health({ pendingCaptures: 7 })} onOpenAccessSettings={jest.fn()} />);
+
+  expect(screen.getByTestId("health-card-pending").props.children).toMatch(/7/);
+});
+
+test("a buffer that has dropped nothing shows no loss warning at all", () => {
+  // GAP-051: the eviction row is the whole point of the counter, so it must
+  // not be a permanent "0 dropped" fixture that readers learn to ignore.
+  render(<HealthCard health={health({ evictedCaptures: 0 })} onOpenAccessSettings={jest.fn()} />);
+
+  expect(screen.queryByTestId("health-card-evicted")).toBeNull();
+});
+
+test("an evicted capture is reported as lost, with the count", () => {
+  render(<HealthCard health={health({ evictedCaptures: 4 })} onOpenAccessSettings={jest.fn()} />);
+
+  const evicted = screen.getByTestId("health-card-evicted");
+  expect(evicted).toBeTruthy();
+  screen.getByText(/4 captures were dropped/);
+});
+
+test("one dropped capture reads in the singular", () => {
+  render(<HealthCard health={health({ evictedCaptures: 1 })} onOpenAccessSettings={jest.fn()} />);
+
+  screen.getByText(/1 capture was dropped/);
 });
 
 test("undefined health (still loading) renders without throwing", () => {

@@ -2,7 +2,15 @@
 
 This document defines PeraPlano's privacy posture and regulatory compliance plan: obligations under the Philippine Data Privacy Act of 2012 (RA 10173) and the National Privacy Commission (NPC), the Google Play policy obligations attached to notification access and finance-adjacent apps, the full data lifecycle (what data exists, where it lives, how long it is kept, and whether it ever leaves the device), the data-minimization stance, the treatment of third-party personal data that appears inside notifications, and the complete list of user-facing privacy controls. It expands §10 of the master planning context and is the source of truth for the privacy notice, the Play Data safety form, and store-review submissions. Genuinely undecided items are tracked in [08-risks-and-open-questions.md](08-risks-and-open-questions.md).
 
-**Status:** Draft v1.1 · 2026-09-24
+**Status:** Draft v1.2 · 2026-09-24
+
+**What changed in v1.2.** Diagnostics moved from legitimate interest to CONSENT
+(owner's ruling, 2026-09-24, GAP-021). §2's legal-basis table, §3's Data safety
+mapping and §4's row 5 now say the same thing: nothing is sent until the user
+turns the Settings row on. The app's default followed in the same commit, so the
+notice and the code agree. This closes the open row that
+[08-risks-and-open-questions.md](08-risks-and-open-questions.md) carried against
+04-features/11-settings-privacy.md.
 
 **What changed in v1.1, and why it is recorded here.** §4's lifecycle table row 1 now
 states that a non-money notification keeps only its app and its times, on both ingest
@@ -41,7 +49,7 @@ PeraPlano is local-first by architecture, not by policy promise. Raw notificatio
 |---|---|---|
 | Notification ingest and on-device ledger | Consent, evidenced in-app before the Notification Access grant | Consent is specific to the purpose ("automatically record money movements from your notifications"), freely given (every permission is skippable; the app degrades to manual mode), and withdrawable (pause listening, revoke access, wipe). |
 | Cloud backup / multi-device sync (Plus) | Consent plus necessity for a service the user requested | Strictly opt-in; disabled by default; disabling it deletes server-side copies (§4). |
-| Aggregate telemetry (parse success/failure counts, crash rates, listener uptime) | Legitimate interest | Content-free counters only: no notification text, no amounts, no merchants, no counterparties. User can opt out in settings without losing any feature. |
+| Aggregate telemetry (parse success/failure counts, crash rates, listener uptime) | **Consent** | Content-free counters only: no notification text, no amounts, no merchants, no counterparties. OFF until the user turns it on in Settings, and withdrawable there at any time; no feature depends on it either way. Owner's ruling, 2026-09-24, settling GAP-021: legitimate interest was the earlier reading and is no longer claimed. |
 | Support correspondence | Consent / contract necessity | Only what the user sends us; users are warned not to paste raw notification text into support messages. |
 | App's own alerts (limit thresholds, bill reminders, loan reminders, goal updates, the daily Review Queue digest, listener health, payday summary) | Necessity for the service the user configured | Delivered on-device; requires the POST_NOTIFICATIONS runtime permission on Android 13+ (§3.5). |
 
@@ -120,7 +128,7 @@ The Data safety form describes data **collected** (transmitted off-device) and *
 | Financial info → purchase history / other financial info | Collected **only when the user enables cloud backup (Plus)**: structured Transaction records and the user's configuration entities (Wallets, Limits, Goals, Loans, Bills, IncomeProfile, UserRules, RecurringPatterns). Optional (off by default). Purpose: app functionality (backup/sync). Encrypted in transit. User can request deletion (in-app wipe and backup disable). **Not shared** with third parties. |
 | Personal info → user IDs | The backup sign-in identity, only if backup is enabled. Optional. Purpose: app functionality. Deletable in-app and via web (§3.7). |
 | Messages → other in-app messages / notifications | Raw notification content is processed **on-device only** and never transmitted; therefore not declared as collected. The prominent-disclosure and declaration flow (§3.1) — not the Data safety form — is where notification access is justified. |
-| App activity / App info and performance | Content-free diagnostics: crash data, parse success/failure counts, listener uptime. Purpose: analytics/app functionality. No content, amounts, merchants, or counterparties. Opt-out available. |
+| App activity / App info and performance | Content-free diagnostics: crash data, parse success/failure counts, listener uptime. Purpose: analytics/app functionality. No content, amounts, merchants, or counterparties. Off until the user opts in; declare as optional. |
 | Data deletion | In-app: wipe everything; disable backup (deletes server copies); web deletion path for the sign-in identity. |
 | Sharing / selling | None. No ads. No data sold. No third-party advertising or marketing data recipients of any kind. |
 
@@ -161,8 +169,8 @@ If cloud backup ships with a sign-in identity, Play's account-deletion policy ap
 | 2 | Committed Transaction records (structured fields only) | Ingest pipeline auto-commit, Review Queue confirmation, manual entry, recurring rules, import | Encrypted on-device | Kept until the user deletes or wipes. Free-tier History gating limits the *visible* window to 90 days; **data is never deleted at the gate** (see §8). | Only if the user enables cloud backup (Plus); encrypted in transit and at rest. |
 | 3 | Configuration entities: Wallet, Limit, Goal, Loan, Bill, Category, RecurringPattern, UserRule, IncomeProfile | User setup and pipeline learning | Encrypted on-device | Until user deletes or wipes | Same as row 2 — only with opt-in Plus backup. |
 | 4 | Entitlements state (`tier: free \| plus`) | Purchase state managed by Google Play; evaluated locally | On-device flag | While the app is installed | Purchase processing is handled by Google Play per its own policies; PeraPlano stores no payment instrument data. |
-| 5 | Aggregate telemetry: parse success/failure counts per provider, dedupe rates, listener uptime, crash data | Generated on-device | Company analytics store (aggregate, content-free) | Raw event records ≤ 90 days; aggregated statistics ≤ 24 months | Yes, but contains no notification content, amounts, merchants, or counterparties. Opt-out available. |
-| 6 | Cloud backup snapshots (Plus, opt-in) | Encrypted sync of rows 2–3 | Company backup infrastructure (via PIP under contract) | Until the user disables backup, wipes, or deletes the sign-in identity; server copies removed within 30 days of any of those | Yes — this is the only path user financial data ever takes off the device, and it is opt-in. |
+| 5 | Aggregate telemetry: parse success/failure counts per provider, dedupe rates, listener uptime, crash data | Generated on-device | Company analytics store (aggregate, content-free) | Raw event records ≤ 90 days; aggregated statistics ≤ 24 months | Only after the user opts in, and then with no notification content, amounts, merchants or counterparties. |
+| 6 | Cloud backup snapshots (Plus, opt-in) **PLANNED, NOT BUILT** | Encrypted sync of rows 2–3 | Company backup infrastructure (via PIP under contract) | Until the user disables backup, wipes, or deletes the sign-in identity; server copies removed within 30 days of any of those | Not today: no code writes this row, and nothing in the app sends financial data anywhere. When built it is opt-in, and it would be the only path off the device. |
 | 7 | Export files (CSV) | Generated on demand by the user | Wherever the user saves or shares them | User-controlled | Only by the user's own action; the app warns that exports are unencrypted and outside its protection. |
 | 8 | Support correspondence | User-initiated | Company support mailbox | ≤ 24 months after case closure | Yes, by the user's own action; users are advised not to paste raw notification text. |
 | 9 | Beta tester signup list: Google account email, first name, optional phone model, consent record | Submitted by the person on the beta page | Company spreadsheet, with Google as processor | Until public release plus ninety days, or until the person asks to be removed | Not device data. It is given to us directly, and shared with Google in order to issue the Play closed-testing invitation. |

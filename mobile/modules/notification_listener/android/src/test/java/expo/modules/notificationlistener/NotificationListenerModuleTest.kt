@@ -74,7 +74,11 @@ class NotificationListenerModuleTest {
   )
 
   /** Interface contract §4 `getListenerHealth`, verbatim. */
-  private val healthKeys = setOf("granted", "serviceConnected", "lastCaptureAt")
+  // `pendingCaptures` and `evictedCaptures` joined the contract with GAP-051:
+  // a buffer that silently drops its oldest capture at the cap left the health
+  // screen unable to say anything about the loss.
+  private val healthKeys =
+    setOf("granted", "serviceConnected", "lastCaptureAt", "pendingCaptures", "evictedCaptures")
 
   /** Interface contract §4 `ObservedPackage`, verbatim. Nothing else may appear. */
   private val observedKeys = setOf("packageName", "count", "lastSeenAt")
@@ -614,6 +618,55 @@ class NotificationListenerModuleTest {
   // =====================================================================
   // getListenerHealth (contract §4; plan Task 6 rule 4)
   // =====================================================================
+
+  @Test
+  fun `getListenerHealth counts what is waiting and what the cap threw away`() {
+    // GAP-051. The count is read-only: `drainPendingCaptures` is destructive,
+    // so a health screen that had to drain in order to count would consume the
+    // very captures it was reporting on.
+    grantNotificationAccess()
+    // setUp creates only the prefs KEK; sealing a capture needs the keypair.
+    KeyStoreBridge.ensureCaptureKeyPair()
+    val prefs = CapturePrefs(context)
+    val buffer = CaptureBuffer.fileFor(context)
+
+    val empty = listenerHealth(context)
+    assertEquals(0, empty["pendingCaptures"])
+    assertEquals(0, empty["evictedCaptures"])
+
+    CaptureBuffer.append(buffer, sampleRecord(id = "waiting-1"))
+    CaptureBuffer.append(buffer, sampleRecord(id = "waiting-2"))
+    prefs.recordEvictedCaptures(3)
+
+    val loaded = listenerHealth(context)
+    assertEquals(2, loaded["pendingCaptures"])
+    assertEquals(3, loaded["evictedCaptures"])
+  }
+
+  @Test
+  fun `the eviction total outlives a drain and dies with a wipe`() {
+    // GAP-051's near-miss, pinned. The drain runs unattended from the ingest
+    // pipeline seconds after launch, so a total cleared there would read 0 by
+    // the time the health screen could show it -- which reads as proof that
+    // nothing was lost. A wipe is the opposite case: the user asked for all of
+    // it to be gone, and a surviving figure describes data that no longer
+    // exists.
+    grantNotificationAccess()
+    KeyStoreBridge.ensureCaptureKeyPair()
+    val prefs = CapturePrefs(context)
+    val buffer = CaptureBuffer.fileFor(context)
+
+    CaptureBuffer.append(buffer, sampleRecord(id = "drained-1"))
+    prefs.recordEvictedCaptures(4)
+
+    assertEquals(1, drainPendingCaptures(context).size)
+    val afterDrain = listenerHealth(context)
+    assertEquals(0, afterDrain["pendingCaptures"])
+    assertEquals(4, afterDrain["evictedCaptures"])
+
+    clearCaptureBuffer(context)
+    assertEquals(0, listenerHealth(context)["evictedCaptures"])
+  }
 
   @Test
   fun `getListenerHealth reports granted, serviceConnected and lastCaptureAt`() {

@@ -82,13 +82,13 @@ function withSettings(overrides: { capture_enabled?: boolean; onboarding_complet
 
 /** Capture is on and the listener is alive: nothing to say. */
 function healthy(): void {
-  mockHealth.mockResolvedValue({ granted: true, serviceConnected: true, lastCaptureAt: NOW });
+  mockHealth.mockResolvedValue({ granted: true, serviceConnected: true, lastCaptureAt: NOW, pendingCaptures: 0, evictedCaptures: 0 });
   withSettings();
 }
 
 /** Access still granted, service silently dead — the failure this notice exists for. */
 function disconnected(): void {
-  mockHealth.mockResolvedValue({ granted: true, serviceConnected: false, lastCaptureAt: NOW });
+  mockHealth.mockResolvedValue({ granted: true, serviceConnected: false, lastCaptureAt: NOW, pendingCaptures: 0, evictedCaptures: 0 });
   withSettings();
 }
 
@@ -117,7 +117,7 @@ test("A DEAD LISTENER POSTS THE INTERRUPTED NOTICE", async () => {
 });
 
 test("revoked notification access is a fault too", async () => {
-  mockHealth.mockResolvedValue({ granted: false, serviceConnected: false, lastCaptureAt: NOW });
+  mockHealth.mockResolvedValue({ granted: false, serviceConnected: false, lastCaptureAt: NOW, pendingCaptures: 0, evictedCaptures: 0 });
   withSettings();
 
   await runTrackingHealthCheck(NOW);
@@ -132,7 +132,7 @@ test("A FRESH INSTALL IS NOT AN INTERRUPTION", async () => {
   // notice above is correct for a user who HAD access and lost it; posting it
   // here would make the first thing a new user ever sees a complaint about a
   // feature onboarding has not offered them yet.
-  mockHealth.mockResolvedValue({ granted: false, serviceConnected: false, lastCaptureAt: null });
+  mockHealth.mockResolvedValue({ granted: false, serviceConnected: false, lastCaptureAt: null, pendingCaptures: 0, evictedCaptures: 0 });
   withSettings({ onboarding_complete: false });
 
   await runTrackingHealthCheck(NOW);
@@ -144,7 +144,7 @@ test("PAUSING ON PURPOSE IS NOT A FAULT", async () => {
   // Exactly TrackingBanner's own precedence rule: the user's switch comes
   // first. Pushing a fault notice at someone who turned capture off themselves
   // trains them to ignore the notice that matters.
-  mockHealth.mockResolvedValue({ granted: true, serviceConnected: false, lastCaptureAt: NOW });
+  mockHealth.mockResolvedValue({ granted: true, serviceConnected: false, lastCaptureAt: NOW, pendingCaptures: 0, evictedCaptures: 0 });
   withSettings({ capture_enabled: false });
 
   await runTrackingHealthCheck(NOW);

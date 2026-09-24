@@ -119,6 +119,38 @@ class CaptureBufferTest {
     assertEquals("id-${CaptureBuffer.MAX_CAPTURES}", drained.last().id)
   }
 
+  @Test
+  fun `an eviction is reported to the caller, because silence is how the loss stayed invisible`() {
+    // GAP-051: the cap drops the oldest capture and said nothing, so a phone
+    // left closed long enough lost money-like signal with no number anywhere
+    // to say how much -- against principle 2, and leaving the
+    // tracking-interrupted notice unable to quantify itself. The buffer has no
+    // prefs and no opinion about where the number belongs; it reports, and the
+    // listener service records.
+    val evicted = mutableListOf<Int>()
+
+    repeat(CaptureBuffer.MAX_CAPTURES) { i ->
+      CaptureBuffer.append(file, record(i)) { dropped -> evicted.add(dropped) }
+    }
+    assertTrue(evicted.isEmpty())
+
+    CaptureBuffer.append(file, record(CaptureBuffer.MAX_CAPTURES)) { dropped -> evicted.add(dropped) }
+
+    assertEquals(listOf(1), evicted)
+  }
+
+  @Test
+  fun `an append below the cap reports nothing at all`() {
+    // The callback must not fire with a zero: a caller adding "0 dropped" to a
+    // counter is harmless, but one that treats any call as "something was
+    // lost" would report a loss on every ordinary capture.
+    var calls = 0
+
+    CaptureBuffer.append(file, record(1)) { calls++ }
+
+    assertEquals(0, calls)
+  }
+
   // ---------------------------------------------------------------------
   // Survives process death -- prove it via a *new* File handle on the same
   // path, never the one `append` was called through.

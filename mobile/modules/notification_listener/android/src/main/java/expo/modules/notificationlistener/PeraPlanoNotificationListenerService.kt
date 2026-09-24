@@ -183,7 +183,17 @@ class PeraPlanoNotificationListenerService : NotificationListenerService() {
    */
   private fun recordActiveNotifications(context: Context) {
     try {
-      recordObservedFrom(activeNotifications, CapturePrefs(context), System.currentTimeMillis())
+      val prefs = CapturePrefs(context)
+      val now = System.currentTimeMillis()
+      // Read ONCE: `activeNotifications` is a binder call into the system
+      // server, and the two passes below must agree about what was on screen.
+      val active = activeNotifications
+      recordObservedFrom(active, prefs, now)
+      // The captures themselves, for the gap an OEM kill left (GAP-050).
+      // AFTER the sighting pass, so a package the allowlist drops is still
+      // offered to the onboarding picker, which is the reason that pass runs
+      // before every drop in `handlePosted` too.
+      captureActiveSince(active, prefs, CaptureBuffer.fileFor(context), now)
     } catch (error: Exception) {
       // Message deliberately omitted -- see the class doc's SECURITY note.
       Log.e(TAG, "could not record the active notifications: ${error.javaClass.simpleName}")
@@ -306,6 +316,45 @@ class PeraPlanoNotificationListenerService : NotificationListenerService() {
     }
 
     /**
+     * Captures what is still sitting in the shade and arrived while nothing
+     * was listening (docs/03 principle 5, GAP-050).
+     *
+     * BOUNDED BY [CapturePrefs.lastCaptureAt], and the bound is the design
+     * rather than an optimisation. Feeding the whole shade through on every
+     * bind would re-capture whatever has been sitting there since yesterday,
+     * long past the replay window that recognises a redelivery, and a
+     * re-captured bank notification becomes a SECOND transaction in the
+     * user's ledger. Everything posted after the last capture is exactly the
+     * gap the kill left, and nothing older than it can be new.
+     *
+     * NO FLOOR MEANS NO GAP. A device that has never captured anything cannot
+     * know which of these the user has already dealt with, so a fresh install
+     * takes none of them and the live path picks up everything from here.
+     *
+     * Each notification goes through [handlePosted], so the pause switch, the
+     * ongoing-tile rule and the provider allowlist all apply exactly as they
+     * do to a live post; this adds no way into the buffer that a live capture
+     * does not already have.
+     *
+     * @return how many notifications were fed through, for the caller's log.
+     */
+    internal fun captureActiveSince(
+      active: Array<StatusBarNotification>?,
+      prefs: CapturePrefs,
+      bufferFile: File,
+      nowMillis: Long,
+    ): Int {
+      val floor = prefs.lastCaptureAt() ?: return 0
+      var offered = 0
+      for (sbn in active.orEmpty()) {
+        if (sbn.postTime <= floor) continue
+        handlePosted(sbn, prefs, bufferFile, nowMillis)
+        offered++
+      }
+      return offered
+    }
+
+    /**
      * The posted flow, with every collaborator passed in so it can run with no
      * `Service` attached -- see the class doc on the seam.
      *
@@ -379,7 +428,11 @@ class PeraPlanoNotificationListenerService : NotificationListenerService() {
 
         // DURABLE FIRST -- see the class doc. Everything below this line is
         // reporting; only this line is the capture actually surviving.
-        CaptureBuffer.append(bufferFile, record)
+        // The eviction count rides along (GAP-051): past the cap the buffer
+        // drops its oldest capture, and until this was recorded the loss had
+        // no number anywhere, which left the tracking-interrupted notice
+        // unable to say how much went missing.
+        CaptureBuffer.append(bufferFile, record) { dropped -> prefs.recordEvictedCaptures(dropped) }
         prefs.recordCapture(record.postedAt)
 
         // ...and only now is JS told, so a crash inside the bridge cannot

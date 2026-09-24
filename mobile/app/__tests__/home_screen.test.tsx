@@ -99,7 +99,7 @@ beforeEach(async () => {
   jest.clearAllMocks();
   mockPush.mockClear();
   __setTierForTests(null);
-  mockHealth.mockResolvedValue({ granted: true, serviceConnected: true, lastCaptureAt: null });
+  mockHealth.mockResolvedValue({ granted: true, serviceConnected: true, lastCaptureAt: null, pendingCaptures: 0, evictedCaptures: 0 });
   await seedDefaultCategories();
   cash = await createWallet({ name: "GCash" });
 });
@@ -312,6 +312,8 @@ test("A DISCONNECTED LISTENER SHOWS ITS OWN BANNER, NOT THE WATCHING CARD", asyn
     granted: true,
     serviceConnected: false,
     lastCaptureAt: systemClock.now() - 2 * DAY_MS,
+    pendingCaptures: 0,
+    evictedCaptures: 0,
   });
 
   renderScreen(<HomeScreen />);
@@ -327,6 +329,8 @@ test("A DISCONNECTED LISTENER STATES THE GAP AND OFFERS A FIX", async () => {
     granted: true,
     serviceConnected: false,
     lastCaptureAt: systemClock.now() - 2 * DAY_MS,
+    pendingCaptures: 0,
+    evictedCaptures: 0,
   });
 
   renderScreen(<HomeScreen />);
@@ -350,6 +354,8 @@ test("opening listener health from Home anchors the More tab's stack", async () 
     granted: true,
     serviceConnected: false,
     lastCaptureAt: systemClock.now() - 2 * DAY_MS,
+    pendingCaptures: 0,
+    evictedCaptures: 0,
   });
 
   renderScreen(<HomeScreen />);
@@ -364,7 +370,7 @@ test("PAUSED IS A NEUTRAL PILL, NOT A FAULT — THE USER CHOSE IT", async () => 
   // Showing a fault banner to someone who paused on purpose trains them to
   // ignore it, which means they will also ignore the real one.
   await setSetting("capture_enabled", false);
-  mockHealth.mockResolvedValue({ granted: true, serviceConnected: false, lastCaptureAt: null });
+  mockHealth.mockResolvedValue({ granted: true, serviceConnected: false, lastCaptureAt: null, pendingCaptures: 0, evictedCaptures: 0 });
 
   renderScreen(<HomeScreen />);
 

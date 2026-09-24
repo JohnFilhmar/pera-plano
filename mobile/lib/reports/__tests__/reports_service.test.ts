@@ -73,16 +73,47 @@ afterEach(async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Rule 1 — Free is limited to the current month, full stop.
+// Rule 1 — Free browses the 90-day history window, one month at a time, and
+// never a custom range (owner's ruling, 2026-09-24, settling GAP-024 in favour
+// of docs/04-features/10-reports.md rule 3 over the code that shipped).
+//
+// THE WINDOW IS MEASURED FROM EACH MONTH'S FIRST DAY. On 2026-08-15 the floor
+// is 2026-05-17, so June, July and August qualify and May does not: its first
+// day is 106 days back. Measuring from the month's LAST day instead would let a
+// user open a month whose early weeks are already past the floor, which is the
+// browsing gate the free tier exists to draw.
 // ---------------------------------------------------------------------------
 
-test("free tier's availableScopes offers only the current month and customAllowed: false", async () => {
+test("free tier's availableScopes offers every month inside the window, and no custom range", async () => {
   __setTierForTests("free");
 
   expect(await availableScopes(TODAY)).toEqual({
-    months: ["2026-08"],
+    months: ["2026-08", "2026-07", "2026-06"],
     customAllowed: false,
   });
+});
+
+test("free may open a prior month inside the window, unclamped", async () => {
+  __setTierForTests("free");
+  await insertTransaction(baseTx({ date: "2026-07-10", amount: 4500, direction: "out" }));
+  await insertTransaction(baseTx({ date: "2026-08-10", amount: 9900, direction: "out" }));
+
+  const result = await getReport({ kind: "month", month: "2026-07" }, TODAY);
+
+  expect(result.truncatedByTier).toBe(false);
+  expect(result.summary.range).toEqual({ from: "2026-07-01", to: "2026-07-31" });
+  expect(result.summary.spend).toBe(4500);
+});
+
+test("free asking for a month older than the window still clamps to the current one", async () => {
+  __setTierForTests("free");
+  await insertTransaction(baseTx({ date: "2026-08-05", amount: 12000, direction: "out" }));
+
+  const result = await getReport({ kind: "month", month: "2026-04" }, TODAY);
+
+  expect(result.truncatedByTier).toBe(true);
+  expect(result.summary.range).toEqual({ from: "2026-08-01", to: "2026-08-31" });
+  expect(result.summary.spend).toBe(12000);
 });
 
 test("a custom range on free silently clamps to the current month and sets truncatedByTier", async () => {

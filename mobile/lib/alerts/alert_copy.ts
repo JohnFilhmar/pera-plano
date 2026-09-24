@@ -262,8 +262,11 @@ export function paydaySummaryAlertCopy(params: { amount: Centavos }): AlertCopy 
 //
 // The parameter is DELETED rather than accepted and ignored: an unused
 // parameter is an invitation for the next caller to invent a number to satisfy
-// it. A native `countPendingCaptures()` is in the v2 backlog; the richer copy
-// can return when a real number exists behind it.
+// it. GAP-051 has since added two real counts to `getListenerHealth`, and
+// NEITHER belongs here: `pendingCaptures` and `evictedCaptures` both describe
+// captures a WORKING listener made, so an outage leaves both at whatever they
+// already were. The listener-health screen reports them, where they answer the
+// question actually being asked.
 // ---------------------------------------------------------------------------
 export function trackingInterruptedAlertCopy(): AlertCopy {
   // "Tracking stopped working", not "Tracking paused" (task-5-brief's Step 6

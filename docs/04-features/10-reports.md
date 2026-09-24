@@ -47,7 +47,7 @@ Reports answer the questions users currently answer with screenshots and mental 
 **Flow A — Monthly review (Free)**
 1. User opens More → Reports. Default view: current calendar month.
 2. Period spend, category breakdown, and in-vs-out render for that month.
-3. Back/forward arrows step through prior months within the 90-day history window; older months render the Gated state.
+3. Back/forward arrows step through prior months within the 90-day history window; older months render the Gated state. A month counts as inside the window when its FIRST day is (owner's ruling, 2026-09-24, settling GAP-024 in favour of this rule over the code that had clamped Free to the current month). On September 24 that offers July, August and September, and refuses June, whose first day is 115 days back.
 4. Tapping a category slice drills into its subcategories; tapping a subcategory lists its Transactions (each opens the standard transaction detail).
 
 **Flow B — Trend review (Plus)**

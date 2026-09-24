@@ -925,6 +925,8 @@ describe("the contract §4 listener surface", () => {
         granted: true,
         serviceConnected: true,
         lastCaptureAt: null,
+        pendingCaptures: 0,
+        evictedCaptures: 0,
       });
 
       const health = await getListenerHealth();
@@ -933,7 +935,40 @@ describe("the contract §4 listener surface", () => {
       // "last captured 1 January 1970" on the health screen instead of
       // "not yet".
       expect(health.lastCaptureAt).toBeNull();
-      expect(health).toEqual({ granted: true, serviceConnected: true, lastCaptureAt: null });
+      expect(health).toEqual({
+        granted: true,
+        serviceConnected: true,
+        lastCaptureAt: null,
+        pendingCaptures: 0,
+        evictedCaptures: 0,
+      });
+    });
+
+    it("carries the buffer counts through, and treats an absent count as zero", async () => {
+      mockNativeModule.getListenerHealth.mockResolvedValue({
+        granted: true,
+        serviceConnected: true,
+        lastCaptureAt: 1754060400000,
+        pendingCaptures: 12,
+        evictedCaptures: 3,
+      });
+
+      const counted = await getListenerHealth();
+      expect(counted.pendingCaptures).toBe(12);
+      expect(counted.evictedCaptures).toBe(3);
+
+      // An older native build predating GAP-051 omits both. `0` is the honest
+      // reading there — unlike `lastCaptureAt`, zero is not a sentinel for a
+      // count, it is the count a buffer that has dropped nothing reports.
+      mockNativeModule.getListenerHealth.mockResolvedValue({
+        granted: true,
+        serviceConnected: true,
+        lastCaptureAt: null,
+      });
+
+      const older = await getListenerHealth();
+      expect(older.pendingCaptures).toBe(0);
+      expect(older.evictedCaptures).toBe(0);
     });
 
     it("normalizes an absent lastCaptureAt to null and passes a real timestamp through untouched", async () => {
@@ -956,7 +991,7 @@ describe("the contract §4 listener surface", () => {
       const healthy = await getListenerHealth();
       expect(healthy.lastCaptureAt).toBe(1754060400000);
       expect(Object.keys(healthy).sort()).toEqual(
-        ["granted", "lastCaptureAt", "serviceConnected"].sort(),
+        ["granted", "lastCaptureAt", "serviceConnected", "pendingCaptures", "evictedCaptures"].sort(),
       );
     });
   });

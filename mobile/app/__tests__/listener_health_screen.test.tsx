@@ -82,7 +82,7 @@ function renderScreen(ui: ReactNode) {
 beforeEach(async () => {
   await freshDb();
   jest.clearAllMocks();
-  mockHealth.mockResolvedValue({ granted: true, serviceConnected: true, lastCaptureAt: null });
+  mockHealth.mockResolvedValue({ granted: true, serviceConnected: true, lastCaptureAt: null, pendingCaptures: 0, evictedCaptures: 0 });
 });
 
 afterEach(async () => {
@@ -111,7 +111,7 @@ test("a paused capture switch shows the neutral note alongside the still-true fa
 });
 
 test("revoked access opens the loud warning, and the settings button reaches the native call", async () => {
-  mockHealth.mockResolvedValue({ granted: false, serviceConnected: false, lastCaptureAt: null });
+  mockHealth.mockResolvedValue({ granted: false, serviceConnected: false, lastCaptureAt: null, pendingCaptures: 0, evictedCaptures: 0 });
 
   renderScreen(<ListenerHealthScreen />);
 
@@ -127,7 +127,7 @@ test("returning to the foreground re-asks the native health check, never trustin
 
   // The user tapped through to system settings and re-granted access — the
   // mock now reports the corrected state on the next read.
-  mockHealth.mockResolvedValue({ granted: true, serviceConnected: true, lastCaptureAt: 123 });
+  mockHealth.mockResolvedValue({ granted: true, serviceConnected: true, lastCaptureAt: 123, pendingCaptures: 0, evictedCaptures: 0 });
 
   act(() => emitAppState("active"));
 

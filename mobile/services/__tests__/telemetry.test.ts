@@ -111,6 +111,10 @@ let postSpy: jest.SpiedFunction<typeof apiClient.post>;
 
 beforeEach(async () => {
   await freshDb();
+  // CONSENT IS EXPLICIT NOW (owner's ruling, 2026-09-24, GAP-021): the default
+  // is off, so a suite about what a SEND contains has to opt in first. The
+  // refusal-when-off path has its own test below, which leaves this unset.
+  await setSetting("telemetry_enabled", true);
   postSpy = jest.spyOn(apiClient, "post").mockResolvedValue(okResponse());
 });
 
