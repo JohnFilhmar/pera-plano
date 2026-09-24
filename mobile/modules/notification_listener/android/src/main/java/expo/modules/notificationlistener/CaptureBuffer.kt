@@ -106,7 +106,19 @@ object CaptureBuffer {
    * unreadable file as empty, would silently overwrite however many
    * captures it actually holds with just this one new record.
    */
-  fun append(file: File, record: CaptureRecord): Int = synchronized(lock) {
+  fun append(
+    file: File,
+    record: CaptureRecord,
+    /**
+     * Called with how many captures the cap threw away, and never with 0
+     * (GAP-051). The buffer has no [CapturePrefs] and no opinion about where
+     * that number belongs; it reports, and the listener service records it
+     * somewhere the health screen can read. A callback that fired on every
+     * append would make "something was lost" indistinguishable from an
+     * ordinary capture at the call site.
+     */
+    onEvicted: (Int) -> Unit = {},
+  ): Int = synchronized(lock) {
     val lines = readLines(file).toMutableList()
     // Looked up fresh on every append, deliberately not cached: a cached
     // SPKI would go stale the moment the capture keypair is regenerated
@@ -118,10 +130,16 @@ object CaptureBuffer {
     // fix is a cache with EXPLICIT invalidation tied to keypair
     // regeneration, not a bare cache -- do not "optimize" this away.
     lines.add(CaptureEnvelope.seal(record, KeyStoreBridge.capturePublicKeySpki()))
+    var evicted = 0
     while (lines.size > MAX_CAPTURES) {
       lines.removeAt(0) // oldest survivors first; the newest is never the one dropped
+      evicted++
     }
     writeLines(file, lines)
+    // AFTER the write, so a caller counting evictions can never count one that
+    // a failed write rolled back: `writeLines` throws before anything is
+    // recorded, and the eviction it would have reported never happened on disk.
+    if (evicted > 0) onEvicted(evicted)
     lines.size
   }
 

@@ -82,10 +82,13 @@ export async function runTrackingHealthCheck(
     const interrupted = await isInterrupted();
     if (interrupted && !wasInterrupted) {
       // NO COUNT IS PASSED, AND NONE CAN BE. A dead listener captures nothing,
-      // so the app has no record of what it missed, and the native module
-      // exposes no non-destructive count of the capture buffer
-      // (`drainPendingCaptures` empties it). A native `countPendingCaptures()`
-      // is in the v2 backlog; until it exists, this notice states no figure.
+      // so the app has no record of what it missed — that holds even now that
+      // `getListenerHealth` reports `pendingCaptures` and `evictedCaptures`
+      // (GAP-051). Neither answers this question: the first counts what the
+      // buffer still HOLDS and the second what its cap threw away, both of
+      // them captures a LIVE listener made. An outage produces neither, so
+      // borrowing either figure here would be the same fabrication the old
+      // `pendingCount` was (see lib/alerts/alert_copy.ts).
       await notifyTrackingInterrupted(now);
     }
     return interrupted;

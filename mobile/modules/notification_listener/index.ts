@@ -13,18 +13,29 @@ import type { RawCapture } from "@/types/domain";
 const CAPTURE_EVENT_NAME = "onCapture";
 
 /**
- * The three facts `getListenerHealth` promises (interface contract §4), and
- * nothing else.
+ * The facts `getListenerHealth` promises (interface contract §4), and nothing
+ * else.
  *
  * `lastCaptureAt` is `number | null`, never `number`. `0` is a valid epoch
  * millisecond, so a 0-as-absent sentinel would render as "last captured
  * 1 January 1970" instead of "not yet" — `CapturePrefs.lastCaptureAt` already
  * draws that distinction on the Kotlin side and nothing here may flatten it.
+ *
+ * THE TWO COUNTS ARE NOT INTERCHANGEABLE (GAP-051). `pendingCaptures` is how
+ * many sealed lines are waiting in the buffer right now, read without
+ * consuming them — `drainPendingCaptures` is destructive and can never be
+ * used to ask. `evictedCaptures` is how many the 500-record cap threw away
+ * since the last successful drain, which is money-like signal the app has
+ * already lost rather than signal it still holds. Neither is a count of what
+ * a DEAD listener missed: nothing is captured then, so nothing is counted
+ * (see `lib/alerts/alert_copy.ts`'s tracking-interrupted note).
  */
 export type ListenerHealth = {
   granted: boolean;
   serviceConnected: boolean;
   lastCaptureAt: number | null;
+  pendingCaptures: number;
+  evictedCaptures: number;
 };
 
 /**
@@ -86,9 +97,17 @@ type NativeRawCapture = Omit<RawCapture, "title" | "text" | "subText" | "bigText
   bigText?: string | null;
 };
 
-/** Health as it can arrive over the bridge — `lastCaptureAt` may be absent. */
-type NativeListenerHealth = Omit<ListenerHealth, "lastCaptureAt"> & {
+/**
+ * Health as it can arrive over the bridge — `lastCaptureAt` may be absent, and
+ * so may both counts, which is what a native build older than GAP-051 sends.
+ */
+type NativeListenerHealth = Omit<
+  ListenerHealth,
+  "lastCaptureAt" | "pendingCaptures" | "evictedCaptures"
+> & {
   lastCaptureAt?: number | null;
+  pendingCaptures?: number;
+  evictedCaptures?: number;
 };
 
 /**
@@ -620,7 +639,7 @@ export function addCaptureListener(listener: (capture: RawCapture) => void): () 
 }
 
 /**
- * The three facts contract §4 promises about the listener, and nothing else.
+ * The facts contract §4 promises about the listener, and nothing else.
  *
  * `granted` is a live access check on the native side, never a stored flag —
  * see `isAccessGranted`. `serviceConnected` and `lastCaptureAt` are written
@@ -631,12 +650,20 @@ export function addCaptureListener(listener: (capture: RawCapture) => void): () 
  * `0` is a valid epoch millisecond, so the health UI would render "not yet"
  * as "last captured 1 January 1970". `??` and not `||` for the same reason —
  * a genuine `0` must survive.
+ *
+ * Both counts DO default to `0`, and that is not an inconsistency: for a count
+ * zero is the real answer a buffer holding nothing gives, not a stand-in for
+ * "unknown". The only reader that can tell an old native build apart from an
+ * empty buffer is the build itself, and the UI's behaviour is the same either
+ * way — say nothing about loss.
  */
 export function getListenerHealth(): Promise<ListenerHealth> {
   return NativeNotificationListener.getListenerHealth().then((health) => ({
     granted: health.granted,
     serviceConnected: health.serviceConnected,
     lastCaptureAt: health.lastCaptureAt ?? null,
+    pendingCaptures: health.pendingCaptures ?? 0,
+    evictedCaptures: health.evictedCaptures ?? 0,
   }));
 }
 

@@ -554,6 +554,37 @@ class CapturePrefs(context: Context) {
       DEFAULT_LISTENER_CONNECTED
     }
 
+  /**
+   * Adds [count] to the running total of captures the buffer's cap threw away
+   * (GAP-051).
+   *
+   * ACCUMULATES rather than overwrites: a phone left closed long enough drops
+   * captures in many separate appends, and the number worth showing is how
+   * many were lost altogether, not how many the last one took.
+   */
+  fun recordEvictedCaptures(count: Int) {
+    if (count <= 0) return
+    write { it.putInt(KEY_EVICTED_CAPTURES, evictedCaptures() + count) }
+  }
+
+  /** How many captures have been thrown away since the last drain. Never negative. */
+  fun evictedCaptures(): Int =
+    try {
+      prefs.getInt(KEY_EVICTED_CAPTURES, 0)
+    } catch (error: Exception) {
+      0
+    }
+
+  /**
+   * Forgets the eviction total, which the drain does once the survivors are
+   * safely in the database: the number answers "how much did this device lose
+   * while you were away", and leaving it standing would report the same loss
+   * again after every future open.
+   */
+  fun clearEvictedCaptures() {
+    write { it.remove(KEY_EVICTED_CAPTURES) }
+  }
+
   /** [atMillis] is epoch milliseconds (interface contract §1). Sealed at rest. */
   fun recordCapture(atMillis: Long) {
     val sealed = seal(atMillis.toString().toByteArray(Charsets.UTF_8)) ?: return
@@ -808,6 +839,18 @@ class CapturePrefs(context: Context) {
 
     private const val KEY_CAPTURE_ENABLED = "capture_enabled"
     private const val KEY_LISTENER_CONNECTED = "listener_connected"
+
+    /**
+     * How many captures the buffer's cap has thrown away since the last drain
+     * (GAP-051).
+     *
+     * Plaintext, like [KEY_LISTENER_CONNECTED] and for the same reason: "the
+     * buffer overflowed by N" says nothing about anyone's finances, and it is
+     * written on the capture path, which must stay cheap. Sealing it would
+     * also make it unreadable on a device whose prefs KEK is gone, which is
+     * precisely a device with problems worth reporting.
+     */
+    private const val KEY_EVICTED_CAPTURES = "evicted_captures"
 
     /**
      * The deny-all flag that sits beside the sealed filter and outranks it

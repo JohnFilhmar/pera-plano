@@ -13,6 +13,8 @@ function health(overrides: Partial<TrackingHealth>): TrackingHealth {
     granted: true,
     serviceConnected: true,
     lastCaptureAt: null,
+    pendingCaptures: 0,
+    evictedCaptures: 0,
     captureEnabled: true,
     ...overrides,
   };

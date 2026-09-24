@@ -428,7 +428,11 @@ class PeraPlanoNotificationListenerService : NotificationListenerService() {
 
         // DURABLE FIRST -- see the class doc. Everything below this line is
         // reporting; only this line is the capture actually surviving.
-        CaptureBuffer.append(bufferFile, record)
+        // The eviction count rides along (GAP-051): past the cap the buffer
+        // drops its oldest capture, and until this was recorded the loss had
+        // no number anywhere, which left the tracking-interrupted notice
+        // unable to say how much went missing.
+        CaptureBuffer.append(bufferFile, record) { dropped -> prefs.recordEvictedCaptures(dropped) }
         prefs.recordCapture(record.postedAt)
 
         // ...and only now is JS told, so a crash inside the bridge cannot

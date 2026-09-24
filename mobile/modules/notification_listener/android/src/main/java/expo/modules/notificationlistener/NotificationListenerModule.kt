@@ -149,7 +149,7 @@ class NotificationListenerModule : Module() {
     // ---- §11a "wipe and start over": delete the buffer outright ---------
 
     AsyncFunction("clearCaptureBuffer") {
-      CaptureBuffer.clear(CaptureBuffer.fileFor(requireContext()))
+      clearCaptureBuffer(requireContext())
     }
 
     // ---- Device screen lock (docs §5a; task-9a-brief) --------------------
@@ -474,6 +474,13 @@ internal fun listenerHealth(context: Context): Map<String, Any?> {
     "granted" to isAccessGranted(context),
     "serviceConnected" to prefs.isListenerConnected(),
     "lastCaptureAt" to prefs.lastCaptureAt(),
+    // GAP-051. READ-ONLY, deliberately: `drainPendingCaptures` is destructive,
+    // so a screen that had to drain in order to count would consume the very
+    // captures it was reporting on, and `CaptureBuffer.size` decrypts nothing.
+    "pendingCaptures" to CaptureBuffer.size(CaptureBuffer.fileFor(context)),
+    // How many the cap threw away since the last drain, which is the number
+    // principle 2 was missing: silent loss with nothing to say how much.
+    "evictedCaptures" to prefs.evictedCaptures(),
   )
 }
 
@@ -533,7 +540,33 @@ internal fun drainPendingCaptures(context: Context): List<Map<String, Any?>> {
     } catch (readFailed: CaptureBuffer.ReadFailedException) {
       throw CaptureBufferReadFailedException()
     }
+  // THE EVICTION TOTAL IS NOT CLEARED HERE, AND THAT IS THE WHOLE POINT OF
+  // GAP-051. This drain runs unattended from the ingest pipeline's own start
+  // (mobile/lib/ingest/pipeline.ts:1120), seconds after launch and long before
+  // the user can reach the listener-health screen, so a clear here would zero
+  // the number in every session that could have shown it -- a counter that is
+  // always 0 by the time anyone looks is worse than none, because it reads as
+  // proof that nothing was lost. An eviction is permanent loss, so the total
+  // stays until `clearCaptureBuffer` wipes it with everything else.
   return records.map { it.toMap() }
+}
+
+/**
+ * Deletes the buffer outright (docs §11a "wipe and start over"), along with the
+ * eviction total that describes it.
+ *
+ * A top-level function rather than the DSL one-liner it replaced, for the same
+ * reason [drainPendingCaptures] is one: it now has two steps that must stay
+ * together, and this is the seam that lets a test say so. A surviving
+ * "12 captures were dropped" after a wipe would be a claim about data this
+ * device no longer has, and the user asked for all of it to be gone.
+ *
+ * NO AUTHENTICATION AND NO KEY, unlike [drainPendingCaptures]: deleting a
+ * sealed file never opens it.
+ */
+internal fun clearCaptureBuffer(context: Context) {
+  CaptureBuffer.clear(CaptureBuffer.fileFor(context))
+  CapturePrefs(context).clearEvictedCaptures()
 }
 
 /**

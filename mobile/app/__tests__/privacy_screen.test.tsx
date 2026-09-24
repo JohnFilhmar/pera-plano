@@ -130,9 +130,9 @@ const mockExportAllData = exportAllData as jest.Mock;
 const mockGetListenerHealth = getListenerHealth as jest.MockedFunction<typeof getListenerHealth>;
 const mockOpenAccessSettings = openAccessSettings as jest.Mock;
 
-const HEALTHY = { granted: true, serviceConnected: true, lastCaptureAt: null };
-const REVOKED = { granted: false, serviceConnected: false, lastCaptureAt: null };
-const DISCONNECTED = { granted: true, serviceConnected: false, lastCaptureAt: null };
+const HEALTHY = { granted: true, serviceConnected: true, lastCaptureAt: null, pendingCaptures: 0, evictedCaptures: 0 };
+const REVOKED = { granted: false, serviceConnected: false, lastCaptureAt: null, pendingCaptures: 0, evictedCaptures: 0 };
+const DISCONNECTED = { granted: true, serviceConnected: false, lastCaptureAt: null, pendingCaptures: 0, evictedCaptures: 0 };
 
 // The exact sentences the row may print, quoted rather than imported: the whole
 // point of GAP-089 is what a reader SEES, and a test that imports the constant
