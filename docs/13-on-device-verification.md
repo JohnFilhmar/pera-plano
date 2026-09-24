@@ -683,9 +683,48 @@ This is the point of the entire encryption plan. Each line is falsifiable.
 
 - [ ] Complete onboarding **including the recovery phrase** → `________________`
 - [ ] Trigger a provider notification with the app **closed**; confirm capture → `________________`
-- [ ] `adb` pull the buffer file; the notification text is **NOT readable** in it → `________________`
+- [ ] `adb` pull the buffer file; the notification text is **NOT readable** in it →
+      **BLOCKED ON THE PLATFORM, 2026-09-25 (Session 3), and the block is the security model
+      working.** The buffer is `files/pending_captures.ndjson`
+      (`CaptureBuffer.FILE_NAME`), inside the app's private data directory. Reading it over adb
+      needs `run-as`, which refuses a non-debuggable package, and notification access on this
+      phone belongs to `com.filldev.peraplano.prev` — the release-signed build. The debuggable
+      `.dev` variant is readable but is not an enabled notification listener, so its buffer never
+      fills: `files/` holds only Expo's own files and no `pending_captures.ndjson`.
+      The three ways to tick this box, none of which is a plain read: grant the `.dev` variant
+      notification access as well (an adb settings change, reversible, and it means two listeners
+      capturing at once), build a debuggable variant that carries the access, or root the device.
+      Until one of those is chosen this box stays open. Note what it would and would not add:
+      `CaptureBufferTest` already proves the sealing in JVM tests, so what a device adds here is
+      that the seal holds against the real hardware Keystore rather than a test double.
 - [ ] `adb` pull the database; a plain `sqlite3` client **rejects** it (encrypted / not a
-      database) → `________________`
+      database) → **MEASURED 2026-09-25 (Session 3), ON A NON-SHIPPING VARIANT — see provenance below.** `sqlite3` answers `Error: file is encrypted or is
+      not a database` to both `SELECT count(*) FROM sqlite_master;` and `.tables`. Three independent
+      readings agree: the first 16 bytes are `d8ca2ac171813727eaa26fedb9b8931d`, so there is no
+      `SQLite format 3` magic; the file contains none of `CREATE TABLE`, `sqlite_master`,
+      `transactions`, `wallets`, or any seeded merchant string; and the byte histogram is 0.4% zero
+      bytes with 37.1% printable ASCII, where 37.1% is exactly 95/256 — the share of byte values
+      that are printable, i.e. what uniform random data gives. A plaintext SQLite file is mostly
+      zero padding with its table names in clear. Pulled byte-exact: 360448 bytes on device,
+      360448 bytes received, confirmed against `stat -c %s` rather than assumed (a first pull via
+      Git Bash redirection truncated to 110080 and was discarded; `cmd /c` redirection is
+      binary-safe and was used instead).
+      **PROVENANCE, AND WHY THIS IS NOT YET A TICK FOR THE SHIPPING BUILD.** The file measured was
+      `com.filldev.peraplano.dev`'s, because `run-as` refuses a non-debuggable package and the
+      preview build is release-signed — the platform refusing to hand over its own app data is the
+      security model working, not an obstacle to route around. The encryption code, the SQLCipher
+      configuration and the key path are identical between variants; only the package id differs,
+      so the reading above is sound evidence about the encryption itself.
+      **IT IS NOT EVIDENCE ABOUT THE ARTEFACT THAT SHIPS, and the dev variant is off-limits as of
+      2026-09-25:** the owner reserved it for another agent working in parallel, so this box may
+      not be re-measured that way. On `prev` the same read is impossible without root. Every access
+      taken here was read-only (`ls`, `stat`, `cat`) and the copy was deleted afterwards; nothing on
+      the device was written or removed.
+      So this box stays UNTICKED for release purposes and needs one of: a debuggable preview-signed
+      build made for the check and then discarded, a rooted device, or an explicit decision that
+      the shared encryption code measured on one variant is sufficient. That last one is the
+      owner's call, not an agent's, because it is the difference between a measured claim and an
+      argued one.
 - [ ] Unlock the app; the capture appears in the ledger → `________________`
 - [ ] Background for six minutes; the app **re-locks** → `________________`
 
