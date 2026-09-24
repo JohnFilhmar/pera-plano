@@ -142,7 +142,7 @@ The Entitlements layer (`tier: free | plus`) ships in MVP hardcoded to `plus`; e
 | History | 90 days | Unlimited |
 | Reports | Basic monthly | Full + trends + custom range |
 | Export | — | CSV (PDF later) |
-| Cloud backup / multi-device sync | — | ✓ |
+| Cloud backup / multi-device sync (PLANNED, no code exists) | — | ✓ |
 | Recurring/subscription detection | — | ✓ |
 | Safe-to-Spend | Today only | Projected to end of period |
 

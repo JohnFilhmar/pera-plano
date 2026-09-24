@@ -458,7 +458,7 @@
   },
   "privacy": {
     "title": "Privacy notice",
-    "intro": "PeraPlano is local-first by architecture, not by policy promise: the notification text your banks and e-wallets already send you is read on your own phone, stored encrypted on that phone with a 30-day time-to-live, and never leaves it under any configuration. The only thing designed to sync off the device is committed transaction records — structured fields, never raw text — and only if you explicitly switch on cloud backup, a PeraPlano Plus feature. Syncing is not the only way data can leave a phone, so the table below lists every category that does: content-free diagnostics you can switch off, any export file you create yourself, and anything you choose to put in a support message. There are no ads, no data selling, and no third-party analytics that receive notification content.",
+    "intro": "PeraPlano is local-first by architecture, not by policy promise: the notification text your banks and e-wallets already send you is read on your own phone, stored encrypted on that phone with a 30-day time-to-live, and never leaves it under any configuration. The only thing designed to sync off the device is committed transaction records — structured fields, never raw text — and only if you explicitly switch on cloud backup, a PeraPlano Plus feature that is not built yet: no version of the app can send your records anywhere today. Syncing is not the only way data can leave a phone, so the table below lists every category that does: content-free diagnostics you can switch off, any export file you create yourself, and anything you choose to put in a support message. There are no ads, no data selling, and no third-party analytics that receive notification content.",
     "sourceStatus": "Draft v1.2 · 2026-09-24",
     "sourceHeading": "Where this notice comes from, and what it still lacks",
     "sourceNote": "This notice is derived from PeraPlano's internal privacy and compliance document, which is marked {status}. That document has not been reviewed by Philippine privacy counsel, so neither has this page.",
@@ -566,11 +566,11 @@
           ],
           [
             "6",
-            "Cloud backup snapshots (Plus, opt-in)",
+            "Cloud backup snapshots (Plus, opt-in) PLANNED, NOT BUILT",
             "Encrypted sync of rows 2–3",
             "Company backup infrastructure (via PIP under contract)",
             "Until the user disables backup, wipes, or deletes the sign-in identity; server copies removed within 30 days of any of those",
-            "Yes — this is the only path user financial data ever takes off the device, and it is opt-in."
+            "Not today: no code writes this row, and nothing in the app sends financial data anywhere. When built it is opt-in, and it would be the only path off the device."
           ],
           [
             "7",
