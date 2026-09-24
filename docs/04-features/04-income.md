@@ -54,6 +54,7 @@ The IncomeProfile answers two questions the rest of the app depends on: *when do
 1. A committed inbound credit matches the IncomeProfile (rule 11) → a payday event.
 2. The app refreshes Safe-to-Spend and, for Plus users with a `contributionRule` on a Goal, runs payday auto-allocation ([05-goals-savings.md](05-goals-savings.md)).
 3. Optional payday acknowledgment notification, off by default. Illustrative only: *"Payday! ₱18,540.00 landed in BPI Payroll. Your goal allocation moved ₱1,500.00 to Emergency Fund."*
+4. A credit that landed while the app was closed is announced on the next launch instead, once the allocation prompt is mounted and the notification subscriber has started. Detection itself runs earlier, during startup, because a percent-of-income Limit reads the profile on the first render; the announcement waits, because a payday is announced exactly once and an announcement made before the listeners exist is spent on nobody (GAP-126, 2026-09-24).
 
 ## Rules & edge cases
 

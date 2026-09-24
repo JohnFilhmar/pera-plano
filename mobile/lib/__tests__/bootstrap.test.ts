@@ -346,6 +346,30 @@ describe("income detection runs once per launch", () => {
     spy.mockRestore();
   });
 
+  test("bootstrapApp REFRESHES but never ANNOUNCES a payday", async () => {
+    // GAP-126. `maybeEmitPayday` marks a payday's transaction ids as announced
+    // before it emits, so the event fires once per payday for the life of the
+    // install. Called from here it fires while `income:payday` has no
+    // subscribers at all: `<PaydaySheets />` is unmounted and the push
+    // subscriber unstarted, both gated on `bootstrapState === "ready"`, which
+    // cannot be true until this function resolves. The payday would be marked
+    // announced and announced to nobody, with no later pass to repeat it.
+    //
+    // The refresh must still happen here, which is why both are asserted: the
+    // profile it writes is what a percent-of-income Limit reads on the first
+    // render.
+    await unlockDatabase(TEST_DEK);
+    const refresh = jest.spyOn(incomeService, "refreshIncomeDetection");
+    const announce = jest.spyOn(incomeService, "maybeEmitPayday");
+
+    await expect(bootstrapApp()).resolves.toEqual({ onboardingComplete: false });
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(announce).not.toHaveBeenCalled();
+    refresh.mockRestore();
+    announce.mockRestore();
+  });
+
   test("A THROWING DETECTION DOES NOT PREVENT BOOTSTRAP FROM RESOLVING", async () => {
     // Rule 3: "Income work must never block or break startup". The user can
     // still read their ledger and fix things by hand; an app that will not open

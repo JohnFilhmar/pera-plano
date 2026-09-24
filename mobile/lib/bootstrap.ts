@@ -16,7 +16,7 @@ import { seedDefaultCategories } from "@/lib/db/repos/categories_repo";
 import { purgeExpired } from "@/lib/db/repos/review_queue_repo";
 import { purgeExpiredRawCaptures } from "@/lib/db/repos/raw_notifications_repo";
 import { getActiveRuleset } from "@/lib/db/repos/parser_rulesets_repo";
-import { runIncomePass } from "@/lib/income/income_ledger_subscriber";
+import { refreshIncomeOnly } from "@/lib/income/income_ledger_subscriber";
 import { seedParserRules } from "@/lib/ingest/seed_rules";
 import { persistPendingProviderPause } from "@/lib/onboarding/pending_provider_pause";
 import { sweepOrphanedAttachments } from "@/lib/support/attachments";
@@ -114,10 +114,19 @@ export async function bootstrapApp(): Promise<BootstrapResult> {
   // Income detection, once per launch (m2-part2 Task 14 rule 1). AFTER the
   // migrations and the seeds, because it reads the ledger and the loan
   // payments; BEFORE the settings read only because nothing depends on the
-  // order there. `runIncomePass` swallows its own failures for the same reason
-  // `runRetention` does — income is derived convenience, and a launch is not
-  // worth failing over it (rule 3).
-  await runIncomePass(Date.now());
+  // order there. `refreshIncomeOnly` swallows its own failures for the same
+  // reason `runRetention` does — income is derived convenience, and a launch is
+  // not worth failing over it (rule 3).
+  //
+  // REFRESH ONLY, NEVER THE ANNOUNCEMENT (GAP-126). `maybeEmitPayday` records a
+  // payday's transaction ids as announced before it emits, so the event fires
+  // once per payday for the life of the install. Fired from here it reaches
+  // nobody: every `income:payday` subscriber is gated on
+  // `bootstrapState === "ready"`, which cannot be true until this function
+  // resolves, so the payday was marked announced and announced to no listener,
+  // with no later pass to repeat it. `app/_layout.tsx` announces instead, once
+  // the subscribers exist.
+  await refreshIncomeOnly(Date.now());
   // Recurring-pattern detection, once per launch (M3 Part 2 Task 7 rule 2).
   // Same placement as income above, for the same reason: it reads the ledger
   // those migrations and seeds just made queryable, and nothing else here
@@ -126,7 +135,7 @@ export async function bootstrapApp(): Promise<BootstrapResult> {
   // `refreshPatterns` in the one try/catch this app should have for it — a
   // second, independently-written copy here would eventually disagree with
   // that one about what "failed safely" means, the same reasoning that keeps
-  // this file calling `runIncomePass` instead of `refreshIncomeDetection`
+  // this file calling `refreshIncomeOnly` instead of `refreshIncomeDetection`
   // directly. Patterns are derived from the ledger, same as income, so a
   // launch is not worth failing over them either (rule 3).
   await runRecurringPass(Date.now());

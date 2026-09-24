@@ -13,7 +13,12 @@ jest.mock("@/lib/income/income_service", () => ({
 import { emitAppEvent } from "@/lib/events/app_events";
 import { maybeEmitPayday, refreshIncomeDetection } from "@/lib/income/income_service";
 
-import { runIncomePass, startIncomeLedgerSubscriber } from "../income_ledger_subscriber";
+import {
+  announcePendingPayday,
+  refreshIncomeOnly,
+  runIncomePass,
+  startIncomeLedgerSubscriber,
+} from "../income_ledger_subscriber";
 
 const mockRefresh = refreshIncomeDetection as jest.MockedFunction<typeof refreshIncomeDetection>;
 const mockPayday = maybeEmitPayday as jest.MockedFunction<typeof maybeEmitPayday>;
@@ -128,5 +133,48 @@ test("a throwing pass does not kill the subscription", async () => {
   stop();
 
   expect(mockRefresh).toHaveBeenCalledTimes(2);
+  warn.mockRestore();
+});
+
+// ---------------------------------------------------------------------------
+// The launch split — GAP-126. Bootstrap refreshes; the shell announces, once
+// every `income:payday` subscriber is live.
+// ---------------------------------------------------------------------------
+
+test("refreshIncomeOnly refreshes and never announces", async () => {
+  // The half bootstrap keeps. It must not reach `maybeEmitPayday`, which marks
+  // a payday announced before emitting and so would spend the payday's only
+  // announcement while the bus still has no subscribers.
+  await refreshIncomeOnly(1_700_000_000_000);
+
+  expect(mockRefresh).toHaveBeenCalledTimes(1);
+  expect(mockRefresh).toHaveBeenCalledWith(1_700_000_000_000);
+  expect(mockPayday).not.toHaveBeenCalled();
+});
+
+test("announcePendingPayday announces and never refreshes", async () => {
+  // The half the shell calls. It reads the profile bootstrap already wrote, so
+  // re-reading 130 days of ledger and every loan payment a second time per
+  // launch would buy nothing.
+  await announcePendingPayday(1_700_000_000_000);
+
+  expect(mockPayday).toHaveBeenCalledTimes(1);
+  expect(mockPayday).toHaveBeenCalledWith(1_700_000_000_000);
+  expect(mockRefresh).not.toHaveBeenCalled();
+});
+
+test("BOTH HALVES SWALLOW THEIR OWN FAILURES", async () => {
+  // Rule 3, and the reason `app/_layout.tsx` and `bootstrapApp` can both call
+  // these with a bare `void`/`await` and no catch of their own. Income is
+  // derived convenience; the ledger is the product.
+  mockRefresh.mockRejectedValueOnce(new Error("refresh exploded"));
+  mockPayday.mockRejectedValueOnce(new Error("announce exploded"));
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+
+  await expect(refreshIncomeOnly(1)).resolves.toBeUndefined();
+  await expect(announcePendingPayday(1)).resolves.toBeUndefined();
+
+  // Swallowed, but not silently, same as the combined pass above.
+  expect(warn).toHaveBeenCalledTimes(2);
   warn.mockRestore();
 });
