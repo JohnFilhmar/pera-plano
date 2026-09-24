@@ -390,7 +390,8 @@ against the secure element. A plain-JVM benchmark put 500 RSA-2048/OAEP decrypts
 that is a *floor*. It cannot capture Keystore/Binder IPC or StrongBox latency, which is what
 dominates on real hardware.
 
-- Measured: `________ s`
+- Measured: **5.265 s** (10.53 ms/record), 2026-08-10; re-run **4.920 s** (9.84 ms/record),
+  2026-08-15. PASS both times, see the session tables at the top of this file.
 - **Approaching ~8 s means the window is too tight.** Widen it before it becomes an intermittent,
   load-dependent failure that only bites users with a full buffer.
 
