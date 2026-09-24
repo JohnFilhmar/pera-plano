@@ -39,6 +39,11 @@ function report(overrides: Partial<EvalReport> = {}): EvalReport {
     peakResidentBytes: 1_290_000_000,
     groundingRejectionRate: 2 / 30,
     totalWallClockMs: 492_000,
+    // Distinct on purpose, so a row reading the wrong counter shows it.
+    constrainedGenerations: 27,
+    malformedGenerations: 2,
+    emptyAnswers: 3,
+    thinkTagAnswers: 4,
     ...overrides,
   };
 }
@@ -56,6 +61,10 @@ const METRIC_TEST_IDS = [
   "ai-eval-grounding",
   "ai-eval-peak-memory",
   "ai-eval-wall-clock",
+  "ai-eval-malformed",
+  "ai-eval-empty",
+  "ai-eval-think",
+  "ai-eval-thinking-mode",
 ];
 
 test("a finished run states this phone's own measured numbers", () => {
@@ -80,6 +89,42 @@ test("a finished run states this phone's own measured numbers", () => {
   expect(textOf("ai-eval-grounding")).toBe("2 of 30");
   expect(textOf("ai-eval-peak-memory")).toBe("1.3 GB");
   expect(textOf("ai-eval-wall-clock")).toBe("8 min 12 s");
+  // docs/13 Gate 2 reads malformed against the constrained rounds that ran,
+  // Gate 3 reads blank and thinking answers against the questions.
+  expect(textOf("ai-eval-malformed")).toBe("2 of 27");
+  expect(textOf("ai-eval-empty")).toBe("3 of 30");
+  expect(textOf("ai-eval-think")).toBe("4 of 30");
+  // No thinking mode was passed, as on a release build, so there is no row.
+  expect(screen.queryByTestId("ai-eval-thinking-mode")).toBeNull();
+});
+
+test("a development run says whether the model was left to think", () => {
+  // Gate 3 compares a thinking-on run against suppressed ones, so a screenshot
+  // of either has to say which it was.
+  const { rerender } = render(
+    <EvalResults
+      state={{ kind: "complete", report: report(), total: 30, suppressThinking: false }}
+      onRun={jest.fn()}
+      onResume={jest.fn()}
+      onCancel={jest.fn()}
+    />,
+  );
+  expect(textOf("ai-eval-thinking-mode")).toBe("Left on");
+
+  rerender(
+    <EvalResults
+      state={{
+        kind: "stopped",
+        report: report({ completed: 12 }),
+        total: 30,
+        suppressThinking: true,
+      }}
+      onRun={jest.fn()}
+      onResume={jest.fn()}
+      onCancel={jest.fn()}
+    />,
+  );
+  expect(textOf("ai-eval-thinking-mode")).toBe("Suppressed");
 });
 
 test("no catalogue spec figure appears anywhere on the screen", () => {
@@ -122,6 +167,10 @@ test("a stopped run says it is partial and scopes every number to what ran", () 
           completed: 12,
           toolPickAccuracy: 9 / 12,
           groundingRejectionRate: 1 / 12,
+          constrainedGenerations: 11,
+          malformedGenerations: 1,
+          emptyAnswers: 2,
+          thinkTagAnswers: 0,
         }),
         total: 30,
       }}
@@ -141,6 +190,9 @@ test("a stopped run says it is partial and scopes every number to what ran", () 
   // would read as a much worse model than the run actually measured.
   expect(textOf("ai-eval-tool-pick")).toBe("9 of 12");
   expect(textOf("ai-eval-grounding")).toBe("1 of 12");
+  expect(textOf("ai-eval-malformed")).toBe("1 of 11");
+  expect(textOf("ai-eval-empty")).toBe("2 of 12");
+  expect(textOf("ai-eval-think")).toBe("0 of 12");
 });
 
 test("a run in progress offers a stop, and nothing else does", () => {

@@ -31,12 +31,17 @@ import type { EvalReport } from "@/lib/ai/eval_runner";
  * be escapable — and a partial result rendered in the finished layout is a lie
  * the user has no way to detect. `total` rides along so the partial notice can
  * say what fraction of the set actually ran.
+ *
+ * `suppressThinking` is the load option the run's model had, and only a
+ * development build sets it. There the eval screen can load the model with
+ * thinking left on (docs/13 Gate 3), and a screenshot of either kind of run has
+ * to say which kind it was.
  */
 export type EvalRunState =
   | { kind: "never_run" }
   | { kind: "running"; completed: number; total: number }
-  | { kind: "stopped"; report: EvalReport; total: number }
-  | { kind: "complete"; report: EvalReport; total: number };
+  | { kind: "stopped"; report: EvalReport; total: number; suppressThinking?: boolean }
+  | { kind: "complete"; report: EvalReport; total: number; suppressThinking?: boolean };
 
 export type EvalResultsProps = {
   state: EvalRunState;
@@ -174,7 +179,7 @@ export function EvalResults({ state, onRun, onResume, onCancel, testID }: EvalRe
     );
   }
 
-  const { report, total } = state;
+  const { report, total, suppressThinking } = state;
   const partial = state.kind === "stopped";
 
   return (
@@ -198,6 +203,13 @@ export function EvalResults({ state, onRun, onResume, onCancel, testID }: EvalRe
       </Text>
 
       <View className="mt-3">
+        {suppressThinking === undefined ? null : (
+          <MetricRow
+            label="Model thinking"
+            value={suppressThinking ? "Suppressed" : "Left on"}
+            testID="ai-eval-thinking-mode"
+          />
+        )}
         <MetricRow
           label="Typing speed"
           value={tokensPerSecond(report.decodeMedianTps)}
@@ -231,6 +243,24 @@ export function EvalResults({ state, onRun, onResume, onCancel, testID }: EvalRe
           label="Answers replaced by a card"
           value={`${countFromRate(report.groundingRejectionRate, report.completed)} of ${report.completed}`}
           testID="ai-eval-grounding"
+        />
+        {/* docs/13 Gates 2 and 3. A garbled request is counted against the
+            rounds the tool grammar actually ran, never against `completed`:
+            an advice question never reaches the model at all. */}
+        <MetricRow
+          label="Garbled tool requests"
+          value={`${report.malformedGenerations} of ${report.constrainedGenerations}`}
+          testID="ai-eval-malformed"
+        />
+        <MetricRow
+          label="Blank answers"
+          value={`${report.emptyAnswers} of ${report.completed}`}
+          testID="ai-eval-empty"
+        />
+        <MetricRow
+          label="Answers with thinking text"
+          value={`${report.thinkTagAnswers} of ${report.completed}`}
+          testID="ai-eval-think"
         />
         <MetricRow
           label="Peak memory used"

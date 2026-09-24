@@ -11,6 +11,7 @@
 import { runEval, summariseEval, type EvalDeps } from "../eval_runner";
 import type { EvalQuestion } from "../eval/questions";
 import { ok, type ToolResult } from "../tools/types";
+import type { LlamaBridge } from "@/modules/llama_bridge/types";
 import {
   fakeLlamaBridge,
   generateCallCount,
@@ -167,6 +168,13 @@ describe("the six metrics", () => {
     expect(Number.isFinite(report.ttftMedianMs)).toBe(true);
     expect(Number.isFinite(report.ttftP90Ms)).toBe(true);
     expect(Number.isFinite(report.totalWallClockMs)).toBe(true);
+    // The gate counters: q1 and q2 each ran one constrained round, q3 none.
+    expect(report).toMatchObject({
+      constrainedGenerations: 2,
+      malformedGenerations: 0,
+      emptyAnswers: 0,
+      thinkTagAnswers: 0,
+    });
   });
 
   test("the grounding-rejection rate counts answers that were thrown away", async () => {
@@ -204,6 +212,100 @@ describe("the six metrics", () => {
     expect(report.toolPickAccuracy).toBe(0);
     expect(report.groundingRejectionRate).toBe(0);
     expect(report.decodeMedianTps).toBe(0);
+    expect(report).toMatchObject({
+      constrainedGenerations: 0,
+      malformedGenerations: 0,
+      emptyAnswers: 0,
+      thinkTagAnswers: 0,
+    });
+  });
+});
+
+describe("the gate counters", () => {
+  test("Gate 2: a tool call and the decline are well formed, and garbage is malformed", async () => {
+    // q1 calls a tool, q2 declines, q3 is advice and never reaches the model,
+    // and a fourth question gets a JSON fragment where the grammar should have
+    // forced a whole call.
+    scriptLlama([
+      { emitToolCall: { name: "get_balance_total", args: {} } },
+      { emit: "You have ₱18,320.00." },
+      { emitRaw: "CANNOT_ANSWER" },
+      { emitRaw: '{"tool":"get_bal' },
+    ]);
+
+    const records = [];
+    for await (const progress of runEval(depsWith({ questions: [...QUESTIONS, QUESTIONS[1]] }))) {
+      records.push(progress);
+    }
+
+    // Only a turn's first round runs constrained, so q1's prose round is not
+    // counted and the denominator stays one per question that reached the model.
+    expect(records.map((record) => record.constrainedGenerations)).toEqual([1, 1, 0, 1]);
+    expect(records.map((record) => record.malformedGenerations)).toEqual([0, 0, 0, 1]);
+    expect(summariseEval(records)).toMatchObject({
+      constrainedGenerations: 3,
+      malformedGenerations: 1,
+    });
+  });
+
+  test("Gate 3: empty answers, and <think> in any output, even one replaced by a card", async () => {
+    scriptLlama([
+      // Nothing at all after the tool result: card reason `empty`.
+      { emitToolCall: { name: "get_balance_total", args: {} } },
+      { emit: "" },
+      // Thinking that survives into the prose. The 8-byte chunks split the
+      // tag itself across two tokens.
+      { emitToolCall: { name: "get_balance_total", args: {} } },
+      { emitRaw: "Ok. <think>hm</think> You have ₱18,320.00." },
+      // Thinking that grounding throws away. It was still decoded.
+      { emitToolCall: { name: "get_balance_total", args: {} } },
+      { emit: "<think>The total is ₱5.00" },
+    ]);
+    const single = QUESTIONS[0];
+
+    const records = [];
+    for await (const progress of runEval(depsWith({ questions: [single, single, single] }))) {
+      records.push(progress);
+    }
+
+    expect(records.map((record) => [record.outcomeKind, record.cardReason])).toEqual([
+      ["card", "empty"],
+      ["prose", null],
+      ["card", "ungrounded"],
+    ]);
+    expect(records.map((record) => record.thinkTag)).toEqual([false, true, true]);
+    expect(summariseEval(records)).toMatchObject({ emptyAnswers: 1, thinkTagAnswers: 2 });
+  });
+
+  test("a constrained round cancelled mid-stream is neither counted nor judged", async () => {
+    // Half a tool call is not malformed output, it is no output. Counting it
+    // would charge Gate 2 for every press of Stop.
+    const abort = { aborted: false };
+    const stopsAfterOneToken: LlamaBridge = {
+      ...fakeLlamaBridge,
+      generate: (prompt, grammar) => {
+        const handle = fakeLlamaBridge.generate(prompt, grammar);
+        async function* tokens() {
+          for await (const token of handle.tokens) {
+            abort.aborted = true;
+            yield token;
+          }
+        }
+        return { tokens: tokens(), cancel: () => handle.cancel() };
+      },
+    };
+    scriptLlama([{ emitToolCall: { name: "get_balance_total", args: {} } }]);
+
+    const records = [];
+    for await (const progress of runEval(
+      depsWith({ bridge: stopsAfterOneToken, abort, questions: [QUESTIONS[0]] }),
+    )) {
+      records.push(progress);
+    }
+
+    expect(records[0].outcomeKind).toBe("cancelled");
+    expect(records[0].constrainedGenerations).toBe(0);
+    expect(records[0].malformedGenerations).toBe(0);
   });
 });
 

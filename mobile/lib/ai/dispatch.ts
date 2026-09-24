@@ -120,7 +120,17 @@ function opensWithBrace(raw: string): boolean {
   return raw.trimStart().startsWith("{");
 }
 
-function parseToolCall(raw: string): ParsedCall | null {
+/**
+ * Reads the model's RAW output as a tool call.
+ *
+ * Exported so the eval's Gate 2 counter judges constrained output by this exact
+ * rule, not by a copy of it that could drift.
+ *
+ * @param raw - Untrimmed output. Whitespace around the JSON object is tolerated.
+ * @returns The call's name and arguments, or `null` unless the text is one JSON
+ *   object with a string `tool` and an object `args`.
+ */
+export function parseToolCall(raw: string): ParsedCall | null {
   if (!opensWithBrace(raw)) return null;
   try {
     const parsed: unknown = JSON.parse(raw.trim());

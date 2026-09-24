@@ -23,17 +23,32 @@
 // resumed run summarised from the generator's return value would silently drop
 // every question answered before the stop — reporting a smaller, faster-looking
 // run than the device actually performed.
+//
+// A DEVELOPMENT BUILD ADDS TWO THINGS FOR docs/13's SESSION 3, and a release
+// build has neither, because both sit behind `__DEV__`. A switch loads the
+// model with thinking left on for one run (Gate 3's comparison), then puts it
+// back. And every question and every report writes one `[ai_eval]` JSON line
+// to the console, which `adb logcat -s ReactNativeJS` collects so nobody has to
+// transcribe a screen. Those lines carry metrics only, never a prompt, an
+// answer or a tool result.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ScrollView, Text, View } from "react-native";
+import { ScrollView, Switch, Text, View } from "react-native";
 
 import { EvalResults, type EvalRunState } from "@/components/ai/eval_results";
 import { Card } from "@/components/ui/card";
+import { ListRow } from "@/components/ui/list_row";
 import type { AbortFlag } from "@/lib/ai/dispatch";
 import { FIXTURE_NOW_ISO } from "@/lib/ai/eval/fixture_ledger";
 import { EVAL_QUESTIONS } from "@/lib/ai/eval/questions";
-import { runEval, summariseEval, type EvalDeps, type EvalProgress } from "@/lib/ai/eval_runner";
+import {
+  runEval,
+  summariseEval,
+  type EvalDeps,
+  type EvalProgress,
+  type EvalReport,
+} from "@/lib/ai/eval_runner";
 import { systemClock } from "@/lib/clock";
-import type { LlamaBridge } from "@/modules/llama_bridge/types";
+import type { LlamaBridge, LoadOptions } from "@/modules/llama_bridge/types";
 
 /**
  * Everything the run needs that this screen must not construct for itself.
@@ -48,9 +63,21 @@ export type EvalHarness = {
   runTool: EvalDeps["runTool"];
   /** Peak RSS in bytes, sampled once per question. */
   readResidentBytes: () => number;
+  /**
+   * The resident model and the options it was loaded with. `id` goes on every
+   * `[ai_eval]` line; `path` and `options` let a development build load it
+   * again with thinking left on for one run, then put it back as it was.
+   */
+  model: { id: string; path: string; options: LoadOptions };
 };
 
 let harness: EvalHarness | null = null;
+
+/**
+ * Fresh runs since the JS bundle loaded. It numbers the `[ai_eval]` lines so
+ * one run's lines can be told from the next run's.
+ */
+let runsStarted = 0;
 
 /**
  * Injected by whoever loads a model, and `null` again when it is unloaded.
@@ -67,10 +94,56 @@ export function configureAiEval(next: EvalHarness | null): void {
 
 const TOTAL_QUESTIONS = EVAL_QUESTIONS.length;
 
+/** The stable prefix docs/13's logcat recipes filter on. */
+const LOG_PREFIX = "[ai_eval]";
+
+/** What every `[ai_eval]` line of one run repeats, so any single line names its run. */
+type RunLabel = { run: number; tier: string; suppressThinking: boolean };
+
+/**
+ * One line per finished question. Every field is named here rather than spread
+ * from `EvalProgress`, so a prompt or an answer added to that type later cannot
+ * ride along into logcat.
+ */
+function logQuestion(label: RunLabel, progress: EvalProgress): void {
+  if (!__DEV__) return;
+  const line = {
+    event: "question",
+    ...label,
+    index: progress.index,
+    id: progress.questionId,
+    score: progress.verdict.score,
+    nameCorrect: progress.verdict.nameCorrect,
+    argsCorrect: progress.verdict.argsCorrect,
+    ttftMs: progress.ttftMs,
+    tokensPerSecond: progress.decodeTokensPerSecond,
+    wallClockMs: progress.wallClockMs,
+    residentBytes: progress.residentBytes,
+    constrained: progress.constrainedGenerations,
+    malformed: progress.malformedGenerations,
+    outcome: progress.outcomeKind,
+    cardReason: progress.cardReason,
+    empty: progress.cardReason === "empty",
+    thinkTag: progress.thinkTag,
+  };
+  console.info(`${LOG_PREFIX} ${JSON.stringify(line)}`);
+}
+
+/** The run's summary line. `EvalReport` holds only numbers, so it goes out whole. */
+function logReport(label: RunLabel, report: EvalReport): void {
+  if (!__DEV__) return;
+  console.info(`${LOG_PREFIX} ${JSON.stringify({ event: "report", ...label, ...report })}`);
+}
+
 export default function AiEvalScreen() {
   const [state, setState] = useState<EvalRunState>({ kind: "never_run" });
+  // Only a development build renders the switch that sets this.
+  const [thinkingAllowed, setThinkingAllowed] = useState(false);
 
   const records = useRef<EvalProgress[]>([]);
+  // Fixed when a run starts, so a resumed segment keeps its run's number and
+  // thinking mode even if the switch moved while it was stopped.
+  const run = useRef({ index: 0, thinkingAllowed: false });
   const abort = useRef<AbortFlag>({ aborted: false });
   // A run outlives a back-press. Without this the generator keeps calling
   // `setState` on an unmounted screen for the rest of a ten-minute eval.
@@ -84,52 +157,81 @@ export default function AiEvalScreen() {
     };
   }, []);
 
+  // Runs one segment, from `startIndex` to the end or a stop, reloading the
+  // model around it when the run allows thinking.
   const start = useCallback(async (startIndex: number) => {
-    if (harness === null) return;
+    // Captured once: the harness can be replaced or cleared while this awaits.
+    const current = harness;
+    if (current === null) return;
+    const { model } = current;
+    const allowThinking = run.current.thinkingAllowed;
+    const label: RunLabel = {
+      run: run.current.index,
+      tier: model.id,
+      suppressThinking: allowThinking ? false : model.options.suppressThinking,
+    };
 
     // A fresh flag per segment: reusing the stopped one would abort the resume
     // before its first question.
     abort.current = { aborted: false };
     setState({ kind: "running", completed: startIndex, total: TOTAL_QUESTIONS });
 
-    const iterator = runEval({
-      bridge: harness.bridge,
-      runTool: harness.runTool,
-      now: Date.parse(FIXTURE_NOW_ISO),
-      // The screen is a composition edge, so it is allowed to read the wall
-      // clock that `lib/ai/eval_runner.ts` refuses to reach for itself.
-      clock: systemClock.now,
-      readResidentBytes: harness.readResidentBytes,
-      abort: abort.current,
-      startIndex,
-    });
-
-    for (;;) {
-      const step = await iterator.next();
-      if (step.done) break;
-
-      records.current.push(step.value);
-      if (!mounted.current) return;
-      setState({
-        kind: "running",
-        completed: step.value.index + 1,
-        total: TOTAL_QUESTIONS,
-      });
+    // Gate 3's thinking-on run. The load lands before the first question's
+    // clock starts, so it never counts toward wall clock.
+    if (allowThinking) {
+      await current.bridge.load(model.path, { ...model.options, suppressThinking: false });
     }
 
-    if (!mounted.current) return;
+    try {
+      const iterator = runEval({
+        bridge: current.bridge,
+        runTool: current.runTool,
+        now: Date.parse(FIXTURE_NOW_ISO),
+        // The screen is a composition edge, so it is allowed to read the wall
+        // clock that `lib/ai/eval_runner.ts` refuses to reach for itself.
+        clock: systemClock.now,
+        readResidentBytes: current.readResidentBytes,
+        abort: abort.current,
+        startIndex,
+      });
+
+      for (;;) {
+        const step = await iterator.next();
+        if (step.done) break;
+
+        records.current.push(step.value);
+        logQuestion(label, step.value);
+        if (!mounted.current) return;
+        setState({
+          kind: "running",
+          completed: step.value.index + 1,
+          total: TOTAL_QUESTIONS,
+        });
+      }
+    } finally {
+      // Back the way it was loaded, so the chat never inherits a thinking
+      // model from a run it never saw.
+      if (allowThinking) await current.bridge.load(model.path, model.options);
+    }
+
     const report = summariseEval(records.current);
+    logReport(label, report);
+    if (!mounted.current) return;
     setState({
       kind: report.completed < TOTAL_QUESTIONS ? "stopped" : "complete",
       report,
       total: TOTAL_QUESTIONS,
+      // A release build has no switch, so its results leave the mode out.
+      suppressThinking: __DEV__ ? label.suppressThinking : undefined,
     });
   }, []);
 
   const onRun = useCallback(() => {
     records.current = [];
+    runsStarted += 1;
+    run.current = { index: runsStarted, thinkingAllowed };
     void start(0);
-  }, [start]);
+  }, [start, thinkingAllowed]);
 
   const onResume = useCallback(() => {
     // The first question with no verdict yet, so a resumed run never replays
@@ -173,6 +275,31 @@ export default function AiEvalScreen() {
       ) : (
         <EvalResults state={state} onRun={onRun} onResume={onResume} onCancel={onCancel} />
       )}
+
+      {/* `__DEV__` is false in a release build, so this switch never ships. */}
+      {__DEV__ && harness !== null ? (
+        <Card testID="ai-eval-thinking">
+          <ListRow
+            title="Let the model think"
+            subtitle="Development builds only, for docs/13 Gate 3. The next run loads the model with thinking left on, then puts it back."
+            subtitleLines={4}
+            right={
+              <Switch
+                testID="ai-eval-thinking-switch"
+                value={thinkingAllowed}
+                onValueChange={setThinkingAllowed}
+                disabled={state.kind === "running"}
+                accessibilityRole="switch"
+                accessibilityLabel="Let the model think"
+                accessibilityState={{
+                  disabled: state.kind === "running",
+                  checked: thinkingAllowed,
+                }}
+              />
+            }
+          />
+        </Card>
+      ) : null}
 
       {/* Clears the tab bar on short devices. */}
       <View className="h-8" />
