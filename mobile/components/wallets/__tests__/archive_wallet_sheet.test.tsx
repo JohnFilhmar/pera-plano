@@ -10,10 +10,11 @@
 //   relocate years of history into whichever wallet happened to be first in the
 //   list — and a mis-tap on a confirm button is not consent to that.
 //
-//   DELETE IS NOT OFFERED. Invariant 4 forbids orphan Transactions, and
+//   HARD DELETE IS NOT OFFERED. Invariant 4 forbids orphan Transactions, and
 //   `wallets_repo` exports no `deleteWallet` at all. A delete affordance here
 //   would be a path to a broken invariant, or a button that throws.
-import { fireEvent, render, screen } from "@testing-library/react-native";
+import { act, fireEvent, render, screen } from "@testing-library/react-native";
+import { useState } from "react";
 
 import { ArchiveWalletSheet } from "../archive_wallet_sheet";
 import type { Wallet } from "@/types/domain";
@@ -40,19 +41,23 @@ const OTHERS: Wallet[] = [
   wallet({ id: "w-cash", name: "Pocket" }),
 ];
 
-function renderSheet(overrides: Partial<React.ComponentProps<typeof ArchiveWalletSheet>> = {}) {
-  const onArchive = jest.fn();
-  render(
+function sheet(overrides: Partial<React.ComponentProps<typeof ArchiveWalletSheet>> = {}) {
+  return (
     <ArchiveWalletSheet
       wallet={wallet()}
       visible
       onDismiss={jest.fn()}
       otherWallets={OTHERS}
       transactionCount={12}
-      onArchive={onArchive}
+      onArchive={jest.fn()}
       {...overrides}
-    />,
+    />
   );
+}
+
+function renderSheet(overrides: Partial<React.ComponentProps<typeof ArchiveWalletSheet>> = {}) {
+  const onArchive = jest.fn();
+  render(sheet({ onArchive, ...overrides }));
   return onArchive;
 }
 
@@ -77,8 +82,7 @@ describe("the transaction-handling choice", () => {
         .numberOfLines,
     ).toBeGreaterThan(1);
     expect(
-      screen.getByText("Their amounts and details are unchanged; only the wallet moves.").props
-        .numberOfLines,
+      screen.getByText("Their amounts and details are unchanged. Transfers between these two wallets stay put.").props.numberOfLines,
     ).toBeGreaterThan(1);
   });
 
@@ -150,6 +154,44 @@ describe("the transaction-handling choice", () => {
   });
 });
 
+describe("what still uses the wallet (GAP-036)", () => {
+  // Spec archive flow step 4 and rule 21. A goal linked to a retired wallet
+  // otherwise just stops moving, and the user finds out much later, if at all.
+  test("the confirmation names every linked goal, loan and income source", () => {
+    renderSheet({
+      links: { goals: ["Emergency fund"], loans: ["Aling Nena"], isIncomeSource: true },
+    });
+
+    screen.getByTestId("archive-wallet-links");
+    screen.getByText("Goal: Emergency fund");
+    screen.getByText("Utang: Aling Nena");
+    screen.getByText("Income: one of your pay sources");
+  });
+
+  test("every linked goal is named, not just the first", () => {
+    renderSheet({
+      links: { goals: ["Emergency fund", "Bagong laptop"], loans: [], isIncomeSource: false },
+    });
+
+    screen.getByText("Goal: Emergency fund");
+    screen.getByText("Goal: Bagong laptop");
+  });
+
+  test("nothing is rendered when nothing is linked", () => {
+    renderSheet({ links: { goals: [], loans: [], isIncomeSource: false } });
+
+    expect(screen.queryByTestId("archive-wallet-links")).toBeNull();
+  });
+
+  test("a caller that has not wired the queries keeps today's sheet", () => {
+    // `links` is optional so this stays true, rather than the sheet rendering an
+    // empty "nothing uses this wallet" claim it has no evidence for.
+    renderSheet();
+
+    expect(screen.queryByTestId("archive-wallet-links")).toBeNull();
+  });
+});
+
 describe("HARD delete is not on offer", () => {
   // THE RULE SURVIVED, THE VOCABULARY CHANGED. This block used to assert that
   // the word "Delete" appeared nowhere in the sheet, which was a proxy for the
@@ -202,4 +244,121 @@ describe("what archiving changes", () => {
 
     expect(screen.getByTestId("archive-wallet-sheet")).toHaveTextContent(/total/i);
   });
+});
+
+// ---------------------------------------------------------------------------
+// GAP-079 — the sheet AROUND the archive, which every test above misses
+// because each renders a fresh sheet, presses once, and stops there.
+//
+// THE DEFAULT IS ONLY A DEFAULT IF IT IS RESTORED. The detail screen keeps
+// this sheet mounted and toggles `visible`, so a "Move them to BPI" the user
+// backed out of was still selected the next time the sheet opened — and one
+// confirm tap from relocating years of history into a wallet nobody chose this
+// time. That is the same mis-tap the file header calls "not consent to that",
+// arriving by a route the header did not anticipate.
+//
+// AND THE CONFIRM HAD NO BUSY STATE AT ALL. The archive re-runs
+// `reassignWalletTransactions` over the ledger the first one is still moving.
+// ---------------------------------------------------------------------------
+
+/** Rejects the archive `ArchivingHarness` is holding open. */
+let failArchive: (() => void) | null = null;
+
+/**
+ * The detail screen's shape around this sheet, which the plain `renderSheet`
+ * above does not have: the confirm fires, `busy` goes true, THE SHEET STAYS
+ * OPEN, and the flag clears only when the write settles — either way, matching
+ * the `onSettled` app/wallet/[id].tsx clears it in.
+ */
+function ArchivingHarness({
+  onArchive,
+}: {
+  onArchive: (moveTransactionsTo: string | null) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  return sheet({
+    busy,
+    onArchive: (moveTransactionsTo) => {
+      onArchive(moveTransactionsTo);
+      setBusy(true);
+      new Promise<void>((_resolve, reject) => {
+        failArchive = () => reject(new Error("archive rejected"));
+      })
+        .catch(() => undefined)
+        .finally(() => setBusy(false));
+    },
+  });
+}
+
+describe("a double tap on Delete wallet", () => {
+  beforeEach(() => {
+    failArchive = null;
+  });
+
+  test("two presses inside one archive submit once", () => {
+    const onArchive = jest.fn();
+    render(<ArchivingHarness onArchive={onArchive} />);
+
+    fireEvent.press(screen.getByTestId("archive-confirm"));
+    fireEvent.press(screen.getByTestId("archive-confirm"));
+
+    expect(onArchive).toHaveBeenCalledTimes(1);
+  });
+
+  test("the confirm says it is busy rather than going quietly dead", () => {
+    render(<ArchivingHarness onArchive={jest.fn()} />);
+
+    fireEvent.press(screen.getByTestId("archive-confirm"));
+
+    const button = screen.getByTestId("archive-confirm");
+    expect(button.props.accessibilityState.disabled).toBe(true);
+    expect(button.props.accessibilityState.busy).toBe(true);
+  });
+
+  test("an archive that fails gives the confirm back", async () => {
+    const onArchive = jest.fn();
+    render(<ArchivingHarness onArchive={onArchive} />);
+    fireEvent.press(screen.getByTestId("archive-confirm"));
+
+    // Taken WHILE the write is open, so this reads false on a sheet that never
+    // had a busy state at all rather than only on one that got stuck in it.
+    expect(screen.getByTestId("archive-confirm").props.accessibilityState.disabled).toBe(true);
+
+    await act(async () => {
+      failArchive?.();
+    });
+
+    // The screen leaves this sheet open on a failure and says so under the
+    // buttons, so the retry that message asks for has to be tappable.
+    expect(screen.getByTestId("archive-confirm").props.accessibilityState.disabled).toBe(false);
+    fireEvent.press(screen.getByTestId("archive-confirm"));
+    expect(onArchive).toHaveBeenCalledTimes(2);
+  });
+});
+
+test("the screen's failure message is rendered where the buttons are", () => {
+  renderSheet({ errorMessage: "This wallet could not be deleted." });
+
+  expect(screen.getByTestId("archive-error")).toHaveTextContent(
+    "This wallet could not be deleted.",
+  );
+});
+
+test("reopening restores the answer that changes nothing", () => {
+  const onArchive = jest.fn();
+  const view = render(sheet({ onArchive }));
+
+  fireEvent.press(screen.getByTestId("archive-move-transactions"));
+  fireEvent.press(screen.getByTestId("archive-target-w-bpi"));
+
+  view.rerender(sheet({ onArchive, visible: false }));
+  view.rerender(sheet({ onArchive, visible: true }));
+
+  // The destination list is gone with the choice that opened it — and the
+  // load-bearing half is the next two lines: a confirm on a freshly opened
+  // sheet KEEPS the transactions, rather than sending the destination picked
+  // during an opening the user walked away from.
+  expect(screen.queryByTestId("archive-target-w-bpi")).toBeNull();
+  fireEvent.press(screen.getByTestId("archive-confirm"));
+  expect(onArchive).toHaveBeenCalledWith(null);
 });

@@ -35,6 +35,7 @@ import type { ChipTone } from "@/components/ui/chip";
 import { palette } from "@/constants/colors";
 import { parseDateIso, startOfLocalDay } from "@/lib/dates";
 import { formatDate } from "@/lib/datetime";
+import { principalApplied } from "@/lib/loans/loan_math";
 import type { LoanStatus } from "@/lib/loans/loans_service";
 import { softBackground } from "@/lib/ui/contrast";
 
@@ -95,14 +96,27 @@ const DUE_FILL: Record<ChipTone, "outline" | "soft"> = {
 export function LoanCard({ status, now, testID }: LoanCardProps) {
   const { colorScheme } = useColorScheme();
   const chip = dueChip(status, now);
-  const { loan, outstanding } = status;
+  const { loan } = status;
 
   // Amount paid so far, as a share of what was borrowed — the same idea
   // `LimitCard`'s bar states, guarded the same way: `principal` is a positive
   // CHECK constraint in 001_core.sql, but guarding rather than assuming keeps
   // this file honest about that being an invariant of the DATA, not of the
   // arithmetic here.
-  const paid = Math.max(0, loan.principal - outstanding);
+  //
+  // MEASURED FROM WHAT WAS PAID, NOT FROM WHAT IS LEFT (GAP-115). This was
+  // `principal - outstanding`, which reports the remaining balance wearing a
+  // progress bar's clothes. A balance adjustment (rule 20's late fee) raises
+  // `outstanding` without unpaying anything, so the bar slid BACKWARDS and the
+  // app looked like it had lost the user's payments.
+  //
+  // NOT `status.paidTotal` EITHER, which is the obvious substitution and is
+  // wrong for amortized loans: an installment is principal PLUS interest,
+  // while the basis below is principal alone, so the ratio would cross 1
+  // before the final installment and paint a full bar beside a live balance.
+  // `principalApplied` is the principal-denominated figure, and it leaves flat
+  // and free-form loans untouched because for those every peso is principal.
+  const paid = principalApplied(loan.schedule ?? null, status.paidTotal);
   const ratio = loan.principal > 0 ? paid / loan.principal : 0;
   const percentPaid = Math.round(Math.min(1, Math.max(0, ratio)) * 100);
 

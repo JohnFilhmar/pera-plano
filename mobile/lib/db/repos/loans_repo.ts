@@ -30,6 +30,7 @@
 import { DEFAULT_LOAN_REMINDER_OFFSETS } from "@/constants/loans";
 import { getDatabase } from "@/lib/db/database";
 import { newId } from "@/lib/ids";
+import { principalApplied } from "@/lib/loans/loan_math";
 import type {
   Centavos,
   Installment,
@@ -54,6 +55,14 @@ export type NewLoan = {
   direction: LoanDirection;
   counterparty: string;
   principal: Centavos;
+  /**
+   * The cash borrowed, for the one kind of loan where that is not `principal`
+   * (migration 020). Omitted or `null` means there is no separate figure: for
+   * amortized and free-form loans `principal` already is one, and for a flat
+   * loan stored before 020 it was never recorded and cannot be derived.
+   * NEVER default this to `principal` — see `Loan.amountBorrowed`.
+   */
+  amountBorrowed?: Centavos | null;
   /**
    * Percent, informational only (domain §3.8). Spec rule 3 requires the UNIT to
    * be explicit at entry — PH lenders commonly quote monthly add-on rates —
@@ -110,6 +119,8 @@ type LoanRow = {
   updated_at: number;
   /** 010_soft_delete_and_derived_limits — appended by ALTER TABLE, hence last. */
   archived_at: number | null;
+  /** 020_loan_amount_borrowed — appended after `archived_at`, for the same reason. */
+  amount_borrowed: number | null;
 };
 
 /**
@@ -175,6 +186,12 @@ function rowToLoan(row: LoanRow): Loan {
     direction: row.direction as LoanDirection,
     counterparty: row.counterparty,
     principal: row.principal,
+    // Added by ALTER TABLE in migration 020, so every loan written before it
+    // reads NULL — which is exactly right for a flat loan whose borrowed
+    // amount was never asked for, and for the two kinds that never had a
+    // second figure at all. `?? null` normalizes the `undefined` a row
+    // selected by an older build would carry, the way `archived_at` does.
+    amountBorrowed: row.amount_borrowed ?? null,
     interestRate: row.interest_rate,
     schedule: row.schedule_json === null ? null : (JSON.parse(row.schedule_json) as Installment[]),
     linkedWalletId: row.linked_wallet_id,
@@ -196,14 +213,16 @@ export async function createLoan(input: NewLoan): Promise<Loan> {
   const id = newId();
 
   await db.runAsync(
-    `INSERT INTO loans (id, direction, counterparty, principal, interest_rate, schedule_json,
-       linked_wallet_id, next_due_date, next_due_amount, reminder_offsets_json, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO loans (id, direction, counterparty, principal, amount_borrowed, interest_rate,
+       schedule_json, linked_wallet_id, next_due_date, next_due_amount, reminder_offsets_json,
+       created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       input.direction,
       input.counterparty,
       input.principal,
+      input.amountBorrowed ?? null,
       input.interestRate ?? null,
       input.schedule && input.schedule.length > 0 ? JSON.stringify(input.schedule) : null,
       input.linkedWalletId ?? null,
@@ -232,7 +251,8 @@ export async function getLoan(id: string): Promise<Loan | null> {
  * `includeSettled` defaults to TRUE. The spec's states table keeps a settled
  * loan visible ("Loan moves to a settled list; history retained"), so hiding it
  * by default would lose the history the same sentence promises to keep.
- * Settled means balance ≤ 0, computed the same way `outstandingBalance` does.
+ * Settled means balance ≤ 0, asked of `outstandingBalance` itself rather than
+ * re-derived here.
  */
 export async function listLoans(opts?: {
   direction?: LoanDirection;
@@ -256,29 +276,28 @@ export async function listLoans(opts?: {
     params.push(opts.direction);
   }
 
-  if (opts?.includeSettled === false) {
-    // Mirrors `outstandingBalance`: principal, less every matched payment's
-    // ledger amount, plus every signed adjustment.
-    clauses.push(`(
-      loans.principal
-      - COALESCE((
-          SELECT SUM(transactions.amount) FROM loan_payments
-            JOIN transactions ON transactions.id = loan_payments.transaction_id
-           WHERE loan_payments.loan_id = loans.id
-             AND transactions.direction = ${PAYING_DIRECTION_SQL}
-        ), 0)
-      + COALESCE((
-          SELECT SUM(amount) FROM loan_adjustments WHERE loan_adjustments.loan_id = loans.id
-        ), 0)
-    ) > 0`);
-  }
-
   const rows = await db.getAllAsync<LoanRow>(
     `SELECT loans.* FROM loans${clauses.length > 0 ? ` WHERE ${clauses.join(" AND ")}` : ""}
       ORDER BY loans.created_at`,
     params,
   );
-  return rows.map(rowToLoan);
+  const loans = rows.map(rowToLoan);
+  if (opts?.includeSettled !== false) return loans;
+
+  // SETTLED IS ASKED OF `outstandingBalance`, NOT RE-DERIVED IN SQL. This
+  // clause used to be a second copy of the balance formula written as a WHERE
+  // predicate, and the copy went wrong the moment the formula stopped being
+  // `principal - paid + adjustments`: a payment's principal content depends on
+  // the SCHEDULE, which lives in `schedule_json` and cannot be summed in a
+  // predicate. Two expressions of one rule is how an amortized loan ended up
+  // filtered out of the matcher's open-loan scan while its own detail screen
+  // still showed a balance — and a loan the matcher cannot see is a payment
+  // the user cannot record against it.
+  const open: Loan[] = [];
+  for (const loan of loans) {
+    if ((await outstandingBalance(loan.id)) > 0) open.push(loan);
+  }
+  return open;
 }
 
 export async function updateLoan(id: string, patch: Partial<NewLoan>): Promise<Loan> {
@@ -292,6 +311,13 @@ export async function updateLoan(id: string, patch: Partial<NewLoan>): Promise<L
     direction: patch.direction ?? current.direction,
     counterparty: patch.counterparty ?? current.counterparty,
     principal: patch.principal ?? current.principal,
+    // `!== undefined`, like `interestRate` right below and NOT like
+    // `principal` right above: an explicit `null` has to CLEAR this. Switching
+    // a flat loan to amortized on the edit screen submits exactly that, and a
+    // `??` here would leave the old borrowed figure hanging off a loan whose
+    // `principal` now IS the borrowed figure — two columns claiming it.
+    amountBorrowed:
+      patch.amountBorrowed !== undefined ? patch.amountBorrowed : current.amountBorrowed,
     interestRate: patch.interestRate !== undefined ? patch.interestRate : current.interestRate,
     schedule: patch.schedule !== undefined ? patch.schedule : current.schedule,
     linkedWalletId:
@@ -308,14 +334,15 @@ export async function updateLoan(id: string, patch: Partial<NewLoan>): Promise<L
   const db = await getDatabase();
   await db.runAsync(
     `UPDATE loans
-        SET direction = ?, counterparty = ?, principal = ?, interest_rate = ?, schedule_json = ?,
-            linked_wallet_id = ?, next_due_date = ?, next_due_amount = ?, reminder_offsets_json = ?,
-            updated_at = ?
+        SET direction = ?, counterparty = ?, principal = ?, amount_borrowed = ?, interest_rate = ?,
+            schedule_json = ?, linked_wallet_id = ?, next_due_date = ?, next_due_amount = ?,
+            reminder_offsets_json = ?, updated_at = ?
       WHERE id = ?`,
     [
       merged.direction,
       merged.counterparty,
       merged.principal,
+      merged.amountBorrowed,
       merged.interestRate,
       merged.schedule && merged.schedule.length > 0 ? JSON.stringify(merged.schedule) : null,
       merged.linkedWalletId,
@@ -503,6 +530,40 @@ export async function listPayments(loanId: string): Promise<LoanPayment[]> {
 }
 
 /**
+ * The payment that already claims this transaction, or `null`.
+ *
+ * `loan_payments.transaction_id` is `NOT NULL UNIQUE` (001_core.sql, invariant
+ * I12), so there is at most one and no ordering is needed. Exists so a caller
+ * can ASK before writing, rather than learning the answer as a thrown
+ * `PaymentAlreadyMatchedError` it then has to translate for the user.
+ */
+export async function getPaymentByTransaction(
+  transactionId: string,
+): Promise<LoanPayment | null> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{
+    id: string;
+    loan_id: string;
+    transaction_id: string;
+    created_at: number;
+    updated_at: number;
+  }>(
+    `SELECT id, loan_id, transaction_id, created_at, updated_at
+     FROM loan_payments WHERE transaction_id = ?`,
+    [transactionId],
+  );
+  return row === null
+    ? null
+    : {
+        id: row.id,
+        loanId: row.loan_id,
+        transactionId: row.transaction_id,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      };
+}
+
+/**
  * Un-matches a payment. Idempotent.
  *
  * NEVER DELETES THE TRANSACTION — the money moved, whatever the matcher thought
@@ -512,6 +573,60 @@ export async function listPayments(loanId: string): Promise<LoanPayment[]> {
 export async function deletePayment(id: string): Promise<void> {
   const db = await getDatabase();
   await db.runAsync("DELETE FROM loan_payments WHERE id = ?", [id]);
+}
+
+// ---------------------------------------------------------------------------
+// Rejected match suggestions
+// ---------------------------------------------------------------------------
+
+/**
+ * The user said none of these rows pays this loan (019_loan_match_rejections).
+ *
+ * IDEMPOTENT, because the same sheet can be opened and rejected twice and a
+ * second "None of these" is not an error the user should ever hear about.
+ * `INSERT OR IGNORE` against the pair's UNIQUE constraint is the whole
+ * mechanism.
+ *
+ * TAKES THE WHOLE LIST, not one id at a time, AS ONE STATEMENT WITH ONE
+ * `VALUES` TUPLE PER ROW — not a loop of single-row inserts. The button
+ * rejects everything the sheet was showing, and a single INSERT is atomic by
+ * definition, which is what actually keeps a half-applied rejection from
+ * surviving a crash mid-write; a bare loop of awaited calls promises no such
+ * thing without a transaction wrapped around it. The candidate list is at
+ * most a handful of rows, so the statement never comes close to SQLite's
+ * bound-variable limit.
+ */
+export async function rejectCandidates(
+  loanId: string,
+  transactionIds: readonly string[],
+  now: number = Date.now(),
+): Promise<void> {
+  if (transactionIds.length === 0) return;
+  const db = await getDatabase();
+
+  const valuesTuples = transactionIds.map(() => "(?, ?, ?, ?)").join(", ");
+  const params = transactionIds.flatMap((transactionId) => [
+    newId(),
+    loanId,
+    transactionId,
+    now,
+  ]);
+
+  await db.runAsync(
+    `INSERT OR IGNORE INTO loan_match_rejections (id, loan_id, transaction_id, created_at)
+     VALUES ${valuesTuples}`,
+    params,
+  );
+}
+
+/** The transactions this loan has been told are not its payments. */
+export async function listRejectedTransactionIds(loanId: string): Promise<string[]> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<{ transaction_id: string }>(
+    "SELECT transaction_id FROM loan_match_rejections WHERE loan_id = ?",
+    [loanId],
+  );
+  return rows.map((row) => row.transaction_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -599,20 +714,51 @@ export async function deleteAdjustment(id: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * What is still owed — spec rule 2: principal, less the matched payments, plus
- * any balance adjustments.
+ * What is still owed — spec rule 2, which is THREE rules and not one:
+ * "Amortized: remaining balance per the schedule after applied payments. Flat:
+ * total repayable minus the sum of `paymentHistory[]`. Free-form: `principal`
+ * (or a user-set starting balance) minus payments, plus any balance
+ * adjustments."
+ *
+ * ALL THREE COUNT DOWN FROM `principal`, and that is not a simplification.
+ * `loan_form.tsx` stores `installment * count` as a flat loan's principal —
+ * citing this very rule — so `principal` already IS the total repayable there;
+ * `buildAmortizationSchedule` makes the principal column sum to the principal,
+ * so it is the schedule's own closing balance there. Free-form says it
+ * outright.
+ *
+ * WHAT DIFFERS IS WHAT A PAYMENT TAKES OFF IT. `principalApplied`
+ * (lib/loans/loan_math.ts) walks the schedule and counts each payment's
+ * PRINCIPAL CONTENT: the whole installment on a flat schedule, where rule 4
+ * leaves every peso principal, and the principal portion alone on an amortized
+ * one, where the rest is interest. Subtracting a whole amortized installment
+ * from a principal balance is what reported a ₱50,000 loan settled after
+ * eleven and a bit of its twelve payments, with interest rows still to run.
+ *
+ * ADJUSTMENTS COUNT ON EVERY KIND, not only free-form. Rule 2 names them under
+ * free-form because that is the only kind where accrued interest can ONLY
+ * arrive as one, but rule 12 has any lender's late fee "recorded as a balance
+ * adjustment", rule 13 covers "payments made entirely outside tracked money" —
+ * the 5-6 case, a flat loan — and rule 20 reopens a SETTLED loan with one.
+ * Dropping them for scheduled loans would leave the collector-paid-by-a-cousin
+ * payment with nothing to reduce.
  *
  * FLOORED AT ZERO (plan rule 5). A negative balance renders as the lender owing
- * the user money, which is a different loan.
+ * the user money, which is a different loan. Only an overpayment or a negative
+ * adjustment can reach it: `principalApplied` is bounded by the schedule for
+ * every peso that lands inside it.
  */
 export async function outstandingBalance(loanId: string): Promise<Centavos> {
   const db = await getDatabase();
 
-  const loan = await db.getFirstAsync<{ principal: number }>(
-    "SELECT principal FROM loans WHERE id = ?",
+  const loan = await db.getFirstAsync<{ principal: number; schedule_json: string | null }>(
+    "SELECT principal, schedule_json FROM loans WHERE id = ?",
     [loanId],
   );
   if (!loan) throw new LoanNotFoundError(loanId);
+
+  const schedule =
+    loan.schedule_json === null ? null : (JSON.parse(loan.schedule_json) as Installment[]);
 
   // ONLY PAYMENTS POINTING THE RIGHT WAY COUNT. `recordPayment` refuses to
   // link a mismatched transaction, so on a healthy database this clause
@@ -632,5 +778,8 @@ export async function outstandingBalance(loanId: string): Promise<Centavos> {
     [loanId],
   );
 
-  return Math.max(0, loan.principal - (paid?.total ?? 0) + (adjusted?.total ?? 0));
+  return Math.max(
+    0,
+    loan.principal - principalApplied(schedule, paid?.total ?? 0) + (adjusted?.total ?? 0),
+  );
 }

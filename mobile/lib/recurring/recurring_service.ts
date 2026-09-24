@@ -26,7 +26,7 @@ import {
   RecurringPatternNotFoundError,
   upsertPattern,
 } from "@/lib/db/repos/recurring_patterns_repo";
-import { listTransactions } from "@/lib/db/repos/transactions_repo";
+import { listFullLedgerBetween } from "@/lib/db/repos/transactions_repo";
 import { createUserRule, listUserRules } from "@/lib/db/repos/user_rules_repo";
 import { withUnitOfWork } from "@/lib/db/unit_of_work";
 import { detectPatterns, normalizeMerchant } from "@/lib/recurring/pattern_detector";
@@ -39,21 +39,42 @@ const DAY_MS = 86_400_000;
  * is `MIN_OCCURRENCES = 3` (pattern_detector.ts), so an ANNUAL pattern needs
  * roughly two full years of history before three instances even exist — three
  * charges a year apart span about 730 days. Rounded up with slack for a
- * charge that lands a few weeks early or late; `historyFloor()` inside
- * `listTransactions` still clamps this to whatever the current tier's
- * visibility window allows (entitlements.ts), so a Free device simply sees
- * less of it, per domain §3.10's tier note.
+ * charge that lands a few weeks early or late.
+ *
+ * NOTHING CLAMPS THIS, BECAUSE THE READ BELOW IS FLOOR-EXEMPT (GAP-122). It
+ * used to: read through `listTransactions`, `historyFloor()` cut these 800 days
+ * down to the Free tier's 90-day browsing window (entitlements.ts), which
+ * cannot hold three instances of anything slower than monthly — the detector
+ * was asked for annual subscriptions and given a window that excludes them by
+ * construction. GAP-118 answered that by not running the pass on Free at all;
+ * GAP-122 reverses that, because Reports rule 19 promises a Free user the COUNT
+ * of detected patterns and a count taken from 90 days understates it — worst of
+ * all for the annual subscription a user most wants flagged, which 90 days
+ * cannot hold at any confidence.
+ *
+ * SO `refreshPatterns` READS `listFullLedgerBetween` INSTEAD. The floor is a
+ * browsing gate and this is a computation: the same line GAP-105 drew for
+ * `sumSpend`, GAP-111 for the categorizer and GAP-118 for income cadence
+ * detection. What recurring detection has that those three do not is a
+ * tier-gated OUTPUT — and that gate lives at the surface, where
+ * app/(tabs)/more/subscriptions.tsx shows Free the count and nothing else, not
+ * in the sample this constant describes.
  */
 const LEDGER_WINDOW_DAYS = 800;
 
 /**
- * Nominal length of each `period` bucket. Two callers:
+ * Nominal length of each `period` bucket. Three callers:
  *
  *   `promotePatternToBill`, for the rare row that predates migration 007 and
  *   so has no `periodDays` of its own to promote from.
  *
- *   `decayStalePatterns`, which scales the forget threshold by this rather
- *   than by `periodDays` on purpose — see that function's own doc.
+ *   `decayStalePatterns`, which scales the forget threshold by the LARGER of
+ *   this and `periodDays` — see that function's own doc for why neither
+ *   number is safe on its own.
+ *
+ *   `MONTHLY_FACTOR` below, which is these same lengths expressed as
+ *   payments-per-month, and is what `monthlyLockedIn` falls back to for that
+ *   same pre-007 row.
  */
 const PERIOD_NOMINAL_DAYS: Record<RecurringPeriod, number> = {
   weekly: 7,
@@ -61,7 +82,20 @@ const PERIOD_NOMINAL_DAYS: Record<RecurringPeriod, number> = {
   annual: 365,
 };
 
-/** Reports rule 17, verbatim: weekly ×52÷12, monthly ×1, annual ÷12. */
+/**
+ * Mean calendar month — the same 30.44 `recurring_patterns_repo.ts` builds its
+ * bucket boundaries from. `monthlyRate` divides a pattern's exact cadence into
+ * this to get how many times a month that pattern charges.
+ */
+const DAYS_PER_MONTH = 30.44;
+
+/**
+ * FALLBACK ONLY — no longer the primary conversion. Reports rule 17 writes its
+ * formula in `period` terms (weekly ×52÷12, monthly ×1, annual ÷12), and that
+ * reading is exactly right for a row whose only cadence information IS its
+ * bucket: one written before migration 007, with no `periodDays`. Every row
+ * that carries a real cadence is converted from that instead — `monthlyRate`.
+ */
 const MONTHLY_FACTOR: Record<RecurringPeriod, number> = {
   weekly: 52 / 12,
   monthly: 1,
@@ -112,7 +146,22 @@ const MONTHLY_FACTOR: Record<RecurringPeriod, number> = {
  */
 export async function refreshPatterns(now: number): Promise<RecurringPattern[]> {
   const from = now - LEDGER_WINDOW_DAYS * DAY_MS;
-  const transactions = await listTransactions({ from, to: now + 1 });
+  // FLOOR-EXEMPT, AND THAT IS THE WHOLE POINT OF USING THIS READ (GAP-122) —
+  // see `LEDGER_WINDOW_DAYS` above for why 800 days a Free device cannot see
+  // would leave rule 19's count wrong in the worst direction.
+  //
+  // BOUNDED, NOT `listFullLedger`. That read is unfiltered by design; using it
+  // here would quietly turn "the last 800 days" into "everything ever", and the
+  // window above is a deliberate two-annual-cycles-plus-slack.
+  //
+  // `to: now + 1`, NOT `to: now`: ranges are half-open `[from, to)` everywhere
+  // in this codebase (interface contract §3), and the charge that just landed is
+  // exactly the one that may complete a cadence.
+  //
+  // `now` NO LONGER GOES TO THE REPOSITORY, because nothing there measures
+  // against it any more. It stays the pinned instant every calculation below
+  // uses, which is what lib/clock.ts asks of this file.
+  const transactions = await listFullLedgerBetween({ from, to: now + 1 });
   const detected = detectPatterns(transactions, now);
 
   const suppressRules = await listUserRules("suppress-recurring");
@@ -151,23 +200,38 @@ export async function refreshPatterns(now: number): Promise<RecurringPattern[]> 
  * `recurring_forget_multiplier` × the pattern's OWN cadence, measured from its
  * stored `lastSeenAt`.
  *
- * SCALED BY `period`, THE STABLE ENUM — NOT `periodDays`. Same reasoning
+ * SCALED BY THE LONGER OF `PERIOD_NOMINAL_DAYS[period]` AND `periodDays`.
+ * Neither number is safe alone.
+ *
+ * The bucket nominal is the STABLE one, for the same reason
  * `recurring_patterns_repo.ts`'s own file header gives for keeping
  * `periodDays` out of pattern IDENTITY: it is `Math.round(meanGap)` over a
  * sliding window and legitimately wobbles pass to pass for one real,
  * unchanged subscription (31 -> 30, that file's own worked example). A
- * silence THRESHOLD built on a wobbling number would make a pattern's forget
- * date jitter with no material change in the user's actual behaviour — the
- * exact defect the identity key was fixed to avoid, avoided here too by using
- * the same stable `PERIOD_NOMINAL_DAYS[period]` this file already defines for
- * `promotePatternToBill`'s fallback. A FIXED day count (the owner's own first
- * draft, explicitly rejected) fails for a related reason: flat 45 days is 1.5
- * missed cycles for a monthly subscription but would delete an ANNUAL one six
- * weeks after it charged, then re-detect it the next time it actually
- * charged — flickering in and out of the locked-in total all year. The
- * multiplier framing is what keeps "1.5" meaning "one and a half missed
- * payments" regardless of cadence: monthly -> 45 days, weekly -> ~10 days,
- * annual -> ~18 months, all from the same stored `1.5`.
+ * silence THRESHOLD built on a wobbling number alone would make a pattern's
+ * forget date jitter with no material change in the user's actual behaviour,
+ * the exact defect the identity key was fixed to avoid.
+ *
+ * But the bucket nominal alone runs SHORT at the top of a bucket, because
+ * `period` is a three-value enum and every real cadence has to land in one of
+ * the three. A fortnightly charge buckets as `weekly` (the repo's
+ * weekly/monthly boundary sits at about 14.6 days), so 1.5 x 7 = 10.5 days
+ * would forget it three days BEFORE its next charge was even due — every
+ * cycle, with the next charge re-detecting it as a fresh, unacknowledged
+ * suggestion and the acknowledgement lost each time. A forget threshold
+ * shorter than the pattern's own cadence is never what "1.5 missed payments"
+ * means. `Math.max` keeps both properties: the threshold can never fall below
+ * the pattern's own cadence, and for the ordinary pattern sitting at or under
+ * its bucket nominal the stable number is still the one that decides.
+ *
+ * A FIXED day count (the owner's own first draft, explicitly rejected) fails
+ * for a related reason: flat 45 days is 1.5 missed cycles for a monthly
+ * subscription but would delete an ANNUAL one six weeks after it charged,
+ * then re-detect it the next time it actually charged — flickering in and out
+ * of the locked-in total all year. The multiplier framing is what keeps "1.5"
+ * meaning "one and a half missed payments" regardless of cadence: monthly ->
+ * 45 days, weekly -> ~10 days, fortnightly -> 21 days, annual -> ~18 months,
+ * all from the same stored `1.5`.
  *
  * ACKNOWLEDGED PATTERNS DECAY ON THE SAME TERMS AS UNACKNOWLEDGED ONES. Rule
  * 17's headline "locked in" figure counts only ACKNOWLEDGED, not-bill-linked
@@ -192,6 +256,37 @@ export async function refreshPatterns(now: number): Promise<RecurringPattern[]> 
  * is still real. If the bill itself is later archived or deleted, that is
  * bills rule 27's lifecycle to own, not this one's.
  *
+ * THIS RUNS ON FREE, AND IT IS THE FLOOR-EXEMPT READ ABOVE THAT MAKES THAT
+ * CORRECT (GAP-122). GAP-118 skipped the whole pass on Free and argued the skip
+ * was right, because "a Free period that quietly forgot the patterns a Plus
+ * period found would be the gate deleting data", which gate principle 1
+ * (docs/05-monetization.md §3.1) forbids outright. That argument was made about
+ * a world where the pass does not run. It runs now, and the argument survives
+ * only because the SAMPLE stopped moving with the tier.
+ *
+ * Removal here is inferred from silence, and silence is measured against
+ * `lastSeenAt` — which the merge above refreshes from the ledger. Give that
+ * merge a 90-day window and the inference breaks on exactly the cadence it
+ * matters most for. An annual subscription charged at `now - 730`, `now - 365`
+ * and TODAY has one visible instance inside 90 days, never reaches
+ * `MIN_OCCURRENCES = 3`, is never upserted, and so keeps a stored `lastSeenAt`
+ * of `now - 365`; a year later that reads as 730 days of silence against a
+ * 1.5 x 365 = 547-day threshold, and the row is deleted for a subscription that
+ * charged this morning. THAT is the gate deleting data, and it is what a
+ * clamped window plus a running decay pass would actually have produced.
+ * Reading the full 800 days in both tiers takes the tier out of the calculation
+ * entirely: same evidence, same `lastSeenAt`, same verdict, which is what
+ * principle 2 — existing records keep working fully, including after a
+ * downgrade — asks for in the first place.
+ *
+ * SKIPPING IT WOULD ALSO HAVE PRESERVED NOTHING. A RecurringPattern is derived
+ * data: Reports rule 18 and domain §3.10 both say a decayed pattern is removed
+ * silently, and removing one changes no Transaction. Merging without decaying
+ * leaves a store no Plus pass would ever produce, and the first pass after an
+ * upgrade deletes those rows anyway — so the only lasting effect would be a
+ * Free count inflated by subscriptions the user has already cancelled, which is
+ * rule 19's teaser lying in the other direction.
+ *
  * A DISMISSED PATTERN IS NEVER CONSIDERED. `listPatterns` below already
  * excludes every `dismissed_at IS NOT NULL` row unconditionally — the same
  * clause the merge loop above relies on — so a dismissed row never reaches
@@ -211,7 +306,8 @@ async function decayStalePatterns(now: number): Promise<void> {
     // No confirmed sighting to measure silence from — nothing to decay yet.
     if (pattern.lastSeenAt === null) continue;
 
-    const thresholdDays = multiplier * PERIOD_NOMINAL_DAYS[pattern.period];
+    const cadenceDays = Math.max(pattern.periodDays ?? 0, PERIOD_NOMINAL_DAYS[pattern.period]);
+    const thresholdDays = multiplier * cadenceDays;
     const silentDays = (now - pattern.lastSeenAt) / DAY_MS;
     if (silentDays > thresholdDays) {
       await deletePattern(pattern.id);
@@ -258,16 +354,41 @@ export async function dismissPattern(patternId: string, now: number): Promise<vo
 }
 
 /**
- * Reports rule 17's headline figure, exactly: acknowledged patterns not
- * linked to a Bill, normalized to a monthly equivalent BY `period` — the
- * spec's own formula names the three-bucket enum, not the exact day count —
- * and summed. Rounded once at the end, not per pattern, so several fractional
- * weekly conversions do not each shave off a centavo before they are added.
+ * How many times a month a pattern charges.
+ *
+ * THE EXACT CADENCE WINS OVER THE BUCKET. `period` is a three-value enum and
+ * `periodFor` buckets any cadence up to about 14.6 days as `weekly`, so a
+ * fortnightly charge scaled by the weekly factor gets counted 52 times a year
+ * instead of 26 — very nearly double its real cost, on exactly the cadence PH
+ * payroll runs on. The bucket is the right identity for a pattern and the
+ * wrong divisor for its money; `periodDays` is the row's own measured cadence
+ * and has no such collision.
+ *
+ * Only a row with no usable cadence falls back to `MONTHLY_FACTOR`: `null` on
+ * a pre-migration-007 row, and `<= 0` defensively, since dividing by that
+ * would return `Infinity` and poison the whole sum rather than one row of it.
+ */
+function monthlyRate(pattern: RecurringPattern): number {
+  const cadenceDays = pattern.periodDays;
+  if (cadenceDays === null || cadenceDays <= 0) return MONTHLY_FACTOR[pattern.period];
+  return DAYS_PER_MONTH / cadenceDays;
+}
+
+/**
+ * Reports rule 17's headline figure: acknowledged patterns not linked to a
+ * Bill, normalized to a monthly equivalent and summed. Rounded once at the
+ * end, not per pattern, so several fractional conversions do not each shave
+ * off a centavo before they are added.
+ *
+ * The rule writes its formula in `period` terms; `monthlyRate` reads that same
+ * formula off the pattern's exact `periodDays` instead, because the enum
+ * cannot tell a weekly charge from a fortnightly one and this is the one place
+ * where that difference doubles the number the user reads.
  */
 export function monthlyLockedIn(patterns: RecurringPattern[]): Centavos {
   const total = patterns
     .filter((pattern) => pattern.acknowledged && pattern.billId === null)
-    .reduce((sum, pattern) => sum + pattern.amount * MONTHLY_FACTOR[pattern.period], 0);
+    .reduce((sum, pattern) => sum + pattern.amount * monthlyRate(pattern), 0);
   return Math.round(total);
 }
 

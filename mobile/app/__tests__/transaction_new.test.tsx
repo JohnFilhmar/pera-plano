@@ -42,7 +42,7 @@ jest.mock("@react-native-community/datetimepicker", () => ({
 }));
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { ReactElement, ReactNode } from "react";
 
 import { KeypadHost } from "@/components/ui/keypad_host";
@@ -273,6 +273,53 @@ describe("a manual entry never enters the pipeline", () => {
 });
 
 // ---------------------------------------------------------------------------
+// The other half of rule 4. Two saves seconds apart are two rows on purpose
+// (above); two presses inside ONE write are one row, because the second is a
+// finger landing again on a Save the screen has not closed yet — this route
+// closes on the write, not on the tap. Since nothing underneath a manual entry
+// dedupes anything, the refusal has to happen at the button, and what makes it
+// happen is the `submitting` flag this route hands the form.
+// ---------------------------------------------------------------------------
+
+describe("a double tap on Save", () => {
+  test("two presses inside one write leave ONE row", async () => {
+    await renderNew();
+    typeAmount("manual-amount", "100");
+
+    save();
+    save();
+
+    await waitFor(() => expect(mockBack).toHaveBeenCalled());
+    expect(await ledger(pocket.id)).toHaveLength(1);
+    // The balance is what a second row landing late would give away: one
+    // ₱100.00 off ₱1,000.00, not two.
+    expect((await getWallet(pocket.id))?.balance).toBe(90_000);
+  });
+
+  test("TWO PRESSES IN ONE TICK leave ONE row", async () => {
+    await renderNew();
+    typeAmount("manual-amount", "100");
+
+    // The test above presses twice in two separate `act()`s, which flushes
+    // enough React work between them that `isPending` alone catches the
+    // second. This one is the real double tap: both presses land inside ONE
+    // act, so no state update from the first can be observed by the second.
+    // A `useState` guard cannot stop this — the setter does not change the
+    // value the running handler's closure already read — which is why the
+    // flag here is a ref. GAP-079 found the same hole on the loan sheet,
+    // where it wrote two payments for one collector visit.
+    await act(async () => {
+      save();
+      save();
+    });
+
+    await waitFor(() => expect(mockBack).toHaveBeenCalled());
+    expect(await ledger(pocket.id)).toHaveLength(1);
+    expect((await getWallet(pocket.id))?.balance).toBe(90_000);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // The wallet the entry lands in
 // ---------------------------------------------------------------------------
 
@@ -413,6 +460,55 @@ describe("a transfer draft", () => {
     expect(mockBack).not.toHaveBeenCalled();
     // Save has to stay live, or the only thing left to do is lose the draft.
     expect(screen.getByTestId("manual-entry-save").props.accessibilityState.disabled).toBe(false);
+  });
+
+  // GAP-078. The test above is the failure BEFORE the write; this is the one
+  // after it, and the two must not say the same thing.
+  test("a failure AFTER the legs commit says the transfer WAS recorded — never that nothing was", async () => {
+    const bank = await createWallet({ name: "BPI", openingBalance: 200_000 });
+    await setMatchers(bank.id, [{ packageName: "com.bpi.ng.app", hint: null }]);
+    await renderNew();
+
+    fireEvent.press(screen.getByTestId("manual-entry-segment-transfer"));
+    typeAmount("manual-amount", "1000");
+    fireEvent.press(screen.getByTestId(`manual-entry-to-wallet-${bank.id}`));
+
+    // `recordTransfer` SUCCEEDS HERE. What fails is the step after it — the
+    // screen closing itself, which is the real rejection this path can hit
+    // ("Attempted to navigate before mounting the Root Layout component") and
+    // stands in for the invalidation failing the same way. `Once`, so nothing
+    // leaks into another test: jest.clearAllMocks() does not drop
+    // implementations.
+    mockBack.mockImplementationOnce(() => {
+      throw new Error("Attempted to navigate before mounting the Root Layout component");
+    });
+    save();
+
+    const failure = await screen.findByTestId("manual-entry-submit-error");
+    const message = failure.props.children as string;
+
+    // THE DISCRIMINATING ASSERTION — and it is the message, not the row count.
+    // The rows below land either way, because recordTransfer already
+    // committed before anything went wrong; what a single catch spanning the
+    // whole chain got wrong was telling the user the opposite.
+    expect(message).not.toContain("Nothing was recorded");
+    expect(message).toContain("Your transfer was recorded");
+    // And it must not invite the retry the pre-commit message does:
+    // recordTransfer is not idempotent, so a second Save writes both legs and
+    // the fee again.
+    expect(message).not.toContain("try again");
+
+    // The money really did move — which is exactly why the copy above may not
+    // deny it. Two linked legs, both balances settled.
+    expect(await ledger()).toHaveLength(2);
+    expect((await getWallet(pocket.id))?.balance).toBe(0);
+    expect((await getWallet(bank.id))?.balance).toBe(300_000);
+
+    // The screen could not close itself, so Save has to come back — otherwise
+    // the user is looking at a message under a permanently spinning button.
+    await waitFor(() => {
+      expect(screen.getByTestId("manual-entry-save").props.accessibilityState.disabled).toBe(false);
+    });
   });
 });
 

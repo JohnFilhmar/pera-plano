@@ -314,10 +314,10 @@ describe("FirstLimitScreen", () => {
     ]);
 
     // With no `onDone` supplied — which is how the router mounts it — saving
-    // still has to move the flow on by itself, and "done" is the one
-    // transition onboarding_state.ts's `nextStep` doc calls out as stranding
-    // the user if it is wrong.
-    await waitFor(() => expect(mockPush).toHaveBeenCalledWith("/(onboarding)/done"));
+    // still has to move the flow on by itself. The successor is "alerts"
+    // since GAP-003 put the POST_NOTIFICATIONS ask between this step and
+    // "done": the Limit just saved here is the reason the alert exists.
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith("/(onboarding)/alerts"));
   });
 
   test("the cadence the user picks is the one that is NOT derived", async () => {
@@ -360,7 +360,7 @@ describe("FirstLimitScreen", () => {
     await renderScreen();
 
     await waitFor(() =>
-      expect(screen.queryByTestId("first-limit-no-income-note")).toBeNull(),
+      expect(screen.queryByTestId("first-limit-no-income-note")).not.toBeOnTheScreen(),
     );
 
     fireEvent.press(screen.getByTestId("first-limit-basis-percent"));

@@ -5,10 +5,11 @@
 // cannot check, on a decision that moves their loan balance and pulls a
 // transaction out of income detection.
 //
-// CONFIRMING IS THE ONLY WRITE. Spec rule 9 permits auto-matching for exactly
-// one signal that is not modelled yet, so nothing reaches the ledger until a
-// tap here — and rejecting is silent, because rule 10 forbids the app inventing
-// a negative rule from a single "no".
+// CONFIRMING IS THE ONLY WRITE TO THE LEDGER. Spec rule 9 permits auto-matching
+// for exactly one signal that is not modelled yet, so nothing reaches the
+// ledger until a tap here. Rejecting writes elsewhere — see `onReject` below —
+// but never a negative rule, because rule 10 forbids the app inventing one from
+// a single "no".
 import { Text, View } from "react-native";
 
 import { AmountText, formatCentavos } from "@/components/ui/amount_text";
@@ -38,6 +39,15 @@ export type PaymentMatchSheetProps = {
   showingAll?: boolean;
   /** Opens the unfiltered list. Absent when it is already open. */
   onShowAll?: () => void;
+  /**
+   * The user said none of the SUGGESTED rows pays this loan, and named them.
+   *
+   * Absent on the browse-everything list, where the same button is a plain
+   * "Close": those fifty rows are a search result, not an offer, and rejecting
+   * them would silence the suggestions on the strength of a user who simply
+   * stopped scrolling.
+   */
+  onReject?: (transactionIds: string[]) => void;
 };
 
 export function PaymentMatchSheet({
@@ -50,6 +60,7 @@ export function PaymentMatchSheet({
   busy = false,
   showingAll = false,
   onShowAll,
+  onReject,
 }: PaymentMatchSheetProps) {
   return (
     <BottomSheet
@@ -131,13 +142,22 @@ export function PaymentMatchSheet({
           />
         )}
 
-        {/* Rejecting is just dismissing. Rule 10: "Rejecting a suggestion never
-            creates a negative UserRule automatically." */}
+        {/* Rejecting writes ONE narrow row per pair (019_loan_match_rejections)
+            and nothing else. Loans rule 10 forbids inventing a negative
+            UserRule from a single "no", and this is not one: it silences these
+            exact transactions on this exact loan, leaves the counterparty and
+            every future transaction from them alone, and stays reachable
+            through "Show every transaction", which ignores the rejections. */}
         <Button
           title={showingAll ? "Close" : "None of these"}
           variant="ghost"
           testID="match-dismiss"
-          onPress={onDismiss}
+          onPress={() => {
+            if (!showingAll && onReject !== undefined) {
+              onReject(candidates.map((candidate) => candidate.transactionId));
+            }
+            onDismiss();
+          }}
         />
       </View>
     </BottomSheet>

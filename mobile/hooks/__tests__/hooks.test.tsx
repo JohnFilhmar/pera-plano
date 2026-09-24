@@ -32,6 +32,7 @@ import {
   seedDefaultCategories,
   UNCATEGORIZED_ID,
 } from "@/lib/db/repos/categories_repo";
+import { createLimit } from "@/lib/db/repos/limits_repo";
 import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import {
   RAW_CAPTURE_TTL_MS,
@@ -48,7 +49,7 @@ import {
   listWallets,
 } from "@/lib/db/repos/wallets_repo";
 import { DEFAULT_TUNABLES } from "@/lib/ingest/ruleset_types";
-import { queryClient as appQueryClient } from "@/lib/query_client";
+import { installSafeToSpendCascade, queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
 import type { Transaction, Wallet } from "@/types/domain";
 
@@ -74,6 +75,7 @@ import { useLinkTransfer } from "../mutations/use_link_transfer";
 import { useResolveReviewItem } from "../mutations/use_resolve_review_item";
 import { useUnlinkTransfer } from "../mutations/use_unlink_transfer";
 import { useCreateUserRule } from "../mutations/use_create_user_rule";
+import { useUpdateLimit } from "../mutations/use_update_limit";
 import { useUpdateTransaction } from "../mutations/use_update_transaction";
 import { useUpdateWallet } from "../mutations/use_update_wallet";
 
@@ -101,7 +103,7 @@ import { useUpdateWallet } from "../mutations/use_update_wallet";
  */
 function makeTestClient(): QueryClient {
   const defaults = appQueryClient.getDefaultOptions();
-  return new QueryClient({
+  const client = new QueryClient({
     ...defaults,
     defaultOptions: {
       ...defaults,
@@ -109,6 +111,10 @@ function makeTestClient(): QueryClient {
       mutations: { ...defaults.mutations, gcTime: 0 },
     },
   });
+  // The shipped client gets this at module scope; a hand-built one has to opt
+  // in, the same way the defaults above are spread in rather than restated.
+  installSafeToSpendCascade(client);
+  return client;
 }
 
 function wrapperFor(client: QueryClient) {
@@ -457,13 +463,17 @@ describe("useBalanceDrift", () => {
       expect(client.getQueryState(queryKeys.wallets.drift(walletB.id))?.status).toBe("success");
     });
 
-    expect(result.current[walletA.id]).toEqual({
-      reported: 900_000,
-      computed: 80_000,
-      drift: 820_000,
-      reportingTransactionId: report.id,
-      dismissedTransactionId: null,
-    });
+    // The cache settles before the render that carries it, so the mapped value
+    // is waited for too: at nine workers a bare read still saw `null` (GAP-052).
+    await waitFor(() =>
+      expect(result.current[walletA.id]).toEqual({
+        reported: 900_000,
+        computed: 80_000,
+        drift: 820_000,
+        reportingTransactionId: report.id,
+        dismissedTransactionId: null,
+      }),
+    );
     expect(result.current[walletB.id]).toBeNull();
   });
 
@@ -933,6 +943,92 @@ describe("useLinkTransfer / useUnlinkTransfer", () => {
     expect((await getTransaction(txA.id))?.transferLinkId).toBeNull();
     expect((await getTransaction(inLeg.id))?.transferLinkId).toBeNull();
     expect(wasInvalidated(client, queryKeys.transactions.list({}))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Safe-to-Spend staleness (docs/04-features/09-safe-to-spend.md rule 13)
+//
+// The hero is the one number the whole product promises is trustworthy, and it
+// is DERIVED — from limits, bills, goals, income, the review queue and the
+// ledger. Nothing under `hooks/mutations/` named its key, so every write left
+// it showing the answer to a question the user had already changed.
+// ---------------------------------------------------------------------------
+
+describe("Safe-to-Spend is invalidated by the writes it is derived from", () => {
+  /** Both queries under the root: the hero, and the Plus projection's input. */
+  const INPUT_KEY = [...queryKeys.safeToSpend.all, "input"] as const;
+
+  function seedSafeToSpend(): void {
+    client.setQueryData(queryKeys.safeToSpend.today(), { safeToSpend: 0 });
+    client.setQueryData(INPUT_KEY, { days: [] });
+  }
+
+  test("useUpdateLimit invalidates the Safe-to-Spend root, not just the limits family", async () => {
+    // Rule 11: editing a limit "recomputes Safe-to-Spend immediately". Before
+    // this, the Plan tab's edit refreshed the limit cards and left the hero
+    // quoting headroom against a cap that no longer existed.
+    const limit = await createLimit({ scope: "monthly", basis: "fixed", value: 500_000 });
+    seedSafeToSpend();
+    client.setQueryData(queryKeys.limits.statuses(), []);
+
+    const { result } = renderHook(() => useUpdateLimit(), { wrapper: wrapperFor(client) });
+    await act(async () => {
+      result.current.mutate({ id: limit.id, patch: { value: 250_000 } });
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(wasInvalidated(client, queryKeys.limits.statuses())).toBe(true);
+    expect(wasInvalidated(client, queryKeys.safeToSpend.today())).toBe(true);
+    expect(wasInvalidated(client, INPUT_KEY)).toBe(true);
+  });
+
+  test("a bill write cascades onto the hero AND the projection input", async () => {
+    // Bills are a rule 13 trigger that no bill hook names, and the projection
+    // input is the half a `refetch()` on the hero would still have missed.
+    seedSafeToSpend();
+    client.setQueryData(queryKeys.bills.list(), []);
+
+    await client.invalidateQueries({ queryKey: queryKeys.bills.all });
+
+    expect(wasInvalidated(client, queryKeys.safeToSpend.today())).toBe(true);
+    expect(wasInvalidated(client, INPUT_KEY)).toBe(true);
+  });
+
+  test("a committed transaction cascades onto it too", async () => {
+    seedSafeToSpend();
+    // The ledger entry Home itself holds — the cascade mirrors an invalidation
+    // that actually LANDS on a cached query, so a source family with nothing
+    // cached is a no-op (see `installSafeToSpendCascade`'s own doc).
+    client.setQueryData(queryKeys.transactions.list({}), []);
+
+    const { result } = renderHook(() => useCreateTransaction(), { wrapper: wrapperFor(client) });
+    await act(async () => {
+      result.current.mutate({
+        walletId: walletA.id,
+        categoryId,
+        amount: 25000,
+        direction: "out",
+        occurredAt: 5000,
+        source: "manual",
+        confidence: 1,
+      });
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(wasInvalidated(client, queryKeys.safeToSpend.today())).toBe(true);
+  });
+
+  test("a write it is NOT derived from leaves it alone", async () => {
+    // The narrowness half. Safe-to-Spend reads no setting and no parser
+    // ruleset, so the cascade is a named source list rather than "any write".
+    seedSafeToSpend();
+    client.setQueryData(queryKeys.settings.captureEnabled(), true);
+
+    await client.invalidateQueries({ queryKey: queryKeys.settings.all });
+
+    expect(wasInvalidated(client, queryKeys.safeToSpend.today())).toBe(false);
+    expect(wasInvalidated(client, INPUT_KEY)).toBe(false);
   });
 });
 

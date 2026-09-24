@@ -9,7 +9,9 @@
 // different text or a different deletion date for the same row. It never
 // shows a summary or a count in place of the rows themselves — a user who
 // came here to check what the app actually read has to see the actual text,
-// not a reassurance that some exists.
+// not a reassurance that some exists. A row whose text was never kept
+// (GAP-107) says exactly that, with the one fact it does hold: when the
+// notification arrived.
 //
 // PRESENTATIONAL. `items` arrives already resolved — the provider name
 // resolved via constants/providers.ts's `providerLabelForPackage` against
@@ -31,6 +33,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Chip } from "@/components/ui/chip";
 import { EmptyState } from "@/components/ui/empty_state";
+import { formatDateTime } from "@/lib/datetime";
 import { ExpiryCountdown } from "./expiry_countdown";
 import type { EpochMs, RawCapture } from "@/types/domain";
 
@@ -39,6 +42,8 @@ export type CapturedListItem = {
   /** Resolved to a human name — never the raw Android package (see the file header). */
   providerName: string;
   expiresAt: EpochMs;
+  /** True when only the app and the times were kept, because the notification did not look like money. */
+  bodyDiscarded: boolean;
 };
 
 export type CapturedListProps = {
@@ -153,7 +158,7 @@ export function CapturedList({ items, now = Date.now(), testID = "captured-list"
         </ScrollView>
       ) : null}
 
-      {pageItems.map(({ capture, providerName, expiresAt }) => (
+      {pageItems.map(({ capture, providerName, expiresAt, bodyDiscarded }) => (
         <Card key={capture.id} testID={`captured-item-${capture.id}`} variant="flat">
           <View className="gap-2">
             <View className="flex-row items-center justify-between">
@@ -163,11 +168,22 @@ export function CapturedList({ items, now = Date.now(), testID = "captured-list"
               <ExpiryCountdown expiresAt={expiresAt} now={now} testID={`captured-item-expiry-${capture.id}`} />
             </View>
             <View testID={`captured-item-text-${capture.id}`} className="gap-1 rounded-xl bg-bg p-3 dark:bg-bg-dark">
-              {captureLines(capture).map((line) => (
-                <Text key={line} className="text-sm text-fg dark:text-fg-dark">
-                  {line}
-                </Text>
-              ))}
+              {bodyDiscarded ? (
+                <>
+                  <Text className="text-sm text-fg dark:text-fg-dark">
+                    {`Arrived ${formatDateTime(capture.postedAt)}`}
+                  </Text>
+                  <Text className="text-sm text-fg-2 dark:text-fg-2-dark">
+                    It didn't look like a money notification, so PeraPlano kept only the app and the time.
+                  </Text>
+                </>
+              ) : (
+                captureLines(capture).map((line) => (
+                  <Text key={line} className="text-sm text-fg dark:text-fg-dark">
+                    {line}
+                  </Text>
+                ))
+              )}
             </View>
           </View>
         </Card>

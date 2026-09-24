@@ -22,18 +22,27 @@
 //    ₱0.00". Rule 9 has a "Minimum history" column precisely so that "we do not
 //    know yet" is sayable, and `IncomeProfile.averageAmount` is already
 //    `Centavos | null`.
+import { startOfLocalDayBefore } from "@/lib/dates";
 import type { Centavos, IncomeCadence } from "@/types/domain";
 
 import type { CandidateEvent } from "./candidates";
+import { collapsePaydays } from "./paydays";
 
-/** Rule 9's window sizes, in events. Irregular is time-based instead. */
+/**
+ * Rule 9's window sizes, in PAYDAYS (rule 11's "matched pay event"). Irregular
+ * is time-based instead, and counts credits — its row says "primary-stream
+ * candidates", not matched pay events.
+ */
 const MEDIAN_WINDOW: Record<Exclude<IncomeCadence, "irregular">, number> = {
   kinsenas: 6,
   weekly: 8,
   monthly: 4,
 };
 
-/** Rule 9's "Minimum history" column. */
+/**
+ * Rule 9's "Minimum history" column — paydays for the three regular cadences,
+ * credits for irregular, for the same reason the window sizes above differ.
+ */
 const MINIMUM_EVENTS: Record<IncomeCadence, number> = {
   kinsenas: 2,
   weekly: 2,
@@ -44,7 +53,6 @@ const MINIMUM_EVENTS: Record<IncomeCadence, number> = {
 /** Rule 9's irregular row sums this window and divides by three. */
 const IRREGULAR_WINDOW_DAYS = 90;
 const IRREGULAR_MONTHS = 3;
-const DAY_MS = 86_400_000;
 
 /**
  * Nearest centavo, HALF AWAY FROM ZERO.
@@ -92,7 +100,15 @@ export function averageAmountFor(
   now: number,
 ): Centavos | null {
   if (cadence === "irregular") {
-    const from = now - IRREGULAR_WINDOW_DAYS * DAY_MS;
+    // A LOCAL-MIDNIGHT BOUND, not `now - 90 * DAY_MS`. Measured from the instant,
+    // the cutoff walks forward with the wall clock: at 09:00 the window opens at
+    // 09:00 on the boundary day and at 10:01 it opens at 10:01, so a credit that
+    // landed at 10:00 that day drops out of the sum between two reads and the
+    // user's income figure changes with nothing having happened. Rule 9's
+    // "trailing 90 days" is a statement about the calendar, like every other
+    // window in this app, so the bound is the boundary day's midnight and the
+    // whole of that day is in.
+    const from = startOfLocalDayBefore(now, IRREGULAR_WINDOW_DAYS);
     const withinWindow = events.filter(
       (event) => event.occurredAt >= from && event.occurredAt <= now,
     );
@@ -101,15 +117,22 @@ export function averageAmountFor(
     return roundCentavos(total / IRREGULAR_MONTHS);
   }
 
-  if (events.length < MINIMUM_EVENTS[cadence]) return null;
+  // THE MEDIAN IS OVER PAYDAYS, NOT OVER CREDITS (GAP-117). Rule 9 says "the
+  // median of recent matched pay events", and rule 11 defines a matched pay
+  // event as a payday — which is a local date, however many deposits the pay
+  // travelled in (lib/income/paydays.ts). An employer who splits one ₱18,500
+  // packet into two ₱9,250 deposits has paid ₱18,500 once, and taking the
+  // median of the deposits reports half a salary. Rule 16 then doubles that
+  // half into the monthly-equivalent M, so every percent-of-income Limit is
+  // built on half the income the user actually has.
+  //
+  // The collapse is the identity for pay that arrives whole, so nothing moves
+  // for a user with no split payday in their history.
+  const paydays = collapsePaydays(events);
+  if (paydays.length < MINIMUM_EVENTS[cadence]) return null;
 
-  // Most recent first, then the window — copied rather than sorted in place,
-  // because the caller still holds this array.
-  const recent = [...events]
-    .sort((a, b) => b.occurredAt - a.occurredAt)
-    .slice(0, MEDIAN_WINDOW[cadence]);
-
-  return median(recent.map((event) => event.amount));
+  // `collapsePaydays` returns oldest first, so the window is the TAIL.
+  return median(paydays.slice(-MEDIAN_WINDOW[cadence]).map((payday) => payday.amount));
 }
 
 /**

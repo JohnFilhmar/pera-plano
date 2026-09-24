@@ -9,7 +9,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { queryKeys } from "@/constants/query_keys";
 import { cancelLoanReminders } from "@/lib/loans/loan_reminders";
-import { confirmPaymentMatch } from "@/lib/loans/loans_service";
+import { recordPaymentAndCloseCards } from "@/lib/loans/loan_match_queue";
 import type { LoanPayment } from "@/types/domain";
 
 import { invalidateKeys } from "./invalidate_keys";
@@ -23,6 +23,10 @@ export type ConfirmPaymentMatchVariables = { loanId: string; transactionId: stri
  * transaction row, but it changes what the transaction MEANS: it is now
  * excluded from income cadence detection (loans rule 17), and any screen
  * showing income or a payment suggestion for it is holding a stale answer.
+ *
+ * ALSO INVALIDATES THE REVIEW QUEUE, because this write can now CLOSE a card.
+ * Without it the queue badge and the queue screen keep showing an item the
+ * database has already resolved, and the user taps a card that is gone.
  */
 export function useConfirmPaymentMatch() {
   const queryClient = useQueryClient();
@@ -32,7 +36,7 @@ export function useConfirmPaymentMatch() {
       loanId,
       transactionId,
     }: ConfirmPaymentMatchVariables): Promise<LoanPayment> => {
-      const payment = await confirmPaymentMatch(loanId, transactionId);
+      const payment = await recordPaymentAndCloseCards(loanId, transactionId);
       // Deliberately AFTER the match is recorded and deliberately not fatal:
       // a cancellation that fails must not undo a match the user confirmed.
       try {
@@ -47,6 +51,7 @@ export function useConfirmPaymentMatch() {
         queryKeys.loans.all,
         queryKeys.transactions.all,
         queryKeys.income.all,
+        queryKeys.reviewQueue.all,
       ]),
   });
 }

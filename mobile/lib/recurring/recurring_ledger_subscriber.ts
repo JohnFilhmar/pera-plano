@@ -33,6 +33,42 @@ const DEFAULT_DEBOUNCE_MS = 750;
  * "and on app foreground") and a second, independently-written copy of this
  * one-line try/catch would eventually disagree with this one about what
  * "failed safely" means.
+ *
+ * THE PASS RUNS IN BOTH TIERS, AND THAT IS A REVERSAL (GAP-122; owner's
+ * decision, 2026-09-10, second pass — it supersedes the recurring half of
+ * GAP-118, taken the same day). GAP-118 returned early here on Free, on the
+ * premise that no Free surface could ever display the result. Reports rule 19
+ * says otherwise, and says it three times (docs/04-features/10-reports.md `:70`,
+ * `:98`, `:157`): "The Free locked preview shows the count of detected patterns
+ * only". The count of what a Free device never detected is zero, so honouring
+ * rule 19 means detecting on Free. Shown the conflict, the owner chose the spec.
+ *
+ * WHAT IS TIER-GATED IS THE SURFACE, NOT THE PASS. `hasRecurringDetection()` is
+ * asked once, by the screen that owns the data
+ * (app/(tabs)/more/subscriptions.tsx), which on Free renders a count and
+ * nothing else — no merchant, no amount, no locked-in total
+ * (docs/05-monetization.md §5 rule 2: a locked preview is a labelled frame,
+ * never real gated data behind a blur). One check, at the surface, is what rule
+ * 19's "gated at the Entitlements call-site" asks for; a second check here only
+ * made the first one unreachable.
+ *
+ * AND THE SAMPLE IS NOW THE SAME IN BOTH TIERS. `refreshPatterns` reads its 800
+ * days through `listFullLedgerBetween`, which is exempt from the 90-day
+ * browsing floor (see `LEDGER_WINDOW_DAYS` in recurring_service.ts). That is
+ * load-bearing, not incidental: three instances of an ANNUAL charge span about
+ * two years, so a floor-clamped Free pass could not detect the subscription a
+ * user most wants flagged, and rule 19's teaser would understate in the one
+ * direction that costs a conversion — "we found nothing".
+ *
+ * `decayStalePatterns` RUNS ON FREE TOO, and it is that floor exemption rather
+ * than this guard's removal that makes it correct — its own doc in
+ * recurring_service.ts works through why.
+ *
+ * NOTHING IS CHECKED PER SUBSCRIPTION EITHER, so an upgrade still needs no
+ * restart: every production entry point (here and lib/bootstrap.ts) runs through
+ * this function, and `refreshPatterns` stays ungated so an upgrade handler that
+ * wants patterns on screen immediately (rule 19's "on upgrade, patterns computed
+ * from the full retained history appear immediately") can call it directly.
  */
 export async function runRecurringPass(now: number): Promise<void> {
   try {

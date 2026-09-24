@@ -80,14 +80,15 @@ test("skip is absent when the caller supplies no onSkip -- the finish step has n
 test("skip advances to the next step -- the wiring rule 1's dead-end guard depends on", () => {
   // Wires onSkip to nextStep exactly the way a real step screen will:
   // skipping the LAST content step must still land on "done", never strand
-  // the user where they started.
-  let step: OnboardingStep = "first_limit";
+  // the user where they started. That step is "alerts" since GAP-003 put the
+  // POST_NOTIFICATIONS ask between "first_limit" and "done".
+  let step: OnboardingStep = "alerts";
   const handleSkip = jest.fn(() => {
     step = nextStep(step) ?? step;
   });
 
   render(
-    <OnboardingFrame step={step} title="First limit" onPrimary={jest.fn()} onSkip={handleSkip}>
+    <OnboardingFrame step={step} title="Turn on alerts" onPrimary={jest.fn()} onSkip={handleSkip}>
       <Text>content</Text>
     </OnboardingFrame>,
   );

@@ -55,9 +55,10 @@ import {
   Inter_800ExtraBold,
 } from "@expo-google-fonts/inter";
 import { useFonts } from "expo-font";
-import { Stack } from "expo-router";
+import * as Notifications from "expo-notifications";
+import { router, Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 // Aliased: this file already imports a ThemeProvider — ours, from
@@ -69,6 +70,7 @@ import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client
 import { AllocationSheet } from "@/components/goals/allocation_sheet";
 import { PaydayDetectedSheet } from "@/components/income/payday_detected_sheet";
 import { KeypadHost } from "@/components/ui/keypad_host";
+import { MutationErrorToast } from "@/components/ui/mutation_error_toast";
 import { palette } from "@/constants/colors";
 import { navThemeFor } from "@/constants/nav_theme";
 import { ThemeProvider, useTheme } from "@/contexts/theme_context";
@@ -76,16 +78,25 @@ import { KeypadProvider } from "@/contexts/keypad_context";
 import { LockProvider, useLock } from "@/contexts/lock_context";
 import { systemClock } from "@/lib/clock";
 import { applyGlobalFont } from "@/lib/fonts";
-import { bootstrapApp, startNetworkSyncSubscriber } from "@/lib/bootstrap";
+import { bootstrapApp, getLastBootstrapResult, startNetworkSyncSubscriber } from "@/lib/bootstrap";
+import { SchemaTooNewError } from "@/lib/db/migrations";
+import { applyCaptureGuard } from "@/lib/privacy/capture_guard";
 import { startSupportOutboxSubscriber } from "@/lib/support/outbox_runner";
 import { useApplyAllocations } from "@/hooks/mutations/use_apply_allocations";
+import { useSkipAllocations } from "@/hooks/mutations/use_skip_allocations";
 import { usePaydayAllocations } from "@/hooks/use_payday_allocations";
 import { BILL_HORIZON_DAYS } from "@/hooks/queries/use_bills";
+import {
+  runGoalMilestonePass,
+  startGoalMilestoneSubscriber,
+} from "@/lib/goals/goal_milestone_subscriber";
 import { startIncomeLedgerSubscriber } from "@/lib/income/income_ledger_subscriber";
 import { startPaydayNotificationSubscriber } from "@/lib/income/payday_notification_subscriber";
 import { startLimitLedgerSubscriber } from "@/lib/limits/limit_ledger_subscriber";
+import { resolveAlertRoute } from "@/lib/alerts/alert_routes";
 import { startTrackingHealthSubscriber } from "@/lib/alerts/tracking_health_subscriber";
 import { startRecurringLedgerSubscriber } from "@/lib/recurring/recurring_ledger_subscriber";
+import { startReconcilePromptSubscriber } from "@/lib/wallets/reconcile_scheduler";
 import { listBillStatuses } from "@/lib/bills/bills_service";
 import { postOverdueNotices, scheduleBillReminders } from "@/lib/bills/bill_reminders";
 import { listLoanStatuses } from "@/lib/loans/loans_service";
@@ -98,7 +109,10 @@ import LockScreen from "./lock";
 // the system font (lib/fonts.ts).
 applyGlobalFont();
 
-type BootstrapState = "pending" | "ready" | "error";
+// "outdated-build" is its own state, not a flavour of "error", because the
+// two want opposite affordances: an ordinary bootstrap failure is worth
+// retrying, and a database written by a newer build never is.
+type BootstrapState = "pending" | "ready" | "error" | "outdated-build";
 
 /**
  * Starts one process-wide subscriber from inside an effect without letting it
@@ -149,6 +163,39 @@ function BootstrapErrorScreen({ onRetry }: { onRetry: () => void }) {
 }
 
 /**
+ * The database is newer than this build (lib/db/migrations.ts's
+ * SchemaTooNewError), which on this app means an OTA bundle was rolled back
+ * under a database that had already migrated forward.
+ *
+ * DELIBERATELY NO RETRY. `BootstrapErrorScreen` offers one because most
+ * bootstrap failures are transient; this one never is. There are no down
+ * migrations, so running again reaches the same refusal, and a button that
+ * cannot work teaches the user their data is gone when it is not. The copy
+ * therefore says the one true thing: their records are safe and untouched, and
+ * the newer app can read them again.
+ *
+ * No "check for updates" action either. Calling into expo-updates from here
+ * would be this app's first Updates call and OTA policy belongs to GAP-028;
+ * until that is settled, pointing at the store is honest and costs nothing.
+ */
+function OutdatedBuildScreen() {
+  return (
+    <View
+      testID="bootstrap-outdated-build"
+      className="flex-1 items-center justify-center gap-4 bg-bg px-6 dark:bg-bg-dark"
+    >
+      <Text className="text-center text-lg font-semibold text-fg dark:text-fg-dark">
+        This version is out of date
+      </Text>
+      <Text className="text-center text-fg-2 dark:text-fg-2-dark">
+        Your records were saved by a newer version of PeraPlano, so this one can't open them
+        safely. Nothing has been lost. Update PeraPlano and everything will be here.
+      </Text>
+    </View>
+  );
+}
+
+/**
  * The payday summary and the goals prompt it hands off to (m2b Task 9 rule 2).
  *
  * ITS OWN COMPONENT BECAUSE OF WHERE THE PROVIDER IS. `useApplyAllocations`
@@ -168,6 +215,7 @@ function PaydaySheets() {
   const { payday, proposals, paydayAmount, acknowledgePayday, dismissAllocations } =
     usePaydayAllocations();
   const applyAllocations = useApplyAllocations();
+  const skipAllocations = useSkipAllocations();
 
   return (
     <>
@@ -179,15 +227,126 @@ function PaydaySheets() {
         visible={proposals.length > 0}
         proposals={proposals}
         paydayAmount={paydayAmount}
-        busy={applyAllocations.isPending}
+        busy={applyAllocations.isPending || skipAllocations.isPending}
         onDismiss={dismissAllocations}
-        onConfirm={async (accepted) => {
-          await applyAllocations.mutateAsync(accepted);
+        onSkip={async () => {
+          try {
+            await skipAllocations.mutateAsync(proposals);
+          } catch {
+            // Same reasoning as `onConfirm` below: the toast is already up,
+            // and the sheet stays open for the retry.
+            return;
+          }
+          dismissAllocations();
+        }}
+        onConfirm={async (accepted, declined) => {
+          try {
+            await applyAllocations.mutateAsync(accepted);
+            // Recorded transfers emit no `ledger:committed` (only ingest does),
+            // so a milestone they crossed would wait for the next commit or
+            // launch without this pass (GAP-055).
+            void runGoalMilestonePass();
+            // The unchecked rows already read "Skipped" (GAP-056).
+            if (declined.length > 0) await skipAllocations.mutateAsync(declined);
+          } catch {
+            // THE CATCH IS FOR THE REJECTION, NOT FOR THE MESSAGE. `onConfirm`
+            // is typed `=> void` and AllocationSheet calls it without holding
+            // the promise, so an unhandled rejection was the whole cost of a
+            // failed apply here. What the user is told is already handled a
+            // level up and must not be duplicated: this is a real
+            // `useMutation`, so lib/query_client.ts's single MutationCache
+            // `onError` has already raised the failure toast by the time this
+            // runs, and a second in-place message would be the same failure
+            // reported twice. The `return` matters as much as the catch —
+            // leaving the sheet OPEN is what keeps the proposals and the
+            // user's ticks alive for the retry the toast asks for.
+            return;
+          }
           dismissAllocations();
         }}
       />
     </>
   );
+}
+
+/**
+ * A tapped notification reduced to the only two things routing needs: the
+ * request identifier (to tell one tap from the same tap arriving twice) and
+ * the routing `data` the notifier attached.
+ */
+type TappedAlert = { id: string; data: unknown };
+
+/**
+ * Sends a tapped notification to the screen it names (docs/06 §6.1's deep-link
+ * table). `lib/alerts/alert_routes.ts` decides WHICH screen; this is the caller
+ * that file was written for and shipped without — every alert in the app
+ * carried routing `data` that nothing read, so "Tap to fix tracking" opened the
+ * app wherever it happened to be.
+ *
+ * ITS OWN COMPONENT BECAUSE OF WHERE IT IS MOUNTED, the same reasoning as
+ * <PaydaySheets /> above. It is rendered only inside AppShell's ready branch
+ * and only AFTER <Stack />, which makes two rules structural rather than
+ * conditions a later edit can quietly drop:
+ *
+ *   NEVER NAVIGATE INTO A LOCKED APP. That branch is reached only when the
+ *   lock reports "unlocked" and bootstrap has resolved, so there is no state
+ *   in which this component exists and the user has not authenticated. A tap
+ *   that lands on the lock screen is held by AppShell instead (see the
+ *   listener effect there) and delivered here the moment this mounts.
+ *
+ *   NEVER NAVIGATE BEFORE THERE IS A NAVIGATOR. `router.push` throws
+ *   "Attempted to navigate before mounting the Root Layout component" if the
+ *   root navigator has not mounted, and this app's Stack does not mount until
+ *   that same ready branch. Being a LATER SIBLING of <Stack /> means React has
+ *   already run the Stack's mount effects by the time this one runs.
+ *
+ * `withAnchor: true`, NOT `unstable_settings.initialRouteName` ALONE. The
+ * anchors on app/(tabs)/plan/_layout.tsx and app/(tabs)/more/_layout.tsx cover
+ * URL deep linking only — expo-router's own documentation is explicit that
+ * `initialRouteName` "only applies during deep linking". A notification tap
+ * arrives as JS: the OS hands this app a response object and we call
+ * `router.push` ourselves, which is an ordinary in-app push as far as the
+ * router is concerned. Without the anchor a tapped bill reminder mounts
+ * `plan/bills/[id]` as the Plan stack's only entry and strands the tab on it —
+ * the exact 2026-09-05 device defect the cross-tab pushes in
+ * app/(tabs)/index.tsx carry `withAnchor` for.
+ */
+function AlertTapNavigation({
+  tapped,
+  onHandled,
+}: {
+  tapped: TappedAlert | null;
+  onHandled: () => void;
+}) {
+  useEffect(() => {
+    if (!tapped) return;
+    // Cleared BEFORE the push, so a route that somehow fails cannot be retried
+    // on every subsequent render of this effect.
+    onHandled();
+    // ONBOARDING OUTRANKS THE TAP. Every destination in the deep-link table
+    // lives under `(tabs)`, and app/index.tsx sends a user who has not
+    // finished setup to `(onboarding)` instead — pushing a bill detail on top
+    // of that would drop someone into the middle of an app they have not set
+    // up yet, past a flow that is not optional. The tap is dropped rather than
+    // held: `onboarding_complete` is read once per bootstrap, so a queue kept
+    // here would not notice the flow finishing anyway.
+    //
+    // `getLastBootstrapResult()` is never null here — this component mounts
+    // only inside the branch bootstrapApp() has already resolved — but its own
+    // doc asks callers to treat the null defensively, and "unknown" failing
+    // toward onboarding matches app/index.tsx's own choice.
+    if (getLastBootstrapResult()?.onboardingComplete !== true) return;
+    try {
+      router.push(resolveAlertRoute(tapped.data), { withAnchor: true });
+    } catch (error) {
+      // The same rule as every subscriber in this shell (plan Task 11 rule 3):
+      // a notification that will not route is a lost tap, and a lost tap is
+      // never worth taking the app down for.
+      console.warn(`a tapped notification (${tapped.id}) could not be routed`, error);
+    }
+  }, [tapped, onHandled]);
+
+  return null;
 }
 
 /** Mounted unconditionally inside ThemeProvider/LockProvider so bootstrapApp()
@@ -197,6 +356,31 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
   const { resolved, isReady: themeReady } = useTheme();
   const { status: lockStatus } = useLock();
   const [bootstrapState, setBootstrapState] = useState<BootstrapState>("pending");
+  const [tappedAlert, setTappedAlert] = useState<TappedAlert | null>(null);
+  // The last tap this shell has already accepted. A cold start delivers the
+  // SAME response twice — once from `getLastNotificationResponse()`, once from
+  // the listener the line below registers — and expo-notifications' own
+  // `useLastNotificationResponse` hook draws the same line, on the same field,
+  // for the same reason.
+  const acceptedAlertIdRef = useRef<string | null>(null);
+  const clearTappedAlert = useCallback(() => setTappedAlert(null), []);
+
+  // FLAG_SECURE FOR THE WHOLE APP, SET ONCE AND NEVER RELEASED.
+  //
+  // HERE RATHER THAN ANYWHERE LOWER because this component mounts
+  // unconditionally, before bootstrap and regardless of lock state, so the
+  // guard is already on for the lock screen and for every screen behind it.
+  // Gating it on `bootstrapState` or `lockStatus` would leave a window at start
+  // where the app is drawing and capture is still allowed.
+  //
+  // NO CLEANUP, DELIBERATELY. Releasing the flag on unmount would mean the last
+  // thing this app does before going away is make itself capturable, and the
+  // only unmount of this component is the app itself ending. Development builds
+  // never set it in the first place -- see lib/privacy/capture_guard.ts for
+  // that exemption and for why an unknown variant is guarded rather than not.
+  useEffect(() => {
+    void applyCaptureGuard();
+  }, []);
 
   const runBootstrap = useCallback(() => {
     setBootstrapState("pending");
@@ -204,7 +388,7 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
       .then(() => setBootstrapState("ready"))
       .catch((error: unknown) => {
         console.error("bootstrapApp failed to start the app", error);
-        setBootstrapState("error");
+        setBootstrapState(error instanceof SchemaTooNewError ? "outdated-build" : "error");
       });
   }, []);
 
@@ -227,6 +411,45 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
       runBootstrap();
     }
   }, [lockStatus, runBootstrap]);
+
+  // THE ONE SUBSCRIPTION IN THIS SHELL THAT IS NOT GATED ON ANYTHING, and it
+  // has to be. A notification tapped on a locked phone wakes the app straight
+  // onto the lock screen, where there is no Stack, no database and no
+  // bootstrap — gate this the way its neighbours are gated and the tap is
+  // simply never heard. So the tap is CAPTURED here, always, and merely HELD:
+  // <AlertTapNavigation /> below is mounted only inside the unlocked, booted
+  // branch, so the actual navigation cannot happen a moment sooner. Nothing in
+  // this effect reads the database or renders anything, which is what makes
+  // running it while locked safe.
+  //
+  // Both halves are needed. The listener catches a tap while this process is
+  // alive; `getLastNotificationResponse()` catches the cold start, where the
+  // tap that LAUNCHED the app happened before any JS existed to hear it.
+  //
+  // WRAPPED, BECAUSE A NATIVE MODULE THAT IS NOT THERE MUST NOT TAKE THE APP
+  // DOWN. Both calls reach `expo-notifications`' native emitter and throw
+  // synchronously if it is missing, which inside an effect unmounts the whole
+  // tree — the failure mode `startSubscriber` above exists to forbid. Losing
+  // notification routing is survivable; losing the app is not.
+  useEffect(() => {
+    const accept = (response: Notifications.NotificationResponse) => {
+      const id = response.notification.request.identifier;
+      if (acceptedAlertIdRef.current === id) return;
+      acceptedAlertIdRef.current = id;
+      setTappedAlert({ id, data: response.notification.request.content.data });
+    };
+
+    let subscription: { remove: () => void } | undefined;
+    try {
+      subscription = Notifications.addNotificationResponseReceivedListener(accept);
+      const launchingResponse = Notifications.getLastNotificationResponse();
+      if (launchingResponse) accept(launchingResponse);
+    } catch (error) {
+      console.warn("notification taps will not open their screen", error);
+    }
+
+    return () => subscription?.remove();
+  }, []);
 
   // Ingest starts only once bootstrap has succeeded — the pipeline reads the
   // parser ruleset bootstrap seeds, and starting first would drain the native
@@ -300,6 +523,27 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
   useEffect(() => {
     if (bootstrapState !== "ready") return;
     return startSubscriber("tracking health", startTrackingHealthSubscriber);
+  }, [bootstrapState]);
+
+  // Cash reconciliation prompts (docs/04-features/02-wallets.md §cash Wallet
+  // reconciliation; docs/06 §4.7's "periodic gentle prompt"). Cash sends no
+  // notifications, so a cash wallet is only ever as accurate as what the user
+  // remembered to enter — this is the only thing in the app that asks. Beside
+  // the tracking-health subscriber because it answers the same shape of
+  // question ("has this quietly stopped being true while nobody looked"), and
+  // it needs both wake-ups that subscriber's neighbours use: a launch pass for
+  // the calendar triggers and a ledger pass for the cash-out one.
+  useEffect(() => {
+    if (bootstrapState !== "ready") return;
+    return startSubscriber("cash reconcile prompts", startReconcilePromptSubscriber);
+  }, [bootstrapState]);
+
+  // Goal milestone notifications (goals rule 12, GAP-055). A launch pass and a
+  // debounced pass per ledger commit, the shape the cash reconcile prompts above
+  // use; `runGoalMilestonePass` swallows its own failures.
+  useEffect(() => {
+    if (bootstrapState !== "ready") return;
+    return startSubscriber("goal milestones", startGoalMilestoneSubscriber);
   }, [bootstrapState]);
 
   // Recurring-pattern detection re-runs on ledger commits, debounced (M3 Part
@@ -394,7 +638,9 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
   const bg = resolved === "dark" ? palette["bg-dark"] : palette.bg;
   return (
     <PersistQueryClientProvider client={queryClient} persistOptions={persistOptions}>
-      {bootstrapState === "pending" ? null : bootstrapState === "error" ? (
+      {bootstrapState === "pending" ? null : bootstrapState === "outdated-build" ? (
+        <OutdatedBuildScreen />
+      ) : bootstrapState === "error" ? (
         <BootstrapErrorScreen onRetry={runBootstrap} />
       ) : (
         // EVERY NAVIGATOR IN THE APP READS ITS COLOURS HERE. Without it they
@@ -418,8 +664,20 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
               components/ui/keypad_host.tsx explains why this one cannot serve
               a Modal. */}
           <KeypadHost />
+          {/* LAST OF THE OVERLAYS, so a failed write is legible over the
+              keypad panel as well as over the screen. It anchors the TOP
+              strip while the keypad takes the bottom band, so the two never
+              contend for the same pixels — see that component's header. It
+              renders nothing until something is queued. */}
+          <MutationErrorToast />
           <StatusBar style="auto" />
           <PaydaySheets />
+          {/* RENDERS NOTHING — it is here for its position, not its output.
+              Being a later sibling of the <Stack /> above is what guarantees
+              the navigator it pushes into has already mounted, and being
+              inside this branch at all is what guarantees the app is unlocked
+              and booted. See the component's own header. */}
+          <AlertTapNavigation tapped={tappedAlert} onHandled={clearTappedAlert} />
         </NavigationThemeProvider>
       )}
     </PersistQueryClientProvider>

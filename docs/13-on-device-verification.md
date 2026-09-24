@@ -48,7 +48,7 @@
 > | Part 3 switches / drain-empties | **NOT RUN** — need the JS bridge; blocked |
 > | Part 4 database unreadable / ledger / re-lock | **NOT RUN** — need onboarding; blocked |
 > | Battery-manager 2 h idle | **NOT RUN** — and this device is Samsung, not one of the four target OEMs |
-> | Part 5 (screen lock, fingerprint, no-lock device) | **DEFERRED — no free device available** |
+> | Part 5 (screen lock, fingerprint, no-lock device, Recents thumbnail, background re-lock) | **DEFERRED — no free device available.** The last two boxes were added later, for GAP-068 and GAP-030, and need only the A54 rather than a second device |
 >
 > ### Deferred, and what that does and does not block
 >
@@ -467,6 +467,14 @@ can stand in for the other.
 > thread, all day. Not a latency problem — notifications arrive at human rates — but a flash-write
 > and battery one, and this listener never stops.
 >
+> **Ongoing tiles are the exception, and they are already short-circuited.** A media player, a
+> download and a navigation session re-post the same ongoing notification at roughly 1 Hz, which is
+> not a human rate. `recordObservedPackage` now takes the delivery's `isOngoing` flag: a first
+> sighting is stored either way, but a re-post of a package already at the front of the list writes
+> nothing until `OBSERVED_REPOST_WINDOW_MILLIS` (60 s) has passed, and never raises the count. So
+> the number to watch on a device is commits per *distinct* notification, not per delivery: a
+> playing track should add no writes at all after the first.
+>
 > If the device number lands near the JVM's rather than well below it, the lever is `apply()`
 > instead of `commit()` **for this one value**: losing the last observed-package write is harmless
 > bookkeeping that the next notification rewrites, which is emphatically not true of the provider
@@ -685,12 +693,43 @@ This is the point of the entire encryption plan. Each line is falsifiable.
 
 ---
 
-## Part 5 — Three platform behaviours only a human changing phone settings can prove
+## Part 5 — Five platform behaviours only a human with the phone can prove
 
 ### Remove the screen lock
 - [ ] `isDeviceKeyUsable()` goes false; the app detects it on next unlock, prompts for the
       recovery words, requires a screen lock to be set again, and restores access to the **same
       ledger with no data loss** → `________________`
+- [ ] **AND CAPTURE STILL WORKS AFTERWARDS.** With the listener enabled, trigger one new bank or
+      e-wallet notification AFTER the recovery above, then open the app and confirm the
+      transaction lands in the ledger or the Review Queue → `________________`
+
+> The second box is the one that was missing, and it is why GAP-059 shipped. Removing the screen
+> lock invalidates every key created with `setUserAuthenticationRequired(true)`, which is the device
+> KEK **and** the capture keypair. Recovery only ever recreated the KEK, so the first box could pass
+> while `getCapturePublicKey()` still handed back the dead pair's public half: the listener went on
+> sealing captures nothing could open, every drain discarded its batch and resolved empty,
+> `lastCaptureAt` kept advancing, and the listener-health card kept reporting a working listener.
+> Silent, permanent, and invisible to a checklist that stops at "the ledger is still there".
+
+### Grant notification access with the shade already full (GAP-125)
+- [ ] Before granting, leave at least one bank or e-wallet notification sitting in the shade.
+      Complete onboarding as far as the provider picker and confirm that app is listed under
+      **"Apps we've seen"**, not merely under "Common in the Philippines" → `________________`
+- [ ] **AND THE COUNT IS NOT INFLATED BY A REBIND.** Reboot the phone (which rebinds the listener),
+      reopen the picker from More > Privacy, and confirm the same app has not climbed the list
+      relative to the others → `________________`
+
+> This is the acceptance criterion GAP-091 could not meet on its own and the reason that entry was
+> logged PARTIAL. The picker's whole premise is that the device can say which banking apps this
+> person actually uses; until `onListenerConnected` took a snapshot, the observed list was empty at
+> the moment access was granted and the picker offered nothing but unverified seed guesses.
+>
+> The second box guards the implementation rather than the feature. The obvious version of this fix
+> is a loop over `recordObservedPackage`, which increments `count` on every call — so every rebind
+> would inflate the count of every package already known, and `count` is what orders the list. The
+> shipped recorder is add-only and a unit test pins it, but the unit test runs on Robolectric and
+> **nothing in CI compiles or tests a line of Kotlin**, so this box is the only check that a real
+> reboot on a real phone behaves the same way.
 
 ### Enroll an additional fingerprint
 - [ ] **The key must SURVIVE.** → `________________`
@@ -702,6 +741,27 @@ This is the point of the entire encryption plan. Each line is falsifiable.
 ### A device with no screen lock at all
 - [ ] Onboarding refuses to proceed and routes to security settings, rather than failing at key
       generation with an opaque error → `________________`
+
+### The app switcher, while unlocked (GAP-068)
+- [ ] Unlock, open Home so a real Safe-to-Spend figure is on screen, background the app, open
+      Recents, and confirm the thumbnail shows **nothing** → `________________`
+
+> This is GAP-068's whole acceptance criterion and it has never been looked at. `FLAG_SECURE` is
+> set app-wide at root mount (`lib/privacy/capture_guard.ts`) and the flag is what blanks the
+> thumbnail, so the check is one glance. **Use a preview or production build.** Development builds
+> are deliberately exempt, so a dev build showing the ledger in Recents proves nothing and is not a
+> failure.
+
+### The background re-lock, with no return to the app (GAP-030)
+- [ ] Unlock, background the app WITHOUT killing it, leave the phone alone for six minutes, then
+      reopen: the app asks to unlock again, and the figures that appear afterwards are the ones a
+      fresh read produces rather than the ones that were on screen before → `________________`
+
+> The foreground check alone would also produce an unlock prompt here, so this box is not proof on
+> its own that the timer fired. What it does prove is the half a unit test cannot: that Android on
+> the A54 still schedules this process's JS thread for long enough in the background for the timer
+> to be worth having. **If the app re-locks, note whether the phone was charging**, since Doze
+> behaves differently, and it is the on-battery case that matters.
 
 ---
 

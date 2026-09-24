@@ -18,16 +18,25 @@
 // what every OTHER non-"unlocked" status already does below
 // (DeviceLockExplainer, RecoveryUnlockForm, UnlockPrompt); this just extends
 // that same discipline to the one status that used to be the exception.
+import { Text, View } from "react-native";
 import OnboardingIndexScreen from "./(onboarding)/index";
 import { DeviceLockExplainer } from "@/components/onboarding/device_lock_explainer";
 import { RecoveryUnlockForm } from "@/components/lock/recovery_unlock_form";
+import { StorageErrorScreen } from "@/components/lock/storage_error_screen";
 import { UnlockPrompt } from "@/components/lock/unlock_prompt";
 import { useLock } from "@/contexts/lock_context";
 import { openSecuritySettings } from "@/modules/notification_listener";
 
 export default function LockScreen() {
-  const { status, errorMessage, unlock, submitRecoveryPhrase, keysProvisioned, wipeAndStartOver } =
-    useLock();
+  const {
+    status,
+    errorMessage,
+    unlock,
+    submitRecoveryPhrase,
+    keysProvisioned,
+    wipeAndStartOver,
+    retryKeyState,
+  } = useLock();
 
   if (status === "checking") {
     return null;
@@ -43,7 +52,29 @@ export default function LockScreen() {
     // reached by routing (app/index.tsx, once already unlocked) gets no
     // callback and keeps redirecting into the numbered flow, which is
     // exactly right when a navigator does exist.
-    return <OnboardingIndexScreen onKeysReady={keysProvisioned} />;
+    //
+    // THE NOTICE ABOVE IT IS THE WIPE'S ONLY REPORTING SURFACE. A "wipe and
+    // start over" that fails AFTER deleting the database file lands the user
+    // here (contexts/lock_context.tsx's WipeIncompleteError branch), and every
+    // screen the sequencer can render is a first-run screen with no idea that
+    // anything went wrong — so without this strip the user is handed a
+    // pristine setup flow as if they had just installed the app, which is the
+    // single least honest thing this screen could say to someone who just
+    // asked for their data to be destroyed. `errorMessage` is null on an
+    // ordinary first run, so nothing renders there.
+    return (
+      <View className="flex-1 bg-bg dark:bg-bg-dark">
+        {errorMessage ? (
+          <Text
+            testID="onboarding-lock-notice"
+            className="px-6 pt-12 text-center text-danger dark:text-danger-dark"
+          >
+            {errorMessage}
+          </Text>
+        ) : null}
+        <OnboardingIndexScreen onKeysReady={keysProvisioned} />
+      </View>
+    );
   }
 
   if (status === "needs_device_lock") {
@@ -54,6 +85,22 @@ export default function LockScreen() {
     // (app/(onboarding)/device_lock.tsx) — see lock_context.tsx's header
     // comment for why this is rendered directly rather than via navigation.
     return <DeviceLockExplainer onOpenSettings={openSecuritySettings} />;
+  }
+
+  if (status === "storage_error") {
+    // docs §11a's other unrecoverable state (GAP-034): getKeyState() rejected,
+    // so the app cannot tell whether this device has keys at all. Deliberately
+    // NOT RecoveryUnlockForm — the recovery path reads the same SecureStore
+    // that just threw, so the phrase is a dead route and offering it would
+    // send the user for their paper copy to watch a second failure. See the
+    // screen's own header.
+    return (
+      <StorageErrorScreen
+        errorMessage={errorMessage}
+        onRetry={retryKeyState}
+        onWipe={wipeAndStartOver}
+      />
+    );
   }
 
   if (status === "needs_recovery") {

@@ -20,7 +20,7 @@
 // The empty state is asserted as a REWARD, with the spec's own wording. "All
 // caught up." is the one empty state in this app that should feel good.
 jest.mock("expo-router", () => ({
-  useRouter: () => ({ back: () => mockBack() }),
+  useRouter: () => mockRouter,
 }));
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -28,8 +28,9 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react-nativ
 import type { ReactNode } from "react";
 
 import { KeypadHost } from "@/components/ui/keypad_host";
+import { MutationErrorToast } from "@/components/ui/mutation_error_toast";
 import { KeypadProvider } from "@/contexts/keypad_context";
-import { closeDatabase } from "@/lib/db/database";
+import { closeDatabase, getDatabase } from "@/lib/db/database";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { createLoan, listPayments, outstandingBalance } from "@/lib/db/repos/loans_repo";
 import { raiseLoanMatchSuggestion } from "@/lib/loans/loan_match_queue";
@@ -43,7 +44,7 @@ import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions
 import { listUserRules } from "@/lib/db/repos/user_rules_repo";
 import { createWallet } from "@/lib/db/repos/wallets_repo";
 import { GATE_REASONS } from "@/lib/ingest/confidence_gate";
-import { queryClient as appQueryClient } from "@/lib/query_client";
+import { clearToasts, queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
 import type { NewReviewItem, ReviewQueueItem, Transaction } from "@/types/domain";
 
@@ -51,10 +52,20 @@ import ReviewQueueScreen, {
   REVIEW_BACKLOG_BANNER,
   REVIEW_EMPTY_BODY,
   REVIEW_EMPTY_TITLE,
+  REVIEW_UNDO_BODY,
+  REVIEW_UNDO_LATE_TITLE,
+  REVIEW_EDIT_BODY,
+  REVIEW_EDIT_TITLE,
+  REVIEW_UNDO_TITLE,
   sortOldestFirst,
 } from "../review/index";
 
 const mockBack = jest.fn();
+const mockPush = jest.fn();
+// ONE OBJECT, NOT ONE PER CALL. The real `useRouter()` is stable across
+// renders, and a mock that is not would make anything depending on its identity
+// rebuild on every render.
+const mockRouter = { back: () => mockBack(), push: (href: string) => mockPush(href) };
 
 const NOW = Date.now();
 const MINUTE = 60 * 1000;
@@ -126,16 +137,57 @@ async function renderScreen(): Promise<void> {
   await waitFor(() => expect(screen.getByTestId("review-queue-screen")).toBeTruthy());
 }
 
+/**
+ * The same screen with the app's notice host above it, as app/_layout.tsx
+ * mounts it (GAP-075).
+ *
+ * SEPARATE FROM `renderScreen` ON PURPOSE. Rule 9's undo is offered through
+ * `publishToast`, and asserting only that something reached the toast QUEUE
+ * would pass with nothing on screen at all — the queue is a module-level array
+ * in lib/query_client.ts, and a host that never rendered it would satisfy every
+ * such assertion. Mounting the real host is what makes "the user is offered an
+ * undo" the thing under test rather than "a function was called".
+ */
+async function renderScreenWithNotices(): Promise<void> {
+  render(
+    <>
+      <MutationErrorToast />
+      <ReviewQueueScreen />
+    </>,
+    { wrapper: Wrapper },
+  );
+  await waitFor(() => expect(screen.getByTestId("review-queue-screen")).toBeTruthy());
+}
+
+/**
+ * The rendered cards' test IDs, in screen order.
+ *
+ * STRINGS, NOT ELEMENTS, because `waitFor` polls this and every failed poll
+ * prints what it received. An element carries its React fiber, so printing one
+ * walks the component tree: 0.9 to 7.6 seconds per failed poll on this screen,
+ * measured, against under 30 ms for the same check on strings. A filter wait
+ * polling elements spent 12 of its 14 seconds formatting error messages it
+ * then threw away, and lost its budget under load (GAP-052).
+ */
+function cardIds(): string[] {
+  return screen.queryAllByTestId(/^review-card-/).map((node) => String(node.props.testID));
+}
+
 let walletId: string;
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  // The notice queue is module state and outlives a test that published into
+  // it — an undo offer left over from the previous case would be on screen
+  // before the next one pressed anything.
+  clearToasts();
   await freshDb();
   await seedDefaultCategories();
   walletId = (await createWallet({ name: "GCash" })).id;
 });
 
 afterEach(async () => {
+  clearToasts();
   await closeDatabase();
 });
 
@@ -185,7 +237,7 @@ describe("the review queue screen", () => {
 
     await renderScreen();
 
-    await waitFor(() => expect(screen.getAllByTestId(/^review-card-/)).toHaveLength(3));
+    await waitFor(() => expect(cardIds()).toHaveLength(3));
     expect(screen.getAllByTestId(/^review-card-/).map((node) => node.props.testID)).toEqual([
       `review-card-${first.id}`,
       `review-card-${second.id}`,
@@ -205,7 +257,7 @@ describe("the review queue screen", () => {
 
     await renderScreen();
 
-    await waitFor(() => expect(screen.getAllByTestId(/^review-card-/)).toHaveLength(2));
+    await waitFor(() => expect(cardIds()).toHaveLength(2));
     expect(screen.getByTestId(`review-reason-${low.id}`)).toHaveTextContent(
       GATE_REASONS.lowConfidence,
     );
@@ -250,7 +302,7 @@ describe("the review queue screen", () => {
 
     await renderScreen();
 
-    await waitFor(() => expect(screen.getAllByTestId(/^review-card-/)).toHaveLength(1));
+    await waitFor(() => expect(cardIds()).toHaveLength(1));
     expect(screen.getByTestId(`review-card-${live.id}`)).toBeTruthy();
   });
 
@@ -308,7 +360,46 @@ describe("triaging from the queue", () => {
       source: "notification",
       confidence: 1,
     });
-    await waitFor(() => expect(screen.queryByTestId(`review-card-${queued.id}`)).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId(`review-card-${queued.id}`)).not.toBeOnTheScreen());
+  });
+
+  // The owner's 2026-09-01 device report: a ₱1,000 withdrawal acknowledged, the
+  // card still sitting there, nothing said. `useReviewAction` carried no
+  // `onError` and this screen never read `triage.error`, so every failure
+  // inside the unit of work reached the user as the biggest button on the card
+  // doing nothing at all.
+  test("a triage write that fails says so, and leaves the card in place", async () => {
+    // A wallet the card names but the ledger no longer has: the card's own
+    // guards pass (the payload carries a wallet id), and `insertTransaction`
+    // then fails the foreign key inside the unit of work, rolling the whole
+    // thing back. This is the residual failure class `missingLedgerField`
+    // cannot close by disabling the button.
+    const queued = await enqueueAt(NOW - HOUR, {
+      kind: "low-confidence",
+      payload: gatedPayload({ walletId: "wallet-deleted-since" }),
+    });
+
+    await renderScreen();
+    fireEvent.press(await screen.findByTestId(`review-primary-${queued.id}`));
+
+    await screen.findByTestId("review-action-error");
+    // Nothing committed, and the question is still on screen to answer.
+    expect(await listTransactions({})).toHaveLength(0);
+    expect(screen.getByTestId(`review-card-${queued.id}`)).toBeTruthy();
+    expect(await countOpen()).toBe(1);
+  });
+
+  test("dismissing the failure notice clears it", async () => {
+    const queued = await enqueueAt(NOW - HOUR, {
+      kind: "low-confidence",
+      payload: gatedPayload({ walletId: "wallet-deleted-since" }),
+    });
+
+    await renderScreen();
+    fireEvent.press(await screen.findByTestId(`review-primary-${queued.id}`));
+    fireEvent.press(await screen.findByTestId("review-action-error-dismiss"));
+
+    await waitFor(() => expect(screen.queryByTestId("review-action-error")).not.toBeOnTheScreen());
   });
 
   test("Correct opens the sheet, and saving a fix teaches the pipeline", async () => {
@@ -332,7 +423,7 @@ describe("triaging from the queue", () => {
     const [rule] = await listUserRules();
     expect(rule.action).toEqual({ kind: "set-category", categoryId: "cat_transport" });
     expect((await listTransactions({}))[0].categoryId).toBe("cat_transport");
-    await waitFor(() => expect(screen.queryByTestId(`review-card-${queued.id}`)).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId(`review-card-${queued.id}`)).not.toBeOnTheScreen());
   });
 
   test("Not money discards the capture without touching the ledger", async () => {
@@ -602,7 +693,7 @@ describe("the queue is paged", () => {
     fireEvent.press(screen.getByTestId("review-queue-load-more"));
 
     // Nothing left to ask for — the second page arrived and covered the rest.
-    await waitFor(() => expect(screen.queryByTestId("review-queue-load-more")).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId("review-queue-load-more")).not.toBeOnTheScreen());
     // Page one is still there — this is "show more", not "next page".
     expect(screen.getByTestId(`review-card-${items[0].id}`)).toBeTruthy();
     // And the queue never fell back to its loading state on the way.
@@ -613,7 +704,7 @@ describe("the queue is paged", () => {
     await seedQueue(3);
     await renderScreen();
 
-    await waitFor(() => expect(screen.getAllByTestId(/^review-card-/)).toHaveLength(3));
+    await waitFor(() => expect(cardIds()).toHaveLength(3));
     expect(screen.queryByTestId("review-queue-load-more")).toBeNull();
     expect(screen.queryByTestId("review-backlog-banner")).toBeNull();
   });
@@ -643,18 +734,16 @@ describe("the queue is filterable by kind", () => {
   test("a kind chip narrows the list, and pressing it again restores the queue", async () => {
     const { parse, unknown } = await seedTwoKinds();
     await renderScreen();
-    await waitFor(() => expect(screen.getAllByTestId(/^review-card-/)).toHaveLength(2));
+    await waitFor(() => expect(cardIds()).toHaveLength(2));
 
     fireEvent.press(screen.getByTestId("review-filter-chip-unknown-provider"));
 
-    // A chip press is a NEW DATABASE READ, not a re-render of loaded rows (the
-    // filter is part of the query — see use_review_queue_page.ts), so these
-    // waits have to outlast a real round trip. `waitFor`'s 1 s default is
-    // enough on an idle machine and not enough on one running the whole suite
-    // in parallel, where this read has queued behind 200 other test databases.
-    await waitFor(() => expect(screen.getAllByTestId(/^review-card-/)).toHaveLength(1), {
-      timeout: 10_000,
-    });
+    // A chip press is a NEW DATABASE READ, not a re-render of loaded rows,
+    // because the filter is part of the query in use_review_queue_page.ts.
+    // Until it lands, the previous filter's two cards stay up as placeholder
+    // data, so this wait fails at least one poll before it passes. That is why
+    // it polls `cardIds()`.
+    await waitFor(() => expect(cardIds()).toHaveLength(1));
     expect(screen.getByTestId(`review-card-${unknown.id}`)).toBeTruthy();
     expect(screen.queryByTestId(`review-card-${parse.id}`)).toBeNull();
     // The narrowing NEVER passes through the loading skeleton — see
@@ -665,9 +754,7 @@ describe("the queue is filterable by kind", () => {
     // A SELECTED CHIP IS ITS OWN REMOVAL AFFORDANCE — there is no separate
     // clear control, so this press has to be the way back.
     fireEvent.press(screen.getByTestId("review-filter-chip-unknown-provider"));
-    await waitFor(() => expect(screen.getByTestId(`review-card-${parse.id}`)).toBeTruthy(), {
-      timeout: 10_000,
-    });
+    await waitFor(() => expect(screen.getByTestId(`review-card-${parse.id}`)).toBeTruthy());
   });
 
   test("the chips count what is waiting", async () => {
@@ -685,35 +772,175 @@ describe("the queue is filterable by kind", () => {
     await enqueueAt(NOW - HOUR, { kind: "low-confidence", payload: gatedPayload() });
     await renderScreen();
 
-    await waitFor(() => expect(screen.getAllByTestId(/^review-card-/)).toHaveLength(1));
+    await waitFor(() => expect(cardIds()).toHaveLength(1));
     expect(screen.queryByTestId("review-filter-bar")).toBeNull();
   });
 
   test("EMPTYING A FILTER IS NOT 'All caught up.' — the reward is never shown over a hidden queue", async () => {
     const { parse, unknown } = await seedTwoKinds();
     await renderScreen();
-    await waitFor(() => expect(screen.getAllByTestId(/^review-card-/)).toHaveLength(2));
+    await waitFor(() => expect(cardIds()).toHaveLength(2));
 
     fireEvent.press(screen.getByTestId("review-filter-chip-unknown-provider"));
-    // Same round trip, same headroom as above.
-    await waitFor(() => expect(screen.getAllByTestId(/^review-card-/)).toHaveLength(1), {
-      timeout: 10_000,
-    });
+    await waitFor(() => expect(cardIds()).toHaveLength(1));
 
     // "Not money" — the last unknown-provider item leaves the queue while the
     // low-confidence one is still waiting one chip away.
     fireEvent.press(await screen.findByTestId(`review-secondary-${unknown.id}`));
 
-    await waitFor(() => expect(screen.getByTestId("review-queue-empty-filtered")).toBeTruthy(), {
-      timeout: 10_000,
-    });
+    await waitFor(() => expect(screen.getByTestId("review-queue-empty-filtered")).toBeTruthy());
     expect(screen.queryByTestId("review-queue-empty")).toBeNull();
     expect(screen.queryByText(REVIEW_EMPTY_TITLE)).toBeNull();
     // And the way out is on screen, because the chip that caused this is the
     // only one still selected.
     fireEvent.press(screen.getByText("Show all"));
-    await waitFor(() => expect(screen.getByTestId(`review-card-${parse.id}`)).toBeTruthy(), {
-      timeout: 10_000,
+    await waitFor(() => expect(screen.getByTestId(`review-card-${parse.id}`)).toBeTruthy());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// UNDO — docs/04-features/08-review-queue.md rule 9 (GAP-075)
+//
+// "Triage is undoable: a just-triaged item shows an undo affordance for 10
+// seconds; committed results remain editable in the ledger indefinitely
+// afterward."
+//
+// The offer is scoped by rule 10 of the same document, which is unqualified:
+// "committed transactions are never deleted by any queue action". So undo is
+// offered for the triages whose entire write was a `resolved_at` — and the
+// second test here is the one that keeps it that way, because an undo over a
+// committed row is not a smaller feature, it is a second chance to record the
+// same purchase twice.
+// ---------------------------------------------------------------------------
+
+describe("taking back a triage", () => {
+  test("dismissing offers an undo, and taking it puts the card back", async () => {
+    const queued = await enqueueAt(NOW - HOUR, {
+      kind: "low-confidence",
+      payload: gatedPayload({ walletId }),
     });
+
+    await renderScreenWithNotices();
+    fireEvent.press(await screen.findByTestId(`review-reject-${queued.id}`));
+
+    await waitFor(async () => expect(await countOpen()).toBe(0));
+    // The notice says what happened AND that the ledger did not move, which is
+    // the half a user has no other way to check.
+    expect(await screen.findByText(REVIEW_UNDO_TITLE)).toBeTruthy();
+    expect(screen.getByText(REVIEW_UNDO_BODY)).toBeTruthy();
+
+    fireEvent.press(screen.getByTestId("app-toast-action"));
+
+    await waitFor(async () => expect(await countOpen()).toBe(1));
+    expect(await screen.findByTestId(`review-card-${queued.id}`)).toBeTruthy();
+    // Reversing a dismissal writes nothing anywhere else — the dismissal wrote
+    // nothing either.
+    expect(await listTransactions({})).toEqual([]);
+    expect(await listUserRules()).toEqual([]);
+  });
+
+  test("confirming offers EDIT, never undo — rule 10 keeps the committed row", async () => {
+    // GAP-075, and the owner's ruling of 2026-09-19. This used to assert NO
+    // offer at all, which was the honest read of the code at the time: undoing
+    // a confirm means deleting the Transaction it wrote, and rule 10 is
+    // unqualified. What it missed is rule 9's own second clause, twelve words
+    // after the promise it could not keep — committed results "remain editable
+    // in the ledger indefinitely afterward". So the offer exists; it just does
+    // the other thing.
+    const queued = await enqueueAt(NOW - HOUR, {
+      kind: "low-confidence",
+      payload: gatedPayload({ walletId }),
+    });
+
+    await renderScreenWithNotices();
+    fireEvent.press(await screen.findByTestId(`review-primary-${queued.id}`));
+
+    await waitFor(async () => expect(await listTransactions({})).toHaveLength(1));
+    await waitFor(async () => expect(await countOpen()).toBe(0));
+
+    expect(await screen.findByText(REVIEW_EDIT_TITLE)).toBeTruthy();
+    expect(screen.getByText(REVIEW_EDIT_BODY)).toBeTruthy();
+    // THE WORD MATTERS, not just the presence of a button. An offer labelled
+    // Undo that edits instead would be the same broken promise read backwards.
+    expect(screen.queryByText(REVIEW_UNDO_TITLE)).toBeNull();
+    expect(screen.getByTestId("app-toast-action")).toBeTruthy();
+    expect(screen.getByText("Edit")).toBeTruthy();
+  });
+
+  test("taking the edit offer opens the row the confirm actually wrote", async () => {
+    const queued = await enqueueAt(NOW - HOUR, {
+      kind: "low-confidence",
+      payload: gatedPayload({ walletId }),
+    });
+
+    await renderScreenWithNotices();
+    fireEvent.press(await screen.findByTestId(`review-primary-${queued.id}`));
+    await waitFor(async () => expect(await listTransactions({})).toHaveLength(1));
+
+    const [committed] = await listTransactions({});
+    fireEvent.press(await screen.findByTestId("app-toast-action"));
+
+    // THE ID IS READ BACK FROM THE LEDGER, not from the payload: `correctItem`
+    // can resolve onto a PRE-EXISTING row when one already holds the movement,
+    // and the offer has to open whichever row now does.
+    expect(mockPush).toHaveBeenCalledWith(`/transaction/${committed.id}/edit`);
+    // Rule 10, asserted where it would break: taking the offer must not remove
+    // anything.
+    expect(await listTransactions({})).toHaveLength(1);
+  });
+
+  test("the edit offer replaces an undo offer rather than stacking beside it", async () => {
+    // Rule 9's subject is singular, and a queue being swept clears several
+    // cards in seconds. The two offers share one dedupe key for that reason, so
+    // the second triage takes the strip over.
+    const first = await enqueueAt(NOW - HOUR, {
+      kind: "low-confidence",
+      payload: gatedPayload({ walletId }),
+    });
+    const second = await enqueueAt(NOW - HOUR, {
+      kind: "low-confidence",
+      payload: gatedPayload({ walletId }),
+    });
+
+    await renderScreenWithNotices();
+    // The reject writes nothing but `resolved_at`, so it is one of the four
+    // triages that still offer a real undo.
+    fireEvent.press(await screen.findByTestId(`review-reject-${first.id}`));
+    expect(await screen.findByText(REVIEW_UNDO_TITLE)).toBeTruthy();
+
+    fireEvent.press(await screen.findByTestId(`review-primary-${second.id}`));
+
+    expect(await screen.findByText(REVIEW_EDIT_TITLE)).toBeTruthy();
+    expect(screen.queryByText(REVIEW_UNDO_TITLE)).toBeNull();
+  });
+
+  test("an offer left on screen by a backgrounded app says so instead of doing nothing", async () => {
+    const queued = await enqueueAt(NOW - HOUR, {
+      kind: "low-confidence",
+      payload: gatedPayload({ walletId }),
+    });
+
+    await renderScreenWithNotices();
+    fireEvent.press(await screen.findByTestId(`review-reject-${queued.id}`));
+    await waitFor(async () => expect(await countOpen()).toBe(0));
+    await screen.findByTestId("app-toast-action");
+
+    // What Android does to a foregrounded timer when the app goes away: the
+    // ten-second countdown stops, the card stays cleared, and the button is
+    // still there when the user comes back minutes later.
+    const db = await getDatabase();
+    await db.runAsync("UPDATE review_queue_items SET resolved_at = ? WHERE id = ?", [
+      Date.now() - 5 * MINUTE,
+      queued.id,
+    ]);
+
+    fireEvent.press(screen.getByTestId("app-toast-action"));
+
+    expect(await screen.findByText(REVIEW_UNDO_LATE_TITLE)).toBeTruthy();
+    expect(await countOpen()).toBe(0);
+    expect(screen.queryByTestId(`review-card-${queued.id}`)).toBeNull();
+    // And it is not reported as a failed write: nothing was attempted that
+    // could have half-succeeded.
+    expect(screen.queryByTestId("review-action-error")).toBeNull();
   });
 });

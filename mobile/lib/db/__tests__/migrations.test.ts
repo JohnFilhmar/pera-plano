@@ -1,5 +1,5 @@
 import { closeDatabase, getDatabase, unlockDatabase } from "../database";
-import { MIGRATIONS, runMigrations, type Migration } from "../migrations";
+import { MIGRATIONS, runMigrations, SchemaTooNewError, type Migration } from "../migrations";
 import { freshDb, TEST_DEK } from "@/test_support/db";
 
 const TEST_MIGRATIONS: Migration[] = [
@@ -49,6 +49,73 @@ test("applies only migrations newer than the recorded ones", async () => {
   await runMigrations(db, [TEST_MIGRATIONS[0]]);
   const applied = await runMigrations(db, TEST_MIGRATIONS);
   expect(applied).toEqual([2]);
+});
+
+// ---------------------------------------------------------------------------
+// An older build opening a newer database (GAP-044)
+//
+// Reachable because OTA is configured: app.json carries `runtimeVersion` and
+// `updates.url`, so a JS bundle can be rolled back onto a device whose database
+// has already migrated forward. There are no down migrations, so the only safe
+// answer is to refuse to open.
+// ---------------------------------------------------------------------------
+
+describe("a database newer than this build's registry", () => {
+  test("REFUSES TO OPEN, and applies nothing", async () => {
+    const db = await getDatabase();
+    // The device is at 2, having run a build that knew about both.
+    await runMigrations(db, TEST_MIGRATIONS);
+
+    // The OTA rollback: a bundle whose registry stops at 1.
+    await expect(runMigrations(db, [TEST_MIGRATIONS[0]])).rejects.toThrow(SchemaTooNewError);
+
+    // Nothing was touched on the way to the refusal. Before the guard, this
+    // path applied nothing and returned normally, and the caller then read a
+    // schema it did not understand.
+    const recorded = await db.getAllAsync<{ version: number }>(
+      "SELECT version FROM schema_migrations ORDER BY version",
+    );
+    expect(recorded.map((r) => r.version)).toEqual([1, 2]);
+  });
+
+  test("names both versions, so the log says which build is behind", async () => {
+    const db = await getDatabase();
+    await runMigrations(db, TEST_MIGRATIONS);
+
+    await expect(runMigrations(db, [TEST_MIGRATIONS[0]])).rejects.toMatchObject({
+      name: "SchemaTooNewError",
+      appliedVersion: 2,
+      registryVersion: 1,
+    });
+  });
+
+  test("A FRESH INSTALL IS NOT REFUSED — an empty database is not a newer one", async () => {
+    const db = await getDatabase();
+    // No schema_migrations rows at all. Math.max() of nothing is -Infinity,
+    // which would compare as "not newer" by accident; this pins that the empty
+    // case is handled on purpose and a first launch still migrates.
+    const applied = await runMigrations(db, TEST_MIGRATIONS);
+    expect(applied).toEqual([1, 2]);
+  });
+
+  test("an equal version still opens — this is not an off-by-one refusal", async () => {
+    const db = await getDatabase();
+    await runMigrations(db, TEST_MIGRATIONS);
+    await expect(runMigrations(db, TEST_MIGRATIONS)).resolves.toEqual([]);
+  });
+
+  test("a gap in the applied versions is caught on the MAXIMUM, not the count", async () => {
+    const db = await getDatabase();
+    await runMigrations(db, TEST_MIGRATIONS);
+    // Two applied, and a registry that also holds two — but a DIFFERENT two,
+    // reaching only version 1. Counting rows would call this even; only the
+    // maximum shows the database is ahead.
+    const sidewaysRegistry: Migration[] = [
+      { version: 1, name: "one", sql: "SELECT 1;" },
+      { version: 0, name: "zero", sql: "SELECT 1;" },
+    ];
+    await expect(runMigrations(db, sidewaysRegistry)).rejects.toThrow(SchemaTooNewError);
+  });
 });
 
 test("a failing migration rolls back and records nothing for it", async () => {
@@ -900,4 +967,388 @@ test("migration 012 keeps the open-queue index", async () => {
   );
 
   expect(indexes.map((row) => row.name)).toContain("idx_review_queue_open");
+});
+
+// ---------------------------------------------------------------------------
+// 020_loan_amount_borrowed — the borrowed figure a flat loan could never store
+// (GAP-082, owner decision 2026-09-10). `loans` gains ONE nullable column, and
+// half of what makes this migration correct is what it does NOT do: a flat
+// loan already on a device keeps its total repayable in `principal` and reads
+// NULL here, because the amount borrowed was never recorded and cannot be
+// recovered — rule 4 forbids the app deriving the interest rate that is the
+// only bridge between ₱5,000 and ₱6,000. A backfill from `principal` would
+// assert the user borrowed the total repayable, false for every flat loan
+// carrying any add-on at all.
+// ---------------------------------------------------------------------------
+const V19_FLAT_LOAN_ID = "loan_v19_flat";
+
+/** The doc's 5-6 example as a v19 row: ₱6,000 repayable in six weekly ₱1,000s. */
+const V19_FLAT_SCHEDULE = JSON.stringify(
+  ["2026-08-22", "2026-08-29", "2026-09-05", "2026-09-12", "2026-09-19", "2026-09-26"].map(
+    (dueDate) => ({ dueDate, amountDue: 100_000 }),
+  ),
+);
+
+describe("020_loan_amount_borrowed upgrades a real version-19 database in place", () => {
+  /** Brings a database to 019 and seeds the flat loan a v19 device would hold. */
+  async function atVersionNineteenWithFlatLoan(
+    db: Awaited<ReturnType<typeof getDatabase>>,
+  ): Promise<void> {
+    const upToNineteen = MIGRATIONS.filter((m) => m.version <= 19);
+    expect(upToNineteen.length).toBe(19);
+    await runMigrations(db, upToNineteen);
+
+    // `principal` IS the total repayable for a flat loan (rule 2) — which is
+    // exactly why the ₱5,000 actually borrowed had nowhere to go on this build.
+    await db.runAsync(
+      `INSERT INTO loans (id, direction, counterparty, principal, interest_rate, schedule_json,
+         linked_wallet_id, next_due_date, next_due_amount, reminder_offsets_json,
+         created_at, updated_at)
+       VALUES (?, 'i-owe', 'Aling Nena', 600000, NULL, ?, NULL, '2026-08-22', 100000,
+               '[-3,0,3]', ?, ?)`,
+      [V19_FLAT_LOAN_ID, V19_FLAT_SCHEDULE, V1_TIMESTAMP, V1_TIMESTAMP],
+    );
+  }
+
+  test("a database at 019, already holding a flat loan, gains the column and keeps every value", async () => {
+    const db = await getDatabase();
+    await atVersionNineteenWithFlatLoan(db);
+
+    // Genuinely absent first, or "it is there afterwards" would prove nothing
+    // about upgrading — a freshDb() passes that assertion having never been at
+    // 019 at all.
+    const before = await db.getAllAsync<{ name: string }>("PRAGMA table_info(loans)");
+    expect(before.map((c) => c.name)).not.toContain("amount_borrowed");
+
+    // 020 AND WHATEVER FOLLOWS IT, nothing at or below 019. An earlier version
+    // in the list would mean something was replayed over live rows; a list not
+    // starting at 20 would mean the registry never got it.
+    const applied = await runMigrations(db);
+    expect(applied[0]).toBe(20);
+    expect(applied).toEqual(MIGRATIONS.filter((m) => m.version > 19).map((m) => m.version));
+
+    const after = await db.getAllAsync<{ name: string }>("PRAGMA table_info(loans)");
+    expect(after.map((c) => c.name)).toContain("amount_borrowed");
+
+    const loan = await db.getFirstAsync<Record<string, unknown>>(
+      "SELECT * FROM loans WHERE id = ?",
+      [V19_FLAT_LOAN_ID],
+    );
+    expect(loan).toMatchObject({
+      id: V19_FLAT_LOAN_ID,
+      direction: "i-owe",
+      counterparty: "Aling Nena",
+      principal: 600000,
+      interest_rate: null,
+      schedule_json: V19_FLAT_SCHEDULE,
+      next_due_date: "2026-08-22",
+      next_due_amount: 100000,
+      reminder_offsets_json: "[-3,0,3]",
+      created_at: V1_TIMESTAMP,
+    });
+
+    const count = await db.getFirstAsync<{ n: number }>("SELECT COUNT(*) AS n FROM loans");
+    expect(count?.n).toBe(1);
+  });
+
+  test("THE COLUMN IS NULL ON A PRE-EXISTING FLAT LOAN, and emphatically not a copy of `principal`", async () => {
+    // The backfill decision, pinned. ₱6,000 here would read as "you borrowed
+    // the whole ₱6,000, and it cost you nothing" — a confident wrong answer
+    // where the true one is that nobody recorded it. Doc open question 3 asks
+    // whether to show "you are paying ₱1,000.00 over principal"; a backfilled
+    // column would make that figure ₱0.00 for every loan that predates this.
+    const db = await getDatabase();
+    await atVersionNineteenWithFlatLoan(db);
+    await runMigrations(db);
+
+    const loan = await db.getFirstAsync<{ borrowed: number | null; principal: number }>(
+      "SELECT amount_borrowed AS borrowed, principal FROM loans WHERE id = ?",
+      [V19_FLAT_LOAN_ID],
+    );
+    expect(loan?.borrowed).toBeNull();
+    expect(loan?.principal).toBe(600000);
+  });
+
+  test("the column is writable on a row that predates it, with integer affinity", async () => {
+    // A user who remembers what they borrowed has to be able to say so on a
+    // loan created before the app ever asked.
+    const db = await getDatabase();
+    await atVersionNineteenWithFlatLoan(db);
+    await runMigrations(db);
+
+    await db.runAsync("UPDATE loans SET amount_borrowed = ? WHERE id = ?", [
+      500000,
+      V19_FLAT_LOAN_ID,
+    ]);
+    const row = await db.getFirstAsync<{ borrowed: number; kind: string }>(
+      "SELECT amount_borrowed AS borrowed, typeof(amount_borrowed) AS kind FROM loans WHERE id = ?",
+      [V19_FLAT_LOAN_ID],
+    );
+    expect(row?.borrowed).toBe(500000);
+    // Centavos are exact integers everywhere else in this schema; a REAL
+    // affinity would silently make one money column a float.
+    expect(row?.kind).toBe("integer");
+  });
+
+  test("the `> 0` CHECK is enforced from the moment the column exists, and NULL still passes it", async () => {
+    // Zero is how "unknown" would sneak in wearing a number instead of a NULL,
+    // and every reader downstream treats NULL as "never recorded".
+    const db = await getDatabase();
+    await atVersionNineteenWithFlatLoan(db);
+    await runMigrations(db);
+
+    await expect(
+      db.runAsync("UPDATE loans SET amount_borrowed = 0 WHERE id = ?", [V19_FLAT_LOAN_ID]),
+    ).rejects.toThrow(/CHECK/i);
+    await expect(
+      db.runAsync("UPDATE loans SET amount_borrowed = -1 WHERE id = ?", [V19_FLAT_LOAN_ID]),
+    ).rejects.toThrow(/CHECK/i);
+
+    await db.runAsync("UPDATE loans SET amount_borrowed = NULL WHERE id = ?", [V19_FLAT_LOAN_ID]);
+    const row = await db.getFirstAsync<{ borrowed: number | null }>(
+      "SELECT amount_borrowed AS borrowed FROM loans WHERE id = ?",
+      [V19_FLAT_LOAN_ID],
+    );
+    expect(row?.borrowed).toBeNull();
+  });
+
+  test("every shipped version ends up recorded, and a further run applies nothing", async () => {
+    // The exactly-once guard is what keeps a second launch from crashing:
+    // re-running `ALTER TABLE ... ADD COLUMN` throws "duplicate column name".
+    const db = await getDatabase();
+    await atVersionNineteenWithFlatLoan(db);
+    await runMigrations(db);
+
+    const recorded = await db.getAllAsync<{ version: number; name: string }>(
+      "SELECT version, name FROM schema_migrations ORDER BY version",
+    );
+    expect(recorded).toEqual(MIGRATIONS.map((m) => ({ version: m.version, name: m.name })));
+    expect(await runMigrations(db)).toEqual([]);
+    expect((await db.getFirstAsync<{ n: number }>("SELECT COUNT(*) AS n FROM loans"))?.n).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 021_raw_notification_body_discarded: the minimal record (GAP-107, owner
+// decision 2026-09-09). `raw_notifications` gains one nullable column. A row
+// already on the device keeps its text and reads NULL, because nothing about
+// it was discarded; the recovery sweep strips such a row later only if the
+// router still calls it not money-related.
+// ---------------------------------------------------------------------------
+describe("021_raw_notification_body_discarded upgrades a real version-20 database in place", () => {
+  /** Brings a database to 020 and seeds a capture the old drain stored whole. */
+  async function atVersionTwentyWithCapture(
+    db: Awaited<ReturnType<typeof getDatabase>>,
+  ): Promise<void> {
+    const upToTwenty = MIGRATIONS.filter((m) => m.version <= 20);
+    expect(upToTwenty.length).toBe(20);
+    await runMigrations(db, upToTwenty);
+
+    await db.runAsync(
+      `INSERT INTO raw_notifications (id, package_name, title, text, sub_text, big_text,
+         posted_at, captured_at, expires_at, notification_key)
+       VALUES ('cap_v20', 'com.friend.chat', 'Ana', 'Kain tayo mamaya!', NULL, NULL, ?, ?, ?, NULL)`,
+      [V1_TIMESTAMP, V1_TIMESTAMP, V1_TIMESTAMP + 30 * 24 * 60 * 60 * 1000],
+    );
+  }
+
+  test("a database at 020, already holding a capture, gains the column and keeps the text", async () => {
+    const db = await getDatabase();
+    await atVersionTwentyWithCapture(db);
+
+    const before = await db.getAllAsync<{ name: string }>("PRAGMA table_info(raw_notifications)");
+    expect(before.map((c) => c.name)).not.toContain("body_discarded_at");
+
+    const applied = await runMigrations(db);
+    expect(applied[0]).toBe(21);
+    expect(applied).toEqual(MIGRATIONS.filter((m) => m.version > 20).map((m) => m.version));
+
+    const after = await db.getAllAsync<{ name: string }>("PRAGMA table_info(raw_notifications)");
+    expect(after.map((c) => c.name)).toContain("body_discarded_at");
+
+    const row = await db.getFirstAsync<{ text: string | null; body_discarded_at: number | null }>(
+      "SELECT text, body_discarded_at FROM raw_notifications WHERE id = 'cap_v20'",
+    );
+    expect(row).toEqual({ text: "Kain tayo mamaya!", body_discarded_at: null });
+  });
+
+  test("a row marked discarded cannot carry text, and one with text cannot be marked", async () => {
+    const db = await getDatabase();
+    await atVersionTwentyWithCapture(db);
+    await runMigrations(db);
+
+    await expect(
+      db.runAsync("UPDATE raw_notifications SET body_discarded_at = ? WHERE id = 'cap_v20'", [
+        V1_TIMESTAMP,
+      ]),
+    ).rejects.toThrow(/CHECK/i);
+    await expect(
+      db.runAsync(
+        `INSERT INTO raw_notifications (id, package_name, title, text, sub_text, big_text,
+           posted_at, captured_at, expires_at, notification_key, body_discarded_at)
+         VALUES ('cap_new', 'com.friend.chat', NULL, NULL, NULL, NULL, ?, ?, ?, 'com.friend.chat|7|x|0', ?)`,
+        [V1_TIMESTAMP, V1_TIMESTAMP, V1_TIMESTAMP, V1_TIMESTAMP],
+      ),
+    ).rejects.toThrow(/CHECK/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 022_goal_milestone: the high-water mark goals rule 12 needs (GAP-055). Every
+// goal already on a device starts at the milestone its wallet already meets, or
+// the first commit after the update would announce weeks-old progress.
+// ---------------------------------------------------------------------------
+describe("022_goal_milestone upgrades a real version-21 database in place", () => {
+  /** Brings a database to 021 with three goals at 10%, 60% and 110% of target. */
+  async function atVersionTwentyOneWithGoals(
+    db: Awaited<ReturnType<typeof getDatabase>>,
+  ): Promise<void> {
+    const upToTwentyOne = MIGRATIONS.filter((m) => m.version <= 21);
+    expect(upToTwentyOne.length).toBe(21);
+    await runMigrations(db, upToTwentyOne);
+
+    for (const [id, balance] of [
+      ["w_low", 50_000],
+      ["w_mid", 300_000],
+      ["w_full", 550_000],
+    ] as const) {
+      await db.runAsync(
+        `INSERT INTO wallets (id, name, balance, currency, is_archived, created_at, updated_at)
+         VALUES (?, ?, ?, 'PHP', 0, ?, ?)`,
+        [id, id, balance, V1_TIMESTAMP, V1_TIMESTAMP],
+      );
+      await db.runAsync(
+        `INSERT INTO goals (id, name, target_amount, target_date, linked_wallet_id,
+           contribution_rule_json, archived_at, created_at, updated_at)
+         VALUES (?, ?, 500000, NULL, ?, NULL, NULL, ?, ?)`,
+        [`g_${id}`, `goal ${id}`, id, V1_TIMESTAMP, V1_TIMESTAMP],
+      );
+    }
+  }
+
+  test("each existing goal starts at the milestone its wallet already meets", async () => {
+    const db = await getDatabase();
+    await atVersionTwentyOneWithGoals(db);
+
+    const applied = await runMigrations(db);
+    expect(applied[0]).toBe(22);
+    expect(applied).toEqual(MIGRATIONS.filter((m) => m.version > 21).map((m) => m.version));
+
+    const rows = await db.getAllAsync<{ id: string; milestone_reached: number }>(
+      "SELECT id, milestone_reached FROM goals ORDER BY id",
+    );
+    expect(rows).toEqual([
+      { id: "g_w_full", milestone_reached: 100 },
+      { id: "g_w_low", milestone_reached: 0 },
+      { id: "g_w_mid", milestone_reached: 50 },
+    ]);
+  });
+
+  test("the column holds only the five values rule 12 names", async () => {
+    const db = await getDatabase();
+    await atVersionTwentyOneWithGoals(db);
+    await runMigrations(db);
+
+    await expect(
+      db.runAsync("UPDATE goals SET milestone_reached = 30 WHERE id = 'g_w_low'"),
+    ).rejects.toThrow(/CHECK/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 023_contribution_decisions: what the user decided about one payday's planned
+// goal contribution (GAP-056, goals rule 14). Recorded or skipped, keyed by goal
+// and payday, because every other state is derived from the ledger.
+// ---------------------------------------------------------------------------
+describe("023_contribution_decisions", () => {
+  test("a database at 022 gains the table and nothing else changes", async () => {
+    const db = await getDatabase();
+    await runMigrations(db, MIGRATIONS.filter((m) => m.version <= 22));
+
+    const applied = await runMigrations(db);
+    expect(applied[0]).toBe(23);
+    expect(applied).toEqual(MIGRATIONS.filter((m) => m.version > 22).map((m) => m.version));
+
+    const columns = await db.getAllAsync<{ name: string }>(
+      "PRAGMA table_info(contribution_decisions)",
+    );
+    expect(columns.map((c) => c.name)).toEqual(["goal_id", "payday_date", "decision", "decided_at"]);
+  });
+
+  test("a decision is recorded or skipped and nothing else, once per goal and payday", async () => {
+    const db = await freshDb();
+    await db.runAsync(
+      `INSERT INTO wallets (id, name, balance, currency, is_archived, created_at, updated_at)
+       VALUES ('w_gsave', 'GSave', 0, 'PHP', 0, ?, ?)`,
+      [V1_TIMESTAMP, V1_TIMESTAMP],
+    );
+    await db.runAsync(
+      `INSERT INTO goals (id, name, target_amount, linked_wallet_id, created_at, updated_at)
+       VALUES ('g_fund', 'Fund', 500000, 'w_gsave', ?, ?)`,
+      [V1_TIMESTAMP, V1_TIMESTAMP],
+    );
+
+    await expect(
+      db.runAsync(
+        "INSERT INTO contribution_decisions (goal_id, payday_date, decision, decided_at) VALUES ('g_fund', '2026-08-10', 'later', 0)",
+      ),
+    ).rejects.toThrow(/CHECK/i);
+
+    await db.runAsync(
+      "INSERT INTO contribution_decisions (goal_id, payday_date, decision, decided_at) VALUES ('g_fund', '2026-08-10', 'skipped', 0)",
+    );
+    await expect(
+      db.runAsync(
+        "INSERT INTO contribution_decisions (goal_id, payday_date, decision, decided_at) VALUES ('g_fund', '2026-08-10', 'recorded', 0)",
+      ),
+    ).rejects.toThrow(/UNIQUE|PRIMARY/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 024_review_resolution: how a card was answered (GAP-057). A card resolved
+// before this migration keeps NULL, because nothing recorded the answer.
+// ---------------------------------------------------------------------------
+describe("024_review_resolution", () => {
+  async function atVersionTwentyThreeWithResolvedCard(
+    db: Awaited<ReturnType<typeof getDatabase>>,
+  ): Promise<void> {
+    await runMigrations(db, MIGRATIONS.filter((m) => m.version <= 23));
+    await db.runAsync(
+      `INSERT INTO review_queue_items (id, kind, payload_json, raw_notification_id, created_at, expires_at, resolved_at)
+       VALUES ('rq_old', 'low-confidence', '{}', NULL, ?, ?, ?)`,
+      [V1_TIMESTAMP, V1_TIMESTAMP + 1, V1_TIMESTAMP],
+    );
+    await db.runAsync(
+      `INSERT INTO review_queue_items (id, kind, payload_json, raw_notification_id, created_at, expires_at, resolved_at)
+       VALUES ('rq_open', 'low-confidence', '{}', NULL, ?, ?, NULL)`,
+      [V1_TIMESTAMP, V1_TIMESTAMP + 1],
+    );
+  }
+
+  test("a database at 023 gains the column, and a card resolved before it reads NULL", async () => {
+    const db = await getDatabase();
+    await atVersionTwentyThreeWithResolvedCard(db);
+
+    const applied = await runMigrations(db);
+    expect(applied[0]).toBe(24);
+
+    const row = await db.getFirstAsync<{ resolved_at: number; resolution: string | null }>(
+      "SELECT resolved_at, resolution FROM review_queue_items WHERE id = 'rq_old'",
+    );
+    expect(row).toEqual({ resolved_at: V1_TIMESTAMP, resolution: null });
+  });
+
+  test("a resolution needs a resolved time, and is one of the two answers", async () => {
+    const db = await getDatabase();
+    await atVersionTwentyThreeWithResolvedCard(db);
+    await runMigrations(db);
+
+    await expect(
+      db.runAsync("UPDATE review_queue_items SET resolution = 'dismissed' WHERE id = 'rq_open'"),
+    ).rejects.toThrow(/CHECK/i);
+    await expect(
+      db.runAsync("UPDATE review_queue_items SET resolution = 'maybe' WHERE id = 'rq_old'"),
+    ).rejects.toThrow(/CHECK/i);
+  });
 });

@@ -70,6 +70,7 @@ class NotificationListenerModuleTest {
   /** Interface contract §4 `RawCapture`, verbatim. Nothing else may appear. */
   private val contractKeys = setOf(
     "id", "packageName", "title", "text", "subText", "bigText", "postedAt", "capturedAt",
+    "notificationKey",
   )
 
   /** Interface contract §4 `getListenerHealth`, verbatim. */
@@ -303,7 +304,7 @@ class NotificationListenerModuleTest {
   }
 
   @Test
-  fun `drained maps carry exactly the eight contract field names`() {
+  fun `drained maps carry exactly the nine contract field names`() {
     KeyStoreBridge.ensureCaptureKeyPair()
     val file = CaptureBuffer.fileFor(context)
     CaptureBuffer.clear(file)
@@ -321,7 +322,7 @@ class NotificationListenerModuleTest {
     val drained = drainAsTheBridgeDoes()
 
     // The EXACT key set, not a containsKey sweep: a per-field containsKey
-    // check passes happily when a ninth key leaks in, and an extra key on
+    // check passes happily when a tenth key leaks in, and an extra key on
     // this map is how a native field escapes into JS's RawCapture.
     assertEquals(2, drained.size)
     for (map in drained) {
@@ -345,6 +346,75 @@ class NotificationListenerModuleTest {
       assertNull(drained[1][key])
     }
     assertEquals("You received PHP 1,500.00 from JUAN D.", drained[1]["text"])
+  }
+
+  // ---------------------------------------------------------------------
+  // The two failure modes drainPendingCaptures has to keep distinguishable
+  // from each other AND from an empty buffer (the class doc's taxonomy).
+  //
+  // The taxonomy tests further up prove mapKeyErrors maps the right
+  // exception to the right code IN ISOLATION. These two prove the drain
+  // path actually routes through it -- which is a separate claim, and the
+  // one that was unprovable while this file re-typed the AsyncFunction's
+  // body into a helper of its own. Each also asserts the buffer SURVIVES,
+  // because a coded rejection that arrived after the file was already
+  // deleted would be a correct-looking error over permanent data loss.
+  // ---------------------------------------------------------------------
+
+  @Test
+  fun `a drain called before the private key's auth window rejects as NotAuthenticated and leaves every capture on disk`() {
+    KeyStoreBridge.ensureCaptureKeyPair()
+    val file = CaptureBuffer.fileFor(context)
+    CaptureBuffer.clear(file)
+    CaptureBuffer.append(file, sampleRecord())
+    CaptureBuffer.append(file, sampleRecord(id = "55555555-5555-4555-8555-555555555555"))
+
+    // Seal still works, open does not -- exactly docs §6's asymmetry, and
+    // exactly what a drain a moment before the user authenticates hits.
+    val liveVault = KeyStoreBridge.vault
+    KeyStoreBridge.vault = LockedPrivateKeyVault(liveVault)
+
+    val thrown = assertThrows(NotAuthenticatedException::class.java) {
+      drainAsTheBridgeDoes()
+    }
+    // The CODE, not just the type: JS branches on this string to decide
+    // whether to re-prompt biometric or to send the user to onboarding.
+    assertEquals("NotAuthenticated", thrown.code)
+
+    // Nothing was lost. A raw UserNotAuthenticatedException reaching JS has
+    // no code to branch on and reads as an unknown failure; a drain that had
+    // already deleted the file would make the retry this rejection exists to
+    // invite return nothing at all.
+    assertTrue("a drain that could not authenticate must not touch the file", file.exists())
+    assertEquals(2, CaptureBuffer.size(file))
+
+    // ...and the retry, once the key is usable again, returns both.
+    KeyStoreBridge.vault = liveVault
+    assertEquals(2, drainAsTheBridgeDoes().size)
+  }
+
+  @Test
+  fun `a drain over an unreadable buffer file rejects as CaptureBufferReadFailed rather than resolving empty`() {
+    KeyStoreBridge.ensureCaptureKeyPair()
+    val file = CaptureBuffer.fileFor(context)
+    CaptureBuffer.clear(file)
+
+    // A directory in the file's exact place: File.readText() fails on every
+    // platform, and it is a STORAGE failure, untouched by the base64/crypto
+    // machinery -- the case CaptureBuffer.ReadFailedException exists for.
+    file.mkdirs()
+
+    val thrown = assertThrows(CaptureBufferReadFailedException::class.java) {
+      drainAsTheBridgeDoes()
+    }
+    assertEquals("CaptureBufferReadFailed", thrown.code)
+
+    // Resolving `[]` here is the bug this whole distinction exists to
+    // prevent: JS would read "nothing pending" over a transient storage
+    // hiccup and the next successful drain would have nothing left to find.
+    assertTrue("a failed read must never delete the file it could not read", file.exists())
+
+    file.delete()
   }
 
   // =====================================================================
@@ -380,6 +450,165 @@ class NotificationListenerModuleTest {
     // Empty means ALLOW ALL, not deny all -- see CapturePrefs.getProviderFilter.
     assertEquals(emptySet<String>(), reopened.getProviderFilter())
     assertTrue(reopened.shouldCapture("com.some.bank.nobody.allowlisted"))
+  }
+
+  @Test
+  fun `setProviderFilter carries deny-all across the bridge, and clears it again`() {
+    // The Privacy centre's every-provider-paused state (GAP-103). It arrives
+    // as an EMPTY list plus the flag, and the flag is the whole message: the
+    // list on its own is allow-all, which is the opposite of what was asked.
+    setProviderFilter(context, emptyList(), denyAll = true)
+
+    val fresh = CapturePrefs(context)
+    assertTrue(fresh.isProviderFilterDenyAll())
+    assertFalse(fresh.shouldCapture(gcash))
+    assertFalse(fresh.shouldCapture("com.some.bank.nobody.allowlisted"))
+
+    // Resuming one provider is a single write that both names the allowlist
+    // and lifts the block. A bridge that only ever set the flag would strand
+    // the user with capture off and no way back.
+    setProviderFilter(context, listOf(gcash))
+
+    val reopened = CapturePrefs(context)
+    assertFalse(reopened.isProviderFilterDenyAll())
+    assertTrue(reopened.shouldCapture(gcash))
+    assertFalse(reopened.shouldCapture(maya))
+  }
+
+  // =====================================================================
+  // A dropped provider filter crosses the bridge as a REJECTION (GAP-114)
+  //
+  // The bridge used to resolve whatever CapturePrefs did, so a device that
+  // could not seal the allowlist told JS the pause had been applied. JS then
+  // wrote `paused_provider_packages` -- the only readable record, since this
+  // bridge has a setter and no getter -- and the switch list reported a
+  // provider as paused while the listener went on capturing from it.
+  // =====================================================================
+
+  @Test
+  fun `setProviderFilter rejects when the allowlist could not be stored`() {
+    // A device whose prefs KEK was never created: the alias is absent, so
+    // every seal fails. Deliberately NOT a re-keyed vault -- that one seals
+    // fine and only fails to OPEN, which is a different state entirely.
+    KeyStoreBridge.vault = FakeKeyVault()
+
+    val thrown = assertThrows(ProviderFilterNotStoredException::class.java) {
+      setProviderFilter(context, listOf(gcash), denyAll = false)
+    }
+    // The `code` is the whole contract: `index.ts`'s rethrowTyped branches on
+    // it, and a rejection with any other code would reach the Privacy centre
+    // as a generic failure with no copy about what is still being captured.
+    assertEquals("ProviderFilterNotStored", thrown.code)
+    // And the message names no package: a rejection that reached a log must
+    // not disclose which banks the user holds, which is the exact disclosure
+    // sealing the filter exists to prevent.
+    assertFalse(thrown.message.orEmpty().contains(gcash))
+  }
+
+  @Test
+  fun `setProviderFilter resolves for a deny-all even when nothing can be sealed`() {
+    KeyStoreBridge.vault = FakeKeyVault()
+
+    // The plaintext flag needs no key, lands on its own, and outranks whatever
+    // stale filter is left on disk -- so the scope the user asked for IS in
+    // force, and rejecting would make JS discard a record of a block the
+    // device is genuinely applying.
+    setProviderFilter(context, emptyList(), denyAll = true)
+
+    val fresh = CapturePrefs(context)
+    assertTrue(fresh.isProviderFilterDenyAll())
+    assertFalse(fresh.shouldCapture(gcash))
+  }
+
+  @Test
+  fun `setProviderFilter resolves on the ordinary path, in both directions`() {
+    // The guard against a bridge that simply always throws, which would pass
+    // both tests above while making every provider switch in the app unusable.
+    setProviderFilter(context, listOf(gcash))
+    setProviderFilter(context, emptyList(), denyAll = true)
+    setProviderFilter(context, listOf(maya))
+
+    val fresh = CapturePrefs(context)
+    assertFalse(fresh.isProviderFilterDenyAll())
+    assertEquals(setOf(maya), fresh.getProviderFilter())
+  }
+
+  // =====================================================================
+  // READING THE SCOPE BACK (GAP-119)
+  //
+  // This bridge had a setter and no getter, so `paused_provider_packages` --
+  // the row More > Privacy draws its provider switches from -- was an
+  // unverifiable claim. These tests are about the three answers that claim has
+  // to be checkable against, and the middle one is the whole point: a filter
+  // the device cannot open is one it is not applying, and reporting that
+  // honestly is what lets the Privacy centre stop presenting a pause the
+  // listener never entered.
+  // =====================================================================
+
+  /** The two fields the JS `ProviderFilter` promises, verbatim. Nothing else. */
+  private val providerFilterKeys = setOf("packageNames", "denyAll")
+
+  @Test
+  fun `getProviderFilter reads back the scope setProviderFilter just wrote`() {
+    setProviderFilter(context, listOf(gcash, maya, gcash))
+
+    val scope = getProviderFilter(context)
+
+    assertEquals(providerFilterKeys, scope.keys)
+    assertEquals(false, scope["denyAll"])
+    // The duplicate collapsed on the way in, so the read-back is a set's worth
+    // of names -- membership is the only question either side ever asks.
+    @Suppress("UNCHECKED_CAST")
+    val packageNames = scope["packageNames"] as List<String>
+    assertEquals(setOf(gcash, maya), packageNames.toSet())
+  }
+
+  @Test
+  fun `getProviderFilter reports allow-all for a filter the device can no longer open`() {
+    setProviderFilter(context, listOf(gcash))
+
+    // A Keystore reset, or a restore onto another device: a DIFFERENT prefs KEK
+    // is present, so sealing still works and opening what came before does not.
+    // The listener falls back to the empty set here, which it reads as ALLOW
+    // EVERY PACKAGE -- the silent fail-open `resyncProviderFilter` exists to
+    // bound and the Privacy centre now exists to report.
+    KeyStoreBridge.vault = FakeKeyVault()
+    KeyStoreBridge.ensurePrefsKek()
+
+    val scope = getProviderFilter(context)
+
+    // NOT papered over as a read error. The empty list is what `shouldCapture`
+    // itself sees, so it is the truth about what this device captures, and a
+    // getter that hid it would leave JS unable to see the one state the
+    // comparison is for.
+    assertEquals(emptyList<String>(), scope["packageNames"])
+    assertEquals(false, scope["denyAll"])
+    assertTrue(
+      "the premise: this device really is capturing everything now",
+      CapturePrefs(context).shouldCapture("com.some.bank.nobody.allowlisted"),
+    )
+  }
+
+  @Test
+  fun `getProviderFilter reports the deny-all flag beside a list it could not replace`() {
+    setProviderFilter(context, listOf(gcash, maya))
+
+    // The branch CapturePrefs.setProviderFilter reports SUCCESS for: no usable
+    // prefs KEK, so the plaintext flag lands alone and the sealed list beside
+    // it stays exactly as it was. Both are handed over, in one snapshot, so a
+    // JS caller can see that the flag is what is in force and never compare the
+    // unreachable list -- which no relaunch on this device would ever change.
+    KeyStoreBridge.vault = FakeKeyVault()
+    setProviderFilter(context, emptyList(), denyAll = true)
+
+    val scope = getProviderFilter(context)
+
+    assertEquals(true, scope["denyAll"])
+    // Still unopenable under the empty vault, so the accessor answers with the
+    // empty set -- and it does not matter, which is precisely the claim: the
+    // flag outranks it and `shouldCapture` never reaches the list at all.
+    assertEquals(emptyList<String>(), scope["packageNames"])
+    assertFalse(CapturePrefs(context).shouldCapture(gcash))
   }
 
   // =====================================================================
@@ -508,16 +737,6 @@ class NotificationListenerModuleTest {
   // Fixtures
   // =====================================================================
 
-  /**
-   * The `drainPendingCaptures` AsyncFunction's body, minus the
-   * `requireContext()` that needs an `AppContext` -- see the class doc's
-   * note on the seam. The error-mapping half of that body (`mapKeyErrors`
-   * and the `ReadFailedException` -> `CaptureBufferReadFailedException`
-   * translation) is covered by the taxonomy tests above and by
-   * `CaptureBufferTest`; what these three tests exercise is the composition
-   * of [CaptureBuffer.drain] with [CaptureRecord.toMap], which is what JS
-   * actually receives.
-   */
   // ---------------------------------------------------------------------
   // openAccessSettings. Not in the plan's six-test list, but rule 2 of the
   // task brief is a behavioural requirement like any other, and this is the
@@ -553,8 +772,24 @@ class NotificationListenerModuleTest {
     )
   }
 
+  /**
+   * The REAL `drainPendingCaptures` body -- [drainPendingCaptures], the
+   * top-level function the AsyncFunction now calls in one line -- with only
+   * the `requireContext()` that needs an `AppContext` supplied from here.
+   *
+   * This used to be a hand-retyped COPY of the AsyncFunction's body, and the
+   * copy is what made the error-mapping half untestable: a copy that carries
+   * its own `mapKeyErrors` call proves the copy maps errors, not that the
+   * bridge does. Deleting `mapKeyErrors` from production left every drain
+   * test here green. Calling the production function is what closed that.
+   *
+   * `modules/notification_listener/__tests__/module_wiring.test.ts` pins the
+   * other half -- that the AsyncFunction body really is the one-line
+   * delegation to this function -- since no JVM test can invoke an
+   * `AsyncFunction` without the JSI runtime.
+   */
   private fun drainAsTheBridgeDoes(): List<Map<String, Any?>> =
-    CaptureBuffer.drain(CaptureBuffer.fileFor(context)).map { it.toMap() }
+    drainPendingCaptures(context)
 
   /**
    * Every string below is ILLUSTRATIVE: invented sample copy in the shape of

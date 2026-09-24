@@ -32,7 +32,7 @@ function makeItem(
     capturedAt: NOW,
     ...overrides,
   };
-  return { capture, providerName, expiresAt: NOW + 1000 };
+  return { capture, providerName, expiresAt: NOW + 1000, bodyDiscarded: false };
 }
 
 /** `count` items, all from the same synthetic package, ids `cap-0`..`cap-{count-1}`. */
@@ -112,4 +112,24 @@ test("capturedPackageOptions orders the noisiest app first", () => {
     { packageName: "com.example.wallet", label: "Example Wallet", count: 2 },
   ];
   expect(options).toEqual(expected);
+});
+
+test("a row whose text was not kept says when it arrived and why it is empty", () => {
+  // GAP-107: a non-money capture drained from the buffer keeps only its app
+  // and its times. The card has to say so; an empty grey box reads as a bug.
+  const postedAt = new Date(2026, 8, 21, 14, 5).getTime();
+  const trimmed: CapturedListItem = {
+    ...makeItem("trimmed", "com.example.chat", "Example Chat", {
+      title: null,
+      text: null,
+      postedAt,
+      capturedAt: postedAt,
+    }),
+    bodyDiscarded: true,
+  };
+  render(<CapturedList items={[trimmed]} />);
+
+  const body = screen.getByTestId("captured-item-text-trimmed");
+  expect(body).toHaveTextContent(/Arrived Sep 21, 2026 at 2:05 PM/);
+  expect(body).toHaveTextContent(/kept only the app and the time/);
 });

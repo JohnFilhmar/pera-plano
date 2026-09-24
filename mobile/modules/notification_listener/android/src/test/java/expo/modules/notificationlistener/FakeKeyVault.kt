@@ -1,5 +1,7 @@
 package expo.modules.notificationlistener
 
+import android.security.keystore.KeyPermanentlyInvalidatedException
+import android.security.keystore.UserNotAuthenticatedException
 import java.security.KeyPairGenerator
 import java.security.PrivateKey
 import java.security.PublicKey
@@ -66,6 +68,15 @@ internal class FakeKeyVault : KeyVault {
     }
   }
 
+  // Unconditionally overwrites, like recreateAesKey above and for the same
+  // reason: AndroidKeyVault deletes the alias and regenerates, and the
+  // observable effect is a keypair that is not the previous one. Tests rely on
+  // that being observable -- a capture sealed under the old public half must
+  // stop opening after this runs.
+  override fun recreateRsaKeyPair(alias: String) {
+    keyPairs[alias] = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
+  }
+
   override fun getAesKey(alias: String): SecretKey =
     secretKeys[alias] ?: error("secret key has not been created")
 
@@ -76,4 +87,41 @@ internal class FakeKeyVault : KeyVault {
     keyPairs[alias]?.private ?: error("capture keypair has not been created")
 
   override fun hasAesKey(alias: String): Boolean = secretKeys.containsKey(alias)
+}
+
+/**
+ * A capture private key that is UNAVAILABLE RIGHT NOW, while everything else
+ * -- the public half above all -- keeps working through [delegate]. Exactly
+ * [UserNotAuthenticatedException] in production: the caller reached
+ * [CaptureEnvelope.open] before the private key's ~10-second post-unlock
+ * authentication window was open.
+ *
+ * That asymmetry is the whole of docs/12-encryption-and-app-lock.md §6: the
+ * listener can always seal and can never open until the user authenticates.
+ * This is a RECOVERABLE state -- the same call retried after authenticating
+ * succeeds -- which is why [CaptureBuffer.drain] must leave the file
+ * untouched when it meets one.
+ */
+internal class LockedPrivateKeyVault(private val delegate: KeyVault) : KeyVault by delegate {
+  override fun getPrivateKey(alias: String): PrivateKey = throw UserNotAuthenticatedException()
+}
+
+/**
+ * A capture private key Android has PERMANENTLY DESTROYED -- what removing
+ * the device screen lock does to a key created with
+ * `setUserAuthenticationRequired(true)` (docs §5). The public half still
+ * reads back through [delegate], because the dead alias survives
+ * invalidation: that is precisely why the listener keeps sealing captures
+ * under a key nothing can ever open again.
+ *
+ * DIFFERENT IN KIND from [LockedPrivateKeyVault], and the difference is the
+ * entire point of having both. "Locked" is recoverable by authenticating;
+ * this is not recoverable at all, and no amount of retrying helps.
+ * [KeyPermanentlyInvalidatedException] extends `InvalidKeyException`, so
+ * anything catching broadly swallows it -- see `CaptureBufferTest`'s
+ * dead-key drain case for what that currently costs (GAP-059).
+ */
+internal class InvalidatedPrivateKeyVault(private val delegate: KeyVault) : KeyVault by delegate {
+  override fun getPrivateKey(alias: String): PrivateKey =
+    throw KeyPermanentlyInvalidatedException()
 }

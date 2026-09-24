@@ -109,7 +109,7 @@ test("income:payday carries the wallet, amount and instant, not just an id", asy
   });
 
   await emitAppEvent("income:payday", {
-    transactionId: "tx-9",
+    transactionIds: ["tx-9"],
     walletId: "w-1",
     amount: 1_850_000,
     occurredAt,
@@ -117,8 +117,30 @@ test("income:payday carries the wallet, amount and instant, not just an id", asy
   off();
 
   expect(seen).toEqual([
-    { transactionId: "tx-9", walletId: "w-1", amount: 1_850_000, occurredAt },
+    { transactionIds: ["tx-9"], walletId: "w-1", amount: 1_850_000, occurredAt },
   ]);
+});
+
+test("income:payday names EVERY credit one payday arrived in", async () => {
+  // A payday is a local date, not a transaction: an employer paying half in the
+  // morning and half in the afternoon sends one payday in two credits, and
+  // `amount` is what they come to together (goals rule 13's percent base is "the
+  // sum of income Transactions detected on that payday date"). A single id could
+  // only ever name one half of that sum.
+  const seen: { transactionIds: string[]; amount: number }[] = [];
+  const off = onAppEvent("income:payday", (payload) => {
+    seen.push({ transactionIds: payload.transactionIds, amount: payload.amount });
+  });
+
+  await emitAppEvent("income:payday", {
+    transactionIds: ["tx-half-1", "tx-half-2"],
+    walletId: "w-1",
+    amount: 1_850_000,
+    occurredAt: new Date(2026, 7, 15, 16, 0).getTime(),
+  });
+  off();
+
+  expect(seen).toEqual([{ transactionIds: ["tx-half-1", "tx-half-2"], amount: 1_850_000 }]);
 });
 
 test("the three events are delivered independently of one another", async () => {
@@ -136,12 +158,12 @@ test("the three events are delivered independently of one another", async () => 
     changed.push(p.transactionId);
   });
   const offPayday = onAppEvent("income:payday", (p) => {
-    payday.push(p.transactionId);
+    payday.push(...p.transactionIds);
   });
 
   await emitAppEvent("ledger:changed", { transactionId: "tx-a" });
   await emitAppEvent("income:payday", {
-    transactionId: "tx-b",
+    transactionIds: ["tx-b"],
     walletId: "w-1",
     amount: 100,
     occurredAt: new Date(2026, 7, 15, 8, 0).getTime(),
@@ -164,14 +186,14 @@ test("unsubscribing from one event leaves the others subscribed", async () => {
     changed.push(p.transactionId);
   });
   const offPayday = onAppEvent("income:payday", (p) => {
-    payday.push(p.transactionId);
+    payday.push(...p.transactionIds);
   });
 
   offChanged();
 
   await emitAppEvent("ledger:changed", { transactionId: "tx-c" });
   await emitAppEvent("income:payday", {
-    transactionId: "tx-d",
+    transactionIds: ["tx-d"],
     walletId: "w-1",
     amount: 100,
     occurredAt: new Date(2026, 7, 15, 8, 0).getTime(),

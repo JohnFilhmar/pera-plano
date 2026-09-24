@@ -22,6 +22,7 @@ import { Card } from "@/components/ui/card";
 import { FormScreen } from "@/components/ui/form_screen";
 import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { SectionHeader } from "@/components/ui/section_header";
+import { useAcknowledgeSplitPaydayNotice } from "@/hooks/mutations/use_acknowledge_split_payday_notice";
 import { useClearManualIncome } from "@/hooks/mutations/use_clear_manual_income";
 import { useConfirmIncome } from "@/hooks/mutations/use_confirm_income";
 import { useDismissIncome } from "@/hooks/mutations/use_dismiss_income";
@@ -38,6 +39,7 @@ export default function IncomeScreen() {
   const dismiss = useDismissIncome();
   const setManual = useSetManualIncome();
   const clearManual = useClearManualIncome();
+  const acknowledgeSplitPayday = useAcknowledgeSplitPaydayNotice();
 
   const [editing, setEditing] = useState(false);
 
@@ -73,6 +75,7 @@ export default function IncomeScreen() {
             onConfirm={() => confirm.mutate()}
             onDismiss={() => dismiss.mutate()}
             onSetManually={() => setEditing(true)}
+            onAcknowledgeSplitPayday={() => acknowledgeSplitPayday.mutate()}
             busy={confirm.isPending || dismiss.isPending}
           />
         ) : (

@@ -6,7 +6,13 @@
 import { closeDatabase } from "@/lib/db/database";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { listLoanPaymentTransactionIds } from "@/lib/db/repos/income_repo";
-import { createLoan, outstandingBalance, recordPayment } from "@/lib/db/repos/loans_repo";
+import {
+  createLoan,
+  listRejectedTransactionIds,
+  outstandingBalance,
+  recordPayment,
+  rejectCandidates,
+} from "@/lib/db/repos/loans_repo";
 import { insertTransaction, listTransactions } from "@/lib/db/repos/transactions_repo";
 import { createWallet } from "@/lib/db/repos/wallets_repo";
 import { selectCandidates } from "@/lib/income/candidates";
@@ -285,6 +291,123 @@ test("an unknown loan yields no candidates rather than throwing", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// Rejections — "None of these" (019_loan_match_rejections)
+// ---------------------------------------------------------------------------
+
+/** A loan with one transaction that plausibly pays it, and a second loan sharing its counterparty. */
+async function aLoanWithOnePlausiblePayment() {
+  const loan = await gloan();
+  const otherLoanSameCounterparty = await createLoan({
+    direction: "i-owe",
+    counterparty: "GLoan",
+    principal: 5000000,
+    nextDueDate: "2026-09-15",
+    nextDueAmount: 444244,
+  });
+  const paying = await insertTransaction({
+    walletId: cash.id,
+    categoryId: UNCATEGORIZED_ID,
+    amount: 444244,
+    direction: "out",
+    occurredAt: new Date(2026, 8, 15).getTime(),
+    merchant: "GLOAN PAYMENT",
+    source: "manual",
+    confidence: 1,
+  });
+  return { loan, paying, otherLoanSameCounterparty };
+}
+
+// "NONE OF THESE" HAS TO SURVIVE THE SHEET CLOSING. Before this, the button
+// called `onDismiss` and nothing else, so the same rows were re-scored on the
+// next visit and the loan kept advertising "2 possible payments". The owner
+// reported it as the button having "no actual wired function".
+test("a rejected transaction stops being suggested for that loan", async () => {
+  const { loan, paying } = await aLoanWithOnePlausiblePayment();
+
+  const before = await findPaymentCandidates(loan.id, NOW);
+  expect(before.map((candidate) => candidate.transactionId)).toContain(paying.id);
+
+  await rejectCandidates(loan.id, [paying.id]);
+
+  const after = await findPaymentCandidates(loan.id, NOW);
+  expect(after.map((candidate) => candidate.transactionId)).not.toContain(paying.id);
+});
+
+// THE REJECTION IS A UI MEMORY, NOT A NEGATIVE RULE (loans rule 10). "Show
+// every transaction" is a SEARCH, and a user who rejected a row and then
+// realised it was the payment must still be able to find it and confirm it.
+test("the browse-everything list still offers a rejected transaction", async () => {
+  const { loan, paying } = await aLoanWithOnePlausiblePayment();
+  await rejectCandidates(loan.id, [paying.id]);
+
+  const all = await findPaymentCandidates(loan.id, NOW, 50, true);
+
+  expect(all.map((candidate) => candidate.transactionId)).toContain(paying.id);
+});
+
+// Rule 10 again, from the other side: a rejection names ONE pair. It says
+// nothing about the counterparty, and a second loan with the same person must
+// still be offered the same row.
+test("a rejection on one loan does not silence the row on another", async () => {
+  const { loan, paying, otherLoanSameCounterparty } = await aLoanWithOnePlausiblePayment();
+  await rejectCandidates(loan.id, [paying.id]);
+
+  const other = await findPaymentCandidates(otherLoanSameCounterparty.id, NOW);
+
+  expect(other.map((candidate) => candidate.transactionId)).toContain(paying.id);
+});
+
+// THE MULTI-ROW SHAPE, WHICH IS THE ONLY ONE THE BUTTON EVER PRODUCES. "None
+// of these" rejects EVERY candidate the sheet was showing, and the sheet is
+// only worth opening when a loan advertises more than one — so two ids in one
+// call is the reported case rather than an edge of it. `rejectCandidates`
+// builds one `VALUES` tuple per id into a single statement, and every
+// rejection test above passes a one-element array, which never assembles a
+// multi-tuple statement at all: a bug in that string would ship green.
+//
+// The second half pins the idempotency the repo documents. The same sheet can
+// be opened and rejected twice, and `INSERT OR IGNORE` against
+// UNIQUE(loan_id, transaction_id) is the whole mechanism that keeps the second
+// press silent instead of a constraint error the user would be shown.
+test("rejecting a whole candidate list silences all of it, and re-rejecting changes nothing", async () => {
+  const { loan, paying } = await aLoanWithOnePlausiblePayment();
+  const alsoPaying = await insertTransaction({
+    walletId: cash.id,
+    categoryId: UNCATEGORIZED_ID,
+    amount: 444244,
+    direction: "out",
+    occurredAt: new Date(2026, 8, 14).getTime(),
+    merchant: "GLOAN AUTOPAY",
+    source: "manual",
+    confidence: 1,
+  });
+
+  const before = await findPaymentCandidates(loan.id, NOW);
+  expect(before.map((candidate) => candidate.transactionId)).toEqual(
+    expect.arrayContaining([paying.id, alsoPaying.id]),
+  );
+
+  await rejectCandidates(loan.id, [paying.id, alsoPaying.id]);
+
+  const after = await findPaymentCandidates(loan.id, NOW);
+  expect(after.map((candidate) => candidate.transactionId)).not.toContain(paying.id);
+  expect(after.map((candidate) => candidate.transactionId)).not.toContain(alsoPaying.id);
+  expect((await listRejectedTransactionIds(loan.id)).sort()).toEqual(
+    [paying.id, alsoPaying.id].sort(),
+  );
+
+  await expect(rejectCandidates(loan.id, [paying.id])).resolves.toBeUndefined();
+
+  expect((await listRejectedTransactionIds(loan.id)).sort()).toEqual(
+    [paying.id, alsoPaying.id].sort(),
+  );
+  const afterRepeat = await findPaymentCandidates(loan.id, NOW);
+  expect(afterRepeat.map((candidate) => candidate.transactionId)).toEqual(
+    after.map((candidate) => candidate.transactionId),
+  );
+});
+
+// ---------------------------------------------------------------------------
 // Confirming — plan rule 5
 // ---------------------------------------------------------------------------
 test("confirming records the payment and reduces the balance", async () => {
@@ -295,6 +418,55 @@ test("confirming records the payment and reduces the balance", async () => {
 
   expect(recorded.transactionId).toBe(txId);
   expect(await outstandingBalance(loan.id)).toBe(5000000 - 444244);
+});
+
+test("THE AMOUNT CEILING FOLLOWS THE MONEY PAID, NOT `principal - outstanding`", async () => {
+  // Rule 8(d) scores a transaction against what the NEXT installment asks for,
+  // so the schedule pointer that picks that installment sets the ceiling of the
+  // ±2% window — this is a money signal, not a label.
+  //
+  // On an amortized loan the two ways of asking "how much has been paid?"
+  // diverge: ₱4,000 handed over clears ₱3,000 of a principal balance, so
+  // `principal - outstanding` reports ₱3,000 and leaves the pointer on the
+  // installment the user has ALREADY paid, asking for its ₱1,000 remainder.
+  // The next ₱4,000 payment then matches nothing and a stray ₱1,000 would
+  // match "the amount due".
+  const loan = await createLoan({
+    direction: "i-owe",
+    counterparty: "Home Credit",
+    principal: 1000000,
+    interestRate: 12,
+    linkedWalletId: cash.id,
+    schedule: [
+      { dueDate: "2026-09-15", amountDue: 400000, principalPortion: 300000, interestPortion: 100000 },
+      { dueDate: "2026-10-15", amountDue: 400000, principalPortion: 330000, interestPortion: 70000 },
+      { dueDate: "2026-11-15", amountDue: 400000, principalPortion: 370000, interestPortion: 30000 },
+    ],
+  });
+  await recordPayment({
+    loanId: loan.id,
+    transactionId: await spend({ amount: 400000, at: NOW - 3 * DAY, merchant: "HOME CREDIT" }),
+  });
+
+  // The next installment, and a stray the size of the FIRST installment's
+  // unpaid remainder under the old pointer — one of these matches "the amount
+  // due" and it is not the same one under both readings.
+  await spend({ amount: 400000, at: NOW, merchant: "HOME CREDIT" });
+  await spend({ amount: 100000, at: NOW, merchant: "HOME CREDIT" });
+
+  const candidates = await findPaymentCandidates(
+    loan.id,
+    NOW,
+    5,
+    // Below the floor too, so this asserts the REASONS rather than merely
+    // whether the transaction cleared a threshold.
+    true,
+  );
+
+  const second = candidates.find((candidate) => candidate.amount === 400000);
+  expect(second?.reasons).toContain("Matches the amount due");
+  const stray = candidates.find((candidate) => candidate.amount === 100000);
+  expect(stray?.reasons ?? []).not.toContain("Matches the amount due");
 });
 
 test("A CONFIRMED PAYMENT IS EXCLUDED FROM INCOME DETECTION", async () => {

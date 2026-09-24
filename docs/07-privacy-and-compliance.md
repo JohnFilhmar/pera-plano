@@ -2,7 +2,16 @@
 
 This document defines PeraPlano's privacy posture and regulatory compliance plan: obligations under the Philippine Data Privacy Act of 2012 (RA 10173) and the National Privacy Commission (NPC), the Google Play policy obligations attached to notification access and finance-adjacent apps, the full data lifecycle (what data exists, where it lives, how long it is kept, and whether it ever leaves the device), the data-minimization stance, the treatment of third-party personal data that appears inside notifications, and the complete list of user-facing privacy controls. It expands §10 of the master planning context and is the source of truth for the privacy notice, the Play Data safety form, and store-review submissions. Genuinely undecided items are tracked in [08-risks-and-open-questions.md](08-risks-and-open-questions.md).
 
-**Status:** Draft v1 · 2026-08-02
+**Status:** Draft v1.1 · 2026-09-24
+
+**What changed in v1.1, and why it is recorded here.** §4's lifecycle table row 1 now
+states that a non-money notification keeps only its app and its times, on both ingest
+paths (owner decisions 2026-09-09 and 2026-09-24). §2's rule requires a notice revision in
+the same release, and the published notice carries the same sentence, held there by a
+drift test. §2.6 requires the PIA to be revisited whenever §4 changes: no PIA exists yet,
+so what this records is an input the first one has to cover, alongside the retention
+question in [08-risks-and-open-questions.md](08-risks-and-open-questions.md) §2. Editing §4
+is an owner decision, and both edits were made on the owner's instruction.
 
 ---
 
@@ -90,7 +99,7 @@ Google Play treats notification access (`NotificationListenerService`) as sensit
 3. **Review evidence pack.** Submission includes: a screen-recorded video of the full flow (disclosure → grant → first auto-tracked transaction → transparency screen showing the captured text → pause → wipe), annotated screenshots, the privacy notice, and the PIA summary (§2.6).
 4. **Voluntary, not coerced.** The permission is skippable; the app degrades to manual entry rather than blocking. This is visible in the review video and materially strengthens the "user choice" dimension of review.
 5. **Staged rollout.** The declaration is exercised first on internal and closed testing tracks to surface policy objections before any public launch date is committed.
-6. **Re-declaration discipline.** Any release that changes what the listener touches re-triggers an internal policy review before submission.
+6. **Re-declaration discipline.** Any release that changes what the listener touches re-triggers an internal policy review before submission. **This is why over-the-air updates are off** (`updates.enabled: false`, GAP-028): an OTA publish reaches installed devices without a store submission, so it is a route around this rule by construction. Shipping through the store is what makes the rule enforceable. See [OTA_RUNBOOK.md](./OTA_RUNBOOK.md) before re-enabling.
 
 ### 3.2 What PeraPlano deliberately does not request
 
@@ -148,7 +157,7 @@ If cloud backup ships with a sign-in identity, Play's account-deletion policy ap
 
 | # | Data | Where it originates | Where it is stored | Retention | Ever leaves the device? |
 |---|---|---|---|---|---|
-| 1 | Raw notification text (target of `rawNotificationRef`), including unknown-bin captures | Posted by other apps; captured by the listener | Encrypted on-device only | **30-day TTL, then purged** (domain invariant) | **Never.** Not in backups, not in telemetry, not in support flows. |
+| 1 | Raw notification text (target of `rawNotificationRef`), including unknown-bin captures; for a non-money notification, only its app and its times | Posted by other apps; captured by the listener | Encrypted on-device only | **30-day TTL, then purged** (domain invariant) | **Never.** Not in backups, not in telemetry, not in support flows. |
 | 2 | Committed Transaction records (structured fields only) | Ingest pipeline auto-commit, Review Queue confirmation, manual entry, recurring rules, import | Encrypted on-device | Kept until the user deletes or wipes. Free-tier History gating limits the *visible* window to 90 days; **data is never deleted at the gate** (see §8). | Only if the user enables cloud backup (Plus); encrypted in transit and at rest. |
 | 3 | Configuration entities: Wallet, Limit, Goal, Loan, Bill, Category, RecurringPattern, UserRule, IncomeProfile | User setup and pipeline learning | Encrypted on-device | Until user deletes or wipes | Same as row 2 — only with opt-in Plus backup. |
 | 4 | Entitlements state (`tier: free \| plus`) | Purchase state managed by Google Play; evaluated locally | On-device flag | While the app is installed | Purchase processing is handled by Google Play per its own policies; PeraPlano stores no payment instrument data. |
@@ -169,7 +178,7 @@ Lifecycle invariants (restating the domain invariants that bind this table):
 ## 5. Data minimization stance
 
 1. **Extract, then discard.** The Normalizer keeps only structured fields (`amount`, `direction`, `merchant`, reference number, balance-after when present, `timestamp`); raw text exists solely to power the transparency screen and re-parsing during its 30-day window.
-2. **Unknown-bin is not a dragnet.** Notifications from unrecognized packages are captured only so the user can flag "this is a money notification" in the Review Queue; they follow the same on-device-only, 30-day-purge rules as row 1 of the lifecycle table.
+2. **Unknown-bin is not a dragnet.** Notifications from unrecognized packages are captured only so the user can flag "this is a money notification" in the Review Queue; they follow the same on-device-only, 30-day-purge rules as row 1 of the lifecycle table. A notification that is not money-like keeps no text at all. Its app and its times stay for the same 30 days so a missed transaction can be found in the Privacy centre, on either path (owner decision 2026-09-09, extended to notifications that arrive while the app is open on 2026-09-24). A package the user has muted keeps nothing at all.
 3. **Telemetry counts, never content.** Parse-success telemetry is aggregate counters only. A parser failure report contains the provider identity and a failure class — never the text that failed to parse.
 4. **No enrichment.** PeraPlano does not look up, buy, or infer additional data about users or their counterparties from any external source.
 5. **Collection follows function.** Every field in the domain model exists because a shipped feature reads it; fields are not collected speculatively. Adding a field to any synced entity requires a lifecycle-table update, a Data safety form review, and a privacy-notice check in the same release.
@@ -187,7 +196,7 @@ Stance:
 1. **Context of origin.** These names were already delivered to the user's own device by the provider; PeraPlano introduces no new disclosure. The user's own record-keeping of who paid them is classic personal/household processing.
 2. **Minimize anyway.** Only the short counterparty label needed for the `merchant` field, Categorizer matching, and Loan `paymentHistory[]` matching is retained in structured form. Everything else in the raw text disappears with the 30-day purge.
 3. **On-device by default.** Third-party names sit on the user's device; they reach company infrastructure only inside an encrypted Plus backup of the user's own ledger, where the company acts as PIC for the user's data, not as a collector of the third party's.
-4. **User-editable.** Counterparty and `merchant` labels can be edited or removed by the user at any time; UserRules can rename them permanently.
+4. **User-editable.** Counterparty and `merchant` labels can be edited or removed by the user at any time; UserRules can rename them permanently. The two are one field on screen, because Transaction detail renders `merchant` falling back to `counterparty`. **Removing the label therefore clears BOTH columns**, since clearing only `merchant` would let the parser's raw counterparty surface in its place and the deleted name would reappear. Relabelling clears neither: it sets `merchant` and leaves `counterparty` as the parser's own record of what the notification said, which loan payment matching reads.
 5. **Never used beyond the user's ledger.** Third-party names are never aggregated across users, never used for matching between users, never in telemetry.
 
 ---
@@ -202,7 +211,7 @@ Stance:
 | Transparency screen ("why was this recorded?") | For any auto-committed Transaction, shows the parsed fields side-by-side with the captured raw text via `rawNotificationRef` while retained | Transaction detail |
 | Parser diagnostics | Per-provider parse activity and success view; shows what the pipeline is doing without exposing other users' anything (it is all local) | More → Settings |
 | Review Queue | Confirm/correct every low-confidence parse; corrections become UserRules | Transactions tab (badge) |
-| Edit anything | Every parsed field — `amount`, `direction`, `walletId`, `categoryId`, `merchant`, `note` — is user-editable | Transaction detail |
+| Edit anything | Every parsed field — `amount`, `direction`, `walletId`, `categoryId`, `merchant`, `note` — is user-editable. `categoryId` and `note` are edited in place; the rest open the edit screen. A leg of a linked transfer has to be unlinked first, because both legs describe one movement and changing one alone would leave the pair contradicting itself | Transaction detail |
 | Export everything | CSV export of the ledger plus full structured export of all configuration entities | More → Settings → Privacy (available on all tiers as a data-portability right; the §8 matrix Export row refers only to the Plus-gated Reports CSV convenience export — see [04-features/10-reports.md](04-features/10-reports.md)) |
 | Wipe everything | Deletes all on-device data and, if backup was enabled, server copies; confirmation flow states exactly what will be destroyed | More → Settings → Privacy |
 | Cloud backup toggle (Plus) | Off by default; enabling states what syncs; disabling deletes server copies within 30 days | More → Settings → Privacy |

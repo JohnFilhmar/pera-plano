@@ -21,6 +21,7 @@ function loan(over: Partial<Loan> = {}): Loan {
     direction: "i-owe",
     counterparty: "Kuya Ben",
     principal: 500_000,
+    amountBorrowed: null,
     interestRate: null,
     schedule: null,
     linkedWalletId: null,
@@ -41,6 +42,7 @@ function status(over: Partial<LoanStatus> = {}, loanOver: Partial<Loan> = {}): L
     nextDue: { dueDate: "2026-09-05", amount: 100_000 },
     overdue: false,
     paidCount: 1,
+    paidTotal: 200_000,
     ...over,
   };
 }

@@ -19,6 +19,11 @@
 //   stamped is money the user can see in the ledger and cannot find in any
 //   total — the ledger and the totals disagreeing, with nothing on screen
 //   admitting it.
+//
+//   A ROW WRITE THAT FAILS MUST TEACH NOTHING. The correction and the rule are
+//   two writes against two aggregates, and only one order between them is safe:
+//   the rule is only true because the row moved. See the flag and the call
+//   counter below.
 jest.mock("expo-router", () => ({
   useLocalSearchParams: () => mockParams,
   useRouter: () => ({
@@ -28,8 +33,58 @@ jest.mock("expo-router", () => ({
   }),
 }));
 
+// A repository call that REFUSES, and a count of how many times a repository
+// call actually ran — the same passthrough-mock shape
+// app/__tests__/wallet_routes.test.tsx uses for the wallet form's paired
+// writes.
+//
+// PASSTHROUGH MOCKS, NOT STUBS. Everything else in both modules is the real
+// implementation, so every other assertion in this file goes on running
+// against the real schema. Only `updateTransaction` changes behaviour, and
+// only while the flag says so.
+//
+// THE FAILURE CANNOT BE PRODUCED ANY OTHER WAY at this level: every category
+// the picker can offer is a valid `category_id`, so `updateTransaction`
+// succeeds for anything this screen can construct — and "the row write failed"
+// is precisely the state the screen was mishandling.
+//
+// THE CALL COUNT IS NOT DECORATION. Before the fix both mutations were fired
+// in the SAME tick, so a test that only checked `user_rules` could outrun the
+// INSERT and pass over the very bug it exists to catch. `createUserRule` never
+// being CALLED is the assertion that cannot pass by timing.
+let mockFailUpdateTransaction = false;
+const mockRepoCalls = { updateTransaction: 0, createUserRule: 0 };
+
+jest.mock("@/lib/db/repos/transactions_repo", () => {
+  const actual = jest.requireActual<typeof import("@/lib/db/repos/transactions_repo")>(
+    "@/lib/db/repos/transactions_repo",
+  );
+  return {
+    ...actual,
+    updateTransaction: (...args: Parameters<typeof actual.updateTransaction>) => {
+      mockRepoCalls.updateTransaction += 1;
+      return mockFailUpdateTransaction
+        ? Promise.reject(new Error("the category could not be saved"))
+        : actual.updateTransaction(...args);
+    },
+  };
+});
+
+jest.mock("@/lib/db/repos/user_rules_repo", () => {
+  const actual = jest.requireActual<typeof import("@/lib/db/repos/user_rules_repo")>(
+    "@/lib/db/repos/user_rules_repo",
+  );
+  return {
+    ...actual,
+    createUserRule: (...args: Parameters<typeof actual.createUserRule>) => {
+      mockRepoCalls.createUserRule += 1;
+      return actual.createUserRule(...args);
+    },
+  };
+});
+
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import type { ReactNode } from "react";
 import { ScrollView, StyleSheet } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -40,7 +95,9 @@ import {
   WHY_RECORDED_TITLE,
 } from "@/components/transactions/why_recorded_panel";
 import { closeDatabase } from "@/lib/db/database";
+import { createBill, getCycle, recordBillPayment } from "@/lib/db/repos/bills_repo";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
+import { createLoan, outstandingBalance, recordPayment } from "@/lib/db/repos/loans_repo";
 import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import {
   purgeExpiredRawCaptures,
@@ -50,7 +107,7 @@ import {
 import { getTransaction, insertTransaction, sumSpend } from "@/lib/db/repos/transactions_repo";
 import { linkTransfer } from "@/lib/db/repos/transfer_links_repo";
 import { listUserRules } from "@/lib/db/repos/user_rules_repo";
-import { createWallet } from "@/lib/db/repos/wallets_repo";
+import { archiveWallet, createWallet, getWallet } from "@/lib/db/repos/wallets_repo";
 import { formatDateTime } from "@/lib/datetime";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
@@ -152,6 +209,9 @@ let bpi: Wallet;
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  mockFailUpdateTransaction = false;
+  mockRepoCalls.updateTransaction = 0;
+  mockRepoCalls.createUserRule = 0;
   await freshDb();
   await seedDefaultCategories();
   await upsertRuleset({
@@ -512,6 +572,41 @@ describe("changing the category", () => {
     expect(await listUserRules()).toEqual([]);
   });
 
+  test("a row write that FAILS teaches nothing — no rule, not even attempted", async () => {
+    const tx = await jollibee();
+    await openPicker(tx);
+
+    fireEvent.press(screen.getByTestId(`category-option-${TRANSPORT}`));
+    // Checked by default, so this is the ordinary "yes, always" path — the one
+    // that used to write the rule whatever happened to the row.
+    expect(screen.getByTestId("category-rule-checkbox").props.accessibilityState?.checked).toBe(
+      true,
+    );
+
+    mockFailUpdateTransaction = true;
+    fireEvent.press(screen.getByTestId("category-picker-save"));
+
+    await waitFor(() => expect(mockRepoCalls.updateTransaction).toBe(1));
+
+    // The row is still Food & Dining: the correction the user made did not
+    // land, and the global failure toast (GAP-013) is what says so.
+    expect((await getTransaction(tx.id))?.categoryId).toBe(FOOD);
+    // So NOTHING may claim it did. The rule write must never have been
+    // attempted — the assertion that cannot pass by timing, because the two
+    // mutations were previously fired in the same tick.
+    expect(mockRepoCalls.createUserRule).toBe(0);
+
+    // And the table, which is the state that decides whether next month's
+    // Jollibee rows move on their own. Given time for an INSERT to land first,
+    // so "no row" means the write never happened rather than that this line
+    // outran it.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(await listUserRules()).toEqual([]);
+    expect(mockRepoCalls.createUserRule).toBe(0);
+  });
+
   test("a transaction with no merchant is offered no rule at all", async () => {
     // `merchantPattern` is a case-insensitive SUBSTRING test, and a blank
     // pattern fails closed in the categorizer — so a rule built from a null
@@ -682,6 +777,285 @@ describe("transfer links", () => {
 });
 
 // ---------------------------------------------------------------------------
+// ARCHIVING IS THE ONLY REMOVAL PATH (wallets_repo has no delete), so an
+// archived wallet's rows stay in the ledger for good. This screen used to call
+// `useWallets()` — active wallets only — and every one of those rows read
+// "Unknown wallet" on a wallet the app could name perfectly well. GAP-076.
+// ---------------------------------------------------------------------------
+
+describe("a row whose wallet has been archived", () => {
+  test("names the wallet and marks it archived, rather than claiming it is unknown", async () => {
+    const tx = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: FOOD,
+      amount: 50_000,
+      direction: "out",
+      occurredAt: NOW,
+      merchant: "Jollibee",
+      source: "notification",
+      confidence: 0.95,
+    });
+    await archiveWallet(gcash.id);
+
+    await renderDetail(tx.id);
+
+    // A regex, not the exact string the active-wallet assertion above uses:
+    // the row now carries the ARCHIVED chip alongside the name.
+    expect(screen.getByTestId("transaction-detail-wallet")).toHaveTextContent(/GCash/);
+    expect(screen.getByTestId("transaction-detail-wallet")).not.toHaveTextContent(
+      /Unknown wallet/,
+    );
+    expect(screen.getByTestId("transaction-detail-wallet")).toHaveTextContent(/ARCHIVED/);
+  });
+
+  test("a transfer candidate in an archived wallet still carries its wallet name", async () => {
+    const outLeg = await insertTransaction({
+      walletId: bpi.id,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 500_000,
+      direction: "out",
+      occurredAt: NOW - 2 * 60 * 60 * 1000,
+      merchant: "Transfer to GCash",
+      source: "notification",
+      confidence: 0.9,
+    });
+    const inLeg = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 500_000,
+      direction: "in",
+      occurredAt: NOW - 2 * 60 * 60 * 1000 + 30_000,
+      merchant: "Cash in from BPI",
+      source: "notification",
+      confidence: 0.9,
+    });
+    await archiveWallet(gcash.id);
+
+    await renderDetail(outLeg.id);
+
+    fireEvent.press(screen.getByTestId("transfer-link-open"));
+    await waitFor(() => expect(screen.getByTestId("transfer-candidate-picker")).toBeTruthy());
+
+    // The candidate is still offered — the counterpart of a transfer is by
+    // definition in another wallet, and an archived one is still a wallet the
+    // money really moved through. Only its NAME was missing.
+    expect(screen.getByTestId(`transfer-candidate-${inLeg.id}`)).toHaveTextContent(/GCash/);
+    expect(screen.getByTestId(`transfer-candidate-${inLeg.id}`)).not.toHaveTextContent(
+      /Unknown wallet/,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Deleting a transaction (GAP-108) — the ledger half of review-queue rule 9,
+// "committed results remain editable in the ledger indefinitely afterward".
+//
+// Rule 10 forbids the queue from ever deleting a committed row, so this screen
+// is the ONLY way back from a mis-tapped Confirm. What is pinned here is what
+// can only be true end to end: that the confirmation names what is about to go,
+// that confirming it actually moves the wallet balance back, and that a leg the
+// database will refuse is refused ON SCREEN with a sentence naming the transfer
+// rather than as a foreign-key error the user cannot act on.
+// ---------------------------------------------------------------------------
+
+describe("deleting a transaction", () => {
+  /** The button is disabled until the deletion plan has been read. */
+  async function pressDelete(): Promise<void> {
+    await waitFor(() =>
+      expect(screen.getByTestId("transaction-delete").props.accessibilityState.disabled).toBe(
+        false,
+      ),
+    );
+    fireEvent.press(screen.getByTestId("transaction-delete"));
+    await waitFor(() => expect(screen.getByTestId("confirm-dialog")).toBeTruthy());
+  }
+
+  test("the confirmation names the row, the wallet and the balance consequence", async () => {
+    const tx = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: FOOD,
+      amount: 66_261,
+      direction: "out",
+      occurredAt: NOW,
+      merchant: "Jollibee",
+      source: "notification",
+      confidence: 0.95,
+    });
+
+    await renderDetail(tx.id);
+    await pressDelete();
+
+    // Amount, counterparty and wallet — the three things the user identifies
+    // the row by. A dialog that only said "Delete this transaction?" would be
+    // asking them to confirm from memory which row they had open.
+    expect(screen.getByTestId("confirm-dialog")).toHaveTextContent(/₱662\.61/);
+    expect(screen.getByTestId("confirm-dialog")).toHaveTextContent(/Jollibee/);
+    expect(screen.getByTestId("confirm-dialog")).toHaveTextContent(/GCash/);
+    expect(screen.getByTestId("confirm-dialog")).toHaveTextContent(
+      /balance goes back to what it was/,
+    );
+  });
+
+  test("confirming removes the row and gives the wallet its money back", async () => {
+    const before = (await getWallet(gcash.id))?.balance ?? 0;
+    const tx = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: FOOD,
+      amount: 66_261,
+      direction: "out",
+      occurredAt: NOW,
+      merchant: "Jollibee",
+      source: "notification",
+      confidence: 0.95,
+    });
+    expect((await getWallet(gcash.id))?.balance).toBe(before - 66_261);
+
+    await renderDetail(tx.id);
+    await pressDelete();
+    await act(async () => {
+      fireEvent.press(screen.getByTestId("confirm-dialog-confirm"));
+    });
+
+    // The database, not the screen: the row is what every total reads.
+    await waitFor(async () => expect(await getTransaction(tx.id)).toBeNull());
+    expect((await getWallet(gcash.id))?.balance).toBe(before);
+    expect(await sumSpend({ from: NOW - DAY_MS, to: NOW + DAY_MS })).toBe(0);
+    // And the screen leaves, because there is nothing left on it to show.
+    await waitFor(() => expect(mockBack).toHaveBeenCalled());
+  });
+
+  test("cancelling leaves the row exactly where it was", async () => {
+    const tx = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: FOOD,
+      amount: 66_261,
+      direction: "out",
+      occurredAt: NOW,
+      merchant: "Jollibee",
+      source: "notification",
+      confidence: 0.95,
+    });
+    const balance = (await getWallet(gcash.id))?.balance;
+
+    await renderDetail(tx.id);
+    await pressDelete();
+    fireEvent.press(screen.getByTestId("confirm-dialog-cancel"));
+
+    expect(await getTransaction(tx.id)).not.toBeNull();
+    expect((await getWallet(gcash.id))?.balance).toBe(balance);
+    expect(mockBack).not.toHaveBeenCalled();
+  });
+
+  test("a row matched to a loan says the loan balance goes back up", async () => {
+    const loan = await createLoan({
+      direction: "i-owe",
+      counterparty: "Juan Dela Cruz",
+      principal: 500_000,
+    });
+    const tx = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: FOOD,
+      amount: 50_000,
+      direction: "out",
+      occurredAt: NOW,
+      merchant: "JUAN D",
+      source: "notification",
+      confidence: 0.95,
+    });
+    await recordPayment({ loanId: loan.id, transactionId: tx.id });
+
+    await renderDetail(tx.id);
+    await pressDelete();
+
+    // Naming the counterparty is the point: "a loan payment is removed" gives
+    // the user no way to tell whether it is the loan they meant.
+    expect(screen.getByTestId("confirm-dialog")).toHaveTextContent(/Juan Dela Cruz/);
+
+    await act(async () => {
+      fireEvent.press(screen.getByTestId("confirm-dialog-confirm"));
+    });
+
+    await waitFor(async () => expect(await getTransaction(tx.id)).toBeNull());
+    expect(await outstandingBalance(loan.id)).toBe(500_000);
+  });
+
+  test("a row matched to a bill says the cycle goes back to unpaid", async () => {
+    const bill = await createBill({
+      name: "Meralco",
+      amount: 235_000,
+      amountMode: "estimated",
+      dueRule: { kind: "day-of-month", day: 20 },
+    });
+    const tx = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: FOOD,
+      amount: 235_000,
+      direction: "out",
+      occurredAt: NOW,
+      merchant: "MERALCO",
+      source: "notification",
+      confidence: 0.95,
+    });
+    await recordBillPayment({ billId: bill.id, dueDate: "2026-09-20", transactionId: tx.id });
+
+    await renderDetail(tx.id);
+    await pressDelete();
+
+    expect(screen.getByTestId("confirm-dialog")).toHaveTextContent(/Meralco/);
+    expect(screen.getByTestId("confirm-dialog")).toHaveTextContent(/back to unpaid/);
+
+    await act(async () => {
+      fireEvent.press(screen.getByTestId("confirm-dialog-confirm"));
+    });
+
+    await waitFor(async () => expect(await getTransaction(tx.id)).toBeNull());
+    expect(await getCycle(bill.id, "2026-09-20")).toBeNull();
+  });
+
+  test("a transfer leg refuses on screen, naming the wallet on the other side", async () => {
+    const outLeg = await insertTransaction({
+      walletId: bpi.id,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 500_000,
+      direction: "out",
+      occurredAt: NOW - 60_000,
+      merchant: "Transfer to GCash",
+      source: "notification",
+      confidence: 0.9,
+    });
+    const inLeg = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 500_000,
+      direction: "in",
+      occurredAt: NOW,
+      merchant: "Cash in from BPI",
+      source: "notification",
+      confidence: 0.9,
+    });
+    await linkTransfer(outLeg.id, inLeg.id, 0);
+
+    await renderDetail(outLeg.id);
+
+    // THE SENTENCE IS THE TEST. `transfer_links` holds two NOT NULL foreign
+    // keys onto `transactions(id)` with no ON DELETE action, so the alternative
+    // to this notice is "FOREIGN KEY constraint failed" on a toast — a message
+    // naming nothing the user can do anything about.
+    await waitFor(() =>
+      expect(screen.getByTestId("transaction-delete-blocked")).toHaveTextContent(/GCash/),
+    );
+    expect(screen.getByTestId("transaction-delete-blocked")).toHaveTextContent(
+      /Not a transfer/,
+    );
+    // And the button cannot be taken up on an offer it would have to break.
+    expect(screen.getByTestId("transaction-delete").props.accessibilityState.disabled).toBe(true);
+    fireEvent.press(screen.getByTestId("transaction-delete"));
+    expect(screen.queryByTestId("confirm-dialog")).toBeNull();
+    expect(await getTransaction(outLeg.id)).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Device-testing fix, Task 2 follow-up (2026-08-18) — the survey run for
 // Task 2 (app/__tests__/wallet_routes.test.tsx) found this screen applying
 // the same defect: safe-area insets on the ScrollView's `style` prop, which
@@ -724,5 +1098,74 @@ describe("system-bar clearance", () => {
       top: undefined,
       bottom: undefined,
     });
+  });
+});
+
+// GAP-061. docs/07's right-to-rectification row and its "Edit anything" table
+// row both claim every parsed field is user-editable here. Until this landed the
+// screen edited category and note and nothing else, so the compliance statement
+// had no code behind it.
+describe("editing a transaction", () => {
+  test("an ordinary row offers the editor, addressed at the row's own id", async () => {
+    const tx = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: FOOD,
+      amount: 66_261,
+      direction: "out",
+      occurredAt: NOW,
+      merchant: "Jollibee",
+      source: "notification",
+      confidence: 0.9,
+    });
+
+    await renderDetail(tx.id);
+
+    fireEvent.press(screen.getByTestId("transaction-edit"));
+    expect(mockPush).toHaveBeenCalledWith({
+      pathname: "/transaction/[id]/edit",
+      params: { id: tx.id },
+    });
+    // The sentence that replaces the button on a linked leg must not be here.
+    expect(screen.queryByTestId("transaction-edit-transfer-note")).toBeNull();
+  });
+
+  // The owner's ruling, 2026-09-18. Both legs describe ONE movement, and
+  // `transfer_link_id` is the schema's only expression of "not spending, not
+  // income" — so a leg edited alone leaves the pair contradicting itself with
+  // nothing anywhere to detect it, because both legs stay out of spend and
+  // income totals either way.
+  test("a linked transfer leg offers a sentence pointing at unlink, and no editor at all", async () => {
+    const outLeg = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 500_000,
+      direction: "out",
+      occurredAt: NOW - 60_000,
+      merchant: "Transfer out",
+      source: "notification",
+      confidence: 0.9,
+    });
+    const inLeg = await insertTransaction({
+      walletId: gcash.id,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 500_000,
+      direction: "in",
+      occurredAt: NOW,
+      merchant: "Transfer in",
+      source: "notification",
+      confidence: 0.9,
+    });
+    await linkTransfer(outLeg.id, inLeg.id, 0);
+
+    await renderDetail(outLeg.id);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("transaction-edit-transfer-note")).toHaveTextContent(/Unlink/),
+    );
+    // Not merely disabled: there is no route out of this screen into the
+    // editor, so nothing can be pressed into producing one.
+    expect(screen.queryByTestId("transaction-edit")).toBeNull();
+    mockPush.mockClear();
+    expect(mockPush).not.toHaveBeenCalled();
   });
 });

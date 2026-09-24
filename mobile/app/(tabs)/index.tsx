@@ -12,6 +12,7 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RefreshControl, ScrollView, View } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
+import type { QueryKey } from "@tanstack/react-query";
 
 import { AlertsFeed, deriveHomeAlerts } from "@/components/home/alerts_feed";
 import { GreetingHeader } from "@/components/home/greeting_header";
@@ -30,6 +31,7 @@ import { Fab } from "@/components/ui/fab";
 import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { StatTile } from "@/components/ui/stat_tile";
 import { queryKeys } from "@/constants/query_keys";
+import { useDayRollover } from "@/hooks/use_day_rollover";
 import { useSetCaptureEnabled } from "@/hooks/mutations/use_set_capture_enabled";
 import { useBills } from "@/hooks/queries/use_bills";
 import { useCategories } from "@/hooks/queries/use_categories";
@@ -59,11 +61,54 @@ const SCOPE_LABEL: Record<string, string> = {
 /** Sunday-first, matching `Date#getDay()`'s own 0..6 numbering. */
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 
+/**
+ * EVERY family this screen draws from — the list a pull-to-refresh and a
+ * local-midnight rollover both go through.
+ *
+ * WHY A LIST AND NOT A BARE `invalidateQueries()`. The blanket call would also
+ * drop the review queue, the ruleset, the parser stats and every settings
+ * value — caches this screen does not read and, on an encrypted database,
+ * pages this screen has no business making somebody else's tab re-decrypt.
+ * hooks/mutations/invalidate_keys.ts exists to keep that discipline; this is
+ * the same discipline applied to a screen-level refresh.
+ *
+ * WHY IT IS THE WHOLE SCREEN AND NOT JUST THE HERO. Everything below the hero
+ * is the hero's explanation, and each of these queries resolves "today" inside
+ * its own `queryFn` — `useLimitStatuses` the period window, `useBills` the due
+ * states, `useDailySpend` (under `transactions`) the seven-day window,
+ * `useLoans` the overdue flags, `useGoals` the pace. Refreshing the headline
+ * and leaving the strips on yesterday's day produces a screen that disagrees
+ * with itself, which is worse than one that is uniformly stale.
+ *
+ * ONE LIST FOR BOTH CALLERS, including the two members that are not
+ * day-dependent at all (`wallets` behind the Balance tile, `listenerHealth`
+ * behind the tracking banner). They belong in a user's pull by definition —
+ * that is what "refresh" means to the person doing it — and the rollover path
+ * fires at most once a day, so sharing one list costs one extra wallet read
+ * and one native health read per day in exchange for a single set of keys
+ * that cannot drift apart.
+ *
+ * `safeToSpend` is named FIRST and explicitly, even though
+ * `installSafeToSpendCascade` (lib/query_client.ts) would mirror most of these
+ * onto it anyway: the cascade only fires for a family that has something
+ * cached, and this screen must not depend on that to refresh its own headline.
+ */
+const HOME_QUERY_ROOTS: readonly QueryKey[] = [
+  queryKeys.safeToSpend.all,
+  queryKeys.limits.all,
+  queryKeys.bills.all,
+  queryKeys.loans.all,
+  queryKeys.goals.all,
+  queryKeys.wallets.all,
+  queryKeys.transactions.all,
+  queryKeys.listenerHealth.all,
+];
+
 export default function HomeScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
 
-  const { data: result, refetch: refetchSafeToSpend } = useSafeToSpend();
+  const { data: result } = useSafeToSpend();
   const { data: limits } = useLimitStatuses();
   const { data: bills } = useBills();
   const { data: health } = useListenerHealth();
@@ -150,13 +195,85 @@ export default function HomeScreen() {
     };
   }, [queryClient]);
 
-  // ...and on focus, because a day can roll over while the app sits in the
-  // background and the period would otherwise be yesterday's.
+  // INVALIDATES THE ROOT rather than refetching the hero's own query. The Plus
+  // projection reads a SECOND query under that root (`useSafeToSpendInput`),
+  // and a bare `refetch()` on the hero leaves the curve drawn from limits and
+  // bills the number above it no longer agrees with.
+  const refreshSafeToSpend = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: queryKeys.safeToSpend.all }),
+    [queryClient],
+  );
+
+  // ...and on navigation focus, so returning to this tab re-reads the headline
+  // rather than showing whatever it held when the user left it.
+  //
+  // THIS IS NOT THE DAY-ROLLOVER TRIGGER, whatever it used to claim.
+  // `useFocusEffect` is expo-router's hook and fires on a NAVIGATION event; an
+  // app resumed from the background comes back to the route it left and emits
+  // none, so a day that turned overnight would never be noticed here.
+  // `useDayRollover` below owns that, and it owns it for the whole screen
+  // rather than for the hero alone.
   useFocusEffect(
     useCallback(() => {
-      void refetchSafeToSpend();
-    }, [refetchSafeToSpend]),
+      void refreshSafeToSpend();
+    }, [refreshSafeToSpend]),
   );
+
+  /**
+   * Every family this screen draws from, invalidated together. Returns the
+   * promise so the caller can wait for the refetches it just started — which
+   * is what the pull-to-refresh spinner below is driven from.
+   *
+   * `invalidateQueries` refetches only ACTIVE observers and swallows their
+   * failures (query-core's `refetchQueries` catches unless `throwOnError`), so
+   * this settles on exactly the queries this screen has mounted and never
+   * rejects.
+   */
+  const refreshHome = useCallback(
+    async () => {
+      await Promise.all(
+        HOME_QUERY_ROOTS.map((queryKey) => queryClient.invalidateQueries({ queryKey })),
+      );
+    },
+    [queryClient],
+  );
+
+  // Rule 13's ninth trigger, local-midnight rollover — the one the cache
+  // cascade cannot state, because no write happens. See the hook's own header
+  // for why neither `useFocusEffect` above nor TanStack's `focusManager` can
+  // stand in for it.
+  useDayRollover(() => {
+    void refreshHome();
+  });
+
+  // THE SPINNER IS THE PULL'S OWN, not the app's. Driving it from a broad
+  // `useIsFetching` would spin on any background refetch the user did not ask
+  // for, and would keep spinning as long as anything matching stayed in
+  // flight; this flag is raised by one gesture and lowered by the settling of
+  // the very promise that gesture created, so it cannot be stranded by an
+  // unrelated query. `refreshing={false}` — what shipped before — dismissed
+  // the spinner the instant the finger lifted, telling the user the refresh
+  // was done before it had started.
+  const [refreshing, setRefreshing] = useState(false);
+  // SET IN THE EFFECT BODY, not only cleared in the teardown. A ref survives
+  // React's development double-mount, so a cleanup-only version would latch
+  // `false` on the simulated unmount and never let the spinner stop again.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const onPullToRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refreshHome();
+    } finally {
+      if (mountedRef.current) setRefreshing(false);
+    }
+  }, [refreshHome]);
 
   // Found once, read twice: the tile row's "Spent so far" below reads this
   // same status's `.spend` rather than re-deriving driving-limit lookup logic
@@ -208,9 +325,7 @@ export default function HomeScreen() {
         testID="home"
         className="flex-1"
         contentContainerClassName="gap-5 p-4"
-        refreshControl={
-          <RefreshControl refreshing={false} onRefresh={() => void refetchSafeToSpend()} />
-        }
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onPullToRefresh} />}
       >
         <TrackingBanner
           health={health}
@@ -224,7 +339,13 @@ export default function HomeScreen() {
           onResume={() => setCaptureEnabled.mutate(true)}
           // The listener-health screen (m3b Task 7) is the destination this
           // action always wanted — the detailed view behind this exact banner.
-          onFix={() => router.push("/more/listener_health")}
+          // `withAnchor` ON EVERY PUSH THAT LEAVES THIS TAB. Home is in one tab and each
+          // of these targets is a screen inside another tab's Stack. Pushed without an
+          // anchor on a cold start, the target becomes that stack's only entry: no Back,
+          // and the tab button returns to the same screen. `unstable_settings` in the
+          // two nested layouts covers the deep-link case; this covers the in-app tap,
+          // which is the one the owner hit.
+          onFix={() => router.push("/more/listener_health", { withAnchor: true })}
         />
 
         {/* IA §5's "Home" row, reached ONLY when the listener is healthy — a
@@ -259,7 +380,7 @@ export default function HomeScreen() {
           paused={paused}
           amountsHidden={amountsHidden}
           onToggleAmounts={() => setAmountsHidden((hidden) => !hidden)}
-          onSetLimit={() => router.push("/plan/limits/new")}
+          onSetLimit={() => router.push("/plan/limits/new", { withAnchor: true })}
           onOpenReviewQueue={() => router.push("/review")}
         />
 
@@ -307,12 +428,18 @@ export default function HomeScreen() {
           alerts={alerts}
           onOpen={(alert) => {
             if (alert.target.kind === "bill") {
-              router.push({
-                pathname: "/plan/bills/[id]",
-                params: { id: alert.target.billId, dueDate: alert.target.dueDate },
-              });
+              router.push(
+                {
+                  pathname: "/plan/bills/[id]",
+                  params: { id: alert.target.billId, dueDate: alert.target.dueDate },
+                },
+                { withAnchor: true },
+              );
             } else {
-              router.push({ pathname: "/plan/limits/[id]", params: { id: alert.target.limitId } });
+              router.push(
+                { pathname: "/plan/limits/[id]", params: { id: alert.target.limitId } },
+                { withAnchor: true },
+              );
             }
           }}
         />
@@ -320,7 +447,10 @@ export default function HomeScreen() {
         <UpcomingBillsStrip
           statuses={bills}
           onOpen={(billId, dueDate) =>
-            router.push({ pathname: "/plan/bills/[id]", params: { id: billId, dueDate } })
+            router.push(
+              { pathname: "/plan/bills/[id]", params: { id: billId, dueDate } },
+              { withAnchor: true },
+            )
           }
         />
 
@@ -334,14 +464,18 @@ export default function HomeScreen() {
           // `todayIndex` above follows, and what lets a "due in 3d" countdown
           // be an ordinary fixture in a test.
           now={systemClock.now()}
-          onOpen={(loanId) => router.push({ pathname: "/plan/loans/[id]", params: { id: loanId } })}
-          onSeeAll={() => router.push("/plan/loans")}
+          onOpen={(loanId) =>
+            router.push({ pathname: "/plan/loans/[id]", params: { id: loanId } }, { withAnchor: true })
+          }
+          onSeeAll={() => router.push("/plan/loans", { withAnchor: true })}
         />
 
         <LimitProgressList
           statuses={limits}
           categoryNames={categoryNames}
-          onOpen={(limitId) => router.push({ pathname: "/plan/limits/[id]", params: { id: limitId } })}
+          onOpen={(limitId) =>
+            router.push({ pathname: "/plan/limits/[id]", params: { id: limitId } }, { withAnchor: true })
+          }
         />
 
         {/* Clears the tab bar above AND the floating add button below it. */}

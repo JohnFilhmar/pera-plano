@@ -67,7 +67,7 @@ Reports answer the questions users currently answer with screenshots and mental 
 4. Free users see the Export action in a locked state with a Plus prompt.
 
 **Flow E — Recurring & subscriptions ("₱X/month locked in", Plus)**
-1. Surfaces: a **Recurring** section inside More → Reports (this doc) and a summary card on Home showing the headline total — both placed per [../06-information-architecture.md](../06-information-architecture.md). Free users see a locked preview showing only the count of detected patterns, never merchants, amounts, or the total ([../05-monetization.md](../05-monetization.md) §3.2, §5).
+1. Surfaces: its **own screen** at More → Subscriptions (`mobile/app/(tabs)/more/subscriptions.tsx`, a sibling of `more/reports.tsx` rather than a section inside it) and a summary card on Home showing the headline total — both placed per [../06-information-architecture.md](../06-information-architecture.md). Free users see a locked preview showing only the count of detected patterns, never merchants, amounts, or the total ([../05-monetization.md](../05-monetization.md) §3.2, §5).
 2. The section lists RecurringPatterns ([../02-domain-model.md](../02-domain-model.md) §3.10) in two groups: **Suggested** (unacknowledged detections — merchant, amount, period, last seen) and **Locked in** (acknowledged).
 3. Actions on a suggested pattern: **Acknowledge** (confirms it as a real recurring commitment; it enters the locked-in total), **Dismiss** (creates a suppressing UserRule so the same pattern is never re-surfaced), or **Make this a bill** (opens the prefilled promotion flow in [07-bills.md](07-bills.md); promotion acknowledges the pattern and links it to the new Bill).
 4. The headline "₱X/month locked in" figure is the sum of acknowledged, not-Bill-linked patterns' amounts normalized to a monthly equivalent (Rule 17).
@@ -85,8 +85,8 @@ Reports answer the questions users currently answer with screenshots and mental 
 9. **History gating hides, never deletes.** For free users, periods older than 90 days are not viewable, but the underlying Transactions are retained. Upgrading to Plus makes full history immediately viewable. Nothing is ever deleted by tier logic.
 10. **Export scope.** The CSV contains exactly the Transactions underlying the current view: the selected period or custom range, all Wallets, committed only. Transfer-linked Transactions **are included as rows** (flagged via `is_transfer` / `transfer_link_id`) so exported Wallet math still balances, but any summary rows are computed with them excluded — consistent with on-screen totals.
 11. **Raw notification text is never exported.** The CSV carries structured fields only; `rawNotificationRef` content stays on-device (invariant 3). Sample notification texts shown anywhere in Reports UI or documentation are illustrative only.
-12. **Deterministic file format.** CSV is UTF-8 with a header row, comma-delimited, RFC 4180 quoting, rows in ascending `timestamp` order. Numbers use `.` as the decimal separator with no thousands separators regardless of device locale, so spreadsheets parse consistently.
-13. **File naming.** `peraplano-transactions-<start>-<end>.csv` with dates as `YYYYMMDD` (e.g., `peraplano-transactions-20260801-20260831.csv`).
+12. **Deterministic file format.** CSV is UTF-8 with a header row, comma-delimited, RFC 4180 quoting, rows in ascending `timestamp` order. Numbers use `.` as the decimal separator with no thousands separators regardless of device locale, so spreadsheets parse consistently. **Formula injection is neutralised**: a free-text cell (`wallet`, `category`, `category_parent`, `merchant`, `counterparty`, `reference`, `note`) whose **first** character is `=`, `+`, `-`, `@`, a tab or a CR is prefixed with a single apostrophe and quoted, so a crafted merchant string — `merchant` is derived from third-party notification text — cannot execute when the file is opened in Excel, LibreOffice or Sheets (OWASP CSV injection). Only the leading character is treated this way; the same characters anywhere else in a cell are left exactly as written, so a note reading "Budget = tight" round-trips unchanged. Numeric and date columns (`amount`, `date`, `time`, `confidence`) are never prefixed.
+13. **File naming and lifetime.** `peraplano-transactions-<date>.csv`, one date rather than the range this rule used to promise, as shipped in `csv_export.ts`. The file is **transient**: written to the app's cache directory, handed to the share sheet, then deleted once the share resolves, is cancelled, or fails — a full plaintext copy of the ledger never outlives the export it was made for, and never accumulates beside the encrypted database. If the device has no share target at all, the export raises an error and writes nothing rather than reporting a success the user never saw.
 14. **Archived Wallets** ([02-wallets.md](02-wallets.md)) remain in historical reports; their Transactions are history and history does not rewrite.
 15. **Trend periods with no data** render as zero-height bars, not gaps, so the axis stays honest.
 16. **Currency format** on screen is `₱1,234.56`; in CSV, `amount` carries no currency symbol (the `currency` is PHP by definition in MVP).
@@ -99,10 +99,12 @@ Reports answer the questions users currently answer with screenshots and mental 
 
 ### CSV column specification (Plus export)
 
+**The authoritative order is `CSV_HEADER` in `mobile/lib/reports/csv_export.ts`, which ships EIGHTEEN columns, not the fourteen this table was written for.** Two of the differences are deliberate and argued at that file's head: the spec's single `timestamp` ships as `date` + `time`, because the Philippines is one time zone and two sortable columns serve a spreadsheet better than one ISO string; and `is_transfer` ships `yes`/`no` rather than `true`/`false`, because it reads better in a cell. The rest are additive (`id`, `currency`, `wallet_type`, `category_parent`, `counterparty`, `reference`) and cost nothing. Do not reorder or rename without updating that file's own reconciliation comment.
+
 | # | Column | Type / format | Source | Notes |
 |---|---|---|---|---|
 | 1 | `id` | string | Transaction | Stable identifier for dedupe on re-import elsewhere |
-| 2 | `timestamp` | ISO 8601 with offset, e.g. `2026-08-12T14:03:22+08:00` | Transaction `timestamp` | Device-local time |
+| 2 | `date` + `time` | `YYYY-MM-DD` and `HH:MM`, two columns | Transaction `occurredAt` | Ships as two columns, not one `timestamp`; see the note above |
 | 3 | `amount` | decimal, 2 places, e.g. `1234.56` | Transaction `amount` | No `₱`, no thousands separators |
 | 4 | `direction` | `in` \| `out` | Transaction `direction` | |
 | 5 | `wallet` | string | Wallet `name` | |
@@ -112,7 +114,7 @@ Reports answer the questions users currently answer with screenshots and mental 
 | 9 | `merchant` | string | Transaction `merchant` | Normalized merchant string |
 | 10 | `source` | `notification` \| `manual` \| `recurring-rule` \| `import` | Transaction `source` | |
 | 11 | `confidence` | decimal `0..1`, e.g. `0.97` | Transaction `confidence` | `1.00` for manual entries |
-| 12 | `is_transfer` | `true` \| `false` | derived from `transferLinkId?` | `true` rows are excluded from summary math |
+| 12 | `is_transfer` | `yes` \| `no` | derived from `transferLinkId?` | `yes` rows are excluded from summary math |
 | 13 | `transfer_link_id` | string | Transaction `transferLinkId?` | Empty when not a transfer; both legs share the value |
 | 14 | `note` | string | Transaction `note?` | Quoted per RFC 4180; empty when absent |
 
@@ -169,9 +171,9 @@ Behavior at the gate:
 - [ ] Free user: months within 90 days render; older months and Trends/custom-range render the locked preview; after upgrading, full history renders without any data loss.
 - [ ] Plus trend view renders 6 and 12 period modes; empty periods render zero bars.
 - [ ] Custom range spanning month boundaries computes all three report types over the exact range, with average daily spend using the range's day count.
-- [ ] Exported CSV matches the column spec exactly: 14 columns, stated order, header row, UTF-8, RFC 4180 quoting, ascending timestamps, locale-stable numbers.
+- [ ] Exported CSV matches `CSV_HEADER` exactly: 18 columns, stated order, header row, UTF-8 with BOM, CRLF line endings, RFC 4180 quoting, ascending timestamps, locale-stable numbers.
 - [ ] Exported CSV contains no raw notification text and no `rawNotificationRef` content in any column.
-- [ ] Transfer-linked rows appear in the CSV with `is_transfer = true` and matching `transfer_link_id` values on both legs.
+- [ ] Transfer-linked rows appear in the CSV with `is_transfer = yes` and matching `transfer_link_id` values on both legs.
 - [ ] Export happens entirely on-device and hands off via the Android share sheet; the app makes no network request in the flow.
 - [ ] Empty period renders the empty state with a listener-health link when the period includes today.
 - [ ] Acknowledging a RecurringPattern adds its normalized monthly amount to the "₱X/month locked in" total (weekly × 52 ÷ 12, annual ÷ 12); dismissing creates a suppressing UserRule and the pattern never re-surfaces.

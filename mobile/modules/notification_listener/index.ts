@@ -28,6 +28,29 @@ export type ListenerHealth = {
 };
 
 /**
+ * The capture scope the listener is ACTUALLY applying, read back off disk
+ * (GAP-119) — the two values `setProviderFilter` writes, in the shape it
+ * writes them.
+ *
+ * `denyAll` OUTRANKS `packageNames`, exactly as it does below the bridge: when
+ * it is `true` nothing is captured and the list beside it is unreachable, and
+ * `CapturePrefs.setProviderFilter` deliberately leaves that list STALE on a
+ * device that could not seal it (see its own doc). A reader comparing this
+ * against a recorded intent must therefore branch on the flag FIRST and never
+ * compare the list while the flag stands, or it will report a mismatch on a
+ * device that is applying precisely what was asked of it.
+ *
+ * AN EMPTY `packageNames` WITH `denyAll` FALSE IS ALLOW-ALL, never deny-all —
+ * the same asymmetry `setProviderFilter` documents, and also what a sealed
+ * filter that cannot be opened reads back as. Both mean the listener is
+ * capturing from every package, which is the honest reading either way.
+ */
+export type ProviderFilter = {
+  packageNames: string[];
+  denyAll: boolean;
+};
+
+/**
  * One package this device has actually been seen posting a notification
  * (interface contract §4; provider-selection plan Task 3) — the raw material
  * for the onboarding provider picker.
@@ -89,6 +112,7 @@ type NativeNotificationListenerModule = {
   unwrapWithDeviceKek(blobB64: string): Promise<string>;
   isDeviceKeyUsable(): Promise<boolean>;
   recreateDeviceKek(): Promise<void>;
+  recreateCaptureKeyPair(): Promise<void>;
   drainPendingCaptures(): Promise<NativeRawCapture[]>;
   clearCaptureBuffer(): Promise<void>;
   isDeviceSecure(): Promise<boolean>;
@@ -99,7 +123,10 @@ type NativeNotificationListenerModule = {
   isAccessGranted(): Promise<boolean>;
   openAccessSettings(): void;
   setCaptureEnabled(enabled: boolean): Promise<void>;
-  setProviderFilter(packageNames: string[]): Promise<void>;
+  setProviderFilter(packageNames: string[], denyAll: boolean): Promise<void>;
+  // Both fields are always written by the Kotlin `getProviderFilter`, so
+  // unlike captures and health there is no absent-value gap to close here.
+  getProviderFilter(): Promise<ProviderFilter>;
   getListenerHealth(): Promise<NativeListenerHealth>;
 
   // ---- Learned package names (provider-selection plan Task 3) ----------
@@ -165,7 +192,8 @@ type BridgeErrorCode =
   | "DeviceKeyInvalidated"
   | "DeviceKeyMissing"
   | "NotAuthenticated"
-  | "CaptureBufferReadFailed";
+  | "CaptureBufferReadFailed"
+  | "ProviderFilterNotStored";
 
 /**
  * The device KEK (or the capture keypair's private key, for
@@ -225,11 +253,37 @@ export class CaptureBufferReadFailedError extends Error {
 }
 
 /**
+ * The capture scope the caller asked for is NOT the one the device is
+ * applying: `setProviderFilter` could not store it (GAP-114). The listener
+ * keeps whatever filter it already had, so the provider the user just paused
+ * is still being captured -- and the reverse for a resume.
+ *
+ * NOT AN AUTHENTICATION FAILURE, unlike the four above, and callers must not
+ * treat it as one. The provider allowlist is sealed under the listener's
+ * UNAUTHENTICATED prefs key, so no biometric prompt and no recovery phrase can
+ * make the same call succeed; only a relaunch can, because that is where the
+ * key is created (`ensurePrefsKeyOnLaunch`, and the listener service's own
+ * `onListenerConnected`).
+ *
+ * A CALLER MUST NOT RECORD THE CHANGE. `paused_provider_packages` is the only
+ * readable record of which providers are paused, so writing it after this
+ * rejection is what produces a switch list that reports a pause the listener
+ * never applied.
+ */
+export class ProviderFilterNotStoredError extends Error {
+  readonly code: BridgeErrorCode = "ProviderFilterNotStored";
+  constructor(message = "the provider filter could not be stored on this device") {
+    super(message);
+    this.name = "ProviderFilterNotStoredError";
+  }
+}
+
+/**
  * Maps a native rejection's `code` to its distinguishable JS error type. An
  * unrecognized `code` (or no `code` at all) rethrows the original error
- * completely unchanged -- this function only ever narrows the four known
+ * completely unchanged -- this function only ever narrows the five known
  * codes, never substitutes a default for anything else, so a genuinely
- * novel native failure is never miscategorized as one of the four.
+ * novel native failure is never miscategorized as one of the five.
  */
 function rethrowTyped(error: unknown): never {
   const code = (error as { code?: unknown } | null | undefined)?.code;
@@ -237,6 +291,7 @@ function rethrowTyped(error: unknown): never {
   if (code === "DeviceKeyMissing") throw new DeviceKeyMissingError();
   if (code === "NotAuthenticated") throw new NotAuthenticatedError();
   if (code === "CaptureBufferReadFailed") throw new CaptureBufferReadFailedError();
+  if (code === "ProviderFilterNotStored") throw new ProviderFilterNotStoredError();
   throw error;
 }
 
@@ -267,6 +322,11 @@ function normalizeCapture(capture: NativeRawCapture): RawCapture {
     bigText: capture.bigText ?? null,
     postedAt: capture.postedAt,
     capturedAt: capture.capturedAt,
+    // Absent on every record the native buffer holds from a build older than
+    // this field. `null` is the honest reading — "this capture cannot say
+    // which notification slot it came from" — and `findReplayCapture` treats
+    // it as "cannot tell" and suppresses nothing.
+    notificationKey: capture.notificationKey ?? null,
   };
 }
 
@@ -307,6 +367,26 @@ export function isDeviceKeyUsable(): Promise<boolean> {
  */
 export function recreateDeviceKek(): Promise<void> {
   return NativeNotificationListener.recreateDeviceKek();
+}
+
+/**
+ * Rotates the capture keypair after the old one has been permanently
+ * invalidated (GAP-059).
+ *
+ * DESTRUCTIVE IN A WAY `recreateDeviceKek` IS NOT. The device KEK only wraps
+ * the DEK, and the DEK comes back from the recovery phrase, so that rotation
+ * loses nothing. A capture sealed to the old public half has no second copy
+ * anywhere: its private half is gone and the ciphertext goes with it. Call this
+ * only once the buffered captures are understood to be lost, and say so by
+ * calling `clearCaptureBuffer` after it.
+ *
+ * Skipping it is worse, which is why it exists. Recovery used to recreate the
+ * device KEK and stop there, leaving `getCapturePublicKey()` returning the DEAD
+ * pair's public half, so every capture sealed AFTER a successful recovery was
+ * unopenable too and nothing on screen said so.
+ */
+export function recreateCaptureKeyPair(): Promise<void> {
+  return NativeNotificationListener.recreateCaptureKeyPair();
 }
 
 /**
@@ -400,8 +480,14 @@ export function isKeyguardLocked(): Promise<boolean> {
 // Everything above is the encryption plan's half of contract §4. Below is
 // the half the listener itself needs: the notification-access grant, the two
 // user-facing switches, health, and live capture events. None of these
-// touches a Keystore key, so none requires authentication and none can
-// produce a rejection from the taxonomy above.
+// requires AUTHENTICATION, so none can produce a rejection from the
+// four-code taxonomy above.
+//
+// `setProviderFilter` is the one that can still reject (GAP-114): the
+// allowlist it writes is sealed under the listener's own unauthenticated
+// prefs key, and on a device where that key is unavailable the write does not
+// happen. `ProviderFilterNotStoredError` is deliberately kept out of the
+// taxonomy above for that reason -- it is not fixed by authenticating.
 // ---------------------------------------------------------------------
 
 /**
@@ -455,9 +541,57 @@ export function setCaptureEnabled(enabled: boolean): Promise<void> {
  * AN EMPTY ARRAY MEANS "ALLOW EVERY PACKAGE", not "allow none". Passing `[]`
  * is how a caller CLEARS the filter, never how it disables capture; that is
  * `setCaptureEnabled(false)`'s job.
+ *
+ * `denyAll` IS THE ONE SENTENCE THE ARRAY CANNOT CARRY (GAP-103): "block every
+ * package". An allowlist has exactly one empty value and it already means the
+ * opposite, so pausing every provider used to arrive here as `[]` and switch
+ * capture from most-restricted to unrestricted. It is REQUIRED, with no
+ * default, for that reason — the fail-open value is the one a caller would
+ * omit, and every call site now has to say which of the two it means.
+ *
+ * IT IS NOT THE MASTER PAUSE. `setCaptureEnabled` stays a separate control the
+ * user sets separately; neither call moves the other. Send `[]` alongside
+ * `true` — the flag outranks the filter below the bridge, so the array is only
+ * what a later resume falls back to.
+ *
+ * REJECTS WITH `ProviderFilterNotStoredError` WHEN THE SCOPE DID NOT LAND
+ * (GAP-114). The allowlist is sealed on the far side, and a device with no
+ * usable prefs key writes nothing rather than falling back to allow-all — this
+ * used to resolve regardless, so a caller recorded a pause the listener never
+ * applied. **Nothing may write its own record of the change until this
+ * resolves**, since there is no getter across this bridge to notice the
+ * disagreement later. See that error's doc for why re-authenticating is the
+ * wrong response.
  */
-export function setProviderFilter(packageNames: string[]): Promise<void> {
-  return NativeNotificationListener.setProviderFilter(packageNames);
+export function setProviderFilter(packageNames: string[], denyAll: boolean): Promise<void> {
+  return NativeNotificationListener.setProviderFilter(packageNames, denyAll).catch(rethrowTyped);
+}
+
+/**
+ * What scope the listener is applying RIGHT NOW — the counterpart
+ * `setProviderFilter` above went without (GAP-119).
+ *
+ * A LIVE READ OFF DISK, never a cached echo of the last write, and that is the
+ * whole point: the values above may not be the ones the last call asked for.
+ * `setProviderFilter` rejects when it could not seal the allowlist, and the
+ * seal can also stop OPENING later, at which point the listener falls back to
+ * capturing everything with nothing in JS the wiser.
+ *
+ * WHAT IT IS FOR, AND WHAT IT IS NOT. It exists so the Privacy centre can
+ * compare the scope the app recorded against the scope in force and say so
+ * when they differ. It is NOT a second place to read the user's pause list
+ * from: `paused_provider_packages` remains the app's record of intent, this is
+ * the device's report of effect, and collapsing the two would lose the
+ * disagreement that is the only reason to ask.
+ *
+ * NO REJECTION TAXONOMY, unlike `setProviderFilter`: the native side reads
+ * plain preferences and cannot fail in a way a caller branches on. A bridge
+ * that is missing this function entirely (an older native build under a newer
+ * JS bundle) rejects like any unknown method, so callers should treat a
+ * rejection as "cannot tell" and claim nothing.
+ */
+export function getProviderFilter(): Promise<ProviderFilter> {
+  return NativeNotificationListener.getProviderFilter();
 }
 
 /**

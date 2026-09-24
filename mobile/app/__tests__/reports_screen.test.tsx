@@ -18,6 +18,7 @@ import { systemClock } from "@/lib/clock";
 import { addMonthsClampedIso, toDateIso } from "@/lib/dates";
 import { closeDatabase } from "@/lib/db/database";
 import { seedDefaultCategories } from "@/lib/db/repos/categories_repo";
+import { insertTransaction } from "@/lib/db/repos/transactions_repo";
 import { createWallet } from "@/lib/db/repos/wallets_repo";
 import { __setTierForTests } from "@/lib/entitlements";
 import { queryClient as appQueryClient } from "@/lib/query_client";
@@ -59,11 +60,30 @@ function renderScreen(ui: ReactNode) {
   return { client, ...utils };
 }
 
+let walletId: string;
+
+/**
+ * One committed spend dated now, which is what moves this screen off its empty
+ * state: `summary.transactionCount === 0` renders `reports-empty` and NO chart
+ * at all, so a test about a chart has to put something in the period first.
+ */
+async function seedSpendThisPeriod(): Promise<void> {
+  await insertTransaction({
+    walletId,
+    categoryId: "cat_food_dining",
+    amount: 25_000,
+    direction: "out",
+    source: "manual",
+    confidence: 1,
+    occurredAt: systemClock.now(),
+  });
+}
+
 beforeEach(async () => {
   await freshDb();
   __setTierForTests(null);
   await seedDefaultCategories();
-  await createWallet({ name: "GCash" });
+  walletId = (await createWallet({ name: "GCash" })).id;
 });
 
 afterEach(async () => {
@@ -95,7 +115,7 @@ test("A SCOPE THE TIER CAN NO LONGER HONOR EXPLAINS ITSELF RATHER THAN FAILING S
     fireEvent.press(screen.getByTestId("range-picker-year-prev"));
   }
   fireEvent.press(screen.getByTestId(`range-picker-month-${LAST_MONTH}`));
-  await waitFor(() => expect(screen.queryByTestId("reports-truncated-notice")).toBeNull(), {
+  await waitFor(() => expect(screen.queryByTestId("reports-truncated-notice")).not.toBeOnTheScreen(), {
     timeout: 30_000,
   });
 
@@ -179,4 +199,47 @@ test("THE SCREEN SCROLLS THROUGH FormScreen, NOT A PLAIN ScrollView", async () =
   const scrollers = screen.UNSAFE_queryAllByType(ScrollView);
   expect(scrollers).toHaveLength(1);
   expect(scrollers.filter((node) => node.props.horizontal === true)).toHaveLength(0);
+});
+
+// ---------------------------------------------------------------------------
+// The trend card — docs/04-features/10-reports.md's states table: a Free user
+// who opens Trends gets a "Locked preview with Plus prompt; no data shown".
+// ---------------------------------------------------------------------------
+
+test("FREE TIER SEES THE LOCKED TREND PREVIEW, NOT A FALSE 'NOT ENOUGH PERIODS' CARD", async () => {
+  // ASSERTS ON WHAT IS ON SCREEN, not on which branch the component picked.
+  // reports_service.ts hands Free a single-point trend, so this screen used to
+  // render TrendLine's "Not enough periods yet to show a trend." — a statement
+  // about the user's DATA that is false when the periods exist and it is the
+  // VIEW that is gated. Both halves are checked, because a lock badge added
+  // ABOVE that sentence would leave it on screen and still satisfy a
+  // badge-only assertion.
+  await seedSpendThisPeriod();
+  __setTierForTests("free");
+  renderScreen(<ReportsScreen />);
+
+  const trendSection = within(await screen.findByTestId("reports-trend", {}, { timeout: 30_000 }));
+  trendSection.getByTestId("trend-line-preview");
+  trendSection.getByText("Sample bars, not your spending. Plus charts how the last 6 periods compare.");
+  trendSection.getByTestId("plus-gate");
+  expect(trendSection.getAllByTestId("plus-badge")).toHaveLength(1);
+
+  expect(screen.queryByText("Not enough periods yet to show a trend.")).toBeNull();
+  expect(trendSection.queryByTestId("trend-line")).toBeNull();
+});
+
+test("PLUS TIER SEES THE REAL TREND CARD, NOT THE SAMPLE FRAME", async () => {
+  await seedSpendThisPeriod();
+  __setTierForTests("plus");
+  renderScreen(<ReportsScreen />);
+
+  const trendSection = within(await screen.findByTestId("reports-trend", {}, { timeout: 30_000 }));
+  trendSection.getByTestId("trend-line");
+  trendSection.getByTestId("trend-legend");
+  expect(trendSection.queryByTestId("trend-line-preview")).toBeNull();
+  // Nothing wraps the Plus path — no gate, and therefore not PlusGate's
+  // unlocked "PLUS · free in beta" badge either, which would be a second badge
+  // on a screen that already carries two independent ones.
+  expect(trendSection.queryByTestId("plus-gate")).toBeNull();
+  expect(trendSection.queryByTestId("plus-badge")).toBeNull();
 });

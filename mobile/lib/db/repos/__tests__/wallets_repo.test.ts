@@ -565,15 +565,14 @@ describe("getBalanceDrift reports the gap between the provider's figure and ours
     });
   });
 
-  test("the figures come from the report that actually set the balance — commit order, not occurred_at order", async () => {
-    // A LATE-ARRIVING OLDER NOTIFICATION. Spec rule 9's second half ("out-of-order
-    // arrivals snap only if the notification timestamp is newer") is NOT
-    // implemented — rule 12 is: the snap always proceeds. So the wallet's balance
-    // is whatever the last COMMITTED report said, and the explainer has to
-    // describe that same figure or it would explain a balance the wallet does
-    // not have. Deliberately committed with the older occurred_at LAST.
+  test("the figures come from the report that actually set the balance — the newest occurred_at, not the last commit", async () => {
+    // A LATE-ARRIVING OLDER NOTIFICATION, committed with the older occurred_at
+    // LAST. `insertTransaction` now implements rule 9's second half, so that
+    // stale report re-anchors nothing; the explainer has to name the report the
+    // wallet is actually sitting on, or it would explain a balance the wallet
+    // does not have. Reading plain commit order here would name the stale one.
     const wallet = await createWallet({ name: "GCash", openingBalance: 100000 });
-    await insertTransaction({
+    const governing = await insertTransaction({
       walletId: wallet.id, categoryId: CATEGORY_ID, amount: 10000, direction: "out",
       occurredAt: 9000, source: "notification", confidence: 0.95, balanceAfter: 700000,
     });
@@ -583,7 +582,8 @@ describe("getBalanceDrift reports the gap between the provider's figure and ours
     });
 
     const drift = await getBalanceDrift(wallet.id);
-    expect(drift?.reported).toBe(300000);
+    expect(drift?.reported).toBe(700000);
+    expect(drift?.reportingTransactionId).toBe(governing.id);
     expect((await getWallet(wallet.id))?.balance).toBe(drift?.reported);
   });
 

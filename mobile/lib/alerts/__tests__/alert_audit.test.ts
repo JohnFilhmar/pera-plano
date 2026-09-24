@@ -87,6 +87,7 @@ function loanStatusOf(over: Partial<Omit<LoanStatus, "loan">> & { loan?: Partial
     direction: "i-owe",
     counterparty: "Aling Nena",
     principal: 600000,
+    amountBorrowed: null,
     interestRate: null,
     schedule: null,
     linkedWalletId: null,
@@ -103,6 +104,7 @@ function loanStatusOf(over: Partial<Omit<LoanStatus, "loan">> & { loan?: Partial
     nextDue: { dueDate: "2026-09-15", amount: 100000 },
     overdue: false,
     paidCount: 0,
+    paidTotal: 0,
     ...over,
     loan,
   };
@@ -223,6 +225,14 @@ describe("every notification routes to its documented destination when tapped", 
     });
   });
 
+  test("a goal milestone opens that goal's detail (docs/06 §6.1: Goal updates → Goal detail)", () => {
+    expect(resolveAlertRoute({ kind: "goalMilestone", goalId: "g-1", milestone: 50 })).toEqual({
+      pathname: "/plan/goals/[id]",
+      params: { id: "g-1" },
+    });
+    expect(resolveAlertRoute({ kind: "goalMilestone", goalId: 7 })).toBe("/");
+  });
+
   test("payday summary opens Home", () => {
     expect(resolveAlertRoute({ kind: "paydaySummary" })).toBe("/");
   });
@@ -328,6 +338,23 @@ describe("anti-spam: listener-health warnings cap at one per day (docs §6.2 rul
     const secondTheSameDay = await notifyTrackingInterrupted(NOW + 60_000);
     expect(secondTheSameDay).toBeNull();
     expect(mockPost).toHaveBeenCalledTimes(1);
+  });
+
+  test("A NOTICE THE OS DROPPED DOES NOT SPEND THE DAY", async () => {
+    // `postAlert` returns null when notification permission is missing, which
+    // on Android 13+ is every install until onboarding's alerts step asks for
+    // POST_NOTIFICATIONS. Writing the cap for a notice nobody was shown turns
+    // rule 4 from anti-spam into censorship: the next 24 hours of real
+    // interruptions are silenced by a notification that never existed.
+    mockPost.mockResolvedValueOnce(null);
+
+    const dropped = await notifyTrackingInterrupted(NOW);
+    expect(dropped).toBeNull();
+    expect(await getSetting("tracking_interrupted_last_notified_at")).toBeNull();
+
+    const oncePermissionExists = await notifyTrackingInterrupted(NOW + 60_000);
+    expect(oncePermissionExists).toBe("os-id");
+    expect(await getSetting("tracking_interrupted_last_notified_at")).toBe(NOW + 60_000);
   });
 
   // NOT A FALSE PASS: the tests above enforce rule 4's DAY cap only, not its

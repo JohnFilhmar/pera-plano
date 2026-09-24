@@ -1,10 +1,12 @@
 import { closeDatabase } from "@/lib/db/database";
 import { __setTierForTests } from "@/lib/entitlements";
-import { createWallet, getWallet } from "../wallets_repo";
+import { createWallet, getBalanceDrift, getWallet } from "../wallets_repo";
 import {
   deleteTransaction,
   getTransaction,
   insertTransaction,
+  listFullLedger,
+  listFullLedgerBetween,
   listTransactions,
   reassignWalletTransactions,
   sumSpend,
@@ -302,7 +304,20 @@ test("sumSpend honours the exclusive upper bound and category/wallet filters", a
   expect(await sumSpend({ from: 0, to: 1 })).toBe(0);
 });
 
-test("free tier clamps sumSpend and listTransactions to the 90-day window", async () => {
+// GAP-105: THE 90-DAY FLOOR GATES BROWSING, NOT COUNTING. Limits rule 8,
+// verbatim: "Limit totals are always computed from the full ledger, regardless
+// of the free tier's 90-day history view gate — data is never deleted, only
+// the browsing view is gated." docs/05-monetization.md §3.3 draws the same
+// line, listing the surfaces the gate touches as "ledger, search, and Reports"
+// while older records "still participate in Wallet balance math".
+//
+// This test used to assert the opposite (`sumSpend` returning 100 on free),
+// which is why the defect survived: it enforced the falsehood. The pair of
+// assertions in the free block below is the whole point — the SAME row, at the
+// SAME instant, on the SAME tier, is invisible to the list and counted by the
+// sum. The list half is what proves the floor is really active; without it a
+// passing sum would mean nothing.
+test("on free the 90-day floor hides a row from listTransactions and still counts it in sumSpend", async () => {
   const now = Date.now();
   await insertTransaction({
     walletId,
@@ -310,6 +325,7 @@ test("free tier clamps sumSpend and listTransactions to the 90-day window", asyn
     amount: 100,
     direction: "out",
     occurredAt: now - 10 * DAY,
+    merchant: "recent",
     source: "manual",
     confidence: 1,
   });
@@ -319,17 +335,235 @@ test("free tier clamps sumSpend and listTransactions to the 90-day window", asyn
     amount: 900,
     direction: "out",
     occurredAt: now - 100 * DAY,
+    merchant: "ancient",
     source: "manual",
     confidence: 1,
   });
 
   __setTierForTests("plus");
   expect(await sumSpend({ from: 0, to: now + 1000 })).toBe(1000);
-  expect((await listTransactions({})).length).toBe(2);
+  expect((await listTransactions({})).map((row) => row.merchant)).toEqual(["recent", "ancient"]);
 
   __setTierForTests("free");
-  expect(await sumSpend({ from: 0, to: now + 1000 })).toBe(100);
-  expect((await listTransactions({})).length).toBe(1);
+  // The floor is active, in the direction that matters: browsing loses the row.
+  expect((await listTransactions({})).map((row) => row.merchant)).toEqual(["recent"]);
+  // And the total keeps it anyway.
+  expect(await sumSpend({ from: 0, to: now + 1000 })).toBe(1000);
+});
+
+// GAP-111: the same line again, for a read that returns ROWS rather than a
+// total. `sumSpend` above proves the floor does not reach the money arithmetic;
+// the categorizer's learned suggestion is the other computation over the whole
+// record, and it needs the rows themselves to count merchants in JS.
+// `listFullLedger` is that read, and the pair below is the same "same row, same
+// instant, same tier" shape: invisible to browsing, present for counting.
+test("listFullLedger returns rows the free-tier floor hides from listTransactions", async () => {
+  const now = Date.now();
+  await insertTransaction({
+    walletId,
+    categoryId: CATEGORY_ID,
+    amount: 100,
+    direction: "out",
+    occurredAt: now - 10 * DAY,
+    merchant: "recent",
+    source: "manual",
+    confidence: 1,
+  });
+  await insertTransaction({
+    walletId,
+    categoryId: CATEGORY_ID,
+    amount: 900,
+    direction: "out",
+    occurredAt: now - 100 * DAY,
+    merchant: "ancient",
+    source: "manual",
+    confidence: 1,
+  });
+
+  __setTierForTests("free");
+  expect((await listTransactions({})).map((row) => row.merchant)).toEqual(["recent"]);
+  expect((await listFullLedger()).map((row) => row.merchant)).toEqual(["recent", "ancient"]);
+
+  // And on plus the two reads agree, which is why this gap was latent: the fix
+  // changes nothing for anyone on the shipped tier.
+  __setTierForTests("plus");
+  expect((await listFullLedger()).map((row) => row.merchant)).toEqual(
+    (await listTransactions({})).map((row) => row.merchant),
+  );
+});
+
+// GAP-118: the floor exemption again, this time for a computation that asks for
+// a WINDOW rather than for everything. Income cadence detection reads a trailing
+// 130 days; on Free it was handed 90, which moved `averageAmount` and with it
+// the base of every percent-of-income Limit. `listFullLedger` is the wrong tool
+// for it — unfiltered by design — so the two assertions below are the pair that
+// matters: past the floor, and still bounded.
+test("listFullLedgerBetween ignores the free-tier floor but honours its own window", async () => {
+  const now = Date.now();
+  const seed = async (merchant: string, daysAgo: number): Promise<void> => {
+    await insertTransaction({
+      walletId,
+      categoryId: CATEGORY_ID,
+      amount: 100,
+      direction: "out",
+      occurredAt: now - daysAgo * DAY,
+      merchant,
+      source: "manual",
+      confidence: 1,
+    });
+  };
+
+  await seed("recent", 10);
+  await seed("past-the-floor", 100);
+  await seed("outside-the-window", 200);
+
+  __setTierForTests("free");
+  // Browsing keeps the 90-day gate.
+  expect((await listTransactions({})).map((row) => row.merchant)).toEqual(["recent"]);
+  // The computation sees the row the floor hid, and NOT the one it never asked
+  // for — the whole difference between this and `listFullLedger`.
+  expect(
+    (await listFullLedgerBetween({ from: now - 130 * DAY, to: now + 1 })).map(
+      (row) => row.merchant,
+    ),
+  ).toEqual(["recent", "past-the-floor"]);
+  expect((await listFullLedger()).map((row) => row.merchant)).toEqual([
+    "recent",
+    "past-the-floor",
+    "outside-the-window",
+  ]);
+
+  // Same window, same rows, either tier — which is the acceptance criterion:
+  // the sample must not move when the tier does.
+  const onFree = (await listFullLedgerBetween({ from: now - 130 * DAY, to: now + 1 })).map(
+    (row) => row.merchant,
+  );
+  __setTierForTests("plus");
+  expect(
+    (await listFullLedgerBetween({ from: now - 130 * DAY, to: now + 1 })).map(
+      (row) => row.merchant,
+    ),
+  ).toEqual(onFree);
+});
+
+test("listFullLedgerBetween is half-open [from, to)", async () => {
+  // Interface contract §3, and the reason `detect` passes `to: now + 1`: the
+  // credit stamped at exactly `now` is the one it is being asked about.
+  const at = Date.now() - DAY;
+  await insertTransaction({
+    walletId,
+    categoryId: CATEGORY_ID,
+    amount: 100,
+    direction: "out",
+    occurredAt: at,
+    merchant: "boundary",
+    source: "manual",
+    confidence: 1,
+  });
+
+  expect(await listFullLedgerBetween({ from: at, to: at })).toEqual([]);
+  expect((await listFullLedgerBetween({ from: at, to: at + 1 })).map((row) => row.merchant)).toEqual(
+    ["boundary"],
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The history floor is a DAY, and it comes from the caller (GAP-047)
+// ---------------------------------------------------------------------------
+//
+// docs/05-monetization.md §3.3 hides records "older than 90 days" — a claim
+// about the user's calendar, like every other window in this app. Computed as
+// `Date.now() - 90 * DAY` it was neither of those things: it was an instant, so
+// the cutoff crept forward through the boundary day hour by hour and a row
+// visible at 09:59 vanished at 10:01; and it was the wall clock read inside a
+// repository, which lib/clock.ts forbids outright — "no engine or service under
+// lib/ calls `Date.now()`" — so nothing downstream could pin it.
+//
+// The fixtures are the pair from the gap's own probe: with `now` at 09:00 on
+// Sep 4 2026 the 90-day boundary day is Jun 6 (Sep 4 - 31 = Aug 4, - 31 =
+// Jul 4, - 30 = Jun 4, - 2 = Jun 2... counted the other way: Jun 6 + 30 = Jul 6,
+// + 31 = Aug 6, + 29 = Sep 4). A credit at 08:00 that day is INSIDE a
+// midnight-anchored window and outside an instant-anchored one; a credit at
+// 10:00 is inside both.
+describe("the Free-tier history floor", () => {
+  const NOW_SEP_4_9AM = new Date(2026, 8, 4, 9, 0).getTime();
+
+  async function seedBoundaryRows(): Promise<void> {
+    for (const [label, at] of [
+      ["day-before", new Date(2026, 5, 5, 23, 59)],
+      ["boundary-08", new Date(2026, 5, 6, 8, 0)],
+      ["boundary-10", new Date(2026, 5, 6, 10, 0)],
+      ["recent", new Date(2026, 8, 1, 10, 0)],
+    ] as const) {
+      await insertTransaction({
+        walletId,
+        categoryId: CATEGORY_ID,
+        amount: 100,
+        direction: "out",
+        occurredAt: at.getTime(),
+        merchant: label,
+        source: "manual",
+        confidence: 1,
+      });
+    }
+  }
+
+  test("A ROW AT 08:00 AND ONE AT 10:00 ON THE BOUNDARY DAY ARE BOTH VISIBLE", async () => {
+    __setTierForTests("free");
+    await seedBoundaryRows();
+
+    const merchants = (await listTransactions({ now: NOW_SEP_4_9AM })).map((row) => row.merchant);
+
+    expect(merchants).toEqual(expect.arrayContaining(["boundary-08", "boundary-10", "recent"]));
+    // Inclusive at the boundary DAY, exclusive before it: contract §3 makes
+    // `from` inclusive, and reaching a day further back would make 90 days 91.
+    expect(merchants).not.toContain("day-before");
+  });
+
+  test("the floor comes from the caller's `now`, not from the wall clock", async () => {
+    __setTierForTests("free");
+    await seedBoundaryRows();
+
+    // Two reads, one process clock, two different answers — which is only
+    // possible if the floor came from the argument. On Sep 4 the boundary day is
+    // Jun 6 and the two Jun 6 rows are in; on Sep 5 it is Jun 7 and they are out.
+    const onSep4 = (await listTransactions({ now: NOW_SEP_4_9AM })).map((row) => row.merchant);
+    const onSep5 = (
+      await listTransactions({ now: new Date(2026, 8, 5, 9, 0).getTime() })
+    ).map((row) => row.merchant);
+
+    expect(onSep4).toContain("boundary-10");
+    expect(onSep5).not.toContain("boundary-10");
+    expect(onSep5).toEqual(["recent"]);
+  });
+
+  test("an omitted `now` still falls back to the wall clock", async () => {
+    // The fallback is what keeps the ledger screens and hooks — composition
+    // edges with no clock of their own — working unchanged.
+    __setTierForTests("free");
+    await insertTransaction({
+      walletId,
+      categoryId: CATEGORY_ID,
+      amount: 100,
+      direction: "out",
+      occurredAt: Date.now() - 10 * DAY,
+      merchant: "recent",
+      source: "manual",
+      confidence: 1,
+    });
+    await insertTransaction({
+      walletId,
+      categoryId: CATEGORY_ID,
+      amount: 900,
+      direction: "out",
+      occurredAt: Date.now() - 100 * DAY,
+      merchant: "ancient",
+      source: "manual",
+      confidence: 1,
+    });
+
+    expect((await listTransactions({})).map((row) => row.merchant)).toEqual(["recent"]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1130,6 +1364,104 @@ describe("a reported balance-after SETS the wallet balance instead of moving it"
   });
 });
 
+// ---------------------------------------------------------------------------
+// Spec rule 9's second half — "out-of-order arrivals snap only if the
+// notification timestamp is newer than the current snapshot's".
+//
+// THE ARRIVAL ORDER AND THE TIMESTAMP ORDER ARE DELIBERATELY OPPOSITE in every
+// test below: the OLDER notification is inserted LAST, which is the only shape
+// the bug has. A fixture that committed them in timestamp order passes against
+// an implementation with no guard at all.
+// ---------------------------------------------------------------------------
+
+describe("a balance-after older than the current snapshot does not re-anchor the wallet", () => {
+  test("the wallet keeps the NEWER reported figure when a stale notification lands after it", async () => {
+    // Thursday's notification arrives first and anchors the wallet at ₱7,000.00.
+    // Tuesday's — delayed by a dead radio — arrives second saying ₱3,000.00.
+    // Snapping to it would rewind the wallet two days and throw away every
+    // movement the bank had already counted into the ₱7,000.00.
+    await insertTransaction({
+      walletId, categoryId: CATEGORY_ID, amount: 10000, direction: "out",
+      occurredAt: 9000, source: "notification", confidence: 0.95, balanceAfter: 700000,
+    });
+    await insertTransaction({
+      walletId, categoryId: CATEGORY_ID, amount: 20000, direction: "out",
+      occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 300000,
+    });
+
+    expect(await balanceOf(walletId)).toBe(700000);
+    // The two numbers a broken implementation lands on: the stale snap itself,
+    // and the fallback increment that would book the movement a second time.
+    expect(await balanceOf(walletId)).not.toBe(300000);
+    expect(await balanceOf(walletId)).not.toBe(700000 - 20000);
+  });
+
+  test("the suppressed row is still committed, with its reported figure intact", async () => {
+    // Suppression is about the WALLET, not the ledger. The movement happened and
+    // the provider did say ₱3,000.00 at that moment; dropping either would lose
+    // history the reconciliation work will need.
+    await insertTransaction({
+      walletId, categoryId: CATEGORY_ID, amount: 10000, direction: "out",
+      occurredAt: 9000, source: "notification", confidence: 0.95, balanceAfter: 700000,
+    });
+    const stale = await insertTransaction({
+      walletId, categoryId: CATEGORY_ID, amount: 20000, direction: "out",
+      occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 300000,
+    });
+
+    const read = await getTransaction(stale.id);
+    expect(read?.balanceAfter).toBe(300000);
+    expect(read?.amount).toBe(20000);
+  });
+
+  test("a report at the SAME instant as the snapshot still snaps — a twin is not out of order", async () => {
+    // A push and its SMS relay carry one `occurred_at`. Rule 9 suppresses what
+    // is OLDER; treating "not newer" as out of order would freeze the wallet on
+    // whichever telling happened to reach the pipeline first.
+    await insertTransaction({
+      walletId, categoryId: CATEGORY_ID, amount: 10000, direction: "out",
+      occurredAt: 5000, source: "notification", confidence: 0.95, balanceAfter: 700000,
+    });
+    await insertTransaction({
+      walletId, categoryId: CATEGORY_ID, amount: 10000, direction: "out",
+      occurredAt: 5000, source: "notification", confidence: 0.95, balanceAfter: 690000,
+    });
+
+    expect(await balanceOf(walletId)).toBe(690000);
+  });
+
+  test("suppression is per wallet — a sibling's newer snapshot never blocks a snap", async () => {
+    const other = await createWallet({ name: "Maya", openingBalance: 50000 });
+    await insertTransaction({
+      walletId: other.id, categoryId: CATEGORY_ID, amount: 10000, direction: "out",
+      occurredAt: 9000, source: "notification", confidence: 0.95, balanceAfter: 700000,
+    });
+    await insertTransaction({
+      walletId, categoryId: CATEGORY_ID, amount: 20000, direction: "out",
+      occurredAt: 1000, source: "notification", confidence: 0.95, balanceAfter: 300000,
+    });
+
+    expect(await balanceOf(walletId)).toBe(300000);
+    expect(await balanceOf(other.id)).toBe(700000);
+  });
+
+  test("a non-reporting backdated transaction still moves the balance", async () => {
+    // The guard is about a stale ANCHOR, not about backdating. Rule 25 keeps a
+    // backdated manual entry affecting the balance, and it carries no reported
+    // figure to be out of order with.
+    await insertTransaction({
+      walletId, categoryId: CATEGORY_ID, amount: 10000, direction: "out",
+      occurredAt: 9000, source: "notification", confidence: 0.95, balanceAfter: 700000,
+    });
+    await insertTransaction({
+      walletId, categoryId: CATEGORY_ID, amount: 25000, direction: "out",
+      occurredAt: 1000, source: "manual", confidence: 1,
+    });
+
+    expect(await balanceOf(walletId)).toBe(675000);
+  });
+});
+
 describe("the ordinary computed path is untouched when no balance is reported", () => {
   test("an omitted balanceAfter still increments, exactly as before", async () => {
     await insertTransaction({
@@ -1347,6 +1679,69 @@ describe("reassignWalletTransactions", () => {
 
     expect((await getWallet(walletId))?.balance).toBe(100000);
     expect((await getWallet(target))?.balance).toBe(0);
+  });
+
+  // GAP-080. `balance_after` is the SOURCE bank's statement about the SOURCE
+  // account. Moved as-is, it becomes the destination's newest reported figure.
+  test("the provider's balance anchors do not travel with the rows", async () => {
+    const tx = await insertTransaction(baseTx({ amount: 15000, balanceAfter: 900000 }));
+    expect((await getTransaction(tx.id))?.balanceAfter).toBe(900000);
+
+    await reassignWalletTransactions(walletId, target);
+
+    const moved = await getTransaction(tx.id);
+    expect(moved?.walletId).toBe(target);
+    expect(moved?.balanceAfter).toBeNull();
+    expect(moved?.computedBalance).toBeNull();
+  });
+
+  test("the destination shows no drift from the source's reported balance", async () => {
+    await insertTransaction(baseTx({ amount: 15000, balanceAfter: 900000 }));
+
+    await reassignWalletTransactions(walletId, target);
+
+    // Without the null-ing above, the newest row carrying a `balance_after` in
+    // `target` is one the SOURCE's provider reported, so the badge compares two
+    // different banks and cannot be cleared until this one reports again.
+    expect(await getBalanceDrift(target)).toBeNull();
+  });
+
+  // GAP-080. Moving this leg would put both legs of one internal transfer in a
+  // single wallet: a transfer that moves no money, and a link meaning nothing.
+  test("a leg whose counterpart is already in the destination stays behind", async () => {
+    const out = await insertTransaction(baseTx({ amount: 500, direction: "out" }));
+    const inLeg = await insertTransaction(
+      baseTx({ amount: 500, direction: "in", walletId: target }),
+    );
+    await linkAsTransfer(out.id, inLeg.id);
+    const ordinary = await insertTransaction(baseTx({ amount: 34500, direction: "out" }));
+
+    await reassignWalletTransactions(walletId, target);
+
+    expect((await getTransaction(ordinary.id))?.walletId).toBe(target);
+    expect((await getTransaction(out.id))?.walletId).toBe(walletId);
+    // Still linked, and the legs still span two wallets, so invariant 2 keeps
+    // excluding the pair from spend and income. Dissolving the link is what
+    // would have made both start counting.
+    expect((await getTransaction(out.id))?.transferLinkId).not.toBeNull();
+  });
+
+  test("the skipped leg's effect stays on the source balance", async () => {
+    const out = await insertTransaction(baseTx({ amount: 500, direction: "out" }));
+    const inLeg = await insertTransaction(
+      baseTx({ amount: 500, direction: "in", walletId: target }),
+    );
+    await linkAsTransfer(out.id, inLeg.id);
+    await insertTransaction(baseTx({ amount: 34500, direction: "out" }));
+
+    await reassignWalletTransactions(walletId, target);
+
+    // Source opened at 100000, spent 500 on the leg it keeps and 34500 on the
+    // row that moves. Only the 34500 is handed over, so the source keeps the
+    // 500 it still holds a row for. A delta measured over rows that did NOT
+    // move would report 99000 here and -34500 there.
+    expect((await getWallet(walletId))?.balance).toBe(99500);
+    expect((await getWallet(target))?.balance).toBe(-34000);
   });
 
   test("moving a wallet to itself changes nothing", async () => {

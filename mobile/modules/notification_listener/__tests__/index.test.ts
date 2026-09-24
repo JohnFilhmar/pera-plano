@@ -69,6 +69,7 @@ import {
   DeviceKeyInvalidatedError,
   DeviceKeyMissingError,
   NotAuthenticatedError,
+  ProviderFilterNotStoredError,
   addCaptureListener,
   clearCaptureBuffer,
   drainPendingCaptures,
@@ -249,9 +250,10 @@ describe("drainPendingCaptures", () => {
     bigText: null,
     postedAt: 1754060400000,
     capturedAt: 1754060400500,
+    notificationKey: "com.globe.gcash.android|0|null|0",
   };
 
-  it("delegates with no arguments and resolves with typed RawCapture objects carrying exactly the eight contract §4 fields", async () => {
+  it("delegates with no arguments and resolves with typed RawCapture objects carrying exactly the nine contract §4 fields", async () => {
     mockNativeModule.drainPendingCaptures.mockResolvedValue([nativeCapture]);
 
     const result = await drainPendingCaptures();
@@ -259,7 +261,17 @@ describe("drainPendingCaptures", () => {
     expect(mockNativeModule.drainPendingCaptures).toHaveBeenCalledWith();
     expect(result).toEqual([nativeCapture]);
     expect(Object.keys(result[0]).sort()).toEqual(
-      ["bigText", "capturedAt", "id", "packageName", "postedAt", "subText", "text", "title"].sort(),
+      [
+        "bigText",
+        "capturedAt",
+        "id",
+        "notificationKey",
+        "packageName",
+        "postedAt",
+        "subText",
+        "text",
+        "title",
+      ].sort(),
     );
   });
 
@@ -322,7 +334,7 @@ describe("drainPendingCaptures", () => {
     expect(thrown).toBeInstanceOf(CaptureBufferReadFailedError);
   });
 
-  it("the four rejection types map to four distinct, non-overlapping error classes -- collapsing any two is the bug this task must avoid", async () => {
+  it("the five rejection types map to five distinct, non-overlapping error classes -- collapsing any two is the bug this task must avoid", async () => {
     // Exercised via drainPendingCaptures purely as a vehicle: rethrowTyped
     // is the SAME shared mapping function behind wrapWithDeviceKek,
     // unwrapWithDeviceKek, and drainPendingCaptures, so testing it through
@@ -346,6 +358,12 @@ describe("drainPendingCaptures", () => {
       ["DeviceKeyMissing", DeviceKeyMissingError],
       ["NotAuthenticated", NotAuthenticatedError],
       ["CaptureBufferReadFailed", CaptureBufferReadFailedError],
+      // GAP-114, and the pairwise check below is why it belongs in this list
+      // rather than beside it: three of the four above are answered by
+      // AUTHENTICATING, and this one never can be. A collapse into
+      // `NotAuthenticated` in particular would put a biometric prompt in front
+      // of a user whose provider switch failed for a reason no prompt reaches.
+      ["ProviderFilterNotStored", ProviderFilterNotStoredError],
     ];
 
     const rejections = await Promise.all(classesByCode.map(([code]) => rejectionFor(code)));
@@ -366,7 +384,7 @@ describe("drainPendingCaptures", () => {
     });
   });
 
-  it("an unrecognized native rejection code is rethrown unchanged, not miscategorized as one of the four known types", async () => {
+  it("an unrecognized native rejection code is rethrown unchanged, not miscategorized as one of the five known types", async () => {
     mockNativeModule.drainPendingCaptures.mockRejectedValue(new Error("boom, no code at all"));
 
     let thrown: unknown;
@@ -380,6 +398,7 @@ describe("drainPendingCaptures", () => {
     expect(thrown).not.toBeInstanceOf(DeviceKeyMissingError);
     expect(thrown).not.toBeInstanceOf(NotAuthenticatedError);
     expect(thrown).not.toBeInstanceOf(CaptureBufferReadFailedError);
+    expect(thrown).not.toBeInstanceOf(ProviderFilterNotStoredError);
     expect((thrown as Error).message).toBe("boom, no code at all");
   });
 });
@@ -436,6 +455,24 @@ describe("openSecuritySettings", () => {
     expect(mockNativeModule.openSecuritySettings).toHaveBeenCalledWith();
     expect(result).toBeUndefined();
   });
+
+  // A `void` wrapper over a `void` native `Function` has exactly one way to
+  // go wrong that the delegation case above cannot see: swallowing. Neither
+  // side of this pair catches anything today, and neither should start --
+  // `Settings.ACTION_SECURITY_SETTINGS` missing is an ActivityNotFoundException
+  // out of `context.startActivity`, and a wrapper that quietly ate it would
+  // leave the user tapping a button that does nothing, with nothing thrown,
+  // nothing logged and nothing on screen. The caller cannot fall back to
+  // re-checking `isDeviceSecure()` either: the answer is unchanged, because
+  // the settings screen never opened.
+  it("does not swallow a native failure -- a settings screen that never opened must not look like success", () => {
+    const failure = new Error("ActivityNotFoundException");
+    mockNativeModule.openSecuritySettings.mockImplementationOnce(() => {
+      throw failure;
+    });
+
+    expect(() => openSecuritySettings()).toThrow(failure);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -488,11 +525,19 @@ describe("isKeyguardLocked", () => {
 // `openAccessSettings`, which is a bare `Function` and therefore `void`.
 // ===========================================================================
 
-/** The eight contract §4 field names, as `Object.keys(...)` should report them. */
+/**
+ * The nine contract §4 field names, as `Object.keys(...)` should report them.
+ *
+ * `notificationKey` joined them with migration 018: the notification SLOT a
+ * capture arrived in, which is what tells an EDIT of an already-captured
+ * notification apart from a second, genuine transaction. The delivery `id`
+ * cannot — it is a fresh UUID every time Android redelivers.
+ */
 const RAW_CAPTURE_FIELDS = [
   "bigText",
   "capturedAt",
   "id",
+  "notificationKey",
   "packageName",
   "postedAt",
   "subText",
@@ -501,7 +546,7 @@ const RAW_CAPTURE_FIELDS = [
 ].sort();
 
 /**
- * A capture with every one of the eight fields populated -- deliberately
+ * A capture with every one of the nine fields populated -- deliberately
  * including non-null `subText`/`bigText`, which the encryption-era
  * `drainPendingCaptures` test above leaves `null`. A normalizer that dropped
  * either field entirely would still pass that older test; it cannot pass this
@@ -516,6 +561,7 @@ const fullyPopulatedCapture: RawCapture = {
   bigText: "You have received PHP 1,250.00 from JUAN D. Ref. No. 9001234567.",
   postedAt: 1754060400000,
   capturedAt: 1754060400500,
+  notificationKey: "com.globe.gcash.android|0|null|0",
 };
 
 /**
@@ -596,9 +642,11 @@ describe("the contract §4 listener surface", () => {
       wrapper: "setProviderFilter",
       nativeMethod: "setProviderFilter",
       // Two entries, so a wrapper that spread the array into positional
-      // arguments, or reversed it, fails.
-      call: () => setProviderFilter(["com.globe.gcash.android", "com.bdo.digitalbanking"]),
-      nativeArgs: [["com.globe.gcash.android", "com.bdo.digitalbanking"]],
+      // arguments, or reversed it, fails. The second argument is the deny-all
+      // flag, and `false` here is the allowlist case -- a wrapper that dropped
+      // it would leave the Kotlin `AsyncFunction`'s second parameter missing.
+      call: () => setProviderFilter(["com.globe.gcash.android", "com.bdo.digitalbanking"], false),
+      nativeArgs: [["com.globe.gcash.android", "com.bdo.digitalbanking"], false],
     },
     {
       wrapper: "drainPendingCaptures",
@@ -683,6 +731,20 @@ describe("the contract §4 listener surface", () => {
       expect(mockNativeModule.openAccessSettings).toHaveBeenCalledWith();
       expect(result).toBeUndefined();
     });
+
+    // Same reasoning as openSecuritySettings' twin of this test, and it
+    // matters more here: until the user reaches the Notification Access
+    // screen nothing is ever captured at all, so a navigation failure that
+    // was silently eaten would present as "the app just doesn't work", with
+    // no thrown error anywhere to say why.
+    it("does not swallow a native failure -- the one navigation the whole feature depends on", () => {
+      const failure = new Error("ActivityNotFoundException");
+      mockNativeModule.openAccessSettings.mockImplementationOnce(() => {
+        throw failure;
+      });
+
+      expect(() => openAccessSettings()).toThrow(failure);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -705,20 +767,61 @@ describe("the contract §4 listener surface", () => {
       // CapturePrefs.getProviderFilter reads an empty allowlist as "allow
       // every package". A wrapper that dropped `[]` as falsy, or substituted a
       // default, would turn "clear the filter" into something else entirely.
-      await setProviderFilter([]);
+      await setProviderFilter([], false);
 
-      expect(mockNativeModule.setProviderFilter).toHaveBeenCalledWith([]);
+      expect(mockNativeModule.setProviderFilter).toHaveBeenCalledWith([], false);
       expect(mockNativeModule.setProviderFilter.mock.calls[0][0]).toHaveLength(0);
+    });
+
+    it("forwards the deny-all flag as its own argument -- the same empty array means the opposite with it set", async () => {
+      // GAP-103. `[]` alone is allow-all; `[]` with the flag is block-all. The
+      // wrapper is the only place the two are told apart before the bridge, so
+      // a flag dropped or defaulted here silently inverts the most restrictive
+      // action the Privacy centre offers.
+      await setProviderFilter([], true);
+
+      expect(mockNativeModule.setProviderFilter).toHaveBeenCalledWith([], true);
+      expect(mockNativeModule.setProviderFilter.mock.calls[0][1]).toBe(true);
+    });
+
+    it("narrows a dropped write to ProviderFilterNotStoredError, which callers branch on", async () => {
+      // GAP-114. The Kotlin side throws this when the allowlist could not be
+      // sealed and no deny-all was asked for, so nothing was written at all.
+      // It is NOT one of the four auth codes: `hooks/mutations/
+      // use_set_provider_pause.ts` tells these apart with `instanceof` to
+      // decide whether "PeraPlano is still reading the same apps" is a true
+      // sentence, and a bare Error here would send it the generic copy.
+      mockNativeModule.setProviderFilter.mockRejectedValue(
+        Object.assign(new Error("native"), { code: "ProviderFilterNotStored" }),
+      );
+
+      await expect(setProviderFilter(["com.globe.gcash.android"], false)).rejects.toBeInstanceOf(
+        ProviderFilterNotStoredError,
+      );
+      await expect(setProviderFilter([], false)).rejects.toMatchObject({
+        code: "ProviderFilterNotStored",
+      });
+    });
+
+    it("leaves a rejection with no recognized code completely unchanged", async () => {
+      // The taxonomy only ever NARROWS. A bridge outage or a future native
+      // failure must not be miscategorized as "the filter was not stored",
+      // which would tell the user to restart over something a restart cannot
+      // fix.
+      const raw = new Error("the bridge is gone");
+      mockNativeModule.setProviderFilter.mockRejectedValue(raw);
+
+      await expect(setProviderFilter([], true)).rejects.toBe(raw);
     });
   });
 
   // -------------------------------------------------------------------------
-  // drainPendingCaptures -- the eight fields, and the JS-side absent-value
+  // drainPendingCaptures -- the nine fields, and the JS-side absent-value
   // guarantee (plan Task 8 rule 3).
   // -------------------------------------------------------------------------
 
   describe("drainPendingCaptures", () => {
-    it("returns typed RawCapture objects carrying all eight fields intact, including non-null subText and bigText", async () => {
+    it("returns typed RawCapture objects carrying all nine fields intact, including non-null subText and bigText", async () => {
       mockNativeModule.drainPendingCaptures.mockResolvedValue([fullyPopulatedCapture]);
 
       const [capture] = await drainPendingCaptures();

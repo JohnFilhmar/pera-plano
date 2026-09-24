@@ -3,13 +3,14 @@
 // Every figure is centavos and every assertion is exact. An amortization
 // schedule that ends ₱0.03 short is the kind of bug a user notices and cannot
 // explain, and it destroys confidence in every other number the app shows.
-import type { Loan } from "@/types/domain";
+import type { Installment, Loan } from "@/types/domain";
 
 import {
   buildAmortizationSchedule,
   buildFlatSchedule,
   monthlyPayment,
   nextDue,
+  principalApplied,
 } from "../loan_math";
 
 function loanOf(over: Partial<Loan> = {}): Loan {
@@ -18,6 +19,7 @@ function loanOf(over: Partial<Loan> = {}): Loan {
     direction: "i-owe",
     counterparty: "GLoan",
     principal: 5000000,
+    amountBorrowed: null,
     interestRate: 12,
     schedule: null,
     linkedWalletId: null,
@@ -262,4 +264,59 @@ test("nextDue reads the schedule in date order, not array order", () => {
   const shuffled = [SCHEDULE[2], SCHEDULE[0], SCHEDULE[1]];
 
   expect(nextDue(loanOf({ schedule: shuffled }), 0)?.dueDate).toBe("2026-09-15");
+});
+
+// ---------------------------------------------------------------------------
+// principalApplied — spec rule 2's three balances, expressed as one walk
+// ---------------------------------------------------------------------------
+
+/** ₱10,000 over three ₱4,000 installments — ₱2,000 of it interest. */
+const AMORTIZED: Installment[] = [
+  { dueDate: "2026-09-15", amountDue: 400000, principalPortion: 300000, interestPortion: 100000 },
+  { dueDate: "2026-10-15", amountDue: 400000, principalPortion: 330000, interestPortion: 70000 },
+  { dueDate: "2026-11-15", amountDue: 400000, principalPortion: 370000, interestPortion: 30000 },
+];
+
+test("A FLAT INSTALLMENT IS ALL PRINCIPAL, so nothing about flat or free-form moves", () => {
+  // Spec rule 4: 5-6 gets no interest formula, and `buildFlatSchedule`'s own
+  // header says every peso is principal. This is what keeps the fix to the
+  // amortized balance from touching the two kinds that were already right.
+  expect(principalApplied(null, 250000)).toBe(250000);
+  expect(principalApplied([], 250000)).toBe(250000);
+  expect(principalApplied(SCHEDULE, 444244)).toBe(444244);
+  expect(principalApplied(SCHEDULE, 444244 * 3)).toBe(444244 * 3);
+});
+
+test("AN AMORTIZED PAYMENT ONLY CLEARS ITS PRINCIPAL PORTION", () => {
+  // The defect in one line: ₱4,000 handed over reduces a ₱10,000 balance by
+  // ₱3,000, not by ₱4,000. Counting the whole installment is how the third
+  // installment's ₱3,700 of principal vanished from the balance.
+  expect(principalApplied(AMORTIZED, 0)).toBe(0);
+  expect(principalApplied(AMORTIZED, 400000)).toBe(300000);
+  expect(principalApplied(AMORTIZED, 800000)).toBe(630000);
+  expect(principalApplied(AMORTIZED, 1200000)).toBe(1000000);
+});
+
+test("a part-paid installment clears its INTEREST first", () => {
+  // A lender applies a short payment to interest before principal, and the
+  // min/max keep the reduction inside the row: never more principal than the
+  // installment holds, never less than nothing.
+  expect(principalApplied(AMORTIZED, 100000)).toBe(0);
+  expect(principalApplied(AMORTIZED, 150000)).toBe(50000);
+  expect(principalApplied(AMORTIZED, 399999)).toBe(299999);
+});
+
+test("ANYTHING BEYOND THE LAST INSTALLMENT COUNTS IN FULL", () => {
+  // Rule 11: "an overpayment applies the excess to the balance". Rule 20
+  // reopens a settled loan with a late fee, and the payment that clears that
+  // fee lands past every installment — with no tail it would reduce nothing.
+  expect(principalApplied(AMORTIZED, 1250000)).toBe(1050000);
+});
+
+test("principalApplied reads the schedule in date order, not array order", () => {
+  // Same reason `nextDue` sorts: the schedule round-trips through JSON, and
+  // walking a shuffled one would apply payments against the wrong rows' splits.
+  const shuffled = [AMORTIZED[2], AMORTIZED[0], AMORTIZED[1]];
+
+  expect(principalApplied(shuffled, 400000)).toBe(300000);
 });

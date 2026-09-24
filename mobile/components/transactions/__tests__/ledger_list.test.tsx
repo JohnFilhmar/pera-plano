@@ -49,7 +49,22 @@ import { ADJUSTMENT_LABEL, TRANSFER_LABEL } from "../transaction_row";
 
 const MINUS = "−";
 
-const AUG_13_9AM = new Date(2026, 7, 13, 9, 0).getTime();
+/**
+ * SEVEN, NOT NINE. This is the fixture the whole local-vs-UTC claim in this
+ * file rests on, and at 9am it was making no claim at all: 09:00 in Manila is
+ * 01:00 UTC on the SAME date, so `new Date(ms).toISOString().slice(0, 10)` —
+ * the wrong one-liner the tests below say they are guarding against — returns
+ * "2026-08-13" too. Every assertion about local grouping passed identically
+ * against the broken implementation.
+ *
+ * 07:00 in Manila is 23:00 UTC on the twelfth. A UTC-keyed implementation now
+ * files this row under the PREVIOUS day, which is exactly the coffee-filed-
+ * yesterday bug the header describes, so `localDateKey`, `groupByDay`'s day
+ * ordering and the day-net headers all discriminate. Requires the suite's
+ * zone to be pinned (test_support/jest_setup.ts) — on a UTC machine 07:00
+ * local is 07:00 UTC and the fixture would go quiet again.
+ */
+const AUG_13_7AM = new Date(2026, 7, 13, 7, 0).getTime();
 const AUG_13_6PM = new Date(2026, 7, 13, 18, 0).getTime();
 const AUG_12_NOON = new Date(2026, 7, 12, 12, 0).getTime();
 const AUG_11_NOON = new Date(2026, 7, 11, 12, 0).getTime();
@@ -63,7 +78,7 @@ function tx(overrides: Partial<Transaction> = {}): Transaction {
     categoryId: "cat_food_dining",
     amount: 10_000,
     direction: "out",
-    occurredAt: AUG_13_9AM,
+    occurredAt: AUG_13_7AM,
     merchant: "Jollibee",
     counterparty: null,
     referenceNo: null,
@@ -166,8 +181,14 @@ describe("localDateKey", () => {
     // is wrong east of Greenwich: 7am in Manila is the PREVIOUS day in UTC, so a
     // morning coffee would file itself under yesterday for every user in the
     // country this app is built for.
-    const nineAm = new Date(2026, 7, 13, 9, 0);
-    expect(localDateKey(nineAm.getTime())).toBe("2026-08-13");
+    //
+    // The instant has to be one where the two answers DIFFER, which the 9am
+    // this used to build was not — 09:00 +08:00 is 01:00 UTC on the same date,
+    // so the one-liner above returned "2026-08-13" as well and this assertion
+    // held either way. 07:00 +08:00 is 23:00 UTC on the twelfth.
+    const sevenAm = new Date(2026, 7, 13, 7, 0);
+    expect(sevenAm.toISOString().slice(0, 10)).toBe("2026-08-12");
+    expect(localDateKey(sevenAm.getTime())).toBe("2026-08-13");
   });
 
   test("pads month and day so keys sort lexically", () => {
@@ -183,7 +204,7 @@ describe("groupByDay", () => {
     // else.
     const groups = groupByDay([
       tx({ id: "t-old", occurredAt: AUG_11_NOON }),
-      tx({ id: "t-morning", occurredAt: AUG_13_9AM }),
+      tx({ id: "t-morning", occurredAt: AUG_13_7AM }),
       tx({ id: "t-mid", occurredAt: AUG_12_NOON }),
       tx({ id: "t-evening", occurredAt: AUG_13_6PM }),
     ]);
@@ -196,15 +217,15 @@ describe("groupByDay", () => {
     // Two notifications for the same instant — the second one to arrive is the
     // one the user just watched happen, so it belongs on top.
     const groups = groupByDay([
-      tx({ id: "first", occurredAt: AUG_13_9AM, createdAt: 1_000 }),
-      tx({ id: "second", occurredAt: AUG_13_9AM, createdAt: 2_000 }),
+      tx({ id: "first", occurredAt: AUG_13_7AM, createdAt: 1_000 }),
+      tx({ id: "second", occurredAt: AUG_13_7AM, createdAt: 2_000 }),
     ]);
 
     expect(groups[0].transactions.map((row) => row.id)).toEqual(["second", "first"]);
   });
 
   test("does not mutate the caller's array", () => {
-    const rows = [tx({ id: "a", occurredAt: AUG_11_NOON }), tx({ id: "b", occurredAt: AUG_13_9AM })];
+    const rows = [tx({ id: "a", occurredAt: AUG_11_NOON }), tx({ id: "b", occurredAt: AUG_13_7AM })];
     groupByDay(rows);
     expect(rows.map((row) => row.id)).toEqual(["a", "b"]);
   });
@@ -274,7 +295,7 @@ describe("day grouping on screen", () => {
   test("renders one header per day, newest day first, rows newest first within it", () => {
     renderLedger([
       tx({ id: "t3", occurredAt: AUG_11_NOON, merchant: "Grab" }),
-      tx({ id: "t1", occurredAt: AUG_13_9AM, merchant: "Jollibee" }),
+      tx({ id: "t1", occurredAt: AUG_13_7AM, merchant: "Jollibee" }),
       tx({ id: "t2", occurredAt: AUG_13_6PM, merchant: "Meralco" }),
     ]);
 
@@ -294,7 +315,7 @@ describe("day grouping on screen", () => {
 
   test("today's header says Today, and yesterday's says Yesterday", () => {
     renderLedger([
-      tx({ id: "t1", occurredAt: AUG_13_9AM }),
+      tx({ id: "t1", occurredAt: AUG_13_7AM }),
       tx({ id: "t2", occurredAt: AUG_12_NOON }),
     ]);
 
@@ -313,7 +334,7 @@ describe("day grouping on screen", () => {
 
   test("the header shows the day's NET, signed", () => {
     renderLedger([
-      tx({ id: "in", direction: "in", amount: 10_000, occurredAt: AUG_13_9AM }),
+      tx({ id: "in", direction: "in", amount: 10_000, occurredAt: AUG_13_7AM }),
       tx({ id: "out", direction: "out", amount: 10_000, occurredAt: AUG_13_6PM }),
     ]);
 
@@ -324,7 +345,7 @@ describe("day grouping on screen", () => {
   test("a transfer leg's amount is NOT added to the day's net", () => {
     // The header would otherwise contradict the label on the row below it.
     renderLedger([
-      tx({ id: "spend", direction: "out", amount: 10_000, occurredAt: AUG_13_9AM }),
+      tx({ id: "spend", direction: "out", amount: 10_000, occurredAt: AUG_13_7AM }),
       tx({
         id: "leg",
         direction: "out",
@@ -385,6 +406,23 @@ describe("a transaction row", () => {
   test("an unknown category still renders a chip rather than an empty pill", () => {
     renderLedger([tx({ id: "t1", categoryId: "cat_not_loaded_yet" })]);
     expect(screen.getByTestId("transaction-category-t1")).toHaveTextContent("Uncategorized");
+  });
+
+  test("shows the time it was told, and NEVER a time it was not (GAP-095)", () => {
+    // `occurredAtFor` lands a deliberately backdated manual entry at the start
+    // of the chosen local day, because the ledger groups by local day. The row
+    // used to render that as "12:00 AM" — a purchase a minute after midnight,
+    // which is a fact about the user's night the app was never given.
+    renderLedger([
+      tx({ id: "backdated", occurredAt: new Date(2026, 7, 11, 0, 0, 0, 0).getTime() }),
+      tx({ id: "captured", occurredAt: AUG_13_7AM }),
+    ]);
+
+    expect(screen.queryByText("12:00 AM")).toBeNull();
+    // The other direction of the rule: a stamp that DOES carry a time still
+    // shows it. A fix that dropped every time would hide the one thing that
+    // orders two rows inside the same day group.
+    expect(screen.getByTestId("transaction-time-captured")).toHaveTextContent("7:00 AM");
   });
 });
 

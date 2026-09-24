@@ -14,16 +14,23 @@
 // sketch was drafted from the ingest pipeline's vocabulary without
 // reconciling it against what Tasks 7-8 actually shipped, and the
 // coordinator ruled to implement against the shipped types as-is (see
-// task-13-report.md, "Escalation"). The table has no column to record which
-// resolution outcome closed an item — only `resolved_at` — because that
-// evidence lives in whatever row the caller's own action produces (the
-// Transaction, the TransferLink, the UserRule); this repo's `resolve` only
-// marks the item closed.
+// task-13-report.md, "Escalation"). Migration 024 gave the table a
+// `resolution` column, so it now records which of the two answers closed an
+// item (GAP-057). The richer evidence still lives in whatever row the caller's
+// own action produces: the Transaction, the TransferLink, the UserRule.
 import { REVIEW_KINDS } from "@/constants/review_kinds";
 import { getDatabase } from "@/lib/db/database";
 import { reviewQueueItemToRow, rowToReviewQueueItem, type ReviewQueueItemRow } from "@/lib/db/mappers";
 import { newId } from "@/lib/ids";
-import type { NewReviewItem, ReviewQueueItem, ReviewResolution } from "@/types/domain";
+import type {
+  Centavos,
+  EpochMs,
+  NewReviewItem,
+  ReviewItemPayload,
+  ReviewQueueItem,
+  ReviewResolution,
+  TxDirection,
+} from "@/types/domain";
 
 /**
  * Review Queue hygiene rule (docs/04-features/08-review-queue.md rules
@@ -68,6 +75,164 @@ export async function enqueue(item: NewReviewItem): Promise<ReviewQueueItem> {
     ],
   );
   return queueItem;
+}
+
+/**
+ * The OPEN item already raised for this capture, or `null`.
+ *
+ * ONE RAW NOTIFICATION MAY RAISE ONE OPEN CARD. The queue had no duplicate
+ * defence of any kind before this (2026-09-01): `dedupe_gate.checkDuplicate`
+ * compares a parsed event against COMMITTED TRANSACTIONS, so it is blind to an
+ * identical event sitting one card away in this table, unconfirmed. Anything
+ * that ran the stages over a stored capture twice therefore produced two
+ * identical cards — and confirming both puts the same ₱1,000 in the ledger
+ * twice, because the second confirm commits before the gate can compare it
+ * against the first.
+ *
+ * THE CAPTURE, AND ONLY THE CAPTURE, IS THE IDENTITY HERE. An earlier revision
+ * of this function also matched on the payload — same kind, amount, direction,
+ * merchant and wallet inside a window — and that is exactly the suppression
+ * `pipeline.test.ts` forbids on the commit path: two genuine ₱100.00 purchases
+ * can agree on every one of those fields, and collapsing them deletes a real
+ * transaction from the user's ledger. Two distinct captures are two distinct
+ * questions; the DedupeGate escalates them to a `possible-duplicate` card and
+ * lets the user judge, which is the right answer and not this function's job.
+ */
+export async function findOpenForRawNotification(
+  rawNotificationId: string,
+  now: number = Date.now(),
+): Promise<ReviewQueueItem | null> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<ReviewQueueItemRow>(
+    `SELECT * FROM review_queue_items
+     WHERE resolved_at IS NULL AND expires_at > ? AND raw_notification_id = ?
+     LIMIT 1`,
+    [now, rawNotificationId],
+  );
+  return row ? rowToReviewQueueItem(row) : null;
+}
+
+/**
+ * The movement an open card is already waiting on, as §6 rule 2 states it.
+ *
+ * `channel` is REQUIRED and is not part of the ingest entry's sketched
+ * signature, which is the one place this deliberately says more than the gap
+ * entry did. Rule 2 suppresses a second telling only when the two channels are
+ * known and DIFFER — a push and its SMS relay are one movement; two same-channel
+ * notifications are §6 rule 4's undecidable pair, which the queue exists to ask
+ * about. Matching without the channel would collapse two genuine ₱100.00
+ * purchases three minutes apart into one card and delete a real transaction,
+ * the exact suppression `findOpenForRawNotification` above refuses for the same
+ * reason.
+ */
+export type OpenTwin = {
+  providerKey: string;
+  amount: Centavos;
+  direction: TxDirection;
+  channel: "push" | "sms";
+  occurredAt: EpochMs;
+  /**
+   * The incoming telling's reference number, when it carried one. Two
+   * references that DISAGREE are the provider's own statement that these are
+   * two transactions, and no coincidence of timing outranks it — the same
+   * exclusion `matchesTwinWindow` makes by requiring `"unavailable"`.
+   */
+  referenceNo?: string | null;
+  /** §6 rule 2's twin window — `dedupeTwinWindowMs`, passed in, never hardcoded here. */
+  windowMs: number;
+};
+
+/**
+ * The OPEN card already raised for THIS movement on the other channel, or
+ * `null`.
+ *
+ * THE HOLE `checkDuplicate` CANNOT SEE. That gate compares an event against
+ * COMMITTED TRANSACTIONS, so a capture that hard-routed — unmapped wallet, a
+ * score under the floor — is invisible to it: the push sits in the queue, its
+ * SMS relay arrives seconds later, finds nothing committed, and is queued too.
+ * The user is asked the same question twice and answering both puts one payment
+ * in the ledger twice, because neither confirm has anything to compare against
+ * either. This is the queue-side half of the same rule.
+ *
+ * NEAREST IN TIME WINS, matching `dedupe_gate.nearestInTime`: a twin arrives
+ * seconds later, not hours, so when several open cards satisfy the window the
+ * closest is the likeliest counterpart.
+ *
+ * THE PAYLOAD IS READ IN JS, NOT IN SQL. `payload_json` is stored verbatim
+ * (rule 1) and this repo does not interpret it in SQL — there is no column to
+ * index and no json1 dependency to take on. The row set it scans is one open
+ * queue, which the spec itself caps at a "Normal" 25 and calls a backlog beyond.
+ *
+ * A CARD RAISED BEFORE THIS FIELD SET EXISTED MATCHES NOTHING, by construction:
+ * its payload has no `providerKey` and no `channel`, and both are required. It
+ * ages out within its 30 days.
+ */
+export async function findOpenTwin(
+  twin: OpenTwin,
+  now: number = Date.now(),
+): Promise<ReviewQueueItem | null> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<ReviewQueueItemRow>(
+    `SELECT * FROM review_queue_items
+     WHERE resolved_at IS NULL AND expires_at > ? AND raw_notification_id IS NOT NULL
+     ORDER BY created_at ASC`,
+    [now],
+  );
+
+  let nearest: ReviewQueueItem | null = null;
+  let smallestDelta = Number.POSITIVE_INFINITY;
+
+  for (const row of rows) {
+    const item = rowToReviewQueueItem(row);
+    const occurredAt = item.payload.occurredAt;
+    if (typeof occurredAt !== "number") continue;
+    if (!describesSameMovement(item.payload, twin)) continue;
+
+    const delta = Math.abs(occurredAt - twin.occurredAt);
+    if (delta > twin.windowMs || delta >= smallestDelta) continue;
+
+    nearest = item;
+    smallestDelta = delta;
+  }
+
+  return nearest;
+}
+
+/**
+ * `dedupe_gate.describesSameMovement` plus rule 2's channel test, asked of a
+ * queued payload rather than of a committed row.
+ *
+ * The channel is checked for PRESENCE before it is compared, for the reason the
+ * gate spells out at its own `providerKey: null` clause: an absent field is not
+ * a wildcard. A payload whose channel was never recorded is no evidence that it
+ * is the OTHER one, and `undefined !== "push"` would read it as exactly that.
+ */
+function describesSameMovement(payload: ReviewItemPayload, twin: OpenTwin): boolean {
+  if (payload.providerKey !== twin.providerKey) return false;
+  if (payload.amount !== twin.amount) return false;
+  if (payload.direction !== twin.direction) return false;
+  if (conflictingReferences(payload.referenceNo, twin.referenceNo)) return false;
+
+  return payload.channel !== undefined && payload.channel !== twin.channel;
+}
+
+/**
+ * True only when BOTH references are usable and they differ — `dedupe_gate`'s
+ * `compareReferences` reduced to the one answer this needs.
+ *
+ * Blank is absent, and absent is not a mismatch: most notifications carry no
+ * reference at all, and reading a missing one as disagreement would disable the
+ * twin window for exactly the pairs it exists to catch. Case and surrounding
+ * whitespace are folded because a push template and an SMS template are written
+ * by different teams and one of them shouts; the interior is left alone, since
+ * stripping separators is how two genuinely different codes start colliding.
+ */
+function conflictingReferences(left: unknown, right: string | null | undefined): boolean {
+  const a = typeof left === "string" ? left.trim().toLowerCase() : "";
+  const b = right?.trim().toLowerCase() ?? "";
+  if (a === "" || b === "") return false;
+
+  return a !== b;
 }
 
 /**
@@ -255,16 +420,14 @@ export async function countOpen(): Promise<number> {
 }
 
 /**
- * Marks an item resolved (rule 3). `resolution` is accepted for the pinned
- * contract §3 signature but not persisted — see the file-header note on why
- * there is no column for it.
+ * Marks an item resolved (rule 3), and records which answer resolved it
+ * (migration 024, GAP-057).
  *
  * Idempotent by construction: resolving an id that is missing or already
  * resolved is a silent no-op — never an error, never a second write — so a
  * double-tap in the triage UI can't overwrite the original `resolved_at`.
  */
 export async function resolve(id: string, resolution: ReviewResolution): Promise<void> {
-  void resolution;
   const db = await getDatabase();
   const existing = await db.getFirstAsync<{ resolved_at: number | null }>(
     "SELECT resolved_at FROM review_queue_items WHERE id = ?",
@@ -273,7 +436,51 @@ export async function resolve(id: string, resolution: ReviewResolution): Promise
   if (!existing || existing.resolved_at !== null) {
     return;
   }
-  await db.runAsync("UPDATE review_queue_items SET resolved_at = ? WHERE id = ?", [Date.now(), id]);
+  await db.runAsync("UPDATE review_queue_items SET resolved_at = ?, resolution = ? WHERE id = ?", [
+    Date.now(),
+    resolution,
+    id,
+  ]);
+}
+
+/**
+ * Clears an item's `resolved_at`, putting the card back in front of the user —
+ * the reverse of `resolve`, and the persistence half of spec rule 9's
+ * ten-second undo.
+ *
+ * Returns whether a row was actually reopened, so a caller can tell "the undo
+ * took" from "there was nothing to undo". A missing id and an already-open item
+ * are both a silent `false`, mirroring `resolve`'s own idempotence: a second tap
+ * on an offer that has already been taken is not an error worth telling anyone
+ * about.
+ *
+ * WHAT THIS FUNCTION DELIBERATELY DOES NOT DECIDE IS WHETHER REOPENING IS SAFE.
+ * Two kinds of resolved row here must never come back. A marker written by
+ * `markCaptureMerged` (resolved inside the same unit of work that creates it,
+ * and never shown to anyone) would become a card about a movement the user
+ * already merged away. And any card whose triage COMMITTED a Transaction would
+ * invite a second confirmation of a row the ledger already holds — the
+ * double-post `findOpenForRawNotification` above exists to prevent, reintroduced
+ * by the undo. Neither test belongs in a repository: one is a question about
+ * age, the other about a different aggregate. `undoResolution` in
+ * lib/review/resolve_actions.ts is the ONLY caller, and it asks both first.
+ *
+ * `expires_at` IS NOT TOUCHED. The hygiene clock (rules 21-25) runs from
+ * arrival, not from triage, and restarting it here would let a card outlive the
+ * raw text that justifies it (domain invariant 3, spec rule 21). A reopened item
+ * therefore keeps exactly the lifetime it had before it was triaged — which is
+ * also why `undoResolution` refuses an item that expired in the meantime rather
+ * than handing `purgeExpired` a row the user just asked to see again.
+ */
+export async function reopen(id: string): Promise<boolean> {
+  const db = await getDatabase();
+  const result = await db.runAsync(
+    // Both columns, together: migration 024's CHECK refuses a resolution on a
+    // card that is open again.
+    "UPDATE review_queue_items SET resolved_at = NULL, resolution = NULL WHERE id = ? AND resolved_at IS NOT NULL",
+    [id],
+  );
+  return result.changes > 0;
 }
 
 /**

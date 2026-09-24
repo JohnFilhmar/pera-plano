@@ -9,6 +9,8 @@
 //     table is not part of any backup payload.
 //   - Every row carries `expires_at` from the moment it is written, and
 //     `purgeExpiredRawCaptures` (run at bootstrap) is what keeps the promise.
+//   - A capture the router judges not money-related keeps no text at all:
+//     `storeDiscardedCapture` writes its app and its times only (GAP-107).
 //   - The row id IS the `RawCapture.id` the native buffer assigned. That is not
 //     a shortcut: pipeline rule 11 makes the at-least-once native drain safe by
 //     asking "have I already seen this capture?", and this table is where the
@@ -39,6 +41,10 @@ type RawNotificationRow = {
   big_text: string | null;
   posted_at: number;
   captured_at: number;
+  /** Migration 018. NULL on every row stored before it — see `RawCapture.notificationKey`. */
+  notification_key: string | null;
+  /** Migration 021. Set only on a minimal record, which `storeDiscardedCapture` writes. */
+  body_discarded_at: number | null;
 };
 
 function rowToRawCapture(row: RawNotificationRow): RawCapture {
@@ -51,12 +57,14 @@ function rowToRawCapture(row: RawNotificationRow): RawCapture {
     bigText: row.big_text,
     postedAt: row.posted_at,
     capturedAt: row.captured_at,
+    notificationKey: row.notification_key,
   };
 }
 
 /**
- * A `RawCapture` plus the ONE extra fact the Privacy centre's captured list
- * needs to render its countdown: when this row expires.
+ * A `RawCapture` plus the two facts the Privacy centre's captured list needs
+ * and the native contract does not carry: when this row expires, and whether
+ * its text was kept at all.
  *
  * A SEPARATE TYPE, not a widened `RawCapture` — same reasoning as
  * `getRawCaptureExpiry`'s own doc: `RawCapture` is interface-contract §4, the
@@ -65,11 +73,19 @@ function rowToRawCapture(row: RawNotificationRow): RawCapture {
  * only on this side of that boundary, for callers that already need the
  * expiry alongside the text (m3b Task 6) and would otherwise pay a second
  * per-row query for it.
+ *
+ * `bodyDiscarded` IS TRUE FOR A MINIMAL RECORD (GAP-107). Its text fields are
+ * null because the router judged the notification not money-related, not
+ * because the notification was blank, and the list has to say which.
  */
-export type StoredRawCapture = RawCapture & { expiresAt: EpochMs };
+export type StoredRawCapture = RawCapture & { expiresAt: EpochMs; bodyDiscarded: boolean };
 
 function rowToStoredRawCapture(row: RawNotificationRow & { expires_at: number }): StoredRawCapture {
-  return { ...rowToRawCapture(row), expiresAt: row.expires_at };
+  return {
+    ...rowToRawCapture(row),
+    expiresAt: row.expires_at,
+    bodyDiscarded: row.body_discarded_at !== null,
+  };
 }
 
 /**
@@ -130,8 +146,9 @@ export async function storeRawCapture(capture: RawCapture, now: number): Promise
   const db = await getDatabase();
   await db.runAsync(
     `INSERT OR IGNORE INTO raw_notifications
-       (id, package_name, title, text, sub_text, big_text, posted_at, captured_at, expires_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, package_name, title, text, sub_text, big_text, posted_at, captured_at, expires_at,
+        notification_key)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       capture.id,
       capture.packageName,
@@ -142,9 +159,88 @@ export async function storeRawCapture(capture: RawCapture, now: number): Promise
       capture.postedAt,
       capture.capturedAt,
       now + RAW_CAPTURE_TTL_MS,
+      capture.notificationKey ?? null,
     ],
   );
   return capture.id;
+}
+
+/**
+ * Persists the minimal record of a capture the router judged not money-related:
+ * its app and its two times, and none of its text (GAP-107, owner decision
+ * 2026-09-09).
+ *
+ * WHY A RECORD AT ALL. The money-signal test is a heuristic, and its false
+ * negatives lose a transaction silently (source_router.ts's asymmetry note).
+ * With this row the miss can still be found in the Privacy centre as
+ * "something arrived from this app at this time and was ignored". Without the
+ * text, the privacy principle holds for the content, which is what it is about.
+ *
+ * THE SLOT KEY GOES WITH THE TEXT. Its tag is the posting app's own label for
+ * the notification, and a chat app puts the conversation there. Migration
+ * 021's CHECK refuses a marked row that carries either.
+ *
+ * Idempotent with the same first-write-wins rule as `storeRawCapture`, and the
+ * same thirty days, counted from `now`.
+ *
+ * @param capture - The capture as the native buffer handed it over. Only its
+ *   id, package and times are written.
+ * @param now - The store time. The row expires thirty days after it, and it is
+ *   recorded as the discard time.
+ * @returns The capture's own id.
+ */
+export async function storeDiscardedCapture(capture: RawCapture, now: number): Promise<string> {
+  const db = await getDatabase();
+  await db.runAsync(
+    `INSERT OR IGNORE INTO raw_notifications
+       (id, package_name, posted_at, captured_at, expires_at, body_discarded_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [
+      capture.id,
+      capture.packageName,
+      capture.postedAt,
+      capture.capturedAt,
+      now + RAW_CAPTURE_TTL_MS,
+      now,
+    ],
+  );
+  return capture.id;
+}
+
+/**
+ * Reduces a stored capture nothing points at to its minimal record: every text
+ * field and the slot key cleared, and the row marked, which also settles it for
+ * the recovery sweep (GAP-107).
+ *
+ * FOR ROWS STORED WHOLE BEFORE ANYTHING ROUTED THEM. The drain now routes before
+ * it stores, so a non-money capture arrives here already trimmed. A row an
+ * earlier build's drain stored with its text is found by the recovery sweep
+ * instead, and the sweep calls this once the router has said what it is.
+ *
+ * NEVER A ROW ANYTHING POINTS AT. "Why was this recorded?" shows a committed
+ * Transaction's text from this table and a Review Queue card shows its own, so
+ * a referenced row keeps its text whatever the caller believes. The guard is
+ * the same pair of `EXISTS` clauses `isRawCaptureUnreferenced` asks.
+ *
+ * `expires_at` DOES NOT MOVE. Discarding is not a store, and the deletion date
+ * the Privacy centre shows must not change under the user.
+ *
+ * @param id - The capture's id. An unknown, referenced or already-trimmed id
+ *   changes nothing.
+ * @param now - Recorded as the discard time.
+ */
+export async function discardRawCaptureBody(id: string, now: number): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync(
+    `UPDATE raw_notifications
+     SET title = NULL, text = NULL, sub_text = NULL, big_text = NULL,
+         notification_key = NULL, body_discarded_at = ?
+     WHERE id = ?
+       AND body_discarded_at IS NULL
+       AND NOT EXISTS (SELECT 1 FROM transactions WHERE raw_notification_id = ?)
+       AND NOT EXISTS (SELECT 1 FROM review_queue_items WHERE raw_notification_id = ?)`,
+    [now, id, id, id],
+  );
 }
 
 /**
@@ -209,6 +305,209 @@ export async function hasRawCapture(id: string): Promise<boolean> {
     [id],
   );
   return (row?.count ?? 0) > 0;
+}
+
+/**
+ * Captures that were stored and then produced nothing — no Transaction, no
+ * Review Queue card — oldest-captured first, at most `limit` of them.
+ *
+ * THE RECOVERY LIST THE PIPELINE NEVER HAD. `storeRawCapture` runs BEFORE the
+ * stages (pipeline rule 2), so a stage that throws — SQLite busy, a corrupt
+ * user rule, the process killed mid-batch — leaves a durable row nothing ever
+ * looks at again, while `hasRawCapture` calls every later delivery of that
+ * notification a replay. The money movement disappears with no row, no card
+ * and no error. This is the query `startIngest` sweeps to find those rows and
+ * put them back through the stages.
+ *
+ * TWO `NOT EXISTS` RATHER THAN A `processed_at` COLUMN, and the difference is
+ * not free. A column would record whether the stages RAN; this asks whether
+ * they left anything BEHIND, which is a different question and is wrong in two
+ * knowable ways:
+ *
+ *   - A capture the stages deliberately ignored — the DedupeGate's `duplicate`
+ *     verdict, the review floor's `unreadable` discard — points at neither
+ *     table, so it is swept again on every launch. Re-running it is SAFE: every
+ *     verdict is anchored on the event's own `occurredAt` rather than on when
+ *     the stages run, so a later pass reaches the same answer. It is repeated
+ *     work, not a wrong one.
+ *   - A capture whose committed Transaction is later DELETED looks unprocessed
+ *     again, and a sweep would re-commit it. `mergeDuplicate`
+ *     (lib/review/resolve_actions.ts) is the only caller of `deleteTransaction`
+ *     in the app, and it closes this itself: the merge leaves a resolved card
+ *     on the dropped capture, which the second `NOT EXISTS` below then reads.
+ *     `isRawCaptureUnreferenced` is the singular form of that same predicate,
+ *     so the merge decides whether to write the marker by asking the exact
+ *     question this sweep will ask later.
+ *
+ * The first wants the column, and the column wants a migration, so it is
+ * recorded here rather than left for the next reader to rediscover.
+ *
+ * ONE KIND OF DELIBERATE IGNORE HAS ITS COLUMN NOW. A minimal record (GAP-107)
+ * points at neither table either, but it holds nothing any stage could read, so
+ * offering it on every launch for thirty days would crowd real stranded
+ * captures out of the limit. `body_discarded_at` settles it.
+ *
+ * BOUNDED BY `expires_at`, exactly as `listRawCaptures` is and for the same
+ * reason: `purgeExpiredRawCaptures` only runs at bootstrap, so a long session
+ * holds rows whose 30 days ran out hours ago. Reprocessing one would be the app
+ * acting on text it told the user was already destroyed.
+ *
+ * OLDEST-CAPTURED FIRST, the opposite of `listRawCaptures`'s newest-first: this
+ * list feeds pipeline rule 8, where an older capture must never be committed
+ * after a newer one. Capped so a device carrying hundreds of stranded rows does
+ * not spend its whole launch on them — whatever the cap leaves is picked up by
+ * the next sweep.
+ */
+export async function listUnprocessedRawCaptures(
+  now: EpochMs,
+  limit: number,
+): Promise<RawCapture[]> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<RawNotificationRow>(
+    `SELECT * FROM raw_notifications
+     WHERE expires_at > ?
+       AND body_discarded_at IS NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM transactions WHERE transactions.raw_notification_id = raw_notifications.id
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM review_queue_items
+         WHERE review_queue_items.raw_notification_id = raw_notifications.id
+       )
+     ORDER BY captured_at ASC
+     LIMIT ?`,
+    [now, limit],
+  );
+  return rows.map(rowToRawCapture);
+}
+
+/**
+ * True when NOTHING points at this capture — no Transaction, no Review Queue
+ * card, resolved or not. `listUnprocessedRawCaptures`'s two `NOT EXISTS`
+ * clauses, asked about one id.
+ *
+ * WHAT IT IS FOR. A caller that is about to remove the last row referencing a
+ * capture has to know whether doing so strands it, because a stranded capture
+ * is one the next `startIngest` sweep re-runs through the stages — and for a
+ * capture whose Transaction was deleted DELIBERATELY, re-running it puts back
+ * the row the user removed. `mergeDuplicate` is that caller.
+ *
+ * NO `expires_at` BOUND, unlike the list above. The list is bounded because it
+ * is ACTED on and an expired capture's text is text the user was told is gone;
+ * this one is only asked whether a reference exists, and a caller writing a
+ * marker for a capture that is about to expire anyway costs one row that
+ * `purgeExpiredRawCaptures` will clear with the rest.
+ */
+export async function isRawCaptureUnreferenced(id: string): Promise<boolean> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ referenced: number }>(
+    `SELECT
+       EXISTS (SELECT 1 FROM transactions WHERE raw_notification_id = ?)
+       OR EXISTS (SELECT 1 FROM review_queue_items WHERE raw_notification_id = ?)
+       AS referenced`,
+    [id, id],
+  );
+  return (row?.referenced ?? 0) === 0;
+}
+
+/**
+ * The id of an already-stored capture that is THE SAME NOTIFICATION as this
+ * one, redelivered — or `null` when this is genuinely new.
+ *
+ * WHY THIS EXISTS ALONGSIDE `hasRawCapture`, WHICH LOOKS LIKE THE SAME
+ * QUESTION. It is not. `capture.id` is a UUID minted per DELIVERY in
+ * `PeraPlanoNotificationListenerService.extractCapture`, so it answers "have I
+ * been handed this exact delivery before" — the right guard for the
+ * at-least-once native drain handing back a batch it already gave us, and the
+ * wrong one for everything else. Android calls `onNotificationPosted` AGAIN
+ * every time an app edits a notification it already posted, and each of those
+ * redeliveries arrives with a fresh UUID. The id check cannot see them, so one
+ * withdrawal notification its bank app edited twice became three stored
+ * captures, three pipeline runs and three identical Review Queue cards
+ * (owner's device report, 2026-09-01).
+ *
+ * THE SLOT KEY IS THE WHOLE ANSWER, AND TEXT ALONE IS NOT.
+ * `notificationKey` is `StatusBarNotification.getKey()` — `package|id|tag|user`
+ * — which the platform holds constant across an edit and differs between two
+ * separately-posted notifications. Matching on the text alone was the first
+ * attempt at this and it is WRONG: `pipeline.test.ts`'s "two distinct captures
+ * with identical amount, channel and timing still reach the DedupeGate" pins
+ * the project's decision that two genuine ₱100.00 purchases producing
+ * byte-identical text inside the twin window must be ESCALATED to the user as
+ * a `possible-duplicate` card, never suppressed. Suppressing there eats a real
+ * transaction, which is worse than the duplicate card it would fix. Requiring
+ * the key means two separately-posted notifications are never touched by this
+ * function at all, whatever their text says.
+ *
+ * A NULL KEY SUPPRESSES NOTHING, and that is the safe direction. Rows stored
+ * before migration 018, and records still in the native buffer written by a
+ * build that predates it, carry none — "cannot tell" must behave exactly like
+ * today rather than guess. Widening those into a package-and-text match is the
+ * dedupe-on-text-alone that migration 018's own header rejects by name, and
+ * `pipeline.test.ts`'s "two distinct captures with identical amount, channel
+ * and timing still reach the DedupeGate" fails the moment it is tried: the two
+ * genuine ₱100.00 purchases it describes carry no key either, so the match
+ * cannot tell them from a redelivery and eats the second one. The DedupeGate's
+ * §6 rule 4 is what settles a keyless pair, and it only gets the chance
+ * because this function declines to.
+ *
+ * A BLANK KEY IS A NULL KEY. `StatusBarNotification.getKey()` is
+ * `package|id|tag|user` and is never empty, so an empty or whitespace-only key
+ * is not a slot identity — it is the same "cannot tell". Taking it literally
+ * would be strictly worse than the null case rather than equivalent to it:
+ * `notification_key = ''` MATCHES, so every keyless capture would share one
+ * empty bucket and any two of them agreeing on package and text inside the
+ * window would suppress each other. That is exactly the text-only rule above,
+ * arrived at by accident. Nothing on the Kotlin path can produce a blank key
+ * today (`CaptureRecord.fromJson` maps a missing one to `null`), which is why
+ * this is a guard rather than a bug fix — but the field is a plain
+ * `string | null` on a native contract, and the cost of it ever becoming `""`
+ * is a silently deleted transaction.
+ *
+ * THE TEXT IS STILL COMPARED, because a slot is reused for genuinely new
+ * content: a tile that goes "Processing" then "Sent ₱1,000" is one slot and
+ * two different facts, and only the second is the transaction. Identical text
+ * in the same slot is the redelivery; changed text in the same slot is a new
+ * capture that the DedupeGate then judges on its merits.
+ *
+ * `posted_at` is deliberately NOT compared, only the window it must fall in:
+ * the platform stamps a repost with a fresh `postTime`, so including it would
+ * differ on exactly the redeliveries this exists to catch.
+ *
+ * NULL-SAFE by `IS` rather than `=`: three of the four text fields are
+ * routinely NULL, and `NULL = NULL` is NULL in SQL, so `=` would never match
+ * the captures carrying the least text.
+ */
+export async function findReplayCapture(
+  capture: RawCapture,
+  windowMs: number,
+): Promise<string | null> {
+  const notificationKey = capture.notificationKey ?? null;
+  if (notificationKey === null || notificationKey.trim() === "") return null;
+
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ id: string }>(
+    `SELECT id FROM raw_notifications
+     WHERE package_name = ?
+       AND notification_key = ?
+       AND title IS ? AND text IS ? AND sub_text IS ? AND big_text IS ?
+       AND posted_at >= ? AND posted_at <= ?
+       AND id <> ?
+     ORDER BY posted_at DESC
+     LIMIT 1`,
+    [
+      capture.packageName,
+      notificationKey,
+      capture.title,
+      capture.text,
+      capture.subText,
+      capture.bigText,
+      capture.postedAt - windowMs,
+      capture.postedAt + windowMs,
+      capture.id,
+    ],
+  );
+  return row?.id ?? null;
 }
 
 /**

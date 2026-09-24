@@ -83,7 +83,7 @@ import { AmountText } from "@/components/ui/amount_text";
 import { registerIcon } from "@/components/ui/button";
 import { ListRow } from "@/components/ui/list_row";
 import { formatTime } from "@/lib/datetime";
-import type { Category, Transaction, Wallet } from "@/types/domain";
+import type { Category, EpochMs, Transaction, Wallet } from "@/types/domain";
 
 /**
  * The exact sentence, exported so the tests and any future surface that shows a
@@ -131,6 +131,32 @@ const UNNAMED_CATEGORY = "Uncategorized";
 
 /** The detail line's shared styling — task-4-brief.md's exact subtitle pair. */
 const DETAIL_TEXT_CLASS = "text-secondary font-medium text-fg-2 dark:text-fg-2-dark";
+
+/**
+ * Whether this row's stamp carries a time the app was actually told.
+ *
+ * A BACKDATED MANUAL ENTRY HAS NO TIME OF DAY. The user picked a day and
+ * nothing more, and `occurredAtFor` (lib/transactions/manual_entry.ts) lands it
+ * at the start of that local day — deliberately, because the ledger groups by
+ * local calendar day. Rendering that as "12:00 AM" invents a moment: it reads
+ * as a purchase made a minute after midnight, which is a fact about the user's
+ * night the app never had.
+ *
+ * The one row this hides a REAL time from is a capture that landed at exactly
+ * 00:00:00.000 local, to the millisecond. That is a stamp the pipeline writes
+ * from `postedAt`, so it is possible rather than impossible — and losing the
+ * time on it costs the user nothing the day header does not already say, where
+ * a fabricated one is a statement about their money that is simply untrue.
+ */
+function hasTimeOfDay(at: EpochMs): boolean {
+  const date = new Date(at);
+  return (
+    date.getHours() !== 0 ||
+    date.getMinutes() !== 0 ||
+    date.getSeconds() !== 0 ||
+    date.getMilliseconds() !== 0
+  );
+}
 
 export type TransactionRowProps = {
   transaction: Transaction;
@@ -226,8 +252,14 @@ export function TransactionRow({
               <Text className={DETAIL_TEXT_CLASS}>{wallet.name}</Text>
             </>
           ) : null}
-          <Text className={DETAIL_TEXT_CLASS}>·</Text>
-          <Text className={DETAIL_TEXT_CLASS}>{formatTime(transaction.occurredAt)}</Text>
+          {hasTimeOfDay(transaction.occurredAt) ? (
+            <>
+              <Text className={DETAIL_TEXT_CLASS}>·</Text>
+              <Text testID={`transaction-time-${transaction.id}`} className={DETAIL_TEXT_CLASS}>
+                {formatTime(transaction.occurredAt)}
+              </Text>
+            </>
+          ) : null}
         </View>
         {isTransfer ? (
           <Text

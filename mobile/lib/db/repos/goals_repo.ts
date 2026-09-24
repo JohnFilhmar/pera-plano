@@ -15,8 +15,9 @@
 // The other half — "a Goal's linkedWalletId is a savings Wallet" — has no
 // column to enforce it, so it is checked here on every write.
 import { getDatabase } from "@/lib/db/database";
+import { milestoneFor, previousMilestone } from "@/lib/goals/goal_math";
 import { newId } from "@/lib/ids";
-import type { ContributionRule, Goal } from "@/types/domain";
+import type { Centavos, ContributionRule, Goal, GoalMilestone } from "@/types/domain";
 
 export type NewGoal = {
   name: string;
@@ -41,6 +42,8 @@ type GoalRow = {
   linked_wallet_id: string;
   contribution_rule_json: string | null;
   archived_at: number | null;
+  /** Migration 022. Read only by the milestone functions below, never mapped onto `Goal`. */
+  milestone_reached: number;
   created_at: number;
   updated_at: number;
 };
@@ -134,10 +137,19 @@ export async function createGoal(input: NewGoal): Promise<Goal> {
   const now = Date.now();
   const id = newId();
 
+  // THE LEVEL THE GOAL STARTS AT IS ANNOUNCED; NOTHING UNDER IT IS (owner's
+  // ruling, 2026-09-24). The mark means "announced up to here", so seeding it one
+  // rung BELOW what the balance meets leaves exactly the starting level owed, and
+  // the pass the creating mutation triggers posts that one alert.
+  const wallet = await db.getFirstAsync<{ balance: number }>(
+    "SELECT balance FROM wallets WHERE id = ?",
+    [input.linkedWalletId],
+  );
+
   await db.runAsync(
     `INSERT INTO goals (id, name, target_amount, target_date, linked_wallet_id,
-       contribution_rule_json, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+       contribution_rule_json, milestone_reached, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       input.name,
@@ -145,6 +157,7 @@ export async function createGoal(input: NewGoal): Promise<Goal> {
       input.targetDate ?? null,
       input.linkedWalletId,
       input.contributionRule ? JSON.stringify(input.contributionRule) : null,
+      previousMilestone(milestoneFor(wallet?.balance ?? 0, input.targetAmount)),
       now,
       now,
     ],
@@ -247,6 +260,22 @@ export async function updateGoal(id: string, patch: Partial<NewGoal>): Promise<G
     ],
   );
 
+  // A RELINK RE-BASES PROGRESS ON A BALANCE THE USER JUST CHOSE, which the edit
+  // flow's own confirmation says, so it reads like a creation: the level the goal
+  // lands on is announced and nothing under it, by seeding the rung below it.
+  // The mark still never falls, so a move onto an emptier wallet announces
+  // nothing and re-announces nothing.
+  if (merged.linkedWalletId !== current.linkedWalletId) {
+    const wallet = await db.getFirstAsync<{ balance: number }>(
+      "SELECT balance FROM wallets WHERE id = ?",
+      [merged.linkedWalletId],
+    );
+    await raiseGoalMilestone(
+      id,
+      previousMilestone(milestoneFor(wallet?.balance ?? 0, merged.targetAmount)),
+    );
+  }
+
   const updated = await getGoal(id);
   if (updated === null) throw new GoalNotFoundError(id);
   return updated;
@@ -283,6 +312,38 @@ export async function archiveGoal(id: string): Promise<void> {
 }
 
 /**
+ * Retires a goal the user has FINISHED with — the spec's "Complete", which the
+ * states table offers on the Reached card and, as "Complete anyway", on the
+ * Past due one (docs/04-features/05-goals-savings.md §States, §complete or edit
+ * flow step 3). `goal_card.tsx` has promised this in copy since it shipped
+ * ("Move the date, lower the target, or complete it anyway") with nothing
+ * behind it, so a reached goal sat in the live list until the user deleted it.
+ *
+ * IT IS THE SAME WRITE `archiveGoal` MAKES, and that is the honest state of the
+ * schema rather than a shortcut: `goals` has ONE retirement column,
+ * `archived_at` (migration 016), and no `completed_at`. Completing and deleting
+ * therefore land a goal in exactly the same place — out of the live list,
+ * restorable, wallet and transactions untouched (rule 3) — and the difference
+ * between them is not recorded. Rule 19 accepts that: the schema records when a
+ * goal was retired, not why, so an archived goal reads as completed only where
+ * the app can DERIVE it, which is the balance-versus-target test rule 10
+ * already calls Reached.
+ *
+ * It exists as its own name anyway, rather than the screen calling
+ * `archiveGoal`, because the two are different requests from the user and only
+ * one place would have to change if a completion column were ever added.
+ *
+ * Idempotent on an unknown or already-retired id, like every archive here.
+ */
+export async function completeGoal(id: string, now: number = Date.now()): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync(
+    "UPDATE goals SET archived_at = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL",
+    [now, now, id],
+  );
+}
+
+/**
  * Restores a deleted goal. The exact inverse of `archiveGoal`.
  *
  * THE WALLET IS THE ONE THING THIS CAN FAIL ON. Deleting a goal frees its
@@ -307,6 +368,76 @@ export async function unarchiveGoal(id: string): Promise<void> {
     "UPDATE goals SET archived_at = NULL, updated_at = ? WHERE id = ? AND archived_at IS NOT NULL",
     [Date.now(), id],
   );
+}
+
+/** One live goal's standing against the milestones (goals rule 12), as the milestone pass reads it. */
+export type GoalMilestoneState = {
+  goalId: string;
+  goalName: string;
+  targetAmount: Centavos;
+  /** The linked wallet's balance, which IS the goal's progress (rule 1). */
+  balance: Centavos;
+  /** The highest milestone ever recorded for this goal. Only rises. */
+  milestoneReached: GoalMilestone;
+};
+
+/**
+ * Every goal whose progress can still reach a milestone: live, on a wallet that
+ * is not archived. Oldest first.
+ *
+ * A goal on an archived wallet is paused, its progress frozen (rule 18), so it
+ * has nothing to announce; a deleted goal is one the user is done with.
+ *
+ * @returns One state per such goal. Empty when there are none.
+ */
+export async function listGoalMilestoneStates(): Promise<GoalMilestoneState[]> {
+  const db = await getDatabase();
+  // `milestone_reached` is typed as the union because migration 022's CHECK
+  // admits no other value.
+  const rows = await db.getAllAsync<{
+    id: string;
+    name: string;
+    target_amount: number;
+    milestone_reached: GoalMilestone;
+    balance: number;
+  }>(
+    `SELECT goals.id, goals.name, goals.target_amount, goals.milestone_reached, wallets.balance
+       FROM goals
+       JOIN wallets ON wallets.id = goals.linked_wallet_id
+      WHERE goals.archived_at IS NULL AND wallets.is_archived = 0
+      ORDER BY goals.created_at`,
+  );
+  return rows.map((row) => ({
+    goalId: row.id,
+    goalName: row.name,
+    targetAmount: row.target_amount,
+    balance: row.balance,
+    milestoneReached: row.milestone_reached,
+  }));
+}
+
+/**
+ * Records that a goal has reached `milestone`, unless it already stands at that
+ * milestone or a higher one, and says whether this call raised it.
+ *
+ * THE RAISE IS THE DECISION TO ANNOUNCE. The pass posts only when this returns
+ * true, so two passes racing over the same crossing post once: the second finds
+ * the mark already there and changes nothing. The mark never falls, which is
+ * rules 12, 20 and 21 in one guard.
+ *
+ * `updated_at` is left alone: reaching a milestone is not an edit the user made.
+ *
+ * @param goalId - The goal. An unknown id changes nothing.
+ * @param milestone - The milestone the goal's balance now meets.
+ * @returns True when the mark rose.
+ */
+export async function raiseGoalMilestone(goalId: string, milestone: GoalMilestone): Promise<boolean> {
+  const db = await getDatabase();
+  const result = await db.runAsync(
+    "UPDATE goals SET milestone_reached = ? WHERE id = ? AND milestone_reached < ?",
+    [milestone, goalId, milestone],
+  );
+  return result.changes === 1;
 }
 
 /**

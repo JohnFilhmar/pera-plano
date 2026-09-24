@@ -60,6 +60,16 @@ jest.mock("@/modules/notification_listener", () => ({
     .mockResolvedValue({ granted: true, serviceConnected: true, lastCaptureAt: null }),
 }));
 
+// ../_layout pulls in ./lock, which composes
+// components/lock/recovery_unlock_form.tsx and its GAP-017 screen capture
+// guard. expo-screen-capture is another requireNativeModule module with
+// nothing to bind to under Jest; nothing here is about the guard, so it is
+// inert. components/lock/__tests__/recovery_unlock_form.test.tsx owns the
+// assertions on its mount/unmount behaviour.
+jest.mock("expo-screen-capture", () => ({
+  usePreventScreenCapture: jest.fn(),
+}));
+
 jest.mock("@/lib/ingest/pipeline", () => ({
   startIngest: jest.fn().mockResolvedValue(jest.fn()),
 }));
@@ -79,6 +89,10 @@ jest.mock("@/lib/alerts/tracking_health_subscriber", () => ({
   startTrackingHealthSubscriber: jest.fn(() => jest.fn()),
 }));
 
+jest.mock("@/lib/goals/goal_milestone_subscriber", () => ({
+  startGoalMilestoneSubscriber: jest.fn(() => jest.fn()),
+}));
+
 // Everything else the shell fires once per launch and that would otherwise
 // reach a database or the notification stack from inside these tests.
 jest.mock("@/lib/bills/bills_service", () => ({ listBillStatuses: jest.fn().mockResolvedValue([]) }));
@@ -95,6 +109,7 @@ import { bootstrapApp } from "@/lib/bootstrap";
 import { useTheme } from "@/contexts/theme_context";
 import { useLock } from "@/contexts/lock_context";
 import { startTrackingHealthSubscriber } from "@/lib/alerts/tracking_health_subscriber";
+import { startGoalMilestoneSubscriber } from "@/lib/goals/goal_milestone_subscriber";
 import { startPaydayNotificationSubscriber } from "@/lib/income/payday_notification_subscriber";
 import { startLimitLedgerSubscriber } from "@/lib/limits/limit_ledger_subscriber";
 
@@ -105,11 +120,13 @@ const mockUseLock = useLock as jest.Mock;
 const mockStartLimits = startLimitLedgerSubscriber as jest.Mock;
 const mockStartPayday = startPaydayNotificationSubscriber as jest.Mock;
 const mockStartTracking = startTrackingHealthSubscriber as jest.Mock;
+const mockStartGoals = startGoalMilestoneSubscriber as jest.Mock;
 
 const SUBSCRIBERS: Array<[string, jest.Mock]> = [
   ["limits ledger", mockStartLimits],
   ["payday summary push", mockStartPayday],
   ["tracking health", mockStartTracking],
+  ["goal milestones", mockStartGoals],
 ];
 
 function renderApp() {
@@ -133,6 +150,7 @@ beforeEach(() => {
   mockStartLimits.mockReturnValue(jest.fn());
   mockStartPayday.mockReturnValue(jest.fn());
   mockStartTracking.mockReturnValue(jest.fn());
+  mockStartGoals.mockReturnValue(jest.fn());
   mockBootstrapApp.mockResolvedValue({ onboardingComplete: true });
   mockUseFonts.mockReturnValue([true, null]);
   mockUseTheme.mockReturnValue({

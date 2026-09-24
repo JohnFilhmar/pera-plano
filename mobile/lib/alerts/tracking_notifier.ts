@@ -93,6 +93,11 @@ export async function notifyTrackingInterrupted(now: EpochMs): Promise<string | 
     // as the thing that must wait for morning.
     bypassQuietHours: true,
   });
-  await setSetting("tracking_interrupted_last_notified_at", now);
+  // THE CAP IS SPENT ONLY BY A NOTICE THAT LANDED. `postAlert` returns null
+  // when notification permission is missing, which on Android 13+ is every
+  // install until onboarding's alerts step asks for POST_NOTIFICATIONS.
+  // Stamping the timestamp for a notice the OS never showed would silence the
+  // first REAL interruption of the next 24 hours over nothing.
+  if (id !== null) await setSetting("tracking_interrupted_last_notified_at", now);
   return id;
 }

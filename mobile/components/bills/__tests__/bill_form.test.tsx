@@ -16,7 +16,7 @@ import { BillForm } from "@/components/bills/bill_form";
 import { DueRulePicker } from "@/components/bills/due_rule_picker";
 import { KeypadHost } from "@/components/ui/keypad_host";
 import { KeypadProvider } from "@/contexts/keypad_context";
-import { typeAmount } from "@/test_support/keypad";
+import { clearAmount, typeAmount } from "@/test_support/keypad";
 import type { DueRule } from "@/types/domain";
 
 /** A Friday, so no weekday adjustment perturbs the previews. */
@@ -245,4 +245,47 @@ test("a bill amount is entered in pesos, not centavos", () => {
   fireEvent.press(screen.getByTestId("bill-save"));
 
   expect(onSubmit.mock.calls[0][0].amount).toBe(235075);
+});
+
+// ---------------------------------------------------------------------------
+// The day field agrees with the rule it stores — GAP-081. LabelledNumber used
+// to keep its own text state and emit the raw string, so "45" or an emptied
+// field stayed on screen while the rule already held 31 or 1, and nothing told
+// the user their number had been replaced. Driven through BillForm rather than
+// the bare picker on purpose: the picker is controlled, so only a parent that
+// feeds the clamped value back can show what the user actually sees.
+// ---------------------------------------------------------------------------
+test("A DAY PAST THE END OF EVERY MONTH SHOWS THE CLAMPED VALUE THE RULE HOLDS", () => {
+  const onSubmit = jest.fn();
+  renderForm(<BillForm today={TODAY} onSubmit={onSubmit} />);
+
+  fireEvent.changeText(screen.getByTestId("bill-name"), "Meralco");
+  typeAmount("bill-amount", "2350");
+  typeAmount("due-day", "45");
+
+  // NumericField builds its accessibility label out of the value it is
+  // rendering, so this is what is on screen — not what the picker emitted.
+  expect(screen.getByTestId("due-day").props.accessibilityLabel).toBe("Day of the month, 31");
+
+  fireEvent.press(screen.getByTestId("bill-save"));
+  expect(onSubmit.mock.calls[0][0].dueRule).toEqual({ kind: "day-of-month", day: 31 });
+});
+
+test("AN EMPTIED DAY BLOCKS SAVE INSTEAD OF QUIETLY MEANING THE 1st", () => {
+  // Wrong due dates feed reminders and the Safe-to-Spend bills term, so an
+  // unanswered field has to stay unanswered rather than fall back to a date.
+  const onSubmit = jest.fn();
+  renderForm(<BillForm today={TODAY} onSubmit={onSubmit} />);
+
+  fireEvent.changeText(screen.getByTestId("bill-name"), "Meralco");
+  typeAmount("bill-amount", "2350");
+  clearAmount("due-day");
+
+  expect(screen.getByTestId("due-day").props.accessibilityLabel).toBe("Day of the month");
+
+  fireEvent.press(screen.getByTestId("bill-save"));
+  expect(onSubmit).not.toHaveBeenCalled();
+  // ...and the preview says why it is empty rather than claiming the rule has
+  // no upcoming dates.
+  screen.getByTestId("due-preview-incomplete");
 });

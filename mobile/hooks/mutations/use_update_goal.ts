@@ -12,6 +12,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/constants/query_keys";
 import { updateGoal } from "@/lib/db/repos/goals_repo";
 import type { NewGoal } from "@/lib/db/repos/goals_repo";
+import { emitAppEvent } from "@/lib/events/app_events";
 import type { Goal } from "@/types/domain";
 
 import { invalidateKeys } from "./invalidate_keys";
@@ -35,6 +36,12 @@ export function useUpdateGoal() {
 
   return useMutation({
     mutationFn: ({ id, patch }: UpdateGoalVariables): Promise<Goal> => updateGoal(id, patch),
-    onSuccess: () => invalidateKeys(queryClient, [queryKeys.goals.all, queryKeys.wallets.all]),
+    onSuccess: (goal) => {
+      // A relink lands the goal on a balance the user just chose, and the level it
+      // lands on is announced; a lowered target can put a goal past a milestone
+      // the same way. Through the bus, for the reason `goals:changed` gives.
+      void emitAppEvent("goals:changed", { goalId: goal.id });
+      invalidateKeys(queryClient, [queryKeys.goals.all, queryKeys.wallets.all]);
+    },
   });
 }

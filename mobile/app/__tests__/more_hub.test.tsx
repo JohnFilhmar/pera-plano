@@ -14,23 +14,57 @@
 // block a press if a feature ever shipped ahead of its own rollout again —
 // SHIPPED_FEATURES is exported readonly, so it uses the same contained
 // "cast away readonly" seam components/gates/__tests__/gates.test.tsx uses.
+//
+// THE "TURN ON ALERTS" ROW (GAP-003) is this hub's only conditional row, and
+// the only one that is not a `push` — it raises the Android 13+
+// POST_NOTIFICATIONS dialog, or opens the phone's settings once Android will
+// no longer show one. Both halves are mocked here: the permission READ
+// (`expo-notifications`) decides whether the row renders at all, and the
+// WRITE (`@/lib/alerts/alerts_service`) is what the row exists to call. The
+// service is mocked rather than let through for the same reason
+// app/__tests__/bills_screen.test.tsx mocks it: it reaches the native
+// `NotificationListener` module, which cannot be required under Jest.
 jest.mock("expo-router", () => ({
   useRouter: () => ({ push: (...args: unknown[]) => mockPush(...args) }),
 }));
 
+// LEFT PENDING BY DEFAULT, deliberately. Every test in this file except the
+// three alerts ones is synchronous, and a permission read that resolved would
+// land its state update after the test body had finished — an `act` warning on
+// thirty tests that are not about this row. A pending read renders exactly the
+// hub this file has always asserted on (the row is hidden until the answer is
+// known); the tests that care resolve it themselves.
+jest.mock("expo-notifications", () => ({
+  getPermissionsAsync: jest.fn(() => new Promise(() => {})),
+}));
+
+jest.mock("@/lib/alerts/alerts_service", () => ({
+  requestAlertPermission: jest.fn(),
+}));
+
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, within } from "@testing-library/react-native";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
 import type { ReactNode } from "react";
+import { Linking } from "react-native";
+import * as Notifications from "expo-notifications";
 
 import { SHIPPED_FEATURES } from "@/constants/shipped_features";
 import type { FeatureKey, ShipState } from "@/constants/shipped_features";
 import { ThemeProvider } from "@/contexts/theme_context";
+import { requestAlertPermission } from "@/lib/alerts/alerts_service";
 import { __setTierForTests } from "@/lib/entitlements";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 
 import MoreScreen from "../(tabs)/more";
 
 const mockPush = jest.fn();
+const mockGetPermissionsAsync = Notifications.getPermissionsAsync as jest.Mock;
+const mockRequestAlertPermission = requestAlertPermission as jest.Mock;
+
+/** The pending-forever default the mock factory above explains. */
+function leaveAlertPermissionUnread(): void {
+  mockGetPermissionsAsync.mockImplementation(() => new Promise(() => {}));
+}
 
 function makeTestClient(): QueryClient {
   const defaults = appQueryClient.getDefaultOptions();
@@ -61,6 +95,8 @@ function setShipState(key: FeatureKey, state: ShipState): void {
 
 beforeEach(() => {
   mockPush.mockClear();
+  mockRequestAlertPermission.mockReset();
+  leaveAlertPermissionUnread();
   __setTierForTests(null);
 });
 
@@ -69,6 +105,7 @@ afterEach(() => {
   // Task 8 — not "soon", which was only ever this file's OLD default.
   setShipState("reports", "shipped");
   __setTierForTests(null);
+  jest.restoreAllMocks();
 });
 
 test("SUBTITLES DO NOT CLIP TO ONE LINE (branch-review-correctness.md F2)", () => {
@@ -203,13 +240,60 @@ test("SUBSCRIPTIONS NAVIGATES TO /more/subscriptions ON PLUS", () => {
   expect(mockPush).toHaveBeenCalledWith("/more/subscriptions");
 });
 
-test("SUBSCRIPTIONS OPENS THE UPGRADE SHEET INSTEAD OF NAVIGATING ON FREE", () => {
-  // PlusGate intercepts the press itself (docs/11 "TWO GATING STATES") — a
-  // Free user never reaches the router at all.
+test("SUBSCRIPTIONS NAVIGATES ON FREE TOO, AND STILL WEARS THE PLUS BADGE", () => {
+  // INVERTED BY GAP-122. This used to assert the opposite — `mockPush` not
+  // called, `upgrade-sheet` open — because `PlusGate` intercepted the press
+  // (docs/11 "TWO GATING STATES"). Reports rule 19 promises a Free user "the
+  // count of detected patterns only", the screen behind this row is where that
+  // count renders, and interception made it unreachable code. The row now
+  // passes its press through (`lockedPress="passthrough"`); the badge, and the
+  // gate on the DATA, both stay — app/(tabs)/more/subscriptions.tsx asks
+  // `hasRecurringDetection()` before it renders anything, and the sheet is one
+  // tap further on from there.
   __setTierForTests("free");
   renderScreen(<MoreScreen />);
 
   fireEvent.press(screen.getByTestId("more-subscriptions"));
-  expect(mockPush).not.toHaveBeenCalled();
-  expect(screen.getByTestId("upgrade-sheet")).toBeTruthy();
+  expect(mockPush).toHaveBeenCalledWith("/more/subscriptions");
+  expect(screen.queryByTestId("upgrade-sheet")).toBeNull();
+  expect(screen.getByTestId("plus-badge")).toBeTruthy();
+});
+
+// ---------------------------------------------------------------------------
+// "Turn on alerts" (GAP-003) — the recovery route for a user who skipped or
+// refused the onboarding alerts step. Without it a refusal on Android 13+ is
+// permanent from inside the app: nothing else in PeraPlano ever asks again.
+// ---------------------------------------------------------------------------
+
+test("THE ALERTS ROW IS HIDDEN ONCE THE PERMISSION IS GRANTED", async () => {
+  mockGetPermissionsAsync.mockResolvedValue({ granted: true, canAskAgain: false });
+  renderScreen(<MoreScreen />);
+
+  await waitFor(() => expect(mockGetPermissionsAsync).toHaveBeenCalled());
+  expect(screen.queryByTestId("more-turn-on-alerts")).toBeNull();
+});
+
+test("THE ALERTS ROW ASKS THE OS WHEN THE PERMISSION IS MISSING AND ANDROID WILL STILL PROMPT", async () => {
+  mockGetPermissionsAsync.mockResolvedValue({ granted: false, canAskAgain: true });
+  mockRequestAlertPermission.mockResolvedValue(true);
+  renderScreen(<MoreScreen />);
+
+  fireEvent.press(await screen.findByTestId("more-turn-on-alerts"));
+
+  await waitFor(() => expect(mockRequestAlertPermission).toHaveBeenCalledTimes(1));
+  // Granting removes the row — there is nothing left for it to offer.
+  await waitFor(() => expect(screen.queryByTestId("more-turn-on-alerts")).not.toBeOnTheScreen());
+});
+
+test("THE ALERTS ROW OPENS SETTINGS INSTEAD OF ASKING AGAIN ONCE ANDROID IS DONE PROMPTING", async () => {
+  const openSettings = jest.spyOn(Linking, "openSettings").mockResolvedValue(undefined);
+  mockGetPermissionsAsync.mockResolvedValue({ granted: false, canAskAgain: false });
+  renderScreen(<MoreScreen />);
+
+  fireEvent.press(await screen.findByTestId("more-turn-on-alerts"));
+
+  await waitFor(() => expect(openSettings).toHaveBeenCalledTimes(1));
+  // A second `requestPermissionsAsync` would resolve from what the OS
+  // remembers, with no dialog — a button that silently does nothing.
+  expect(mockRequestAlertPermission).not.toHaveBeenCalled();
 });

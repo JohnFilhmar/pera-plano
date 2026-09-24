@@ -20,6 +20,7 @@ import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { useUnarchiveGoal } from "@/hooks/mutations/use_unarchive_goal";
 import { useArchivedGoals } from "@/hooks/queries/use_archived_plan_items";
 import { useGoals } from "@/hooks/queries/use_goals";
+import { usePendingContributions } from "@/hooks/queries/use_pending_contributions";
 import { WalletAlreadyHasGoalError } from "@/lib/db/repos/goals_repo";
 import { canCreateGoal } from "@/lib/entitlements";
 import type { GoalStatus } from "@/lib/goals/goals_service";
@@ -45,6 +46,10 @@ function goalRowAccessibilityLabel(status: GoalStatus): string {
 export function GoalsPanel() {
   const router = useRouter();
   const { data: statuses } = useGoals();
+  const { data: pending } = usePendingContributions();
+  const outstandingByGoal = new Map(
+    (pending ?? []).map((contribution) => [contribution.goalId, contribution.outstanding]),
+  );
 
   const onAdd = () => {
     const count = statuses?.length ?? 0;
@@ -134,6 +139,7 @@ export function GoalsPanel() {
               progress={status.progress}
               targetDate={status.goal.targetDate}
               contributionRule={status.goal.contributionRule}
+              plannedThisPayday={outstandingByGoal.get(status.goal.id) ?? null}
             />
           </Pressable>
         ))}

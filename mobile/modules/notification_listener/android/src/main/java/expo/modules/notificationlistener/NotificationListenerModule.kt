@@ -71,6 +71,15 @@ import expo.modules.kotlin.modules.ModuleDefinition
  * `recreateDeviceKek` is the one function here that is NOT a taxonomy
  * source -- it is the recovery ACTION the `DeviceKeyInvalidated` rejection
  * exists to lead to. See [KeyStoreBridge.recreateDeviceKek]'s doc.
+ *
+ * ONE MORE CODE SITS OUTSIDE THAT TAXONOMY ENTIRELY:
+ * [ProviderFilterNotStoredException] -> `code == "ProviderFilterNotStored"`
+ * (GAP-114), thrown by [setProviderFilter] when the capture scope the user
+ * asked for did not reach disk. It is listed apart from the four above on
+ * purpose -- every one of those is a statement about an AUTH-GATED key and
+ * three of them are fixed by authenticating, while this one is about the
+ * UNAUTHENTICATED prefs KEK and is fixed by relaunching. Folding it in would
+ * send a user who paused a provider into the recovery-phrase flow.
  */
 class NotificationListenerModule : Module() {
 
@@ -125,17 +134,16 @@ class NotificationListenerModule : Module() {
       KeyStoreBridge.recreateDeviceKek()
     }
 
+    // ---- Recovery: rotate a permanently-invalidated capture keypair ------
+
+    AsyncFunction("recreateCaptureKeyPair") {
+      KeyStoreBridge.recreateCaptureKeyPair()
+    }
+
     // ---- Decrypting drain of the buffered-while-dead queue ---------------
 
     AsyncFunction("drainPendingCaptures") {
-      val file = CaptureBuffer.fileFor(requireContext())
-      val records =
-        try {
-          mapKeyErrors { CaptureBuffer.drain(file) }
-        } catch (readFailed: CaptureBuffer.ReadFailedException) {
-          throw CaptureBufferReadFailedException()
-        }
-      records.map { it.toMap() }
+      drainPendingCaptures(requireContext())
     }
 
     // ---- §11a "wipe and start over": delete the buffer outright ---------
@@ -185,8 +193,20 @@ class NotificationListenerModule : Module() {
       setCaptureEnabled(requireContext(), enabled)
     }
 
-    AsyncFunction("setProviderFilter") { packageNames: List<String> ->
-      setProviderFilter(requireContext(), packageNames)
+    // TWO ARGUMENTS, BOTH REQUIRED FROM JS. `denyAll` is what an allowlist
+    // cannot say (GAP-103); `modules/notification_listener/index.ts` is the
+    // only caller and always passes it.
+    AsyncFunction("setProviderFilter") { packageNames: List<String>, denyAll: Boolean ->
+      setProviderFilter(requireContext(), packageNames, denyAll)
+    }
+
+    // THE READ-BACK THIS BRIDGE WENT WITHOUT (GAP-119). Everything above was
+    // write-only, so no JS caller could ask what scope the device is actually
+    // applying -- see [getProviderFilter] for what the Privacy centre does
+    // with the answer.
+
+    AsyncFunction("getProviderFilter") {
+      getProviderFilter(requireContext())
     }
 
     // ---- Health (contract §4; plan Task 6 rule 4) ------------------------
@@ -355,9 +375,83 @@ internal fun setCaptureEnabled(context: Context, enabled: Boolean) {
  * [CapturePrefs.getProviderFilter]. Passing `[]` is therefore how a caller
  * clears the filter, not how it disables capture; that is
  * [setCaptureEnabled]'s job.
+ *
+ * [denyAll] IS THE SENTENCE THE LIST CANNOT CARRY (GAP-103): "block every
+ * package", which the Privacy centre reaches by pausing every provider and
+ * which used to arrive here as `[]`, i.e. as its exact opposite. It stays
+ * INDEPENDENT of [setCaptureEnabled]: the master pause and the provider
+ * switches are two controls the user sets separately, and neither may move
+ * the other. Pass `[]` alongside it -- the flag outranks the filter, so the
+ * list it is sent with is only what a later resume falls back to.
+ *
+ * Defaulted to `false` for the same reason [CapturePrefs.setProviderFilter]
+ * defaults it: a caller that names only an allowlist means only an allowlist.
+ *
+ * THROWS [ProviderFilterNotStoredException] WHEN THE SCOPE DID NOT LAND
+ * (GAP-114) -- the one function on this bridge that can fail without any
+ * Keystore key being AUTHENTICATED. [CapturePrefs.setProviderFilter] returns
+ * `false` when the allowlist could not be sealed at all (no usable prefs KEK)
+ * and no deny-all was asked for, so nothing was written and the listener keeps
+ * whatever filter it already had. Resolving anyway is what made a pause the
+ * user explicitly asked for disappear: JS wrote `paused_provider_packages` --
+ * the only readable record of the pause, since this bridge has a setter and no
+ * getter -- for a scope the device never entered, and capture continued from
+ * the provider whose switch now read "Paused".
+ *
+ * A REJECTION RATHER THAN A RETURNED FLAG, because this is the one shape a
+ * caller cannot accidentally ignore. `app/(onboarding)/providers.tsx` already
+ * handles a rejection here (it degrades to the allow-all default on purpose,
+ * see its own comment); a `false` would have sailed past its `.catch`
+ * untouched, fixing the Privacy centre and leaving the identical silence one
+ * screen away.
  */
-internal fun setProviderFilter(context: Context, packageNames: List<String>) {
-  CapturePrefs(context).setProviderFilter(packageNames.toSet())
+internal fun setProviderFilter(
+  context: Context,
+  packageNames: List<String>,
+  denyAll: Boolean = false,
+) {
+  if (!CapturePrefs(context).setProviderFilter(packageNames.toSet(), denyAll)) {
+    throw ProviderFilterNotStoredException()
+  }
+}
+
+/**
+ * The capture scope the listener is ACTUALLY applying: the allowlist and the
+ * deny-all flag, as one snapshot (GAP-119).
+ *
+ * WHY IT EXISTS. [setProviderFilter] above had no counterpart, so JS held a
+ * record of the scope it had ASKED for and no way to check it. That record is
+ * `paused_provider_packages`, and it is what the Privacy centre draws its
+ * provider switches from -- so on a device where a write did not land, the one
+ * screen dedicated to "which banks may this app read" reported a pause the
+ * listener never entered, with nothing anywhere to contradict it.
+ *
+ * BOTH VALUES OR NEITHER, in one call, for the same reason
+ * [CapturePrefs.setProviderFilter] writes them in one `commit()`: the flag
+ * outranks the list, so a caller that read them separately could pair a
+ * pre-write flag with a post-write list and describe a scope the device has
+ * never been in.
+ *
+ * READ THROUGH THE EXACT ACCESSORS [CapturePrefs.shouldCapture] CONSULTS, and
+ * in the same order, which is what makes the answer the enforced scope rather
+ * than a second opinion about it. That matters most in the case JS most needs
+ * to hear about: a sealed filter that cannot be OPENED (Keystore reset,
+ * restored onto another device, a preferences file from a foreign build) reads
+ * back as the EMPTY set, and the listener genuinely captures every package on
+ * that device. Reporting the empty set here is therefore not a read failure to
+ * paper over -- it is the truth, and it is exactly the fail-open the Privacy
+ * centre has to be able to see.
+ *
+ * NO KEY, NO AUTHENTICATION, AND NEVER A REJECTION -- like every other reader
+ * on [CapturePrefs], which is a class the headless listener service calls with
+ * no catch. Nothing here can fail in a way a caller would have to branch on.
+ */
+internal fun getProviderFilter(context: Context): Map<String, Any?> {
+  val prefs = CapturePrefs(context)
+  return mapOf(
+    "denyAll" to prefs.isProviderFilterDenyAll(),
+    "packageNames" to prefs.getProviderFilter().toList(),
+  )
 }
 
 /**
@@ -404,6 +498,43 @@ internal fun listenerHealth(context: Context): Map<String, Any?> {
  */
 internal fun observedPackages(context: Context): List<Map<String, Any?>> =
   CapturePrefs(context).listObservedPackages().map { it.toMap() }
+
+/**
+ * Everything the `drainPendingCaptures` AsyncFunction does: drain the
+ * buffered-while-dead queue, translate the two failure kinds JS has to tell
+ * apart into their coded exceptions, and hand back the contract §4 maps.
+ *
+ * A top-level, `Module`-free function for the same reason as everything else
+ * on this page, and here the reason is sharper than usual: while this logic
+ * lived INSIDE the `AsyncFunction` block, the only way for
+ * `NotificationListenerModuleTest` to reach it was to re-type it into a test
+ * helper -- and a re-typed copy of the error mapping proves nothing about the
+ * mapping the bridge actually runs. Deleting the [mapKeyErrors] call here
+ * would have left every drain test green while a `NotAuthenticated` rejection
+ * reached JS as a raw [UserNotAuthenticatedException] with no `code` to
+ * branch on, which JS reads as an unknown failure and, per
+ * [CaptureBuffer]'s class doc, must never be confused with "the buffer is
+ * empty". Keep the DSL body a one-liner.
+ *
+ * THE TWO TRANSLATIONS ARE NOT INTERCHANGEABLE. [mapKeyErrors] handles the
+ * Keystore pair ([KeyPermanentlyInvalidatedException],
+ * [UserNotAuthenticatedException]); the `catch` below handles a storage-layer
+ * read failure, which is not a key problem at all. Both leave the buffer
+ * completely untouched on disk -- see [CaptureBuffer.drain]'s doc for why
+ * that ordering is what makes a retry safe -- and both must stay
+ * distinguishable from the fifth outcome, an empty buffer, which is a normal
+ * `[]` and never an error.
+ */
+internal fun drainPendingCaptures(context: Context): List<Map<String, Any?>> {
+  val file = CaptureBuffer.fileFor(context)
+  val records =
+    try {
+      mapKeyErrors { CaptureBuffer.drain(file) }
+    } catch (readFailed: CaptureBuffer.ReadFailedException) {
+      throw CaptureBufferReadFailedException()
+    }
+  return records.map { it.toMap() }
+}
 
 /**
  * Points [PeraPlanoNotificationListenerService.liveSink] at [emit], adapting
@@ -612,5 +743,30 @@ internal class CaptureBufferReadFailedException :
   CodedException(
     code = "CaptureBufferReadFailed",
     message = "the pending-capture buffer could not be read",
+    cause = null,
+  )
+
+/**
+ * Crosses the bridge as `code == "ProviderFilterNotStored"` -- the capture
+ * scope JS asked for is NOT the one the device is applying (GAP-114). The
+ * allowlist is sealed under the prefs KEK, and on a device where that key is
+ * unavailable [CapturePrefs.setProviderFilter] writes nothing at all rather
+ * than dropping the user to allow-all.
+ *
+ * NOT PART OF THE FOUR-CODE AUTH TAXONOMY above, and the difference matters to
+ * a caller: nothing here is waiting on a user authentication, so re-prompting
+ * for biometrics or for the recovery phrase would be the wrong response and
+ * would fail again identically. The prefs KEK is created unauthenticated at
+ * `OnCreate` ([ensurePrefsKeyOnLaunch]) and at `onListenerConnected`, so the
+ * remedy is a relaunch, which is what the JS copy tells the user.
+ *
+ * SECURITY: the message names only the failure, never a package name, so a
+ * rejection reaching a log cannot disclose which banks the user holds -- the
+ * exact disclosure sealing the filter exists to prevent.
+ */
+internal class ProviderFilterNotStoredException :
+  CodedException(
+    code = "ProviderFilterNotStored",
+    message = "the provider filter could not be stored on this device",
     cause = null,
   )

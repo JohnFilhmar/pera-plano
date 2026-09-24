@@ -24,8 +24,9 @@ jest.mock("@/modules/notification_listener", () => ({
 }));
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
 import type { ReactNode } from "react";
+import { AppState } from "react-native";
 
 import { ThemeProvider } from "@/contexts/theme_context";
 import { isShipped } from "@/constants/shipped_features";
@@ -130,7 +131,22 @@ test("A FRESH APP SHOWS THE NO-LIMIT INVITATION, NOT A ZERO", async () => {
   await screen.findByText("Set a limit to see what's safe to spend");
 
   fireEvent.press(screen.getByTestId("sts-set-limit"));
-  expect(mockPush).toHaveBeenCalledWith("/plan/limits/new");
+  expect(mockPush).toHaveBeenCalledWith("/plan/limits/new", { withAnchor: true });
+});
+
+// A CROSS-TAB PUSH CARRIES ITS ANCHOR. Home lives in one tab and every one of
+// these targets lives in another tab's Stack. Without `withAnchor` the target
+// mounts as that stack's ONLY entry on a cold start, and the tab is stuck on
+// it: no back, and pressing the tab button returns to the same card. See
+// plan/_layout.tsx for the other half, which covers deep links rather than
+// in-app pushes.
+test("opening a limit from Home anchors the Plan tab's stack", async () => {
+  renderScreen(<HomeScreen />);
+  await screen.findByTestId("sts-set-limit");
+
+  fireEvent.press(screen.getByTestId("sts-set-limit"));
+
+  expect(mockPush).toHaveBeenCalledWith("/plan/limits/new", { withAnchor: true });
 });
 
 test("A LIMIT AND SOME SPEND PRODUCE A REAL NUMBER AND ITS CAPTION", async () => {
@@ -284,7 +300,7 @@ test("THE WATCHING CARD CLEARS ONCE A TRANSACTION LANDS, WITHOUT A MANUAL PULL",
   const tx = await spend(200_000, systemClock.now() - 60_000);
   await emitAppEvent("ledger:committed", { transactionId: tx.id });
 
-  await waitFor(() => expect(screen.queryByTestId("home-empty")).toBeNull(), {
+  await waitFor(() => expect(screen.queryByTestId("home-empty")).not.toBeOnTheScreen(), {
     timeout: 30_000,
   });
 });
@@ -320,7 +336,28 @@ test("A DISCONNECTED LISTENER STATES THE GAP AND OFFERS A FIX", async () => {
   fireEvent.press(screen.getByTestId("tracking-fix"));
   // The listener-health screen (m3b Task 7) is the destination this action
   // always wanted — the detailed view behind this exact banner.
-  expect(mockPush).toHaveBeenCalledWith("/more/listener_health");
+  expect(mockPush).toHaveBeenCalledWith("/more/listener_health", { withAnchor: true });
+});
+
+// A CROSS-TAB PUSH CARRIES ITS ANCHOR. Home lives in one tab and every one of
+// these targets lives in another tab's Stack. Without `withAnchor` the target
+// mounts as that stack's ONLY entry on a cold start, and the tab is stuck on
+// it: no back, and pressing the tab button returns to the same card. See
+// plan/_layout.tsx for the other half, which covers deep links rather than
+// in-app pushes.
+test("opening listener health from Home anchors the More tab's stack", async () => {
+  mockHealth.mockResolvedValue({
+    granted: true,
+    serviceConnected: false,
+    lastCaptureAt: systemClock.now() - 2 * DAY_MS,
+  });
+
+  renderScreen(<HomeScreen />);
+  await screen.findByTestId("tracking-fix");
+
+  fireEvent.press(screen.getByTestId("tracking-fix"));
+
+  expect(mockPush).toHaveBeenCalledWith("/more/listener_health", { withAnchor: true });
 });
 
 test("PAUSED IS A NEUTRAL PILL, NOT A FAULT — THE USER CHOSE IT", async () => {
@@ -430,10 +467,13 @@ test("AN OVERDUE BILL RAISES AN ALERT AND OPENS ITS CYCLE", async () => {
 
   await screen.findByText("Meralco is overdue", {}, { timeout: 30_000 });
   fireEvent.press(screen.getByTestId(`home-alert-bill:${bill.id}:${yesterday}`));
-  expect(mockPush).toHaveBeenCalledWith({
-    pathname: "/plan/bills/[id]",
-    params: { id: bill.id, dueDate: yesterday },
-  });
+  expect(mockPush).toHaveBeenCalledWith(
+    {
+      pathname: "/plan/bills/[id]",
+      params: { id: bill.id, dueDate: yesterday },
+    },
+    { withAnchor: true },
+  );
 });
 
 test("A HEALTHY APP RAISES NO ALERTS — SILENCE IS THE GOOD STATE", async () => {
@@ -499,4 +539,181 @@ test("A LEDGER COMMIT MOVES THE NUMBER WITHOUT A MANUAL PULL", async () => {
     },
     { timeout: 30_000 },
   );
+});
+
+// ---------------------------------------------------------------------------
+// Rule 13's ninth trigger — local-midnight rollover — and the pull that says
+// it is refreshing
+// ---------------------------------------------------------------------------
+
+/**
+ * A DAILY Limit with money already inside its window, and the clock pinned to
+ * that evening.
+ *
+ * The scope is the whole point. A daily window is the one that provably empties
+ * at midnight with no other input: the same rows, read against tomorrow, put
+ * `spend` at zero and the allowance back at the full cap. Nothing in these
+ * tests writes to the ledger after the render, so a figure that moves can only
+ * have moved because a query re-ran against a new "today".
+ *
+ * PINNED RELATIVE TO THE REAL DATE, not to a hardcoded evening in some other
+ * month: rows are stamped by their repositories from `Date.now()` directly
+ * (`createLimit`, `insertTransaction`), which the `systemClock` spy does not
+ * reach, so a distant fixture would leave every row created in the pinned day's
+ * own future.
+ */
+async function pinTonightWithADailyLimit(): Promise<{
+  nowSpy: jest.SpyInstance<number, []>;
+  justAfterMidnight: number;
+}> {
+  const today = new Date();
+  const tonight = new Date(
+    today.getFullYear(),
+    today.getMonth(),
+    today.getDate(),
+    23,
+    30,
+  ).getTime();
+
+  await createLimit({ scope: "daily", basis: "fixed", value: 1_000_000 });
+  await spend(400_000, tonight - 30 * 60_000);
+
+  return {
+    nowSpy: jest.spyOn(systemClock, "now").mockReturnValue(tonight),
+    justAfterMidnight: tonight + 35 * 60_000,
+  };
+}
+
+/**
+ * Wakes the screen the way Android does — through the listener the screen
+ * itself registered, on the AppState object the screen itself imported.
+ *
+ * NOT A MODULE MOCK OF OUR OWN. React Native's Jest preset already replaces
+ * `AppState` wholesale (react-native/jest/mocks/AppState.js, wired in
+ * react-native/jest/setup.js): there is no real AppState under Jest to leave
+ * unmocked, and a `DeviceEventEmitter.emit("appStateDidChange", …)` reaches
+ * nothing — verified before this test was written. Reading the preset's own
+ * `mock.calls` is the closest thing to the real object available, and it still
+ * fails the moment the screen stops subscribing. That Android delivers the
+ * event at all stays an on-device check.
+ */
+function resumeTheApp(): void {
+  const listeners = (AppState.addEventListener as jest.Mock).mock.calls
+    .filter(([event]) => event === "change")
+    .map(([, listener]) => listener as (state: string) => void);
+
+  expect(listeners.length).toBeGreaterThan(0);
+  act(() => {
+    for (const listener of listeners) listener("active");
+  });
+}
+
+/** The live props of the control the ScrollView was handed. */
+function refreshControlProps(): { refreshing: boolean; onRefresh: () => Promise<void> } {
+  return screen.getByTestId("home").props.refreshControl.props;
+}
+
+test("A DAY ROLLOVER IN THE BACKGROUND MOVES THE CARDS UNDER THE HERO, NOT JUST THE HERO", async () => {
+  // docs/04-features/09-safe-to-spend.md rule 13's ninth trigger, and its
+  // acceptance line: "local-midnight rollover with the app in the background
+  // (verified on next open)". Before this, `useFocusEffect` was the only
+  // wake-up on this screen — a NAVIGATION hook, which a resume never fires —
+  // so the strips under the hero kept yesterday's window until some unrelated
+  // write happened to invalidate them.
+  const { nowSpy, justAfterMidnight } = await pinTonightWithADailyLimit();
+
+  try {
+    renderScreen(<HomeScreen />);
+
+    // Tonight: ₱4,000 of a ₱10,000 daily cap is gone, so ₱6,000 is left.
+    await screen.findByTestId("sts-amount", {}, { timeout: 30_000 });
+    await waitFor(() => expect(screen.getByTestId("sts-amount")).toHaveTextContent("₱6,000.00"), {
+      timeout: 30_000,
+    });
+    // The tile reads `useLimitStatuses`, a DIFFERENT query from the hero's —
+    // this is the half the old focus effect never touched.
+    expect(screen.getByTestId("home-stat-spent-amount")).toHaveTextContent("₱4,000.00");
+
+    nowSpy.mockReturnValue(justAfterMidnight);
+    resumeTheApp();
+
+    // Tomorrow: the same ledger, a new window. No commit, no mutation, no pull.
+    await waitFor(
+      () => {
+        expect(screen.getByTestId("home-stat-spent-amount")).toHaveTextContent("₱0.00");
+        expect(screen.getByTestId("sts-amount")).toHaveTextContent("₱10,000.00");
+      },
+      { timeout: 30_000 },
+    );
+  } finally {
+    nowSpy.mockRestore();
+  }
+});
+
+test("a resume that does not cross midnight leaves the screen alone", async () => {
+  // The reason this is not `refetchOnWindowFocus: true`. If every foreground
+  // refreshed the screen, the test above would pass for the wrong reason and
+  // the encrypted database would be re-read on every alt-tab.
+  const { nowSpy } = await pinTonightWithADailyLimit();
+
+  try {
+    renderScreen(<HomeScreen />);
+    await waitFor(() => expect(screen.getByTestId("sts-amount")).toHaveTextContent("₱6,000.00"), {
+      timeout: 30_000,
+    });
+
+    // A transaction landing WITHOUT the ledger event that normally announces
+    // it: a same-day resume must not pick it up, because a same-day resume
+    // does nothing at all.
+    await spend(100_000, systemClock.now() - 60_000);
+    resumeTheApp();
+
+    await waitFor(() => expect(screen.getByTestId("sts-amount")).toHaveTextContent("₱6,000.00"), {
+      timeout: 30_000,
+    });
+    expect(screen.getByTestId("home-stat-spent-amount")).toHaveTextContent("₱4,000.00");
+  } finally {
+    nowSpy.mockRestore();
+  }
+});
+
+test("PULL-TO-REFRESH REFRESHES THE WHOLE SCREEN, AND THE SPINNER LASTS AS LONG AS THE REFRESH DOES", async () => {
+  // What shipped before: `refreshing={false}` with a single `safeToSpend`
+  // invalidation. The spinner vanished the instant the finger lifted — the app
+  // claiming to be finished before it had begun — and the cards under the hero
+  // were not refreshed at all.
+  const { nowSpy, justAfterMidnight } = await pinTonightWithADailyLimit();
+
+  try {
+    renderScreen(<HomeScreen />);
+    await waitFor(() => expect(screen.getByTestId("sts-amount")).toHaveTextContent("₱6,000.00"), {
+      timeout: 30_000,
+    });
+    expect(refreshControlProps().refreshing).toBe(false);
+
+    nowSpy.mockReturnValue(justAfterMidnight);
+    let pull!: Promise<void>;
+    act(() => {
+      pull = refreshControlProps().onRefresh();
+    });
+
+    // Still spinning while the queries it started are in flight.
+    expect(refreshControlProps().refreshing).toBe(true);
+
+    await act(async () => {
+      await pull;
+    });
+
+    await waitFor(
+      () => {
+        expect(screen.getByTestId("sts-amount")).toHaveTextContent("₱10,000.00");
+        expect(screen.getByTestId("home-stat-spent-amount")).toHaveTextContent("₱0.00");
+      },
+      { timeout: 30_000 },
+    );
+    // ...and settled once they are, so the control cannot be stranded.
+    expect(refreshControlProps().refreshing).toBe(false);
+  } finally {
+    nowSpy.mockRestore();
+  }
 });

@@ -9,6 +9,7 @@ jest.mock("@/lib/recurring/recurring_service", () => ({
   refreshPatterns: jest.fn().mockResolvedValue([]),
 }));
 
+import { __setTierForTests } from "@/lib/entitlements";
 import { emitAppEvent } from "@/lib/events/app_events";
 import { refreshPatterns } from "@/lib/recurring/recurring_service";
 
@@ -23,6 +24,10 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, DEBOUNCE_MS * 
 beforeEach(() => {
   jest.clearAllMocks();
   mockRefresh.mockResolvedValue([]);
+});
+
+afterEach(() => {
+  __setTierForTests(null);
 });
 
 test("A BURST OF COMMITS TRIGGERS EXACTLY ONE DETECTION PASS", async () => {
@@ -99,4 +104,61 @@ test("a throwing pass does not kill the subscription", async () => {
 
   expect(mockRefresh).toHaveBeenCalledTimes(2);
   warn.mockRestore();
+});
+
+// ---------------------------------------------------------------------------
+// THE TIER DOES NOT DECIDE WHETHER THE PASS RUNS (GAP-122)
+// ---------------------------------------------------------------------------
+//
+// INVERTED FROM THE GAP-118 VERSION OF THIS BLOCK, which asserted the exact
+// opposite — "ON FREE THE PASS DOES NOT RUN AT ALL", "on free a ledger commit
+// schedules nothing", "UPGRADING TO PLUS RUNS THE NEXT PASS WITH NO RESTART".
+// That skip was taken on the premise that no free surface could ever display
+// the result; Reports rule 19 (docs/04-features/10-reports.md `:70`, `:98`,
+// `:157`) says the free locked preview owes the user "the count of detected
+// patterns only", and the owner chose to honour it. A device that never runs
+// detection has nothing to count, so the pass now runs in both tiers, the
+// 800-day window is read floor-exempt in both (recurring_service.ts), and the
+// only tier check left is on the screen that renders the count
+// (app/(tabs)/more/subscriptions.tsx).
+
+test("ON FREE THE PASS RUNS, BECAUSE RULE 19 OWES FREE A COUNT", async () => {
+  __setTierForTests("free");
+
+  await expect(runRecurringPass(Date.now())).resolves.toBeUndefined();
+
+  expect(mockRefresh).toHaveBeenCalledTimes(1);
+});
+
+test("on free a ledger commit schedules a pass, same as on plus", async () => {
+  // The event entry point matters as much as bootstrap's direct call: a drained
+  // capture burst is where a free user's first patterns actually come from.
+  __setTierForTests("free");
+  const stop = startRecurringLedgerSubscriber({ debounceMs: DEBOUNCE_MS });
+
+  await emitAppEvent("ledger:committed", { transactionId: "tx-1" });
+  await settle();
+  stop();
+
+  expect(mockRefresh).toHaveBeenCalledTimes(1);
+});
+
+test("NEITHER TIER IS TREATED DIFFERENTLY, AND AN UPGRADE MID-SESSION CHANGES NOTHING HERE", async () => {
+  // No guard is left to be evaluated per pass or per subscription, so the tier
+  // flipping under a live subscriber is a non-event for this file: both commits
+  // below run a pass. What an upgrade changes is what the Subscriptions screen
+  // is allowed to render, which is that screen's own test.
+  __setTierForTests("free");
+  const stop = startRecurringLedgerSubscriber({ debounceMs: DEBOUNCE_MS });
+
+  await emitAppEvent("ledger:committed", { transactionId: "tx-1" });
+  await settle();
+  expect(mockRefresh).toHaveBeenCalledTimes(1);
+
+  __setTierForTests("plus");
+  await emitAppEvent("ledger:committed", { transactionId: "tx-2" });
+  await settle();
+  stop();
+
+  expect(mockRefresh).toHaveBeenCalledTimes(2);
 });

@@ -34,9 +34,9 @@ jest.mock("@/lib/db/repos/review_queue_repo", () => {
   };
 });
 
-import { closeDatabase } from "@/lib/db/database";
+import { closeDatabase, getDatabase } from "@/lib/db/database";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
-import { storeRawCapture } from "@/lib/db/repos/raw_notifications_repo";
+import { isRawCaptureUnreferenced, storeRawCapture } from "@/lib/db/repos/raw_notifications_repo";
 import {
   countOpen,
   enqueue,
@@ -50,10 +50,12 @@ import {
   listTransactions,
   sumSpend,
 } from "@/lib/db/repos/transactions_repo";
-import { getTransferLink } from "@/lib/db/repos/transfer_links_repo";
+import { getTransferLink, linkTransfer } from "@/lib/db/repos/transfer_links_repo";
 import { listUserRules } from "@/lib/db/repos/user_rules_repo";
+import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { createWallet, getWallet } from "@/lib/db/repos/wallets_repo";
 import { freshDb } from "@/test_support/db";
+import type { RulesetBundleInput } from "@/lib/ingest/ruleset_types";
 import type { RawCapture, ReviewKind, ReviewQueueItem } from "@/types/domain";
 
 import {
@@ -64,6 +66,8 @@ import {
   ignoreProvider,
   mergeDuplicate,
   linkAsTransfer,
+  undoResolution,
+  UNDO_MAX_AGE_MS,
 } from "../resolve_actions";
 
 const FOOD = "cat_food_dining";
@@ -113,6 +117,15 @@ async function queueParse(
       ...overrides,
     },
   });
+}
+
+/** Every `transfer_links` row, dissolved ones included — a refused pairing must leave none. */
+async function countTransferLinkRows(): Promise<number> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ count: number }>(
+    "SELECT COUNT(*) AS count FROM transfer_links",
+  );
+  return row?.count ?? 0;
 }
 
 beforeEach(async () => {
@@ -225,6 +238,182 @@ describe("confirmItem commits the proposal and closes the item", () => {
     const committed = await getTransaction((await confirmItem(item.id, NOW)) as string);
 
     expect(committed?.categoryId).toBe(UNCATEGORIZED_ID);
+  });
+
+  test("carries the notification's reference number onto the row", async () => {
+    const item = await queueParse({ referenceNo: "GC778899" });
+
+    const committed = await getTransaction((await confirmItem(item.id, NOW)) as string);
+
+    // §6 rule 1's strong key, and the only thing that can match this row to a
+    // late telling of the same movement. Dropped here (GAP-012), the same
+    // purchase's SMS relay outside the 180-second twin window reads as a second,
+    // genuine transaction and is committed beside it.
+    expect(committed?.referenceNo).toBe("GC778899");
+  });
+
+  test("dates the row from the event's own stamp when the payload carries one", async () => {
+    const item = await queueParse({ occurredAt: POSTED_AT - 90_000 });
+
+    const committed = await getTransaction((await confirmItem(item.id, NOW)) as string);
+
+    // The stages already worked this out; `capture.postedAt` is the fallback for
+    // cards raised before the payload carried it, not the better answer.
+    expect(committed?.occurredAt).toBe(POSTED_AT - 90_000);
+  });
+
+  test("does not snap the wallet to a balance the notification reported earlier", async () => {
+    const item = await queueParse({ balanceAfter: 999_999 });
+
+    await confirmItem(item.id, NOW);
+
+    // The payload carries `balanceAfter` for the audit trail, but the proposal
+    // deliberately does not: `insertTransaction` SETS the wallet's balance to a
+    // non-null one, and spec rule 9's "only if newer than the current snapshot"
+    // guard is not implemented — so a card triaged days later would re-anchor
+    // the wallet to a stale figure and discard every movement since.
+    expect((await getWallet(gcashId))?.balance).toBe(100000 - 125000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The DedupeGate on the CONFIRM path (GAP-012).
+//
+// `checkDuplicate` runs in the pipeline, over captures. A queue item skipped it
+// entirely: whatever the gate decided when the card was raised, the ledger has
+// moved since — the twin may have committed on the other channel, or the user
+// may have answered the twin's own card first — and confirming regardless is how
+// one payment becomes two rows with nothing on screen to explain it.
+// ---------------------------------------------------------------------------
+
+describe("confirming a card whose movement is already in the ledger", () => {
+  const SMS_PACKAGE = "com.google.android.apps.messaging";
+  const REFERENCE = "GC778899";
+
+  /**
+   * One provider reachable on two channels — the shape §6 rule 2 is written for,
+   * and the minimum this suite needs: without an installed ruleset there is no
+   * provider key and no channel for either side, and the confirm path correctly
+   * declines to judge at all.
+   */
+  const TWO_CHANNEL_BUNDLE: RulesetBundleInput = {
+    version: 2,
+    providers: [
+      {
+        providerKey: "gcash",
+        packageNames: [GCASH_PACKAGE],
+        version: 2,
+        channel: "push",
+        templates: [
+          {
+            id: "gcash_push_sent",
+            match: String.raw`\bsent (?<amount>(?:₱|PHP)\s?[\d,]+(?:\.\d{2})?)`,
+            direction: "out",
+            confidence: 1,
+          },
+        ],
+      },
+      {
+        providerKey: "gcash",
+        packageNames: [SMS_PACKAGE],
+        version: 2,
+        channel: "sms",
+        senderIds: ["GCASH"],
+        templates: [
+          {
+            id: "gcash_sms_sent",
+            match: String.raw`\bsent (?<amount>(?:₱|PHP)\s?[\d,]+(?:\.\d{2})?)`,
+            direction: "out",
+            confidence: 1,
+          },
+        ],
+      },
+    ],
+  };
+
+  /** The relay that already reached the ledger, on the other channel. */
+  async function commitSmsTwin(referenceNo: string | null): Promise<string> {
+    await storeCapture("raw-sms", { packageName: SMS_PACKAGE, title: "GCASH" });
+    const row = await insertTransaction({
+      walletId: gcashId,
+      categoryId: FOOD,
+      amount: 125000,
+      direction: "out",
+      occurredAt: POSTED_AT + 30_000,
+      referenceNo,
+      source: "notification",
+      confidence: 0.95,
+      rawNotificationId: "raw-sms",
+    });
+    return row.id;
+  }
+
+  beforeEach(async () => {
+    await upsertRuleset(TWO_CHANNEL_BUNDLE);
+  });
+
+  test("commits nothing, closes the card, and names the row that already holds it", async () => {
+    const committed = await commitSmsTwin(REFERENCE);
+    const item = await queueParse({
+      providerKey: "gcash",
+      channel: "push",
+      referenceNo: REFERENCE,
+      occurredAt: POSTED_AT,
+    });
+
+    const returned = await confirmItem(item.id, NOW);
+
+    // One row, and it is the one that was already there — not a second row and
+    // not a card left open for the user to try again.
+    expect(await listTransactions({})).toHaveLength(1);
+    expect(returned).toBe(committed);
+    expect((await getReviewItem(item.id))?.resolvedAt).not.toBeNull();
+    // The card keeps referencing its capture, so the ingest sweep sees a settled
+    // row: nothing was deleted here, so the merge's marker rule is not in play.
+    expect(await isRawCaptureUnreferenced("raw-1")).toBe(false);
+  });
+
+  test("references that disagree are two transactions, and both are recorded", async () => {
+    await commitSmsTwin("GC000111");
+    const item = await queueParse({
+      providerKey: "gcash",
+      channel: "push",
+      referenceNo: REFERENCE,
+      occurredAt: POSTED_AT,
+    });
+
+    await confirmItem(item.id, NOW);
+
+    // The provider's own statement that these are not the same thing. Folding
+    // them would delete a real transaction the user just vouched for.
+    expect(await listTransactions({})).toHaveLength(2);
+  });
+
+  test("a same-channel pair the user called real is still committed", async () => {
+    // §6 rule 4's undecidable pair, with no reference either way: pressing
+    // "Looks right" IS the answer to "are these two purchases or one?", and
+    // refusing it here would overrule the human decision the card asked for.
+    await commitSmsTwin(null);
+    const item = await queueParse({
+      providerKey: "gcash",
+      channel: "sms",
+      occurredAt: POSTED_AT,
+    });
+
+    await confirmItem(item.id, NOW);
+
+    expect(await listTransactions({})).toHaveLength(2);
+  });
+
+  test("a card raised before the payload carried a provider falls back to the capture", async () => {
+    const committed = await commitSmsTwin(REFERENCE);
+    // No `providerKey` and no `channel` — every card enqueued before GAP-012
+    // looks like this. The capture's package resolved through the installed
+    // ruleset is what stands in for them.
+    const item = await queueParse({ referenceNo: REFERENCE, occurredAt: POSTED_AT });
+
+    expect(await confirmItem(item.id, NOW)).toBe(committed);
+    expect(await listTransactions({})).toHaveLength(1);
   });
 });
 
@@ -502,6 +691,41 @@ describe("linkAsTransfer pairs two committed legs", () => {
     await expect(linkAsTransfer(item.id, outId, "ghost")).rejects.toThrow();
     expect(await countOpen()).toBe(1);
   });
+
+  // A card can wait days for an answer, and the ledger moves underneath it. If
+  // a leg it names is paired with somebody else in the meantime, confirming
+  // used to re-stamp that leg onto a new link and leave the old row `active`
+  // with its surviving partner orphaned — a transfer the user already settled
+  // walking back into their spend total (GAP-031, domain §3.3 invariant 3).
+  test("an IN leg paired elsewhere while the card waited is not stolen back", async () => {
+    const item = await queueParse({}, "ambiguous-transfer");
+    const { outId, inId } = await seedLegs();
+    const rival = await insertTransaction({
+      walletId: gcashId,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 99000,
+      direction: "out",
+      occurredAt: POSTED_AT + 120000,
+      source: "manual",
+      confidence: 1,
+    });
+    const settled = await linkTransfer(rival.id, inId, 0);
+
+    const returned = await linkAsTransfer(item.id, outId, inId);
+
+    // Answered by the ledger, so the card closes rather than failing forever on
+    // a pairing that can no longer be made.
+    expect(returned).toBe(settled.id);
+    expect(await countOpen()).toBe(0);
+
+    // The settled pair is untouched, and there is exactly one of it.
+    expect(await countTransferLinkRows()).toBe(1);
+    expect((await getTransaction(inId))?.transferLinkId).toBe(settled.id);
+    expect((await getTransaction(rival.id))?.transferLinkId).toBe(settled.id);
+    // The out leg was never stamped, so it keeps counting — the honest answer
+    // when the app could not pair it, and one the user can still fix by hand.
+    expect((await getTransaction(outId))?.transferLinkId).toBeNull();
+  });
 });
 
 describe("confirmAsTransfer commits the queued leg and pairs it in one step", () => {
@@ -533,6 +757,52 @@ describe("confirmAsTransfer commits the queued leg and pairs it in one step", ()
     expect(
       await sumSpend({ from: POSTED_AT - 1000, to: POSTED_AT + 10 * 60 * 1000 }),
     ).toBe(0);
+  });
+
+  test("a counterpart already paired elsewhere closes the card and commits nothing", async () => {
+    const counterpart = await insertTransaction({
+      walletId: bpiId,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 125000,
+      direction: "in",
+      occurredAt: POSTED_AT + 30000,
+      source: "notification",
+      confidence: 0.9,
+    });
+    // The counterpart's real other half, linked from the transaction detail
+    // screen while this card was still open.
+    const rival = await insertTransaction({
+      walletId: gcashId,
+      categoryId: UNCATEGORIZED_ID,
+      amount: 125000,
+      direction: "out",
+      occurredAt: POSTED_AT + 20000,
+      source: "manual",
+      confidence: 1,
+    });
+    const settled = await linkTransfer(rival.id, counterpart.id, 0);
+    const item = await queueParse(
+      { transferCounterpartTransactionId: counterpart.id },
+      "ambiguous-transfer",
+    );
+
+    const committedId = await confirmAsTransfer(item.id);
+
+    // GAP-031's acceptance criterion, read literally: one active link row, both
+    // of its legs still pointing at it.
+    expect(await countTransferLinkRows()).toBe(1);
+    expect((await getTransferLink(settled.id))?.status).toBe("active");
+    expect((await getTransaction(counterpart.id))?.transferLinkId).toBe(settled.id);
+    expect((await getTransaction(rival.id))?.transferLinkId).toBe(settled.id);
+
+    // NOTHING COMMITTED for the candidate. It has no ledger row of its own yet
+    // — the gate queued it rather than committing it — so writing one here
+    // would put an internal movement into the spend total on the very card
+    // where the user said it is not one, and the pairing still could not be
+    // made. `null` is how the caller learns that.
+    expect(committedId).toBeNull();
+    expect(await listTransactions({})).toHaveLength(2);
+    expect(await countOpen()).toBe(0);
   });
 });
 
@@ -719,6 +989,116 @@ describe("mergeDuplicate leaves one row and undoes the double count", () => {
 });
 
 // ---------------------------------------------------------------------------
+// The merge has to SURVIVE A RELAUNCH. `startIngest`'s recovery sweep re-runs
+// every stored capture that points at neither a Transaction nor a queue card
+// (`listUnprocessedRawCaptures`), so a merge that deletes the last row
+// referencing a capture hands that capture back to the pipeline, which commits
+// the duplicate again under an id the user has never seen. These pin the
+// reference the merge leaves behind.
+// ---------------------------------------------------------------------------
+
+describe("a merged-away capture is never handed back to the ingest sweep", () => {
+  async function countCardsFor(captureId: string): Promise<number> {
+    const db = await getDatabase();
+    const row = await db.getFirstAsync<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM review_queue_items WHERE raw_notification_id = ?",
+      [captureId],
+    );
+    return row?.count ?? 0;
+  }
+
+  async function seedCapturedTwins(): Promise<{ keep: string; drop: string }> {
+    await storeCapture("raw-keep");
+    await storeCapture("raw-drop");
+    const keep = await insertTransaction({
+      walletId: gcashId,
+      categoryId: FOOD,
+      amount: 30000,
+      direction: "out",
+      occurredAt: POSTED_AT,
+      merchant: "7-ELEVEN",
+      source: "notification",
+      confidence: 0.9,
+      rawNotificationId: "raw-keep",
+    });
+    const drop = await insertTransaction({
+      walletId: gcashId,
+      categoryId: FOOD,
+      amount: 30000,
+      direction: "out",
+      occurredAt: POSTED_AT + 4000,
+      source: "notification",
+      confidence: 0.8,
+      rawNotificationId: "raw-drop",
+    });
+    return { keep: keep.id, drop: drop.id };
+  }
+
+  test("the ledger-side merge leaves the dropped capture referenced", async () => {
+    const { keep, drop } = await seedCapturedTwins();
+
+    // NO QUEUE ITEM, which is the case the docblock describes and the dangerous
+    // one: both rows auto-committed, so neither ever raised a card, and nothing
+    // but this action's own marker can tell the sweep the question is settled.
+    await mergeDuplicate("no-card-was-ever-raised", keep, drop);
+
+    expect(await listTransactions({})).toHaveLength(1);
+    expect(await isRawCaptureUnreferenced("raw-drop")).toBe(false);
+    // And the marker is invisible: it is resolved in the same unit of work that
+    // creates it, so the user is never asked a question they already answered.
+    expect(await countOpen()).toBe(0);
+    expect(await listOpen()).toHaveLength(0);
+  });
+
+  test("a capture that already carries a card gets no second one", async () => {
+    const { keep, drop } = await seedCapturedTwins();
+    const item = await enqueue({
+      kind: "possible-duplicate",
+      rawNotificationId: "raw-drop",
+      payload: { duplicateOfTransactionId: keep },
+    });
+
+    await mergeDuplicate(item.id, keep, drop);
+
+    // One row, not two. A second marker would claim the user was asked about
+    // this capture twice.
+    expect(await countCardsFor("raw-drop")).toBe(1);
+    expect((await getReviewItem(item.id))?.resolvedAt).not.toBeNull();
+    expect(await isRawCaptureUnreferenced("raw-drop")).toBe(false);
+  });
+
+  test("a hand-typed row carries no capture, so the merge writes no marker", async () => {
+    await storeCapture("raw-keep");
+    const keep = await insertTransaction({
+      walletId: gcashId,
+      categoryId: FOOD,
+      amount: 30000,
+      direction: "out",
+      occurredAt: POSTED_AT,
+      merchant: "7-ELEVEN",
+      source: "notification",
+      confidence: 0.9,
+      rawNotificationId: "raw-keep",
+    });
+    const drop = await insertTransaction({
+      walletId: gcashId,
+      categoryId: FOOD,
+      amount: 30000,
+      direction: "out",
+      occurredAt: POSTED_AT + 4000,
+      source: "manual",
+      confidence: 1,
+    });
+
+    await mergeDuplicate("no-card-was-ever-raised", keep.id, drop.id);
+
+    // Nothing stored it, so no sweep can find it and there is nothing to mark.
+    expect(await countCardsFor("raw-keep")).toBe(0);
+    expect(await listTransactions({})).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Rule 2 — atomic, or nothing
 // ---------------------------------------------------------------------------
 
@@ -752,5 +1132,131 @@ describe("a failure part-way through an action leaves no partial write", () => {
     expect(transactionId).not.toBeNull();
     expect(await listTransactions({})).toHaveLength(1);
     expect(await listOpen()).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// undoResolution — spec rule 9's ten-second take-back (GAP-075)
+// ---------------------------------------------------------------------------
+//
+// "Triage is undoable: a just-triaged item shows an undo affordance for 10
+// seconds; committed results remain editable in the ledger indefinitely
+// afterward."
+//
+// WHAT IS ACTUALLY UNDER TEST IS THE REFUSALS, not the reopen. Clearing a
+// `resolved_at` is one UPDATE; the reason this function exists rather than a
+// direct call to `reopen` is that three kinds of resolved card must never come
+// back, and only one of those three is a question about time.
+//
+// THE THIRD ONE IS THE MONEY ONE. Spec rule 10 is unqualified — "committed
+// transactions are never deleted by any queue action" — so an undo cannot
+// delete what a confirmation wrote, and reopening the card while leaving the row
+// is worse than either: the user meets the same question again, answers it
+// again, and their ledger holds one purchase twice. The guard is asked of the
+// LEDGER rather than of the action kind, so it holds however the function is
+// called.
+
+describe("undoResolution takes back a triage that wrote nothing but a resolution", () => {
+  /** When the queue actually stamped the item, read back rather than assumed. */
+  async function resolvedAtOf(itemId: string): Promise<number> {
+    const stamp = (await getReviewItem(itemId))?.resolvedAt;
+    expect(stamp).not.toBeNull();
+    return stamp as number;
+  }
+
+  test("a dismissed card comes back to the open queue", async () => {
+    const item = await queueParse();
+    await resolve(item.id, "dismissed");
+    expect(await countOpen()).toBe(0);
+
+    expect(await undoResolution(item.id, (await resolvedAtOf(item.id)) + 2_000)).toBe(true);
+
+    expect((await listOpen()).map((row) => row.id)).toEqual([item.id]);
+    expect((await getReviewItem(item.id))?.resolvedAt).toBeNull();
+    // And it stayed a dismissal all the way through: nothing was committed on
+    // the way out and nothing on the way back.
+    expect(await listTransactions({})).toEqual([]);
+    expect(await listUserRules()).toEqual([]);
+  });
+
+  test("a triage that committed is NEVER reopened, and its row is never touched", async () => {
+    const item = await queueParse();
+    const transactionId = (await confirmItem(item.id, NOW)) as string;
+    expect(transactionId).not.toBeNull();
+
+    expect(await undoResolution(item.id, (await resolvedAtOf(item.id)) + 2_000)).toBe(false);
+
+    // The card stays closed — a reopened card over a committed row is an
+    // invitation to record the same purchase twice.
+    expect((await getReviewItem(item.id))?.resolvedAt).not.toBeNull();
+    expect(await countOpen()).toBe(0);
+    // And spec rule 10 holds: the ledger row and the balance it moved are
+    // exactly where the confirmation left them.
+    expect(await getTransaction(transactionId)).not.toBeNull();
+    expect((await getWallet(gcashId))?.balance).toBe(100000 - 125000);
+  });
+
+  test("the offer is refused once it is older than the window", async () => {
+    const item = await queueParse();
+    await resolve(item.id, "dismissed");
+    const at = await resolvedAtOf(item.id);
+
+    expect(await undoResolution(item.id, at + UNDO_MAX_AGE_MS)).toBe(true);
+
+    await resolve(item.id, "dismissed");
+    const again = await resolvedAtOf(item.id);
+    expect(await undoResolution(item.id, again + UNDO_MAX_AGE_MS + 1)).toBe(false);
+    expect(await countOpen()).toBe(0);
+  });
+
+  test("a card whose thirty days ran out while the offer was on screen stays closed", async () => {
+    await storeCapture("raw-expiring");
+    const item = await enqueue({
+      kind: "low-confidence",
+      rawNotificationId: "raw-expiring",
+      payload: { amount: 125000, direction: "out", walletId: gcashId },
+      expiresAt: Date.now() + 1_000,
+    });
+    await resolve(item.id, "dismissed");
+    const at = await resolvedAtOf(item.id);
+
+    // Two seconds later the offer is still on screen and the card is not.
+    expect(await undoResolution(item.id, at + 2_000)).toBe(false);
+    expect((await getReviewItem(item.id))?.resolvedAt).not.toBeNull();
+  });
+
+  test("a card with no capture behind it is judged on its own, not on the ledger", async () => {
+    // `loan-match`'s shape: `loan_match_queue.ts` stores no `rawNotificationId`
+    // because the card is about a row that was committed long before it, and
+    // "Not a loan payment" does not touch that row. A guard keyed on the action
+    // would have to be told that; one keyed on the capture gets it for free.
+    await insertTransaction({
+      walletId: gcashId,
+      categoryId: FOOD,
+      amount: 200000,
+      direction: "out",
+      occurredAt: POSTED_AT,
+      merchant: "JUAN D",
+      source: "notification",
+      confidence: 1,
+    });
+    const item = await enqueue({ kind: "loan-match", payload: { transactionId: "t-1" } });
+    await resolve(item.id, "dismissed");
+
+    expect(await undoResolution(item.id, (await resolvedAtOf(item.id)) + 2_000)).toBe(true);
+    expect((await listOpen()).map((row) => row.id)).toEqual([item.id]);
+  });
+
+  test("there is nothing to take back on an open item, an unknown id, or a second tap", async () => {
+    const item = await queueParse();
+
+    expect(await undoResolution("no-such-item")).toBe(false);
+    expect(await undoResolution(item.id)).toBe(false);
+
+    await resolve(item.id, "dismissed");
+    const at = await resolvedAtOf(item.id);
+    expect(await undoResolution(item.id, at + 1_000)).toBe(true);
+    expect(await undoResolution(item.id, at + 2_000)).toBe(false);
+    expect(await countOpen()).toBe(1);
   });
 });

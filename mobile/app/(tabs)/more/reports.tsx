@@ -11,18 +11,20 @@
 import { useState } from "react";
 import { Text, View } from "react-native";
 
+import { PlusGate } from "@/components/gates/plus_gate";
 import { DonutChart } from "@/components/reports/donut_chart";
 import { ExportButton } from "@/components/reports/export_button";
 import { RangePicker } from "@/components/reports/range_picker";
 import { RankedBars } from "@/components/reports/ranked_bars";
 import { SummaryTiles } from "@/components/reports/summary_tiles";
-import { TrendLine } from "@/components/reports/trend_line";
+import { TrendLine, TrendLinePreview } from "@/components/reports/trend_line";
 import { EmptyState } from "@/components/ui/empty_state";
 import { FormScreen } from "@/components/ui/form_screen";
 import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { useAvailableScopes, useReport } from "@/hooks/queries/use_report";
 import { systemClock } from "@/lib/clock";
 import { toDateIso } from "@/lib/dates";
+import { hasTrends } from "@/lib/entitlements";
 import type { ReportScope } from "@/lib/reports/reports_service";
 
 /** Rule 6, verbatim. */
@@ -127,7 +129,37 @@ export default function ReportsScreen() {
             <SummaryTiles summary={summary} />
             <DonutChart categories={categories} />
             <RankedBars merchants={merchants} />
-            <TrendLine points={trend} />
+            {/* TRENDS ARE PLUS — docs/04-features/10-reports.md's states
+                table ("Free user ... opens Trends / custom range" gets a "Locked
+                preview with Plus prompt; no data shown") and
+                docs/05-monetization.md §4's Reports row. Free is NOT handed
+                `trend` at all: reports_service.ts's rule 3 collapses the trend
+                window to the current month on Free, so `points` there is a
+                single period and `TrendLine`'s own guard would render "Not
+                enough periods yet to show a trend." — a false statement about
+                the user's DATA when the truth is that the VIEW is gated.
+                `TrendLinePreview` says the true thing, and `PlusGate` carries
+                the prompt, which is exactly the pairing RangePicker already
+                uses one card above for the custom-range row (the other half of
+                that same doc sentence).
+
+                `hasTrends()` rather than a bare `getTier()` here:
+                lib/entitlements.ts is the only place that knows about tiers,
+                and `PlusGate` alone cannot make this call — it decides how to
+                FRAME a child, never which child to hand it.
+
+                The `reports-trend` wrapper scopes a test to this gate's badge
+                alone, for the same reason `reports-export` above exists: this
+                screen renders two other independent PlusGates. */}
+            <View testID="reports-trend">
+              {hasTrends() ? (
+                <TrendLine points={trend} />
+              ) : (
+                <PlusGate capability="reports">
+                  <TrendLinePreview />
+                </PlusGate>
+              )}
+            </View>
           </>
         )}
       </View>

@@ -5,9 +5,14 @@
 // is informational only — it is never counted anywhere, ever.
 import { closeDatabase } from "@/lib/db/database";
 import { createWallet } from "../wallets_repo";
-import { getTransferLink, linkTransfer, unlinkTransfer } from "../transfer_links_repo";
+import {
+  AlreadyLinkedError,
+  getTransferLink,
+  linkTransfer,
+  unlinkTransfer,
+} from "../transfer_links_repo";
 import { freshDb } from "@/test_support/db";
-import { insertTransaction, sumSpend } from "../transactions_repo";
+import { getTransaction, insertTransaction, sumSpend } from "../transactions_repo";
 import type { SQLiteDatabase } from "@/lib/db/database";
 import type { Transaction } from "@/types/domain";
 
@@ -126,6 +131,72 @@ test("a negative fee — a credited bonus — round-trips intact", async () => {
   // zero would silently discard the fact that the user gained ₱50.00.
   expect(link.feeAmount).toBe(-5000);
   expect((await getTransferLink(link.id))?.feeAmount).toBe(-5000);
+});
+
+// ---------------------------------------------------------------------------
+// Domain §3.3 invariant 3 — a Transaction belongs to at most ONE Transfer Link.
+// The UPDATE above is the only statement in the app that can break it, and it
+// used to do so happily: a second link over either leg re-stamped that leg and
+// left the first `transfer_links` row `active` with one half pointing
+// elsewhere (GAP-031).
+// ---------------------------------------------------------------------------
+
+async function countLinkRows(): Promise<number> {
+  const row = await db.getFirstAsync<{ count: number }>(
+    "SELECT COUNT(*) AS count FROM transfer_links",
+  );
+  return row?.count ?? 0;
+}
+
+test("linkTransfer refuses an already-linked OUT leg and writes nothing", async () => {
+  const out = await leg(sending, "out", 100000);
+  const incoming = await leg(receiving, "in", 100000);
+  const rival = await leg(receiving, "in", 100000);
+  const first = await linkTransfer(out.id, incoming.id, 0);
+
+  await expect(linkTransfer(out.id, rival.id, 0)).rejects.toThrow(AlreadyLinkedError);
+
+  // NOTHING, not "nothing important": the guard sits inside the same
+  // transaction as the INSERT, so a rejected pairing leaves no orphan link row
+  // for `getTransferLink` to hand back and no stamp on the leg it was refused.
+  expect(await countLinkRows()).toBe(1);
+  expect((await getTransaction(out.id))?.transferLinkId).toBe(first.id);
+  expect((await getTransaction(incoming.id))?.transferLinkId).toBe(first.id);
+  expect((await getTransaction(rival.id))?.transferLinkId).toBeNull();
+});
+
+test("linkTransfer refuses an already-linked IN leg and writes nothing", async () => {
+  const out = await leg(sending, "out", 100000);
+  const incoming = await leg(receiving, "in", 100000);
+  const rival = await leg(sending, "out", 100000);
+  const first = await linkTransfer(out.id, incoming.id, 0);
+
+  // The half the old code never looked at anywhere — `resolve_actions` checked
+  // the out leg only, and this repository checked neither.
+  await expect(linkTransfer(rival.id, incoming.id, 0)).rejects.toThrow(
+    new AlreadyLinkedError(incoming.id, first.id),
+  );
+
+  expect(await countLinkRows()).toBe(1);
+  expect((await getTransaction(out.id))?.transferLinkId).toBe(first.id);
+  expect((await getTransaction(incoming.id))?.transferLinkId).toBe(first.id);
+  expect((await getTransaction(rival.id))?.transferLinkId).toBeNull();
+});
+
+test("a leg freed by unlinkTransfer can be paired again", async () => {
+  const out = await leg(sending, "out", 100000);
+  const incoming = await leg(receiving, "in", 100000);
+  const first = await linkTransfer(out.id, incoming.id, 0);
+  await unlinkTransfer(first.id);
+
+  // `unlinkTransfer` clears the stamp, which IS the claim — a dissolved link
+  // must not hold a leg hostage, or a user who unlinked a wrong auto-match
+  // could never link the right pair.
+  const second = await linkTransfer(out.id, incoming.id, 0);
+
+  expect(second.id).not.toBe(first.id);
+  expect((await getTransaction(out.id))?.transferLinkId).toBe(second.id);
+  expect((await getTransaction(incoming.id))?.transferLinkId).toBe(second.id);
 });
 
 test("unlinkTransfer dissolves the link and returns both legs to the totals", async () => {

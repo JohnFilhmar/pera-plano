@@ -59,13 +59,44 @@ export type AppEventMap = {
    * staleness the identifier rule above exists to prevent — inverted, because
    * here the historical figure IS the correct one. `occurredAt` likewise: an
    * allocation belongs to the payday's own instant, not to processing time.
+   *
+   * A PAYDAY, NOT A TRANSACTION. `transactionIds` is a list because one payday
+   * can arrive as several credits — an employer paying half in the morning and
+   * half in the afternoon is ordinary here — and `amount` is what they come to
+   * TOGETHER, which is the base goals rule 13 names for a percent contribution:
+   * "the sum of income Transactions detected on that payday date". A single
+   * `transactionId` could only ever name one half of that sum, and a handler
+   * reconciling the transfer (rule 14) needs all the rows it covers.
    */
   "income:payday": {
-    transactionId: string;
+    /** Every credit the payday covers, oldest first. Never empty. */
+    transactionIds: string[];
+    /** The wallet holding the largest share of the day's pay. */
     walletId: string;
+    /** The day's credits combined. */
     amount: Centavos;
+    /** When the pay finished arriving — the last credit's instant. */
     occurredAt: EpochMs;
   };
+
+  /**
+   * A Goal was created, or edited in a way that can move its progress: a
+   * relink onto another Wallet, or a changed target.
+   *
+   * WHY AN EVENT RATHER THAN A DIRECT CALL. The milestone pass is the only thing
+   * that listens, and it lives behind `lib/alerts/alerts_service.ts`, which
+   * imports expo-notifications and the native notification listener. A mutation
+   * that called the pass directly would drag that whole stack into every screen
+   * and every test that creates a goal; `app/(onboarding)` and `app/goal/*` have
+   * no business loading the notification transport. The bus is the seam that
+   * keeps them apart, exactly as it does for the ledger.
+   *
+   * WHAT THE SUBSCRIBER DOES WITH IT: a milestone pass, because a goal created
+   * on, or moved onto, a Wallet that already sits past a milestone announces the
+   * level it starts at (goals rule 12, owner's ruling 2026-09-24), and neither of
+   * the pass's other wake-ups, a launch and a ledger commit, covers that.
+   */
+  "goals:changed": { goalId: string };
 
   /**
    * A problem report in the offline outbox changed state — sent, rescheduled

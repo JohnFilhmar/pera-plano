@@ -21,7 +21,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { queryKeys } from "@/constants/query_keys";
 import { resolve } from "@/lib/db/repos/review_queue_repo";
-import { confirmLoanMatch } from "@/lib/loans/loan_match_queue";
+import { confirmLoanMatch, dismissLoanMatch } from "@/lib/loans/loan_match_queue";
 import {
   answerWalletKind,
   confirmAsTransfer,
@@ -31,6 +31,7 @@ import {
   ignoreProvider,
   linkAsTransfer,
   mergeDuplicate,
+  undoResolution,
   type CorrectionPatch,
 } from "@/lib/review/resolve_actions";
 import type { Centavos } from "@/types/domain";
@@ -62,6 +63,15 @@ export type ReviewAction =
   | { kind: "confirm-loan-match"; itemId: string; loanId: string }
   | { kind: "correct"; itemId: string; patch: CorrectionPatch }
   | { kind: "dismiss"; itemId: string }
+  /**
+   * "Not a loan payment" (loans rule 10). NOT a bare `dismiss`: the rule's
+   * follow-up counter ("repeated rejections for the same merchant surface a
+   * one-time prompt") needs a named seam to be added at, and a switch case
+   * that reaches past the loans module gives it nowhere to live.
+   * `dismissLoanMatch` is a pass-through today and exists for exactly that
+   * reason.
+   */
+  | { kind: "dismiss-loan-match"; itemId: string }
   | { kind: "confirm-transfer"; itemId: string }
   /**
    * The user named the wallet the other half of a transfer moved to or from.
@@ -87,31 +97,92 @@ export type ReviewAction =
   | { kind: "answer-wallet-kind"; itemId: string; owed: boolean }
   | { kind: "ignore-provider"; itemId: string; packageName: string }
   | { kind: "link-transfer"; itemId: string; outTransactionId: string; inTransactionId: string }
-  | { kind: "merge"; itemId: string; keepTransactionId: string; dropTransactionId: string };
+  | { kind: "merge"; itemId: string; keepTransactionId: string; dropTransactionId: string }
+  /**
+   * "Undo" — spec rule 9's ten-second take-back, which is the only action here
+   * that REVERSES one of the others rather than answering a card.
+   *
+   * IT CARRIES NOTHING BUT THE ITEM, and that is deliberate: what has to be
+   * reversed is a fact about the database, not about the tap. `undoResolution`
+   * reads the item's own state and refuses anything it cannot completely undo
+   * — see its docblock for why a triage that COMMITTED is not on that list and
+   * what spec rule 10 has to do with it. An action carrying "and here is the
+   * transaction to delete" would be the caller deciding that instead, from a
+   * value it took on trust.
+   */
+  | { kind: "undo"; itemId: string };
 
-async function run(action: ReviewAction): Promise<void> {
+/**
+ * What a triage did, for the affordance the screen offers straight afterwards.
+ *
+ * WAS A BARE `boolean` UNTIL GAP-075. It carried one fact -- whether an `undo`
+ * declined -- and threw away the other one the screen now needs: `correctItem`
+ * and `confirmItem` already RETURN the id of the Transaction they committed,
+ * and that value went nowhere. Rule 9's remedy for a committed triage is that
+ * it "remains editable in the ledger", and an Edit affordance cannot open a row
+ * it was never told about.
+ *
+ * `transactionId` IS NULL FOR EVERY ACTION THAT COMMITTED NOTHING, which is
+ * most of them, and null is the honest answer rather than a missing case: a
+ * dismissal, a wallet-kind answer and a loan match all leave the ledger's rows
+ * exactly as they were, so there is nothing for an Edit to open.
+ *
+ * IT IS ALSO NULL FOR THE COMMITTING ACTIONS THAT DO NOT PRODUCE ONE ROW TO
+ * EDIT. A transfer confirm writes a pair, a merge drops one row and keeps
+ * another, and a link joins two that already existed; "the row this triage
+ * committed" is not a question any of those has a single answer to, and
+ * guessing one would send the user to edit half of a pair. Those keep the
+ * ledger's own screens as their remedy.
+ */
+export type ReviewActionOutcome = {
+  /** `false` ONLY when an `undo` declined: an offer taken too late, or a card
+   * whose thirty days ran out while the notice was on screen. `undoResolution`
+   * returns that as a refusal rather than an error because nothing went wrong
+   * and "Try again" is not the advice — the caller says so in its own words. */
+  readonly reopened: boolean;
+  /** The Transaction a confirm or a correction left behind, or `null`. */
+  readonly transactionId: string | null;
+};
+
+/** Everything but `undo` and the two committing actions answers the same way. */
+const DID_IT: ReviewActionOutcome = { reopened: true, transactionId: null };
+
+async function run(action: ReviewAction): Promise<ReviewActionOutcome> {
   switch (action.kind) {
     case "confirm":
-      await confirmItem(action.itemId);
-      return;
+      // THE RETURNED ID IS KEPT NOW (GAP-075). It can be a row this triage did
+      // NOT write: `correctItem`'s GAP-012 branch resolves onto a pre-existing
+      // Transaction when one already holds the movement, and returns that row's
+      // id. Under the delete-flavoured undo the entry proposed, that was a trap
+      // — it would have destroyed the other ingest channel's row. Under an Edit
+      // it is exactly right: the row the id names is the one that now holds the
+      // movement, which is the row the user means.
+      return { reopened: true, transactionId: await confirmItem(action.itemId) };
     case "confirm-loan-match":
       // `confirmLoanMatch` wraps `recordPayment` and `resolve` in one unit of
       // work — the direction invariant (`PaymentDirectionMismatchError`) and
       // the one-transaction-one-loan invariant both live in that repository
       // call, and nothing here may reach past it.
       await confirmLoanMatch(action.itemId, action.loanId);
-      return;
+      return DID_IT;
     case "correct":
-      await correctItem(action.itemId, action.patch);
-      return;
+      return { reopened: true, transactionId: await correctItem(action.itemId, action.patch) };
     case "dismiss":
       // Straight to the repository: there is no ledger consequence to make
       // atomic with it, and `resolve` is already idempotent on a double tap.
       await resolve(action.itemId, "dismissed");
-      return;
+      return DID_IT;
+    case "dismiss-loan-match":
+      // Not a bare `resolve`: loans rule 10's rejection COUNTER ("repeated
+      // rejections for the same merchant surface a one-time prompt") needs a
+      // named seam to be added at, and a switch case that reaches past the
+      // loans module gives it nowhere to live. `dismissLoanMatch` is a
+      // pass-through today and exists for exactly that reason.
+      await dismissLoanMatch(action.itemId);
+      return DID_IT;
     case "confirm-transfer":
       await confirmAsTransfer(action.itemId);
-      return;
+      return DID_IT;
     case "confirm-one-sided-transfer":
       await confirmOneSidedTransfer(
         action.itemId,
@@ -119,19 +190,26 @@ async function run(action: ReviewAction): Promise<void> {
         action.feeAmount,
         Date.now(),
       );
-      return;
+      return DID_IT;
     case "answer-wallet-kind":
       await answerWalletKind(action.itemId, action.owed);
-      return;
+      return DID_IT;
     case "ignore-provider":
       await ignoreProvider(action.itemId, action.packageName);
-      return;
+      return DID_IT;
     case "link-transfer":
       await linkAsTransfer(action.itemId, action.outTransactionId, action.inTransactionId);
-      return;
+      return DID_IT;
     case "merge":
       await mergeDuplicate(action.itemId, action.keepTransactionId, action.dropTransactionId);
-      return;
+      return DID_IT;
+    case "undo":
+      // The ONLY case whose answer is not "it is done". Every guard lives in
+      // `undoResolution`, including the one that refuses a card whose triage
+      // committed — asked of the ledger rather than of the action kind, so it
+      // holds even if a future caller offers undo somewhere this file does not
+      // know about.
+      return { reopened: await undoResolution(action.itemId), transactionId: null };
   }
 }
 
@@ -140,6 +218,16 @@ function keysFor(action: ReviewAction) {
   const queue = [queryKeys.reviewQueue.all];
   switch (action.kind) {
     case "dismiss":
+    case "dismiss-loan-match":
+    // THE QUEUE KEYS AND NOTHING ELSE, exactly like the two dismissals it
+    // shares this branch with — and for the same reason, read backwards.
+    // `undoResolution` only ever reverses a triage whose ENTIRE write was
+    // `resolved_at`; it refuses every card that committed. So the one thing
+    // undo can change is which items are open, which is the badge, the counts
+    // and the list. Adding the ledger keys here would refetch every
+    // transaction and every wallet balance to render numbers that by
+    // construction did not move.
+    case "undo":
       return queue;
     case "confirm-loan-match":
       // The LOANS keys, not the ledger's. No Transaction was created, edited or
@@ -174,9 +262,25 @@ function keysFor(action: ReviewAction) {
   }
 }
 
+/**
+ * THE ONE HOOK IN THIS DIRECTORY THAT OPTS OUT OF THE GLOBAL FAILURE TOAST
+ * (lib/query_client.ts's `createMutationErrorCache`), and the only reason is
+ * that app/review/index.tsx already says something better in place: its
+ * `triageFailureMessage` names the missing field, points at the control that
+ * fills it in, and states outright that the balances are unchanged — a
+ * sentence that function's own doc explains it is entitled to and the global
+ * copy is not. A toast on top of it is the same news twice, in weaker words,
+ * over the card the user is still looking at.
+ *
+ * NOTHING ELSE HERE MAY COPY THIS. The flag is not "this hook handles its own
+ * errors" — it is "this hook's ONLY caller renders a specific failure inline,
+ * and always will". A hook that opts out without that is back to the silence
+ * GAP-013 exists to end.
+ */
 export function useReviewAction() {
   const queryClient = useQueryClient();
   return useMutation({
+    meta: { errorToast: false },
     mutationFn: (action: ReviewAction) => run(action),
     onSuccess: (_result, action) => invalidateKeys(queryClient, keysFor(action)),
   });

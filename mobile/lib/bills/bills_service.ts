@@ -28,6 +28,12 @@
 // asks, even after the ladder has been earned", and rule 13's reset on any
 // rejection.
 import {
+  ALWAYS_CONFIRM_DEVIATION_PCT,
+  LADDER_THRESHOLD,
+  WINDOW_CLOSES_DAYS_AFTER,
+  WINDOW_OPENS_DAYS_BEFORE,
+} from "@/constants/bills";
+import {
   createBill,
   getBill,
   listBillPayments,
@@ -46,25 +52,22 @@ import type {
   Centavos,
   DueRule,
   IsoDate,
+  MatchedBillPayment,
   Transaction,
 } from "@/types/domain";
 
 import { estimateAmount, type AmountEstimate, type PaymentAmount } from "./amount_estimator";
 import { daysUntil, occurrencesBetween } from "./due_rules";
+import { matchWindowFor, toleranceFor } from "./rule_summary";
 
 const DAY_MS = 86_400_000;
 
-/** Spec rule 15: the auto-match window opens 7 days before the due date. */
-const WINDOW_OPENS_DAYS_BEFORE = 7;
-/** ...and closes 15 days after it. */
-const WINDOW_CLOSES_DAYS_AFTER = 15;
-/**
- * Except for an overdue cycle, where rule 26 keeps it open for 30 days:
- * "late payment of an overdue bill is the expected resolution path", and a
- * window that shut first would leave the app unable to recognise the very
- * payment it has been nagging for.
- */
-const OVERDUE_WINDOW_DAYS = 30;
+// THE MATCHER'S OWN NUMBERS NOW LIVE IN `constants/bills.ts` (GAP-085), with
+// the same names and values. The bill detail's "auto-match rule summary" row
+// has to state the tolerance and window this file matches under, and a screen
+// cannot import them from here — this module imports the repositories, so the
+// import would pull `getDatabase` into the UI layer. Re-exported below only
+// where something outside already named them.
 
 /**
  * How far back to enumerate cycles that were never resolved.
@@ -76,16 +79,7 @@ const OVERDUE_WINDOW_DAYS = 30;
  */
 const OVERDUE_LOOKBACK_DAYS = 120;
 
-/** Spec rule 14's floor for a FIXED bill: ±₱30.00 or ±3%, whichever is greater. */
-const FIXED_TOLERANCE_CENTAVOS = 3000;
-const FIXED_TOLERANCE_PCT = 3;
-/** ...and ±30% of the current estimate for an ESTIMATED one. */
-const ESTIMATED_TOLERANCE_PCT = 30;
-
-/** Spec rule 13: confirmations needed before matching goes silent. */
-export const LADDER_THRESHOLD = 3;
-/** Spec rule 8: a jump this large always asks, ladder or no ladder. */
-export const ALWAYS_CONFIRM_DEVIATION_PCT = 30;
+export { ALWAYS_CONFIRM_DEVIATION_PCT, LADDER_THRESHOLD };
 
 /** Below this a transaction is not worth mentioning at all. */
 const CANDIDATE_FLOOR = 0.5;
@@ -107,7 +101,14 @@ export type BillStatus = {
   /** Negative once past. */
   daysUntil: number;
   cycle: BillCycle | null;
-  payment: BillPayment | null;
+  /**
+   * Joined to its ledger transaction, so a caller drawing payment history has
+   * the amount that was actually paid. `estimate` above is one figure for the
+   * WHOLE BILL, copied onto every cycle — it answers "what does this cost", not
+   * "what did I pay in January", and the two differ by exactly the amount the
+   * bill moved between cycles.
+   */
+  payment: MatchedBillPayment | null;
 };
 
 export type BillPaymentCandidate = {
@@ -170,12 +171,14 @@ export async function listBillStatuses(now: number, horizonDays: number): Promis
     const created = toDateIso(new Date(bill.createdAt));
     const from = created > today ? lookbackFloor : maxIso(created, lookbackFloor);
     const to = addDaysIso(today, horizonDays);
-    const estimate = estimateAmount(bill, await paymentAmounts(bill.id));
+    // ONE join, two readers: the estimator wants the amounts, and a status's
+    // `payment` carries the whole matched row so the bill detail can show what
+    // each cycle actually cost instead of repeating this estimate on every row.
+    const matched = await matchedPayments(bill.id);
+    const estimate = estimateAmount(bill, matched);
 
     const cycles = new Map((await listCycles(bill.id)).map((cycle) => [cycle.dueDate, cycle]));
-    const payments = new Map(
-      (await listBillPayments(bill.id)).map((payment) => [payment.cycleDueDate, payment]),
-    );
+    const payments = new Map(matched.map((payment) => [payment.cycleDueDate, payment]));
 
     // A resolved cycle outside the enumerated range still belongs in the list —
     // it is history the user paid, and `from` is a floor on GENERATION, not on
@@ -199,17 +202,36 @@ export async function listBillStatuses(now: number, horizonDays: number): Promis
   return statuses.sort((a, b) => (a.dueDate < b.dueDate ? -1 : a.dueDate > b.dueDate ? 1 : 0));
 }
 
-/** The joined payment history the estimator needs — amounts live on the ledger. */
-async function paymentAmounts(billId: string): Promise<PaymentAmount[]> {
+/**
+ * Every matched payment for a bill, each carrying its ledger transaction's
+ * amount and date — the figures `bill_payments` deliberately does not store.
+ *
+ * A payment whose transaction has gone is DROPPED rather than reported at zero.
+ * The estimator has always skipped it, and a history row reading ₱0.00 would be
+ * a lie about money rather than the absence of a fact.
+ */
+async function matchedPayments(billId: string): Promise<MatchedBillPayment[]> {
   const payments = await listBillPayments(billId);
-  const amounts: PaymentAmount[] = [];
+  const matched: MatchedBillPayment[] = [];
   for (const payment of payments) {
     const transaction = await getTransaction(payment.transactionId);
     if (transaction !== null) {
-      amounts.push({ cycleDueDate: payment.cycleDueDate, amount: transaction.amount });
+      matched.push({
+        ...payment,
+        amount: transaction.amount,
+        occurredAt: transaction.occurredAt,
+      });
     }
   }
-  return amounts;
+  return matched;
+}
+
+/** The joined payment history the estimator needs — amounts live on the ledger. */
+async function paymentAmounts(billId: string): Promise<PaymentAmount[]> {
+  return (await matchedPayments(billId)).map((payment) => ({
+    cycleDueDate: payment.cycleDueDate,
+    amount: payment.amount,
+  }));
 }
 
 /**
@@ -243,15 +265,10 @@ export async function totalDueInPeriod(
 // ---------------------------------------------------------------------------
 // Candidates — spec rules 14-19
 // ---------------------------------------------------------------------------
-/** Rule 14's two tolerance bands, which differ by amount mode. */
-function toleranceFor(bill: Bill, estimate: AmountEstimate): Centavos {
-  if (bill.amountMode === "fixed") {
-    // "±₱30.00 or ±3% of the amount, whichever is greater" — the allowance that
-    // absorbs an e-wallet's ₱7.00 bills-payment convenience fee.
-    return Math.max(FIXED_TOLERANCE_CENTAVOS, (estimate.amount * FIXED_TOLERANCE_PCT) / 100);
-  }
-  return (estimate.amount * ESTIMATED_TOLERANCE_PCT) / 100;
-}
+// RULE 14's TOLERANCE NOW LIVES IN `rule_summary.ts` (GAP-085) and is imported
+// above. The bill detail has to print the band it is matching under, and a
+// screen cannot reach into this module for it — so the one implementation moved
+// to the side of the wall both callers can stand on.
 
 function normalize(text: string): string {
   return text.toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
@@ -283,6 +300,14 @@ function scoreCandidate(
     reasons.push(`Paid to ${bill.name}`);
   }
 
+  // DELIBERATELY NOT CLAMPED WITH THE WINDOW (GAP-112). This band RANKS what
+  // the window already admitted; it is not a second gate, and rule 15 is about
+  // the window. Clamping it would change no verdict for a clamped bill anyway —
+  // every gap the tighter window lets through is already inside 15 — while for
+  // an overdue cycle, where rule 26 stretches the close to 30 days, a band that
+  // followed the close would hand the same +0.1 to a payment 29 days late as to
+  // one 4 days late. Holding the line at 15 makes a very late transaction earn
+  // its score from the amount and the merchant instead.
   const gap = Math.abs(daysUntil(toDateIso(new Date(transaction.occurredAt)), dueDate));
   if (gap <= 3) {
     score += 0.2;
@@ -319,11 +344,15 @@ export async function findBillPaymentCandidates(
 
   const estimate = estimateAmount(bill, await paymentAmounts(bill.id));
 
-  // Rule 26 widens the close for a cycle already overdue.
+  // Rule 15's window, with its half-period clamp, and rule 26's wider close for
+  // a cycle already overdue. Both live in `matchWindowFor` (rule_summary.ts)
+  // for `toleranceFor`'s reason: the bill detail prints the window it is
+  // matching under, and a second copy of the arithmetic would drift from this
+  // one and lie to the user about what the app just did.
   const today = toDateIso(new Date(now));
-  const closesAfter = dueDate < today ? OVERDUE_WINDOW_DAYS : WINDOW_CLOSES_DAYS_AFTER;
-  const from = Date.parse(`${addDaysIso(dueDate, -WINDOW_OPENS_DAYS_BEFORE)}T00:00:00`);
-  const to = Date.parse(`${addDaysIso(dueDate, closesAfter)}T00:00:00`) + DAY_MS;
+  const matchWindow = matchWindowFor(bill.dueRule, dueDate, dueDate < today);
+  const from = Date.parse(`${addDaysIso(dueDate, -matchWindow.opensDaysBefore)}T00:00:00`);
+  const to = Date.parse(`${addDaysIso(dueDate, matchWindow.closesDaysAfter)}T00:00:00`) + DAY_MS;
 
   const transactions = await listTransactions({
     from,

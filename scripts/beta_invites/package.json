@@ -1,0 +1,22 @@
+{
+  "name": "@peraplano/beta-invites",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "One-off mailer that sends Play closed-testing invitations to the people who signed up on /beta.",
+  "scripts": {
+    "send": "tsx src/send.ts",
+    "preview": "tsx src/send.ts --dry-run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "nodemailer": "^9.1.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/nodemailer": "^8.0.1",
+    "tsx": "^4.23.13",
+    "typescript": "~5.9.2"
+  }
+}

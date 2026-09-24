@@ -55,7 +55,7 @@ After a correcting triage: "Apply to 12 similar past transactions?" → **Previe
 ### Flow: resolve a suspected duplicate
 
 1. The DedupeGate commits the first record and holds the suspected twin **uncommitted** — totals never double-count while the question is open.
-2. **Same transaction** → the held twin is discarded; the kept record survives (default keep: the record with more parsed fields, e.g., the push with balance-after over the SMS-relay text). A dedupe signature UserRule is created so the same push/SMS twin pattern is suppressed automatically next time.
+2. **Same transaction** → the held twin is discarded and the record that arrived **first** survives. Nothing is weighed for richness and nothing is merged: `mobile/lib/ingest/dedupe_gate.ts` returns a verdict and nothing else, `mobile/lib/ingest/pipeline.ts` answers a `duplicate` verdict by writing nothing at all, and this card's "Same transaction" resolves the item without touching the committed row. So an SMS relay that beat its push through the twin window keeps the ledger, and the push's reference number and balance-after go with the twin. See the MVP amendment under [../03-ingest-pipeline.md](../03-ingest-pipeline.md) §6 rule 5; the richer-parse tie-break and field union are deferred in [../09-v2-backlog.md](../09-v2-backlog.md) §2b.7. **No dedupe signature UserRule is created either**, contrary to what this rule said until 2026-09-06: `UserRuleAction` (`mobile/types/domain.ts`) has six kinds and none of them expresses a dedupe signature, and the dismiss path runs a bare `resolve` with no `teachFrom`. Nothing is learned from resolving a duplicate, so the same push/SMS twin pattern is asked about again next time. That gap has no deferral record yet.
 3. **Different** → the held twin commits as an independent Transaction.
 
 ### Flow: resolve an ambiguous transfer
@@ -86,11 +86,30 @@ These tools also work outside the queue, directly on committed transactions — 
 ### What lands in the queue
 
 1. **Low-confidence parse** — the ConfidenceGate routes any parse below the auto-commit threshold; the Transaction is held uncommitted until triaged.
-2. **Unknown provider** — the SourceRouter's unknown-bin captures notifications from unrecognized packages **only if** they pass the money-signal heuristic: the text contains a currency marker or amount-shaped pattern (e.g., `₱`, `PHP`, `1,234.56`). Non-matching notifications are discarded immediately and never stored — a data-minimization requirement, not an optimization (see [../07-privacy-and-compliance.md](../07-privacy-and-compliance.md)).
+2. **Unknown provider** — the SourceRouter's unknown-bin captures notifications from unrecognized packages **only if** they pass the money-signal heuristic: the text contains a currency marker or amount-shaped pattern (e.g., `₱`, `PHP`, `1,234.56`). Non-matching notifications are discarded immediately and their text is never stored — a data-minimization requirement, not an optimization (see [../07-privacy-and-compliance.md](../07-privacy-and-compliance.md)). Such a notification leaves only its app and its times, for the Privacy centre, whether it arrived while the app was open or closed ([../03-ingest-pipeline.md](../03-ingest-pipeline.md) §1 principle 2).
 3. **Ambiguous transfer** — a TransferDetector candidate pair below the auto-link threshold (amounts near-equal but outside tight fee tolerance, or timing at the window's edge). Both legs are committed; only the pairing is queued.
 4. **Suspected duplicate** — a DedupeGate near-match (same amount, close timestamps, but no shared reference number). The first record commits; the twin is held uncommitted.
 5. Held items (types 1 and 4) are **not** counted in wallet balances, Limits, reports, or Safe-to-Spend until confirmed — the accepted simplification stated in [09-safe-to-spend.md](09-safe-to-spend.md). Balance drift from long-held items is caught by cash reconciliation prompts ([02-wallets.md](02-wallets.md)).
 6. One real-world event produces at most one actionable item: an ambiguous parse that is also a suspected duplicate queues once, as the duplicate (the stricter question), resolving both on triage.
+
+**As shipped — 2026-09-04.** Rule 6 previously held only within a single telling. A bank that
+sends both a push and an SMS for one debit produced two cards, and confirming both wrote two
+ledger rows. Two mechanisms now enforce the rule across channels:
+
+- On the queue path, a capture carries its `channel`, `providerKey`, `referenceNo` and
+  `occurredAt` in the item payload, and `findOpenTwin` suppresses the second telling when an
+  open card already exists for the same movement on the **other** channel. Both channels must be
+  known and must differ: two genuine identical purchases minutes apart on the same channel stay
+  two cards, because collapsing them would lose a real transaction.
+- On the triage path, confirming a card runs the duplicate check before inserting, so a card
+  whose twin already auto-committed on the other channel resolves onto the existing row instead
+  of committing a second one.
+
+A suppressed capture produces neither a transaction nor a card, so it writes the same
+already-resolved marker the ledger-side merge writes. Without it the recovery sweep would raise
+a fresh card the moment the user dismissed the twin. `balanceAfter` is carried in the payload
+but deliberately not applied to the committed row: the wallet snap has no "only if newer" guard,
+so a card triaged days later would re-anchor the balance to a stale figure.
 
 ### Triage interaction contract
 
@@ -99,6 +118,18 @@ These tools also work outside the queue, directly on committed transactions — 
 9. Triage is undoable: a just-triaged item shows an undo affordance for 10 seconds; committed results remain editable in the ledger indefinitely afterward.
 10. Dismissing is never destructive to the ledger: only held (uncommitted) records can be discarded; committed transactions are never deleted by any queue action.
 11. If a Wallet referenced by a queued item is archived before triage, the triage flow asks the user to pick a target Wallet (consistent with the no-orphan-transactions invariant in [../02-domain-model.md](../02-domain-model.md)).
+
+#### As shipped — 2026-09-19 (`app/review/index.tsx`, `hooks/mutations/use_review_action.ts`)
+
+**Rules 9 and 10 disagreed, and rule 9 was only half built.** Rule 9 promises a ten-second undo affordance; rule 10, twelve words later, is unqualified — "committed transactions are never deleted by any queue action". Undoing a confirm means deleting the Transaction it wrote, so the two cannot both be honoured as written. What shipped in the first pass was the undo for the four triages whose entire write is `resolved_at`: the low-confidence and unknown-provider rejects, "Same transaction" on a duplicate whose twin was never committed, and "Not a loan payment". Every committing triage offered nothing at all. Filed as GAP-075.
+
+> **OWNER DECISION (2026-09-19): rule 10 wins, and no rule text changes.** Rule 9's own second clause is the remedy for a committed triage — results "remain editable in the ledger indefinitely afterward" — so the affordance exists for those too; it says **Edit** and opens the ledger row, inside the same ten seconds and on the same strip. The alternative considered and rejected was a carve-out in rule 10 permitting a delete inside the undo window, which buys a truer "undo" at the cost of the one guarantee the queue makes about the ledger.
+
+**Confirm and correct only.** Both commit one proposed Transaction and both answer "which row did this leave behind" with exactly one id. A transfer confirm writes a pair, a merge keeps one row and drops another, and a link joins two that already existed; none has a single row that is "the result", and sending the user to edit half of a pair would be worse than sending them nowhere. Those keep the ledger's own screens, which rule 9's second clause is equally true of.
+
+**The row it opens is read back from the commit, not from the card.** `correctItem` resolves onto a PRE-EXISTING Transaction when one already holds the movement, and returns that row's id. Under the delete-flavoured undo that was a trap — it would have destroyed the other ingest channel's row. Under an Edit it is exactly right: the id names whichever row now holds the movement.
+
+**One offer at a time.** The Edit and Undo offers share a dedupe key, so a second triage replaces the first and restarts its ten seconds rather than stacking a second button over a list that has already moved.
 
 ### UserRule creation and replay
 
@@ -195,7 +226,7 @@ Gate behavior follows the standard rule: keep data, block creation of new, never
 - [ ] "Same transaction" discards the held twin and never removes a committed record; "Different" commits the twin.
 - [ ] "It's a transfer" creates a Transfer Link and both legs immediately leave spend/income totals; "Unlink transfer" restores them; Limits and Safe-to-Spend recompute in both directions.
 - [ ] Merge, split (within the 30-day raw TTL), link, and unlink all work from the ledger without a queue item present.
-- [ ] Only money-signal notifications from unknown packages are retained; a non-matching notification from an unknown package is verifiably never stored.
+- [ ] Only money-signal notifications from unknown packages are retained with their text; a non-matching notification from an unknown package verifiably never has its text stored.
 - [ ] The flag flow ("This is a money notification") commits a Transaction with `rawNotificationRef`, creates a source→Wallet UserRule, and the next capture from that source arrives pre-filled.
 - [ ] The badge counts actionable items (unknown sources grouped per source app), caps at 99+, and updates only on resolution, expiry, or arrival — not on merely opening the queue.
 - [ ] No per-item push notification is ever sent; the daily digest fires at most once per day and only under its trigger conditions.

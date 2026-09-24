@@ -38,6 +38,26 @@
 // to ask about), and the section says so explicitly when `wallets.length ===
 // 0` instead of leaving a bare "WALLET" label over dead space.
 //
+// (b)'s CAP IS GONE, AND ITS OBJECTION IS ANSWERED RATHER THAN OVERRULED
+// (2026-09-05). This sheet no longer owns a scroll area at all: `BottomSheet`
+// bounds EVERY sheet's body now, at a share of the window minus whatever the
+// keypad panel and the navigation bar are occupying. What (b) rejected was a
+// TALLER FIXED CAP — one number, picked on one phone, still a fold on the
+// next. This is not that number. It is derived per render from the device's
+// own window and from the space actually taken, so there is no device it was
+// not measured on, which is the whole of what the original objection asked
+// for. The reordering (b) chose instead stands on its own merits and is
+// untouched; only the fold it was weighed against has changed shape.
+//
+// WHAT THAT MOVES: the whole body scrolls now, Save included. Save is reached
+// by scrolling to the end of the sheet, NOT by sitting outside a scroll area —
+// the sheet's bounded body is the only scroll container here, and the keypad
+// panel is cleared by the sheet's own bottom padding rather than by keeping
+// Save out of the scroll. (a) and (b) are otherwise as they were: the
+// missing-field line still sits directly above Save and the wallet block still
+// renders above Direction, so a single-wallet user still reaches both without
+// scrolling at all.
+//
 // THE PRESELECT IS A CONFIRMABLE DEFAULT, NOT A SUPPRESSED SIGNAL (fixed
 // 2026-08-18, post-review). A first version of (c) folded the preselected
 // wallet into the diff's OWN baseline, so saving an untouched single-wallet
@@ -55,7 +75,7 @@
 // rather than presumptuous, since there is only one wallet it could mean.
 import { Check } from "lucide-react-native";
 import { useEffect, useState } from "react";
-import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { Pressable, Text, TextInput, View } from "react-native";
 
 import { CategoryPicker } from "@/components/transactions/category_picker";
 import { BottomSheet } from "@/components/ui/bottom_sheet";
@@ -382,8 +402,7 @@ export function CorrectSheet({
   return (
     <BottomSheet visible={visible} onDismiss={onDismiss} title={CORRECT_SHEET_TITLE}>
       <View testID="correct-sheet" className="gap-4">
-        <ScrollView className="max-h-96">
-          <View className="gap-4">
+        <View className="gap-4">
             {/* THE NOTIFICATION ITSELF, ABOVE THE FORM. The user tapped "This
                 is a money notification" about a specific piece of text; making
                 them retype what it said — with the text no longer on screen —
@@ -545,7 +564,6 @@ export function CorrectSheet({
               />
             </View>
           </View>
-        </ScrollView>
 
         {ruleOffered ? (
           <Pressable

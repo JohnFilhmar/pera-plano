@@ -41,6 +41,10 @@ export type SupportAttachmentDraft = {
   discardDraft: () => Promise<void>;
   /** Forgets the draft WITHOUT deleting files — for a successful submit, where the rows now own them. */
   releaseDraft: () => void;
+  /** Takes files back under the draft's ownership after a submit that failed to
+   * queue, so the unmount teardown still cleans them up. See `releaseDraft`'s
+   * call site for why the release happens BEFORE the insert. */
+  adoptDraft: (attachments: readonly NewSupportReportAttachment[]) => void;
 };
 
 export function useSupportAttachmentDraft(): SupportAttachmentDraft {
@@ -121,6 +125,13 @@ export function useSupportAttachmentDraft(): SupportAttachmentDraft {
     setError(null);
   }, [commit]);
 
+  const adoptDraft = useCallback(
+    (items: readonly NewSupportReportAttachment[]) => {
+      commit([...items]);
+    },
+    [commit],
+  );
+
   return {
     attachments,
     error,
@@ -129,5 +140,6 @@ export function useSupportAttachmentDraft(): SupportAttachmentDraft {
     removeAttachment,
     discardDraft,
     releaseDraft,
+    adoptDraft,
   };
 }

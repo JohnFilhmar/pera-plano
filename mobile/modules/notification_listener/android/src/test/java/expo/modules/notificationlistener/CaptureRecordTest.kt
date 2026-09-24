@@ -8,23 +8,20 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * CaptureRecord is the one shape a captured notification takes across three
- * hops: the disk buffer's JSON, the JS-bridge map, and (per contract) an
- * android.os.Bundle event payload. These tests focus on the property that
- * decides the task: null must survive every hop distinctly from empty
- * string, and the eight JS `RawCapture` key names (interface contract §4)
- * must be exact.
- *
- * toBundle() is implemented per the contract but is NOT unit-tested here.
- * android.os.Bundle has no real in-memory backing on the plain JVM test
- * classpath used by this module (no Robolectric, per Task 1/M1a decision) --
- * calling its instance methods throws "not mocked" at runtime. See the
- * companion report for the empirical probe that confirmed this.
+ * CaptureRecord is the one shape a captured notification takes across two
+ * hops: the disk buffer's JSON and the JS-bridge map. These tests focus on
+ * the property that decides the task: null must survive every hop distinctly
+ * from empty string, and the nine JS `RawCapture` key names (interface
+ * contract §4) must be exact.
  */
 class CaptureRecordTest {
 
   private val contractKeys = setOf(
     "id", "packageName", "title", "text", "subText", "bigText", "postedAt", "capturedAt",
+    // Migration 018. The notification SLOT this arrived in, which is what tells
+    // an edit of an already-captured notification apart from a second, genuine
+    // transaction -- the delivery id cannot, because it is fresh every time.
+    "notificationKey",
   )
 
   private fun sample(
@@ -34,6 +31,7 @@ class CaptureRecordTest {
     bigText: String? = "You have sent PHP 500.00 to JUAN D. Ref. 1234567",
     postedAt: Long = 1_754_524_800_000L,
     capturedAt: Long = 1_754_524_800_321L,
+    notificationKey: String? = "com.globe.gcash.android|0|null|0",
   ) = CaptureRecord(
     id = "3f1c6a2e-9b47-4c1d-8f52-77a0d1b6e904",
     packageName = "com.globe.gcash.android",
@@ -43,6 +41,7 @@ class CaptureRecordTest {
     bigText = bigText,
     postedAt = postedAt,
     capturedAt = capturedAt,
+    notificationKey = notificationKey,
   )
 
   // ---------------------------------------------------------------------
@@ -94,7 +93,7 @@ class CaptureRecordTest {
   }
 
   @Test
-  fun `toJson emits exactly the eight contract keys, no more, no less`() {
+  fun `toJson emits exactly the nine contract keys, no more, no less`() {
     val json = sample().toJson()
     val keys = mutableSetOf<String>()
     json.keys().forEachRemaining { keys.add(it) }
@@ -160,5 +159,36 @@ class CaptureRecordTest {
     val hostile = "\"quoted\"\nline two\\slash ₱99.50"
     val map = sample(subText = hostile).toMap()
     assertEquals(hostile, map["subText"])
+  }
+
+  // ---------------------------------------------------------------------
+  // notificationKey -- migration 018
+  // ---------------------------------------------------------------------
+
+  @Test
+  fun `notificationKey survives the json round trip`() {
+    val slot = "com.bpi.ng.app|17|tag|0"
+    val restored = CaptureRecord.fromJson(sample(notificationKey = slot).toJson())
+    assertEquals(slot, restored.notificationKey)
+  }
+
+  @Test
+  fun `a null notificationKey round trips as null, never the string null`() {
+    val restored = CaptureRecord.fromJson(sample(notificationKey = null).toJson())
+    assertNull(restored.notificationKey)
+  }
+
+  @Test
+  fun `a record buffered before this field existed still deserializes`() {
+    // Records written by an older build carry no `notificationKey` key at all.
+    // Throwing on them would strand every capture the buffer is holding from
+    // before the upgrade -- the one thing the buffer exists to prevent.
+    val legacy = sample().toJson()
+    legacy.remove("notificationKey")
+
+    val restored = CaptureRecord.fromJson(legacy)
+
+    assertNull(restored.notificationKey)
+    assertEquals("com.globe.gcash.android", restored.packageName)
   }
 }

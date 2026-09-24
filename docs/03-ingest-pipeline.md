@@ -2,7 +2,7 @@
 
 This document specifies PeraPlano's Ingest pipeline — the notification → ledger pipeline that delivers the core promise: *you never log a transaction; you only set the rules.* It defines every stage's inputs, outputs, rules, and failure modes; the Philippine provider catalogue the pipeline targets; the deduplication and transfer-detection rules; the parser-as-versioned-data model; the Android platform constraints the pipeline lives under; and the confidence scoring that decides what auto-commits and what routes to the Review Queue. The pipeline is the product's moat: everything else in the app is a view over the ledger this pipeline produces.
 
-**Status:** Draft v1 · 2026-08-02
+**Status:** Draft v1 · 2026-08-02 · MVP amendments 2026-09-05 (§5 rule 5, §6 rule 5, §11.2 rules 2 and 4)
 
 ---
 
@@ -15,7 +15,7 @@ flowchart TD
     A[Notification capture\nNotificationListenerService] --> B[SourceRouter]
     B -->|known provider| C[Parser]
     B -->|unknown, money-like| RQ[Review Queue]
-    B -->|unknown, not money-like| X[Dropped — never stored]
+    B -->|unknown, not money-like| X[Dropped, text never stored]
     C --> D[Normalizer]
     D --> E[DedupeGate]
     E -->|duplicate| S[Suppressed]
@@ -31,7 +31,7 @@ flowchart TD
 Design principles that govern every stage:
 
 1. **Conservative by default.** When the pipeline is unsure, it asks (Review Queue) rather than guesses. A wrong auto-committed Transaction corrupts totals and destroys trust; a Review Queue item costs one tap.
-2. **Never lose money-like signal.** Anything that might be a transaction is retained (encrypted, on-device, 30-day TTL) even when it cannot be parsed. Anything that is clearly not money-related is dropped immediately and never stored.
+2. **Never lose money-like signal.** Anything that might be a transaction is retained (encrypted, on-device, 30-day TTL) even when it cannot be parsed. Anything that is clearly not money-related is dropped immediately, and its text is never stored. It does leave a minimal record, its app and its times and nothing else, under the same 30-day TTL, so a miss by the money-signal heuristic can still be found in the Privacy centre (owner decision 2026-09-09, extended to the live path on 2026-09-24; GAP-107). Both paths behave the same way, whether the notification arrived while the app was running or was drained from the native buffer afterwards. A package the user has muted is the one exception and leaves nothing at all: they have already said it is not money.
 3. **Corrections become rules.** Every user correction in the Review Queue produces a **UserRule** that replays on future notifications. Parser gaps become training data instead of bug reports.
 4. **Raw text never leaves the phone.** Only structured, committed Transaction records ever sync (and only if the user enables cloud backup, a Plus feature). Telemetry about the pipeline is aggregate counts only — never content.
 5. **No true backfill exists.** Android provides no API to replay notifications that were posted and dismissed while the listener was down. On reconnection, the listener can read a snapshot of notifications still present in the status bar and feed them through the normal pipeline as a partial catch-up; anything dismissed or auto-cancelled during the gap is permanently gone. The mitigation for the truly lost remainder is reconciliation (§12.4), not replay.
@@ -77,7 +77,7 @@ Design principles that govern every stage:
 
 1. Routing is by source package name matched against the provider catalogue (§10). Package names in the catalogue are indicative and must be verified at implementation.
 2. **SMS-relay sub-route:** notifications posted by the default SMS app are inspected for known bank sender-ID prefixes ("BPI", "BDO", "MB", "LBP", and the rest of the catalogue's SMS-capable providers). A match routes the event to that bank's Parser rules with channel = SMS-via-Messages. The app never reads SMS directly (§12.2).
-3. **Unknown-bin pre-filter (data minimization):** an event from an unknown package is retained only if it is money-like — its text contains a currency marker (₱, "PHP", "Php") or an amount-shaped pattern. Everything else is dropped immediately and never stored. This keeps chat messages, social notifications, and other private content out of the app entirely.
+3. **Unknown-bin pre-filter (data minimization):** an event from an unknown package is retained only if it is money-like — its text contains a currency marker (₱, "PHP", "Php") or an amount-shaped pattern. Everything else is dropped immediately and its text is never stored. This keeps chat messages, social notifications, and other private content out of the app entirely. What such a notification does leave is its app and its times, as principle 2 describes, on either path.
 4. Unknown-bin items are stored encrypted on-device with the same 30-day TTL as all raw notification text, and surface in a collapsed "Other captured notifications" area of the Review Queue where the user can flag "this is a money notification." A flag sends only the package name and a parse-gap signal (never content) so the team can prioritize new parser coverage.
 5. Super-app packages (Shopee carrying ShopeePay, Grab carrying GrabPay) route to their provider's Parser, which is responsible for rejecting the high volume of non-transactional (marketing) notifications those apps emit.
 
@@ -88,7 +88,7 @@ Design principles that govern every stage:
 | Provider ships under a variant package name (regional build, rebrand) | Money notifications land in unknown-bin | Money-like pre-filter retains them; user flag + remote-updatable routing table (§11) adds the package without an app release |
 | Default SMS app differs by OEM or user choice | Bank SMS relay missed | Routing table lists common default SMS app packages; unknown-bin catches the rest via sender-ID text in a money-like notification |
 | Marketing push from a money app | Parser load and false-positive risk | Parser template classification drops non-transactional events (§4) |
-| Money notification without a currency marker | Dropped by pre-filter | Accepted residual risk; tracked as an open question (§14) |
+| Money notification without a currency marker | Dropped by pre-filter | Accepted residual risk; tracked as an open question (§14). It leaves its app and time in the Privacy centre on either path, so the miss can be found (principle 2) |
 
 ---
 
@@ -132,6 +132,8 @@ Design principles that govern every stage:
 5. **Balance-after:** retained when present. It never overrides the ledger, but feeds reconciliation cross-checks ("provider reports ₱4,310.25; PeraPlano computes ₱4,510.25 — reconcile?").
 6. Timestamp is the notification post time (Stage 0, rule 5).
 
+> **MVP amendment (2026-09-05) — rule 5's cross-check is real, but it does not live in the pipeline.** The Normalizer only *retains* balance-after; no stage of the ingest pipeline compares it to anything, and no ingest path raises a "reconcile?" prompt. The comparison happens after commit, in the Wallets code: `insertTransaction` (`mobile/lib/db/repos/transactions_repo.ts`) captures the pre-snap computed figure and stores it on the row beside the reported one, and `getBalanceDrift` (`mobile/lib/db/repos/wallets_repo.ts`) compares that pair on the newest reporting row. The gap is surfaced by the balance-drift attention state and its drift explainer, specified in [04-features/02-wallets.md](04-features/02-wallets.md) §Flow: balance handling rules 1–3, with `tunables.balanceDriftToleranceCentavos` (§11.1) as the threshold. Cash Wallets never report a balance at all and are reconciled on a separate path (`mobile/lib/wallets/reconcile.ts`, spec'd in the same doc under §Flow: cash Wallet reconciliation). Read the prompt quoted above as an illustration of what the drift explainer asks, not as something Stage 3 does.
+
 **Failure modes:**
 
 | Failure | Effect | Mitigation |
@@ -149,7 +151,7 @@ Many PH transactions announce themselves twice: a provider push notification *an
 
 **Input:** a normalized event, plus the recent event/Transaction history.
 
-**Output:** either the event passes through as unique, or it is suppressed as a duplicate of an existing event or committed Transaction (surviving record enriched per rule 5).
+**Output:** either the event passes through as unique, or it is suppressed as a duplicate of an existing event or committed Transaction (surviving record enriched per rule 5 — but see the amendment under rule 5: the MVP suppresses the twin and enriches nothing).
 
 **Dedupe rules:**
 
@@ -164,6 +166,12 @@ Many PH transactions announce themselves twice: a provider push notification *an
    4. Missing fields on the survivor are filled from the suppressed twin (field union).
    5. The suppressed twin's raw text remains in the on-device raw store until its 30-day TTL; the surviving record's `rawNotificationRef` points at the survivor's raw text.
 6. All dedupe windows and keys ship as tunable values inside the versioned ruleset data (§11), so they can be adjusted remotely if real-world twin timing differs from these initial values.
+
+> **MVP amendment (2026-09-05) — rule 5 sub-rules 1–4 are not built; no merge happens today.** The DedupeGate (`mobile/lib/ingest/dedupe_gate.ts`) returns a verdict and nothing else, and the orchestrator (`mobile/lib/ingest/pipeline.ts`) answers a `duplicate` verdict by returning `ignored: "duplicate"` and writing nothing at all. **The first arrival wins** — whether or not it is the richer parse (sub-rule 1), whether or not it is the push (sub-rule 2), and the survivor keeps its own timestamp because it was never rewritten — which is not sub-rule 3's guarantee, since a delayed twin can carry the earlier post time. The twin's fields are discarded, not merged in (sub-rule 4). The cost is concrete and it falls on SMS-first twins: the thinner SMS parse survives and the push's reference number, balance-after and cleaner merchant are dropped with it. Field union is deferred as a follow-up code change, recorded with this example in [09-v2-backlog.md](09-v2-backlog.md) §2b.7.
+>
+> **Sub-rule 5 does hold.** The raw capture is stored before the gate ever runs, so a suppressed twin's text stays in the raw store to its own 30-day TTL, and the survivor's `rawNotificationRef` is its own by construction rather than by a copy step.
+>
+> **Two paths do overwrite an existing record, and neither is field union.** A `supersedes` verdict lets a provider's own notification overwrite a transfer leg the app had minted on the user's confirmation — the incoming event is authoritative there, so it replaces rather than enriches. A `queued-twin` outcome folds a second telling into the open Review Queue card already waiting on the first, suppressing it without enriching that card. The user-driven "Same transaction" merge does not union fields either: `mergeDuplicate` (`mobile/lib/review/resolve_actions.ts`) deletes the dropped row, reverses its balance effect, and never touches the kept one. So [04-features/08-review-queue.md](04-features/08-review-queue.md) §Flow: resolve a suspected duplicate rule 2 chooses *which record survives*; no path in the app fills a field on the survivor from the record it discards.
 
 **Failure modes:**
 
@@ -325,11 +333,27 @@ Parser rot is a top product risk: providers change notification wording silently
 ### 11.2 Versioning and update discipline
 
 1. Every ruleset carries a version. Every parse records the pack version that produced it (§4, rule 5), so a regression introduced by version N is traceable and reversible.
-2. Updates are fetched by the app, verified for integrity and authenticity before activation, and applied atomically — a device is always on exactly one coherent ruleset version.
+2. Updates are fetched by the app and applied atomically — a device is always on exactly one coherent ruleset version. A bundle's integrity and authenticity are verified before activation: an Ed25519 signature over the raw response body, checked against a public key shipped in the app.
 3. Rulesets are data only. No update can deliver executable logic; the update channel can change *what patterns are matched*, never *what the app does*.
-4. Staged rollout: a new ruleset version reaches a small percentage of devices first; parse-success telemetry (aggregate counts only) gates wider rollout. A regression triggers rollback to the prior version.
+4. Staged rollout — **intended, not yet built**: a new ruleset version is to reach a small percentage of devices first, with parse-success telemetry (aggregate counts only) gating wider rollout and a regression triggering rollback to the prior version. See the amendment below.
 5. The app always embeds a known-good ruleset so it works fully offline and on first run; remote updates are an improvement channel, not a dependency.
 6. The Settings parser-diagnostics screen ([04-features/11-settings-privacy.md](04-features/11-settings-privacy.md)) shows the active ruleset version and per-provider parse health on the user's own device.
+
+> **MVP amendment (2026-09-05) — what rules 2 and 4 actually amount to today.** The update client is `mobile/services/parser_rules.ts`: a once-a-day `GET /v1/parser_rules?since_version=N`, a size cap applied to the raw body before `JSON.parse` ever sees it, and full schema validation (`mobile/lib/ingest/ruleset_schema.ts`) before anything is written, so an invalid bundle is discarded in memory and never stored. There is also no server behind that URL yet — `server/` is scheduled after the mobile MVP — so every request today answers as "nothing to install".
+>
+> **Rule 2 is now met (2026-09-18, GAP-043).** `mobile/lib/ingest/ruleset_signature.ts` verifies an **Ed25519 signature over the raw response body** against a public key compiled into the app, and `parser_rules.ts` runs that check after the size cap and **before anything is parsed**. The signature is **detached, in the `X-Ruleset-Signature` response header**, rather than a field inside the JSON: signing a field would mean the two sides agreeing on a byte-exact re-serialization of everything else — key order, number formatting, escaping — and every one of those is a place to disagree and to talk a verifier into checking something other than what it parsed. The bytes verified are the bytes parsed.
+>
+> **It fails closed, including when the header is simply absent.** There is deliberately no "unsigned bundles are allowed while the server is being built" allowance, because that is exactly what would still be switched on the day the server went live. **The client ships first on purpose:** an install that goes out without verification accepts unsigned bundles forever and no later server change can reach it, so the build that ships before the server exists is the one that has to already know the key.
+>
+> **Rotation costs a store release, and that is accepted.** A second trusted key, or a rotation bundle signed by the current key, would each remove that cost and each widen the surface the check exists to narrow, so neither ships until there is a server to need one. Losing the private key does not endanger any user's data; it ends the update channel until the next release. **The server side owes exactly one thing:** sign the response body with the matching private key and send the hex signature in that header.
+>
+> Rule 2's atomicity clause held already: `upsertRuleset` installs in one guarded INSERT that can never downgrade a device, and `getActiveRuleset` resolves exactly one version.
+>
+> **Rule 4 is absent outright.** There is no rollout bucket, no `rollout_percent` in the bundle schema, and no telemetry gate between a fetch and activation — the first device to ask gets the new version. The only rollback that exists is local and read-time: a stored payload that will not decode falls back to the previous good version (`mobile/lib/db/repos/parser_rulesets_repo.ts`), which covers a corrupt row rather than a bad ruleset that parses cleanly and matches wrongly.
+>
+> **Rule 4 is still absent, and deferring it was the owner's call (2026-09-18).** There is no rollout bucket, no `rollout_percent` in the bundle schema, and no telemetry gate between a fetch and activation. A staged rollout needs a server to stage FROM: with nothing emitting `rollout_percent`, the gate would ship untested against any real producer and be tuned blind. It is additive to the schema and can be built alongside the server. The only rollback that exists remains local and read-time — a stored payload that will not decode falls back to the previous good version (`mobile/lib/db/repos/parser_rulesets_repo.ts`) — which covers a corrupt row rather than a bad ruleset that parses cleanly and matches wrongly.
+>
+> Rule 4 is tracked as **GAP-043** in `GAP_ANALYSIS.md`, which also owns rewriting this paragraph once a rollout mechanism ships. Until then, treat rule 4 as design intent.
 
 ### 11.3 Corpus discipline
 

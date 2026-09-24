@@ -15,10 +15,13 @@ import type { AppEventMap } from "@/lib/events/app_events";
 import { freshDb } from "@/test_support/db";
 import type { Wallet } from "@/types/domain";
 
+import { listContributionDecisions } from "@/lib/db/repos/contribution_decisions_repo";
+
 import {
   applyAllocations,
   listGoalStatuses,
   proposePaydayAllocations,
+  skipAllocations,
 } from "../goals_service";
 
 const NOW = new Date(2026, 7, 15, 12, 0).getTime();
@@ -30,7 +33,7 @@ let seabank: Wallet;
 /** A payday of `amount` landing in the payroll wallet. */
 function paydayOf(amount: number): AppEventMap["income:payday"] {
   return {
-    transactionId: "tx-payday",
+    transactionIds: ["tx-payday"],
     walletId: payroll.id,
     amount,
     occurredAt: NOW,
@@ -94,6 +97,8 @@ test("a fixed rule proposes its exact amount", async () => {
       requested: 200000,
       fromWalletId: payroll.id,
       toWalletId: gsave.id,
+      // The local day the pay landed: the key a skip or a recording is filed under.
+      paydayDate: "2026-08-15",
     },
   ]);
 });
@@ -400,3 +405,86 @@ async function fund(walletId: string, amount: number): Promise<void> {
     confidence: 1,
   });
 }
+
+// ---------------------------------------------------------------------------
+// Decisions (GAP-056, goals rule 14). Recording a proposal completes that
+// payday's contribution; skipping one releases it from Safe-to-Spend.
+// ---------------------------------------------------------------------------
+test("applying a proposal records that payday's contribution as made", async () => {
+  const goal = await createGoal({
+    name: "Emergency",
+    targetAmount: 5000000,
+    linkedWalletId: gsave.id,
+    contributionRule: { kind: "fixed", amount: 200000 },
+  });
+  const proposals = await proposePaydayAllocations(paydayOf(1850000), NOW);
+
+  await applyAllocations(proposals, NOW);
+
+  expect(await listContributionDecisions("2026-08-15", "2026-08-15")).toEqual([
+    { goalId: goal.id, paydayDate: "2026-08-15", decision: "recorded" },
+  ]);
+});
+
+test("skipAllocations records a skip for each proposal it is given", async () => {
+  const emergency = await createGoal({
+    name: "Emergency",
+    targetAmount: 5000000,
+    linkedWalletId: gsave.id,
+    contributionRule: { kind: "fixed", amount: 200000 },
+  });
+  const travel = await createGoal({
+    name: "Travel",
+    targetAmount: 2000000,
+    linkedWalletId: seabank.id,
+    contributionRule: { kind: "fixed", amount: 100000 },
+  });
+  const proposals = await proposePaydayAllocations(paydayOf(1850000), NOW);
+
+  await skipAllocations(proposals, NOW);
+
+  const decisions = await listContributionDecisions("2026-08-15", "2026-08-15");
+  expect(decisions.map((row) => [row.goalId, row.decision]).sort()).toEqual(
+    [
+      [emergency.id, "skipped"],
+      [travel.id, "skipped"],
+    ].sort(),
+  );
+  // And a skip writes nothing to the ledger: the app never moves money.
+  expect(await listTransactions({})).toEqual([]);
+});
+
+test("a retry after a partial failure records each contribution once (review fix)", async () => {
+  // The sheet stays open after a failed confirm (app/_layout.tsx) with the same
+  // proposals, and the toast invites a retry. The proposal that already
+  // committed must not be recorded a second time.
+  await createGoal({
+    name: "Emergency",
+    targetAmount: 5000000,
+    linkedWalletId: gsave.id,
+    contributionRule: { kind: "fixed", amount: 200000 },
+  });
+  await createGoal({
+    name: "Travel",
+    targetAmount: 2000000,
+    linkedWalletId: seabank.id,
+    contributionRule: { kind: "fixed", amount: 100000 },
+  });
+  const proposals = await proposePaydayAllocations(paydayOf(1850000), NOW);
+  const realLink = transferLinksRepo.linkTransfer;
+  let calls = 0;
+  const link = jest
+    .spyOn(transferLinksRepo, "linkTransfer")
+    .mockImplementation(async (...args: Parameters<typeof realLink>) => {
+      calls += 1;
+      if (calls === 2) throw new Error("link failed");
+      return realLink(...args);
+    });
+  await expect(applyAllocations(proposals, NOW)).rejects.toThrow("link failed");
+  link.mockRestore();
+
+  await applyAllocations(proposals, NOW);
+
+  // One out-leg and one in-leg per goal, never a second pair for the first.
+  expect(await listTransactions({})).toHaveLength(4);
+});

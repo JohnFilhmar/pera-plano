@@ -55,7 +55,8 @@ import { createWallet } from "@/lib/db/repos/wallets_repo";
 import { __setTierForTests } from "@/lib/entitlements";
 import { setManualIncome } from "@/lib/income/income_service";
 import { derivedLimitsFrom } from "@/lib/limits/limit_derivation";
-import { getLimitAlertState } from "@/lib/db/repos/limits_repo";
+import { previousPeriodWindow } from "@/lib/limits/limit_engine";
+import { getLimitAlertState, setLimitAlertState } from "@/lib/db/repos/limits_repo";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { freshDb } from "@/test_support/db";
 import type { Category, Wallet } from "@/types/domain";
@@ -129,13 +130,17 @@ afterEach(async () => {
   await closeDatabase();
 });
 
-async function spend(categoryId: string, amount: number): Promise<void> {
+async function spend(
+  categoryId: string,
+  amount: number,
+  occurredAt: number = Date.now(),
+): Promise<void> {
   await insertTransaction({
     walletId: wallet.id,
     categoryId,
     amount,
     direction: "out",
-    occurredAt: Date.now(),
+    occurredAt,
     source: "manual",
     confidence: 1,
   });
@@ -435,7 +440,7 @@ test("the percent field says what the percentage comes to, once income is known"
   renderScreen(<NewLimitScreen />);
 
   fireEvent.press(screen.getByTestId("limit-basis-percent"));
-  await waitFor(() => expect(screen.queryByTestId("limit-percent-blocked")).toBeNull());
+  await waitFor(() => expect(screen.queryByTestId("limit-percent-blocked")).not.toBeOnTheScreen());
 
   typeAmount("limit-percent", "20");
 
@@ -486,7 +491,67 @@ test("the gated create route explains the cap and shows NO form", async () => {
 // ---------------------------------------------------------------------------
 // Detail
 // ---------------------------------------------------------------------------
-test("detail itemizes the effective limit and lists what counted", async () => {
+// ITEMIZED means base, rollover and effective are three DIFFERENT figures on
+// screen, and this test could not see any of that before. It created a
+// rollover-free fixed limit — for which base, effective and the card's own
+// total are all the same ₱10,000.00 — then asserted
+// `getAllByText("₱10,000.00").length > 0` and the bare existence of the
+// `limit-detail-effective` node. Every one of those held against a card that
+// printed the base three times, or that dropped the rollover row entirely,
+// which is exactly the itemization rule 3 exists to force.
+//
+// So the fixture now has a real carryover: last month closed with ₱2,500 of
+// its ₱10,000 base unspent, and rule 14 clamps that forward. Base ₱10,000,
+// rollover ₱2,500, effective ₱12,500, spend ₱3,000 — four figures no two of
+// which are equal, each read off the node that is supposed to carry it.
+test("detail itemizes the effective limit as base plus rollover, and lists what counted", async () => {
+  const limit = await createLimit({
+    scope: "monthly",
+    basis: "fixed",
+    value: 1000000,
+    rollover: true,
+  });
+
+  // Rule 18: a limit only carries headroom forward from a period it was
+  // actually watching, which the engine checks by requiring a stored state
+  // whose `periodStart` IS the previous window. Seeded rather than simulated
+  // — the boundary logic itself belongs to lib/limits/__tests__.
+  const previous = previousPeriodWindow("monthly", Date.now());
+  await setLimitAlertState(limit.id, {
+    periodStart: previous.start,
+    base: 1000000,
+    carryover: 0,
+    fired: [],
+    muted: false,
+    lastSpend: 0,
+  });
+  // ₱7,500 of last month's ₱10,000, leaving ₱2,500 to carry. `sumSpend` over
+  // the previous window is what the engine reads, not the stored `lastSpend`.
+  await spend(food.id, 750000, previous.start + 86_400_000);
+
+  await spend(food.id, 300000);
+  mockParams = { id: limit.id };
+
+  renderScreen(<LimitDetailScreen />);
+
+  await screen.findByTestId("limit-detail");
+  screen.getByText("Monthly limit");
+  // Base: the only place ₱10,000.00 appears, since the card above now totals
+  // ₱12,500.00. `getByText`, singular, so a second copy is a failure.
+  screen.getByText("₱10,000.00");
+  expect(screen.getByTestId("limit-detail-carryover").props.children).toBe("₱2,500.00");
+  expect(screen.getByTestId("limit-detail-effective").props.children).toBe("₱12,500.00");
+  screen.getByText(/Spent ₱3,000.00/);
+  // The card and the itemization have to agree, which they cannot if the card
+  // is quietly showing the base.
+  screen.getByText("₱3,000.00 / ₱12,500.00");
+});
+
+// The other side of the same rule, and the reason the test above cannot simply
+// assert "a carryover row exists": with rollover off there is nothing to
+// itemize, and printing a ₱0.00 rollover line would invent a concept the user
+// has not turned on.
+test("detail shows no rollover row when the limit does not roll over", async () => {
   const limit = await createLimit({ scope: "monthly", basis: "fixed", value: 1000000 });
   await spend(food.id, 250000);
   mockParams = { id: limit.id };
@@ -494,9 +559,8 @@ test("detail itemizes the effective limit and lists what counted", async () => {
   renderScreen(<LimitDetailScreen />);
 
   await screen.findByTestId("limit-detail");
-  screen.getByText("Monthly limit");
-  screen.getByTestId("limit-detail-effective");
-  expect(screen.getAllByText("₱10,000.00").length).toBeGreaterThan(0);
+  expect(screen.queryByTestId("limit-detail-carryover")).toBeNull();
+  expect(screen.getByTestId("limit-detail-effective").props.children).toBe("₱10,000.00");
   screen.getByText(/Spent ₱2,500.00/);
 });
 

@@ -9,6 +9,8 @@ import {
   isOverdue,
   nextOccurrence,
   occurrencesBetween,
+  periodDays,
+  unadjustedOccurrence,
 } from "@/lib/bills/due_rules";
 import type { DueRule } from "@/types/domain";
 
@@ -307,4 +309,109 @@ test("daysUntil counts CALENDAR days across a month and a year boundary", () => 
   expect(daysUntil("2027-01-01", "2026-12-31")).toBe(1);
   expect(daysUntil("2026-03-01", "2026-02-28")).toBe(1); // 2026 is not a leap year
   expect(daysUntil("2028-03-01", "2028-02-28")).toBe(2); // 2028 is
+});
+
+// ---------------------------------------------------------------------------
+// The unadjusted date — spec rule 3 (GAP-085)
+// ---------------------------------------------------------------------------
+// "Weekday adjustment moves the due date at most 2 days; the UNADJUSTED date is
+// still shown in the bill detail for transparency." Only the adjusted date is
+// stored (migration 006), so the detail screen recovers the base one from the
+// rule — which this file's header has always said it can.
+test("THE UNADJUSTED DATE IS RECOVERED FROM THE RULE", () => {
+  // 2026-02-21 is a Saturday, so "earlier" pulls it back to Friday the 20th.
+  const rule: DueRule = { kind: "day-of-month", day: 21, weekdayAdjust: "earlier" };
+  expect(occurrencesBetween(rule, "2026-02-01", "2026-02-28")).toEqual(["2026-02-20"]);
+
+  expect(unadjustedOccurrence(rule, "2026-02-20")).toBe("2026-02-21");
+});
+
+test("`later` is recovered too", () => {
+  // 2026-02-22 is a Sunday; "later" pushes it to Monday the 23rd.
+  const rule: DueRule = { kind: "day-of-month", day: 22, weekdayAdjust: "later" };
+  expect(occurrencesBetween(rule, "2026-02-01", "2026-02-28")).toEqual(["2026-02-23"]);
+
+  expect(unadjustedOccurrence(rule, "2026-02-23")).toBe("2026-02-22");
+});
+
+test("A DATE THAT NEVER MOVED COMES BACK UNCHANGED", () => {
+  // The detail screen renders the transparency line only when the two differ,
+  // so this is what "there was no shift" looks like. 2026-02-20 is a Friday.
+  const rule: DueRule = { kind: "day-of-month", day: 20, weekdayAdjust: "earlier" };
+  expect(unadjustedOccurrence(rule, "2026-02-20")).toBe("2026-02-20");
+  expect(unadjustedOccurrence({ kind: "day-of-month", day: 21 }, "2026-02-21")).toBe(
+    "2026-02-21",
+  );
+});
+
+test("THE MONTH-BOUNDARY FALLBACK IS RECOVERED IN THE DIRECTION IT REALLY WENT", () => {
+  // 2026-05-31 is a Sunday. "later" would be June 1st, which leaves the month
+  // and breaks the one-per-month promise, so due_rules falls back the OTHER
+  // way — to Friday the 29th. Recovering "the day after the adjusted date"
+  // would have answered the 30th, a Saturday the rule never produces.
+  const rule: DueRule = { kind: "last-day-of-month", weekdayAdjust: "later" };
+  expect(occurrencesBetween(rule, "2026-05-01", "2026-05-31")).toEqual(["2026-05-29"]);
+
+  expect(unadjustedOccurrence(rule, "2026-05-29")).toBe("2026-05-31");
+});
+
+test("a week-based rule has no unadjusted date to recover", () => {
+  // The spec scopes the shift to month-based rules, and `adjustOf` returns
+  // "none" here whatever the field says — so the stored date IS the base date.
+  const rule: DueRule = {
+    kind: "every-n-weeks",
+    n: 2,
+    weekday: 0,
+    anchorDate: "2026-02-22",
+    weekdayAdjust: "earlier",
+  };
+  expect(unadjustedOccurrence(rule, "2026-02-22")).toBe("2026-02-22");
+});
+
+test("an edited rule that no longer produces an open cycle reports the stored date", () => {
+  // Rule 25 keeps an old cycle open while the rule underneath it changes.
+  // Inventing a base for an occurrence the rule cannot make would be a
+  // fabricated fact on a screen whose whole job here is transparency.
+  const rule: DueRule = { kind: "day-of-month", day: 21, weekdayAdjust: "earlier" };
+  expect(unadjustedOccurrence(rule, "2026-02-11")).toBe("2026-02-11");
+});
+
+// ---------------------------------------------------------------------------
+// The period a rule implies — spec rule 15's "half the bill's period" (GAP-112)
+// ---------------------------------------------------------------------------
+// `DueRule` says WHEN, never HOW OFTEN, so the number rule 15's clamp needs has
+// to come out of the schedule itself. Every expectation below is the gap the
+// rule really produces, averaged over 52 weeks — not a table someone typed.
+test("EVERY DUE RULE REPORTS THE PERIOD ITS OWN SCHEDULE PRODUCES", () => {
+  const weekly: DueRule = { kind: "every-n-weeks", n: 1, weekday: 5, anchorDate: "2026-02-20" };
+  expect(periodDays(weekly, "2026-02-20")).toBe(7);
+  expect(periodDays({ ...weekly, n: 2 }, "2026-02-20")).toBe(14);
+
+  // Twelve occurrences a year whatever the month lengths do, which is the point
+  // of averaging: the gap from a February due date to the next is 28 days and
+  // from a March one 31, and a monthly bill's window must not flinch between
+  // them. Half of 30.33 is over 15, so neither of rule 15's maxima moves.
+  expect(periodDays(DAY_15, "2026-02-15")).toBeCloseTo(30.33, 2);
+  expect(periodDays(DAY_15, "2026-03-15")).toBeCloseTo(30.33, 2);
+
+  // Katapusan, the spec's other month-shaped rule: still twelve a year.
+  expect(periodDays({ kind: "last-day-of-month" }, "2026-01-31")).toBeCloseTo(30.33, 2);
+
+  // Kinsenas-katapusan alternates 15 and 16 days; the average is neither, and
+  // half of it is the one figure both halves of the month can agree on.
+  expect(periodDays({ kind: "semi-monthly" }, "2026-02-15")).toBeCloseTo(15.17, 2);
+
+  expect(periodDays({ kind: "every-n-months", n: 3, day: 20, anchorMonth: 2 }, "2026-02-20")).toBe(
+    91,
+  );
+});
+
+test("a rule with no occurrence in a year is reported as annual, not as zero", () => {
+  // Unreachable from the create form — `dueRuleForCadence` caps n at 12 — but a
+  // migrated or hand-edited rule could produce it, and dividing by the count
+  // would hand rule 15's clamp a division by zero. Annual makes every clamp
+  // derived from it non-binding, which is the safe direction: 7 and 15 are
+  // already the maxima, so a wrong answer here can only fail to tighten.
+  const biennial: DueRule = { kind: "every-n-months", n: 24, day: 20, anchorMonth: 2 };
+  expect(periodDays(biennial, "2026-03-20")).toBe(364);
 });

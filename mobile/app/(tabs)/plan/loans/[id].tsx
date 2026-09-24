@@ -21,6 +21,7 @@ import { EmptyState } from "@/components/ui/empty_state";
 import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
 import { SectionHeader } from "@/components/ui/section_header";
 import { useConfirmPaymentMatch } from "@/hooks/mutations/use_confirm_payment_match";
+import { useRejectPaymentCandidates } from "@/hooks/mutations/use_reject_payment_candidates";
 import { useLoanHistory } from "@/hooks/queries/use_loan_history";
 import { useLoans } from "@/hooks/queries/use_loans";
 import { useArchiveLoan } from "@/hooks/mutations/use_archive_loan";
@@ -35,6 +36,7 @@ export default function LoanDetailScreen() {
   const { data: statuses } = useLoans();
   const { data: candidates } = usePaymentCandidates(id);
   const confirm = useConfirmPaymentMatch();
+  const reject = useRejectPaymentCandidates();
   const [sheetOpen, setSheetOpen] = useState(false);
   // The unfiltered list is fetched ONLY once the user asks for it — it drops
   // the score floor and reads up to 50 transactions, which is not work to do
@@ -89,16 +91,31 @@ export default function LoanDetailScreen() {
   // `Loan.schedule` stores installments; `ScheduleTable` renders schedule rows.
   // Mapping here rather than widening the table keeps the table usable with a
   // freshly built schedule too, before anything is saved.
-  const rows: ScheduleRow[] = (status.loan.schedule ?? []).map((installment, index) => ({
-    index: index + 1,
-    dueDate: installment.dueDate,
-    payment: installment.amountDue,
-    principal: installment.principalPortion ?? installment.amountDue,
-    interest: installment.interestPortion ?? 0,
-    balanceAfter: 0,
-  }));
-
-  const paid = status.loan.principal - status.outstanding;
+  //
+  // THE BALANCE COLUMN IS FOLDED, NOT STORED. An `Installment` carries no
+  // balance of its own, and the literal zero this map used to print made every
+  // row of a saved loan read as fully settled. What is left after a row is what
+  // the rows below it still have to clear — principal portions on an amortized
+  // schedule, the whole installment on a flat one (rule 4: every peso of a 5-6
+  // loan is principal) — which is the same walk `buildAmortizationSchedule` and
+  // `buildFlatSchedule` make for a schedule that was never saved.
+  const installments = status.loan.schedule ?? [];
+  let remaining = installments.reduce(
+    (total, installment) => total + (installment.principalPortion ?? installment.amountDue),
+    0,
+  );
+  const rows: ScheduleRow[] = installments.map((installment, index) => {
+    const principal = installment.principalPortion ?? installment.amountDue;
+    remaining -= principal;
+    return {
+      index: index + 1,
+      dueDate: installment.dueDate,
+      payment: installment.amountDue,
+      principal,
+      interest: installment.interestPortion ?? 0,
+      balanceAfter: remaining,
+    };
+  });
 
   return (
     <ScrollView
@@ -108,10 +125,16 @@ export default function LoanDetailScreen() {
     >
       <LoanCard testID="loan-detail-card" status={status} now={now} />
 
+      {/* THE SUM OF THE RECORDED PAYMENTS, not `principal - outstanding`.
+          `outstandingBalance` also folds in balance adjustments and floors at
+          zero, so the subtraction read a late fee (rule 20) as money the user
+          had paid — negative before the first payment, and capped at the
+          principal after an overpayment. An adjustment belongs to the balance
+          beside it, not to what the user handed over. */}
       <Card>
         <View className="flex-row items-center justify-between">
           <Text className="text-fg-2 dark:text-fg-2-dark">Paid so far</Text>
-          <AmountText testID="loan-detail-paid" amount={paid} />
+          <AmountText testID="loan-detail-paid" amount={status.paidTotal} />
         </View>
         <View className="mt-2 flex-row items-center justify-between">
           <Text className="text-fg-2 dark:text-fg-2-dark">Payments recorded</Text>
@@ -240,7 +263,7 @@ export default function LoanDetailScreen() {
       />
 
       <SectionHeader title="Schedule" />
-      <ScheduleTable testID="loan-schedule" rows={rows} totalPaid={paid} />
+      <ScheduleTable testID="loan-schedule" rows={rows} totalPaid={status.paidTotal} />
 
       {/* THE DIRECTION IS NOT PASSED AND NOT PASSABLE. The sheet takes the
           whole `Loan`, reads `direction` off it for its wording only, and
@@ -271,6 +294,9 @@ export default function LoanDetailScreen() {
         showingAll={browsingAll}
         onShowAll={() => setBrowsingAll(true)}
         busy={confirm.isPending}
+        onReject={(transactionIds) =>
+          reject.mutate({ loanId: status.loan.id, transactionIds })
+        }
         onDismiss={() => {
           setSheetOpen(false);
           setBrowsingAll(false);

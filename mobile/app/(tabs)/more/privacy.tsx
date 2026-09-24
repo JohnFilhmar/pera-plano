@@ -8,6 +8,15 @@
 // from `raw_notifications`, and every sentence is checkable against the code
 // beside it (see each component's own header for its specific claim).
 //
+// AND WHERE A SWITCH DOES NOT CONTROL CAPTURE, THIS SCREEN NOW SAYS SO
+// (GAP-119). The provider rows render from `paused_provider_packages`, which is
+// the app's RECORD of the scope, and on a device that could not seal a provider
+// filter that record is not what the listener is applying. The sentence above
+// was therefore true of the code and not always true of the phone. The banner in
+// the Providers section compares the record against a live native read of the
+// filter itself and reports the disagreement — which is what makes the claim
+// checkable rather than merely intended.
+//
 // ALL ORCHESTRATION LIVES HERE, NOT IN THE COMPONENTS. Same split
 // app/(onboarding)/providers.tsx uses against
 // components/onboarding/provider_picker.tsx: every hook, every native call,
@@ -16,8 +25,10 @@
 // which is also what keeps every one of those components free of the
 // `lib/db/repos/**` import the global constraints forbid.
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Smartphone } from "lucide-react-native";
-import { ScrollView, Text, View } from "react-native";
+import { AppState, ScrollView, Text, View } from "react-native";
+import type { AppStateStatus } from "react-native";
 
 import { CaptureToggle } from "@/components/privacy/capture_toggle";
 import { CapturedList } from "@/components/privacy/captured_list";
@@ -31,13 +42,19 @@ import { formatSize } from "@/lib/ai/downloader";
 import { installedModels, removeInstalledModel } from "@/lib/ai/model_files";
 import type { InstalledModel } from "@/lib/ai/model_files";
 import { providerLabel, providerLabelForPackage } from "@/constants/providers";
+import { queryKeys } from "@/constants/query_keys";
 import { useSetCaptureEnabled } from "@/hooks/mutations/use_set_capture_enabled";
 import { useSetProviderPause } from "@/hooks/mutations/use_set_provider_pause";
 import { useCaptureEnabled, usePausedProviderPackages } from "@/hooks/queries/use_capture_settings";
+import { useListenerHealth } from "@/hooks/queries/use_listener_health";
+import { useProviderFilter } from "@/hooks/queries/use_provider_filter";
 import { useRawCaptures } from "@/hooks/queries/use_raw_captures";
 import { useRuleset } from "@/hooks/queries/use_ruleset";
 import { useLock } from "@/contexts/lock_context";
 import { exportAllData } from "@/lib/privacy/data_export";
+import { compareProviderScope } from "@/lib/privacy/provider_scope";
+import { WipeIncompleteError } from "@/lib/security/wipe";
+import { openAccessSettings } from "@/modules/notification_listener";
 import type { ProviderSwitchItem } from "@/components/privacy/provider_switch_list";
 
 /**
@@ -63,24 +80,137 @@ const CAPTURED_LIST_BODY =
 const MODELS_BODY =
   "The assistant's model is a public file stored on this phone. It holds none of your records, and deleting it frees the space straight away.";
 
+/**
+ * The two sentences a failed wipe can honestly print, split exactly where
+ * lib/security/wipe.ts splits its failures: a `wipeDatabase()` rejection
+ * propagates as itself because NOTHING was destroyed, and every later
+ * rejection arrives as `WipeIncompleteError` because the file is already gone.
+ * The second sentence is this screen's original wording, kept because it is
+ * accurate for that case. The first exists because it was previously printed
+ * too: one message for both told a user whose ledger was still on their phone
+ * that their data had been erased, which is the opposite of the truth in the
+ * more frightening direction, on the one screen whose whole job is being
+ * checkable about their data. It says what state they are actually in and that
+ * the phrase and the ledger both survived, so a retry is a real option.
+ */
+const WIPE_INCOMPLETE_BODY =
+  "Your data was erased, but PeraPlano could not finish resetting. Please close and reopen the app.";
+const WIPE_NOT_STARTED_BODY =
+  "Nothing was erased. Your data and your recovery words are still on this phone, so you can try again.";
+
+/**
+ * The sentence GAP-119 exists to print: the switches below are the app's
+ * RECORD, and this screen used to present them as though they were what the
+ * listener holds. On a device that could not seal a provider filter the two
+ * disagree, capture is wider than the switches show, and until this banner
+ * nothing anywhere said so.
+ *
+ * IT DESCRIBES THE DISAGREEMENT, NEVER ITS CAUSE. "PeraPlano could not save
+ * this" would be a guess: the same mismatch is reachable from a ruleset that
+ * gained a provider after this launch started, where nothing failed at all.
+ * What is observed is that the recorded scope and the applied scope differ, and
+ * that is what it says.
+ *
+ * AND IT DOES NOT SAY "READING". Whether anything is being captured right now
+ * also depends on the master pause directly above it, which the capture row
+ * already reports; a banner claiming a bank is "still being read" would be
+ * flatly false to a user who has capture switched off, on the one screen whose
+ * whole job is being checkable.
+ *
+ * THE REMEDY IS REAL AND IS THE ONLY ONE (GAP-114's own reasoning). The filter
+ * is sealed under the listener's prefs key, which is created on launch and when
+ * the listener service binds — never lazily by a write from this screen — so a
+ * relaunch is the single action available to the user that can change the
+ * outcome, and `resyncProviderFilter` in lib/bootstrap.ts is what makes it one:
+ * every launch re-asserts this row.
+ *
+ * THERE IS NO DISMISS CONTROL, deliberately. This describes a live mismatch
+ * recomputed on every render from the two values themselves, so hiding it would
+ * restore exactly the silence it removes — and it needs no dismissal, because
+ * the launch that fixes the mismatch is the same launch that stops rendering
+ * it.
+ */
+const PROVIDER_SCOPE_MISMATCH_TITLE = "These switches aren't in force";
+const PROVIDER_SCOPE_MISMATCH_BODY =
+  "PeraPlano recorded the providers below, but the notification listener still holds a different list. Close and reopen PeraPlano — every start re-applies these switches.";
+
 const SmartphoneIcon = registerIcon(Smartphone);
 
 export default function PrivacyScreen() {
-  const { wipeAndStartOver } = useLock();
+  /**
+   * `errorMessage` is the wipe's real reporting channel, not the `catch` in
+   * `handleWipeConfirmed` — see that function's doc. It is read here rather
+   * than after the `await` because the value in that closure is the one from
+   * the render that started the wipe, i.e. always the one from before the
+   * context set it.
+   */
+  const { wipeAndStartOver, errorMessage: lockErrorMessage } = useLock();
+  const queryClient = useQueryClient();
 
   const { data: captureEnabled } = useCaptureEnabled();
   const { data: pausedPackages } = usePausedProviderPackages();
   const { data: bundle } = useRuleset();
   const { data: captures } = useRawCaptures();
+  /**
+   * THE SWITCH ALONE CANNOT SAY WHETHER ANYTHING IS BEING READ. `capture_enabled`
+   * is the user's intent; whether the listener actually has Notification Access
+   * and is connected is a live native fact, and only this hook has it. Without
+   * it this screen printed "PeraPlano is reading your bank and e-wallet
+   * notifications" to a user who had declined the permission or had it revoked
+   * by their OEM — see components/privacy/capture_toggle.tsx's own note.
+   *
+   * NOT A SECOND SOURCE OF TRUTH FOR THE SWITCH: `TrackingHealth.captureEnabled`
+   * is deliberately ignored here, so the Switch keeps rendering off exactly one
+   * query (`useCaptureEnabled`) and the two can never disagree mid-write.
+   */
+  const { data: health } = useListenerHealth();
+  /**
+   * THE ONLY THING ON THIS SCREEN THAT KNOWS WHAT THE LISTENER ACTUALLY HOLDS
+   * (GAP-119). Every provider row above renders from `pausedPackages`, which is
+   * the app's record of intent; this is the device's report of effect, and the
+   * banner below exists for the case where they differ. Kept as a separate
+   * query rather than folded into either of them for the reason
+   * use_provider_filter.ts's own doc gives: a single source could not represent
+   * the disagreement.
+   */
+  const { data: heldFilter } = useProviderFilter();
 
   const setCaptureEnabled = useSetCaptureEnabled();
   const setProviderPause = useSetProviderPause();
+
+  /**
+   * Notification Access is granted, and revoked, in ANOTHER app — the system
+   * settings screen the row below opens — with no callback to this one
+   * (`isAccessGranted`'s own doc, modules/notification_listener/index.ts). So
+   * the live read has to be re-asked on every foreground return, or the row
+   * would keep telling a user who just fixed the grant that access is still
+   * off. AppState rather than `useFocusEffect` for the reason
+   * app/(tabs)/more/index.tsx states for the same round trip: leaving PeraPlano
+   * never unfocuses the tab, so a focus effect would miss the one return that
+   * matters. Identical to app/(tabs)/more/listener_health.tsx's effect, which
+   * exists for this same grant.
+   */
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (next: AppStateStatus) => {
+      if (next === "active") {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.listenerHealth.all });
+      }
+    });
+    return () => subscription.remove();
+  }, [queryClient]);
 
   const [exporting, setExporting] = useState(false);
   const [wiping, setWiping] = useState(false);
   const [busyProviderKey, setBusyProviderKey] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const [wipeError, setWipeError] = useState<string | null>(null);
+  /**
+   * True once a wipe attempt has come back and left this screen mounted, which
+   * is the only situation in which the lock context's `errorMessage` belongs
+   * to this screen's wipe. Without the gate, any message the context happens to
+   * be holding would print itself under the Erase button on first mount.
+   */
+  const [wipeAttempted, setWipeAttempted] = useState(false);
 
   /**
    * The assistant's weights, which NEITHER the export NOR the wipe can reach.
@@ -149,12 +279,44 @@ export default function PrivacyScreen() {
     [providers, pausedSet],
   );
 
+  /**
+   * Whether the two reads can be compared AT ALL yet, and it is not the same
+   * question as whether they agree.
+   *
+   * NOTHING IS CLAIMED UNTIL BOTH HAVE LANDED. `heldFilter` is `undefined`
+   * while the native read is in flight AND if it rejects (`retry: false`), and
+   * either way the honest answer is that this screen cannot tell — so it says
+   * nothing, rather than warning about a comparison it has only half of.
+   *
+   * AND NOT WHILE A SWITCH IS BEING WRITTEN. A successful toggle moves the row
+   * and the listener together, and the mutation stays pending until BOTH
+   * queries have refetched (see its `onSuccess`), so this is the window in
+   * which the cache legitimately holds one new value and one old one. Reading
+   * it would flash the banner on every successful pause.
+   */
+  const providerScopeSettled =
+    heldFilter !== undefined && pausedPackages !== undefined && !setProviderPause.isPending;
+
+  const providerScopeMismatch = useMemo(() => {
+    if (!providerScopeSettled || heldFilter === undefined || pausedPackages === undefined) {
+      return false;
+    }
+    return (
+      compareProviderScope({
+        universe: allPackageNames,
+        paused: pausedPackages,
+        actual: heldFilter,
+      }) === "not_in_force"
+    );
+  }, [providerScopeSettled, heldFilter, pausedPackages, allPackageNames]);
+
   const capturedItems = useMemo(
     () =>
       (captures ?? []).map((capture) => ({
         capture,
         providerName: providerLabelForPackage(providers, capture.packageName),
         expiresAt: capture.expiresAt,
+        bodyDiscarded: capture.bodyDiscarded,
       })),
     [captures, providers],
   );
@@ -223,28 +385,59 @@ export default function PrivacyScreen() {
    * therefore still happens on the way back in, just at the one moment there
    * is a key to do it with.
    *
-   * THE CATCH BELOW IS STILL NOT OPTIONAL, for the same reason as before:
-   * `wipeKeys()` and `clearCaptureBuffer()` both run AFTER `wipeDatabase()`
-   * has already deleted the file irreversibly (see lib/security/wipe.ts's
-   * header on why that order is deliberate). Without this catch, either one
-   * throwing would leave the user on this screen with a stopped spinner, no
-   * message, and an app whose data is already gone — the single most
-   * dangerous silent failure this feature could have.
+   * A FAILURE DOES NOT ARRIVE AS A REJECTION. The context's
+   * `wipeAndStartOver` NEVER REJECTS — its own doc says so, and
+   * contexts/__tests__/lock_context.test.tsx pins both failure kinds as
+   * `resolves` — because its first call site (app/lock.tsx) fires it as
+   * `void onWipe()`, where a rejection would be an unhandled promise on the
+   * screen a silent failure is most dangerous on. Every outcome lands in the
+   * context's `status`/`errorMessage` instead, and which of the two failures
+   * happened decides whether this screen is even still mounted to report it:
+   *
+   * - A failure AFTER `wipeDatabase()` (`WipeIncompleteError`) moves status to
+   *   "needs_onboarding", so app/_layout.tsx's AppShell replaces this entire
+   *   Stack with the lock gate, and app/lock.tsx prints the context's message
+   *   above the fresh setup flow. Nothing this file renders is on screen by
+   *   then, and nothing it could set would ever be seen.
+   * - A `wipeDatabase()` failure destroyed nothing, so status deliberately
+   *   stays "unlocked" and this screen stays mounted — and until this handler
+   *   read `errorMessage`, that user watched the spinner stop and got no
+   *   message at all. Its `catch` never ran, because there was no rejection to
+   *   catch. That is the silent failure the block below actually prevents.
+   *
+   * THE CATCH STILL IS NOT OPTIONAL, and now branches. It is what stands
+   * between a future context that does reject and that same stopped spinner —
+   * and if it ever fires it must not repeat the bug it was written with: one
+   * message for both kinds told a user whose ledger was untouched that their
+   * data had been erased. `WipeIncompleteError` is the only thing that can say
+   * which side of the database file the sequence stopped on.
    */
   const handleWipeConfirmed = async () => {
     setWiping(true);
     setWipeError(null);
+    setWipeAttempted(false);
     try {
       await wipeAndStartOver();
+      setWipeAttempted(true);
     } catch (error) {
-      console.warn("privacy: wipe could not finish after the database was cleared", error);
-      setWipeError(
-        "Your data was erased, but PeraPlano could not finish resetting. Please close and reopen the app.",
-      );
+      if (error instanceof WipeIncompleteError) {
+        console.warn("privacy: wipe could not finish after the database was cleared", error);
+        setWipeError(WIPE_INCOMPLETE_BODY);
+      } else {
+        console.warn("privacy: wipe stopped before anything was erased", error);
+        setWipeError(WIPE_NOT_STARTED_BODY);
+      }
     } finally {
       setWiping(false);
     }
   };
+
+  /**
+   * The catch's message first (it only exists for a rejection this screen has
+   * no other account of), then the context's, which is where every failure the
+   * app can currently produce actually reports itself.
+   */
+  const wipeNotice = wipeError ?? (wipeAttempted ? lockErrorMessage : null);
 
   return (
     <ScrollView
@@ -284,7 +477,9 @@ export default function PrivacyScreen() {
       <SectionHeader title="Listening" />
       <CaptureToggle
         enabled={captureEnabled}
+        health={health}
         onChange={(enabled) => setCaptureEnabled.mutate(enabled)}
+        onOpenAccessSettings={openAccessSettings}
         busy={setCaptureEnabled.isPending}
       />
 
@@ -295,6 +490,27 @@ export default function PrivacyScreen() {
             the nearest scale entry, for the same reason as that banner's
             heading. */}
         <Text className="text-section font-semibold text-fg dark:text-fg-dark">Providers</Text>
+        {/* ABOVE the switch list, because it is about the rows underneath it —
+            a notice printed below them would be read after the reader has
+            already believed what they say. `danger` fill with `on-brand` ink is
+            the audited pairing for a solid danger surface (constants/colors.ts:
+            4.83:1 light, 6.42:1 dark); `text-surface` would be white by
+            coincidence in light mode and near-black on red in dark. Same solid
+            treatment components/home/tracking_banner.tsx gives its own
+            something-is-actually-broken state. */}
+        {providerScopeMismatch ? (
+          <View
+            testID="provider-scope-mismatch"
+            className="gap-1 rounded-2xl bg-danger p-4 dark:bg-danger-dark"
+          >
+            <Text className="text-section font-bold text-on-brand dark:text-on-brand-dark">
+              {PROVIDER_SCOPE_MISMATCH_TITLE}
+            </Text>
+            <Text className="text-body text-on-brand dark:text-on-brand-dark">
+              {PROVIDER_SCOPE_MISMATCH_BODY}
+            </Text>
+          </View>
+        ) : null}
         <ProviderSwitchList
           items={switchItems}
           onToggle={handleToggleProvider}
@@ -406,9 +622,9 @@ export default function PrivacyScreen() {
           </Text>
         ) : null}
         <WipeFlow onConfirmed={handleWipeConfirmed} busy={wiping} />
-        {wipeError ? (
+        {wipeNotice ? (
           <Text testID="privacy-wipe-error" className="text-body text-danger dark:text-danger-dark">
-            {wipeError}
+            {wipeNotice}
           </Text>
         ) : null}
       </View>

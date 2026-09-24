@@ -61,6 +61,51 @@ test("percent basis handles a fractional percent, which is why value is x100", (
   expect(baseFor({ basis: "percent-of-income", value: 10000, scope: "monthly" }, M)).toBe(M);
 });
 
+test("percent basis lands ON an exact peso boundary a float intermediate misses", () => {
+  // Both pairs are exact multiples of ₱1.00 — there is no remainder for the
+  // conservative floor to take. A `value / 10_000` fraction is an inexact
+  // binary value, though, so the old float path arrived a hair BELOW the
+  // boundary and the floor then took a whole peso off: 0.29 x 100000 is
+  // 28999.999999999996, not 29000. The ₱37,000 pairs above cannot show this —
+  // they all have a genuine centavo remainder, which hides the one-peso drop
+  // inside rounding that was going to happen anyway.
+  //
+  // ₱1,000.00 at 29% is ₱290.00; the float path returned ₱289.00.
+  expect(baseFor({ basis: "percent-of-income", value: 2900, scope: "monthly" }, 100_000)) //
+    .toBe(29_000);
+  // ₱15,000.00 at 14.5% is ₱2,175.00; the float path returned ₱2,174.00.
+  expect(baseFor({ basis: "percent-of-income", value: 1450, scope: "monthly" }, 1_500_000)) //
+    .toBe(217_500);
+});
+
+test("percent basis agrees with exact BigInt arithmetic on every scope", () => {
+  // The two pinned pairs above are members of a class, not curiosities: the
+  // drop hits a few thousandths of a percent of inputs, which is exactly the
+  // density hand-picked cases miss. BigInt is the oracle because it cannot
+  // round at all — 12, 52 and 365 belong in the divisor so there is a single
+  // division, and it is integral.
+  const divisorFor: Record<LimitScope, bigint> = {
+    monthly: 1_000_000n,
+    annual: 1_000_000n,
+    weekly: 52_000_000n,
+    daily: 365_000_000n,
+  };
+
+  for (let peso = 1_000; peso <= 40_000; peso += 1_000) {
+    const income = peso * 100;
+    for (let value = 50; value <= 10_000; value += 250) {
+      for (const scope of SCOPES) {
+        const numerator = BigInt(scope === "monthly" ? income : 12 * income) * BigInt(value);
+        const exact = Number(numerator / divisorFor[scope]) * 100;
+        // Income, percent and scope ride along in the tuple so a failure names
+        // the offending pair instead of reporting two bare centavo figures.
+        expect([income, value, scope, baseFor({ basis: "percent-of-income", value, scope }, income)])
+          .toEqual([income, value, scope, exact]);
+      }
+    }
+  }
+});
+
 test("percent basis with UNKNOWN income is paused (null), never ₱0.00", () => {
   for (const scope of SCOPES) {
     expect([scope, baseFor({ basis: "percent-of-income", value: TWENTY_PERCENT, scope }, null)]) //

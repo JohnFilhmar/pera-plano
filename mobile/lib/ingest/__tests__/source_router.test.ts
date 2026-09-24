@@ -11,8 +11,8 @@
 //   known         → parsed normally.
 //   unknown       → the RAW NOTIFICATION TEXT is shown to the user in the
 //                   Review Queue so they can teach the app (§3 rule 4).
-//   not_financial → dropped on the spot, never stored, never displayed
-//                   (§1 principle 2, §3 rule 3 "data minimization").
+//   not_financial → dropped on the spot; its text is never stored or
+//                   displayed (§1 principle 2, §3 rule 3 "data minimization").
 //
 // So a mistake in the not_financial → unknown direction takes a friend's text
 // message and prints it inside a finance app. Several tests below exist for no

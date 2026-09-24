@@ -141,6 +141,9 @@ function floorToPeso(centavos: number): Centavos {
   return Math.floor(centavos / 100) * 100;
 }
 
+/** The domain's percent × 100 encoding (10,000) × 100 centavos per peso. */
+const PERCENT_PESO_DIVISOR = 1_000_000;
+
 /**
  * The peso base for one period, or `null` for **Paused — income unknown**.
  *
@@ -150,10 +153,21 @@ function floorToPeso(centavos: number): Centavos {
  *     monthly = M × v%   ·   annual = 12M × v%
  *     weekly  = (12M ÷ 52) × v%   ·   daily = (12M ÷ 365) × v%
  *
- * `value` IS PERCENT × 100 (12.5% → 1250), per `types/domain.ts` — hence
- * `/ 10_000` rather than the `/ 100` the m2 plan's snippet uses. That plan was
- * written against a whole-percent encoding that never shipped; taking it
- * literally makes every percent-of-income limit a hundredth of its real size.
+ * `value` IS PERCENT × 100 (12.5% → 1250), per `types/domain.ts` — which is
+ * where the 10,000 inside `PERCENT_PESO_DIVISOR` comes from, rather than the
+ * `/ 100` the m2 plan's snippet uses. That plan was written against a
+ * whole-percent encoding that never shipped; taking it literally makes every
+ * percent-of-income limit a hundredth of its real size.
+ *
+ * INTEGERS THROUGHOUT, ONE DIVISION PER BRANCH, INSIDE THE FLOOR. Money is
+ * integer centavos end to end and a float intermediate breaks that: `value /
+ * 10_000` is an inexact binary fraction, so at M = ₱1,000.00 and 29% the
+ * product `0.29 × 100000` is 28999.999999999996 and the floor hands back ₱289
+ * where the exact answer is ₱290. Multiplying first cannot land below an exact
+ * peso boundary. The 12, 52 and 365 factors join the divisor for the same
+ * reason — pre-dividing the income reintroduces the fraction the multiply just
+ * avoided. Every product stays far below 2^53 for any real income, so each
+ * intermediate is exact and `Math.floor` sees the true quotient.
  *
  * NULL FOR ZERO INCOME AS WELL AS FOR UNKNOWN. Limits rule 12 requires a
  * non-zero `averageAmount` for a usable IncomeProfile and states outright that
@@ -169,18 +183,17 @@ export function baseFor(
   if (args.basis === "fixed") return args.value;
   if (monthlyIncome === null || monthlyIncome <= 0) return null;
 
-  const fraction = args.value / 10_000;
   const annualIncome = 12 * monthlyIncome;
 
   switch (args.scope) {
     case "monthly":
-      return floorToPeso(monthlyIncome * fraction);
+      return Math.floor((monthlyIncome * args.value) / PERCENT_PESO_DIVISOR) * 100;
     case "annual":
-      return floorToPeso(annualIncome * fraction);
+      return Math.floor((annualIncome * args.value) / PERCENT_PESO_DIVISOR) * 100;
     case "weekly":
-      return floorToPeso((annualIncome / 52) * fraction);
+      return Math.floor((annualIncome * args.value) / (52 * PERCENT_PESO_DIVISOR)) * 100;
     case "daily":
-      return floorToPeso((annualIncome / 365) * fraction);
+      return Math.floor((annualIncome * args.value) / (365 * PERCENT_PESO_DIVISOR)) * 100;
   }
 }
 

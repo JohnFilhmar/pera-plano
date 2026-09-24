@@ -43,6 +43,8 @@ A Limit is a spending cap over a repeating period (daily, weekly, monthly, or an
 5. Toggle `rollover` on or off (default off). A one-line explanation of the rollover rule is shown next to the toggle.
 6. Review summary ("₱8,000.00 monthly, Food & Dining, rollover on") → Save.
 7. The Limit starts measuring immediately, using spend already recorded in the current period.
+8. **Entering one Limit creates three derived siblings**, one at each of the other three cadences, scaled from what was entered (`mobile/lib/limits/limit_derivation.ts`). Owner's decision, 2026-08-20: a user who says "₱8,000 a month" also wants the daily and weekly views of that figure without entering them, so the app derives them and marks each with `derivedFrom` pointing at the source Limit.
+9. **Derived Limits are free.** The Free active-Limit cap counts source Limits only, meaning rows where `derivedFrom` is null (`canCreateLimit`, called from `components/plan/limits_panel.tsx`). Counting the derived rows would take a Free user from "one Limit" to gated the instant onboarding finished, over three rows they never asked for.
 
 ### Flow: threshold alert → detail
 

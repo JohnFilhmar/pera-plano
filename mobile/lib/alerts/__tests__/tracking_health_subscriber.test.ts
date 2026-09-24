@@ -69,16 +69,27 @@ const mockSetting = getSetting as jest.MockedFunction<typeof getSetting>;
 
 const NOW = new Date(2026, 6, 10, 12, 0).getTime();
 
+/**
+ * `getSetting` answers PER KEY rather than with one blanket value: the check
+ * reads `onboarding_complete` as well as `capture_enabled`, and a single
+ * `false` covering both would let the pause test pass for the wrong reason.
+ * Defaults are the settled state — onboarding done, capture on.
+ */
+function withSettings(overrides: { capture_enabled?: boolean; onboarding_complete?: boolean } = {}): void {
+  const values = { capture_enabled: true, onboarding_complete: true, ...overrides };
+  mockSetting.mockImplementation((key) => Promise.resolve(values[key as keyof typeof values] as never));
+}
+
 /** Capture is on and the listener is alive: nothing to say. */
 function healthy(): void {
   mockHealth.mockResolvedValue({ granted: true, serviceConnected: true, lastCaptureAt: NOW });
-  mockSetting.mockResolvedValue(true as never);
+  withSettings();
 }
 
 /** Access still granted, service silently dead — the failure this notice exists for. */
 function disconnected(): void {
   mockHealth.mockResolvedValue({ granted: true, serviceConnected: false, lastCaptureAt: NOW });
-  mockSetting.mockResolvedValue(true as never);
+  withSettings();
 }
 
 beforeEach(() => {
@@ -107,11 +118,26 @@ test("A DEAD LISTENER POSTS THE INTERRUPTED NOTICE", async () => {
 
 test("revoked notification access is a fault too", async () => {
   mockHealth.mockResolvedValue({ granted: false, serviceConnected: false, lastCaptureAt: NOW });
-  mockSetting.mockResolvedValue(true as never);
+  withSettings();
 
   await runTrackingHealthCheck(NOW);
 
   expect(mockNotify).toHaveBeenCalled();
+});
+
+test("A FRESH INSTALL IS NOT AN INTERRUPTION", async () => {
+  // The same never-granted health as the test above, but read before the user
+  // has finished onboarding — the state every install starts in, since
+  // `capture_enabled` defaults to true and the grant defaults to false. The
+  // notice above is correct for a user who HAD access and lost it; posting it
+  // here would make the first thing a new user ever sees a complaint about a
+  // feature onboarding has not offered them yet.
+  mockHealth.mockResolvedValue({ granted: false, serviceConnected: false, lastCaptureAt: null });
+  withSettings({ onboarding_complete: false });
+
+  await runTrackingHealthCheck(NOW);
+
+  expect(mockNotify).not.toHaveBeenCalled();
 });
 
 test("PAUSING ON PURPOSE IS NOT A FAULT", async () => {
@@ -119,7 +145,7 @@ test("PAUSING ON PURPOSE IS NOT A FAULT", async () => {
   // first. Pushing a fault notice at someone who turned capture off themselves
   // trains them to ignore the notice that matters.
   mockHealth.mockResolvedValue({ granted: true, serviceConnected: false, lastCaptureAt: NOW });
-  mockSetting.mockResolvedValue(false as never);
+  withSettings({ capture_enabled: false });
 
   await runTrackingHealthCheck(NOW);
 

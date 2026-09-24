@@ -52,6 +52,7 @@ class CapturePrefsTest {
   private val legacyKeyProviderFilter = "provider_filter"
   private val legacyKeyLastCaptureAt = "last_capture_at"
   private val sealedKeyProviderFilter = "provider_filter_sealed"
+  private val denyAllKeyProviderFilter = "provider_filter_deny_all"
   private val sealedKeyLastCaptureAt = "last_capture_at_sealed"
   private val sealedKeyObservedPackages = "observed_packages_sealed"
 
@@ -156,6 +157,178 @@ class CapturePrefsTest {
     assertEquals(emptySet<String>(), prefs.getProviderFilter())
     assertTrue(prefs.shouldCapture(gcash))
     assertTrue(prefs.shouldCapture(maya))
+  }
+
+  // ---------------------------------------------------------------------
+  // Deny-all: the sentence the allowlist cannot carry (GAP-103). Pausing
+  // every provider in the Privacy centre used to compute an EMPTY allowlist,
+  // which this class reads as allow-all -- the most restrictive action the
+  // app offers producing the least restrictive outcome.
+  // ---------------------------------------------------------------------
+
+  @Test
+  fun `deny-all refuses every package, including one the allowlist names`() {
+    prefs.setProviderFilter(setOf(gcash, maya), denyAll = true)
+
+    assertTrue(prefs.isProviderFilterDenyAll())
+    // A package INSIDE the filter, so an implementation that consulted only
+    // the allowlist would answer true here. That is the actual bug excluded.
+    assertFalse(prefs.shouldCapture(gcash))
+    assertFalse(prefs.shouldCapture(maya))
+    assertFalse(prefs.shouldCapture(bpi))
+    assertFalse(prefs.shouldCapture("com.some.bank.nobody.allowlisted"))
+    // ...and with the empty filter the Privacy centre actually sends, which
+    // on its own is allow-all.
+    prefs.setProviderFilter(emptySet(), denyAll = true)
+    assertFalse(prefs.shouldCapture(gcash))
+    assertFalse(prefs.shouldCapture("com.some.bank.nobody.allowlisted"))
+  }
+
+  @Test
+  fun `deny-all is off unless something set it, on a fresh install and on an upgrade`() {
+    // Fresh install: the key has never been written.
+    assertFalse(prefs.isProviderFilterDenyAll())
+    assertTrue(prefs.shouldCapture(gcash))
+
+    // The upgrade shape: a filter sealed by a build that had no such key.
+    // Reading it must not invent a deny-all, or every upgraded install
+    // silently stops capturing.
+    prefs.setProviderFilter(setOf(gcash))
+    rawPrefs().edit().remove(denyAllKeyProviderFilter).commit()
+
+    val upgraded = CapturePrefs(context)
+
+    assertFalse(upgraded.isProviderFilterDenyAll())
+    assertEquals(setOf(gcash), upgraded.getProviderFilter())
+    assertTrue(upgraded.shouldCapture(gcash))
+    assertFalse(upgraded.shouldCapture(maya))
+  }
+
+  @Test
+  fun `deny-all survives a new instance, and resuming one provider lifts it`() {
+    prefs.setProviderFilter(emptySet(), denyAll = true)
+
+    val reopened = CapturePrefs(context)
+    assertTrue("a block the user asked for must outlive the process", reopened.isProviderFilterDenyAll())
+    assertFalse(reopened.shouldCapture(gcash))
+
+    // The reverse transition: one provider resumed becomes an allowlist of
+    // exactly that provider, and the block is lifted in the same write.
+    reopened.setProviderFilter(setOf(gcash))
+
+    val third = CapturePrefs(context)
+    assertFalse(third.isProviderFilterDenyAll())
+    assertTrue(third.shouldCapture(gcash))
+    assertFalse("lifting the block must not fall back to allow-all", third.shouldCapture(maya))
+  }
+
+  @Test
+  fun `deny-all outlives a lost prefs key, unlike the sealed filter beside it`() {
+    prefs.setProviderFilter(emptySet(), denyAll = true)
+
+    // A Keystore reset: the sealed filter is unreadable from here on and
+    // falls back to allow-all. The flag is plaintext precisely so this
+    // cannot turn "block everything" into "allow everything".
+    KeyStoreBridge.vault = FakeKeyVault()
+    KeyStoreBridge.ensurePrefsKek()
+
+    val stranded = CapturePrefs(context)
+
+    assertEquals(emptySet<String>(), stranded.getProviderFilter())
+    assertTrue(stranded.isProviderFilterDenyAll())
+    assertFalse(stranded.shouldCapture(gcash))
+    assertFalse(stranded.shouldCapture("com.some.bank.nobody.allowlisted"))
+  }
+
+  // ---------------------------------------------------------------------
+  // A WRITE THAT DID NOT HAPPEN MUST NOT BE REPORTED AS ONE THAT DID
+  // (GAP-114). [CapturePrefs.setProviderFilter] is the only function in this
+  // class with a caller that can act on a failure: everything else here is
+  // read by the headless listener, which has nobody to tell, while this is
+  // written by a user watching a switch. It returned `Unit`, so a device with
+  // no usable prefs key silently kept capturing from the provider the user had
+  // just paused, and the JS settings row -- the ONLY readable record of that
+  // pause, since this class is exposed across the bridge with a setter and no
+  // getter -- recorded a state the listener never entered.
+  // ---------------------------------------------------------------------
+
+  /**
+   * A device that cannot seal anything: the prefs KEK alias was never created,
+   * so [KeyStoreBridge.sealPrefsValue] finds no key and every seal fails. The
+   * shape of a Keystore that refused to generate the key at launch -- NOT the
+   * same as the lost-key tests above, which install a DIFFERENT key and so
+   * still seal happily while failing to open what came before.
+   */
+  private fun loseThePrefsKey() {
+    KeyStoreBridge.vault = FakeKeyVault()
+  }
+
+  @Test
+  fun `a write that lands reports success, in all three of its shapes`() {
+    // Asserted first and separately, because every failure case below is also
+    // satisfied by an implementation that simply always answers `false` --
+    // which would strand the user unable to change a switch at all.
+    assertTrue("an allowlist", prefs.setProviderFilter(setOf(gcash)))
+    assertTrue("a deny-all", prefs.setProviderFilter(emptySet(), denyAll = true))
+    assertTrue("a clear back to allow-all", prefs.setProviderFilter(emptySet()))
+  }
+
+  @Test
+  fun `an allowlist that could not be sealed reports failure and leaves the stored one alone`() {
+    prefs.setProviderFilter(setOf(gcash, maya))
+    val before = rawPrefs().getString(sealedKeyProviderFilter, null)
+    assertNotNull(before)
+
+    loseThePrefsKey()
+
+    assertFalse(
+      "the pause the user asked for did not land, and saying otherwise is the defect",
+      CapturePrefs(context).setProviderFilter(setOf(gcash)),
+    )
+    // Read as CIPHERTEXT off disk rather than through getProviderFilter():
+    // with the key gone, the accessor answers "allow all" for a value that is
+    // still perfectly intact, so only the raw string can show that the failed
+    // write neither replaced nor removed it.
+    assertEquals(
+      "a failed seal must not touch what is already stored",
+      before,
+      rawPrefs().getString(sealedKeyProviderFilter, null),
+    )
+  }
+
+  @Test
+  fun `a deny-all that landed without its allowlist still reports success`() {
+    loseThePrefsKey()
+
+    // The allowlist could not be sealed, so only the plaintext flag was
+    // written -- and the flag is the whole of the scope the user asked for.
+    // shouldCapture never opens the filter while it stands, and the only path
+    // back to `false` is a write that replaces the filter in the same commit,
+    // so the stale value beside it can never be consulted. Reporting failure
+    // here would make the caller drop `paused_provider_packages` for a block
+    // the device really is applying.
+    assertTrue(CapturePrefs(context).setProviderFilter(emptySet(), denyAll = true))
+
+    val reopened = CapturePrefs(context)
+    assertTrue(reopened.isProviderFilterDenyAll())
+    assertFalse(reopened.shouldCapture(gcash))
+    assertFalse(reopened.shouldCapture("com.some.bank.nobody.allowlisted"))
+  }
+
+  @Test
+  fun `a resume that could not be sealed reports failure and leaves the block standing`() {
+    prefs.setProviderFilter(emptySet(), denyAll = true)
+    loseThePrefsKey()
+
+    // Resuming one provider is an allowlist write with the flag OFF. It cannot
+    // be sealed, so nothing at all is written -- including the flag, which
+    // must not be cleared by a write whose allowlist never landed, or the user
+    // would be dropped from "block everything" to allow-all.
+    assertFalse(CapturePrefs(context).setProviderFilter(setOf(gcash)))
+
+    val reopened = CapturePrefs(context)
+    assertTrue("a block must stand until a write actually replaces it", reopened.isProviderFilterDenyAll())
+    assertFalse(reopened.shouldCapture(gcash))
   }
 
   // ---------------------------------------------------------------------
@@ -419,6 +592,74 @@ class CapturePrefsTest {
     assertEquals(setOf(gcash, maya), third.getProviderFilter())
   }
 
+  // ---------------------------------------------------------------------
+  // The migration's PRESERVE-ON-FAILURE claim, which every test above takes
+  // for granted by only ever running with a usable prefs KEK.
+  //
+  // `migrateLegacyPlaintextValues` documents that a failed seal "writes and
+  // deletes NOTHING and returns, leaving the plaintext for the next
+  // construction to retry", and the whole of that guarantee rests on one
+  // `?: return` firing before `editor.commit()`. An upgrade that removed the
+  // plaintext it could not preserve would take the user's provider selection
+  // with it -- the setting gone AND the plaintext gone, for no benefit.
+  // ---------------------------------------------------------------------
+
+  @Test
+  fun `a migration that cannot seal writes nothing, deletes nothing, and the next construction retries`() {
+    val postedAt = 1754060400000L
+    writeLegacyPlaintextFilter(setOf(gcash, bpi))
+    writeLegacyPlaintextCapture(postedAt)
+
+    // A device with no usable prefs KEK: sealPrefsValue throws
+    // PrefsValueSealException, which CapturePrefs.seal reduces to null. This
+    // is the same "no key at all" state the never-throw tests below use, and
+    // the realistic shape of a Keystore that refused to generate.
+    KeyStoreBridge.vault = FakeKeyVault()
+
+    CapturePrefs(context) // must not throw
+
+    // NOTHING SEALED. A `?: ""` in place of the `?: return`, or a seal
+    // failure that fell through, would leave an unopenable blob here that
+    // the "runs once" rule would then never revisit.
+    assertNull(
+      "a failed seal must not leave a sealed key behind",
+      rawPrefs().getString(sealedKeyProviderFilter, null),
+    )
+    assertNull(rawPrefs().getString(sealedKeyLastCaptureAt, null))
+
+    // NOTHING DELETED. This is the half that costs real data if it breaks:
+    // both `editor.remove` calls are staged before the commit, so the early
+    // return has to abandon them together with the writes.
+    assertTrue(
+      "the plaintext filter must survive a migration that could not seal it",
+      rawPrefs().contains(legacyKeyProviderFilter),
+    )
+    assertTrue(
+      "the plaintext timestamp must survive it too -- one commit covers both",
+      rawPrefs().contains(legacyKeyLastCaptureAt),
+    )
+    assertEquals(setOf(gcash, bpi), rawPrefs().getStringSet(legacyKeyProviderFilter, null))
+    assertEquals(postedAt, rawPrefs().getLong(legacyKeyLastCaptureAt, -1L))
+
+    // AND THE RETRY HEALS IT. "Leaving the plaintext for the next
+    // construction to retry" is only a guarantee if a later construction
+    // actually completes the move -- CapturePrefs is built fresh on every
+    // notification, so the next one with a working key is the retry.
+    KeyStoreBridge.ensurePrefsKek()
+    val migrated = CapturePrefs(context)
+
+    assertEquals(setOf(gcash, bpi), migrated.getProviderFilter())
+    assertEquals(postedAt, migrated.lastCaptureAt())
+    assertFalse(
+      "the retry must finish the job the failed attempt left alone",
+      rawPrefs().contains(legacyKeyProviderFilter),
+    )
+    assertFalse(rawPrefs().contains(legacyKeyLastCaptureAt))
+    val onDisk = rawStoredText()
+    assertFalse("the migrated package names must not remain on disk: $onDisk", onDisk.contains(gcash))
+    assertFalse(onDisk.contains(postedAt.toString()))
+  }
+
   @Test
   fun `constructing CapturePrefs on a fresh install writes nothing`() {
     // Nothing has ever been stored, so there is nothing to migrate -- and the
@@ -653,6 +894,102 @@ class CapturePrefsTest {
       listOf(maya, gcash),
       CapturePrefs(context).listObservedPackages().map { it.packageName },
     )
+  }
+
+  // ---------------------------------------------------------------------
+  // ONGOING RE-POSTS.
+  //
+  // A media player, a download and a navigation session each re-post the SAME
+  // persistent tile roughly once a second for as long as they run. Recording
+  // one of those the way a real post is recorded costs a whole-file re-seal
+  // plus an fsync -- the 3.8 ms `recordObservedPackage`'s own doc measured --
+  // on the thread the listener has to stay responsive on, once a second, for
+  // hours.
+  // It also hands the top of the "seen N times" ranking to whichever app
+  // re-posts most, which is never the bank.
+  // ---------------------------------------------------------------------
+
+  @Test
+  fun `an ongoing re-post of the front package neither writes nor raises the count`() {
+    // FIRST SIGHT IS STILL RECORDED, ongoing or not: a bank's
+    // foreground-service tile can be the only notification it ever posts
+    // before the user reaches the picker.
+    prefs.recordObservedPackage(gcash, seenAt, isOngoing = true)
+    val afterFirstSight = rawPrefs().getString(sealedKeyObservedPackages, null)
+    assertNotNull("a package seen for the first time must be stored, ongoing or not", afterFirstSight)
+
+    // Nine more arrivals of the same tile, one second apart, exactly as a
+    // download's progress notification arrives.
+    for (index in 1..9) {
+      prefs.recordObservedPackage(gcash, seenAt + index * 1_000L, isOngoing = true)
+    }
+
+    // BYTE-IDENTICAL, which is what makes this an assertion about WRITES
+    // rather than about the value. Every seal mints a fresh random IV
+    // (KeyStoreBridge.sealPrefsValue), so a re-seal could not reproduce the
+    // same string even for identical plaintext -- an unchanged blob is proof
+    // that no commit happened at all.
+    assertEquals(
+      "ten arrivals of one ongoing tile must cost exactly one prefs write",
+      afterFirstSight,
+      rawPrefs().getString(sealedKeyObservedPackages, null),
+    )
+
+    val observed = CapturePrefs(context).listObservedPackages().single()
+    // The count is the picker's "is this a bank or a one-off" signal, so it
+    // has to mean distinct posts. Ten re-posts of one tile is one post.
+    assertEquals("an ongoing tile re-posting must not inflate the count", 1, observed.count)
+    assertEquals(seenAt, observed.lastSeenAt)
+  }
+
+  @Test
+  fun `a real post still counts however soon after an ongoing one it arrives`() {
+    prefs.recordObservedPackage(gcash, seenAt, isOngoing = true)
+
+    // One second later, and NOT ongoing -- a genuine second notification, not
+    // the same tile arriving again. A short-circuit that keyed on recency
+    // alone would swallow this, and with it the transfer confirmation that
+    // follows a balance alert seconds later.
+    prefs.recordObservedPackage(gcash, seenAt + 1_000)
+
+    val observed = CapturePrefs(context).listObservedPackages().single()
+    assertEquals("a distinct post must count, whatever preceded it", 2, observed.count)
+    assertEquals(seenAt + 1_000, observed.lastSeenAt)
+  }
+
+  @Test
+  fun `an ongoing tile still refreshes lastSeenAt once the window has run out`() {
+    prefs.recordObservedPackage(gcash, seenAt, isOngoing = true)
+
+    // The window is a WRITE bound, not a permanent silence: a navigation
+    // session running for an hour must not leave the picker believing the
+    // app was last seen when the route started.
+    val later = seenAt + CapturePrefs.OBSERVED_REPOST_WINDOW_MILLIS
+    prefs.recordObservedPackage(gcash, later, isOngoing = true)
+
+    val observed = CapturePrefs(context).listObservedPackages().single()
+    assertEquals(later, observed.lastSeenAt)
+    assertEquals("a re-post never raises the count, even when it writes", 1, observed.count)
+  }
+
+  @Test
+  fun `an ongoing re-post of a displaced package moves it back to the front`() {
+    prefs.recordObservedPackage(gcash, seenAt, isOngoing = true)
+    prefs.recordObservedPackage(maya, seenAt + 1_000)
+    assertEquals(
+      listOf(maya, gcash),
+      CapturePrefs(context).listObservedPackages().map { it.packageName },
+    )
+
+    // gcash is no longer the front entry, so the ORDER is a fact this
+    // delivery would change -- the short-circuit must not apply, however
+    // recently gcash was seen.
+    prefs.recordObservedPackage(gcash, seenAt + 2_000, isOngoing = true)
+
+    val observed = CapturePrefs(context).listObservedPackages()
+    assertEquals(listOf(gcash, maya), observed.map { it.packageName })
+    assertEquals("...and it still is not a distinct post", 1, observed.first().count)
+    assertEquals(seenAt + 2_000, observed.first().lastSeenAt)
   }
 
   @Test

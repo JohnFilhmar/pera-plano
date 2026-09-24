@@ -18,7 +18,7 @@
 // (Global Constraints: no repository import inside a component), so what is
 // SUBMITTED is what is asserted here, and what is WRITTEN is asserted in
 // app/__tests__/transaction_new.test.tsx.
-import { fireEvent, render, screen } from "@testing-library/react-native";
+import { act, fireEvent, render, screen } from "@testing-library/react-native";
 import { useState } from "react";
 import type { ReactElement } from "react";
 
@@ -71,6 +71,9 @@ const AUG_11_NOON = new Date(2026, 7, 11, 12, 0).getTime();
 const AUG_12_NOON = new Date(2026, 7, 12, 12, 0).getTime();
 /** The injected clock: 13 Aug 2026, 9:30pm. Nothing here reads `Date.now()`. */
 const NOW = new Date(2026, 7, 13, 21, 30).getTime();
+/** The two ends of a real local-midnight crossing, for the pair of tests below. */
+const BEFORE_MIDNIGHT = new Date(2026, 7, 13, 23, 58).getTime();
+const AFTER_MIDNIGHT = new Date(2026, 7, 14, 0, 2).getTime();
 
 const POCKET: Wallet = {
   id: "cash-pocket",
@@ -162,9 +165,12 @@ function tx(overrides: Partial<Transaction> = {}): Transaction {
 function Harness({
   wallets = [POCKET, BPI],
   transactions = [],
+  now = NOW,
 }: {
   wallets?: Wallet[];
   transactions?: Transaction[];
+  /** Movable, so a test can let real time pass while the form stays open. */
+  now?: number;
 }) {
   const [amount, setAmount] = useState("");
   return (
@@ -172,7 +178,7 @@ function Harness({
       wallets={wallets}
       categories={CATEGORIES}
       transactions={transactions}
-      now={NOW}
+      now={now}
       amount={amount}
       onAmountChange={setAmount}
       onSubmit={onSubmit}
@@ -183,13 +189,18 @@ function Harness({
 
 // NumericField throws without a KeypadProvider above it, and the panel it
 // opens has to be hosted somewhere — see test_support/keypad.ts's header.
-function renderForm(ui: ReactElement): void {
-  render(
+function formTree(ui: ReactElement): ReactElement {
+  return (
     <KeypadProvider>
       {ui}
       <KeypadHost />
-    </KeypadProvider>,
+    </KeypadProvider>
   );
+}
+
+/** Returns the render result now, so a test can `rerender` with a later clock. */
+function renderForm(ui: ReactElement): ReturnType<typeof render> {
+  return render(formTree(ui));
 }
 
 function save(): void {
@@ -506,6 +517,47 @@ describe("the secondary fields", () => {
     );
   });
 
+  // -------------------------------------------------------------------------
+  // MIDNIGHT PASSES WHILE THE FORM IS OPEN (GAP-095). The day used to be a
+  // `useState` initialiser, which runs once: a purchase typed at 12:05am was
+  // filed to YESTERDAY, stamped at yesterday's midnight, in the previous
+  // period and the previous seven-day bar.
+  // -------------------------------------------------------------------------
+
+  test("an untouched date follows the clock across midnight", () => {
+    const view = renderForm(<Harness now={BEFORE_MIDNIGHT} />);
+    // Opened two minutes before midnight, with the day it would have frozen
+    // on visible on screen.
+    expect(screen.getByText("2026-08-13")).toBeTruthy();
+
+    typeAmount("manual-amount", "250");
+    // The date is never touched — the clock is what moves.
+    view.rerender(formTree(<Harness now={AFTER_MIDNIGHT} />));
+    save();
+
+    expect(screen.getByText("2026-08-14")).toBeTruthy();
+    // The 14th, and the SAVE INSTANT rather than a midnight — `occurredAtFor`
+    // keeps the real moment for a same-day entry.
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ occurredAt: AFTER_MIDNIGHT }),
+    );
+  });
+
+  test("a date the user PICKED does not follow the clock across midnight", () => {
+    const view = renderForm(<Harness now={BEFORE_MIDNIGHT} />);
+
+    typeAmount("manual-amount", "250");
+    pickDate("manual-entry-date", 2026, 8, 11);
+    view.rerender(formTree(<Harness now={AFTER_MIDNIGHT} />));
+    save();
+
+    // The other half of the rule. A default that chased the clock over a
+    // deliberate choice would silently re-date a backdated entry.
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ occurredAt: new Date(2026, 7, 11, 0, 0, 0, 0).getTime() }),
+    );
+  });
+
   test("the date picker is bounded by the injected clock, not the wall clock", () => {
     renderForm(<Harness />);
 
@@ -677,5 +729,93 @@ describe("the Transfer segment", () => {
 
     expect(onSubmit).not.toHaveBeenCalled();
     expect(screen.getByTestId("manual-entry-fee-error")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The double tap. The route closes this screen when the WRITE lands, not when
+// the tap happens, so Save sits under the finger for the whole write — and a
+// second tap in that window is a second, independent entry (a second pair of
+// legs and a second link on the transfer path). Nothing below dedupes it: two
+// deliberate saves seconds apart ARE two rows, which is app/transaction/
+// new.tsx's rule 4, so the only place this can be refused is the button.
+// ---------------------------------------------------------------------------
+
+/** Rejects the write `WritingHarness` is holding open. */
+let failWrite: (() => void) | null = null;
+
+/**
+ * The route's shape around a write, which the plain `Harness` above does not
+ * have: `onSubmit` fires, `submitting` goes true, THE SCREEN STAYS OPEN, and
+ * the flag clears only when the write settles — either way, matching the
+ * `.finally` app/transaction/new.tsx clears it in.
+ */
+function WritingHarness() {
+  const [amount, setAmount] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  return (
+    <ManualEntryForm
+      wallets={[POCKET, BPI]}
+      categories={CATEGORIES}
+      transactions={[]}
+      now={NOW}
+      amount={amount}
+      onAmountChange={setAmount}
+      onSubmit={(draft) => {
+        onSubmit(draft);
+        setSubmitting(true);
+        new Promise<void>((_resolve, reject) => {
+          failWrite = () => reject(new Error("write rejected"));
+        })
+          .catch(() => undefined)
+          .finally(() => setSubmitting(false));
+      }}
+      submitting={submitting}
+      onCreateCashWallet={onCreateCashWallet}
+    />
+  );
+}
+
+describe("a double tap on Save", () => {
+  beforeEach(() => {
+    failWrite = null;
+  });
+
+  test("two presses inside one write submit once", () => {
+    renderForm(<WritingHarness />);
+    typeAmount("manual-amount", "100");
+
+    save();
+    save();
+
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  test("Save says it is busy rather than going quietly dead", () => {
+    renderForm(<WritingHarness />);
+    typeAmount("manual-amount", "100");
+    save();
+
+    // Same no-dead-taps rule the Transfer segment follows: refused WITH THE
+    // REASON on it, here a spinner and `busy` instead of an inline sentence.
+    const button = screen.getByTestId("manual-entry-save");
+    expect(button.props.accessibilityState.disabled).toBe(true);
+    expect(button.props.accessibilityState.busy).toBe(true);
+  });
+
+  test("a write that fails gives Save back", async () => {
+    renderForm(<WritingHarness />);
+    typeAmount("manual-amount", "100");
+    save();
+
+    await act(async () => {
+      failWrite?.();
+    });
+
+    // A rejected transfer leaves this screen open telling the user nothing was
+    // recorded and to try again — so the retry it asks for has to be tappable.
+    expect(screen.getByTestId("manual-entry-save").props.accessibilityState.disabled).toBe(false);
+    save();
+    expect(onSubmit).toHaveBeenCalledTimes(2);
   });
 });

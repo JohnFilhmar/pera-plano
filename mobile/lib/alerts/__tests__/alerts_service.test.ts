@@ -52,7 +52,7 @@ import {
   requestAlertPermission,
   scheduleReminder,
 } from "../alerts_service";
-import { CHANNEL_LIMITS, CHANNEL_REMINDERS } from "../channels";
+import { CHANNEL_GOALS, CHANNEL_LIMITS, CHANNEL_REMINDERS } from "../channels";
 
 const mockNotifications = Notifications as jest.Mocked<typeof Notifications>;
 const mockIsKeyguardLocked = isKeyguardLocked as jest.MockedFunction<typeof isKeyguardLocked>;
@@ -108,12 +108,21 @@ function countedIds(): void {
 // ---------------------------------------------------------------------------
 // Channels
 // ---------------------------------------------------------------------------
-test("creates both android channels", async () => {
+test("creates every android channel", async () => {
   await ensureNotificationChannels();
 
   const ids = mockNotifications.setNotificationChannelAsync.mock.calls.map((c) => c[0]);
-  expect(ids).toEqual(expect.arrayContaining([CHANNEL_LIMITS, CHANNEL_REMINDERS]));
-  expect(ids).toHaveLength(2);
+  expect(ids).toEqual(expect.arrayContaining([CHANNEL_LIMITS, CHANNEL_REMINDERS, CHANNEL_GOALS]));
+  expect(ids).toHaveLength(3);
+});
+
+test("goal updates get their own channel at default importance (docs/06 §6.1)", async () => {
+  await ensureNotificationChannels();
+
+  const byId = new Map(
+    mockNotifications.setNotificationChannelAsync.mock.calls.map((c) => [c[0], c[1]]),
+  );
+  expect(byId.get(CHANNEL_GOALS)?.importance).toBe(mockNotifications.AndroidImportance.DEFAULT);
 });
 
 test("the two channels carry DIFFERENT importances", async () => {

@@ -221,6 +221,16 @@ export function SafeToSpendHero({
     amountsHidden,
   );
 
+  // Rule 6a leaves goal money OUT of a filtered limit's arithmetic, which would
+  // otherwise make the figure disappear from the screen — trading a wrong
+  // number for a missing one. It gets its own sentence instead, and only when
+  // it is not already inside the set-aside line above (an unfiltered limit does
+  // deduct it, and saying it twice would read as two separate sums).
+  const plannedSavingsLabel =
+    result.plannedSavings > 0 && result.contributionsTerm === 0
+      ? `${amountsHidden ? HIDDEN_AMOUNT : formatCentavos(result.plannedSavings)} is going to goals this period`
+      : null;
+
   const inkClass = paused ? "text-fg-2 dark:text-fg-2-dark" : INK_CLASS[state];
   const mutedInkClass = paused ? "text-fg-2 dark:text-fg-2-dark" : MUTED_INK_CLASS[state];
   const barClass = paused ? "bg-line dark:bg-line-dark" : BAR_CLASS[state];
@@ -294,6 +304,15 @@ export function SafeToSpendHero({
       {setAsideLabel === null ? null : (
         <Text testID="sts-set-aside" className={`text-secondary font-medium ${mutedInkClass}`}>
           {setAsideLabel}
+        </Text>
+      )}
+
+      {/* "is going to", NOT "is set aside": on a filtered limit this money was
+          deliberately NOT subtracted from the figure above, and borrowing the
+          set-aside wording would re-assert the deduction the fix removed. */}
+      {plannedSavingsLabel === null ? null : (
+        <Text testID="sts-planned-savings" className={`text-secondary font-medium ${mutedInkClass}`}>
+          {plannedSavingsLabel}
         </Text>
       )}
 

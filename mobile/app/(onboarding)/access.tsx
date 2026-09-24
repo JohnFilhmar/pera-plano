@@ -152,6 +152,16 @@ export default function AccessScreen() {
             setStage("declined");
           }
         })
+        // The `.catch` on the focus effect above belongs to the focus effect's
+        // OWN chain and never covered this one, so a bridge that threw on the
+        // return from Settings was an unhandled rejection here. Same landing as
+        // that one, and for the same reason: a call that could not be made is
+        // not a refusal, so this must not assert "declined" — it leaves the
+        // intro stage in place, where the primary button is still "Turn on
+        // notification access" and a second trip is one tap away.
+        .catch(() => {
+          setStage("intro");
+        })
         .finally(() => {
           checkInFlightRef.current = false;
         });

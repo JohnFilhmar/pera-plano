@@ -1,4 +1,5 @@
 // app/(tabs)/plan/goals/[id].tsx — Goal detail (m2b Task 4).
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { ScrollView, Text, View } from "react-native";
 
@@ -8,16 +9,33 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty_state";
 import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
+import { queryKeys } from "@/constants/query_keys";
+import { invalidateKeys } from "@/hooks/mutations/invalidate_keys";
 import { useDeleteGoal } from "@/hooks/mutations/use_delete_goal";
+import { useSkipAllocations } from "@/hooks/mutations/use_skip_allocations";
 import { useGoals } from "@/hooks/queries/use_goals";
+import { usePendingContributions } from "@/hooks/queries/use_pending_contributions";
 import { useWallets } from "@/hooks/queries/use_wallets";
+import { completeGoal } from "@/lib/db/repos/goals_repo";
 
 export default function GoalDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  const queryClient = useQueryClient();
   const { data: statuses } = useGoals();
   const { data: wallets } = useWallets();
   const remove = useDeleteGoal();
+  const { data: pendingContributions } = usePendingContributions();
+  const skip = useSkipAllocations();
+
+  // Inline rather than a `use_complete_goal.ts` beside `use_delete_goal.ts`:
+  // this is the only screen that can reach the action, and the two mutations
+  // invalidate the same pair of keys for the same reason (see `useDeleteGoal` —
+  // retiring a goal frees its savings wallet for the next one).
+  const complete = useMutation({
+    mutationFn: (goalId: string): Promise<void> => completeGoal(goalId),
+    onSuccess: () => invalidateKeys(queryClient, [queryKeys.goals.all, queryKeys.wallets.all]),
+  });
 
   if (statuses === undefined) {
     return (
@@ -44,6 +62,16 @@ export default function GoalDetailScreen() {
   }
 
   const wallet = (wallets ?? []).find((candidate) => candidate.id === status.goal.linkedWalletId);
+  const pending =
+    (pendingContributions ?? []).find((contribution) => contribution.goalId === status.goal.id) ??
+    null;
+
+  // The two states the spec's states table offers Complete on: Reached
+  // ("card offers Complete, Raise target, or Keep as-is") and Past due ("Move
+  // the date, Lower the target, or Complete anyway" — the sentence `GoalCard`
+  // already prints on that card). An on-track goal is not finished with, and an
+  // offer to finish it there would compete with the plan it is still following.
+  const canComplete = status.progress.pace === "reached" || status.progress.pace === "past_due";
 
   return (
     <ScrollView
@@ -57,7 +85,27 @@ export default function GoalDetailScreen() {
         progress={status.progress}
         targetDate={status.goal.targetDate}
         contributionRule={status.goal.contributionRule}
+        plannedThisPayday={pending?.outstanding ?? null}
       />
+
+      {/* Goals flow step 4's "Skip this payday" (GAP-056). Moving the money in
+          the bank app needs no button here: a transfer into this goal's
+          account within three days completes the contribution by itself. */}
+      {pending === null ? null : (
+        <>
+          <Button
+            title="Skip this payday"
+            variant="secondary"
+            testID="goal-skip-payday"
+            loading={skip.isPending}
+            onPress={() => skip.mutate([{ goalId: pending.goalId, paydayDate: pending.paydayDate }])}
+          />
+          <Text className="text-center text-fg-2 dark:text-fg-2-dark">
+            Skipping lets Safe-to-Spend count this payday's plan as spendable again. The rule stays on
+            for your next payday.
+          </Text>
+        </>
+      )}
 
       <Card>
         <View className="flex-row items-center justify-between">
@@ -76,6 +124,29 @@ export default function GoalDetailScreen() {
           money that was already sitting in it.
         </Text>
       </Card>
+
+      {/* ABOVE EDIT, because on a reached goal it is the action the user came
+          for. Its own paragraph says where the goal goes, since "complete" and
+          "delete" land it in the same restorable list today — the schema has
+          one retirement column (see `completeGoal`) — and a user who is told
+          only "completed" would go looking for a list that does not exist. */}
+      {canComplete ? (
+        <>
+          <Button
+            title="Mark complete"
+            testID="goal-complete"
+            loading={complete.isPending}
+            onPress={async () => {
+              await complete.mutateAsync(status.goal.id);
+              router.back();
+            }}
+          />
+          <Text className="text-center text-fg-2 dark:text-fg-2-dark">
+            Completing files the goal away with its history. The account and every peso in it stay
+            exactly as they are, and you can bring the goal back from Plan → Goals.
+          </Text>
+        </>
+      ) : null}
 
       {/* EDIT SITS ABOVE DELETE, and this screen used to have only the second
           of the two (owner's device report: "unable to edit goals"). Without

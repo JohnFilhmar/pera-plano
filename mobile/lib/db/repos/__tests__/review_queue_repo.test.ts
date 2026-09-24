@@ -4,11 +4,16 @@ import {
   countOpen,
   countOpenByKind,
   enqueue,
+  findOpenForRawNotification,
+  findOpenTwin,
+  getReviewItem,
   listOpen,
   listOpenPage,
   purgeExpired,
+  reopen,
   resolve,
 } from "../review_queue_repo";
+import { storeRawCapture } from "../raw_notifications_repo";
 import { freshDb } from "@/test_support/db";
 import type { ReviewItemPayload, ReviewKind, ReviewQueueItem } from "@/types/domain";
 import type { SQLiteDatabase } from "@/lib/db/database";
@@ -484,4 +489,352 @@ describe("countOpenByKind", () => {
     expect(Object.values(counts).reduce((sum, count) => sum + count, 0)).toBe(total);
     expect(total).toBe(1);
   });
+});
+
+// ---------------------------------------------------------------------------
+// findOpenForRawNotification — one raw notification may raise one open card.
+// Before this the queue had no duplicate defence of any kind: `checkDuplicate`
+// compares against COMMITTED transactions, so two cards for one capture could
+// both be confirmed and commit the same money twice (2026-09-01).
+// ---------------------------------------------------------------------------
+
+describe("findOpenForRawNotification", () => {
+  /**
+   * `review_queue_items.raw_notification_id` is a foreign key, so a card can
+   * only ever point at a capture that really was stored — these tests store one
+   * for the same reason the pipeline does before it queues anything.
+   */
+  async function storeCapture(id: string): Promise<void> {
+    await storeRawCapture(
+      {
+        id,
+        packageName: "com.globe.gcash.android",
+        title: "GCash",
+        text: "You sent ₱1,000.00 to Juan Dela Cruz.",
+        subText: null,
+        bigText: null,
+        postedAt: 1_000,
+        capturedAt: 1_000,
+        notificationKey: null,
+      },
+      1_000,
+    );
+  }
+
+  test("finds the open card already raised for a capture", async () => {
+    await storeCapture("cap-1");
+    const item = await enqueue({
+      kind: "low-confidence",
+      payload: { amount: 100_000 },
+      rawNotificationId: "cap-1",
+    });
+
+    expect((await findOpenForRawNotification("cap-1"))?.id).toBe(item.id);
+  });
+
+  test("is null for a capture that has raised no card", async () => {
+    await storeCapture("cap-1");
+    await enqueue({ kind: "low-confidence", payload: {}, rawNotificationId: "cap-1" });
+
+    expect(await findOpenForRawNotification("cap-2")).toBe(null);
+  });
+
+  test("ignores a card the user has already triaged", async () => {
+    // A resolved card is not an open question, so the same capture reaching the
+    // stages again must be free to ask a new one rather than silently reusing a
+    // card the user has finished with.
+    await storeCapture("cap-1");
+    const item = await enqueue({
+      kind: "low-confidence",
+      payload: {},
+      rawNotificationId: "cap-1",
+    });
+    await resolve(item.id, "confirmed");
+
+    expect(await findOpenForRawNotification("cap-1")).toBe(null);
+  });
+
+  test("ignores an expired card", async () => {
+    // Same predicate as `listOpen`: an item past its 30-day TTL is no longer
+    // open, and treating it as one would suppress a card the user can never see.
+    await storeCapture("cap-1");
+    const dateSpy = jest.spyOn(Date, "now");
+    dateSpy.mockReturnValue(1_000);
+    await enqueue({
+      kind: "low-confidence",
+      payload: {},
+      rawNotificationId: "cap-1",
+      expiresAt: 2_000,
+    });
+    dateSpy.mockRestore();
+
+    expect(await findOpenForRawNotification("cap-1", 10_000)).toBe(null);
+  });
+
+  test("never matches a card that came from a different capture", async () => {
+    // Two distinct captures are two distinct questions, however alike their
+    // payloads read — suppressing the second would drop a real transaction.
+    await storeCapture("cap-1");
+    await enqueue({
+      kind: "low-confidence",
+      payload: { amount: 100_000, direction: "out", merchant: "Aling Nena" },
+      rawNotificationId: "cap-1",
+    });
+
+    expect(await findOpenForRawNotification("cap-2")).toBe(null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// findOpenTwin — docs/03 §6 rule 2, asked of the QUEUE instead of the ledger.
+// `checkDuplicate` only ever compares against committed rows, so a push that
+// hard-routed (unmapped wallet, a score under the floor) is invisible to it and
+// its SMS relay thirty seconds later raises a second card for one movement.
+// Confirming both writes the payment twice, because neither confirm has a
+// committed row to compare against either (GAP-012).
+// ---------------------------------------------------------------------------
+
+describe("findOpenTwin", () => {
+  const TWIN_WINDOW_MS = 180_000;
+  const OCCURRED_AT = 1_700_000_000_000;
+
+  async function storeCapture(id: string): Promise<void> {
+    await storeRawCapture(
+      {
+        id,
+        packageName: "com.bpi.ng.app",
+        title: "BPI",
+        text: "Your account was debited ₱750.00.",
+        subText: null,
+        bigText: null,
+        postedAt: OCCURRED_AT,
+        capturedAt: OCCURRED_AT,
+        notificationKey: null,
+      },
+      OCCURRED_AT,
+    );
+  }
+
+  /** The push card the pipeline raises for a capture it could not auto-commit. */
+  async function queuePush(
+    captureId: string,
+    payload: ReviewItemPayload = {},
+    expiresAt?: number,
+  ): Promise<ReviewQueueItem> {
+    await storeCapture(captureId);
+    return enqueue({
+      kind: "low-confidence",
+      rawNotificationId: captureId,
+      expiresAt,
+      payload: {
+        providerKey: "bpi",
+        channel: "push",
+        amount: 75_000,
+        direction: "out",
+        occurredAt: OCCURRED_AT,
+        walletId: null,
+        ...payload,
+      },
+    });
+  }
+
+  /** The SMS relay of that same movement, as the pipeline asks about it. */
+  function smsTwin(overrides: Partial<Parameters<typeof findOpenTwin>[0]> = {}) {
+    return {
+      providerKey: "bpi",
+      amount: 75_000,
+      direction: "out" as const,
+      channel: "sms" as const,
+      occurredAt: OCCURRED_AT + 30_000,
+      windowMs: TWIN_WINDOW_MS,
+      ...overrides,
+    };
+  }
+
+  test("finds the open push card its SMS relay is a second telling of", async () => {
+    const card = await queuePush("cap-push");
+
+    expect((await findOpenTwin(smsTwin()))?.id).toBe(card.id);
+  });
+
+  test("never folds two tellings on the SAME channel", async () => {
+    // §6 rule 4's undecidable pair. Two genuine ₱750.00 purchases minutes apart
+    // agree on provider, amount, direction and the window — the queue exists to
+    // ASK about that, and collapsing them here would delete a real transaction
+    // exactly as a payload-matching `findOpenForRawNotification` would.
+    await queuePush("cap-push");
+
+    expect(await findOpenTwin(smsTwin({ channel: "push" }))).toBe(null);
+  });
+
+  test("a card whose channel was never recorded matches nothing", async () => {
+    // Absent is not "the other one". Every card raised before the payload
+    // carried a channel reads this way, and reading `undefined` as a difference
+    // would suppress them on no evidence at all.
+    await queuePush("cap-push", { channel: undefined });
+
+    expect(await findOpenTwin(smsTwin())).toBe(null);
+  });
+
+  test("references that disagree are two transactions, however close together", async () => {
+    // The provider's own statement that these are not the same thing, and it
+    // outranks the timing — `matchesTwinWindow` makes the same exclusion.
+    await queuePush("cap-push", { referenceNo: "BPI556677" });
+
+    expect(await findOpenTwin(smsTwin({ referenceNo: "BPI998877" }))).toBe(null);
+    expect((await findOpenTwin(smsTwin({ referenceNo: "bpi556677" }))) !== null).toBe(true);
+    // A blank reference is an ABSENT one, never a mismatch: most notifications
+    // carry none, and failing closed there would disable the whole rule.
+    expect((await findOpenTwin(smsTwin({ referenceNo: "  " }))) !== null).toBe(true);
+  });
+
+  test("stops at the twin window, inclusive of the boundary", async () => {
+    await queuePush("cap-push");
+
+    expect(await findOpenTwin(smsTwin({ occurredAt: OCCURRED_AT + TWIN_WINDOW_MS }))).not.toBe(null);
+    expect(await findOpenTwin(smsTwin({ occurredAt: OCCURRED_AT + TWIN_WINDOW_MS + 1 }))).toBe(null);
+    // Absolute, like `dedupe_gate.isWithin`: a delayed relay can be stamped
+    // either side of the card it belongs to.
+    expect(await findOpenTwin(smsTwin({ occurredAt: OCCURRED_AT - TWIN_WINDOW_MS }))).not.toBe(null);
+  });
+
+  test("a different provider, amount or direction is a different movement", async () => {
+    await queuePush("cap-push");
+
+    expect(await findOpenTwin(smsTwin({ providerKey: "gcash" }))).toBe(null);
+    expect(await findOpenTwin(smsTwin({ amount: 75_001 }))).toBe(null);
+    expect(await findOpenTwin(smsTwin({ direction: "in" }))).toBe(null);
+  });
+
+  test("a triaged or expired card is not an open question", async () => {
+    const resolved = await queuePush("cap-resolved");
+    await resolve(resolved.id, "confirmed");
+    expect(await findOpenTwin(smsTwin())).toBe(null);
+
+    await queuePush("cap-expired", {}, OCCURRED_AT + 1);
+
+    expect(await findOpenTwin(smsTwin(), OCCURRED_AT + 10_000)).toBe(null);
+  });
+
+  test("the nearest card in time wins when several could match", async () => {
+    const far = await queuePush("cap-far", { occurredAt: OCCURRED_AT - 120_000 });
+    const near = await queuePush("cap-near", { occurredAt: OCCURRED_AT + 25_000 });
+
+    expect(far.id).not.toBe(near.id);
+    expect((await findOpenTwin(smsTwin()))?.id).toBe(near.id);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reopen — the persistence half of spec rule 9's ten-second undo (GAP-075)
+// ---------------------------------------------------------------------------
+//
+// The claim is that `resolve` is reversible AND that reversing it costs the
+// item nothing else. The second half is the one worth a test: an undo that
+// restarted the 30-day hygiene clock would let a card outlive the raw text that
+// justifies it (rule 21, domain invariant 3), and nothing about a reopened card
+// on screen would show it.
+
+describe("reopen", () => {
+  async function queued(): Promise<ReviewQueueItem> {
+    return enqueue({ kind: "low-confidence", payload: { amount: 125000 } });
+  }
+
+  test("a resolved item goes back to being open", async () => {
+    const item = await queued();
+    await resolve(item.id, "dismissed");
+    expect(await countOpen()).toBe(0);
+
+    expect(await reopen(item.id)).toBe(true);
+
+    expect(await countOpen()).toBe(1);
+    expect((await listOpen()).map((row) => row.id)).toEqual([item.id]);
+  });
+
+  test("the expiry clock is not restarted — it runs from arrival, not from triage", async () => {
+    const item = await queued();
+    await resolve(item.id, "dismissed");
+    await reopen(item.id);
+
+    const after = await getReviewItem(item.id);
+    expect(after?.expiresAt).toBe(item.expiresAt);
+    expect(after?.createdAt).toBe(item.createdAt);
+    expect(after?.resolvedAt).toBeNull();
+  });
+
+  test("there is nothing to reopen on an unknown id or an item that is already open", async () => {
+    const item = await queued();
+
+    expect(await reopen("no-such-item")).toBe(false);
+    expect(await reopen(item.id)).toBe(false);
+    expect(await countOpen()).toBe(1);
+  });
+
+  test("a second undo of the same item changes nothing", async () => {
+    const item = await queued();
+    await resolve(item.id, "dismissed");
+
+    expect(await reopen(item.id)).toBe(true);
+    expect(await reopen(item.id)).toBe(false);
+    expect(await countOpen()).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The resolution is kept (GAP-057). "Dismissed" and "confirmed" used to be
+// indistinguishable in the table, because `resolve` accepted the value and
+// dropped it.
+// ---------------------------------------------------------------------------
+test("resolve records whether the card was confirmed or dismissed", async () => {
+  const dismissed = await enqueue({ kind: "low-confidence", payload: {} });
+  const confirmed = await enqueue({ kind: "low-confidence", payload: {} });
+
+  await resolve(dismissed.id, "dismissed");
+  await resolve(confirmed.id, "confirmed");
+
+  const rows = await db.getAllAsync<{ id: string; resolution: string | null }>(
+    "SELECT id, resolution FROM review_queue_items",
+  );
+  expect(new Map(rows.map((row) => [row.id, row.resolution]))).toEqual(
+    new Map([
+      [dismissed.id, "dismissed"],
+      [confirmed.id, "confirmed"],
+    ]),
+  );
+});
+
+test("reopening a card clears its resolution along with its resolved time", async () => {
+  const item = await enqueue({ kind: "low-confidence", payload: {} });
+  await resolve(item.id, "dismissed");
+
+  expect(await reopen(item.id)).toBe(true);
+
+  const row = await db.getFirstAsync<{ resolved_at: number | null; resolution: string | null }>(
+    "SELECT resolved_at, resolution FROM review_queue_items WHERE id = ?",
+    [item.id],
+  );
+  expect(row).toEqual({ resolved_at: null, resolution: null });
+});
+
+test("a stored payload that is not a JSON object lists as empty instead of failing the queue", async () => {
+  // Decoded at the boundary (GAP-057). Before, one corrupt row threw out of
+  // JSON.parse and took every open card down with it.
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    const good = await enqueue({ kind: "low-confidence", payload: { amount: 100 } });
+    const broken = await enqueue({ kind: "low-confidence", payload: {} });
+    await db.runAsync("UPDATE review_queue_items SET payload_json = ? WHERE id = ?", [
+      "{not json",
+      broken.id,
+    ]);
+
+    const open = await listOpen();
+
+    expect(open.map((item) => item.id).sort()).toEqual([good.id, broken.id].sort());
+    expect(open.find((item) => item.id === broken.id)?.payload).toEqual({});
+    expect(open.find((item) => item.id === good.id)?.payload).toEqual({ amount: 100 });
+    expect(warn).toHaveBeenCalled();
+  } finally {
+    warn.mockRestore();
+  }
 });

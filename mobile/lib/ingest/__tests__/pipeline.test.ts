@@ -17,8 +17,11 @@ jest.mock("@/modules/notification_listener", () => ({
 }));
 
 import { closeDatabase } from "@/lib/db/database";
+import { __setTierForTests } from "@/lib/entitlements";
 import { addCaptureListener, drainPendingCaptures } from "@/modules/notification_listener";
 import * as parseStatsRepo from "@/lib/diagnostics/parse_stats_repo";
+import * as rawNotificationsRepo from "@/lib/db/repos/raw_notifications_repo";
+import * as transactionsRepo from "@/lib/db/repos/transactions_repo";
 import { createLoan, outstandingBalance } from "@/lib/db/repos/loans_repo";
 import { createUserRule } from "@/lib/db/repos/user_rules_repo";
 import { createWallet, getBalanceDrift, getWallet } from "@/lib/db/repos/wallets_repo";
@@ -27,10 +30,14 @@ import {
   recordTraitEvidence,
   setWalletOwed,
 } from "@/lib/db/repos/wallet_traits_repo";
-import { answerWalletKind } from "@/lib/review/resolve_actions";
+import { answerWalletKind, correctItem, mergeDuplicate } from "@/lib/review/resolve_actions";
 import { onAppEvent } from "@/lib/events/app_events";
 import { freshDb } from "@/test_support/db";
-import { getRawCapture, storeRawCapture } from "@/lib/db/repos/raw_notifications_repo";
+import {
+  getRawCapture,
+  isRawCaptureUnreferenced,
+  storeRawCapture,
+} from "@/lib/db/repos/raw_notifications_repo";
 import { getTransferLink } from "@/lib/db/repos/transfer_links_repo";
 import { insertTransaction, listTransactions, sumSpend } from "@/lib/db/repos/transactions_repo";
 import { listOpen } from "@/lib/db/repos/review_queue_repo";
@@ -39,7 +46,7 @@ import { seedParserRules } from "@/lib/ingest/seed_rules";
 import { setSetting } from "@/lib/db/repos/app_settings_repo";
 import { attachCounterpartLeg } from "@/lib/transfers/transfer_service";
 import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
-import { __awaitIngestIdle, processCapture, startIngest } from "../pipeline";
+import { __awaitIngestIdle, __resetIngestFailures, processCapture, startIngest } from "../pipeline";
 import type { RawCapture, Transaction } from "@/types/domain";
 import type { RulesetBundleInput } from "@/lib/ingest/ruleset_types";
 import type { SQLiteDatabase } from "@/lib/db/database";
@@ -92,6 +99,11 @@ function capture(overrides: Partial<RawCapture> & Pick<RawCapture, "id">): RawCa
     bigText: null,
     postedAt: NOW - MINUTE,
     capturedAt: NOW - MINUTE,
+    // Explicitly null rather than omitted, so a fixture compares equal to the
+    // same capture read back out of the database — `rowToRawCapture` always
+    // produces the field, and most notifications in these tests are not about
+    // redelivery at all (migration 018).
+    notificationKey: null,
     ...overrides,
   };
 }
@@ -148,6 +160,10 @@ beforeEach(async () => {
   db = await freshDb();
   await seedDefaultCategories();
   await seedParserRules();
+  // The pipeline's poison-pill counter lives in the module, not the database,
+  // so a fresh schema does not clear it and one test's failures would count
+  // toward the next test's ceiling.
+  __resetIngestFailures();
 
   clockOffset = 0;
   liveListener = null;
@@ -162,6 +178,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  __setTierForTests(null);
   await closeDatabase();
   jest.restoreAllMocks();
 });
@@ -526,16 +543,25 @@ test("an unknown provider with a money signal is queued", async () => {
   expect(await getRawCapture("cap-unknown")).not.toBeNull();
 });
 
-test("an unknown provider with no money signal is ignored and nothing is stored", async () => {
+test("an unknown provider with no money signal leaves its app and time, and none of its text", async () => {
+  // OWNER'S RULING, 2026-09-24: the live path keeps the same minimal record the
+  // buffered drain keeps, so the Privacy centre can account for a notification
+  // whichever way it arrived. §1 principle 2 / §3 rule 3 are untouched: no part
+  // of a private message reaches the database, only the app and the times.
   await createWallet({ name: "GCash" });
+  const chat = capture({ id: "cap-chat", packageName: CHAT, title: "Ana", text: "Kain tayo mamaya!" });
 
-  const outcome = await processCapture(
-    capture({ id: "cap-chat", packageName: CHAT, title: "Ana", text: "Kain tayo mamaya!" }),
-  );
+  const outcome = await processCapture(chat);
 
   expect(outcome).toEqual({ kind: "ignored", reason: "not_financial" });
-  // §1 principle 2 / §3 rule 3: a private message never touches the database.
-  expect(await getRawCapture("cap-chat")).toBeNull();
+  expect(await getRawCapture("cap-chat")).toEqual({
+    ...chat,
+    title: null,
+    text: null,
+    subText: null,
+    bigText: null,
+    notificationKey: null,
+  });
   expect(await listOpen()).toHaveLength(0);
   expect(await ledger()).toHaveLength(0);
 });
@@ -646,6 +672,60 @@ test("the same RawCapture processed twice commits exactly one transaction", asyn
   expect(await listOpen()).toHaveLength(0);
 });
 
+// The owner's 2026-09-01 device report: one ₱1,000.00 withdrawal, several
+// identical cards. Android redelivers a notification every time its app edits
+// it, and `extractCapture` stamps each redelivery with a fresh UUID, so the
+// id-keyed guard above could not see them.
+test("a notification redelivered under a new id after an edit raises no second card", async () => {
+  const wallet = await createWallet({ name: "GCash" });
+  await addMatcher(wallet.id, GCASH);
+  const slot = `${GCASH}|0|null|0`;
+
+  // Same slot, same text, a new delivery id and a fresh postTime — exactly what
+  // the platform hands over when an app re-posts a notification it already
+  // posted.
+  const first = await processCapture(
+    gcashSend("cap-edit-1", { notificationKey: slot, postedAt: NOW - MINUTE }),
+  );
+  const second = await processCapture(
+    gcashSend("cap-edit-2", { notificationKey: slot, postedAt: NOW - MINUTE + 1_200 }),
+  );
+
+  expect(first.kind).toBe("committed");
+  expect(second).toEqual({ kind: "ignored", reason: "duplicate" });
+  expect(await ledger()).toHaveLength(1);
+  expect(await listOpen()).toHaveLength(0);
+});
+
+test("a slot re-used for genuinely new text is a new capture, not a replay", async () => {
+  const wallet = await createWallet({ name: "GCash" });
+  await addMatcher(wallet.id, GCASH);
+  const slot = `${GCASH}|7|null|0`;
+
+  // One tile that says "Processing" and then, seconds later, says what actually
+  // happened. Same slot, different facts — only the second is a transaction,
+  // and suppressing it would lose the money it describes.
+  await processCapture(
+    capture({ id: "cap-slot-1", text: "Processing your request...", notificationKey: slot }),
+  );
+  const second = await processCapture(
+    capture({
+      id: "cap-slot-2",
+      text: "You sent ₱500.00 to Juan Dela Cruz. Ref No. ABC123456.",
+      notificationKey: slot,
+      postedAt: NOW - MINUTE + 2_000,
+    }),
+  );
+
+  expect(second.kind).toBe("committed");
+  expect(await ledger()).toHaveLength(1);
+});
+
+// The keyless case — every capture buffered by a build older than migration
+// 018 — is covered by the test directly below: its two captures carry no
+// `notificationKey`, and it still requires the second to be QUEUED rather than
+// suppressed. `findReplayCapture`'s own null-key contract is pinned in
+// raw_notifications_repo.test.ts.
 test("two distinct captures with identical amount, channel and timing still reach the DedupeGate", async () => {
   const wallet = await createWallet({ name: "GCash" });
   await addMatcher(wallet.id, GCASH);
@@ -694,6 +774,149 @@ test("a push and SMS twin commits once", async () => {
   // Rule 1's strong key: same provider, same reference, same amount, same
   // direction, inside 48 hours — regardless of channel. The channel is the
   // thing the RecentEvent join has to supply, and `Transaction` does not carry.
+  expect(sms).toEqual({ kind: "ignored", reason: "duplicate" });
+  expect(await ledger()).toHaveLength(1);
+  expect(await listOpen()).toHaveLength(0);
+});
+
+// ---------------------------------------------------------------------------
+// The twin whose FIRST leg never committed (GAP-012).
+//
+// `checkDuplicate` compares an event against COMMITTED TRANSACTIONS, so a
+// telling that hard-routed — unmapped wallet, a score under the floor — is
+// invisible to it. Its relay on the other channel therefore reads as unique and
+// is queued too: two cards for one movement, and "Looks right" on each puts the
+// payment in the ledger twice, because the second confirm has nothing to compare
+// against either.
+// ---------------------------------------------------------------------------
+
+/** The queued-twin fixture: one movement, two channels, neither auto-committable. */
+async function queuedTwinSetup(): Promise<string> {
+  const wallet = await createWallet({ name: "BPI", openingBalance: 900000 });
+  await upsertRuleset(TWIN_BUNDLE);
+  // NO wallet matcher for either package, deliberately: both tellings hard-route
+  // on an unresolved wallet, so neither is ever committed and the committed-row
+  // DedupeGate has nothing at all to look at.
+  return wallet.id;
+}
+
+function bpiPush(id: string, postedAt: number): RawCapture {
+  return capture({
+    id,
+    packageName: BPI,
+    text: "Your account was debited ₱750.00. Ref No. BPI556677.",
+    postedAt,
+  });
+}
+
+function bpiSms(id: string, postedAt: number): RawCapture {
+  return capture({
+    id,
+    packageName: MESSAGES,
+    title: "BPI",
+    text: "BPI: Your account was debited ₱750.00. Ref No. BPI556677.",
+    postedAt,
+  });
+}
+
+test("a queued push and its SMS twin raise ONE card, and confirming it commits once", async () => {
+  const walletId = await queuedTwinSetup();
+
+  const push = await processCapture(bpiPush("cap-queued-push", NOW - MINUTE));
+  const sms = await processCapture(bpiSms("cap-queued-sms", NOW - MINUTE + 30_000));
+
+  expect(push.kind).toBe("queued");
+  // Not `duplicate`: nothing is in the ledger yet, and a caller reading this
+  // outcome needs to be able to tell "already recorded" from "still waiting to
+  // be answered".
+  expect(sms).toEqual({ kind: "ignored", reason: "queued-twin" });
+
+  const open = await listOpen();
+  expect(open).toHaveLength(1);
+  expect(open[0].rawNotificationId).toBe("cap-queued-push");
+
+  // One card, one answer, one row. The wallet has to be supplied because the
+  // parse could not resolve it — that hard route is what put the card here.
+  await correctItem(open[0].id, { walletId });
+
+  const rows = await ledger();
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({
+    amount: 75000,
+    direction: "out",
+    // Carried through the card, which used to drop it. Without it, §6 rule 1
+    // can never match this row to a later telling of the same movement.
+    referenceNo: "BPI556677",
+  });
+  expect(await listOpen()).toHaveLength(0);
+});
+
+test("the suppressed twin's capture is never handed back to the recovery sweep", async () => {
+  await queuedTwinSetup();
+
+  await processCapture(bpiPush("cap-sweep-push", NOW - MINUTE));
+  await processCapture(bpiSms("cap-sweep-sms", NOW - MINUTE + 30_000));
+
+  // `listUnprocessedRawCaptures` calls a capture that points at neither a
+  // Transaction nor a queue card unprocessed work. The suppression produces
+  // neither, so it leaves the same already-resolved marker `mergeDuplicate`
+  // leaves — and the marker is invisible, so the queue still holds one card.
+  expect(await isRawCaptureUnreferenced("cap-sweep-sms")).toBe(false);
+  expect(await listOpen()).toHaveLength(1);
+
+  mockDrain.mockResolvedValue([]);
+  const stop = await startIngest();
+  await __awaitIngestIdle();
+  stop();
+
+  // A relaunch changes nothing. Without the marker the sweep would re-run the
+  // SMS capture on every launch for its whole 30-day life, and the moment the
+  // user dismissed the push card it would raise a fresh one for a notification
+  // they had already answered.
+  expect(await listOpen()).toHaveLength(1);
+  expect(await ledger()).toHaveLength(0);
+});
+
+test("a card whose twin auto-committed on the other channel commits nothing when confirmed", async () => {
+  const walletId = await queuedTwinSetup();
+  // The relay's package IS mapped and the push's is not, which is the everyday
+  // asymmetry: one telling resolves a wallet and sails through, the other
+  // hard-routes. The queue-side guard deliberately does not run on the
+  // auto-commit path, so this pair really does produce a row AND a card.
+  await addMatcher(walletId, MESSAGES);
+
+  const push = await processCapture(bpiPush("cap-mirror-push", NOW - MINUTE));
+  const sms = await processCapture(bpiSms("cap-mirror-sms", NOW - MINUTE + 30_000));
+
+  expect(push.kind).toBe("queued");
+  expect(sms.kind).toBe("committed");
+  expect(await ledger()).toHaveLength(1);
+
+  const [card] = await listOpen();
+  await correctItem(card.id, { walletId });
+
+  // Still one row. The confirm runs the same `checkDuplicate` the pipeline does,
+  // so the card resolves onto the row that already holds the movement instead of
+  // writing a second one nothing on screen would explain.
+  expect(await ledger()).toHaveLength(1);
+  expect(await listOpen()).toHaveLength(0);
+});
+
+test("a card confirmed at T is not committed again by its SMS relay two hours later", async () => {
+  const walletId = await queuedTwinSetup();
+
+  const push = await processCapture(bpiPush("cap-slow-push", NOW - 3 * 60 * MINUTE));
+  expect(push.kind).toBe("queued");
+
+  const [card] = await listOpen();
+  await correctItem(card.id, { walletId });
+  expect(await ledger()).toHaveLength(1);
+
+  // Two hours later: far outside the 180 s twin window, well inside the 48 h
+  // strong key. The reference number the card now carries is the ONLY thing
+  // that can still match this relay to the row the user confirmed.
+  const sms = await processCapture(bpiSms("cap-slow-sms", NOW - 60 * MINUTE));
+
   expect(sms).toEqual({ kind: "ignored", reason: "duplicate" });
   expect(await ledger()).toHaveLength(1);
   expect(await listOpen()).toHaveLength(0);
@@ -964,6 +1187,58 @@ test("0.95 minus a 0.05 learned penalty still auto-commits", async () => {
   expect(await listOpen()).toHaveLength(0);
 });
 
+// GAP-111: WHAT THE APP HAS LEARNED IS NOT A BROWSING QUESTION. The history the
+// categorizer counts used to arrive through `listTransactions({})`, which clamps
+// to the free tier's 90-day view gate — so the three rows that taught the app
+// this merchant stopped being evidence the day they aged out, and a user on Free
+// would be asked to categorize a merchant they had already filed three times.
+// Limits rule 8 draws the line: "Limit totals are always computed from the full
+// ledger, regardless of the free tier's 90-day history view gate", and §8 rule 3
+// puts no window on the learned count at all.
+//
+// THE FIRST ASSERTION IS THE CONTROL. Those three rows really are past the
+// floor, so a `listTransactions({})` history would have been EMPTY here and no
+// suggestion could have fired; the test would pass vacuously without it. This is
+// the same fixture as the plus test above with one thing changed — the age of
+// the prior rows — and the outcome must not change with it.
+test("on free a merchant learned before the 90-day floor is still learned", async () => {
+  const wallet = await createWallet({ name: "BPI", openingBalance: 500000 });
+  await addMatcher(wallet.id, MESSAGES);
+  await upsertRuleset(LEARNED_BUNDLE);
+  for (const index of [1, 2, 3]) {
+    await insertTransaction({
+      walletId: wallet.id,
+      categoryId: "cat_groceries_palengke",
+      amount: 10000 + index,
+      direction: "out",
+      occurredAt: NOW - 100 * DAY,
+      merchant: "Aling Nena Store",
+      source: "notification",
+      confidence: 1,
+    });
+  }
+
+  __setTierForTests("free");
+  expect(await listTransactions({})).toHaveLength(0);
+
+  const outcome = await processCapture(
+    capture({
+      id: "cap-learned-free",
+      packageName: MESSAGES,
+      title: "TESTBANK",
+      text: "TESTBANK: Your card was debited ₱250.00 at Aling Nena Store.",
+    }),
+  );
+
+  expect(outcome.kind).toBe("committed");
+  const committed = (await ledger()).find((row) => row.amount === 25000);
+  expect(committed?.categoryId).toBe("cat_groceries_palengke");
+  // 0.90 rather than 0.95 is the proof it came from LEARNING: the merchant map
+  // and user rules cost nothing, only a learned category charges 0.05.
+  expect(committed?.confidence).toBe(0.9);
+  expect(await listOpen()).toHaveLength(0);
+});
+
 test("a user rule outranks the merchant map and costs no confidence", async () => {
   const wallet = await createWallet({ name: "GCash" });
   await addMatcher(wallet.id, GCASH);
@@ -1039,6 +1314,98 @@ test("a crash after drainPendingCaptures loses nothing", async () => {
   stop();
 });
 
+// ---------------------------------------------------------------------------
+// The batch store is ONE transaction. The native ack has already happened by
+// the time the first row is written, so the table is the only copy of the
+// drain — and a pass of autocommit inserts stopping half way leaves a state
+// nothing downstream can even detect, because a short `raw_notifications` and
+// a complete one look exactly alike (GAP-040).
+// ---------------------------------------------------------------------------
+
+test("a kill part-way through the batch store leaves no half-written batch", async () => {
+  const wallet = await createWallet({ name: "GCash", openingBalance: 900000 });
+  await addMatcher(wallet.id, GCASH);
+  const batch = [
+    gcashSend("buf-1", { text: sendText("100.00", "REF0001"), postedAt: NOW - 5 * MINUTE }),
+    gcashSend("buf-2", { text: sendText("200.00", "REF0002"), postedAt: NOW - 4 * MINUTE }),
+    gcashSend("buf-3", { text: sendText("300.00", "REF0003"), postedAt: NOW - 3 * MINUTE }),
+  ];
+  mockDrain.mockResolvedValue(batch);
+
+  // The cut lands on the THIRD write, with two already in hand. An OEM freeze
+  // cannot be scripted, but the durability question it asks is exactly this
+  // one: what does the table hold when the batch stops part way through?
+  const realStore = rawNotificationsRepo.storeRawCapture;
+  const store = jest
+    .spyOn(rawNotificationsRepo, "storeRawCapture")
+    .mockImplementation(async (raw, at) => {
+      if (raw.id === "buf-3") throw new Error("killed mid-batch");
+      return realStore(raw, at);
+    });
+
+  const stop = await startIngest();
+  // RESOLVES, and that is deliberate: the batch's failure is swallowed at the
+  // head of the chain so a rejected head cannot silence every live capture
+  // appended after it. Idle means "the queue drained", not "the batch
+  // succeeded" -- the rollback assertions below are what say it failed.
+  await __awaitIngestIdle();
+  stop();
+
+  // Not one row of it. Two durable captures beside a third that vanished is the
+  // undetectable state: `listUnprocessedRawCaptures` would hand the survivors
+  // back on the next launch looking like ordinary stranded work, and nothing
+  // anywhere would say the rest of the drain is gone.
+  for (const raw of batch) {
+    expect(await getRawCapture(raw.id)).toBeNull();
+  }
+  expect(await ledger()).toHaveLength(0);
+  expect(store).toHaveBeenCalledTimes(3);
+
+  // And "none of it" is what makes the loss recoverable at all: the batch the
+  // kill cost is the batch the next drain hands back (M1a Task 3 chose
+  // at-least-once deliberately), and it commits whole, once each, because the
+  // rollback left nothing for the replay guard to trip over.
+  store.mockRestore();
+  mockDrain.mockResolvedValue(batch);
+  const second = await startIngest();
+  await __awaitIngestIdle();
+  second();
+
+  expect((await commitOrder()).map((row) => row.amount)).toEqual([10000, 20000, 30000]);
+});
+
+test("a failed batch does not silence every live capture for the rest of the process", async () => {
+  const wallet = await createWallet({ name: "GCash", openingBalance: 900000 });
+  await addMatcher(wallet.id, GCASH);
+  mockDrain.mockResolvedValue([
+    gcashSend("buf-1", { text: sendText("100.00", "REF0001"), postedAt: NOW - 5 * MINUTE }),
+  ]);
+
+  const realStore = rawNotificationsRepo.storeRawCapture;
+  jest.spyOn(rawNotificationsRepo, "storeRawCapture").mockImplementation(async (raw, at) => {
+    if (raw.id.startsWith("buf-")) throw new Error("killed mid-batch");
+    return realStore(raw, at);
+  });
+
+  const stop = await startIngest();
+  await __awaitIngestIdle();
+
+  // THE REGRESSION, and it is a quiet one. The head of the chain has now
+  // rejected. Live captures are appended with `chain.then(onFulfilled)`, and
+  // `.then` on a REJECTED promise skips its callback and passes the rejection
+  // on -- so every notification arriving from here to the end of the process
+  // was dropped without a trace, which is the exact outcome the chain was
+  // built to prevent. The user sees tracking simply stop working until they
+  // restart the app.
+  liveListener?.(
+    gcashSend("live-1", { text: sendText("500.00", "REF9999"), postedAt: NOW - MINUTE }),
+  );
+  await __awaitIngestIdle();
+  stop();
+
+  expect((await ledger()).map((row) => row.amount)).toEqual([50000]);
+});
+
 test("a stage throwing leaves the capture readable and reprocessable", async () => {
   const wallet = await createWallet({ name: "GCash" });
   await addMatcher(wallet.id, GCASH);
@@ -1087,6 +1454,220 @@ test("startIngest leaves the native buffer alone while capture is paused", async
   stop();
 });
 
+// ---------------------------------------------------------------------------
+// The two entry points apply the same guards (GAP-048).
+//
+// `processCapture` (live) and `processStored` (buffered, via the drain and the
+// recovery sweep) reach the same stages, and the buffered one used to reach
+// them past the muted-source rule the live one applies. A package the user
+// marked "not money" then raised a fresh `unknown-provider` card for every
+// notification it had posted while the app was dead — the "queue teaches the
+// user to ignore it" failure the queue's own dismissal rule exists to prevent.
+// ---------------------------------------------------------------------------
+
+test("a dismissed package in the buffered batch raises no card and is never stored", async () => {
+  await createWallet({ name: "GCash" });
+  // The mute `ignoreProvider` writes: the matcher carries the raw package name.
+  await createUserRule({ matcher: { providerKey: CHAT }, action: { kind: "ignore" } });
+  mockDrain.mockResolvedValue([
+    capture({
+      id: "buf-dismissed-1",
+      packageName: CHAT,
+      text: "Promo! Only ₱99.00 today",
+      postedAt: NOW - 5 * MINUTE,
+    }),
+    capture({
+      id: "buf-dismissed-2",
+      packageName: CHAT,
+      text: "Last chance, ₱49.00 off",
+      postedAt: NOW - 4 * MINUTE,
+    }),
+  ]);
+
+  const stop = await startIngest();
+  await __awaitIngestIdle();
+  stop();
+
+  expect(await listOpenReviewItems()).toHaveLength(0);
+  // Dropped BEFORE the store, exactly as the live path drops it — so nothing is
+  // left pointing at neither a transaction nor a card for the recovery sweep to
+  // re-run on every launch for the next thirty days.
+  expect(await getRawCapture("buf-dismissed-1")).toBeNull();
+  expect(await getRawCapture("buf-dismissed-2")).toBeNull();
+});
+
+test("the recovery sweep raises no card for a capture whose package was muted later", async () => {
+  await createWallet({ name: "GCash" });
+  // Stored in an earlier session, back when the source was still unknown rather
+  // than muted. The drain's pre-store filter cannot reach this one; only
+  // `processStored`'s own guard can.
+  await storeRawCapture(
+    capture({ id: "swept-dismissed", packageName: CHAT, text: "Promo! Only ₱99.00 today" }),
+    NOW - DAY,
+  );
+  await createUserRule({ matcher: { providerKey: CHAT }, action: { kind: "ignore" } });
+  mockDrain.mockResolvedValue([]);
+
+  const stop = await startIngest();
+  await __awaitIngestIdle();
+  stop();
+
+  // The mute is a standing statement about the PACKAGE, evaluated when the
+  // capture is routed — so a capture that was buffered before it still gets no
+  // card (04-features/08-review-queue.md puts the rule at the SourceRouter
+  // stage).
+  expect(await listOpenReviewItems()).toHaveLength(0);
+});
+
+test("an ignore rule never silences a known provider in the buffered batch", async () => {
+  const wallet = await createWallet({ name: "GCash", openingBalance: 900000 });
+  await addMatcher(wallet.id, GCASH);
+  // A rule naming a package the ruleset DOES claim. `isDismissedPackage` is
+  // asked only on the `unknown` route, and this pins that: widening the guard
+  // to a known provider would silently delete real transactions.
+  await createUserRule({ matcher: { providerKey: GCASH }, action: { kind: "ignore" } });
+  mockDrain.mockResolvedValue([gcashSend("buf-known-ignored")]);
+
+  const stop = await startIngest();
+  await __awaitIngestIdle();
+  stop();
+
+  expect((await ledger()).map((row) => row.amount)).toEqual([50000]);
+  expect(await getRawCapture("buf-known-ignored")).not.toBeNull();
+});
+
+test("a paused app runs no recovery sweep either", async () => {
+  await createWallet({ name: "GCash" });
+  // Stranded from an earlier session: durable, with neither a transaction nor a
+  // card behind it, which is exactly what the sweep comes back for.
+  await storeRawCapture(gcashSend("swept-while-paused"), NOW - DAY);
+  await setSetting("capture_enabled", false);
+
+  const stop = await startIngest();
+  await __awaitIngestIdle();
+  stop();
+
+  // THE PAUSE GUARD FOR THE BUFFERED PATH LIVES HERE, at `startIngest`, and it
+  // covers the sweep as well as the drain — which is why `processStored` does
+  // not re-ask per capture. Re-asking would abandon rows that are already
+  // durable; guarding the single entry point cannot.
+  expect(await ledger()).toHaveLength(0);
+  expect(await listOpenReviewItems()).toHaveLength(0);
+  // Still stranded, still recoverable: the sweep did not run, it did not
+  // consume the capture, and unpausing brings it back.
+  expect(await getRawCapture("swept-while-paused")).not.toBeNull();
+  expect(await isRawCaptureUnreferenced("swept-while-paused")).toBe(true);
+});
+
+// ---------------------------------------------------------------------------
+// A non-money capture drained from the buffer keeps no text (GAP-107, owner
+// decision 2026-09-09). The live path has always dropped one before storing
+// anything. The drain stored the whole notification and discarded it only
+// afterwards, so on an install whose provider filter admits every app a
+// friend's message sat in `raw_notifications` for thirty days. The decision
+// was neither option the entry offered: keep the app and the times and nothing
+// else, so a missed transaction can still be found in the Privacy centre.
+// ---------------------------------------------------------------------------
+
+test("a non-money capture in the buffered batch keeps its app and times and none of its text", async () => {
+  await createWallet({ name: "GCash" });
+  const message = capture({
+    id: "buf-chat",
+    packageName: CHAT,
+    title: "Ana",
+    text: "Kain tayo mamaya!",
+    notificationKey: `${CHAT}|7|thread-ana|0`,
+    postedAt: NOW - 5 * MINUTE,
+    capturedAt: NOW - 5 * MINUTE,
+  });
+  mockDrain.mockResolvedValue([message]);
+
+  const stop = await startIngest();
+  await __awaitIngestIdle();
+  stop();
+
+  expect(await getRawCapture("buf-chat")).toEqual({
+    ...message,
+    title: null,
+    text: null,
+    subText: null,
+    bigText: null,
+    notificationKey: null,
+  });
+  expect(await listOpenReviewItems()).toHaveLength(0);
+  expect(await ledger()).toHaveLength(0);
+});
+
+test("a trimmed capture is settled, so the next launch's recovery sweep leaves it alone", async () => {
+  await createWallet({ name: "GCash" });
+  mockDrain.mockResolvedValue([
+    capture({ id: "buf-chat", packageName: CHAT, title: "Ana", text: "Kain tayo mamaya!" }),
+  ]);
+
+  const stop = await startIngest();
+  await __awaitIngestIdle();
+  stop();
+
+  // Nothing points at the row, which is what the sweep calls stranded work.
+  // Offering it on every launch for thirty days would fill the sweep's
+  // oldest-first limit with chat and starve the real stranded captures.
+  expect(await rawNotificationsRepo.listUnprocessedRawCaptures(NOW + MINUTE, 100)).toEqual([]);
+});
+
+test("the recovery sweep strips the text from a non-money capture an earlier build stored whole", async () => {
+  await createWallet({ name: "GCash" });
+  // What the drain wrote before GAP-107: the whole message, never referenced.
+  const legacy = capture({ id: "swept-chat", packageName: CHAT, title: "Ana", text: "Kain tayo mamaya!" });
+  await storeRawCapture(legacy, NOW - DAY);
+  mockDrain.mockResolvedValue([]);
+
+  const stop = await startIngest();
+  await __awaitIngestIdle();
+  stop();
+
+  expect(await getRawCapture("swept-chat")).toEqual({ ...legacy, title: null, text: null });
+  expect(await rawNotificationsRepo.listUnprocessedRawCaptures(NOW + MINUTE, 100)).toEqual([]);
+});
+
+test("a money-like capture from the same unknown app keeps its text and raises its card", async () => {
+  // The trim is for what the router calls not money-related, and nothing else:
+  // an unknown app's money-like capture is exactly what the user must see.
+  await createWallet({ name: "GCash" });
+  mockDrain.mockResolvedValue([
+    capture({ id: "buf-pautang", packageName: CHAT, title: "Ana", text: "Pautang naman ₱200.00" }),
+  ]);
+
+  const stop = await startIngest();
+  await __awaitIngestIdle();
+  stop();
+
+  expect(await getRawCapture("buf-pautang")).toMatchObject({ text: "Pautang naman ₱200.00" });
+  expect(await listOpenReviewItems()).toHaveLength(1);
+});
+
+test("a stored rule whose action is missing its category does not stop the capture committing (GAP-057)", async () => {
+  // The entry's acceptance criterion: "A malformed user_rules.action_json row
+  // does not crash ingest." An unparseable one never did; a known kind missing
+  // its field decoded, matched every outgoing capture, and handed
+  // insertTransaction no category.
+  const wallet = await createWallet({ name: "GCash", openingBalance: 900000 });
+  await addMatcher(wallet.id, GCASH);
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  await db.runAsync(
+    `INSERT INTO user_rules (id, matcher_json, action_json, priority, is_enabled, created_from,
+       applied_count, last_applied_at, created_at, updated_at)
+     VALUES ('rule_no_category', '{"direction":"out"}', '{"kind":"set-category"}', 0, 1, NULL, 0, NULL, ?, ?)`,
+    [NOW, NOW],
+  );
+
+  const outcome = await processCapture(gcashSend("cap-bad-rule"));
+
+  expect(outcome.kind).toBe("committed");
+  const [row] = await ledger();
+  expect(row.categoryId).not.toBeUndefined();
+  warn.mockRestore();
+});
+
 test("a replayed batch after a crash re-commits nothing", async () => {
   const wallet = await createWallet({ name: "GCash", openingBalance: 900000 });
   await addMatcher(wallet.id, GCASH);
@@ -1115,13 +1696,151 @@ test("an already-stored capture is not reprocessed from the buffer", async () =>
   await addMatcher(wallet.id, GCASH);
   const raw = gcashSend("buf-known");
   await storeRawCapture(raw, NOW);
+  // The row its first run committed, spelled out rather than implied. A stored
+  // capture with NOTHING behind it is no longer "already handled" — that is
+  // precisely the stranded state the recovery sweep exists to finish — so a
+  // capture that really did finish has to look finished.
+  await insertTransaction({
+    walletId: wallet.id,
+    categoryId: UNCATEGORIZED_ID,
+    amount: 50000,
+    direction: "out",
+    occurredAt: NOW - MINUTE,
+    source: "notification",
+    confidence: 0.95,
+    rawNotificationId: raw.id,
+  });
   mockDrain.mockResolvedValue([raw]);
 
   const stop = await startIngest();
   await __awaitIngestIdle();
 
-  expect(await ledger()).toHaveLength(0);
+  // Still the one row: neither the drain nor the sweep ran the stages again.
+  expect(await ledger()).toHaveLength(1);
   stop();
+});
+
+// ---------------------------------------------------------------------------
+// The recovery sweep — rule 2 stores the raw capture BEFORE the stages, so a
+// stage that throws leaves a durable row that produced nothing, and rule 11
+// then calls every later delivery of that notification a replay. Without a
+// pass that comes back for those rows, a real transaction is gone with no
+// ledger row, no card and no error.
+// ---------------------------------------------------------------------------
+
+test("a capture whose stages threw is committed by the next startIngest", async () => {
+  const wallet = await createWallet({ name: "GCash", openingBalance: 900000 });
+  await addMatcher(wallet.id, GCASH);
+  mockDrain.mockResolvedValue([gcashSend("buf-transient")]);
+  // One transient write failure, after the raw row is already durable — a busy
+  // database is the everyday version of this, and it is not the capture's fault.
+  const insert = jest
+    .spyOn(transactionsRepo, "insertTransaction")
+    .mockRejectedValueOnce(new Error("database is locked"));
+
+  const first = await startIngest();
+  await __awaitIngestIdle();
+  first();
+
+  expect(await ledger()).toHaveLength(0);
+  expect(await getRawCapture("buf-transient")).not.toBeNull();
+  expect(insert).toHaveBeenCalledTimes(1);
+
+  // The drain already emptied the native buffer, so nothing redelivers this
+  // capture: the stored row is the only copy, and the sweep is the only thing
+  // that can still reach it.
+  mockDrain.mockResolvedValue([]);
+  const second = await startIngest();
+  await __awaitIngestIdle();
+  second();
+
+  const rows = await ledger();
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({
+    amount: 50000,
+    direction: "out",
+    rawNotificationId: "buf-transient",
+  });
+});
+
+test("a capture that throws on every attempt becomes a card instead of a silent loop", async () => {
+  const wallet = await createWallet({ name: "GCash", openingBalance: 900000 });
+  await addMatcher(wallet.id, GCASH);
+  mockDrain.mockResolvedValue([gcashSend("buf-poison")]);
+  // Permanently unwritable, not transient: the sweep would otherwise re-run
+  // this row on every launch for its whole 30-day life and never tell anyone.
+  jest
+    .spyOn(transactionsRepo, "insertTransaction")
+    .mockRejectedValue(new Error("database is locked"));
+
+  const first = await startIngest();
+  await __awaitIngestIdle();
+  first();
+  const second = await startIngest();
+  await __awaitIngestIdle();
+  second();
+
+  // Two failures are not enough. A device that fails twice on a busy database
+  // and succeeds on the third try must not be handed a card about it.
+  expect(await listOpenReviewItems()).toHaveLength(0);
+
+  const third = await startIngest();
+  await __awaitIngestIdle();
+  third();
+
+  const open = await listOpenReviewItems();
+  expect(open).toHaveLength(1);
+  expect(open[0].kind).toBe("unknown-provider");
+  expect(open[0].rawNotificationId).toBe("buf-poison");
+  expect(await ledger()).toHaveLength(0);
+
+  // And the card is now what the sweep sees, so a fourth pass does nothing.
+  const fourth = await startIngest();
+  await __awaitIngestIdle();
+  fourth();
+  expect(await listOpenReviewItems()).toHaveLength(1);
+});
+
+test("a transaction the user merged away is not re-committed by the next sweep", async () => {
+  const wallet = await createWallet({ name: "GCash", openingBalance: 900000 });
+  await addMatcher(wallet.id, GCASH);
+
+  // The row the user keeps: typed in before the notification landed, which is
+  // exactly why the DedupeGate let the pair through. `describesSameMovement`
+  // refuses a row with no provider outright (dedupe_gate.ts's `providerKey:
+  // null` note), so a hand-entered twin is never suppressed automatically and
+  // the merge is the only thing that can settle it.
+  const kept = await insertTransaction({
+    walletId: wallet.id,
+    categoryId: UNCATEGORIZED_ID,
+    amount: 50000,
+    direction: "out",
+    occurredAt: NOW - MINUTE,
+    source: "manual",
+    confidence: 1,
+  });
+
+  expect((await processCapture(gcashSend("cap-merged"))).kind).toBe("committed");
+  const committed = (await ledger()).find((row) => row.rawNotificationId === "cap-merged");
+  expect(committed).toBeDefined();
+
+  // The ledger-side merge `mergeDuplicate`'s own docblock describes: a capture
+  // that auto-committed never raised a card, so there is no queue item to pass
+  // and nothing here resolves one.
+  await mergeDuplicate("no-card-was-ever-raised", kept.id, (committed as Transaction).id);
+  expect(await ledger()).toHaveLength(1);
+
+  mockDrain.mockResolvedValue([]);
+  const stop = await startIngest();
+  await __awaitIngestIdle();
+  stop();
+
+  // The user's answer has to survive a relaunch. Re-running the stages reaches
+  // the same verdict it reached the first time — the surviving twin is manual,
+  // so the gate still calls the capture unique — and committing again would put
+  // back the exact row they merged away, with a new id they cannot recognise.
+  expect(await ledger()).toHaveLength(1);
+  expect((await ledger())[0].id).toBe(kept.id);
 });
 
 // ---------------------------------------------------------------------------

@@ -70,6 +70,9 @@ import { useReviewKindCounts } from "@/hooks/queries/use_review_kind_counts";
 import { useReviewQueuePage } from "@/hooks/queries/use_review_queue_page";
 import { useRuleset } from "@/hooks/queries/use_ruleset";
 import { useWallets } from "@/hooks/queries/use_wallets";
+import { PaymentAlreadyMatchedError } from "@/lib/db/repos/loans_repo";
+import { publishToast } from "@/lib/query_client";
+import { IncompleteReviewItemError, UNDO_WINDOW_MS } from "@/lib/review/resolve_actions";
 import type { ReviewKind, ReviewQueueItem } from "@/types/domain";
 
 const BackGlyph = registerIcon(ChevronLeft);
@@ -130,6 +133,54 @@ export function reviewFilteredEmptyBody(kind: ReviewKind): string {
 export const REVIEW_BACKLOG_THRESHOLD = 25;
 export const REVIEW_BACKLOG_BANNER =
   "That's a lot of unreviewed items — parsers may be out of date.";
+
+/**
+ * What a FAILED triage action says.
+ *
+ * THE BUG THIS EXISTS FOR: `useReviewAction` carried no `onError` and this
+ * screen never read `triage.error`, so every failure inside `correctItem` —
+ * which runs in a unit of work and rolls the whole thing back — reached the
+ * user as the biggest button on the card doing nothing at all. Reported from
+ * a device on 2026-09-01: a ₱1,000 withdrawal acknowledged, the card still
+ * sitting there, no message. `review_card.tsx`'s `missingLedgerField` closed
+ * the three inputs it could close by DISABLING the button; it could not close
+ * the class, because a wallet deleted after the card was queued, a category
+ * the row's foreign key no longer finds, or SQLite contention with the ingest
+ * pipeline all still throw from inside the same transaction.
+ *
+ * IT SAYS THE LEDGER IS UNCHANGED, and that sentence is the important half.
+ * The user just pressed a button about their own money and it did not take;
+ * without being told the write rolled back, the only safe thing they can
+ * assume is that it half-happened, and the reasonable next move is to go
+ * looking for a transaction that is not there.
+ */
+export function triageFailureMessage(error: unknown): string {
+  if (error instanceof IncompleteReviewItemError) {
+    return `This one still needs ${FAILURE_FIELD_LABEL[error.missing] ?? error.missing} before it can be saved. Open "Change the details" to fill it in. Nothing was saved.`;
+  }
+  // The generic sentence below says "nothing was saved, your balances are
+  // unchanged, try again". For this error every clause is false: the payment IS
+  // recorded, the balance DID move, and trying again can never succeed because
+  // `loan_payments.transaction_id` is UNIQUE. Step 4 above should keep this
+  // unreachable from the card; it stays as the honest fallback for any path
+  // that still reaches `recordPayment` with a claimed transaction.
+  if (error instanceof PaymentAlreadyMatchedError) {
+    return "This payment is already recorded on one of your loans, so there was nothing to save.";
+  }
+  return "That didn't go through, and nothing was saved — your balances are unchanged. Try again.";
+}
+
+/**
+ * The user's words for the field, matching `review_card.tsx`'s own
+ * `BLOCKED_FIELD_LABEL`. `IncompleteReviewItemError.missing` is a plain
+ * string, so an unrecognised value falls through to itself rather than
+ * rendering "undefined" on a card about someone's money.
+ */
+const FAILURE_FIELD_LABEL: Record<string, string> = {
+  amount: "the amount",
+  direction: "whether this was money in or out",
+  wallet: "the wallet",
+};
 
 /**
  * Oldest first (rule 2), sorted HERE rather than trusted from the caller.
@@ -248,7 +299,12 @@ function secondaryActionFor(item: ReviewQueueItem): ReviewAction | "correct" {
       // rejection count per merchant-loan pair that nothing stores yet, and
       // writing an `ignore` rule here instead would silence a real repayment
       // the user only meant to skip once.
-      return { kind: "dismiss", itemId: item.id };
+      //
+      // `dismiss-loan-match`, NOT the generic `dismiss`: it routes through
+      // `dismissLoanMatch` in the loans module, which is the named seam that
+      // rejection counter needs, rather than a bare `resolve` call the loans
+      // module never sees.
+      return { kind: "dismiss-loan-match", itemId: item.id };
     case "one-sided-transfer":
       // "Not a transfer" — commit the captured leg UNPAIRED, exactly what
       // `ambiguous-transfer`'s own secondary does above, and for the same
@@ -302,6 +358,122 @@ function secondaryActionFor(item: ReviewQueueItem): ReviewAction | "correct" {
  */
 function rejectActionFor(item: ReviewQueueItem): ReviewAction | null {
   return item.kind === "low-confidence" ? { kind: "dismiss", itemId: item.id } : null;
+}
+
+// ---------------------------------------------------------------------------
+// Undo (spec rule 9)
+// ---------------------------------------------------------------------------
+//
+// "Triage is undoable: a just-triaged item shows an undo affordance for 10
+// seconds; committed results remain editable in the ledger indefinitely
+// afterward."
+//
+// THE OFFER IS THE APP'S ONE TRANSIENT NOTICE SURFACE, not a second overlay.
+// `publishToast` (lib/query_client.ts) and the host in app/_layout.tsx were
+// built with a neutral tone, a caller-supplied duration and an action slot for
+// exactly this; growing a snackbar of our own here would put two strips at the
+// top of the same screen with no rule about which wins.
+//
+// ONE OFFER AT A TIME, which is what the shared `dedupeKey` buys. Rule 9's
+// subject is singular — "a just-triaged item" — and a queue being swept clears
+// several cards in a few seconds. Three stacked Undo buttons over a list that
+// has already moved would ask the user to remember which card each one meant.
+// A repeat REPLACES the entry in place and reissues its id, so the second
+// dismissal takes over the offer and restarts the ten seconds.
+
+const REVIEW_UNDO_TOAST_KEY = "review:undo";
+
+export const REVIEW_UNDO_TITLE = "Cleared from your review queue.";
+/**
+ * IT SAYS THE LEDGER DID NOT MOVE, and that clause is the one doing work.
+ * Undo is offered only for triages that wrote nothing but `resolved_at`
+ * (`undoableItemId` below), so this is a fact about those actions rather than
+ * reassurance — the same fact spec rule 10 states about dismissing, said to the
+ * user at the moment they might wonder.
+ */
+export const REVIEW_UNDO_BODY = "Nothing in your ledger changed. Undo puts the card back.";
+
+export const REVIEW_EDIT_TITLE = "Added to your ledger.";
+/**
+ * THE OTHER HALF OF RULE 9, and the half that had never been built (GAP-075).
+ *
+ * Rule 9 promises two things: a ten-second take-back, and that "committed
+ * results remain editable in the ledger indefinitely afterward". Wave 13 built
+ * the take-back for the four triages whose entire write was `resolved_at` and
+ * stopped, because undoing a CONFIRM means deleting the Transaction it wrote
+ * and rule 10 is unqualified: "committed transactions are never deleted by any
+ * queue action". The two rules sit twelve words apart.
+ *
+ * OWNER'S RULING (2026-09-19): RULE 10 WINS AND RULE 9 IS ALREADY SATISFIED BY
+ * ITS OWN SECOND CLAUSE. So a triage that committed offers Edit rather than
+ * Undo, on the same strip and inside the same ten seconds, and the ledger keeps
+ * every row. The wording says what did happen rather than what did not, because
+ * "nothing changed" would be false here and it is the one sentence the undo
+ * offer leans on.
+ */
+export const REVIEW_EDIT_BODY = "Tap Edit to change the details, or find it in the ledger any time.";
+
+export const REVIEW_UNDO_LATE_TITLE = "Too late to undo.";
+/**
+ * The offer is a `setTimeout` in a mounted component, and Android freezes JS
+ * timers on a backgrounded app — so a user who leaves mid-window and comes back
+ * minutes later can find the button still on screen. `undoResolution` refuses
+ * that tap (`UNDO_MAX_AGE_MS`), and a refusal the user cannot see is the silence
+ * GAP-013 exists to end: they pressed a button about their own data and the card
+ * did not come back.
+ */
+export const REVIEW_UNDO_LATE_BODY = "That card stays cleared, and your ledger is unchanged.";
+
+/**
+ * The item an undo may be offered for, or `null` when this triage must not
+ * offer one.
+ *
+ * ONLY THE TRIAGES THAT WROTE NOTHING BUT `resolved_at`: "Not money" on an
+ * unknown provider, the reject on a low-confidence card, "Same transaction" on
+ * a duplicate whose twin was never committed, and "Not a loan payment". For
+ * those, clearing the resolution is the complete reversal — there is no ledger
+ * row, no rule and no link left over.
+ *
+ * EVERY COMMITTING ACTION IS ABSENT ON PURPOSE, and `undoResolution` refuses
+ * them a second time from the database side. Spec rule 10 is unqualified —
+ * "committed transactions are never deleted by any queue action" — and rule 9's
+ * own next clause says what happens to a confirmation instead: it "remains
+ * editable in the ledger". See `undoResolution`'s docblock for the rest,
+ * including the confirm branch that resolves onto a row it did not write, which
+ * a delete-what-was-returned undo would destroy.
+ *
+ * THE `default` IS THE SAFE SIDE OF THE FENCE. A kind added to `ReviewAction`
+ * later gets no undo until someone decides it deserves one; the failure mode is
+ * a missing affordance, not an undo that half-reverses a write.
+ */
+/**
+ * Whether this triage's outcome is one editable row, so the offer can point at
+ * it (GAP-075).
+ *
+ * CONFIRM AND CORRECT ONLY, which is what rule 8 and rule 12 are about: a
+ * proposed Transaction committed as it stood, or committed with the user's
+ * changes. Both go through `correctItem`, and both answer "which row did this
+ * leave behind" with exactly one id.
+ *
+ * NOT THE OTHER COMMITTING ACTIONS, and that is a limit rather than an
+ * oversight. A transfer confirm writes a PAIR, a merge keeps one row and drops
+ * another, and a link joins two that already existed — none of them has a
+ * single row that is "the result", and sending the user to edit half of a pair
+ * would be worse than sending them nowhere. Their remedy stays the ledger's own
+ * screens, which rule 9's second clause is equally true of.
+ */
+function offersEdit(action: ReviewAction): boolean {
+  return action.kind === "confirm" || action.kind === "correct";
+}
+
+function undoableItemId(action: ReviewAction): string | null {
+  switch (action.kind) {
+    case "dismiss":
+    case "dismiss-loan-match":
+      return action.itemId;
+    default:
+      return null;
+  }
 }
 
 export default function ReviewQueueScreen() {
@@ -363,15 +535,112 @@ export default function ReviewQueueScreen() {
   const remaining =
     filteredTotal === undefined || filteredTotal - shown <= 0 ? undefined : filteredTotal - shown;
 
+  /**
+   * Takes the offer back: reopens the card the user just cleared.
+   *
+   * THE REFUSAL IS SPOKEN, not swallowed. `undoResolution` answers `false`
+   * rather than throwing when the offer is stale or the card expired
+   * underneath it — nothing went wrong, so the inline failure banner's "nothing
+   * was saved, try again" would be two wrong sentences. This says what actually
+   * happened instead, on the same surface the offer came from.
+   */
+  const takeUndo = useCallback(
+    (itemId: string): void => {
+      triage.mutate(
+        { kind: "undo", itemId },
+        {
+          onSuccess: ({ reopened }) => {
+            if (reopened) return;
+            publishToast({
+              tone: "neutral",
+              title: REVIEW_UNDO_LATE_TITLE,
+              body: REVIEW_UNDO_LATE_BODY,
+              dedupeKey: REVIEW_UNDO_TOAST_KEY,
+            });
+          },
+        },
+      );
+    },
+    [triage],
+  );
+
+  /**
+   * Commits a triage and offers to edit what it wrote (GAP-075).
+   *
+   * THE SAME STRIP AND THE SAME KEY as the undo offer, so only one is ever on
+   * screen: rule 9's subject is singular, and a queue being swept clears
+   * several cards in seconds. A second triage replaces the first offer and
+   * restarts its ten seconds, which is the behaviour the shared `dedupeKey`
+   * already bought for undo.
+   *
+   * NO OFFER WHEN THERE IS NO ROW TO OPEN. `correctItem` answers `null` when it
+   * resolved a card without leaving a Transaction behind, and an Edit button
+   * that opens nothing is worse than no button. The triage still succeeded, so
+   * nothing else changes.
+   *
+   * ON SUCCESS ONLY, for the same reason the undo offer is: a triage that
+   * failed left the card where it was, and offering to edit a row it did not
+   * write would sit on top of the inline failure banner saying the opposite.
+   */
+  const commitWithEditOffer = useCallback(
+    (action: ReviewAction): void => {
+      triage.mutate(action, {
+        onSuccess: ({ transactionId }) => {
+          if (transactionId === null) return;
+          publishToast({
+            tone: "neutral",
+            title: REVIEW_EDIT_TITLE,
+            body: REVIEW_EDIT_BODY,
+            dedupeKey: REVIEW_UNDO_TOAST_KEY,
+            durationMs: UNDO_WINDOW_MS,
+            actionLabel: "Edit",
+            onAction: () => router.push(`/transaction/${transactionId}/edit`),
+          });
+        },
+      });
+    },
+    [router, triage],
+  );
+
   const dispatch = useCallback(
     (action: ReviewAction | "correct", item: ReviewQueueItem): void => {
       if (action === "correct") {
         setCorrecting(item.id);
         return;
       }
-      triage.mutate(action);
+
+      if (offersEdit(action)) {
+        commitWithEditOffer(action);
+        return;
+      }
+
+      const undoable = undoableItemId(action);
+      if (undoable === null) {
+        triage.mutate(action);
+        return;
+      }
+
+      // ON SUCCESS ONLY, and per-call rather than in the hook. A triage that
+      // failed left the card exactly where it was, so offering to undo it would
+      // be an offer to reverse nothing — over the inline failure banner that is
+      // already explaining the opposite.
+      triage.mutate(action, {
+        onSuccess: () =>
+          publishToast({
+            tone: "neutral",
+            title: REVIEW_UNDO_TITLE,
+            body: REVIEW_UNDO_BODY,
+            dedupeKey: REVIEW_UNDO_TOAST_KEY,
+            // Rule 9's ten seconds, which is longer than the app's default
+            // notice: this one is a window the user has to act inside, not a
+            // message they only have to read.
+            durationMs: UNDO_WINDOW_MS,
+            actionLabel: "Undo",
+            onAction: () => takeUndo(undoable),
+          }),
+      });
     },
-    [triage],
+    [commitWithEditOffer, takeUndo, triage],
   );
 
   /**
@@ -394,7 +663,10 @@ export default function ReviewQueueScreen() {
    * sheet through "Change the details" and tick the box that says so.
    */
   function recordAutofill(item: ReviewQueueItem, proposal: AutofillCommit): void {
-    triage.mutate({
+    // THROUGH THE SAME OFFER AS EVERY OTHER CORRECTION (GAP-075). This path
+    // commits a Transaction exactly as the sheet's save does, so the row it
+    // leaves behind is as editable as any other and the user gets told so.
+    commitWithEditOffer({
       kind: "correct",
       itemId: item.id,
       patch: {
@@ -465,6 +737,50 @@ export default function ReviewQueueScreen() {
           className="mx-4 mt-2 rounded-xl bg-chip px-4 py-3 dark:bg-chip-dark"
         >
           <Text className="text-body text-fg dark:text-fg-dark">{REVIEW_BACKLOG_BANNER}</Text>
+        </View>
+      ) : null}
+
+      {triage.isError ? (
+        // ABOVE THE LIST, NOT OVER IT. The card the user pressed is still on
+        // screen and still needs triaging, so a modal or a full-screen
+        // `ErrorState` would hide the very thing the message is about. Same
+        // `bg-chip` slab as the backlog banner for the reason given there —
+        // the app has no opaque danger-soft token — with the danger ink
+        // carrying the tone instead of the surface.
+        <View
+          testID="review-action-error"
+          accessibilityLiveRegion="polite"
+          className="mx-4 mt-2 rounded-xl bg-chip px-4 py-3 dark:bg-chip-dark"
+        >
+          <Text className="text-body text-danger dark:text-danger-dark">
+            {triageFailureMessage(triage.error)}
+          </Text>
+          <View className="mt-2 flex-row gap-4">
+            {/* `triage.variables` is the action that just failed — React
+                Query keeps it until the next mutate or `reset`, so a retry
+                needs no copy of it held in this component's own state, which
+                could drift from what was actually attempted. */}
+            {triage.variables === undefined ? null : (
+              <Pressable
+                testID="review-action-error-retry"
+                accessibilityRole="button"
+                onPress={() => {
+                  if (triage.variables !== undefined) triage.mutate(triage.variables);
+                }}
+                className="min-h-[44px] justify-center"
+              >
+                <Text className="text-body font-semibold text-fg dark:text-fg-dark">Try again</Text>
+              </Pressable>
+            )}
+            <Pressable
+              testID="review-action-error-dismiss"
+              accessibilityRole="button"
+              onPress={() => triage.reset()}
+              className="min-h-[44px] justify-center"
+            >
+              <Text className="text-body text-fg-2 dark:text-fg-2-dark">Dismiss</Text>
+            </Pressable>
+          </View>
         </View>
       ) : null}
 
@@ -560,6 +876,15 @@ export default function ReviewQueueScreen() {
                   wallets={wallets}
                   categories={categories}
                   providers={ruleset?.providers}
+                  // ONLY THE CARD BEING WRITTEN. `useReviewAction` is one
+                  // mutation shared by the whole queue, so a card-local latch
+                  // could not tell "a write for me" from "a write for the card
+                  // above", and would have nothing to clear it: a failed triage
+                  // leaves its card on screen, so a latch set on press would
+                  // strand the user. Matching on `variables.itemId` is the only
+                  // read that distinguishes them, and it settles with the
+                  // mutation.
+                  busy={triage.isPending && triage.variables?.itemId === entry.id}
                   // Supplying the handlers is what lights the pair up:
                   // without them the card renders DISABLED rather than
                   // live-but-inert — see review_card.tsx's header on why a

@@ -5,11 +5,12 @@
 // so a screen that showed "the bill" without saying which occurrence would have
 // to guess which one the user tapped.
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 
 import { BillMatchSheet } from "@/components/bills/bill_match_sheet";
 import { BillRow } from "@/components/bills/bill_row";
+import { BillRulesCard } from "@/components/bills/bill_rules_card";
 import { estimateLabel } from "@/components/bills/estimate_text";
 import { AmountText } from "@/components/ui/amount_text";
 import { Button } from "@/components/ui/button";
@@ -21,13 +22,16 @@ import { SectionHeader } from "@/components/ui/section_header";
 import { useBillCandidates } from "@/hooks/queries/use_bill_candidates";
 import { useBills } from "@/hooks/queries/use_bills";
 import { useArchiveBill } from "@/hooks/mutations/use_archive_bill";
+import { useMarkBillPaidExternally } from "@/hooks/mutations/use_mark_bill_paid_externally";
 import {
   useRecordBillPayment,
   useRejectBillMatch,
 } from "@/hooks/mutations/use_record_bill_payment";
 import { useSkipBillCycle } from "@/hooks/mutations/use_skip_bill_cycle";
+import type { BillStatus } from "@/lib/bills/bills_service";
 import { parseDateIso } from "@/lib/dates";
 import { formatDate } from "@/lib/datetime";
+import type { MatchedBillPayment } from "@/types/domain";
 
 export default function BillDetailScreen() {
   const { id, dueDate } = useLocalSearchParams<{ id: string; dueDate?: string }>();
@@ -35,18 +39,50 @@ export default function BillDetailScreen() {
   const { data: statuses } = useBills();
   const [sheetOpen, setSheetOpen] = useState(false);
   const [confirmingArchive, setConfirmingArchive] = useState(false);
+  const [confirmingSkip, setConfirmingSkip] = useState(false);
+  // THE REF IS THE GUARD on the skip, not `confirmingSkip` and not
+  // `skip.isPending` (GAP-079, GAP-060): a setter does not change the value the
+  // handler closure running in this tick already read, and React Query notifies
+  // its observers on a timer, so two confirms inside ONE tick both see `false`
+  // and both write. The cycle itself survives that — migration 006 is UNIQUE on
+  // (bill_id, due_date), so the loser's INSERT is simply rejected — but a
+  // rejected mutation is a failure toast (GAP-013) about a skip that in fact
+  // went through, which is the same "the app is lying about my money" the
+  // confirmation below exists to prevent. The state beside the ref exists only
+  // to re-render the button, which a ref never does.
+  const skipInFlight = useRef(false);
+  const [skipBusy, setSkipBusy] = useState(false);
+  // The same guard, for the same reason, on the other one-way cycle write —
+  // see the comment above. `resolveCycle` refuses to re-resolve a resolved
+  // cycle, so the loser of a same-tick double tap raises a failure toast about
+  // a mark-paid that in fact went through.
+  const externalInFlight = useRef(false);
+  const [externalBusy, setExternalBusy] = useState(false);
+  const [confirmingExternal, setConfirmingExternal] = useState(false);
   const archive = useArchiveBill();
 
   const record = useRecordBillPayment();
   const reject = useRejectBillMatch();
   const skip = useSkipBillCycle();
+  const payExternally = useMarkBillPaidExternally();
 
   const forBill = (statuses ?? []).filter((status) => status.bill.id === id);
   // Without a `dueDate` param, the soonest UNRESOLVED cycle is the one the user
   // most likely means; falling back to the first row would open a paid cycle.
+  //
+  // ALL THREE RESOLVED STATES, not two. `resolved_external` was unreachable
+  // from the app until the action below existed, so this line agreeing with
+  // `unresolved` a few lines down cost nothing; the moment a cycle can be
+  // settled outside the ledger, a bare bill link would open it and show a
+  // screen with every action already spent.
   const status =
     forBill.find((candidate) => candidate.dueDate === dueDate) ??
-    forBill.find((candidate) => candidate.state !== "paid" && candidate.state !== "skipped") ??
+    forBill.find(
+      (candidate) =>
+        candidate.state !== "paid" &&
+        candidate.state !== "skipped" &&
+        candidate.state !== "resolved_external",
+    ) ??
     forBill[0];
 
   const { data: candidates } = useBillCandidates(id, status?.dueDate);
@@ -71,7 +107,12 @@ export default function BillDetailScreen() {
     );
   }
 
-  const history = forBill.filter((row) => row.payment !== null);
+  // A PREDICATE, not a bare `!== null`: the rows below read the payment's own
+  // amount and date, and a plain filter leaves the field nullable and forces a
+  // branch for a case this list has already excluded.
+  const history = forBill.filter(
+    (row): row is BillStatus & { payment: MatchedBillPayment } => row.payment !== null,
+  );
   const unresolved = status.state !== "paid" && status.state !== "skipped" &&
     status.state !== "resolved_external";
 
@@ -104,6 +145,17 @@ export default function BillDetailScreen() {
         </Text>
       </Card>
 
+      {/* THE THREE SPEC ROWS THAT WERE NEVER DRAWN (GAP-085): due rule in
+          plain words, reminder schedule, auto-match rule summary — plus rule
+          3's unadjusted date. Every one of them is set once at creation and
+          was, until now, unreadable afterwards anywhere in the app. */}
+      <BillRulesCard
+        testID="bill-rules"
+        bill={status.bill}
+        estimate={status.estimate}
+        dueDate={status.dueDate}
+      />
+
       {unresolved && candidates !== undefined && candidates.length > 0 ? (
         <Button
           title={`${candidates.length} possible payment${candidates.length === 1 ? "" : "s"}`}
@@ -113,15 +165,102 @@ export default function BillDetailScreen() {
         />
       ) : null}
 
+      {/* THE SPEC'S THIRD MARK-PAID OPTION, "Paid outside my wallets" (GAP-085).
+          The other two are already here or deliberately absent: "pick from
+          ledger" is the candidate sheet above, and "record a cash payment"
+          would write a Transaction, which double-counts against every limit and
+          total the moment it exists.
+
+          WITHOUT THIS THE CASH PAYER HAD NO TRUTHFUL ACTION AT ALL. Leaving the
+          cycle open keeps it subtracting from Safe-to-Spend (safe-to-spend rule
+          5) for a bill that is paid; skipping it clears the number but records
+          "no payment was expected", which is the opposite of what happened and
+          is what the bill's own history is for. `resolved_external` has existed
+          in the schema since migration 006 — the chip, the Settled section,
+          Safe-to-Spend's bills term and the reminder scheduler all already
+          handle it — and nothing in the app could write it. */}
+      {unresolved ? (
+        <Button
+          title="Paid outside my wallets"
+          variant="secondary"
+          testID="bill-paid-externally"
+          disabled={payExternally.isPending || externalBusy}
+          onPress={() => setConfirmingExternal(true)}
+        />
+      ) : null}
+
+      <ConfirmDialog
+        visible={confirmingExternal}
+        title="Already paid this one?"
+        // Names the cycle, for the same reason the skip below does: a bill can
+        // have two cycles open at once (rule 25).
+        body={`${formatDate(
+          parseDateIso(status.dueDate).getTime(),
+        )} will be settled with no ledger entry — nothing is added to your spending, and no amount is learned for your estimate. It stops counting against your Safe-to-Spend and its remaining reminders are cancelled. You cannot undo this.`}
+        confirmLabel="Yes, it's paid"
+        onCancel={() => setConfirmingExternal(false)}
+        onConfirm={() => {
+          if (externalInFlight.current || payExternally.isPending) return;
+          externalInFlight.current = true;
+          setExternalBusy(true);
+          setConfirmingExternal(false);
+          payExternally.mutate(
+            { billId: status.bill.id, dueDate: status.dueDate },
+            {
+              onSettled: () => {
+                externalInFlight.current = false;
+                setExternalBusy(false);
+              },
+            },
+          );
+        }}
+      />
+
+      {/* ASKS FIRST (GAP-086). Skipping is a one-way write on a Safe-to-Spend
+          input — the cycle leaves the term, its reminders are cancelled, and
+          `resolveCycle` refuses to reopen it — so a single tap that did it
+          silently moved the headline number with nothing to reverse. Delete,
+          two buttons down and no less recoverable, has always confirmed. */}
       {unresolved ? (
         <Button
           title="Skip this cycle"
           variant="secondary"
           testID="bill-skip-cycle"
-          disabled={skip.isPending}
-          onPress={() => skip.mutate({ billId: status.bill.id, dueDate: status.dueDate })}
+          disabled={skip.isPending || skipBusy}
+          onPress={() => setConfirmingSkip(true)}
         />
       ) : null}
+
+      <ConfirmDialog
+        visible={confirmingSkip}
+        title="Skip this cycle?"
+        // Names the cycle, because this screen is scoped to ONE occurrence and
+        // a bill can have two open at once (rule 25) — "skip this cycle" alone
+        // does not say which one is about to go.
+        body={`Nothing will be recorded as paid for ${formatDate(
+          parseDateIso(status.dueDate).getTime(),
+        )}. It stops counting against your Safe-to-Spend and its remaining reminders are cancelled. You cannot undo this.`}
+        confirmLabel="Skip this cycle"
+        onCancel={() => setConfirmingSkip(false)}
+        onConfirm={() => {
+          if (skipInFlight.current || skip.isPending) return;
+          skipInFlight.current = true;
+          setSkipBusy(true);
+          setConfirmingSkip(false);
+          skip.mutate(
+            { billId: status.bill.id, dueDate: status.dueDate },
+            {
+              // `onSettled`, not the success arm: a refused skip leaves the
+              // button on screen (the cycle is still unresolved) and the retry
+              // it needs has to be tappable again.
+              onSettled: () => {
+                skipInFlight.current = false;
+                setSkipBusy(false);
+              },
+            },
+          );
+        }}
+      />
 
       {/* THE TWO ACTIONS ON THE BILL ITSELF, as opposed to on this cycle
           (owner: bills are "unarchivable ... should also be modifable").
@@ -178,13 +317,21 @@ export default function BillDetailScreen() {
                 <Text className="text-fg dark:text-fg-dark">
                   {formatDate(parseDateIso(row.dueDate).getTime())}
                 </Text>
+                {/* THE TRANSACTION'S OWN DATE, not the payment row's
+                    `createdAt` — that is when the match was confirmed, which
+                    for a cycle matched weeks late is not the day the money
+                    moved. Spec's states table: "Paid ₱2,412.36 on Jan 18". */}
                 <Text className="text-xs text-fg-2 dark:text-fg-2-dark">
-                  {row.payment === null
-                    ? "Settled"
-                    : `Paid ${formatDate(row.payment.createdAt)}`}
+                  {`Paid ${formatDate(row.payment.occurredAt)}`}
                 </Text>
               </View>
-              <AmountText amount={row.estimate.amount} />
+              {/* AND THE TRANSACTION'S OWN AMOUNT (GAP-065). This was
+                  `row.estimate.amount`, which is one figure computed for the
+                  bill and copied onto every one of its cycles — so a bill paid
+                  ₱2,100, ₱2,350 and ₱2,600 printed the average three times.
+                  The spec calls this list "payment history (matched
+                  transactions)"; the matched transaction is the fact. */}
+              <AmountText amount={row.payment.amount} />
             </View>
           </Card>
         ))

@@ -61,7 +61,7 @@
 // Transactions, the schema's NO ACTION foreign key blocks the DELETE outright,
 // and `wallets_repo` exports no `deleteWallet` to call.
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -91,6 +91,9 @@ import { useUnarchiveWallet } from "@/hooks/mutations/use_unarchive_wallet";
 import { useDismissDrift } from "@/hooks/mutations/use_dismiss_drift";
 import { useBalanceDrift } from "@/hooks/queries/use_balance_drift";
 import { useCategories } from "@/hooks/queries/use_categories";
+import { useGoals } from "@/hooks/queries/use_goals";
+import { useIncomeSummary } from "@/hooks/queries/use_income_summary";
+import { useLoans } from "@/hooks/queries/use_loans";
 import { useRuleset } from "@/hooks/queries/use_ruleset";
 import { useTransactions } from "@/hooks/queries/use_transactions";
 import { useWallet } from "@/hooks/queries/use_wallet";
@@ -219,6 +222,24 @@ export default function WalletDetailScreen() {
   const [reconciling, setReconciling] = useState(false);
   const [correcting, setCorrecting] = useState(false);
   const [archiving, setArchiving] = useState(false);
+  // The two writes this screen owns, each held as a REF plus a piece of state
+  // (GAP-060, GAP-079).
+  //
+  // THE REFS ARE THE GUARDS. `isPending` alone cannot be one — React Query
+  // notifies its observers on a timer, so two presses inside ONE JS tick both
+  // read `false`, and on the archive path that is a second
+  // `reassignWalletTransactions` over a ledger the first is still moving. Nor
+  // can a `useState` be one: a setter does not change the value the CURRENT
+  // render's handler closure is holding, so both presses in that tick still
+  // read `false`. Only a ref is written and read back inside one tick.
+  //
+  // THE STATE IS THE RENDER — a ref changing re-renders nothing, and both
+  // buttons have a busy state to show. `isPending` is ORed in with it, because
+  // it stays true across the invalidation `onSuccess` awaits.
+  const archiveInFlight = useRef(false);
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  const dismissInFlight = useRef(false);
+  const [dismissBusy, setDismissBusy] = useState(false);
 
   const { data: wallet, isPending } = useWallet(walletId);
   const { data: drift } = useBalanceDrift(walletId);
@@ -227,9 +248,33 @@ export default function WalletDetailScreen() {
   const { data: transactions } = useTransactions({ walletId });
   const { data: wallets } = useWallets();
   const { data: categories } = useCategories();
+  // GAP-036. What the archive confirmation has to name before it retires this
+  // wallet. `useGoals` already excludes deleted goals and `useLoans` already
+  // excludes settled and archived ones, so "live" and "active" come for free
+  // rather than needing two new wallet-scoped repository reads.
+  const { data: goalStatuses } = useGoals();
+  const { data: loans } = useLoans();
+  const { data: income } = useIncomeSummary();
   const archiveWallet = useArchiveWallet();
   const unarchiveWallet = useUnarchiveWallet();
   const dismissDrift = useDismissDrift();
+
+  // GAP-036. Three reads, filtered to this wallet, for the archive
+  // confirmation to name. Both hooks return STATUSES rather than rows, so the
+  // goal and the loan are each one level in; a loan's `linkedWalletId` is
+  // nullable and most loans have none.
+  const walletLinks = useMemo(
+    () => ({
+      goals: (goalStatuses ?? [])
+        .filter((status) => status.goal.linkedWalletId === walletId)
+        .map((status) => status.goal.name),
+      loans: (loans ?? [])
+        .filter((status) => status.loan.linkedWalletId === walletId)
+        .map((status) => status.loan.counterparty),
+      isIncomeSource: (income?.sourceWalletIds ?? []).includes(walletId),
+    }),
+    [goalStatuses, loans, income, walletId],
+  );
 
   if (isPending) {
     return (
@@ -490,17 +535,31 @@ export default function WalletDetailScreen() {
                     testID="wallet-detail-dismiss-drift"
                     title="Dismiss"
                     variant="secondary"
-                    loading={dismissDrift.isPending}
+                    loading={dismissDrift.isPending || dismissBusy}
                     // The id from the drift ON SCREEN, never a fresh read: this
                     // records what the user actually looked at and accepted. A
                     // report that lands between this render and the tap keeps its
                     // own drift, and the badge comes back for it.
-                    onPress={() =>
-                      dismissDrift.mutate({
-                        walletId: wallet.id,
-                        transactionId: dismissibleDrift.reportingTransactionId,
-                      })
-                    }
+                    onPress={() => {
+                      if (dismissInFlight.current || dismissDrift.isPending) return;
+                      dismissInFlight.current = true;
+                      setDismissBusy(true);
+                      dismissDrift.mutate(
+                        {
+                          walletId: wallet.id,
+                          transactionId: dismissibleDrift.reportingTransactionId,
+                        },
+                        // `onSettled`: a refused dismissal leaves the badge and
+                        // this button exactly where they were, so the retry the
+                        // failure toast asks for has to be tappable.
+                        {
+                          onSettled: () => {
+                            dismissInFlight.current = false;
+                            setDismissBusy(false);
+                          },
+                        },
+                      );
+                    }}
                   />
                 </View>
               ) : null}
@@ -514,7 +573,13 @@ export default function WalletDetailScreen() {
                   testID="wallet-detail-archive"
                   title="Delete wallet"
                   variant="secondary"
-                  onPress={() => setArchiving(true)}
+                  // The mutation is reset ON THE WAY IN, not on the way out: a
+                  // refusal the user backed away from must not be the first
+                  // thing the sheet says the next time it opens (GAP-079).
+                  onPress={() => {
+                    archiveWallet.reset();
+                    setArchiving(true);
+                  }}
                 />
               </View>
             </View>
@@ -589,10 +654,36 @@ export default function WalletDetailScreen() {
             onDismiss={() => setArchiving(false)}
             otherWallets={wallets ?? []}
             transactionCount={(transactions ?? []).length}
+            links={walletLinks}
+            busy={archiveWallet.isPending || archiveBusy}
+            // The sheet stays open on a failure — `setArchiving(false)` is on
+            // the success arm and stays there — so it is the one surface that
+            // can say what is still true: the wallet is live, its transactions
+            // have not moved, and the choice above is still what will be sent.
+            errorMessage={
+              archiveWallet.isError
+                ? "This wallet could not be deleted. Nothing was moved and nothing was retired — try again."
+                : null
+            }
             onArchive={(moveTransactionsTo) => {
+              // The sheet's own `busy` guard is a prop, so within one JS tick
+              // it is still the previous render's value — this ref is what a
+              // second confirm in that tick actually meets.
+              if (archiveInFlight.current || archiveWallet.isPending) return;
+              archiveInFlight.current = true;
+              setArchiveBusy(true);
               archiveWallet.mutate(
                 { id: wallet.id, moveTransactionsTo },
-                { onSuccess: () => setArchiving(false) },
+                {
+                  onSuccess: () => setArchiving(false),
+                  // `onSettled`, not the success arm: a refused archive leaves
+                  // the sheet open, and the retry it asks for needs the confirm
+                  // button back.
+                  onSettled: () => {
+                    archiveInFlight.current = false;
+                    setArchiveBusy(false);
+                  },
+                },
               );
             }}
           />

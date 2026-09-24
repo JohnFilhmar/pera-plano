@@ -26,9 +26,13 @@
 //      "THE NUMBERED FLOW" below), same as the fresh-install path once its
 //      own pre-flow steps are done.
 //
-// THE PROVIDER STEP (provider-selection plan Task 4) is the first of "the
-// steps that actually belong after the phrase" to exist. It runs in the
-// FRESH-INSTALL sequence only -- branch 1 above.
+// THE PROVIDER STEP IS NO LONGER ONE OF THESE (GAP-091). It ran here, in the
+// fresh-install sequence, between the phrase and the numbered flow -- which is
+// BEFORE notification access is granted, and the listener has observed nothing
+// until it is. So the picker's "Apps we've seen" was empty on every fresh
+// install and could not be anything else. It now sits in the numbered flow at
+// the slot ONBOARDING_STEPS always reserved for it, after "battery", which is
+// also where docs/04-features/01-onboarding.md step 6 puts it.
 //
 // THE NUMBERED FLOW (m3c-onboarding-client plan Task 2; docs
 // §04-features/01-onboarding.md) is lib/onboarding/onboarding_state.ts's nine
@@ -40,10 +44,17 @@
 // app/index.tsx's own history (see that file's and app/lock.tsx's header
 // comments). onboarding_state.ts's own header explains why landing BOTH
 // branches on "welcome" specifically is correct rather than merely
-// convenient: onboarding progress is not persisted, so an already-keyed user
-// who never finished the numbered flow restarts it at the top exactly the
-// same way a freshly-provisioned one does -- there is no OTHER correct
-// resume point for either.
+// convenient: a freshly-provisioned user has no recorded step yet, and
+// "welcome" is both the first step and what `readOnboardingStep` returns when
+// there is nothing usable to resume from.
+//
+// THE ALREADY-KEYED BRANCH NO LONGER LANDS ON "welcome" UNCONDITIONALLY
+// (GAP-067). It did, and that is what made an interrupted run a loop rather
+// than a pause: the access and battery steps both send the user into system
+// Settings, five minutes there trips the background re-lock, and on the way
+// back this redirect threw away every step they had finished. It now resumes at
+// the recorded step. See lib/onboarding/onboarding_state.ts's header for why
+// the "progress is not persisted" reasoning was reversed.
 //
 // ORDERING (task-10-brief rule 1 / docs §5a): device-lock renders FIRST and
 // unconditionally, for every entry above. Nothing here calls generatePhrase()
@@ -71,41 +82,64 @@
 import { Redirect } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import { getKeyState } from "@/lib/crypto/key_manager";
+import { readOnboardingStep } from "@/lib/onboarding/onboarding_state";
+import type { OnboardingStep } from "@/lib/onboarding/onboarding_state";
 import DeviceLockScreen from "./device_lock";
 import RecoveryPhraseScreen from "./recovery_phrase";
-import ProvidersScreen from "./providers";
 
-type Step =
-  | "checking"
-  | "device_lock"
-  | "recovery_phrase"
-  | "providers"
-  | "done"
-  | "already_keyed";
+type Step = "checking" | "device_lock" | "recovery_phrase" | "done" | "already_keyed";
 
 export default function OnboardingIndexScreen({
   onKeysReady,
 }: { onKeysReady?: () => void } = {}) {
   const [step, setStep] = useState<Step>("checking");
+  // Where the numbered flow resumes. `null` until the read below answers, which
+  // is also the only state the Redirect below can be reached in without one --
+  // it falls back to "welcome", the pre-GAP-067 behaviour.
+  const [resumeAt, setResumeAt] = useState<OnboardingStep | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    getKeyState().then((state) => {
-      if (cancelled) return;
-      setStep(state === "uninitialized" ? "device_lock" : "already_keyed");
-    });
+    getKeyState()
+      .then(async (state) => {
+        if (cancelled) return;
+        if (state === "uninitialized") {
+          setStep("device_lock");
+          return;
+        }
+        // READ BEFORE THE STEP IS SET, so the Redirect never renders once with
+        // "welcome" and then again with the real target -- the first one would
+        // already have navigated.
+        //
+        // A read that throws falls back to "welcome" rather than propagating:
+        // the `.catch` below would send an already-keyed user to "device_lock",
+        // which re-runs the key check rather than the flow they were in.
+        const resume = await readOnboardingStep().catch<OnboardingStep>(() => "welcome");
+        if (cancelled) return;
+        setResumeAt(resume);
+        setStep("already_keyed");
+      })
+      // "device_lock", NOT A STUCK "checking". Without this catch a rejecting
+      // bridge left the step at "checking" forever, and "checking" renders
+      // `null` — a permanently blank screen with no spinner, no message and no
+      // control, on the very first screen of a first install. Falling forward
+      // to the device-lock step is the safe direction of the two: it re-checks
+      // the device itself and, once satisfied, runs `initializeKeys()`, which
+      // is a no-op-or-create rather than a destructive write, so a device that
+      // turns out to be keyed after all is not harmed by arriving here. The
+      // opposite guess ("already_keyed") would hand a brand-new user straight
+      // to the numbered flow with no keys and no database behind it.
+      .catch(() => {
+        if (cancelled) return;
+        setStep("device_lock");
+      });
     return () => {
       cancelled = true;
     };
   }, []);
 
   const handleSecure = useCallback(() => setStep("recovery_phrase"), []);
-  // The provider picker runs AFTER the phrase, never before: it is the first
-  // step that writes anything the listener will act on, and a user who
-  // abandoned onboarding earlier would be left with a configured listener and
-  // no recovery words for the data it goes on to collect.
-  const handlePhraseDone = useCallback(() => setStep("providers"), []);
-  const handleProvidersDone = useCallback(() => setStep("done"), []);
+  const handlePhraseDone = useCallback(() => setStep("done"), []);
 
   // Both terminal steps mean the same thing to a caller: this sequencer has
   // nothing left to run and the keys it exists to create are on the device.
@@ -130,16 +164,12 @@ export default function OnboardingIndexScreen({
     // no navigator for a Redirect to move -- rendering one would be the same
     // no-op this file's header describes. Without one, this component was
     // reached by routing, so the Redirect is the real forward action.
-    return onKeysReady ? null : <Redirect href="/(onboarding)/welcome" />;
+    return onKeysReady ? null : <Redirect href={`/(onboarding)/${resumeAt ?? "welcome"}`} />;
   }
 
   if (step === "device_lock") {
     return <DeviceLockScreen onSecure={handleSecure} />;
   }
 
-  if (step === "recovery_phrase") {
-    return <RecoveryPhraseScreen onDone={handlePhraseDone} />;
-  }
-
-  return <ProvidersScreen onDone={handleProvidersDone} />;
+  return <RecoveryPhraseScreen onDone={handlePhraseDone} />;
 }

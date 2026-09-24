@@ -17,7 +17,7 @@
 // the rename means a failed rename (a duplicate name) never silently
 // reassigns a provider on the way to reporting the error.
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -45,6 +45,13 @@ export default function EditWalletScreen() {
   // SafeAreaProvider comment for why each surface pads its own edges.
   const insets = useSafeAreaInsets();
   const [error, setError] = useState<string | null>(null);
+  // The whole two-write chain, as a REF plus a piece of state — see
+  // app/wallet/new.tsx's own pair for why neither `isPending` nor a `useState`
+  // can be the guard on its own (GAP-060, GAP-079). Here the second tap
+  // re-runs a rename and a matcher SET, and `setMatchers` can move a pair off
+  // another wallet.
+  const saveInFlight = useRef(false);
+  const [saving, setSaving] = useState(false);
 
   const { data: wallet, isPending } = useWallet(walletId);
   const { data: ruleset } = useRuleset();
@@ -75,14 +82,34 @@ export default function EditWalletScreen() {
   }
 
   function save(values: WalletFormValues): void {
+    if (saveInFlight.current || updateWallet.isPending || setMatchers.isPending) return;
     setError(null);
+    saveInFlight.current = true;
+    setSaving(true);
     updateWallet.mutate(
       { id: walletId, patch: { name: values.name } },
       {
         onSuccess: () => {
           setMatchers.mutate(
             { walletId, matchers: values.matchers },
-            { onSuccess: () => router.back() },
+            {
+              onSuccess: () => router.back(),
+              // THE RENAME IS ALREADY COMMITTED WHEN THIS FIRES, so the screen
+              // has to say which half landed. Without it this route went on
+              // showing a form that looks unsaved over a wallet that has been
+              // renamed, and the obvious retry re-runs the rename against its
+              // own new name — a no-op the user reads as the save working.
+              // Unlike app/wallet/new.tsx, there is nowhere better to send
+              // them: this IS the matcher screen, so the message stays here.
+              onError: () =>
+                setError(
+                  "The name was saved, but which notifications land here was not. Check the sources below and save again.",
+                ),
+              onSettled: () => {
+                saveInFlight.current = false;
+                setSaving(false);
+              },
+            },
           );
         },
         onError: (failure) => {
@@ -91,6 +118,11 @@ export default function EditWalletScreen() {
               ? `You already have a wallet called "${failure.walletName}". Pick another name.`
               : "That wallet could not be saved. Try again.",
           );
+          // Only on THIS arm — the success arm hands the flag to the matcher
+          // write above, and clearing it here too would open that second
+          // write's window to a double tap.
+          saveInFlight.current = false;
+          setSaving(false);
         },
       },
     );
@@ -140,7 +172,7 @@ export default function EditWalletScreen() {
           key={`${wallet.id}:${ownMatchers === undefined ? "loading" : "ready"}`}
           submitLabel="Save wallet"
           onSubmit={save}
-          submitting={updateWallet.isPending || setMatchers.isPending}
+          submitting={updateWallet.isPending || setMatchers.isPending || saving}
           errorMessage={error}
           initial={{
             name: wallet.name,

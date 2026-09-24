@@ -180,6 +180,38 @@ export function occurrencesBetween(
 }
 
 /**
+ * The date an occurrence would have fallen on BEFORE the weekday shift.
+ *
+ * Spec rule 3: "Weekday adjustment moves the due date at most 2 days; the
+ * UNADJUSTED date is still shown in the bill detail for transparency." Only the
+ * adjusted date is stored (migration 006), because every downstream date is
+ * computed from it — so the base date is recovered from the rule here, which is
+ * exactly what this file's header says it is recoverable for.
+ *
+ * Returns `adjustedDate` unchanged whenever nothing moved: a rule with no
+ * adjustment, a week-based rule (which ignores the shift by design), or a date
+ * that never landed on a weekend. The detail screen shows the line only when
+ * the two differ, so "unchanged" reads as "there was no shift".
+ */
+export function unadjustedOccurrence(rule: DueRule, adjustedDate: IsoDate): IsoDate {
+  const adjust = adjustOf(rule);
+  if (adjust === "none") return adjustedDate;
+
+  // The shift never leaves the month (see the header), so the base occurrence
+  // is among that month's own — no neighbouring month can have produced it.
+  const date = parseDateIso(adjustedDate);
+  for (const base of baseOccurrencesInMonth(rule, date.getFullYear(), date.getMonth())) {
+    if (applyWeekdayAdjust(base, adjust) === adjustedDate) return base;
+  }
+
+  // No base occurrence adjusts onto this date: the rule was edited while an
+  // older cycle was still open (rule 25), so the stored date is the only fact
+  // left. Reporting it is honest; inventing a base for a rule that no longer
+  // produces this occurrence is not.
+  return adjustedDate;
+}
+
+/**
  * The first occurrence STRICTLY AFTER `afterDate`.
  *
  * Strictly, because a bill due today has already been enumerated: an inclusive
@@ -201,6 +233,41 @@ export function nextOccurrence(rule: DueRule, afterDate: IsoDate): IsoDate {
   // Unreachable for every variant of DueRule: the widest gap any of them can
   // produce is `every-n-months` with a large n, and 1500 days covers n = 48.
   throw new Error(`no occurrence of ${rule.kind} within four years of ${afterDate}`);
+}
+
+/** Exactly 52 weeks, so a week-based rule divides into it without a remainder. */
+const PERIOD_SAMPLE_DAYS = 364;
+
+/**
+ * How many days a bill's PERIOD is, averaged over a year of its own schedule.
+ *
+ * `DueRule` has no period field — it says WHEN, never HOW OFTEN — and rule 15's
+ * "half the bill's period" needs a number. Counting the rule's own occurrences
+ * across a fixed year is the only derivation that cannot drift from the
+ * schedule: a constant table per `kind` would be a second model of the calendar
+ * living beside this file, free to disagree with it the first time either moves.
+ *
+ * AVERAGED, NOT THE GAP TO THE NEXT ONE. Rule 15 says "the BILL's period" — a
+ * property of the bill, not of one cycle — and the exact forward gap is not
+ * that: it is 28 days from a February due date and 31 from a March one, so a
+ * monthly bill's window would narrow by a day every February and the detail
+ * screen's sentence would change month to month for no reason a user could
+ * name. Semi-monthly alternates 15 and 16 for the same reason. The average
+ * (30.33 and 15.17) is what the spec's own "weekly bills use a proportionally
+ * tighter window" is contrasting a monthly bill against.
+ *
+ * A rule with no occurrence in a whole year cannot be produced by the create
+ * form (`every-n-months` is capped at n = 12), but a hand-edited or migrated
+ * one could be; it is reported as annual, which makes every clamp derived from
+ * it non-binding — the safe direction, since 7 and 15 are already the maxima.
+ */
+export function periodDays(rule: DueRule, fromDate: IsoDate): number {
+  const count = occurrencesBetween(
+    rule,
+    fromDate,
+    addDaysIso(fromDate, PERIOD_SAMPLE_DAYS - 1),
+  ).length;
+  return count > 0 ? PERIOD_SAMPLE_DAYS / count : PERIOD_SAMPLE_DAYS;
 }
 
 /**

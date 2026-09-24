@@ -467,6 +467,59 @@ class PeraPlanoNotificationListenerServiceTest {
     assertEquals(listOf(gcash), prefs.listObservedPackages().map { it.packageName })
   }
 
+  /**
+   * THE WRITE-FREQUENCY TEST, and the one the recording-on-every-delivery
+   * implementation fails.
+   *
+   * The tile above is not posted once. A media player, a download and a
+   * navigation session each re-post the SAME ongoing notification roughly
+   * once a second for as long as they run, and every one of those arrivals
+   * reaches `handlePosted` on the binder thread. Recording each one charged a
+   * whole-file re-seal plus an fsync -- 3.8 ms, per `CapturePrefs`' own
+   * measurement -- to the capture path, indefinitely, and inflated the "seen
+   * N times" ranking the picker reads until it named whichever app re-posts
+   * most rather than the bank.
+   */
+  @Test
+  fun `ten re-posts of one ongoing notification cost one write and leave the count at one`() {
+    recordSink()
+
+    val tile = statusBarNotification(
+      gcash,
+      notification(title = sampleTitle, text = sampleText, ongoing = true),
+    )
+
+    post(tile)
+    val afterFirstSight = rawObservedPackagesBlob()
+    assertNotNull("the first sighting must still be recorded, ongoing or not", afterFirstSight)
+
+    // Nine more arrivals of the same tile, a second apart.
+    for (index in 1..9) {
+      post(tile, capturedAt + index * 1_000L)
+    }
+
+    // BYTE-IDENTICAL. Every seal mints a fresh random IV
+    // (KeyStoreBridge.sealPrefsValue), so a re-seal could not reproduce the
+    // same string even for identical plaintext -- an unchanged blob is proof
+    // no commit happened, which a "the value is still the same" assertion
+    // could never be.
+    assertEquals(
+      "a re-posting tile must not write once per arrival",
+      afterFirstSight,
+      rawObservedPackagesBlob(),
+    )
+
+    val observed = prefs.listObservedPackages().single()
+    assertEquals(gcash, observed.packageName)
+    assertEquals("the count means distinct posts, and this was one", 1, observed.count)
+    assertEquals(capturedAt, observed.lastSeenAt)
+
+    // Still the ongoing drop path throughout: nothing captured, nothing
+    // delivered to JS. See the mirror rule in the service's class doc.
+    assertEquals(emptyList<String>(), bufferedIds())
+    assertEquals(emptyList<CaptureRecord>(), sinkRecords)
+  }
+
   @Test
   fun `handlePosted records the package when capture is paused and when there is no text to capture`() {
     // The remaining two drop paths, so all four are covered: pause switch,
@@ -677,9 +730,14 @@ class PeraPlanoNotificationListenerServiceTest {
   // Fixtures
   // =====================================================================
 
-  /** Runs the posted flow through the explicit seam -- no Service instance. */
-  private fun post(sbn: StatusBarNotification) {
-    PeraPlanoNotificationListenerService.handlePosted(sbn, prefs, bufferFile, capturedAt)
+  /**
+   * Runs the posted flow through the explicit seam -- no Service instance.
+   *
+   * [nowMillis] defaults to the single fixture clock; the re-post test passes
+   * its own, because the whole point there is deliveries separated in time.
+   */
+  private fun post(sbn: StatusBarNotification, nowMillis: Long = capturedAt) {
+    PeraPlanoNotificationListenerService.handlePosted(sbn, prefs, bufferFile, nowMillis)
   }
 
   /**
@@ -728,12 +786,20 @@ class PeraPlanoNotificationListenerServiceTest {
    * calls its own key would rename in lockstep and stop testing anything.
    */
   private fun openObservedPackagesBlob(): String {
-    val blob = context
-      .getSharedPreferences(CapturePrefs.PREFS_NAME, Context.MODE_PRIVATE)
-      .getString("observed_packages_sealed", null)
+    val blob = rawObservedPackagesBlob()
     assertNotNull("nothing was stored for the observed packages at all", blob)
     return String(KeyStoreBridge.openPrefsValue(requireNotNull(blob)), Charsets.UTF_8)
   }
+
+  /**
+   * The sealed observed-package string exactly as it sits on disk, or `null`
+   * if nothing has been stored. Compared across deliveries it answers "did a
+   * write happen?" rather than "what is the value?" -- see the re-post test
+   * for why those are different questions here.
+   */
+  private fun rawObservedPackagesBlob(): String? = context
+    .getSharedPreferences(CapturePrefs.PREFS_NAME, Context.MODE_PRIVATE)
+    .getString("observed_packages_sealed", null)
 
   private fun notification(
     title: CharSequence? = null,
@@ -752,6 +818,128 @@ class PeraPlanoNotificationListenerServiceTest {
   }
 
   @Suppress("DEPRECATION") // the only StatusBarNotification constructor apps can call
+  // =====================================================================
+  // THE SHADE AT BIND TIME (GAP-125).
+  //
+  // The observed list is written only by onNotificationPosted, so it was
+  // EMPTY at the instant the user granted notification access and filled only
+  // from what posted afterwards. The onboarding provider picker runs seconds
+  // later and its whole subject is "apps we've seen", so it had nothing to
+  // show on a fresh install. recordObservedFrom is the catch-up.
+  //
+  // Tested through the pure companion function rather than through a bound
+  // service, for the reason the class doc gives about handlePosted:
+  // `activeNotifications` belongs to a bound NotificationListenerService, and
+  // a test that had to bind one could only assert that binding works. The
+  // wiring itself is covered by the real-service test at the end.
+  // =====================================================================
+
+  @Test
+  fun `recordObservedFrom records every package already sitting in the shade`() {
+    val active = arrayOf(
+      statusBarNotification(gcash, notification(title = sampleTitle, text = sampleText)),
+      statusBarNotification(maya, notification(title = sampleTitle, text = sampleText)),
+    )
+
+    PeraPlanoNotificationListenerService.recordObservedFrom(active, prefs, capturedAt)
+
+    assertEquals(
+      setOf(gcash, maya),
+      prefs.listObservedPackages().map { it.packageName }.toSet(),
+    )
+  }
+
+  @Test
+  fun `a snapshot is stamped with the post time, not with the moment of the bind`() {
+    // A notification posted three hours ago is not a sighting that just
+    // happened. Stamping it "now" would sort it above genuinely recent posts
+    // and reorder the picker on a lie -- and the list is capped, so the
+    // ordering decides what survives.
+    val active = arrayOf(statusBarNotification(gcash, notification(title = sampleTitle, text = sampleText)))
+
+    PeraPlanoNotificationListenerService.recordObservedFrom(active, prefs, capturedAt)
+
+    val observed = prefs.listObservedPackages().single()
+    assertEquals(postedAt, observed.lastSeenAt)
+    assertNotEquals(capturedAt, observed.lastSeenAt)
+    assertEquals(1, observed.count)
+  }
+
+  @Test
+  fun `a package already observed is neither re-counted nor re-stamped`() {
+    // THE TEST THAT RULES OUT A LOOP OVER recordObservedPackage, which is the
+    // obvious implementation and the wrong one: it INCREMENTS count on every
+    // call, so every rebind would inflate the count of everything already
+    // known -- and count is exactly the signal the picker uses to separate a
+    // bank the user actually uses from a one-off.
+    prefs.recordObservedPackage(gcash, capturedAt)
+    val before = prefs.listObservedPackages().single()
+
+    PeraPlanoNotificationListenerService.recordObservedFrom(
+      arrayOf(statusBarNotification(gcash, notification(title = sampleTitle, text = sampleText))),
+      prefs,
+      capturedAt + 1,
+    )
+
+    val after = prefs.listObservedPackages().single()
+    assertEquals(before.count, after.count)
+    assertEquals(before.lastSeenAt, after.lastSeenAt)
+  }
+
+  @Test
+  fun `the latest post wins when one package is in the shade twice`() {
+    val active = arrayOf(
+      statusBarNotification(gcash, notification(title = sampleTitle, text = sampleText), postTime = postedAt),
+      statusBarNotification(gcash, notification(title = sampleTitle, text = sampleText), postTime = postedAt + 900),
+    )
+
+    PeraPlanoNotificationListenerService.recordObservedFrom(active, prefs, capturedAt)
+
+    assertEquals(postedAt + 900, prefs.listObservedPackages().single().lastSeenAt)
+  }
+
+  @Test
+  fun `a post time of zero is recorded as seen now rather than sorted to the bottom`() {
+    // Not a real instant. Letting it through would make that package the
+    // first thing dropped at the cap, which silently loses an app the picker
+    // exists to offer.
+    val active = arrayOf(
+      statusBarNotification(gcash, notification(title = sampleTitle, text = sampleText), postTime = 0L),
+    )
+
+    PeraPlanoNotificationListenerService.recordObservedFrom(active, prefs, capturedAt)
+
+    assertEquals(capturedAt, prefs.listObservedPackages().single().lastSeenAt)
+  }
+
+  @Test
+  fun `an empty shade records nothing, and neither does a missing one`() {
+    PeraPlanoNotificationListenerService.recordObservedFrom(emptyArray(), prefs, capturedAt)
+    assertEquals(emptyList<ObservedPackage>(), prefs.listObservedPackages())
+
+    PeraPlanoNotificationListenerService.recordObservedFrom(null, prefs, capturedAt)
+    assertEquals(emptyList<ObservedPackage>(), prefs.listObservedPackages())
+  }
+
+  @Test
+  fun `onListenerConnected still reports the binding when the shade cannot be read`() {
+    // Through a REAL service instance, because the seam tests above cannot
+    // catch a recordActiveNotifications that was never wired into the
+    // callback -- the same gap the posted flow has its own real-service test
+    // for.
+    //
+    // Robolectric binds no NotificationManager, so `activeNotifications`
+    // either throws or answers with nothing; this asserts the outcome that
+    // must hold either way. Reporting the binding is plan rule 4 and the
+    // health screen reads it, so a snapshot that failed must never be able to
+    // take that down with it.
+    val service = Robolectric.buildService(PeraPlanoNotificationListenerService::class.java).get()
+
+    service.onListenerConnected()
+
+    assertTrue(prefs.isListenerConnected())
+  }
+
   private fun statusBarNotification(
     packageName: String,
     notification: Notification,

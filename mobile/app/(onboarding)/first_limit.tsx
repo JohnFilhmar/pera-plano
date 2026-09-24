@@ -6,6 +6,13 @@
 // "false" and 50/80/100% respectively — every one of them editable later in
 // Plan -> Limits, none of them a decision onboarding needs to force.
 //
+// IT NEVER CREATES A SECOND LIMIT AT A SCOPE THAT HAS ONE (GAP-067). The flow
+// is re-entered often enough to matter -- a background relock while the user is
+// in system Settings for the access or battery step drops them back at the
+// start of it -- and `createLimit` has no unique constraint on scope, so the
+// second pass used to leave two active limits at the same cadence. See
+// `submit`.
+//
 // NO ENTITLEMENT CHECK HERE, DELIBERATELY. `canCreateLimit` (lib/entitlements.ts)
 // gates a SECOND active Limit; the linear onboarding flow creates at most one,
 // so the gate can never fire on this path (docs/05-monetization.md's own
@@ -17,9 +24,8 @@
 // hooks/queries/use_income_summary.ts only.
 //
 // IT NAVIGATES ITSELF — see app/(onboarding)/wallets.tsx's header for the
-// whole story. Reached from income.tsx; advances to done.tsx, which is the
-// transition onboarding_state.ts's own `nextStep` doc singles out as the one
-// a wrong answer strands the user on.
+// whole story. Reached from income.tsx; advances to alerts.tsx (GAP-003 put
+// that step between this one and done.tsx).
 import { useCallback } from "react";
 import { useRouter } from "expo-router";
 
@@ -27,6 +33,7 @@ import { FirstLimitForm } from "@/components/onboarding/first_limit_form";
 import type { FirstLimitFormValues } from "@/components/onboarding/first_limit_form";
 import { OnboardingFrame } from "@/components/onboarding/onboarding_frame";
 import { useCreateLimit } from "@/hooks/mutations/use_create_limit";
+import { useUpdateLimit } from "@/hooks/mutations/use_update_limit";
 import { useIncomeSummary } from "@/hooks/queries/use_income_summary";
 import { useLimitStatuses } from "@/hooks/queries/use_limit_statuses";
 import { derivedLimitsFrom } from "@/lib/limits/limit_derivation";
@@ -38,17 +45,22 @@ export default function FirstLimitScreen({
   const router = useRouter();
   const { data: income } = useIncomeSummary();
   const createLimit = useCreateLimit();
-  // Read only to know which cadences already have a limit — see `submit`.
+  const updateLimit = useUpdateLimit();
+  // Which cadences already have a limit — read for BOTH halves of `submit`:
+  // the one the user chose, and the three derived from it.
   const { data: statuses } = useLimitStatuses();
 
-  // nextStep("first_limit") === "done" (lib/onboarding/onboarding_state.ts),
+  // nextStep("first_limit") === "alerts" (lib/onboarding/onboarding_state.ts),
   // hardcoded so the literal matches a real file for expo-router to resolve.
+  // WAS "done" until GAP-003 put the POST_NOTIFICATIONS ask between the two:
+  // the alert this step's Limit will raise is the best possible reason to
+  // grant it, and it is the screen immediately after this one.
   const advance = useCallback(() => {
     if (onDone) {
       onDone();
       return;
     }
-    router.push("/(onboarding)/done");
+    router.push("/(onboarding)/alerts");
   }, [onDone, router]);
 
   const goBack = useCallback(() => {
@@ -61,13 +73,41 @@ export default function FirstLimitScreen({
 
   const submit = useCallback(
     async (values: FirstLimitFormValues) => {
-      const created = await createLimit.mutateAsync({
-        // THE USER'S CHOICE, not a hardcoded "monthly" (owner, 2026-08-20).
-        scope: values.scope,
-        basis: values.basis,
-        value: values.value,
-        rollover: false,
-      });
+      // THE CHOSEN SCOPE IS IDEMPOTENT TOO (GAP-067). This step is reachable a
+      // second time -- by back-navigation, and by a relock that restarts the
+      // flow -- and it used to insert unconditionally, leaving the user with
+      // two active limits at one cadence and a Safe-to-Spend figure computed
+      // from both. `occupied` below has answered the same question for the
+      // derived cadences since they existed; the scope the user actually asked
+      // for was the one case never asked about.
+      //
+      // UPDATED, NOT SKIPPED. The user has just filled in this form and
+      // tapped save; discarding what they typed because an earlier pass wrote
+      // something at that cadence would be the same screen doing nothing, with
+      // no way for them to tell. An edit is also what the app already calls
+      // this: `app/(tabs)/plan/limits/[id]/edit.tsx` treats editing a DERIVED
+      // limit as an ordinary edit, and `updateLimit` leaves `derived_from`
+      // alone, so the provenance of a row this replaces is preserved either
+      // way.
+      //
+      // ROLLOVER AND is_active ARE NOT IN THE PATCH, so an existing limit keeps
+      // both. A fresh one is created with `rollover: false` because that is
+      // this step's fixed default; forcing the same `false` onto a limit the
+      // user had since switched on in Plan -> Limits would quietly change how
+      // much they may spend, from a screen that never mentioned it.
+      const existing = (statuses ?? []).find((status) => status.limit.scope === values.scope);
+      const created = existing
+        ? await updateLimit.mutateAsync({
+            id: existing.limit.id,
+            patch: { basis: values.basis, value: values.value },
+          })
+        : await createLimit.mutateAsync({
+            // THE USER'S CHOICE, not a hardcoded "monthly" (owner, 2026-08-20).
+            scope: values.scope,
+            basis: values.basis,
+            value: values.value,
+            rollover: false,
+          });
 
       // AND THE OTHER THREE CADENCES (owner, 2026-08-20): "limits are still not
       // automated to auto insert to user's database ... after entering it,
@@ -101,7 +141,7 @@ export default function FirstLimitScreen({
     // first render's value — `undefined`, before the query resolves — and the
     // occupied-scope check silently becomes "nothing is occupied" forever,
     // which is exactly the duplication it exists to prevent.
-    [createLimit, advance, statuses],
+    [createLimit, updateLimit, advance, statuses],
   );
 
   return (
@@ -114,7 +154,7 @@ export default function FirstLimitScreen({
     >
       <FirstLimitForm
         monthlyIncome={income?.monthlyEquivalent ?? null}
-        busy={createLimit.isPending}
+        busy={createLimit.isPending || updateLimit.isPending}
         onSubmit={submit}
         // BACK TO THE INCOME STEP, not Plan's /plan/income route. The tabs are
         // not mounted during onboarding, and the percent-blocked card is the

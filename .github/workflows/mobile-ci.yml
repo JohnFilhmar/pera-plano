@@ -1,0 +1,168 @@
+name: mobile-ci
+
+# Typecheck and the Jest suite for `mobile/`. Deliberately no Gradle, no EAS and no
+# Android build: none of these tests need a native toolchain, and putting a native
+# build in front of the gate would trade the thing that answers a PR in minutes for
+# one that answers it in half an hour.
+
+on:
+  # `push` is scoped to master. `pull_request` already covers every feature-branch
+  # commit that is heading for master, so an unscoped `push` would run the whole
+  # matrix a second time over the same commits — and this is a private repository, so
+  # those are billed minutes. Keeping master here is what makes the gate's result on
+  # the default branch a matter of record after a merge.
+  push:
+    branches: [master]
+    paths: &paths
+      - "mobile/**"
+      # Self-referential on purpose: an edit to this file must run the gate it
+      # describes, or a broken workflow lands green.
+      - ".github/workflows/mobile-ci.yml"
+  pull_request:
+    paths: *paths
+
+concurrency:
+  # Supersede an in-flight run when the PR is pushed again; never cancel a master
+  # run, whose result is the record for that commit.
+  group: mobile-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          # Caches ~/.npm, the download cache, keyed on the lockfile. `npm ci` still
+          # deletes and rebuilds node_modules — this only stops it re-fetching all
+          # 1,346 locked packages, on each of the eight jobs in this workflow.
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+
+  jest:
+    runs-on: ubuntu-latest
+    strategy:
+      # One shard failing must not hide the other five. A red gate should name every
+      # broken suite in a single run, not one shard's worth per push.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - run: npm ci
+
+      # Both flags here are load-bearing, and both were measured rather than guessed.
+      #
+      # `--shard` splits the suites by a hash of each test path: deterministic,
+      # disjoint, every suite in exactly one shard. Checked against
+      # `npx jest --listTests` at 269 suites — 45+45+45+45+45+44 = 269, the union of
+      # the six shards equals the full list, and all fifteen pairwise intersections
+      # are empty. The divisor is `strategy.job-total` and not a literal 6: editing
+      # the matrix above while leaving a hardcoded divisor behind would drop a whole
+      # shard's tests from the gate silently, with nothing failing to say so. Shards
+      # balance by suite COUNT and not duration, so no leg can finish faster than its
+      # own slowest file (`lib/db/__tests__/schema.test.ts` is 135 s by itself).
+      #
+      # `--maxWorkers=1` is what makes this gate green, and it is not the obvious
+      # choice. Measured on an idle dev box, same shard, same commit:
+      #
+      #     --maxWorkers=2   447.9 s   1 suite failed (app/__tests__/review_queue)
+      #     --maxWorkers=1   732.8 s   89/89 suites, 1697/1697 tests, exit 0
+      #
+      # The `app/` suites poll with `waitFor` on a 10 s budget under a 30 s
+      # testTimeout. They lose that race whenever a second worker is competing for the
+      # machine, and the same file passes when it runs alone. So the parallelism
+      # belongs BETWEEN runners, where each matrix leg is its own VM, rather than
+      # between workers inside one runner. Six shards is what buys back the wall time
+      # that one worker gives up: about 45 suites a leg, roughly 370 s at this box's
+      # speed, against the 733 s the same work takes as three shards.
+      #
+      # Leaving the count to package.json's "60%" would make it a function of the
+      # runner instead: measured against a stubbed cpu count on jest 29.7.0, that
+      # resolves to 1 worker on a 2-core box, 2 on a 4-core box and 9 on this 16-core
+      # one. Pinning it means the gate behaves the same on whatever GitHub hands out.
+      - name: Jest shard ${{ matrix.shard }}/${{ strategy.job-total }}
+        run: npm test -- --shard=${{ matrix.shard }}/${{ strategy.job-total }} --maxWorkers=1 --json --outputFile=jest-report-${{ matrix.shard }}.json
+
+      # Uploaded even when the shard fails — a failing run is the one whose report is
+      # worth reading. `--outputFile` only diverts the JSON; the human-readable
+      # reporter output still lands in the job log.
+      - name: Upload shard report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jest-report-shard-${{ matrix.shard }}
+          path: mobile/jest-report-${{ matrix.shard }}.json
+          if-no-files-found: warn
+          retention-days: 7
+
+  # A matrix reports one check per leg ("jest (1)", "jest (2)", ...), so its check
+  # names change the moment the shard count does, and any branch protection naming
+  # them silently stops applying. This job is the stable name to require alongside
+  # `typecheck` — the two checks this gate is meant to present.
+  #
+  # Note for whoever configures branch protection: both jobs sit behind the `paths`
+  # filter above, so a PR touching nothing under `mobile/` never reports them.
+  # Required checks and path filters do not combine on their own.
+  tests:
+    needs: [jest]
+    # `!cancelled()` rather than `always()`: a cancelled run should stop here instead
+    # of returning a verdict on shards that never finished.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every shard to pass
+        env:
+          SHARDS: ${{ needs.jest.result }}
+        run: |
+          set -euo pipefail
+          echo "Jest shard matrix result: $SHARDS"
+          if [ "$SHARDS" != "success" ]; then
+            echo "::error::at least one Jest shard did not pass."
+            exit 1
+          fi
+
+  # GAP-109. `server-ci.yml` already runs gitleaks, but behind a `server/**` paths
+  # filter, so a pull request touching only `mobile/**` was scanned by nothing at all
+  # -- and mobile is the half that ships to users, holding the encryption path, the
+  # Play Integrity wiring and the provider ruleset URL.
+  #
+  # A separate job rather than widening server-ci's filter: the two workflows carry
+  # different filters for good reasons, and widening one to cover the other's paths
+  # would run a server build on a mobile-only change.
+  secret-scan:
+    runs-on: ubuntu-latest
+    # gitleaks-action calls `GET /pulls/:number/commits` to scan just the PR's diff on
+    # a pull_request event. The default workflow token is contents:read only, which
+    # 403s that call ("Resource not accessible by integration") -- a missing scope, not
+    # a finding. contents:read is still needed for the checkout below.
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # History, not just the tip: a value deleted in a later commit was still
+          # published if it was ever pushed.
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

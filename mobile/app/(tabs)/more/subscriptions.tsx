@@ -10,11 +10,17 @@
 // merchant list is a privacy-shaped thing a screenshot or a shoulder-surf can
 // read at a glance. So this screen does NOT wrap its pattern list in
 // `PlusGate` the way `schedule_table.tsx` does; on Free it renders a
-// dedicated locked frame that shows only a count. In normal use a Free user
-// never reaches this branch at all — the More-tab entry
-// (app/(tabs)/more/index.tsx) is itself `PlusGate`-wrapped and intercepts the
-// press before navigation — but this screen checks again on its own rather
-// than trusting that its only caller got it right.
+// dedicated locked frame that shows only a count.
+//
+// AND THAT FRAME IS THE FREE USER'S REAL DESTINATION (GAP-122), not a defensive
+// branch nobody reaches. It used to be the latter: the More-tab entry
+// (app/(tabs)/more/index.tsx) intercepted the press before navigation, so this
+// check never fired in production and rule 19's count was unreachable code.
+// That row now passes its press through (`lockedPress="passthrough"`) precisely
+// because this check is here — the gate is at this call-site, which is where
+// rule 19 puts it, and the free branch below returns BEFORE
+// `useRecurringPatterns`' data reaches `PatternCard`, `LockedInHeader` or
+// `monthlyLockedIn`.
 //
 // mobile-ui-revamp Part 3 Task 4 — three deliberate departures from the
 // brief's literal wording, each forced by something outside this file's

@@ -1,9 +1,9 @@
 package expo.modules.notificationlistener
 
+import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.UserNotAuthenticatedException
 import java.io.File
 import java.nio.file.Files
-import java.security.PrivateKey
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -410,16 +410,53 @@ class CaptureBufferTest {
     assertTrue("a drain that aborts on a locked key must not touch the file", file.exists())
     assertEquals(2, CaptureBuffer.size(file))
   }
-}
 
-/**
- * Simulates a locked capture private key -- exactly
- * [android.security.keystore.UserNotAuthenticatedException] in production
- * -- while leaving the public key (and everything else) usable through
- * [delegate]. That asymmetry is the entire point of docs §6: the listener
- * can always seal, and can never open, until the user authenticates.
- */
-private class LockedPrivateKeyVault(private val delegate: KeyVault) : KeyVault by delegate {
-  override fun getPrivateKey(alias: String): PrivateKey =
-    throw UserNotAuthenticatedException()
+  // ---------------------------------------------------------------------
+  // A PERMANENTLY INVALIDATED capture private key -- the state removing the
+  // device screen lock leaves behind (docs §5).
+  //
+  // THIS TEST WAS INVERTED BY GAP-059, WHICH IS WHAT ITS PREDECESSOR ASKED FOR.
+  // It used to pin the defect: openAll's `catch (error: Exception)` swallowed
+  // KeyPermanentlyInvalidatedException (it extends InvalidKeyException) into
+  // the per-line skip-and-count path, drain deleted the file afterwards, and a
+  // device whose key had died silently discarded every buffered capture and
+  // resolved `[]` while the health card kept reporting a working listener. The
+  // old test asserted exactly that, with a comment saying it must go red and be
+  // rewritten when the fix landed. This is that rewrite.
+  //
+  // The contract now matches the auth case one test above: a failure that is
+  // not per-line aborts the whole drain BEFORE the delete, so the file survives
+  // and JS decides what happens next. It cannot decide anything about captures
+  // that have already been deleted.
+  // ---------------------------------------------------------------------
+
+  @Test
+  fun `a dead capture key aborts the drain and leaves the buffer on disk (GAP-059)`() {
+    CaptureBuffer.append(file, record(1))
+    CaptureBuffer.append(file, record(2))
+    assertEquals(2, CaptureBuffer.size(file))
+
+    // The public half still works -- an invalidated alias is not a missing
+    // one -- so the listener would happily keep appending here too.
+    KeyStoreBridge.vault = InvalidatedPrivateKeyVault(fakeVault)
+    assertEquals(3, CaptureBuffer.append(file, record(3)))
+
+    assertThrows(KeyPermanentlyInvalidatedException::class.java) {
+      CaptureBuffer.drain(file)
+    }
+
+    // THE FILE IS THE POINT. These captures are unopenable either way -- their
+    // private key is gone and nothing brings it back -- but losing them
+    // silently and losing them after telling JS are different products. JS
+    // clears the buffer explicitly through clearCaptureBuffer once it has
+    // recreated the keypair, so the loss is a decision rather than an accident.
+    //
+    // THE SAME TREATMENT AS THE AUTH CASE, and that shared treatment is the
+    // load-bearing half of this test now. Both are Keystore-family failures
+    // about the KEY rather than about one line, both abort, both leave the
+    // file. If a future change routed either back into the per-line skip, one
+    // of these two tests fails whichever way it went.
+    assertTrue("a drain that aborts on a dead key must not touch the file", file.exists())
+    assertEquals(3, CaptureBuffer.size(file))
+  }
 }

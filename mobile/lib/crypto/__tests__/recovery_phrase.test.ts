@@ -1,5 +1,6 @@
 import * as Crypto from "expo-crypto";
 import {
+  ARGON2ID_PARAMS,
   generatePhrase,
   deriveRecoveryKey,
   normalizePhrase,
@@ -45,14 +46,16 @@ const WRONG_COMBINATION_PHRASE = [
   "about",
 ];
 
-// A configuration this fast would indicate the KDF was accidentally left at
-// trivial parameters (t=1, m=8 KiB costs ~31ms of CPU time under this same
-// Jest environment — see recovery_phrase.ts's parameter comment for the
-// wall-clock benchmark). The real parameters cost roughly 2.6-4.1s of CPU
-// time here (see the comment on MAX_REASONABLE_DERIVATION_MS below), so this
-// floor has wide margin below the real value and wide margin above a
-// trivially-configured one.
-const TRIVIAL_KDF_FLOOR_MS = 300;
+// THE TIMING FLOOR IS GONE, ON PURPOSE (2026-09-18). It required a derivation
+// to burn more than 300ms of CPU, on the reasoning that trivial parameters
+// (t=1, m=8 KiB) cost ~31ms while the shipped ones cost 2.6-4.1s here. The
+// margin looked enormous and the assertion still failed on master at `4ee2ac4`,
+// measuring under 300ms — an order of magnitude below the floor, which means
+// the measurement was wrong rather than the KDF weak. "Nobody left the KDF at
+// trivial parameters" is a claim about four numbers, so it is now asserted
+// against `ARGON2ID_PARAMS` directly; see "refuses trivial KDF parameters"
+// below. The CEILING survives, because it is robust in the direction a floor
+// is not.
 
 // An upper bound so a future change can't silently restore something like
 // the 55-80 SECOND-per-derivation configuration this task tried before
@@ -206,6 +209,11 @@ describe("normalizePhrase", () => {
   });
 });
 
+// NO PER-TEST TIMEOUTS. Each test runs two real Argon2id derivations, measured
+// at 2.6 to 4.4 s on an idle machine and past 10 s under nine workers, and the
+// package's 30 s testTimeout is their budget. The 10 s overrides these tests
+// used to carry were written when Jest's default was 5 s; once package.json
+// raised it, they cut the budget to a third (GAP-052).
 describe("deriveRecoveryKey", () => {
   const saltA = new Uint8Array(16).fill(1);
   const saltB = new Uint8Array(16).fill(2);
@@ -216,31 +224,66 @@ describe("deriveRecoveryKey", () => {
 
     expect(keyOne.length).toBe(32);
     expect(Buffer.from(keyOne)).toEqual(Buffer.from(keyTwo));
-  }, 10000);
+  });
 
   it("derives a different key for a different salt", async () => {
     const keyOne = await deriveRecoveryKey(ZERO_ENTROPY_PHRASE, saltA);
     const keyTwo = await deriveRecoveryKey(ZERO_ENTROPY_PHRASE, saltB);
 
     expect(Buffer.from(keyOne)).not.toEqual(Buffer.from(keyTwo));
-  }, 10000);
+  });
 
   it("derives a completely different key when one word changes", async () => {
     const keyOne = await deriveRecoveryKey(ZERO_ENTROPY_PHRASE, saltA);
     const keyTwo = await deriveRecoveryKey(WRONG_COMBINATION_PHRASE, saltA);
 
     expect(Buffer.from(keyOne)).not.toEqual(Buffer.from(keyTwo));
-  }, 10000);
+  });
 
-  it("takes longer than a floor that would flag trivial KDF parameters, and less than a ceiling that would flag an unusable one", async () => {
-    // CPU time, not wall-clock — see the comment on MAX_REASONABLE_DERIVATION_MS
-    // above for why. process.cpuUsage(prior) returns a delta since `prior`.
+  // THE FLOOR IS ASSERTED AGAINST THE PARAMETERS, NOT AGAINST A CLOCK.
+  //
+  // It used to measure CPU time and require more than TRIVIAL_KDF_FLOOR_MS of
+  // it. That failed on master at `4ee2ac4` on a GitHub runner, having measured
+  // under 300ms for a derivation this suite's own comments put at 2.6-4.1s —
+  // an order of magnitude out, which is not "the KDF got faster" but
+  // `process.cpuUsage()` failing to attribute the work. The wall-clock version
+  // before it was replaced for the same class of reason (see
+  // MAX_REASONABLE_DERIVATION_MS's comment); moving from wall-clock to CPU time
+  // narrowed the flakiness without removing it, because both are measurements
+  // of the machine rather than of the configuration.
+  //
+  // What the floor was ever FOR is "nobody left the KDF at trivial parameters",
+  // and that is a statement about four numbers. `ARGON2ID_PARAMS` is the frozen
+  // record `deriveRecoveryKey` actually reads — its own doc calls that export
+  // load-bearing precisely so it cannot drift from what derivation does — so
+  // asserting it is both deterministic and strictly stronger than timing:
+  // timing catches a weakened KDF probabilistically and only on a machine slow
+  // enough to notice, while this catches it always.
+  it("refuses trivial KDF parameters", () => {
+    // t=1, m=8 KiB is the accidental-default shape the old floor existed to
+    // catch. Each bound is well below the shipped value and well above a
+    // trivial one, so retuning within sane ranges does not trip it.
+    expect(ARGON2ID_PARAMS.t).toBeGreaterThanOrEqual(2);
+    expect(ARGON2ID_PARAMS.m_kib).toBeGreaterThanOrEqual(1024);
+    expect(ARGON2ID_PARAMS.p).toBeGreaterThanOrEqual(1);
+    // A 256-bit key, matching the DEK width. A shorter one would be a weaker
+    // key regardless of how long it took to derive.
+    expect(ARGON2ID_PARAMS.dk_len).toBe(32);
+  });
+
+  it("takes less than a ceiling that would flag an unusable configuration", async () => {
+    // THE CEILING STAYS ON THE CLOCK, and that asymmetry is deliberate. It
+    // guards against the 55-80 SECOND-per-derivation configuration this task
+    // tried before retuning, and a ceiling is robust in the direction a floor
+    // is not: a configuration that unusable blows any reasonable bound on any
+    // machine, while a floor fails whenever the machine is merely fast or the
+    // measurement is merely wrong. CPU time, not wall-clock — see the comment
+    // on MAX_REASONABLE_DERIVATION_MS above for why.
     const cpuStart = process.cpuUsage();
     await deriveRecoveryKey(ZERO_ENTROPY_PHRASE, saltA);
     const cpuElapsed = process.cpuUsage(cpuStart);
     const cpuElapsedMs = (cpuElapsed.user + cpuElapsed.system) / 1000;
 
-    expect(cpuElapsedMs).toBeGreaterThan(TRIVIAL_KDF_FLOOR_MS);
     expect(cpuElapsedMs).toBeLessThan(MAX_REASONABLE_DERIVATION_MS);
     // No per-test timeout override: the global 30s testTimeout (package.json's
     // jest.testTimeout) is still a wall-clock backstop against a genuine hang

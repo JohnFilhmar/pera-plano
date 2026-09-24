@@ -28,21 +28,58 @@
 // suite carried is kept verbatim below: both confirmations required,
 // cancelling either wipes nothing, a wrong word never enables the button, and
 // a failure surfaces `privacy-wipe-error` instead of a stuck spinner.
+//
+// `getListenerHealth`/`openAccessSettings` join that same native mock because
+// the capture row now states the LIVE grant rather than the switch's position
+// (GAP-089): the screen reads `useListenerHealth()` and hands the settings
+// opener down to `CaptureToggle`, exactly as app/(tabs)/more/listener_health.tsx
+// already does for the health card.
+//
+// `ProviderFilterNotStoredError` is part of this mock because the pause hook
+// branches on it with `instanceof` (GAP-114) — a stand-in class rather than the
+// real one, since index.ts calls `requireNativeModule` at import time and
+// cannot be required under Jest. Identity is all that is needed: the hook and
+// the test below reach the class through this same mock.
+//
+// `getProviderFilter` joins it for GAP-119: the screen now reads the scope the
+// listener is ACTUALLY applying and compares it against the pause row it draws
+// the switches from. It is the one function here whose RESOLVED VALUE is the
+// subject of a test rather than a fixture — see the mismatch section below.
 jest.mock("@/modules/notification_listener", () => ({
+  getListenerHealth: jest.fn(),
+  openAccessSettings: jest.fn(),
   setCaptureEnabled: jest.fn().mockResolvedValue(undefined),
   setProviderFilter: jest.fn().mockResolvedValue(undefined),
+  getProviderFilter: jest.fn(),
+  ProviderFilterNotStoredError: class ProviderFilterNotStoredError extends Error {
+    readonly code = "ProviderFilterNotStored";
+    constructor(message = "the provider filter could not be stored on this device") {
+      super(message);
+      this.name = "ProviderFilterNotStoredError";
+    }
+  },
 }));
 
 jest.mock("@/lib/privacy/data_export", () => ({
   exportAllData: jest.fn().mockResolvedValue("file:///cache/peraplano-export-fake.json"),
 }));
 
-// The whole lock context is stubbed to a single spy: the screen's only use of
-// it is this one call, and mounting a real LockProvider here would drag in
-// expo-local-authentication and the native key manager for no added proof.
+// The whole lock context is stubbed: mounting a real LockProvider here would
+// drag in expo-local-authentication and the native key manager for no added
+// proof. Two values, because the screen uses two — and `errorMessage` is the
+// one a failed wipe actually arrives on. The real `wipeAndStartOver` NEVER
+// REJECTS (its own doc; contexts/__tests__/lock_context.test.tsx pins both
+// failure kinds as `resolves` and asserts the message each one leaves behind),
+// so the stub below fails the way the real one does: it sets the message and
+// then resolves. A stub that rejected instead would be testing a promise the
+// app cannot produce.
 const mockWipeAndStartOver = jest.fn().mockResolvedValue(undefined);
+let mockLockErrorMessage: string | null = null;
 jest.mock("@/contexts/lock_context", () => ({
-  useLock: () => ({ wipeAndStartOver: mockWipeAndStartOver }),
+  useLock: () => ({
+    wipeAndStartOver: mockWipeAndStartOver,
+    errorMessage: mockLockErrorMessage,
+  }),
 }));
 
 // The assistant's weights live OUTSIDE the encrypted database (spec §2.3 rule
@@ -77,25 +114,69 @@ import { closeDatabase } from "@/lib/db/database";
 import { getSetting, setSetting } from "@/lib/db/repos/app_settings_repo";
 import { seedDefaultCategories } from "@/lib/db/repos/categories_repo";
 import { upsertRuleset } from "@/lib/db/repos/parser_rulesets_repo";
-import { storeRawCapture, RAW_CAPTURE_TTL_MS } from "@/lib/db/repos/raw_notifications_repo";
+import {
+  storeDiscardedCapture,
+  storeRawCapture,
+  RAW_CAPTURE_TTL_MS,
+} from "@/lib/db/repos/raw_notifications_repo";
 import { listDataTableNames } from "@/lib/db/table_names";
 import { exportAllData } from "@/lib/privacy/data_export";
 import { MODEL_CATALOGUE } from "@/lib/ai/catalogue";
 import { formatSize } from "@/lib/ai/downloader";
 import { queryClient as appQueryClient } from "@/lib/query_client";
+import { WipeIncompleteError } from "@/lib/security/wipe";
 import { freshDb } from "@/test_support/db";
-import { setCaptureEnabled, setProviderFilter } from "@/modules/notification_listener";
+import {
+  getListenerHealth,
+  getProviderFilter,
+  openAccessSettings,
+  ProviderFilterNotStoredError,
+  setCaptureEnabled,
+  setProviderFilter,
+} from "@/modules/notification_listener";
 
 import PrivacyScreen from "../(tabs)/more/privacy";
 import type { SQLiteDatabase } from "@/lib/db/database";
 
 const mockSetCaptureEnabled = setCaptureEnabled as jest.Mock;
 const mockSetProviderFilter = setProviderFilter as jest.Mock;
+const mockGetProviderFilter = getProviderFilter as jest.MockedFunction<typeof getProviderFilter>;
 const mockExportAllData = exportAllData as jest.Mock;
+const mockGetListenerHealth = getListenerHealth as jest.MockedFunction<typeof getListenerHealth>;
+const mockOpenAccessSettings = openAccessSettings as jest.Mock;
+
+const HEALTHY = { granted: true, serviceConnected: true, lastCaptureAt: null };
+const REVOKED = { granted: false, serviceConnected: false, lastCaptureAt: null };
+const DISCONNECTED = { granted: true, serviceConnected: false, lastCaptureAt: null };
+
+// The exact sentences the row may print, quoted rather than imported: the whole
+// point of GAP-089 is what a reader SEES, and a test that imports the constant
+// it asserts would keep passing through any rewording, including a rewording
+// back to a claim the app cannot support.
+const ACTIVE_COPY =
+  "PeraPlano is reading your bank and e-wallet notifications to record transactions automatically.";
+const NO_ACCESS_COPY =
+  "Notification access is off, so PeraPlano is reading nothing. Grant it again to resume automatic tracking.";
+const DISCONNECTED_COPY =
+  "Notification access is on, but the listener service is not running, so nothing is being read right now.";
+const CHECKING_COPY = "Checking whether PeraPlano can read your notifications right now.";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const GCASH_PACKAGE = "com.globe.gcash.android";
 const BPI_PACKAGE = "com.bpi.ng.app";
+
+// The two provider scopes this suite hands the device (GAP-119). An empty
+// allowlist with `denyAll` false is ALLOW-ALL, never deny-all — it is both the
+// fresh-install state and what a filter that cannot be decrypted reads back as.
+const ALLOW_ALL = { packageNames: [], denyAll: false };
+const ONLY_BPI = { packageNames: [BPI_PACKAGE], denyAll: false };
+
+// Quoted, not imported, for the reason this file's grant copy already gives:
+// the claim is what the reader SEES, and importing the constant would keep the
+// test green through any rewording — including a rewording back into silence.
+const SCOPE_MISMATCH_TITLE = "These switches aren't in force";
+const SCOPE_MISMATCH_BODY =
+  "PeraPlano recorded the providers below, but the notification listener still holds a different list. Close and reopen PeraPlano — every start re-applies these switches.";
 
 // Same discipline transaction_detail.test.tsx uses: the screen reads the
 // wall clock for its countdown and its capture list, so fixtures are
@@ -130,6 +211,15 @@ let db: SQLiteDatabase;
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  mockLockErrorMessage = null;
+  // Healthy by default, so every test that is not about the grant renders the
+  // same screen it always did.
+  mockGetListenerHealth.mockResolvedValue(HEALTHY);
+  // Allow-all by default, which pairs with the empty `paused_provider_packages`
+  // every test starts from: the app has recorded no narrowing, so there is
+  // nothing to check the listener against and the GAP-119 banner stays away
+  // from every test that is not about it.
+  mockGetProviderFilter.mockResolvedValue(ALLOW_ALL);
   db = await freshDb();
   await seedDefaultCategories();
   await upsertRuleset({
@@ -161,6 +251,90 @@ test("the master pause calls the native setter and persists the setting", async 
 });
 
 // ---------------------------------------------------------------------------
+// The capture row states the LIVE grant, not the switch's position (GAP-089).
+//
+// The switch is the user's INTENT; whether anything is actually being read
+// also needs Notification Access and a connected listener, which only
+// `getListenerHealth()` knows. The row used to print "PeraPlano is reading
+// your bank and e-wallet notifications" whenever `capture_enabled` was not
+// `false` — to a user who declined the permission, to one whose OEM revoked
+// it on a reboot, and during the frames before either value had loaded.
+//
+// ASSERTED ON RENDERED TEXT, and every case asserts the ABSENCE of the active
+// sentence as well as the presence of the honest one: a subtitle that computed
+// the right string and then failed to reach the screen would satisfy a
+// presence-only test while the user still read the false claim.
+// ---------------------------------------------------------------------------
+
+test("with notification access revoked the row says access is off and offers the settings fix", async () => {
+  mockGetListenerHealth.mockResolvedValue(REVOKED);
+
+  await renderPrivacyScreen();
+
+  await waitFor(() => expect(screen.getByText(NO_ACCESS_COPY)).toBeTruthy());
+  expect(screen.queryByText(ACTIVE_COPY)).toBeNull();
+
+  fireEvent.press(screen.getByTestId("capture-toggle-open-settings"));
+  expect(mockOpenAccessSettings).toHaveBeenCalledTimes(1);
+});
+
+test("a granted permission with a dead listener service reads as disconnected, not as tracking", async () => {
+  mockGetListenerHealth.mockResolvedValue(DISCONNECTED);
+
+  await renderPrivacyScreen();
+
+  await waitFor(() => expect(screen.getByText(DISCONNECTED_COPY)).toBeTruthy());
+  expect(screen.queryByText(ACTIVE_COPY)).toBeNull();
+  // Same destination: re-granting access in system settings is what rebinds
+  // the listener, so the fix prompt is offered for this state too.
+  expect(screen.getByTestId("capture-toggle-open-settings")).toBeTruthy();
+});
+
+test("the active claim survives only when the grant and the service both confirm it", async () => {
+  await renderPrivacyScreen();
+
+  await waitFor(() => expect(screen.getByText(ACTIVE_COPY)).toBeTruthy());
+  // Nothing to fix, so nothing is offered — a permanent settings link would
+  // train the reader to ignore the one that means something.
+  expect(screen.queryByTestId("capture-toggle-open-settings")).toBeNull();
+  expect(mockOpenAccessSettings).not.toHaveBeenCalled();
+});
+
+test("the row claims nothing while the live read has not landed", async () => {
+  // Never resolves: the state the screen is in for its first frames, and the
+  // state it stays in if the bridge hangs. `retry: false` on the hook means a
+  // throw lands here too.
+  mockGetListenerHealth.mockReturnValue(new Promise<never>(() => {}));
+
+  await renderPrivacyScreen();
+
+  await waitFor(() => expect(screen.getByText(CHECKING_COPY)).toBeTruthy());
+  expect(screen.queryByText(ACTIVE_COPY)).toBeNull();
+  expect(screen.queryByTestId("capture-toggle-open-settings")).toBeNull();
+});
+
+test("a user who paused on purpose is told they paused, not that the permission is broken", async () => {
+  // Both faults at once, which is the ordinary consequence of pausing rather
+  // than a second problem — the precedence components/home/tracking_banner.tsx
+  // and use_listener_health.ts's header already set for this pair.
+  mockGetListenerHealth.mockResolvedValue(REVOKED);
+  await setSetting("capture_enabled", false);
+
+  await renderPrivacyScreen();
+
+  await waitFor(() =>
+    expect(
+      screen.getByText(
+        "While paused, PeraPlano reads and stores nothing from any provider — not even for the Review Queue. Turn it back on to resume.",
+      ),
+    ).toBeTruthy(),
+  );
+  expect(screen.queryByText(NO_ACCESS_COPY)).toBeNull();
+  expect(screen.queryByText(ACTIVE_COPY)).toBeNull();
+  expect(screen.queryByTestId("capture-toggle-open-settings")).toBeNull();
+});
+
+// ---------------------------------------------------------------------------
 // Per-provider switches (rule 2)
 // ---------------------------------------------------------------------------
 
@@ -175,17 +349,221 @@ test("a provider switch calls setProviderFilter with the remaining packages", as
   // gcash does not, and the filter is not simply cleared to allow-all.
   const lastCall = mockSetProviderFilter.mock.calls[mockSetProviderFilter.mock.calls.length - 1];
   expect(lastCall[0]).toEqual([BPI_PACKAGE]);
+  // Not a deny-all: bpi is still capturing, and the second argument is what
+  // says so (GAP-103).
+  expect(lastCall[1]).toBe(false);
 });
 
 test("resuming a paused provider clears the filter back to allow-all once nothing is paused", async () => {
   await setSetting("paused_provider_packages", [GCASH_PACKAGE]);
+  // The device is applying that pause, so this fixture is a working phone
+  // rather than one carrying the GAP-119 mismatch — which is a different test.
+  mockGetProviderFilter.mockResolvedValue(ONLY_BPI);
 
   await renderPrivacyScreen();
   await waitFor(() => expect(screen.getByTestId("provider-switch-paused-gcash")).toBeTruthy());
 
   fireEvent(screen.getByTestId("provider-switch-gcash"), "valueChange", true);
 
-  await waitFor(() => expect(mockSetProviderFilter).toHaveBeenCalledWith([]));
+  await waitFor(() => expect(mockSetProviderFilter).toHaveBeenCalledWith([], false));
+});
+
+test("PAUSING THE LAST REMAINING PROVIDER SENDS DENY-ALL FROM THIS SCREEN", async () => {
+  // The defect this closes was reachable from here, not only from the hook:
+  // switching off the last provider computed `[]`, which the listener reads as
+  // allow-all. Two providers exist in this ruleset, so pausing the second one
+  // empties the allowlist.
+  await setSetting("paused_provider_packages", [GCASH_PACKAGE]);
+  mockGetProviderFilter.mockResolvedValue(ONLY_BPI);
+
+  await renderPrivacyScreen();
+  await waitFor(() => expect(screen.getByTestId("provider-switch-bpi")).toBeTruthy());
+
+  fireEvent(screen.getByTestId("provider-switch-bpi"), "valueChange", false);
+
+  await waitFor(() => expect(mockSetProviderFilter).toHaveBeenCalledWith([], true));
+  // And the master capture switch is NOT touched: the two controls stay
+  // independent, which is the whole reason the bridge grew a deny-all instead
+  // of the screen reaching for setCaptureEnabled(false).
+  expect(mockSetCaptureEnabled).not.toHaveBeenCalled();
+});
+
+test("A PAUSE THE DEVICE COULD NOT STORE LEAVES THE SWITCH ON, AND RECORDS NOTHING", async () => {
+  // GAP-114. `setProviderFilter` used to resolve on a device that could not
+  // seal the allowlist and therefore wrote nothing, so this switch moved to
+  // "Paused", `paused_provider_packages` recorded it, and the listener carried
+  // on capturing from gcash — with no getter across the bridge, nothing could
+  // ever have noticed the disagreement.
+  mockSetProviderFilter.mockRejectedValueOnce(new ProviderFilterNotStoredError());
+
+  await renderPrivacyScreen();
+  await waitFor(() => expect(screen.getByTestId("provider-switch-gcash")).toBeTruthy());
+
+  fireEvent(screen.getByTestId("provider-switch-gcash"), "valueChange", false);
+
+  await waitFor(() => expect(mockSetProviderFilter).toHaveBeenCalled());
+  // The switch reads `true` for "not paused", so it is still on — and the
+  // "Paused" caption, which is the row's other statement about the same fact,
+  // never appears. Asserted through `waitFor` so a row that flips and only
+  // later settles back would still fail rather than race.
+  await waitFor(() =>
+    expect(screen.getByTestId("provider-switch-gcash").props.value).toBe(true),
+  );
+  expect(screen.queryByTestId("provider-switch-paused-gcash")).toBeNull();
+  // And the only readable record is untouched, which is what keeps the next
+  // launch's re-sync (lib/bootstrap.ts) from pushing a pause that never was.
+  expect(await getSetting("paused_provider_packages")).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------
+// A SCOPE THE DEVICE IS NOT APPLYING IS SAID OUT LOUD HERE (GAP-119)
+//
+// The switches above render from `paused_provider_packages`, which is the app's
+// record of INTENT. GAP-116 made a failed onboarding selection durable and
+// self-healing, but only at the NEXT LAUNCH — until then capture is wider than
+// what the switches show, and this screen presented the record as though it
+// were the applied filter. The comparison behind these tests is
+// lib/privacy/provider_scope.ts; what is asserted here is that the reader
+// actually sees it, and — just as importantly — that they do NOT see it in the
+// three states where the two values are allowed to look different.
+// ---------------------------------------------------------------------------
+
+test("A FILTER THE DEVICE NEVER APPLIED IS REPORTED, ON THE SCREEN THAT SHOWS THE SWITCHES", async () => {
+  // The row says gcash is paused. The listener holds an empty allowlist, which
+  // is ALLOW-ALL — so gcash is still in scope, and this screen used to say the
+  // opposite with nothing anywhere to contradict it.
+  await setSetting("paused_provider_packages", [GCASH_PACKAGE]);
+  mockGetProviderFilter.mockResolvedValue(ALLOW_ALL);
+
+  await renderPrivacyScreen();
+
+  await waitFor(() => expect(screen.getByTestId("provider-scope-mismatch")).toBeTruthy());
+  expect(screen.getByText(SCOPE_MISMATCH_TITLE)).toBeTruthy();
+  // The remedy has to be NAMED, not implied: relaunching is the only action
+  // available to the user that can change the outcome, because the prefs key
+  // the filter is sealed under is created on launch and never lazily by a write
+  // from this screen.
+  expect(screen.getByText(SCOPE_MISMATCH_BODY)).toBeTruthy();
+  // The switch itself still reports the recorded intent. The banner is what
+  // says the intent is not in force; a row that silently flipped back would be
+  // a second, contradictory account of the same fact.
+  expect(screen.getByTestId("provider-switch-paused-gcash")).toBeTruthy();
+});
+
+test("A LAUNCH THAT RE-ASSERTED THE FILTER CLEARS IT WITH NO USER ACTION", async () => {
+  // Same recorded pause, but this device applied it: the allowlist is
+  // "everyone except gcash", which is exactly what `resyncProviderFilter`
+  // pushes at every launch. Nothing is tapped anywhere in this test — a fresh
+  // process reading agreeing values is the whole mechanism.
+  await setSetting("paused_provider_packages", [GCASH_PACKAGE]);
+  mockGetProviderFilter.mockResolvedValue(ONLY_BPI);
+
+  await renderPrivacyScreen();
+
+  await waitFor(() => expect(screen.getByTestId("provider-switch-paused-gcash")).toBeTruthy());
+  expect(screen.queryByTestId("provider-scope-mismatch")).toBeNull();
+  expect(screen.queryByText(SCOPE_MISMATCH_TITLE)).toBeNull();
+});
+
+test("a clean install is told nothing at all", async () => {
+  // TRAP 1. `paused_provider_packages` is empty on a fresh install, and it is
+  // also what onboarding leaves for a user who allowed everything or tapped
+  // Skip. The listener holds allow-all. Reading an empty row as "the filter
+  // was never applied" would show this banner to every new user forever, since
+  // no launch can make an unasserted row agree with anything.
+  expect(await getSetting("paused_provider_packages")).toEqual([]);
+
+  await renderPrivacyScreen();
+
+  await waitFor(() => expect(screen.getByTestId("provider-switch-gcash")).toBeTruthy());
+  expect(screen.queryByTestId("provider-scope-mismatch")).toBeNull();
+});
+
+test("an every-provider block that landed without its allowlist is in force, not a mismatch", async () => {
+  // TRAP 3. `CapturePrefs.setProviderFilter` writes the plaintext deny-all flag
+  // and reports SUCCESS when it could not seal the list beside it, leaving that
+  // list stale on disk — and the stale list is unreachable for as long as the
+  // flag stands. Comparing it would report a mismatch on a device applying
+  // exactly what was asked, and the next launch would fail to seal in exactly
+  // the same way, so the banner would never clear.
+  await setSetting("paused_provider_packages", [GCASH_PACKAGE, BPI_PACKAGE]);
+  mockGetProviderFilter.mockResolvedValue({
+    packageNames: [GCASH_PACKAGE, BPI_PACKAGE],
+    denyAll: true,
+  });
+
+  await renderPrivacyScreen();
+
+  await waitFor(() => expect(screen.getByTestId("provider-switch-paused-gcash")).toBeTruthy());
+  expect(screen.queryByTestId("provider-scope-mismatch")).toBeNull();
+});
+
+test("a ruleset that names no packages warns about nothing", async () => {
+  // TRAP 2. With no universe there is no "everyone else" to allow, so the
+  // expected allowlist is empty for a reason that has nothing to do with the
+  // user's choices — the same case `resyncProviderFilter` skips rather than
+  // pushing a deny-all it would be inventing. A launch cannot fix it, so a
+  // banner about it would never clear.
+  await upsertRuleset({ version: 2, providers: [], tunables: {} });
+  await setSetting("paused_provider_packages", [GCASH_PACKAGE]);
+  mockGetProviderFilter.mockResolvedValue(ALLOW_ALL);
+
+  await renderPrivacyScreen();
+
+  await waitFor(() => expect(screen.getByTestId("privacy-reassurance")).toBeTruthy());
+  expect(screen.queryByTestId("provider-scope-mismatch")).toBeNull();
+});
+
+test("a pause that lands never flashes a mismatch while the two reads catch up", async () => {
+  // The regression this guards is in the WIRING, not the comparison: a
+  // successful toggle moves the row and the listener together, so refreshing
+  // only the row would pair a fresh intent with a stale effect and accuse the
+  // app of the very failure it had just avoided.
+  mockSetProviderFilter.mockImplementationOnce(
+    async (packageNames: string[], denyAll: boolean) => {
+      mockGetProviderFilter.mockResolvedValue({ packageNames, denyAll });
+    },
+  );
+
+  await renderPrivacyScreen();
+  await waitFor(() => expect(screen.getByTestId("provider-switch-gcash")).toBeTruthy());
+
+  fireEvent(screen.getByTestId("provider-switch-gcash"), "valueChange", false);
+
+  await waitFor(() => expect(screen.getByTestId("provider-switch-paused-gcash")).toBeTruthy());
+  expect(screen.queryByTestId("provider-scope-mismatch")).toBeNull();
+});
+
+test("the warning offers no way to hide it, and outlives an unrelated change on the screen", async () => {
+  // Not hand-dismissible on purpose: it describes a LIVE mismatch, recomputed
+  // on every render from the two values themselves, so a hide control would
+  // restore exactly the silence it exists to remove.
+  await setSetting("paused_provider_packages", [GCASH_PACKAGE]);
+  mockGetProviderFilter.mockResolvedValue(ALLOW_ALL);
+
+  await renderPrivacyScreen();
+  await waitFor(() => expect(screen.getByTestId("provider-scope-mismatch")).toBeTruthy());
+
+  expect(screen.queryByTestId("provider-scope-mismatch-dismiss")).toBeNull();
+
+  // A successful, unrelated mutation re-renders the whole screen. The banner is
+  // still there afterwards, because nothing about the filter changed.
+  fireEvent(screen.getByTestId("capture-toggle-switch"), "valueChange", false);
+  await waitFor(() => expect(mockSetCaptureEnabled).toHaveBeenCalledWith(false));
+  expect(screen.getByTestId("provider-scope-mismatch")).toBeTruthy();
+});
+
+test("a bridge that cannot answer claims nothing in either direction", async () => {
+  // `retry: false`, so a rejection is final. "Cannot tell" is not "mismatch":
+  // an accusation the app has no evidence for is the same defect as the silence
+  // this entry removes, pointed the other way.
+  await setSetting("paused_provider_packages", [GCASH_PACKAGE]);
+  mockGetProviderFilter.mockRejectedValue(new Error("no such method"));
+
+  await renderPrivacyScreen();
+
+  await waitFor(() => expect(screen.getByTestId("provider-switch-paused-gcash")).toBeTruthy());
+  expect(screen.queryByTestId("provider-scope-mismatch")).toBeNull();
 });
 
 // ---------------------------------------------------------------------------
@@ -230,6 +608,31 @@ test("the captured list renders real rows newest first", async () => {
   // own doc for why the title is included alongside the text.
   expect(screen.getByTestId("captured-item-text-newer")).toHaveTextContent(/You received PHP 200/);
   expect(screen.getByTestId("captured-item-text-older")).toHaveTextContent(/You sent PHP 100 to Juan/);
+});
+
+test("a capture stored without its text renders the note, read back from the database", async () => {
+  // GAP-107, end to end: the flag travels from `raw_notifications` through
+  // the hook and the screen's own mapping into the card.
+  await storeDiscardedCapture(
+    {
+      id: "trimmed",
+      packageName: "com.example.chat",
+      title: "Ana",
+      text: "Kain tayo mamaya!",
+      subText: null,
+      bigText: null,
+      postedAt: NOW,
+      capturedAt: NOW,
+    },
+    NOW,
+  );
+
+  await renderPrivacyScreen();
+
+  await waitFor(() => expect(screen.getByTestId("captured-item-trimmed")).toBeTruthy());
+  const body = screen.getByTestId("captured-item-text-trimmed");
+  expect(body).toHaveTextContent(/kept only the app and the time/);
+  expect(body).not.toHaveTextContent(/Kain tayo/);
 });
 
 test("the countdown renders the correct remaining days for a pinned clock", async () => {
@@ -320,16 +723,42 @@ test("an export failure surfaces an error and releases the busy spinner", async 
 });
 
 // ---------------------------------------------------------------------------
-// The wipe's failure path (coordinator finding). `wipeKeys()` and
-// `clearCaptureBuffer()` both run AFTER `wipeDatabase()` has already deleted
-// the file irreversibly — see privacy.tsx's own doc on `handleWipeConfirmed`
-// and lib/security/wipe.ts's header on that ordering. Before this catch
-// existed, a rejection from either left the user with a stopped spinner, no
-// error, and an app whose data was already gone.
+// The wipe's failure paths, and WHICH ONE THIS SCREEN CAN EVEN REPORT.
+// lib/security/wipe.ts splits them at the database file: a `wipeDatabase()`
+// rejection propagates as itself because nothing was destroyed, every later
+// rejection is re-thrown as `WipeIncompleteError` because the file is gone.
+// The lock context turns that split into two states, and only ONE of them
+// leaves this screen mounted:
+//
+//   - after the database is gone -> status "needs_onboarding", so
+//     app/_layout.tsx's AppShell replaces this whole Stack with the lock gate
+//     and app/lock.tsx prints the notice (app/__tests__/lock_screen.test.tsx
+//     asserts that rendered notice; contexts/__tests__/lock_context.test.tsx
+//     asserts the message and the status). Nothing here could be seen.
+//   - before anything is erased -> status stays "unlocked", this screen stays
+//     mounted, and the promise RESOLVES. That is the case below, and until the
+//     screen read `errorMessage` the user got a stopped spinner and no message
+//     at all: the catch never ran, because nothing ever rejected.
+//
+// GAP-104 also asked for the catch itself to stop saying "Your data was
+// erased" about a failure that erased nothing. It is unreachable while the
+// context swallows every rejection, so the two tests that exercise it say so
+// in their names; they mock ONLY to force the rejection, and assert what is
+// rendered.
 // ---------------------------------------------------------------------------
 
-test("a wipe failure after the database is cleared surfaces an error instead of leaving the spinner stuck", async () => {
-  mockWipeAndStartOver.mockRejectedValueOnce(new Error("wipe: keystore delete failed"));
+// contexts/lock_context.tsx's WIPE_FAILED_MESSAGE, quoted verbatim. What is
+// pinned here is that the screen prints the CONTEXT's sentence for the failure
+// that happened; that the context produces this one is pinned in its own suite.
+const WIPE_FAILED_COPY =
+  "Nothing was erased — that didn't go through. Your data and your recovery words are still here, so you can try again.";
+
+test("a wipe that stops before the database is deleted says nothing was erased, instead of stopping the spinner in silence", async () => {
+  // Exactly what the real context does with a `wipeDatabase()` failure: keep
+  // the status, put its own sentence in `errorMessage`, resolve.
+  mockWipeAndStartOver.mockImplementationOnce(async () => {
+    mockLockErrorMessage = WIPE_FAILED_COPY;
+  });
   await renderPrivacyScreen();
 
   fireEvent.press(screen.getByTestId("wipe-everything-trigger"));
@@ -338,13 +767,77 @@ test("a wipe failure after the database is cleared surfaces an error instead of 
   fireEvent.press(screen.getByTestId("wipe-confirm-erase"));
 
   await waitFor(() => expect(mockWipeAndStartOver).toHaveBeenCalledTimes(1));
-  await waitFor(() => expect(screen.getByTestId("privacy-wipe-error")).toBeTruthy());
-  screen.getByText(
-    "Your data was erased, but PeraPlano could not finish resetting. Please close and reopen the app.",
+  // The words the user READS, not the state behind them: setting a message
+  // that never reaches the screen is the failure this whole screen is about.
+  await waitFor(() =>
+    expect(screen.getByTestId("privacy-wipe-error")).toHaveTextContent(WIPE_FAILED_COPY),
   );
-  // Nothing navigated — the user is not silently left on a half-reset app
-  // that LOOKS like it moved on when it did not.
+  // And it is the CONTEXT's sentence on screen, not a fixed one this screen
+  // keeps for itself — the message has to follow which failure happened.
+  expect(
+    screen.queryByText(
+      "Your data was erased, but PeraPlano could not finish resetting. Please close and reopen the app.",
+    ),
+  ).toBeNull();
   expect(mockReplace).not.toHaveBeenCalled();
+  expect(screen.getByTestId("wipe-confirm-erase").props.accessibilityState.busy).toBe(false);
+});
+
+test("nothing is printed under the Erase button before a wipe is ever attempted", async () => {
+  // The gate on the context's message. `errorMessage` is a channel the whole
+  // lock shares, so an unlock failure's leftovers must not appear here as a
+  // verdict on a wipe the user never ran.
+  mockLockErrorMessage = "Something went wrong. Try again.";
+
+  await renderPrivacyScreen();
+
+  expect(screen.queryByTestId("privacy-wipe-error")).toBeNull();
+});
+
+test("if the context ever rejects instead, a post-database failure still says the data was erased", async () => {
+  mockWipeAndStartOver.mockRejectedValueOnce(
+    new WipeIncompleteError(new Error("wipe: keystore delete failed")),
+  );
+  await renderPrivacyScreen();
+
+  fireEvent.press(screen.getByTestId("wipe-everything-trigger"));
+  fireEvent.press(screen.getByTestId("confirm-dialog-confirm"));
+  fireEvent.changeText(screen.getByTestId("wipe-confirm-input"), "DELETE");
+  fireEvent.press(screen.getByTestId("wipe-confirm-erase"));
+
+  await waitFor(() => expect(mockWipeAndStartOver).toHaveBeenCalledTimes(1));
+  await waitFor(() =>
+    expect(screen.getByTestId("privacy-wipe-error")).toHaveTextContent(
+      "Your data was erased, but PeraPlano could not finish resetting. Please close and reopen the app.",
+    ),
+  );
+  expect(mockReplace).not.toHaveBeenCalled();
+  expect(screen.getByTestId("wipe-confirm-erase").props.accessibilityState.busy).toBe(false);
+});
+
+test("if the context ever rejects instead, a pre-database failure does not claim the data was erased", async () => {
+  // A bare Error is what `wipeAndStartOver` propagates when `wipeDatabase()`
+  // itself failed. One message for both kinds told this user their ledger was
+  // gone while it was still on the phone.
+  mockWipeAndStartOver.mockRejectedValueOnce(new Error("disk I/O error"));
+  await renderPrivacyScreen();
+
+  fireEvent.press(screen.getByTestId("wipe-everything-trigger"));
+  fireEvent.press(screen.getByTestId("confirm-dialog-confirm"));
+  fireEvent.changeText(screen.getByTestId("wipe-confirm-input"), "DELETE");
+  fireEvent.press(screen.getByTestId("wipe-confirm-erase"));
+
+  await waitFor(() => expect(mockWipeAndStartOver).toHaveBeenCalledTimes(1));
+  await waitFor(() =>
+    expect(screen.getByTestId("privacy-wipe-error")).toHaveTextContent(
+      "Nothing was erased. Your data and your recovery words are still on this phone, so you can try again.",
+    ),
+  );
+  expect(
+    screen.queryByText(
+      "Your data was erased, but PeraPlano could not finish resetting. Please close and reopen the app.",
+    ),
+  ).toBeNull();
   expect(screen.getByTestId("wipe-confirm-erase").props.accessibilityState.busy).toBe(false);
 });
 
@@ -396,7 +889,12 @@ test("the erase runs the lock context's full start-over — key material include
   // lock gate. Nothing else is asserted about the destination here — that
   // belongs to the lock context's suite, not the screen's.
   expect(mockReplace).not.toHaveBeenCalled();
-  expect(screen.getByTestId("wipe-confirm-erase").props.accessibilityState.busy).toBe(false);
+  // WAITED FOR, NOT READ. The spinner clears in the handler's `finally`, after
+  // the call the wait above saw, and at nine workers the render that shows it
+  // landed after a bare read (GAP-052).
+  await waitFor(() =>
+    expect(screen.getByTestId("wipe-confirm-erase").props.accessibilityState.busy).toBe(false),
+  );
 });
 
 test("cancelling the first confirmation wipes nothing", async () => {

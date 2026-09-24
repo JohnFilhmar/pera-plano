@@ -19,7 +19,7 @@
 // they just did — while quietly leaving money in a pocket they had already
 // emptied.
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "expo-router";
 
 import { ManualEntryForm } from "@/components/transactions/manual_entry_form";
@@ -65,6 +65,20 @@ function transferErrorMessage(error: unknown): string {
   return "That transfer wasn't saved. Nothing was recorded — try again.";
 }
 
+/**
+ * The OPPOSITE claim to every sentence above, for the failures that happen
+ * after `recordTransfer` has already committed — the invalidation, or the
+ * `router.back()` that closes this screen.
+ *
+ * IT MUST NOT OFFER A RETRY. `recordTransfer` is not idempotent: pressing Save
+ * again writes the two legs and the fee a SECOND time, so the wording that is
+ * correct three lines up is the most expensive thing this screen could say
+ * here. Closing the sheet by hand is the entire remedy — the rows are in the
+ * ledger and the balances already moved.
+ */
+const TRANSFER_COMMITTED_MESSAGE =
+  "Your transfer was recorded, but this screen didn't close on its own. Close it and check your wallets — don't save it again.";
+
 export default function NewTransactionScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -80,6 +94,40 @@ export default function NewTransactionScreen() {
   // Query's own error state behind it; `recordTransfer` is a bare promise this
   // screen calls itself, so the screen has to hold what went wrong.
   const [transferError, setTransferError] = useState<string | null>(null);
+  // The in-flight flag Save is disabled by — see ManualEntryForm's `submitting`
+  // prop for why a second tap inside the write window is a second set of rows
+  // rather than a no-op.
+  //
+  // BOTH PATHS, AND A REF, which is the part that actually stops a same-tick
+  // double tap. `createTransaction.isPending` cannot do it alone: React Query
+  // notifies its observers on a microtask, so two presses inside ONE JS tick
+  // both read `isPending: false` and both commit.
+  //
+  // A `useState` flag cannot do it either, which is what this comment used to
+  // claim. Calling the setter does not change the value the CURRENT render's
+  // closure is holding, so the second press in that tick reads the same stale
+  // `false` the first one did. GAP-079 proved it on the loan sheet: the state
+  // flag was in place and one collector visit still wrote two payments. Only a
+  // ref mutates in time for a handler already running in this tick.
+  //
+  // The state below exists purely to re-render the button into its spinner;
+  // the ref is the guard. `isPending` is still ORed in for the button, because
+  // it stays true through the invalidation `onSuccess` awaits, a window the
+  // ref has already been cleared in.
+  const writeInFlightRef = useRef(false);
+  const [writeInFlight, setWriteInFlight] = useState(false);
+
+  function beginWrite(): boolean {
+    if (writeInFlightRef.current) return false;
+    writeInFlightRef.current = true;
+    setWriteInFlight(true);
+    return true;
+  }
+
+  function endWrite(): void {
+    writeInFlightRef.current = false;
+    setWriteInFlight(false);
+  }
   const { open } = useKeypad();
 
   // The amount is deliberately the first and only thing on screen (m1c rule
@@ -125,44 +173,75 @@ export default function NewTransactionScreen() {
       // Cleared on every attempt, so a message from the previous try cannot
       // sit under a Save that has just succeeded.
       setTransferError(null);
-      recordTransfer(
-        {
-          fromWalletId: draft.fromWalletId,
-          toWalletId: draft.toWalletId,
-          amount: draft.amount,
-          feeAmount: draft.feeAmount,
-          occurredAt: draft.occurredAt,
-          note: draft.note,
-        },
-        Date.now(),
-      ).then(() =>
-        // Same key set useCreateTransaction invalidates, minus reviewQueue
-        // (recordTransfer never raises a loan match) and swapped to BOTH
-        // wallets that moved instead of one, since a transfer's two legs
-        // land in two different wallets rather than the entry path's single
-        // walletId.
-        invalidateKeys(queryClient, [
-          queryKeys.transactions.all,
-          queryKeys.wallets.detail(draft.fromWalletId),
-          queryKeys.wallets.detail(draft.toWalletId),
-          queryKeys.wallets.lists(),
-        ]),
-      )
-        .then(() => router.back())
-        // THE SCREEN STAYS OPEN, AND SAYS WHY. Without this the rejection is an
-        // unhandled promise: no `back()`, no message, Save still live — a sheet
-        // that neither closed nor complained, leaving the user with no way to
-        // tell whether three rows landed or none did. This is the path that
-        // writes THREE rows, so "did my money move?" is the one question the
-        // screen must never leave unanswered. Save is enabled off the typed
-        // amount alone, so it is already live for the retry.
-        .catch((error: unknown) => setTransferError(transferErrorMessage(error)));
-      // Closed only AFTER the write commits — same reasoning as the entry
-      // path's onSuccess below: a `back()` fired before the two legs land
-      // would leave a failed transfer with nobody on screen to be told.
+      if (!beginWrite()) return;
+      // WHICH SIDE OF `recordTransfer` THE FAILURE FELL ON IS THE WHOLE POINT
+      // OF THIS FLAG, and of the `await` sequence rather than the `.then()`
+      // chain this used to be. Every message transferErrorMessage() can produce
+      // ends in "Nothing was recorded" — a promise the SERVICE makes and only
+      // the service can keep: validate() throws before a row is written, and
+      // the three inserts and the link run inside one withUnitOfWork. The two
+      // steps AFTER it, the invalidation and the `back()`, run on a ledger that
+      // has ALREADY committed. One catch spanning all three therefore printed
+      // "Nothing was recorded" on a screen where three rows had just landed —
+      // the one lie this path exists to prevent, told by the code written to
+      // prevent it.
+      //
+      // THE SCREEN STILL STAYS OPEN AND STILL SAYS WHY in both cases. Without
+      // that the rejection is an unhandled promise: no `back()`, no message,
+      // Save still live — a sheet that neither closed nor complained, leaving
+      // the user with no way to tell whether three rows landed or none did.
+      // This is the path that writes THREE rows, so "did my money move?" is the
+      // one question the screen must never leave unanswered. All that changes
+      // below is which of the two true answers it gives.
+      void (async () => {
+        let committed = false;
+        try {
+          await recordTransfer(
+            {
+              fromWalletId: draft.fromWalletId,
+              toWalletId: draft.toWalletId,
+              amount: draft.amount,
+              feeAmount: draft.feeAmount,
+              occurredAt: draft.occurredAt,
+              note: draft.note,
+            },
+            Date.now(),
+          );
+          committed = true;
+          // Same key set useCreateTransaction invalidates, minus reviewQueue
+          // (recordTransfer never raises a loan match) and swapped to BOTH
+          // wallets that moved instead of one, since a transfer's two legs
+          // land in two different wallets rather than the entry path's single
+          // walletId.
+          await invalidateKeys(queryClient, [
+            queryKeys.transactions.all,
+            queryKeys.wallets.detail(draft.fromWalletId),
+            queryKeys.wallets.detail(draft.toWalletId),
+            queryKeys.wallets.lists(),
+          ]);
+          // Closed only AFTER the write commits — same reasoning as the entry
+          // path's onSuccess below: a `back()` fired before the two legs land
+          // would leave a failed transfer with nobody on screen to be told.
+          router.back();
+        } catch (error: unknown) {
+          setTransferError(
+            // The money moved, and the screen failing to close is the only
+            // symptom the user can see. So this names the one thing left to do
+            // rather than offering a retry that would write the transfer twice.
+            committed ? TRANSFER_COMMITTED_MESSAGE : transferErrorMessage(error),
+          );
+        } finally {
+          // IN `finally`, NOT ON THE SUCCESS ARM. A rejected transfer leaves
+          // this screen open, and a flag cleared only where the write commits
+          // would leave the user reading "try again" under a Save that never
+          // comes back.
+          endWrite();
+        }
+      })();
       return;
     }
 
+    if (!beginWrite()) return;
     createTransaction.mutate(
       {
         walletId: draft.walletId,
@@ -180,7 +259,11 @@ export default function NewTransactionScreen() {
       },
       // Closed only AFTER the write commits. A `back()` fired optimistically
       // would leave a failed write with nobody on screen to be told about it.
-      { onSuccess: () => router.back() },
+      //
+      // `onSettled`, not `onSuccess`, for the flag — the transfer path's
+      // `finally` for the same reason: a write that failed leaves this screen
+      // open, and Save has to come back for the retry.
+      { onSuccess: () => router.back(), onSettled: endWrite },
     );
   }
 
@@ -196,6 +279,7 @@ export default function NewTransactionScreen() {
         onAmountChange={setAmount}
         onSubmit={handleSubmit}
         submitError={transferError}
+        submitting={createTransaction.isPending || writeInFlight}
         onCreateCashWallet={() => router.push("/wallet/new")}
         onClose={() => router.back()}
       />

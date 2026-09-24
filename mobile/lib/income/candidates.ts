@@ -14,6 +14,11 @@
 // overspending. A missed real payday only delays detection.
 import type { Centavos, Transaction } from "@/types/domain";
 
+// NOT A RUNTIME CYCLE, though it reads like one: `paydays.ts` imports only the
+// TYPE `CandidateEvent` back from this file, and `import type` is erased by the
+// compiler. One collapse, one answer — see that module's header.
+import { collapsePaydays, type Payday } from "./paydays";
+
 export type CandidateEvent = {
   transactionId: string;
   walletId: string;
@@ -124,13 +129,72 @@ function streamKey(event: CandidateEvent): string {
   return `${event.walletId}|${payer}`;
 }
 
+/**
+ * One band under one key. `amounts` holds one sample per PAYDAY the band has
+ * accepted — the day's combined pay, not each credit — which is what makes
+ * `amounts.length` the group's payday count and `median(amounts)` a typical
+ * payday rather than a typical deposit.
+ */
 type Group = { key: string; amounts: number[]; events: CandidateEvent[] };
+
+/** Rule 4's band: "amount within ±30% of the group's running median". */
+const BAND_TOLERANCE = 0.3;
+
+/** The closest in-band group under `key`, or `undefined` when none accepts `amount`. */
+function bandFor(groups: Group[], key: string, amount: Centavos): Group | undefined {
+  // The CLOSEST in-band group, not merely the first. Two bands under one key
+  // can both accept a value that sits between them, and the nearer one is the
+  // one it belongs to.
+  let best: Group | undefined;
+  let bestDistance = Infinity;
+  for (const group of groups) {
+    if (group.key !== key) continue;
+    const middle = median(group.amounts);
+    const distance = Math.abs(amount - middle);
+    if (distance <= middle * BAND_TOLERANCE && distance < bestDistance) {
+      best = group;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
 
 /**
  * The primary income stream — income rule 4: candidates grouped by
  * `(walletId, normalized merchant/counterparty, amount within ±30% of the
  * group's RUNNING median)`, largest group wins. MVP models exactly one
  * IncomeProfile, and this is the stream it represents.
+ *
+ * THE BAND IS ASKED OF A PAYDAY, NOT OF A CREDIT (GAP-117), which is why the
+ * candidates are collapsed per key with `collapsePaydays` before anything is
+ * measured. "Is this the same pay stream" is a question about the pay that
+ * arrived on a day, and an employer in this market splits one packet into two
+ * deposits often enough to be ordinary. Banded per credit, a user paid whole
+ * most of the time who receives ONE payday as two halves cannot fit either half
+ * into the full-pay band: the halves form a second group, that group loses the
+ * largest-group sort, and the split payday is filtered out of the evidence a
+ * stage before `maybeEmitPayday` ever runs. It fails silently, and only for the
+ * payday that was split.
+ *
+ * COLLAPSED PER KEY, not globally. A payday is a local date, but two credits on
+ * one date into two different wallets are two streams (rule 4 keys on
+ * `walletId` first), so joining them would invent a payday that never landed
+ * anywhere.
+ *
+ * A DAY WHOSE TOTAL IS OUT OF BAND FALLS BACK TO ITS INDIVIDUAL CREDITS, which
+ * is rule 8: "an extra off-schedule credit (a bonus, or the mandatory December
+ * 13th-month pay) does not break a confirmed cadence". A ₱50,000 13th month
+ * landing on the same day as an ₱18,500 salary makes the day's total ₱68,500,
+ * and dropping the whole day would take the salary — and its matched expected
+ * window — with it. Judged individually the salary still joins its stream and
+ * the bonus starts its own, exactly as it did before this function collapsed
+ * anything. The fallback never widens the band: every credit still has to sit
+ * within ±30% of some existing group's median.
+ *
+ * A KEY'S FIRST PAYDAY ALWAYS SEEDS ITS GROUP WHOLE, before that fallback can
+ * apply. Seeding from a half instead would set the running median to half a
+ * payday, and every later whole payday would then read as out of band — which
+ * is the original bug, reintroduced through the escape hatch.
  *
  * RUNNING median, not the group's first amount, so a raise that arrives over
  * several pay periods stays one stream instead of splitting into a "before" and
@@ -145,40 +209,66 @@ type Group = { key: string; amounts: number[]; events: CandidateEvent[] };
  * thresholds; suppressing a singleton here would hide the FIRST payday of a
  * genuinely new stream, which is exactly one event until the second arrives.
  *
- * Ties go to the group whose first event is earliest — `Array.sort` is stable
+ * THE WINNER IS THE GROUP WITH THE MOST PAYDAYS, not the most credits. Rule 4's
+ * "largest recurring group" counts recurrences, and a stream paid in halves has
+ * twice the credits for the same number of paydays — counting credits would let
+ * it outrank a genuinely more frequent stream on nothing but its deposit habit.
+ *
+ * Ties go to the group whose first payday is earliest — `Array.sort` is stable
  * and the groups are built in chronological order. An arbitrary winner would
  * make the user's income figure depend on iteration order.
  */
 export function primaryStream(events: CandidateEvent[]): CandidateEvent[] {
   const groups: Group[] = [];
-  const chronological = [...events].sort((a, b) => a.occurredAt - b.occurredAt);
 
-  for (const event of chronological) {
-    const key = streamKey(event);
-
-    // The CLOSEST in-band group, not merely the first. Two bands under one key
-    // can both accept a value that sits between them, and the nearer one is the
-    // one it belongs to.
-    let best: Group | undefined;
-    let bestDistance = Infinity;
-    for (const group of groups) {
-      if (group.key !== key) continue;
-      const middle = median(group.amounts);
-      const distance = Math.abs(event.amount - middle);
-      if (distance <= middle * 0.3 && distance < bestDistance) {
-        best = group;
-        bestDistance = distance;
-      }
+  for (const { key, payday } of paydaysByKey(events)) {
+    // A key with no band yet has nothing to be measured against, so its first
+    // payday defines the band rather than being tested by one.
+    if (!groups.some((group) => group.key === key)) {
+      groups.push({ key, amounts: [payday.amount], events: [...payday.credits] });
+      continue;
     }
 
-    if (best) {
-      best.amounts.push(event.amount);
-      best.events.push(event);
-    } else {
-      groups.push({ key, amounts: [event.amount], events: [event] });
+    const wholeDay = bandFor(groups, key, payday.amount);
+    if (wholeDay) {
+      wholeDay.amounts.push(payday.amount);
+      wholeDay.events.push(...payday.credits);
+      continue;
+    }
+
+    for (const credit of payday.credits) {
+      const band = bandFor(groups, key, credit.amount);
+      if (band) {
+        band.amounts.push(credit.amount);
+        band.events.push(credit);
+      } else {
+        groups.push({ key, amounts: [credit.amount], events: [credit] });
+      }
     }
   }
 
   if (groups.length === 0) return [];
-  return [...groups].sort((a, b) => b.events.length - a.events.length)[0].events;
+  const winner = [...groups].sort((a, b) => b.amounts.length - a.amounts.length)[0];
+  return [...winner.events].sort((a, b) => a.occurredAt - b.occurredAt);
+}
+
+/**
+ * Every candidate's payday, tagged with the stream key it belongs to, oldest
+ * first. The chronological order is what keeps the running median running and
+ * the tie-break above meaningful.
+ */
+function paydaysByKey(events: CandidateEvent[]): { key: string; payday: Payday }[] {
+  const byKey = new Map<string, CandidateEvent[]>();
+  for (const event of events) {
+    const key = streamKey(event);
+    const existing = byKey.get(key);
+    if (existing === undefined) byKey.set(key, [event]);
+    else existing.push(event);
+  }
+
+  return Array.from(byKey, ([key, keyEvents]) =>
+    collapsePaydays(keyEvents).map((payday) => ({ key, payday })),
+  )
+    .flat()
+    .sort((a, b) => a.payday.credits[0].occurredAt - b.payday.credits[0].occurredAt);
 }

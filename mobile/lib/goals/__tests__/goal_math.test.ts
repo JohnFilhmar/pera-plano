@@ -5,8 +5,8 @@
 // "ahead" state — which the spec does not contain. The project owner settled it
 // on 2026-08-15 the way the plan's own Global Constraints already do: the spec
 // wins.
-import { computeGoalProgress } from "../goal_math";
-import type { Goal } from "@/types/domain";
+import { computeGoalProgress, milestoneFor, milestonesCrossed, previousMilestone } from "../goal_math";
+import type { Goal, GoalMilestone } from "@/types/domain";
 
 const on = (y: number, m: number, d: number) => new Date(y, m, d, 12, 0).getTime();
 
@@ -285,4 +285,60 @@ test("computeGoalProgress is pure — same inputs, same answer", () => {
   });
 
   expect(first).toEqual(second);
+});
+
+// ---------------------------------------------------------------------------
+// Milestones (goals rule 12, GAP-055). The highest of 25, 50, 75 and 100
+// percent the balance meets, in integer arithmetic so a centavo target that
+// does not divide evenly is never a float comparison.
+// ---------------------------------------------------------------------------
+describe("milestoneFor", () => {
+  test.each([
+    [0, 1_000_000, 0],
+    [249_999, 1_000_000, 0],
+    [250_000, 1_000_000, 25],
+    [499_999, 1_000_000, 25],
+    [500_000, 1_000_000, 50],
+    [750_000, 1_000_000, 75],
+    [999_999, 1_000_000, 75],
+    [1_000_000, 1_000_000, 100],
+    [1_250_000, 1_000_000, 100],
+    [-50_000, 1_000_000, 0],
+    [1, 3, 25],
+  ])("a balance of %i against a target of %i meets %i", (balance, target, expected) => {
+    expect(milestoneFor(balance, target)).toBe(expected);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Which milestones one change crossed (owner's ruling, 2026-09-24: every one of
+// them, not just the highest), and the level below a given one, which is how a
+// new goal is seeded so that only the level it starts at is announced.
+// ---------------------------------------------------------------------------
+describe("milestonesCrossed", () => {
+  test.each([
+    [0, 0, 1_000_000, []],
+    [0, 250_000, 1_000_000, [25]],
+    [0, 800_000, 1_000_000, [25, 50, 75]],
+    [0, 1_000_000, 1_000_000, [25, 50, 75, 100]],
+    [25, 800_000, 1_000_000, [50, 75]],
+    [75, 800_000, 1_000_000, []],
+    [100, 1_000_000, 1_000_000, []],
+    // A dip leaves the mark where it was, so nothing is owed on the way back up.
+    [50, 300_000, 1_000_000, []],
+  ])("from a mark of %i, a balance of %i against %i owes %j", (from, balance, target, expected) => {
+    expect(milestonesCrossed(from as GoalMilestone, balance, target)).toEqual(expected);
+  });
+});
+
+describe("previousMilestone", () => {
+  test.each([
+    [0, 0],
+    [25, 0],
+    [50, 25],
+    [75, 50],
+    [100, 75],
+  ])("the level below %i is %i", (milestone, expected) => {
+    expect(previousMilestone(milestone as GoalMilestone)).toBe(expected);
+  });
 });

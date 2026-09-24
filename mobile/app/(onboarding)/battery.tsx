@@ -4,16 +4,19 @@
 // (lib/onboarding/onboarding_state.ts). Reached from access.tsx; advances to
 // wallets.tsx.
 //
-// ADVANCES TO wallets.tsx, NOT app/(onboarding)/providers.tsx, EVEN THOUGH
-// `nextStep("battery")` LITERALLY RETURNS `"providers"`. That name in
-// ONBOARDING_STEPS is reserved, not routed (onboarding_state.ts's own header
-// and task-3-report.md's Decision 5): app/(onboarding)/providers.tsx already
-// ran once, earlier in this same session, inside app/(onboarding)/index.tsx's
-// pre-flow sequencer, where its `onDone` prop was wired. Pushing here a
-// second time mounts it fresh with no props -- `onDone` is `undefined`, so
-// `commit()`'s `.finally(() => onDone?.())` silently does nothing and the
-// user is stranded with no forward action. Skip straight to the next
-// actually-rendered numbered-flow screen instead.
+// ADVANCES TO providers.tsx, WHICH `nextStep("battery")` HAS ALWAYS SAID
+// (GAP-091). It used to skip past it to wallets.tsx, because the picker ran
+// once already in app/(onboarding)/index.tsx's pre-flow sequencer and mounting
+// it again here left it with no `onDone` and no forward action. The picker has
+// moved into this flow and navigates itself, so the reserved slot is a real
+// route now and the detour is gone.
+//
+// WHY IT HAD TO MOVE. The picker's whole subject is "apps we've seen", and the
+// listener has seen nothing until notification access is granted -- which is
+// the step two before this one. Running before the grant meant
+// `listObservedPackages()` returned an empty list on every fresh install, so
+// the picker offered nothing but seed guesses and the wallets step, deriving
+// from the same empty list moments later, proposed a cash wallet alone.
 //
 // REUSES oem_guidance.tsx RATHER THAN DUPLICATING IT (rule 4: "shows the
 // matching guidance from oem_guidance ... rather than generic advice").
@@ -42,42 +45,35 @@
 // "unverifiable, so don't pretend to verify it" call docs rule 17 already
 // makes: a skipped or incomplete battery exemption sets the at-risk state
 // elsewhere (Home's listener-health surface), never a hard stop here.
+//
+// THE INTENT ITSELF NOW LIVES IN lib/onboarding/battery_settings.ts (GAP-018),
+// not here. This step is no longer its only caller: skipping it used to be
+// permanent, so app/(tabs)/more/permissions.tsx now offers the same action
+// from Settings, and both fire one shared `openBatterySettings()` rather than
+// two copies of an intent string nothing type-checks.
 import { useCallback } from "react";
 import { useRouter } from "expo-router";
-import { Linking } from "react-native";
 
 import { BatteryExplainer } from "@/components/onboarding/battery_explainer";
 import { OnboardingFrame } from "@/components/onboarding/onboarding_frame";
 import { OemGuidance } from "@/components/privacy/oem_guidance";
-
-/**
- * `Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS` — the app-list
- * screen where the user finds PeraPlano and sets it to "Not optimized"/
- * "Allow". Deliberately NOT `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`
- * (the direct per-app system dialog): that one needs the
- * `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` manifest permission declared and
- * justified at Play review, the same category of cost this app already
- * avoided once for `QUERY_ALL_PACKAGES` (docs/04-features/01-onboarding.md
- * open question 2). The list screen needs no new permission at all.
- */
-const BATTERY_SETTINGS_INTENT = "android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS";
+import { openBatterySettings } from "@/lib/onboarding/battery_settings";
 
 export default function BatteryScreen({ brand }: { brand?: string | null } = {}) {
   const router = useRouter();
 
-  // NOT nextStep("battery") ("providers" -- see this file's header: that
-  // name is reserved, not a second rendering of app/(onboarding)/providers.tsx).
+  // nextStep("battery") === "providers" (lib/onboarding/onboarding_state.ts).
   // Hardcoded, like every other routed step in this task: the literal has to
   // match a real file for expo-router to resolve it.
   const advance = useCallback(() => {
-    router.push("/(onboarding)/wallets");
+    router.push("/(onboarding)/providers");
   }, [router]);
 
   const handlePrimary = useCallback(() => {
-    Linking.sendIntent(BATTERY_SETTINGS_INTENT).catch(() => {
-      // Best-effort only (see this file's header) — nothing to recover from,
-      // and no way to verify the outcome regardless.
-    });
+    // Best-effort only (see this file's header and `openBatterySettings`'s own
+    // doc) — nothing to recover from, and no way to verify the outcome
+    // regardless, so this advances rather than waiting on an answer.
+    openBatterySettings();
     advance();
   }, [advance]);
 

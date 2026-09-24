@@ -27,6 +27,7 @@ const EMERGENCY: AllocationProposal = {
   requested: 200000,
   fromWalletId: "w-payroll",
   toWalletId: "w-gsave",
+  paydayDate: "2026-08-15",
 };
 
 const TRAVEL: AllocationProposal = {
@@ -36,6 +37,7 @@ const TRAVEL: AllocationProposal = {
   requested: 300000, // trimmed by rule 3's cap
   fromWalletId: "w-payroll",
   toWalletId: "w-seabank",
+  paydayDate: "2026-08-15",
 };
 
 // NumericField (inside each row's amount field) throws without a
@@ -58,6 +60,7 @@ const TRAVEL: AllocationProposal = {
 function renderSheet(over: Partial<Parameters<typeof AllocationSheet>[0]> = {}) {
   const onConfirm = jest.fn();
   const onDismiss = jest.fn();
+  const onSkip = jest.fn();
   render(
     <KeypadProvider>
       <KeypadHost />
@@ -67,11 +70,12 @@ function renderSheet(over: Partial<Parameters<typeof AllocationSheet>[0]> = {}) 
         paydayAmount={1850000}
         onConfirm={onConfirm}
         onDismiss={onDismiss}
+        onSkip={onSkip}
         {...over}
       />
     </KeypadProvider>,
   );
-  return { onConfirm, onDismiss };
+  return { onConfirm, onDismiss, onSkip };
 }
 
 test("lists every proposal and totals them against the payday", () => {
@@ -255,4 +259,117 @@ test("the keypad draws above the sheet, not behind it", () => {
   // from the row's separate formatCentavos summary a line below, which would
   // read "₱500.00", so this is not an ambiguous match.
   expect(screen.getByText("₱500")).toBeTruthy();
+});
+
+// ---------------------------------------------------------------------------
+// Every payday starts from its own proposals — GAP-084. The sheet is mounted
+// once for the app's lifetime (app/_layout.tsx:178-189) with only `visible`
+// toggling, and its rows are keyed by goal id, which does not change between
+// paydays: a goal unchecked or edited down on one payday came back that way on
+// the next, and the ledger recorded an amount chosen for a different payday.
+// ---------------------------------------------------------------------------
+function sheetTree(proposals: AllocationProposal[], onConfirm: jest.Mock) {
+  // Same mount ORDER as renderSheet — see its comment; it is load-bearing.
+  return (
+    <KeypadProvider>
+      <KeypadHost />
+      <AllocationSheet
+        visible
+        proposals={proposals}
+        paydayAmount={1850000}
+        onConfirm={onConfirm}
+        onDismiss={jest.fn()}
+        onSkip={jest.fn()}
+      />
+    </KeypadProvider>
+  );
+}
+
+test("A NEW PAYDAY'S PROPOSALS RESET THE SHEET, rather than carrying the last one's edits", () => {
+  const onConfirm = jest.fn();
+  const view = render(sheetTree([EMERGENCY, TRAVEL], onConfirm));
+
+  // Last payday: Travel skipped, Emergency trimmed to ₱1,500.
+  fireEvent.press(screen.getByTestId(`allocation-toggle-${TRAVEL.goalId}`));
+  typeAmount(`allocation-amount-${EMERGENCY.goalId}`, "1500");
+
+  // This payday: same goals, different figures.
+  const nextEmergency: AllocationProposal = { ...EMERGENCY, amount: 250000, requested: 250000 };
+  const nextTravel: AllocationProposal = { ...TRAVEL, amount: 120000, requested: 120000 };
+  view.rerender(sheetTree([nextEmergency, nextTravel], onConfirm));
+
+  expect(
+    screen.getByTestId(`allocation-toggle-${TRAVEL.goalId}`).props.accessibilityState.checked,
+  ).toBe(true);
+  expect(screen.getByTestId("allocation-total").props.children).toBe("₱3,700.00 of ₱18,500.00");
+
+  fireEvent.press(screen.getByTestId("allocation-confirm"));
+  const accepted = onConfirm.mock.calls[0][0] as AllocationProposal[];
+  expect(accepted.map((proposal) => [proposal.goalId, proposal.amount])).toEqual([
+    [EMERGENCY.goalId, 250000],
+    [TRAVEL.goalId, 120000],
+  ]);
+});
+
+// The other half of the same rule: reseeding is keyed on what the proposals
+// SAY, not on the array's identity, so a parent re-render mid-edit must not
+// throw away what the user is in the middle of typing.
+test("a re-render with the same proposals leaves the user's edits alone", () => {
+  const onConfirm = jest.fn();
+  const view = render(sheetTree([EMERGENCY, TRAVEL], onConfirm));
+
+  typeAmount(`allocation-amount-${EMERGENCY.goalId}`, "1500");
+  // A fresh array, same figures — what a parent hands down on any re-render.
+  view.rerender(sheetTree([{ ...EMERGENCY }, { ...TRAVEL }], onConfirm));
+
+  fireEvent.press(screen.getByTestId("allocation-confirm"));
+  const accepted = onConfirm.mock.calls[0][0] as AllocationProposal[];
+  expect(accepted.find((proposal) => proposal.goalId === EMERGENCY.goalId)?.amount).toBe(150000);
+});
+
+// ---------------------------------------------------------------------------
+// Skipping (GAP-056, goals rule 14c). "Not now" leaves the payday's
+// contributions pending, because the user may still move the money in their
+// bank app. Skipping is its own button, and an unchecked row is a skip too:
+// the row already says "Skipped".
+// ---------------------------------------------------------------------------
+test("Skip this payday skips every proposal and records nothing", () => {
+  const { onConfirm, onDismiss, onSkip } = renderSheet();
+
+  fireEvent.press(screen.getByTestId("allocation-skip-payday"));
+
+  expect(onSkip).toHaveBeenCalledTimes(1);
+  expect(onConfirm).not.toHaveBeenCalled();
+  expect(onDismiss).not.toHaveBeenCalled();
+});
+
+test("confirm hands the unchecked rows back as declined", () => {
+  const { onConfirm } = renderSheet();
+
+  fireEvent.press(screen.getByTestId(`allocation-toggle-${TRAVEL.goalId}`)); // uncheck
+  fireEvent.press(screen.getByTestId("allocation-confirm"));
+
+  const declined = onConfirm.mock.calls[0][1] as AllocationProposal[];
+  expect(declined.map((proposal) => proposal.goalId)).toEqual([TRAVEL.goalId]);
+});
+
+test("Not now dismisses without skipping", () => {
+  const { onDismiss, onSkip } = renderSheet();
+
+  fireEvent.press(screen.getByTestId("allocation-skip"));
+
+  expect(onDismiss).toHaveBeenCalledTimes(1);
+  expect(onSkip).not.toHaveBeenCalled();
+});
+
+test("a checked row cleared to zero is neither recorded nor skipped (review fix)", () => {
+  // Its chip still reads "Included", so skipping it would contradict the screen.
+  const { onConfirm } = renderSheet();
+
+  clearAmount(`allocation-amount-${EMERGENCY.goalId}`);
+  fireEvent.press(screen.getByTestId("allocation-confirm"));
+
+  const [accepted, declined] = onConfirm.mock.calls[0] as [AllocationProposal[], AllocationProposal[]];
+  expect(accepted.map((proposal) => proposal.goalId)).toEqual([TRAVEL.goalId]);
+  expect(declined).toEqual([]);
 });

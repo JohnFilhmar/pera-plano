@@ -165,6 +165,13 @@ export function WalletCard({
   } else if (hasProvider) {
     statusLine = <ListeningLine />;
   } else {
+    // "reconcile weekly" IS NOW A PROMISE SOMETHING KEEPS (GAP-010).
+    // `lib/wallets/reconcile_scheduler.ts` runs that 7-day cadence
+    // (`RECONCILE_CADENCE_MS`); until it existed this row was the app's only
+    // statement of a schedule nothing ran. The word stays a literal here rather
+    // than being imported from that module, deliberately: the import would pull
+    // `postAlert` and the whole expo-notifications stack into a presentational
+    // card this file's header keeps free of even a database.
     statusLine = (
       <Text numberOfLines={1} className="text-secondary font-medium text-fg-2 dark:text-fg-2-dark">
         Manual · reconcile weekly

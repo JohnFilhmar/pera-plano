@@ -82,6 +82,26 @@ export function hasBackup(): boolean {
 }
 
 /**
+ * Reports' trend view (docs/04-features/10-reports.md's states table: a Free
+ * user who "opens Trends / custom range" gets a "Locked preview with Plus
+ * prompt; no data shown", and docs/05-monetization.md §4's Reports row:
+ * "Trends, custom ranges, and comparison views render as locked previews").
+ *
+ * ITS OWN FUNCTION for exactly the reason `hasCsvExport` below gives for
+ * being one: trends and export are separate rows of the tier matrix
+ * (docs/05-monetization.md §2) that only happen to coincide in MVP.
+ *
+ * The SCREEN asks this, not just `PlusGate`: the gate decides how to frame a
+ * child, but only the call site can decide WHICH child — the real series, or
+ * the sample frame that replaces it — and rule 5 of m2b Task 3 (see
+ * `hasPaydayAutoAllocation` above) wants that question asked here rather than
+ * as a `getTier() === "plus"` written into the screen.
+ */
+export function hasTrends(): boolean {
+  return getTier() === "plus";
+}
+
+/**
  * Reports' CSV export (docs/04-features/10-reports.md Flow D: "CSV export is
  * Plus. Free users see the Export action disabled with the Plus prompt.").
  *

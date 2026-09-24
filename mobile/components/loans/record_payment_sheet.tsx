@@ -25,7 +25,7 @@
 // BOTH WRITES OR NEITHER is settled in the service, not here — see
 // `recordManualPayment`'s own header for why a transaction without its loan
 // link is worse than no transaction at all.
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 
 import { formatCentavos } from "@/components/ui/amount_text";
@@ -93,6 +93,14 @@ export function RecordPaymentSheet({
   const [day, setDay] = useState(toDateIso(new Date(now)));
   const [chosenWalletId, setChosenWalletId] = useState<string | null>(null);
   const [showErrors, setShowErrors] = useState(false);
+  // The write this sheet has already started, in TWO forms: a REF, because
+  // `confirm` has to read its own write back inside the same JS tick (a state
+  // setter does not change what the current render's closure holds, and this
+  // file's own suite proves a `useState` here writes two payments for one
+  // collector visit), and STATE, because a ref changing re-renders nothing and
+  // the button has a spinner to show. See `confirm` below.
+  const writeInFlight = useRef(false);
+  const [writing, setWriting] = useState(false);
 
   const record = useRecordPayment();
 
@@ -109,7 +117,28 @@ export function RecordPaymentSheet({
     setDay(toDateIso(new Date(now)));
     setChosenWalletId(null);
     setShowErrors(false);
+    writeInFlight.current = false;
+    setWriting(false);
   }
+
+  // EVERY OPENING STARTS BLANK (GAP-079). The loan screen keeps this sheet in
+  // the tree and toggles `visible`, and only the `BottomSheet` inside stops
+  // rendering — so an amount typed and then dismissed (the backdrop and system
+  // back both go straight to `onDismiss`, which the Cancel button's `reset` is
+  // no substitute for) was still in the field the next time the sheet opened,
+  // one tap from recording a payment on a loan the user was only looking at.
+  //
+  // The same effect shape correct_sheet.tsx already uses for the same reason.
+  useEffect(() => {
+    if (!visible) return;
+    reset();
+    // The mutation's own `isError` is rendered below, so a failure the user
+    // walked away from is part of the previous opening too.
+    record.reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `reset` is
+    // re-created every render and `record.reset` is a bound method on the
+    // observer; neither belongs in a dependency list keyed on the opening.
+  }, [visible]);
 
   function confirm(): void {
     // The three conditions are re-stated rather than read off `amountMissing` /
@@ -118,11 +147,26 @@ export function RecordPaymentSheet({
     // compiles only with a non-null assertion on each — and an assertion is
     // exactly the thing that would keep compiling on the day one of these
     // becomes reachable while null. The booleans stay for the error messages.
+    //
+    // AHEAD OF ALL THREE, a write already in flight (GAP-079): it outranks
+    // every other reason this sheet has to accept or refuse a tap.
+    //
+    // A SYNCHRONOUS FLAG, NOT `record.isPending` ALONE (GAP-060). React Query
+    // notifies its observers on a timer, so two presses inside ONE JS tick
+    // both read `isPending: false` and both commit — two transactions AND two
+    // loan payments for one collector visit, which halves the outstanding
+    // balance the user is trying to keep honest. `isPending` is still ORed
+    // into the button's `loading` below, because it stays true across the
+    // invalidation `onSuccess` awaits, which is a window the ref has already
+    // been cleared in.
+    if (writeInFlight.current || record.isPending) return;
     if (amount <= 0 || walletId === null || occurredAt === null) {
       setShowErrors(true);
       return;
     }
     setShowErrors(false);
+    writeInFlight.current = true;
+    setWriting(true);
     record.mutate(
       { loanId: loan.id, amount, walletId, occurredAt },
       {
@@ -130,6 +174,13 @@ export function RecordPaymentSheet({
           reset();
           onDone?.();
           onDismiss();
+        },
+        // `onSettled`, NOT the success arm. A rejected payment leaves this
+        // sheet open with the amount, the date and the wallet still chosen,
+        // and the retry it asks for needs the button back.
+        onSettled: () => {
+          writeInFlight.current = false;
+          setWriting(false);
         },
       },
     );
@@ -266,6 +317,19 @@ export function RecordPaymentSheet({
           transaction.
         </Text>
 
+        {/* IN PLACE, OVER THE FORM THAT STILL HOLDS THE ANSWER (GAP-079). The
+            global failure toast (GAP-013) says something failed; only this
+            sheet can say that BOTH writes were refused together — the
+            transaction and its loan link are one unit of work
+            (`recordManualPayment`) — so the loan balance is exactly where it
+            was and this form is still the way to try again. */}
+        {record.isError ? (
+          <Text testID="loan-payment-error" className="text-sm text-danger dark:text-danger-dark">
+            That payment could not be recorded. Nothing was written and this loan&apos;s balance is
+            unchanged — try again.
+          </Text>
+        ) : null}
+
         <View className="flex-row gap-2">
           <View className="flex-1">
             <Button
@@ -283,7 +347,7 @@ export function RecordPaymentSheet({
               testID="loan-payment-confirm"
               title="Record payment"
               onPress={confirm}
-              loading={record.isPending}
+              loading={record.isPending || writing}
             />
           </View>
         </View>

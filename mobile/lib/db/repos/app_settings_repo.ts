@@ -40,11 +40,61 @@ import { UNKNOWN_INCOME_DETECTION, type IncomeDetectionState } from "@/types/con
 // beside the rule that reads it (IA §6.2 rule 7) rather than duplicated here,
 // the same way `IncomeDetectionState` above is defined beside income's own.
 import type { HeldPeriod } from "@/lib/alerts/notification_policy";
+import type { OnboardingStep } from "@/lib/onboarding/onboarding_state";
+
+/**
+ * Where the one-time "your income figure moved" notice has got to (GAP-117).
+ *
+ * `undecided` — no detection pass has judged this device yet · `due` — the
+ * figure moved because split paydays are now counted as one payday, and the
+ * user has not been told · `done` — told, or judged not to apply. `done` covers
+ * both endings on purpose: the notice never returns either way, and a fourth
+ * state would only be a record of something no reader can act on.
+ */
+export type SplitPaydayNotice = "undecided" | "due" | "done";
 
 export type AppSettings = {
   onboarding_complete: boolean;
+  /**
+   * How far through the numbered flow the user has got, so a run that is
+   * interrupted resumes where it stopped rather than at "welcome" (GAP-067).
+   *
+   * THE TYPE IS THE CONTRACT, NOT A GUARANTEE ABOUT THE ROW. Every setting is
+   * stored as JSON and this one is written by whichever app version was
+   * installed at the time, so a value outside `ONBOARDING_STEPS` is reachable
+   * after a downgrade or a renamed step. `readOnboardingStep` validates what
+   * it reads and falls back to the first step; nothing else should read this
+   * key directly.
+   *
+   * Meaningless once `onboarding_complete` is true, and deliberately not
+   * cleared: `app/index.tsx` routes on the flag first, so the stale value is
+   * never read again.
+   */
+  onboarding_step: OnboardingStep;
   capture_enabled: boolean;
   telemetry_enabled: boolean;
+  /**
+   * The earliest instant `lib/wallets/reconcile_scheduler.ts` may show the next
+   * cash reconciliation prompt (docs/04-features/02-wallets.md §cash Wallet
+   * reconciliation). `null` means never asked — the fresh-install default,
+   * which never blocks a prompt.
+   *
+   * A GATE ON THE NEXT PROMPT, NOT A RECORD OF THE LAST ONE, which is why it is
+   * spelled `_prompt_at` rather than `_last_prompted_at` like the tracking
+   * notice's key below. The scheduler writes `now + RECONCILE_CADENCE_MS` the
+   * moment a prompt actually lands, so being asked once pushes the next ask a
+   * full week out whether the user answers, snoozes or ignores it.
+   *
+   * WRITTEN ONLY WHEN THE OS ACCEPTED THE NOTICE, exactly as
+   * `tracking_interrupted_last_notified_at` is: `postAlert` returns `null` when
+   * notification permission is missing, and stamping this for a prompt nobody
+   * saw would silence the following week's real one.
+   *
+   * GLOBAL, NOT PER WALLET. Rule 15's per-Wallet snooze and "don't ask for this
+   * Wallet again" need a control to set them, and both live in the reconcile
+   * sheet / wallet settings; a key with no writer is the `theme_preference` trap
+   * this file's header describes, so it is deliberately not added ahead of them.
+   */
   cash_reconcile_prompt_at: number | null;
   /**
    * When `services/parser_rules.ts`'s `checkForRulesetUpdate` last actually
@@ -140,8 +190,32 @@ export type AppSettings = {
    * Without a row to read back, the switch list would have no way to know
    * which providers are currently paused after a cold start; this key is
    * that readable copy, and every write to it is paired with the matching
-   * `setProviderFilter` call so the two can never disagree about which
-   * packages capture.
+   * `setProviderFilter` call.
+   *
+   * PAIRED WRITES ARE NOT ENOUGH, THOUGH, and this doc used to claim they were
+   * ("so the two can never disagree"). They can. The native copy is stored
+   * SEALED, and a sealed value that cannot be OPENED — Keystore reset, restore
+   * onto another device, a preferences file from a foreign build — falls back
+   * to the empty set, which the listener reads as ALLOW EVERY PACKAGE
+   * (`CapturePrefs.getProviderFilter`). Nothing on this side can detect that,
+   * precisely because there is no getter. What closes it is
+   * `resyncProviderFilter()` in `lib/bootstrap.ts`: it pushes this row back
+   * across the bridge on every launch, so a filter that went allow-all behind
+   * the app's back is restored at the next start rather than never.
+   *
+   * That re-sync only ever NARROWS, so an empty array here is left alone
+   * rather than pushed as `setProviderFilter([])`. An empty row does not mean
+   * "the user wants allow-all" — it is also the fresh-install default, and what
+   * an onboarding user who allowed everything or tapped Skip leaves behind. See
+   * that function for the full reasoning.
+   *
+   * `app/(onboarding)/providers.tsx` DOES write here now, indirectly (GAP-116).
+   * It has no open database of its own — it renders above the unlock gate — so
+   * it hands the complement of its allowlist to
+   * `lib/onboarding/pending_provider_pause.ts`, and
+   * `persistOnboardingProviderPause()` in lib/bootstrap.ts stores it on the
+   * first launch that can. Before that, a selection the device failed to seal
+   * had no row to be restored from at all.
    */
   paused_provider_packages: string[];
   /**
@@ -237,11 +311,27 @@ export type AppSettings = {
    * the same step, the way `bill_reminder_ids` and its cycle keys are.
    */
   quiet_hours_held_period: HeldPeriod | null;
+  /**
+   * GAP-117's one-time notice, tracked here rather than inside
+   * `income_detection_state` even though income detection is what settles it.
+   * That value is detection's working NOTES and is rewritten wholesale on every
+   * pass (see `types/control.ts`); this one has to survive exactly as many
+   * rewrites as it takes the user to open the Income screen once.
+   *
+   * `undecided` IS THE RIGHT FRESH-INSTALL DEFAULT, and it costs a new install
+   * nothing: the first detection pass on a device with no previously stored
+   * `averageAmount` settles it to `done` before any figure exists to have
+   * moved. See `settleSplitPaydayNotice` in lib/income/income_service.ts for
+   * why that one rule is also what keeps a NEW user's ordinary median drift
+   * from being mistaken for this upgrade's effect.
+   */
+  income_split_payday_notice: SplitPaydayNotice;
 };
 
 /** Values returned by `getSetting`/`getAllSettings` for a key with no row yet. */
 export const DEFAULT_SETTINGS: AppSettings = {
   onboarding_complete: false,
+  onboarding_step: "welcome",
   capture_enabled: true,
   telemetry_enabled: true,
   cash_reconcile_prompt_at: null,
@@ -261,6 +351,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   quiet_hours_end_minute: 480,
   quiet_hours_held_ids: [],
   quiet_hours_held_period: null,
+  income_split_payday_notice: "undecided",
 };
 
 type SettingValueRow = { value_json: string };

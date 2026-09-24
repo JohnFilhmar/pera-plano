@@ -31,6 +31,7 @@ import { Button, registerIcon } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { formatCentavos } from "@/components/ui/amount_text";
 import type { IncomeSummary } from "@/lib/income/income_service";
+import type { Centavos, IncomeCadence } from "@/types/domain";
 
 const CheckGlyph = registerIcon(Check);
 
@@ -39,6 +40,8 @@ export type IncomeSummaryCardProps = {
   onConfirm: () => void;
   onDismiss: () => void;
   onSetManually: () => void;
+  /** GAP-117's one-time notice has been read. */
+  onAcknowledgeSplitPayday: () => void;
   busy?: boolean;
 };
 
@@ -72,11 +75,51 @@ export function incomeSentence(summary: IncomeSummary): string {
   }
 }
 
+/** What detection is seeing now, said as a rate rather than as a cadence enum. */
+function detectedRate(cadence: IncomeCadence, amount: Centavos): string {
+  const each = formatCentavos(amount);
+  switch (cadence) {
+    case "kinsenas":
+      return `We're seeing about ${each} twice a month now.`;
+    case "weekly":
+      return `We're seeing about ${each} every week now.`;
+    case "monthly":
+      return `We're seeing about ${each} a month now.`;
+    case "irregular":
+      return `We're seeing about ${each} a month now, arriving irregularly.`;
+  }
+}
+
+/**
+ * The one suggestion card, in the two shapes income rule 14 gives it.
+ *
+ * WITH NO DECLARATION it is a discovery: the card's own sentence already shows
+ * the detected figures, so the prompt only has to ask.
+ *
+ * OVER A DECLARATION it is news of a CHANGE, and it has to carry the new number
+ * itself — everything else on that card is the user's own figure, so "is this
+ * right?" would be asking them to accept something they cannot see. It also
+ * must not read as a discovery: a user who typed their salary in knows perfectly
+ * well when they are paid, and being told the app "spotted" it says the app
+ * forgot.
+ */
+export function suggestionPrompt(summary: IncomeSummary): string {
+  const suggested = summary.suggestedChange ?? null;
+  if (!summary.isManualOverride || suggested === null) {
+    return "We think we spotted your payday. Is this right?";
+  }
+  return `Your pay looks like it changed. ${detectedRate(
+    suggested.cadence,
+    suggested.averageAmount,
+  )} Update the income you set?`;
+}
+
 export function IncomeSummaryCard({
   summary,
   onConfirm,
   onDismiss,
   onSetManually,
+  onAcknowledgeSplitPayday,
   busy = false,
 }: IncomeSummaryCardProps) {
   const known = summary.cadence !== null && summary.averageAmount !== null;
@@ -93,6 +136,36 @@ export function IncomeSummaryCard({
         </Text>
       ) : null}
 
+      {/* GAP-117, once per device. It sits directly under the figure because it
+          is an explanation OF that figure: a user who opens this screen to find
+          out why their limit moved should not have to scroll past the number in
+          question to reach the answer. It blocks nothing — everything below
+          renders exactly as it otherwise would, and the button only marks the
+          notice read. */}
+      {summary.hasSplitPaydayNotice ? (
+        <View testID="income-split-payday-notice" className="mt-4">
+          <Text className="font-semibold text-fg dark:text-fg-dark">
+            Your income figure changed
+          </Text>
+          <Text className="mt-1 text-fg-2 dark:text-fg-2-dark">
+            When your pay arrives as two deposits on the same day, PeraPlano now counts it as one
+            payday instead of two smaller ones. The amount above is your full pay, not part of it.
+          </Text>
+          <Text className="mt-2 text-fg-2 dark:text-fg-2-dark">
+            Any limit you set as a percentage of your income is measured against that figure, so its
+            headroom changed to match. Nothing you set yourself was altered.
+          </Text>
+          <View className="mt-3">
+            <Button
+              title="Got it"
+              variant="secondary"
+              testID="income-split-payday-ack"
+              onPress={onAcknowledgeSplitPayday}
+            />
+          </View>
+        </View>
+      ) : null}
+
       {summary.isManualOverride ? (
         <Text testID="income-manual-note" className="mt-3 text-fg-2 dark:text-fg-2-dark">
           You set this yourself, so PeraPlano won&apos;t change it.
@@ -101,16 +174,24 @@ export function IncomeSummaryCard({
 
       {/* Rule 2, provisional: say it is a guess, and offer both answers. The
           suggestion is suppressed once dismissed (rule 3) — `hasPendingSuggestion`
-          is what carries that, not the status alone. */}
+          is what carries that, not the status alone. It also carries income
+          rule 14's divergence suggestion over a DECLARED income, which is the
+          same offer about the same figures and so is the same block; only the
+          words change. */}
       {summary.hasPendingSuggestion ? (
         <View testID="income-suggestion" className="mt-4">
-          <Text className="text-fg dark:text-fg-dark">
-            We think we spotted your payday. Is this right?
+          <Text testID="income-suggestion-prompt" className="text-fg dark:text-fg-dark">
+            {suggestionPrompt(summary)}
           </Text>
           <View className="mt-3 flex-row gap-3">
-            <Button title="Confirm" onPress={onConfirm} testID="income-confirm" loading={busy} />
             <Button
-              title="Not right"
+              title={summary.isManualOverride ? "Update it" : "Confirm"}
+              onPress={onConfirm}
+              testID="income-confirm"
+              loading={busy}
+            />
+            <Button
+              title={summary.isManualOverride ? "Keep mine" : "Not right"}
               variant="secondary"
               onPress={onDismiss}
               testID="income-dismiss"

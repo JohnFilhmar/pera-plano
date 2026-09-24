@@ -132,6 +132,26 @@ object KeyStoreBridge {
     vault.recreateAesKey(DEVICE_KEK_ALIAS)
   }
 
+  /**
+   * Rotates the capture keypair after the old one has been permanently
+   * invalidated (GAP-059).
+   *
+   * DESTRUCTIVE, AND UNLIKE [recreateDeviceKek] NOTHING CAN BE CARRIED ACROSS.
+   * The device KEK has a recovery path because the DEK it wraps is recoverable
+   * from the phrase and can be re-wrapped under the new key. A capture sealed
+   * to the old public half has no such second copy: its private half is gone,
+   * so the ciphertext is gone with it. The caller therefore has to have
+   * decided that the buffered captures are lost before calling this, and
+   * `clearCaptureBuffer` is how it says so.
+   *
+   * Without this, recovery left `capturePublicKeySpki()` returning the DEAD
+   * pair's public half, so every capture sealed from then on was unopenable
+   * too, and the app reported itself recovered the whole time.
+   */
+  fun recreateCaptureKeyPair() {
+    vault.recreateRsaKeyPair(CAPTURE_KEY_ALIAS)
+  }
+
   /** Returns `iv || ciphertext` (GCM tag is part of the trailing ciphertext bytes). */
   fun wrapWithDeviceKek(plaintext: ByteArray): ByteArray {
     val cipher = Cipher.getInstance(AES_TRANSFORMATION)

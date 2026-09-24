@@ -19,6 +19,8 @@ import {
   setLimitAlertState,
   updateLimit,
 } from "@/lib/db/repos/limits_repo";
+import { listTransactions } from "@/lib/db/repos/transactions_repo";
+import { __setTierForTests } from "@/lib/entitlements";
 import { newId } from "@/lib/ids";
 import { freshDb } from "@/test_support/db";
 
@@ -104,6 +106,29 @@ async function seedTransferLinkedSpend(args: {
   ]);
 }
 
+/**
+ * Moves a limit's `created_at`/`updated_at` to instants this test file can
+ * reason about.
+ *
+ * `createLimit` stamps the REAL wall clock while every test here drives a fixed
+ * 2026 instant, so an unbackdated limit always looks like it was created — and
+ * last edited — AFTER every period under test. Rule 18's
+ * "does not retroactively receive any" guard reads exactly those two columns,
+ * so without this the rollover tests below would agree with the rule by
+ * accident of the fixture rather than because the code applies it.
+ */
+async function backdateLimit(
+  limitId: string,
+  createdAt: number,
+  updatedAt: number = createdAt,
+): Promise<void> {
+  await db.runAsync("UPDATE limits SET created_at = ?, updated_at = ? WHERE id = ?", [
+    createdAt,
+    updatedAt,
+    limitId,
+  ]);
+}
+
 beforeEach(async () => {
   db = await freshDb();
   jest.clearAllMocks();
@@ -114,6 +139,9 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  // The tier override is process-global: a test that switches to free must not
+  // leak it into the next one.
+  __setTierForTests(null);
   await closeDatabase();
 });
 
@@ -272,7 +300,15 @@ test("A NEW LIMIT DOES NOT RETROACTIVELY RECEIVE CARRYOVER (rule 18)", async () 
   // in August, ₱1,000 spent in July, so the plan grants ₱7,000 of carryover and
   // an effective limit of ₱15,000.
   await seedTx({ walletId: "w1", categoryId: "food", amount: 100000, occurredAt: ms(2026, 6, 20) });
-  await createLimit({ scope: "monthly", basis: "fixed", value: 800000, rollover: true });
+  const limit = await createLimit({
+    scope: "monthly",
+    basis: "fixed",
+    value: 800000,
+    rollover: true,
+  });
+  // Created on 1 August at 09:00 — INSIDE the period being measured, which is
+  // what rule 18 turns on. Stated rather than inherited from the wall clock.
+  await backdateLimit(limit.id, ms(2026, 7, 1, 9));
 
   await recomputeLimits({ now: ms(2026, 7, 2), monthlyIncome: null });
 
@@ -281,22 +317,151 @@ test("A NEW LIMIT DOES NOT RETROACTIVELY RECEIVE CARRYOVER (rule 18)", async () 
   expect(status.effectiveLimit).toBe(800000);
 });
 
-test("carryover only comes from a period that was actually tracked", async () => {
-  // Same honesty rule, one step further out: state exists but is two periods
-  // stale (the app was not opened for a month), so there is no base snapshot
-  // for the immediately preceding period to compute headroom against.
+test("A TWO-PERIOD-STALE STATE CARRIES N-1's HEADROOM, AND ONLY N-1's", async () => {
+  // This test used to assert 0 here, on the reasoning that a state two periods
+  // stale leaves "no base snapshot for the immediately preceding period". For a
+  // FIXED limit that reasoning is wrong: rule 9 says "the base limit for every
+  // period equals `value`", so base(N-1) is on the row, unchanged. The old
+  // assertion pinned the defect GAP-041 describes — the app closed for July,
+  // and July's headroom silently discarded.
+  //
+  // It also pins the answer to the multi-period question. Rule 14 reads
+  // base(N-1), and rule 16 says carryover "expires at the end of the period it
+  // was carried into" — so August takes JULY's headroom (₱8,000 - ₱3,000 =
+  // ₱5,000) and nothing of June's (₱8,000 - ₱2,000 = ₱6,000). Two skipped
+  // periods do not chain, and the two figures are deliberately different so a
+  // chained implementation cannot pass this.
   const limit = await createLimit({
     scope: "monthly",
     basis: "fixed",
     value: 800000,
     rollover: true,
   });
-  await recomputeLimits({ now: ms(2026, 5, 10), monthlyIncome: null }); // June
-  await seedTx({ walletId: "w1", categoryId: "food", amount: 100000, occurredAt: ms(2026, 6, 20) });
+  await backdateLimit(limit.id, ms(2026, 3, 4)); // created in April
+
+  await seedTx({ walletId: "w1", categoryId: "food", amount: 200000, occurredAt: ms(2026, 5, 8) });
+  await recomputeLimits({ now: ms(2026, 5, 10), monthlyIncome: null }); // June, recorded
+  await seedTx({ walletId: "w1", categoryId: "food", amount: 300000, occurredAt: ms(2026, 6, 20) });
 
   await recomputeLimits({ now: ms(2026, 7, 2), monthlyIncome: null }); // straight to August
 
-  expect((await getLimitAlertState(limit.id))?.carryover).toBe(0);
+  expect((await getLimitAlertState(limit.id))?.carryover).toBe(500000);
+});
+
+test("AN UNRECORDED QUIET PERIOD STILL CARRIES ITS FULL HEADROOM", async () => {
+  // The doc's acceptance example, verbatim: "base ₱8,000.00 monthly ... spend
+  // ₱0.00 in June -> July effective limit ₱16,000.00 (cap at one base)".
+  //
+  // It was unreachable. `recomputeLimits` is the only writer of alert state and
+  // it only runs on a ledger commit, so spending nothing in June is exactly
+  // what stops June from being recorded — and the engine then read the missing
+  // row as "no previous period" and carried nothing. The quieter the month, the
+  // less headroom it earned, which inverts the whole feature.
+  const limit = await createLimit({
+    scope: "monthly",
+    basis: "fixed",
+    value: 800000,
+    rollover: true,
+  });
+  await backdateLimit(limit.id, ms(2026, 4, 3)); // created in May, so June is wholly its own
+
+  // Nothing happened in June at all: no spend, no commit, no state.
+  expect(await getLimitAlertState(limit.id)).toBeNull();
+
+  const [status] = await getLimitStatuses({ now: ms(2026, 6, 2), monthlyIncome: null });
+
+  expect(status.carryover).toBe(800000);
+  expect(status.effectiveLimit).toBe(1600000);
+});
+
+test("an unrecorded previous period carries only the headroom it actually left", async () => {
+  // The other half of the same acceptance line — "spend ₱5,000.00 in June ->
+  // July effective limit ₱11,000.00" — with June still unrecorded, which is
+  // ordinary: the native capture buffer drains on the next app open, so a
+  // month's transactions can land in the ledger after that month has closed.
+  // Without this case a fix that carried a constant full base would pass the
+  // test above.
+  const limit = await createLimit({
+    scope: "monthly",
+    basis: "fixed",
+    value: 800000,
+    rollover: true,
+  });
+  await backdateLimit(limit.id, ms(2026, 4, 3));
+  await seedTx({ walletId: "w1", categoryId: "food", amount: 500000, occurredAt: ms(2026, 5, 12) });
+
+  await recomputeLimits({ now: ms(2026, 6, 2), monthlyIncome: null });
+
+  const state = await getLimitAlertState(limit.id);
+  expect(state?.periodStart).toBe(new Date(2026, 6, 1).getTime());
+  expect(state?.carryover).toBe(300000);
+  expect(
+    (await getLimitStatuses({ now: ms(2026, 6, 2), monthlyIncome: null }))[0].effectiveLimit,
+  ).toBe(1100000);
+});
+
+test("an unrecorded previous period carries nothing when rollover is off", async () => {
+  // The guard the whole reconstruction hangs off. A user who never enabled
+  // rollover must not have their effective limit quietly grow — this passes
+  // both before and after the fix and is a control, not a witness.
+  await backdateLimit(
+    (await createLimit({ scope: "monthly", basis: "fixed", value: 800000, rollover: false })).id,
+    ms(2026, 4, 3),
+  );
+
+  const [status] = await getLimitStatuses({ now: ms(2026, 6, 2), monthlyIncome: null });
+
+  expect(status.carryover).toBe(0);
+  expect(status.effectiveLimit).toBe(800000);
+});
+
+test("A PERCENT-OF-INCOME LIMIT CARRIES NOTHING WITHOUT A SNAPSHOT (rule 18)", async () => {
+  // Deliberately narrower than rule 14 read on its own, for two doc reasons.
+  // Rule 18: "For percent-of-income Limits, carryover math uses the SNAPSHOTTED
+  // peso bases of each period" — today's income yields base(N), which is not
+  // base(N-1). And rule 12: a limit whose income was unusable spends the period
+  // Paused and "stops counting", which without a snapshot is indistinguishable
+  // from a period that was merely quiet. Reconstructing here would hand out
+  // headroom that may never have accrued, so the fix stops at `basis: fixed`.
+  const limit = await createLimit({
+    scope: "monthly",
+    basis: "percent-of-income",
+    value: 2000,
+    rollover: true,
+  });
+  await backdateLimit(limit.id, ms(2026, 4, 3));
+
+  const [status] = await getLimitStatuses({ now: ms(2026, 6, 2), monthlyIncome: 3700000 });
+
+  expect(status.base).toBe(740000);
+  expect(status.carryover).toBe(0);
+  expect(status.effectiveLimit).toBe(740000);
+});
+
+test("RAISING A LIMIT TODAY DOES NOT RETROACTIVELY RAISE LAST PERIOD'S BASE", async () => {
+  // base(N-1) is reconstructed from the row's CURRENT `value`, so an edit made
+  // inside the current period would otherwise rewrite history: ₱8,000 through a
+  // quiet June, raised to ₱20,000 on 2 July, would carry ₱20,000 forward and
+  // open July at ₱40,000 where rule 14 allows ₱16,000. `updatedAt` landing
+  // inside the current period withdraws the reconstruction rather than guessing
+  // which value June ran under. Also rules 2-4: `filtersFor` sums the previous
+  // window with TODAY's filters, so an edited filter makes prevSpend a figure
+  // for a limit that never existed.
+  const limit = await createLimit({
+    scope: "monthly",
+    basis: "fixed",
+    value: 800000,
+    rollover: true,
+  });
+  await backdateLimit(limit.id, ms(2026, 4, 3));
+
+  await updateLimit(limit.id, { value: 2000000 });
+  await backdateLimit(limit.id, ms(2026, 4, 3), ms(2026, 6, 2)); // edited on 2 July
+  await refreshLimitBase(limit.id, ms(2026, 6, 2), null);
+
+  const state = await getLimitAlertState(limit.id);
+  expect(state?.base).toBe(2000000);
+  expect(state?.carryover).toBe(0);
 });
 
 test("turning rollover OFF removes the current period's carryover immediately (rule 18)", async () => {
@@ -537,4 +702,51 @@ test("a state written by an earlier version is respected, not overwritten", asyn
   // 90% — above 80 (already fired) and below 100. Nothing new.
   expect(alerts).toEqual([]);
   expect((await getLimitAlertState(limit.id))?.fired).toEqual([50, 80]);
+});
+
+// ---------------------------------------------------------------------------
+// The 90-day history floor gates BROWSING, not counting — rule 8 (GAP-105)
+// ---------------------------------------------------------------------------
+//
+// Rule 8, verbatim: "Limit totals are always computed from the full ledger,
+// regardless of the free tier's 90-day history view gate — data is never
+// deleted, only the browsing view is gated." docs/05-monetization.md §3.3 says
+// it twice more: the gate makes records invisible "in ledger, search, and
+// Reports" while they "still participate in Wallet balance math", and
+// Safe-to-Spend's "today number is computed identically in both tiers".
+//
+// `__setTierForTests("free")` IS LOAD-BEARING. The shipped MVP tier is `plus`,
+// where `historyWindowDays()` returns null and the floor is never applied at
+// all — this test would pass with or without the fix if it ran on the default.
+//
+// AN ANNUAL LIMIT IS ALSO LOAD-BEARING. The floor only bites on a window that
+// reaches further back than 90 days; a monthly or weekly limit would sit
+// entirely inside the free window and prove nothing either way.
+test("FREE: an annual limit counts spend the ledger list is not allowed to show", async () => {
+  __setTierForTests("free");
+
+  const now = ms(2026, 10, 15); // Nov 15 2026 — the annual window opened Jan 1.
+  await createLimit({ scope: "annual", basis: "fixed", value: 5000000 });
+
+  // Both rows are inside the annual period. Only the November one is inside
+  // the free tier's 90-day view (the floor on this `now` is Aug 17 2026).
+  await seedTx({ walletId: "w1", categoryId: "food", amount: 300000, occurredAt: ms(2026, 1, 20) });
+  await seedTx({ walletId: "w1", categoryId: "food", amount: 200000, occurredAt: ms(2026, 10, 14) });
+
+  const [status] = await getLimitStatuses({ now, monthlyIncome: null });
+  expect(status.spend).toBe(500000);
+
+  // THE FLOOR REALLY IS ACTIVE, AND IN THE FAILING DIRECTION. Same tier, same
+  // window, same rows: the browsable ledger drops the February purchase that
+  // the total above just counted. That divergence is what rule 8 asks for.
+  const browsable = await listTransactions({
+    from: status.window.start,
+    to: status.window.end,
+    now,
+  });
+  expect(browsable.map((row) => row.amount)).toEqual([200000]);
+
+  // §3.3's "computed identically in both tiers", stated as an assertion.
+  __setTierForTests("plus");
+  expect((await getLimitStatuses({ now, monthlyIncome: null }))[0].spend).toBe(500000);
 });

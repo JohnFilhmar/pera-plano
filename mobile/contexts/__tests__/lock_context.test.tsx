@@ -65,14 +65,86 @@ jest.mock("@/lib/db/database", () => ({
   closeDatabase: jest.fn(),
 }));
 
+// `queryClient` is a stub object rather than the real client for the same
+// reason the two key functions are jest.fn()s: every describe above asserts
+// WHICH teardown steps lockNow() ran and in what order, and the real client
+// would drag its persister and the cache cipher into all of them. The last
+// describe in this file is the one that routes back to the real module, and
+// it never reads `queryClient`.
 jest.mock("@/lib/query_client", () => ({
   setCacheEncryptionKey: jest.fn(),
   clearCacheEncryptionKey: jest.fn(),
+  queryClient: { clear: jest.fn() },
 }));
 
-jest.mock("@/lib/security/wipe", () => ({
-  wipeAndStartOver: jest.fn(),
+// GAP-072 added a second consumer of the DEK on exactly the same lifecycle.
+// Mocked for the same reason the query cache is: these tests assert WHICH
+// teardown steps ran and in what order, not what AES does.
+jest.mock("@/lib/crypto/attachment_cipher", () => ({
+  setAttachmentKey: jest.fn(),
+  clearAttachmentKey: jest.fn(),
 }));
+
+// `WipeIncompleteError` is redeclared here rather than imported from the real
+// module, the same shape the key_manager factory above uses: this factory IS
+// the module lock_context.tsx imports, so the class the test throws and the
+// class the `instanceof` check reads are the same one. lib/security/__tests__/
+// wipe.test.ts is what pins the REAL wipeAndStartOver to actually throw this
+// type for a post-database failure and NOT for a wipeDatabase() one — without
+// that file the two tests below would only be describing a fiction this
+// factory invented.
+jest.mock("@/lib/security/wipe", () => {
+  class WipeIncompleteError extends Error {
+    readonly cause: unknown;
+
+    constructor(cause: unknown) {
+      super(cause instanceof Error ? cause.message : String(cause));
+      this.name = "WipeIncompleteError";
+      this.cause = cause;
+    }
+  }
+  return {
+    wipeAndStartOver: jest.fn(),
+    WipeIncompleteError,
+  };
+});
+
+// Keeps jest_setup.ts's real Node CSPRNG and adds a one-shot park, so the
+// last describe in this file can hold a persisted-cache write suspended on
+// the exact await it parks on for real (cache_cipher.ts's nonce draw) while
+// the background timeout tears the DEK down underneath it. Controls live in
+// the factory's own closure, not behind jest.spyOn -- see
+// lib/crypto/__tests__/key_manager.test.ts's note on the namespace-import
+// trap that makes a spy on a mocked module silently miss.
+jest.mock("expo-crypto", () => {
+  let parkNextDraw = false;
+  let releaseDraw: (() => void) | null = null;
+  let announceParked: (() => void) | null = null;
+  return {
+    randomUUID: () => require("crypto").randomUUID(),
+    getRandomBytesAsync: async (byteCount: number) => {
+      const bytes = new Uint8Array(require("crypto").randomBytes(byteCount));
+      if (parkNextDraw) {
+        parkNextDraw = false;
+        await new Promise<void>((resolve) => {
+          releaseDraw = resolve;
+          announceParked?.();
+          announceParked = null;
+        });
+      }
+      return bytes;
+    },
+    __parkNextNonceDraw: () =>
+      new Promise<void>((resolve) => {
+        parkNextDraw = true;
+        announceParked = resolve;
+      }),
+    __releaseParkedNonceDraw: () => {
+      releaseDraw?.();
+      releaseDraw = null;
+    },
+  };
+});
 
 // The real classes' shape (code/name), redeclared here rather than imported
 // from the real module -- @/modules/notification_listener's top-level
@@ -114,12 +186,18 @@ jest.mock("@/modules/notification_listener", () => {
 import { act, renderHook, waitFor } from "@testing-library/react-native";
 import type { ReactNode } from "react";
 import { AppState } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { gcm } from "@noble/ciphers/aes.js";
+import { hexToBytes } from "@noble/hashes/utils.js";
+import * as Crypto from "expo-crypto";
 import { authenticateAsync } from "expo-local-authentication";
+import type { PersistedClient } from "@tanstack/react-query-persist-client";
 import * as KeyManager from "@/lib/crypto/key_manager";
 import * as Database from "@/lib/db/database";
+import * as AttachmentCipher from "@/lib/crypto/attachment_cipher";
 import { onAppEvent } from "@/lib/events/app_events";
 import * as QueryCache from "@/lib/query_client";
-import { wipeAndStartOver } from "@/lib/security/wipe";
+import { wipeAndStartOver, WipeIncompleteError } from "@/lib/security/wipe";
 import {
   DeviceKeyMissingError,
   DeviceKeyInvalidatedError,
@@ -137,6 +215,9 @@ const mockUnlockDatabase = Database.unlockDatabase as jest.Mock;
 const mockCloseDatabase = Database.closeDatabase as jest.Mock;
 const mockSetCacheEncryptionKey = QueryCache.setCacheEncryptionKey as jest.Mock;
 const mockClearCacheEncryptionKey = QueryCache.clearCacheEncryptionKey as jest.Mock;
+const mockQueryClientClear = QueryCache.queryClient.clear as jest.Mock;
+const mockSetAttachmentKey = AttachmentCipher.setAttachmentKey as jest.Mock;
+const mockClearAttachmentKey = AttachmentCipher.clearAttachmentKey as jest.Mock;
 const mockWipeAndStartOver = wipeAndStartOver as jest.Mock;
 const mockIsDeviceSecure = isDeviceSecure as jest.Mock;
 
@@ -212,6 +293,77 @@ describe("cold start", () => {
     const { result } = renderHook(() => useLock(), { wrapper });
 
     await waitFor(() => expect(result.current.status).toBe("locked"));
+  });
+
+  // GAP-034. A REJECTION AND "locked" ARE NOT THE SAME ANSWER, and mapping the
+  // first onto the second is what bricked the app: "locked" renders an Unlock
+  // button whose unwrap reads the same SecureStore that just threw, so a
+  // persistent failure (some OEM Keystore states) failed forever with generic
+  // copy, and the only wipe affordance lived under "needs_recovery".
+  test("a REJECTED getKeyState goes to storage_error, never to locked", async () => {
+    mockGetKeyState.mockRejectedValue(new Error("SecureStore unavailable"));
+
+    const { result } = renderHook(() => useLock(), { wrapper });
+
+    await waitFor(() => expect(result.current.status).toBe("storage_error"));
+    // The screen owns the explanation, so there is nothing to say above it
+    // until a retry has also failed.
+    expect(result.current.errorMessage).toBeNull();
+    expect(mockUnlockWithDeviceKey).not.toHaveBeenCalled();
+  });
+
+  test("retryKeyState recovers from storage_error when the read starts working again", async () => {
+    mockGetKeyState.mockRejectedValueOnce(new Error("SecureStore unavailable"));
+
+    const { result } = renderHook(() => useLock(), { wrapper });
+    await waitFor(() => expect(result.current.status).toBe("storage_error"));
+
+    mockGetKeyState.mockResolvedValue("locked");
+    await act(async () => {
+      await result.current.retryKeyState();
+    });
+
+    expect(result.current.status).toBe("locked");
+    expect(result.current.errorMessage).toBeNull();
+  });
+
+  test("a first-run device whose key state only became readable on the retry still reaches onboarding, not the lock screen", async () => {
+    mockGetKeyState.mockRejectedValueOnce(new Error("SecureStore unavailable"));
+
+    const { result } = renderHook(() => useLock(), { wrapper });
+    await waitFor(() => expect(result.current.status).toBe("storage_error"));
+
+    mockGetKeyState.mockResolvedValue("uninitialized");
+    await act(async () => {
+      await result.current.retryKeyState();
+    });
+
+    expect(result.current.status).toBe("needs_onboarding");
+  });
+
+  test("a retry that fails again stays on storage_error and says so, so the button is not silently inert", async () => {
+    mockGetKeyState.mockRejectedValue(new Error("SecureStore unavailable"));
+
+    const { result } = renderHook(() => useLock(), { wrapper });
+    await waitFor(() => expect(result.current.status).toBe("storage_error"));
+
+    await act(async () => {
+      await result.current.retryKeyState();
+    });
+
+    expect(result.current.status).toBe("storage_error");
+    expect(result.current.errorMessage).toMatch(/Still no answer from secure storage/);
+  });
+
+  test("retryKeyState never rejects, whatever getKeyState throws", async () => {
+    mockGetKeyState.mockRejectedValue(new Error("SecureStore unavailable"));
+
+    const { result } = renderHook(() => useLock(), { wrapper });
+    await waitFor(() => expect(result.current.status).toBe("storage_error"));
+
+    await act(async () => {
+      await expect(result.current.retryKeyState()).resolves.toBeUndefined();
+    });
   });
 });
 
@@ -828,6 +980,75 @@ describe("wipeAndStartOver()", () => {
     expect(mockWipeAndStartOver).toHaveBeenCalledTimes(1);
   });
 
+  // -------------------------------------------------------------------------
+  // GAP-078 — the wipe's own failure must be reported. RecoveryUnlockForm
+  // fires this as `void onWipe()`, so before these two paths existed a
+  // rejection was an unhandled promise and the status simply never moved.
+  // -------------------------------------------------------------------------
+
+  test("a wipe that fails AFTER the database file is gone still lands on onboarding, with a message saying so", async () => {
+    mockUnlockWithDeviceKey.mockRejectedValue(new DeviceKeyInvalidatedError());
+    const { result } = renderHook(() => useLock(), { wrapper });
+    await waitFor(() => expect(result.current.status).toBe("locked"));
+    await act(async () => {
+      await result.current.unlock();
+    });
+    await waitFor(() => expect(result.current.status).toBe("needs_recovery"));
+
+    // wipeDatabase() succeeded and wipeKeys() threw — the ordering
+    // lib/security/wipe.ts's header calls deliberate, and the state its
+    // WipeIncompleteError exists to name.
+    mockWipeAndStartOver.mockRejectedValueOnce(
+      new WipeIncompleteError(new Error("secure store unavailable")),
+    );
+
+    await act(async () => {
+      // NOT `rejects` — this must resolve. Its one call site does not hold the
+      // promise, so a rejection here is an unhandled one on the screen where a
+      // silent failure is most dangerous.
+      await expect(result.current.wipeAndStartOver()).resolves.toBeUndefined();
+    });
+
+    // STAYING ON "needs_recovery" IS THE DEFECT, not the safe option. The
+    // database file is deleted by this point, so the phrase box the user would
+    // be left staring at can only re-wrap a key against a database that no
+    // longer exists.
+    expect(result.current.status).toBe("needs_onboarding");
+    expect(result.current.errorMessage).not.toBeNull();
+    // The two claims the message has to make: the data IS gone (the user is
+    // about to be handed a fresh setup flow that would otherwise look like the
+    // wipe did nothing), and the reset did not finish.
+    expect(result.current.errorMessage).toContain("erased");
+    expect(result.current.errorMessage).toContain("couldn't finish");
+    // Same cleanup the success path does: this module's cache key is its own
+    // copy of the DEK bytes and wipeKeys() could never have reached it.
+    expect(mockClearCacheEncryptionKey).toHaveBeenCalled();
+  });
+
+  test("a wipe that fails BEFORE anything is destroyed stays on the recovery screen and says nothing was erased", async () => {
+    mockUnlockWithDeviceKey.mockRejectedValue(new DeviceKeyInvalidatedError());
+    const { result } = renderHook(() => useLock(), { wrapper });
+    await waitFor(() => expect(result.current.status).toBe("locked"));
+    await act(async () => {
+      await result.current.unlock();
+    });
+    await waitFor(() => expect(result.current.status).toBe("needs_recovery"));
+
+    // A bare Error, which is what wipeAndStartOver propagates when
+    // wipeDatabase() itself fails: the ledger and both wraps are untouched.
+    mockWipeAndStartOver.mockRejectedValueOnce(new Error("disk I/O error"));
+
+    await act(async () => {
+      await expect(result.current.wipeAndStartOver()).resolves.toBeUndefined();
+    });
+
+    // The opposite of the test above, and the reason the two failures may not
+    // share one branch: nothing was destroyed, so the recovery phrase still
+    // opens this database and the form must stay mounted for it.
+    expect(result.current.status).toBe("needs_recovery");
+    expect(result.current.errorMessage).toContain("Nothing was erased");
+  });
+
   // The DOUBLE CONFIRMATION requirement itself (one confirmation alone must
   // destroy nothing) is a UI-level property of RecoveryUnlockForm, which
   // only ever calls this context function once both confirmations have
@@ -1008,6 +1229,250 @@ describe("background timeout", () => {
     expect(mockCloseDatabase).not.toHaveBeenCalled();
     expect(mockKeyManagerLock).not.toHaveBeenCalled();
     nowSpy.mockRestore();
+  });
+
+  // GAP-030. Every test above drives the re-lock through a RETURN to the
+  // foreground, which is the only way the app used to reach it: for the whole
+  // background stay the DEK, the open database handle and every decrypted row
+  // stayed in memory, and docs §7's "what happens while locked" described a
+  // state the app had not entered yet.
+  test("five minutes in the background re-locks on its own, with no return to the foreground", async () => {
+    const result = await arriveAtUnlocked();
+    // Enabled only now: arriveAtUnlocked() above waits on real promises
+    // through waitFor, which fake timers would stall.
+    jest.useFakeTimers();
+    try {
+      act(() => emitAppState("background"));
+      // Still unlocked one millisecond short of the window, which is what
+      // makes the assertion after it about the timer and not about
+      // backgrounding alone.
+      await act(async () => {
+        jest.advanceTimersByTime(5 * 60 * 1000 - 1);
+        await Promise.resolve();
+      });
+      expect(result.current.status).toBe("unlocked");
+      expect(mockKeyManagerLock).not.toHaveBeenCalled();
+
+      await act(async () => {
+        jest.advanceTimersByTime(1);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(result.current.status).toBe("locked");
+      expect(mockClearCacheEncryptionKey).toHaveBeenCalledTimes(1);
+      expect(mockCloseDatabase).toHaveBeenCalledTimes(1);
+      expect(mockKeyManagerLock).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  // GAP-072. The support outbox's attachment files are encrypted under the same
+  // DEK, so the key holding it has to die with the cache key. A lock that
+  // scrubbed one and not the other would leave a live copy of the DEK in
+  // whichever module was forgotten, which is the whole point of the teardown.
+  test("locking scrubs the attachment key too, not only the query cache's", async () => {
+    const result = await arriveAtUnlocked();
+    expect(mockSetAttachmentKey).toHaveBeenCalledWith(DEK);
+
+    const nowSpy = jest.spyOn(Date, "now");
+    const t0 = 1_700_000_000_000;
+    nowSpy.mockReturnValue(t0);
+    act(() => emitAppState("background"));
+    nowSpy.mockReturnValue(t0 + 6 * 60 * 1000);
+    await act(async () => {
+      emitAppState("active");
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(result.current.status).toBe("locked"));
+    nowSpy.mockRestore();
+
+    // Both keys, or neither — the pairing IS the assertion.
+    expect(mockClearAttachmentKey).toHaveBeenCalledTimes(1);
+    expect(mockClearCacheEncryptionKey).toHaveBeenCalledTimes(1);
+  });
+
+  // GAP-030's other half. Closing the database ends the app's ability to read
+  // a row; the rows it already read are plain objects in the query cache with
+  // a gcTime that outlives the lock, so a "locked" app kept the ledger in
+  // memory and repainted it on unlock before any refetch resolved.
+  test("locking empties the in-memory query cache, after the database is closed and before the DEK is zeroed", async () => {
+    const result = await arriveAtUnlocked();
+    const nowSpy = jest.spyOn(Date, "now");
+    const t0 = 1_700_000_000_000;
+    nowSpy.mockReturnValue(t0);
+
+    act(() => emitAppState("background"));
+    nowSpy.mockReturnValue(t0 + 6 * 60 * 1000);
+    await act(async () => {
+      emitAppState("active");
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(result.current.status).toBe("locked"));
+    nowSpy.mockRestore();
+
+    expect(mockQueryClientClear).toHaveBeenCalledTimes(1);
+    expect(mockCloseDatabase.mock.invocationCallOrder[0]).toBeLessThan(
+      mockQueryClientClear.mock.invocationCallOrder[0],
+    );
+    expect(mockQueryClientClear.mock.invocationCallOrder[0]).toBeLessThan(
+      mockKeyManagerLock.mock.invocationCallOrder[0],
+    );
+  });
+
+  // The timer must not outlive the trip to the background that armed it, or a
+  // user who comes back at minute four, keeps using the app and never
+  // backgrounds it again is re-locked mid-session at minute five.
+  test("returning to the foreground inside the window disarms the timer entirely", async () => {
+    const result = await arriveAtUnlocked();
+    const nowSpy = jest.spyOn(Date, "now");
+    const t0 = 1_700_000_000_000;
+    nowSpy.mockReturnValue(t0);
+
+    act(() => emitAppState("background"));
+    nowSpy.mockReturnValue(t0 + 4 * 60 * 1000);
+    act(() => emitAppState("active"));
+    expect(result.current.status).toBe("unlocked");
+    nowSpy.mockRestore();
+
+    jest.useFakeTimers();
+    try {
+      await act(async () => {
+        jest.advanceTimersByTime(10 * 60 * 1000);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(result.current.status).toBe("unlocked");
+      expect(mockKeyManagerLock).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GAP-002 -- the persisted cache and the lock, end to end
+// ---------------------------------------------------------------------------
+
+// The only block in this file that runs the REAL lib/query_client (via
+// requireActual, routed in through the two mocks lock_context.tsx already
+// calls) and the real cache cipher underneath it. Everything above asserts
+// that lockNow() calls the teardown steps in order; this asserts what those
+// steps mean for a write that was ALREADY RUNNING when they fired.
+//
+// The race, concretely: the persister's serialize awaits a nonce draw, and
+// during that await lock_context drops the cache key, closes the database
+// and calls KeyManager.lock(), whose real implementation zeroes the DEK
+// BUFFER in place -- the very buffer lock_context handed to
+// setCacheEncryptionKey. A serialize that resolved its key before that await
+// resumes holding 32 zero bytes and writes the whole dehydrated cache
+// (wallet balances, merchant names) to AsyncStorage under a key that is
+// public by definition. Nothing detects it: the blob simply fails to
+// authenticate on the next unlock and is discarded as corrupt.
+describe("a persisted-cache write in flight when the app re-locks", () => {
+  // query-async-storage-persister's documented default key, same as
+  // lib/__tests__/query_client.test.ts.
+  const STORAGE_KEY = "REACT_QUERY_OFFLINE_CACHE";
+  const GCM_NONCE_BYTES = 12;
+  const ZERO_KEY = new Uint8Array(32);
+  const MERCHANT = "Jollibee SM Megamall";
+
+  const realQueryCache = jest.requireActual<typeof import("@/lib/query_client")>("@/lib/query_client");
+
+  // The mock-only controls the expo-crypto factory at the top of this file
+  // adds; the cast reaches them without widening the module's own types.
+  const CryptoMock = Crypto as unknown as {
+    __parkNextNonceDraw: () => Promise<void>;
+    __releaseParkedNonceDraw: () => void;
+  };
+
+  // Deliberately does NOT go through cache_cipher.ts -- this is the attacker's
+  // side of the test, and it must not inherit any guard the module under test
+  // happens to have.
+  function decryptsUnderZeroKey(blob: string): boolean {
+    try {
+      const bytes = hexToBytes(blob);
+      gcm(ZERO_KEY, bytes.slice(0, GCM_NONCE_BYTES)).decrypt(bytes.slice(GCM_NONCE_BYTES));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function persistedClient(): PersistedClient {
+    return {
+      buster: realQueryCache.persistOptions.buster,
+      timestamp: 1_700_000_000_000,
+      clientState: { mutations: [], queries: [{ queryKey: ["wallets"], state: { data: { merchant: MERCHANT } } }] },
+    } as unknown as PersistedClient;
+  }
+
+  beforeEach(async () => {
+    mockSetCacheEncryptionKey.mockImplementation(realQueryCache.setCacheEncryptionKey);
+    mockClearCacheEncryptionKey.mockImplementation(realQueryCache.clearCacheEncryptionKey);
+    await AsyncStorage.clear();
+  });
+
+  afterEach(async () => {
+    realQueryCache.clearCacheEncryptionKey();
+    mockSetCacheEncryptionKey.mockReset();
+    mockClearCacheEncryptionKey.mockReset();
+    mockKeyManagerLock.mockReset();
+    await AsyncStorage.clear();
+  });
+
+  test("resumes after the lock without ever writing a blob readable under the zeroed DEK", async () => {
+    const dek = new Uint8Array(32).fill(0x42);
+    mockUnlockWithDeviceKey.mockResolvedValue(dek);
+    // key_manager.ts's real lock(): zero the bytes, THEN drop the reference.
+    mockKeyManagerLock.mockImplementation(() => {
+      dek.fill(0);
+    });
+
+    const { result } = renderHook(() => useLock(), { wrapper });
+    await waitFor(() => expect(result.current.status).toBe("locked"));
+    await act(async () => {
+      await result.current.unlock();
+    });
+    await waitFor(() => expect(result.current.status).toBe("unlocked"));
+
+    const parked = CryptoMock.__parkNextNonceDraw();
+    const write = realQueryCache.persistOptions.persister.persistClient(persistedClient());
+    // Resolves only once serialize is genuinely suspended inside the nonce
+    // draw -- this is the liveness proof that the write is in flight, not a
+    // write that never started.
+    await parked;
+
+    const nowSpy = jest.spyOn(Date, "now");
+    const t0 = 1_700_000_000_000;
+    nowSpy.mockReturnValue(t0);
+    act(() => emitAppState("background"));
+    nowSpy.mockReturnValue(t0 + 6 * 60 * 1000);
+    await act(async () => {
+      emitAppState("active");
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(result.current.status).toBe("locked"));
+    nowSpy.mockRestore();
+
+    expect(mockKeyManagerLock).toHaveBeenCalledTimes(1);
+    expect(Array.from(dek)).toEqual(Array.from(ZERO_KEY));
+
+    await act(async () => {
+      CryptoMock.__releaseParkedNonceDraw();
+      await Promise.resolve(write).catch(() => undefined);
+      await new Promise((resolve) => setImmediate(resolve));
+    });
+
+    const raw = await AsyncStorage.getItem(STORAGE_KEY);
+    if (raw !== null) expect(decryptsUnderZeroKey(raw)).toBe(false);
+    expect(raw).toBeNull();
   });
 });
 

@@ -39,6 +39,10 @@
 // malformed report into an endless background retry nobody can see.
 import type { AxiosResponse } from "axios";
 
+import {
+  cleanupDecryptedAttachments,
+  decryptAttachmentToTempFile,
+} from "@/lib/support/attachments";
 import { apiClient } from "@/services/api";
 import type { SupportReport } from "@/types/support";
 
@@ -77,11 +81,29 @@ export type ReactNativeFilePart = { uri: string; name: string; type: string };
 /** One multipart field: a name and either a plain value or a file descriptor. */
 export type SupportReportPart = [string, string | ReactNativeFilePart];
 
-function fileNameFor(fileUri: string, index: number): string {
-  const lastSegment = fileUri.split("/").pop();
-  return lastSegment !== undefined && lastSegment.length > 0
-    ? lastSegment
-    : `attachment-${index + 1}`;
+/**
+ * The filename the ticketing system will show.
+ *
+ * DERIVED FROM THE MIME TYPE, NOT FROM THE URI (GAP-072). It used to be the
+ * stored file's own last path segment, which worked while that file was a
+ * verbatim `.png` copy. The stored file is now AES-GCM ciphertext named
+ * `<uuid>.enc`, and what actually gets uploaded is a decrypted temp file with
+ * no extension at all — so reading either path would put `.enc` or nothing in
+ * front of whoever opens the ticket. The row's `mimeType` is the authoritative
+ * answer and always was: the old `.png` was itself derived from it.
+ */
+function fileNameFor(mimeType: string, index: number): string {
+  const known: Record<string, string> = {
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+    "image/heic": "heic",
+    "image/gif": "gif",
+    "video/mp4": "mp4",
+    "video/quicktime": "mov",
+  };
+  return `attachment-${index + 1}.${known[mimeType.toLowerCase()] ?? "bin"}`;
 }
 
 /**
@@ -96,7 +118,16 @@ function fileNameFor(fileUri: string, index: number): string {
  * `services/__tests__/support_reports.test.ts` actually pins, and
  * `buildFormData` below is the one line that turns it into a request body.
  */
-export function supportReportParts(report: SupportReport): SupportReportPart[] {
+export function supportReportParts(
+  report: SupportReport,
+  /**
+   * The plaintext URI to upload for each attachment, positionally (GAP-072).
+   * The row's own `fileUri` is ciphertext on disk and cannot be sent; the
+   * sender decrypts to a temp file and passes those here. Omitted only by tests
+   * that are pinning the non-file fields, where it falls back to the row's URI.
+   */
+  uploadUris?: readonly string[],
+): SupportReportPart[] {
   const parts: SupportReportPart[] = [
     ["reportId", report.id],
     ["title", report.title],
@@ -117,8 +148,8 @@ export function supportReportParts(report: SupportReport): SupportReportPart[] {
     parts.push([
       "attachments",
       {
-        uri: attachment.fileUri,
-        name: fileNameFor(attachment.fileUri, index),
+        uri: uploadUris?.[index] ?? attachment.fileUri,
+        name: fileNameFor(attachment.mimeType, index),
         type: attachment.mimeType,
       },
     ]);
@@ -127,9 +158,9 @@ export function supportReportParts(report: SupportReport): SupportReportPart[] {
   return parts;
 }
 
-function buildFormData(report: SupportReport): FormData {
+function buildFormData(report: SupportReport, uploadUris: readonly string[]): FormData {
   const form = new FormData();
-  for (const [name, value] of supportReportParts(report)) {
+  for (const [name, value] of supportReportParts(report, uploadUris)) {
     // The cast is the platform gap described above `ReactNativeFilePart` — a
     // plain string needs none of it, and never takes this branch.
     form.append(name, typeof value === "string" ? value : (value as unknown as Blob));
@@ -187,11 +218,39 @@ function outcomeForStatus(status: number): SupportSendOutcome {
  * server chose to put in it — must never end up in one.
  */
 export async function sendSupportReport(report: SupportReport): Promise<SupportSendOutcome> {
+  // THE PLAINTEXT WINDOW, AND IT IS BOUNDED BY THIS `finally` (GAP-072). The
+  // stored files are ciphertext; React Native's FormData streams from a path
+  // and has no byte-array form, so an upload needs readable files on disk for
+  // as long as the request takes. They are written to the cache directory, and
+  // removed on EVERY outcome below — sent, rejected, retry, or a throw from
+  // inside the request — because a temp file that outlives its send is exactly
+  // the plaintext-at-rest this entry exists to remove.
+  const tempUris: string[] = [];
   try {
-    const response = await apiClient.post<unknown>(SUPPORT_REPORTS_PATH, buildFormData(report), {
-      headers: { "Content-Type": "multipart/form-data" },
-      timeout: UPLOAD_TIMEOUT_MS,
-    });
+    for (const attachment of report.attachments) {
+      tempUris.push(await decryptAttachmentToTempFile(attachment.fileUri));
+    }
+  } catch {
+    await cleanupDecryptedAttachments(tempUris);
+    // A FILE WE CANNOT DECRYPT WILL NEVER DECRYPT. It means the app is locked
+    // (the flush is gated on unlocked, so this is a lock landing mid-send — try
+    // again later) or the file is gone or corrupt. Retry rather than reject,
+    // because the first case genuinely resolves itself and the second is caught
+    // by the sweep, which unlinks the row's files and lets the report fail on
+    // its own attempt budget rather than being marked rejected by a local
+    // fault the server never saw.
+    return { kind: "retry", reason: "Couldn't read the attachments. We'll try again." };
+  }
+
+  try {
+    const response = await apiClient.post<unknown>(
+      SUPPORT_REPORTS_PATH,
+      buildFormData(report, tempUris),
+      {
+        headers: { "Content-Type": "multipart/form-data" },
+        timeout: UPLOAD_TIMEOUT_MS,
+      },
+    );
 
     if (response.status >= 200 && response.status < 300) {
       return { kind: "sent", ticketRef: readTicketRef(response) };
@@ -204,5 +263,7 @@ export async function sendSupportReport(report: SupportReport): Promise<SupportS
     // the reason: it is an axios/native string ("Network Error", or a URL in
     // some cases), and this value is rendered.
     return { kind: "retry", reason: "No connection." };
+  } finally {
+    await cleanupDecryptedAttachments(tempUris);
   }
 }

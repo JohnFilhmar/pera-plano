@@ -24,7 +24,13 @@
 //      reusable place to get an `AlertCopy` instead of hand-rolling the
 //      "no amount locked" discipline five separate times.
 import type { LimitAlert } from "@/types/control";
-import type { Centavos, LimitScope, LimitThreshold, LoanDirection } from "@/types/domain";
+import type {
+  Centavos,
+  GoalMilestone,
+  LimitScope,
+  LimitThreshold,
+  LoanDirection,
+} from "@/types/domain";
 
 type AlertCopyVariant = { title: string; body: string };
 
@@ -158,6 +164,49 @@ export function loanReminderAlertCopy(params: {
   return {
     locked: { title, body: lockedBody },
     unlocked: { title, body: unlockedBody },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Goal milestone (goals rule 12, GAP-055). docs/06 §6.1's illustrative text is
+// "Halfway there! ₱25,000.00 of ₱50,000.00 saved for Emergency Fund."
+//   locked:   "Emergency Fund is halfway there."
+//   unlocked: "Halfway there! ₱25,000 of ₱50,000 saved for Emergency Fund."
+// ---------------------------------------------------------------------------
+const MILESTONE_PHRASES: Record<Exclude<GoalMilestone, 0>, { headline: string; state: string }> = {
+  25: { headline: "A quarter of the way there!", state: "a quarter of the way there" },
+  50: { headline: "Halfway there!", state: "halfway there" },
+  75: { headline: "Three quarters of the way there!", state: "three quarters of the way there" },
+  100: { headline: "Goal reached!", state: "fully funded" },
+};
+
+/**
+ * The Goal update for a milestone reached.
+ *
+ * The goal's name is one the user configured, so it survives locked, as a
+ * bill's name does (docs/12 §7a); the saved and target figures do not.
+ *
+ * @param params.goalName - The goal's own name.
+ * @param params.milestone - The milestone reached. Never 0: nothing is announced below a quarter.
+ * @param params.saved - The linked wallet's balance, in centavos. Can exceed the target.
+ * @param params.target - The goal's target, in centavos.
+ * @returns Both variants, for `postAlert` to choose between at post time.
+ */
+export function goalMilestoneAlertCopy(params: {
+  goalName: string;
+  milestone: Exclude<GoalMilestone, 0>;
+  saved: Centavos;
+  target: Centavos;
+}): AlertCopy {
+  const { goalName, milestone, saved, target } = params;
+  const title = "Goal update";
+  const phrase = MILESTONE_PHRASES[milestone];
+  return {
+    locked: { title, body: `${goalName} is ${phrase.state}.` },
+    unlocked: {
+      title,
+      body: `${phrase.headline} ${formatPeso(saved)} of ${formatPeso(target)} saved for ${goalName}.`,
+    },
   };
 }
 
@@ -373,6 +422,15 @@ export const ALERT_COPY_CATALOGUE: Array<{ name: string; copy: AlertCopy }> = [
     name: "loanDue-owed-to-me",
     copy: loanReminderAlertCopy({ direction: "owed-to-me", counterparty: "Juan", daysUntilDue: 7, amount: 1500000 }),
   },
+  ...([25, 50, 75, 100] as const).map((milestone) => ({
+    name: `goalMilestone@${milestone}`,
+    copy: goalMilestoneAlertCopy({
+      goalName: "Emergency Fund",
+      milestone,
+      saved: milestone * 50_000,
+      target: 5_000_000,
+    }),
+  })),
   {
     name: "paydaySummary",
     copy: paydaySummaryAlertCopy({ amount: 3500000 }),

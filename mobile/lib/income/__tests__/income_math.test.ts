@@ -103,6 +103,78 @@ test("irregular is the trailing 90 days SUMMED and divided by three", () => {
   expect(averageAmountFor(events, "irregular", NOW)).toBe(450000); // 13,500 / 3
 });
 
+// ---------------------------------------------------------------------------
+// The 90-day boundary is a DAY, not an hour (GAP-047)
+// ---------------------------------------------------------------------------
+//
+// Every other window in this app is a local-day boundary, and rule 9's
+// "trailing 90 days" is a claim about the user's calendar. Measured as
+// `now - 90 * DAY_MS` the cutoff instead walks forward with the wall clock
+// through the boundary day, so a credit drops out of the sum at some arbitrary
+// minute and the user's income figure — and every percent-of-income Limit
+// measured against it — changes with nothing having happened.
+//
+// The fixtures below are chosen so the two arithmetics DISAGREE. `NOW_9AM` is
+// 09:00 on Aug 15 2026, so the boundary day is May 17 (Aug 15 − 15 = Jul 31,
+// − 31 = Jun 30, − 30 = May 31, − 14 = May 17). A credit at 08:00 on May 17 is
+// inside a midnight-anchored window and OUTSIDE an instant-anchored one, which
+// opens at 09:00 that day; a credit at 10:00 is inside both. That is exactly
+// the pair the acceptance criterion names, and the whole point is that they
+// come out the same.
+const NOW_9AM = new Date(2026, 7, 15, 9, 0).getTime();
+
+function creditAt(id: string, amount: number, at: Date): CandidateEvent {
+  return {
+    transactionId: id,
+    walletId: "w-payroll",
+    amount,
+    occurredAt: at.getTime(),
+    merchant: "ACME GIGS",
+    counterparty: null,
+  };
+}
+
+test("A CREDIT AT 08:00 AND ONE AT 10:00 ON THE BOUNDARY DAY ARE TREATED THE SAME", () => {
+  const early = creditAt("early", 300000, new Date(2026, 4, 17, 8, 0));
+  const late = creditAt("late", 300000, new Date(2026, 4, 17, 10, 0));
+  const recent = creditAt("recent", 300000, new Date(2026, 6, 1, 10, 0));
+
+  // Both boundary-day credits count, so all three are in the window and rule 9's
+  // minimum of three is met: ₱9,000.00 ÷ 3.
+  expect(averageAmountFor([early, late, recent], "irregular", NOW_9AM)).toBe(300000);
+
+  // And `early` is genuinely one of the three — drop it and the same call falls
+  // under the minimum. Without this the assertion above would still pass if the
+  // window silently excluded it and something else made up the count.
+  expect(averageAmountFor([late, recent], "irregular", NOW_9AM)).toBeNull();
+});
+
+test("the window opens at LOCAL MIDNIGHT, so the day before the boundary is still out", () => {
+  // The inclusive side is the boundary DAY, not the day before it: contract §3
+  // makes `from` inclusive, and widening any further would make "90 days" 92.
+  const dayBefore = creditAt("day-before", 300000, new Date(2026, 4, 16, 23, 59));
+  const late = creditAt("late", 300000, new Date(2026, 4, 17, 10, 0));
+  const recent = creditAt("recent", 300000, new Date(2026, 6, 1, 10, 0));
+
+  expect(averageAmountFor([dayBefore, late, recent], "irregular", NOW_9AM)).toBeNull();
+});
+
+test("the window does not move again until the local DATE does", () => {
+  // The symptom in one assertion: two reads two hours apart on the same day
+  // must agree. Under `now - 90 * DAY_MS` they cannot — the cutoff at 09:00 and
+  // the cutoff at 11:00 sit on either side of the 10:00 credit.
+  const early = creditAt("early", 300000, new Date(2026, 4, 17, 8, 0));
+  const late = creditAt("late", 300000, new Date(2026, 4, 17, 10, 0));
+  const recent = creditAt("recent", 300000, new Date(2026, 6, 1, 10, 0));
+  const events = [early, late, recent];
+
+  const atNine = averageAmountFor(events, "irregular", NOW_9AM);
+  const atEleven = averageAmountFor(events, "irregular", new Date(2026, 7, 15, 11, 0).getTime());
+
+  expect(atNine).toBe(300000);
+  expect(atEleven).toBe(atNine);
+});
+
 test("BELOW THE MINIMUM HISTORY THE ANSWER IS null, NOT ZERO", () => {
   // Rule 9's "Minimum history" column: 2 events for kinsenas/weekly/monthly,
   // 3 for irregular. The m2-part2 plan says an empty list returns 0, but 0 is a

@@ -9,18 +9,21 @@ import { closeDatabase } from "@/lib/db/database";
 import type { SQLiteDatabase } from "@/lib/db/database";
 import { seedDefaultCategories, UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
 import { insertTransaction } from "@/lib/db/repos/transactions_repo";
-import { createWallet, getWallet } from "@/lib/db/repos/wallets_repo";
+import { archiveWallet, createWallet, getWallet } from "@/lib/db/repos/wallets_repo";
 import { freshDb } from "@/test_support/db";
 import type { Wallet } from "@/types/domain";
 
 import {
   countGoals,
+  completeGoal,
   createGoal,
   archiveGoal,
   unarchiveGoal,
   GoalNotFoundError,
   getGoal,
+  listGoalMilestoneStates,
   listGoals,
+  raiseGoalMilestone,
   updateGoal,
   WalletAlreadyHasGoalError,
   LinkedWalletNotFoundError,
@@ -374,6 +377,63 @@ test("the deleted list is opt-in and holds exactly what was deleted", async () =
 });
 
 // ---------------------------------------------------------------------------
+// Complete — the spec's third lifecycle verb, which had no implementation at
+// all until now ("card offers Complete, Raise target, or Keep as-is"). A
+// reached goal could only be DELETED, so the live list filled with goals the
+// user had already finished.
+// ---------------------------------------------------------------------------
+test("COMPLETING A REACHED GOAL RETIRES IT AND LEAVES THE SAVINGS ALONE", async () => {
+  // Rule 3 holds for completing exactly as it does for deleting: the goal is a
+  // lens over the account, and finishing the plan must not touch the money.
+  const goal = await createGoal({
+    name: "Travel",
+    targetAmount: 3000000,
+    linkedWalletId: savings.id,
+  });
+  await fundWallet(savings.id, 3000000);
+
+  await completeGoal(goal.id);
+
+  expect(await listGoals()).toEqual([]);
+  expect((await getGoal(goal.id))?.archivedAt).toEqual(expect.any(Number));
+  expect((await getWallet(savings.id))?.balance).toBe(3000000);
+});
+
+test("a completed goal is restorable, and frees its account meanwhile", async () => {
+  // Completing is a retirement, not a destruction — the same contract deleting
+  // has since migration 016, and the reason `completeGoal` reuses `archived_at`
+  // rather than inventing a second lifecycle.
+  const goal = await createGoal({
+    name: "Travel",
+    targetAmount: 3000000,
+    targetDate: "2027-01-01",
+    linkedWalletId: savings.id,
+  });
+
+  await completeGoal(goal.id);
+
+  expect(await countGoals()).toBe(0);
+  expect((await listGoals({ includeArchived: true })).map((row) => row.id)).toEqual([goal.id]);
+
+  await unarchiveGoal(goal.id);
+  const restored = await getGoal(goal.id);
+  expect(restored?.archivedAt).toBeNull();
+  expect(restored?.createdAt).toBe(goal.createdAt);
+  expect(restored?.targetDate).toBe("2027-01-01");
+});
+
+test("completing is idempotent and never re-stamps a goal that is already retired", async () => {
+  const goal = await createGoal({ name: "Travel", targetAmount: 3000000, linkedWalletId: savings.id });
+  await completeGoal(goal.id, 1000);
+
+  await completeGoal(goal.id, 2000);
+  await archiveGoal(goal.id);
+
+  expect((await getGoal(goal.id))?.archivedAt).toBe(1000);
+  await expect(completeGoal("no-such-goal")).resolves.toBeUndefined();
+});
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 async function fundWallet(walletId: string, amount: number): Promise<void> {
@@ -387,3 +447,43 @@ async function fundWallet(walletId: string, amount: number): Promise<void> {
     confidence: 1,
   });
 }
+
+// ---------------------------------------------------------------------------
+// Milestones (GAP-055, goals rule 12). The column is a high-water mark: the
+// repository only ever raises it, and the pass in
+// lib/goals/goal_milestone_subscriber.ts decides when.
+// ---------------------------------------------------------------------------
+test("a new goal starts one milestone BELOW the level its wallet already meets, so that level is announced and nothing under it", async () => {
+  // Owner's ruling, 2026-09-24: a goal created on a wallet already at 60 percent
+  // announces 50 and not 25. The mark means "announced up to here", so seeding it
+  // at 25 leaves exactly one level owed, which the next pass posts.
+  await fundWallet(savings.id, 300000); // ₱3,000 of ₱5,000: 60%
+  const goal = await createGoal({ name: "Phone", targetAmount: 500000, linkedWalletId: savings.id });
+
+  expect(await listGoalMilestoneStates()).toEqual([
+    { goalId: goal.id, goalName: "Phone", targetAmount: 500000, balance: 300000, milestoneReached: 25 },
+  ]);
+});
+
+test("raiseGoalMilestone only ever raises, and says whether it did", async () => {
+  const goal = await createGoal({ name: "Phone", targetAmount: 500000, linkedWalletId: savings.id });
+
+  expect(await raiseGoalMilestone(goal.id, 50)).toBe(true);
+  // A second pass racing the first loses, which is what stops a double post.
+  expect(await raiseGoalMilestone(goal.id, 50)).toBe(false);
+  expect(await raiseGoalMilestone(goal.id, 25)).toBe(false);
+
+  const [state] = await listGoalMilestoneStates();
+  expect(state.milestoneReached).toBe(50);
+});
+
+test("listGoalMilestoneStates leaves out deleted goals and goals whose wallet is archived", async () => {
+  const live = await createGoal({ name: "Phone", targetAmount: 500000, linkedWalletId: savings.id });
+  const deleted = await createGoal({ name: "Trip", targetAmount: 500000, linkedWalletId: otherSavings.id });
+  await archiveGoal(deleted.id);
+  // Rule 18: a goal on an archived wallet is paused, its progress frozen.
+  await createGoal({ name: "Tuition", targetAmount: 500000, linkedWalletId: spending.id });
+  await archiveWallet(spending.id);
+
+  expect((await listGoalMilestoneStates()).map((state) => state.goalId)).toEqual([live.id]);
+});

@@ -15,6 +15,15 @@
 // DatabaseLockedError. Both unlock() and submitRecoveryPhrase() below run all
 // three, in order, before ever reporting "unlocked".
 //
+// GAP-072 ADDED A FOURTH KEY TO THE SAME LIFECYCLE, not a fourth step to that
+// ordered sequence: `setAttachmentKey(dek)` sits immediately after the cache
+// key on both unlock paths, and `clearAttachmentKey()` beside every
+// `clearCacheEncryptionKey()`. It is deliberately NOT ordered against the
+// database — support attachments are files, and nothing about opening or
+// closing SQLCipher affects them — so it is pinned to the cache key purely so
+// the two cannot drift apart: a lock that scrubbed one and not the other would
+// leave a live DEK copy in whichever module was forgotten.
+//
 // WHY COLD START NEVER TRUSTS AN IN-MEMORY DEK: key_manager.getKeyState() can
 // report "unlocked" if something already populated its module-level `dek`
 // this same process (there is no such caller yet, but nothing prevents one
@@ -88,11 +97,15 @@ import {
 } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import * as LocalAuthentication from "expo-local-authentication";
+import * as AttachmentCipher from "@/lib/crypto/attachment_cipher";
 import * as KeyManager from "@/lib/crypto/key_manager";
 import * as Database from "@/lib/db/database";
 import { emitAppEvent } from "@/lib/events/app_events";
 import * as QueryCache from "@/lib/query_client";
-import { wipeAndStartOver as performWipeAndStartOver } from "@/lib/security/wipe";
+import {
+  wipeAndStartOver as performWipeAndStartOver,
+  WipeIncompleteError,
+} from "@/lib/security/wipe";
 import {
   DeviceKeyInvalidatedError,
   DeviceKeyMissingError,
@@ -107,6 +120,7 @@ export type LockStatus =
   | "authenticating" // a device-key unlock attempt is in flight
   | "needs_recovery" // the device Keystore key was permanently invalidated
   | "needs_device_lock" // needs_recovery, but the device ALSO has no screen lock right now (docs §5a) -- recreateDeviceKek() cannot make a new auth-gated key without one, so this runs before rewrapAfterInvalidation is ever attempted
+  | "storage_error" // getKeyState() REJECTED, so the app knows neither whether keys exist nor whether this device was ever set up (GAP-034, docs §11a) -- distinct from "locked", which means the keys are there and simply have not been unwrapped yet
   | "unlocked"; // the DEK is in memory, the database is open, the cache key is set
 
 type LockContextValue = {
@@ -119,8 +133,10 @@ type LockContextValue = {
   submitRecoveryPhrase: (phrase: string[]) => Promise<void>;
   /** Onboarding's first-run handoff: "keys now exist on this device" — moves "needs_onboarding" to "locked", and nothing else. See its implementation for why this is the only correct destination. */
   keysProvisioned: () => void;
-  /** The §11a escape hatch. Callers (RecoveryUnlockForm) own the double-confirmation UI; this only runs the actual destruction once invoked. */
+  /** The §11a escape hatch. Callers (RecoveryUnlockForm) own the double-confirmation UI; this only runs the actual destruction once invoked. NEVER REJECTS — its one call site fires it as `void onWipe()`, so a failure reported by rejection would be an unhandled promise on the one screen where a silent failure is most dangerous. Every outcome lands in `status`/`errorMessage` instead. */
   wipeAndStartOver: () => Promise<void>;
+  /** The "storage_error" screen's "Try again": re-reads the key state and routes on the result. Never rejects, for the same reason wipeAndStartOver does not. */
+  retryKeyState: () => Promise<void>;
 };
 
 const LockContext = createContext<LockContextValue | null>(null);
@@ -135,6 +151,23 @@ const FIVE_MINUTES_MS = 5 * 60 * 1000;
  */
 const RECOVERY_AUTH_NOT_COMPLETED_MESSAGE =
   "We couldn't confirm it's you, so nothing was unlocked. Your words are still here — tap Unlock to try again.";
+
+/**
+ * The wipe stopped after the database file was already deleted (see
+ * lib/security/wipe.ts's `WipeIncompleteError`). It says the data IS gone,
+ * because it is and the user is about to be handed a fresh setup flow that
+ * would otherwise look like the wipe silently did nothing.
+ */
+const WIPE_INCOMPLETE_MESSAGE =
+  "Your data was erased, but PeraPlano couldn't finish resetting. Setting up again from here is safe — close and reopen the app if anything looks wrong.";
+
+/**
+ * The wipe failed before it destroyed anything. It says so plainly: this user
+ * asked for their data to be deleted, and leaving them to guess whether it was
+ * is the one thing this screen must not do.
+ */
+const WIPE_FAILED_MESSAGE =
+  "Nothing was erased — that didn't go through. Your data and your recovery words are still here, so you can try again.";
 
 /**
  * The system authentication challenge that opens the Keystore's ~10s window
@@ -178,36 +211,103 @@ export function LockProvider({ children }: { children: ReactNode }) {
   // window measured "from when the app backgrounded, not from last
   // interaction" (docs §7) true by construction rather than by care.
   const backgroundedAtRef = useRef<number | null>(null);
+  // The armed background re-lock, or null when foregrounded or not armed.
+  // Held in a ref rather than state because arming it must not re-render the
+  // whole tree on every trip to the background.
+  const backgroundTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /**
+   * THE COLD-START KEY-STATE READ, and the retry the §11a screen runs.
+   *
+   * A REJECTION IS NOT "locked" (GAP-034). It used to be, with a "Couldn't
+   * check your device. Try again." message, and the two states are not the
+   * same thing at all: "locked" means the keys are on this device and simply
+   * have not been unwrapped yet, so it renders an Unlock button whose unwrap
+   * reads the very SecureStore that just threw. On a persistent failure (some
+   * OEM Keystore states) that button failed forever with generic copy, and
+   * the wipe affordance existed only under "needs_recovery" — so the app was
+   * bricked with no route out but uninstalling, which docs §11a exists to
+   * forbid.
+   *
+   * @param shouldApply Read after the await, so the mount effect can drop a
+   *   result that arrived after unmount. The user-driven retry passes nothing
+   *   and always applies.
+   * @returns Whether the read succeeded. Returned rather than inferred from
+   *   `status` afterwards, because `statusRef` is assigned during render and
+   *   a caller resuming from this await has not necessarily re-rendered yet.
+   */
+  const checkKeyState = useCallback(
+    async (shouldApply: () => boolean = () => true): Promise<boolean> => {
+      try {
+        const state = await KeyManager.getKeyState();
+        if (!shouldApply()) return true;
+        setStatus(state === "uninitialized" ? "needs_onboarding" : "locked");
+        setErrorMessage(null);
+        return true;
+      } catch {
+        if (shouldApply()) {
+          setStatus("storage_error");
+          // The screen this lands on explains the situation in full, so a
+          // second line of failure copy above its own explanation would say
+          // nothing the user is not already reading. A FAILED RETRY sets one
+          // (below), because then the user needs to know the tap did anything.
+          setErrorMessage(null);
+        }
+        return false;
+      }
+    },
+    [],
+  );
+
+  /** The §11a screen's "Try again": the same read, with copy for the case
+   * where it fails a second time and the screen would otherwise look inert. */
+  const retryKeyState = useCallback(async () => {
+    const ok = await checkKeyState();
+    if (!ok) {
+      setErrorMessage("Still no answer from secure storage. Try restarting your phone.");
+    }
+  }, [checkKeyState]);
 
   useEffect(() => {
     let cancelled = false;
-    KeyManager.getKeyState()
-      .then((state) => {
-        if (cancelled) return;
-        setStatus(state === "uninitialized" ? "needs_onboarding" : "locked");
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setStatus("locked");
-        setErrorMessage("Couldn't check your device. Try again.");
-      });
+    void checkKeyState(() => !cancelled);
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [checkKeyState]);
 
   /**
    * The composite teardown (task-9-brief rule 4 / contract §10): clears the
-   * cache key, closes the database handle, and zeroes the in-memory DEK.
-   * Order: cache key first (cheap, synchronous), then await the database
-   * close (SQLCipher's page cache must not survive), and the DEK last —
-   * never scrub key material before everything that might still need it
-   * has finished. Nothing here depends on the DEK still being valid, so this
-   * ordering is a safety margin, not a strict requirement.
+   * cache key, closes the database handle, empties the in-memory query cache,
+   * and zeroes the in-memory DEK. Order: cache key first (cheap, synchronous),
+   * then await the database close (SQLCipher's page cache must not survive),
+   * and the DEK last — never scrub key material before everything that might
+   * still need it has finished. Nothing here depends on the DEK still being
+   * valid, so this ordering is a safety margin, not a strict requirement.
+   *
+   * WHY `queryClient.clear()` IS PART OF THE TEARDOWN. Closing the database
+   * ends the app's ability to READ a row; it does nothing about the rows
+   * already read. Every decrypted balance, merchant name and amount the user
+   * looked at before backgrounding sits in the query cache as plain
+   * JavaScript objects, with a 30-minute `gcTime` that outlives the lock, so
+   * a "locked" app still held the ledger in memory and — the visible half of
+   * the same bug — repainted it on unlock, before any refetch resolved.
+   *
+   * It is safe to run after `clearCacheEncryptionKey()` above. `clear()`
+   * makes the persister attempt one throttled write with no key, and
+   * cache_cipher.ts's `serialize` rejects with `CacheCipherKeyMissingError`
+   * rather than writing anything, which @tanstack/query-async-storage-persister
+   * swallows into a no-op when no `retry` is configured. The stored blob is
+   * left as it was: encrypted, and holding only the two families
+   * `PERSISTED_QUERY_PREFIXES` allows. It also does not wake
+   * `installSafeToSpendCascade`, which subscribes to `invalidate` actions
+   * only, so nothing tries to refetch against the handle just closed.
    */
   const lockNow = useCallback(async () => {
     QueryCache.clearCacheEncryptionKey();
+    AttachmentCipher.clearAttachmentKey();
     await Database.closeDatabase();
+    QueryCache.queryClient.clear();
     KeyManager.lock();
     // AFTER the teardown, never before: a subscriber that reads the database on
     // this event must find it already closed. The bus swallows a throwing
@@ -242,12 +342,42 @@ export function LockProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    const cancelBackgroundTimer = () => {
+      if (backgroundTimerRef.current === null) return;
+      clearTimeout(backgroundTimerRef.current);
+      backgroundTimerRef.current = null;
+    };
+
     const subscription = AppState.addEventListener("change", (next: AppStateStatus) => {
       if (next === "background") {
         backgroundedAtRef.current = Date.now();
+        cancelBackgroundTimer();
+        if (statusRef.current !== "unlocked") return; // nothing to tear down
+        // TWO MECHANISMS, AND BOTH ARE NEEDED. This timer is what makes the
+        // app actually REACH the state docs §7 calls locked — DEK zeroed,
+        // database closed, cache emptied — while it is still in the
+        // background, instead of carrying all three until the user happens to
+        // come back. It is best effort by nature: a timer only fires while
+        // Android still schedules this process's JS thread, so Doze, a
+        // background process kill or an OEM's own reaper silently skips it.
+        // That is why the elapsed-time check on the "active" transition below
+        // stays exactly as it was, and remains the guarantee.
+        //
+        // The timer also covers the one case that check cannot. It counts
+        // elapsed time, while the check below subtracts two `Date.now()`
+        // readings, so a wall clock moved backwards past the five minutes
+        // makes that subtraction small (or negative) and skips the re-lock
+        // for as long as the clock stays there. A pending timer does not care
+        // what the clock says.
+        backgroundTimerRef.current = setTimeout(() => {
+          backgroundTimerRef.current = null;
+          if (statusRef.current !== "unlocked") return;
+          void lockNow();
+        }, FIVE_MINUTES_MS);
         return;
       }
       if (next !== "active") return;
+      cancelBackgroundTimer();
 
       if (statusRef.current === "needs_device_lock") {
         void recheckDeviceLock();
@@ -262,7 +392,10 @@ export function LockProvider({ children }: { children: ReactNode }) {
         void lockNow();
       }
     });
-    return () => subscription.remove();
+    return () => {
+      subscription.remove();
+      cancelBackgroundTimer();
+    };
   }, [lockNow, recheckDeviceLock]);
 
   /**
@@ -326,6 +459,7 @@ export function LockProvider({ children }: { children: ReactNode }) {
       const dek = await KeyManager.unlockWithDeviceKey();
       await Database.unlockDatabase(dek);
       QueryCache.setCacheEncryptionKey(dek);
+      AttachmentCipher.setAttachmentKey(dek);
       setStatus("unlocked");
     } catch (error) {
       if (error instanceof DeviceKeyMissingError) {
@@ -401,6 +535,7 @@ export function LockProvider({ children }: { children: ReactNode }) {
 
       await Database.unlockDatabase(dek);
       QueryCache.setCacheEncryptionKey(dek);
+      AttachmentCipher.setAttachmentKey(dek);
       setStatus("unlocked");
     } catch (error) {
       if (error instanceof KeyManager.RecoveryUnlockFailedError) {
@@ -432,8 +567,38 @@ export function LockProvider({ children }: { children: ReactNode }) {
     wipeInFlightRef.current = true;
     try {
       await performWipeAndStartOver();
+      // The wipe destroys key_manager's DEK, but this module's cache key is
+      // its OWN COPY of those bytes (lib/query_client.ts's setter) and
+      // wipeKeys() cannot reach it. Without this line a "start over" would
+      // leave a live DEK in memory after the wipe that was supposed to
+      // destroy every piece of key material. lockNow() above already does
+      // this on the ordinary lock path; the wipe path needs it too.
+      QueryCache.clearCacheEncryptionKey();
+      AttachmentCipher.clearAttachmentKey();
       setErrorMessage(null);
       setStatus("needs_onboarding");
+    } catch (error) {
+      if (error instanceof WipeIncompleteError) {
+        // THE DATABASE FILE IS ALREADY GONE. Everything below the try's happy
+        // path still has to happen: the cache key is a copy wipeKeys() could
+        // never have reached even when it succeeds, and staying on
+        // "needs_recovery" would park the user in front of a phrase box whose
+        // only button re-wraps a key against a database that no longer exists.
+        // So the status moves forward exactly as on success, and the message —
+        // rendered by app/lock.tsx above the onboarding pre-flow — is the only
+        // part that differs.
+        QueryCache.clearCacheEncryptionKey();
+        AttachmentCipher.clearAttachmentKey();
+        setErrorMessage(WIPE_INCOMPLETE_MESSAGE);
+        setStatus("needs_onboarding");
+      } else {
+        // wipeDatabase() itself failed, so NOTHING was destroyed: the ledger,
+        // both wraps and the recovery phrase are all still exactly as they
+        // were. Status deliberately stays "needs_recovery" — the same rule
+        // every other failure path in this file follows — so the form stays
+        // mounted and both the phrase and a second wipe attempt stay live.
+        setErrorMessage(WIPE_FAILED_MESSAGE);
+      }
     } finally {
       wipeInFlightRef.current = false;
     }
@@ -447,8 +612,9 @@ export function LockProvider({ children }: { children: ReactNode }) {
       submitRecoveryPhrase,
       keysProvisioned,
       wipeAndStartOver,
+      retryKeyState,
     }),
-    [status, errorMessage, unlock, submitRecoveryPhrase, keysProvisioned, wipeAndStartOver],
+    [status, errorMessage, unlock, submitRecoveryPhrase, keysProvisioned, wipeAndStartOver, retryKeyState],
   );
 
   return <LockContext.Provider value={value}>{children}</LockContext.Provider>;

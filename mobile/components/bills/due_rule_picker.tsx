@@ -21,7 +21,12 @@
 // through `accessibilityState` anywhere in this project's tests — unlike the
 // bill/loan reminder offsets next door — so all three are free to become real
 // `Chip`/`SegmentedControl` instances rather than hand-mirrored classNames.
-import { useState } from "react";
+//
+// THE NUMBER FIELDS ARE CONTROLLED BY THE RULE, not by a local text buffer.
+// `LabelledNumber` used to keep its own `useState` and emit the raw string, so
+// "45" or "" stayed on screen while the rule already held 31 or 1 — the field
+// disagreed with the value being saved, and nothing said so. Reading straight
+// from `value` means the clamp is visible the moment it happens.
 import { Text, View } from "react-native";
 
 import { Chip } from "@/components/ui/chip";
@@ -80,25 +85,61 @@ function acceptsAdjust(rule: DueRule): boolean {
   return rule.kind !== "every-n-weeks";
 }
 
+/**
+ * AN EMPTY FIELD IS `NaN`, NOT 1. Clearing the day used to fall back to the
+ * 1st, so a half-edited rule saved as "every month on the 1st" — a due date
+ * the user never picked, feeding reminders and the Safe-to-Spend bills term.
+ * `NaN` says "not answered yet"; `isDueRuleComplete` is what stops it saving.
+ */
 function clampDay(text: string): number {
   const parsed = Number.parseInt(text.replace(/[^0-9]/g, ""), 10);
-  if (Number.isNaN(parsed)) return 1;
+  if (Number.isNaN(parsed)) return Number.NaN;
   return Math.min(31, Math.max(1, parsed));
 }
 
 function clampN(text: string): number {
   const parsed = Number.parseInt(text.replace(/[^0-9]/g, ""), 10);
-  if (Number.isNaN(parsed)) return 1;
+  if (Number.isNaN(parsed)) return Number.NaN;
   return Math.min(12, Math.max(1, parsed));
+}
+
+/** What the field shows: the stored number, or nothing while it is unanswered. */
+function numberText(value: number): string {
+  return Number.isNaN(value) ? "" : String(value);
+}
+
+/**
+ * Every number the chosen kind needs has an answer.
+ *
+ * Read by `bill_form.tsx`'s `canSave` — the picker cannot disable a button it
+ * does not own, and an incomplete rule is not a rule.
+ */
+export function isDueRuleComplete(rule: DueRule): boolean {
+  switch (rule.kind) {
+    case "day-of-month":
+      return !Number.isNaN(rule.day);
+    case "every-n-months":
+      return !Number.isNaN(rule.n) && !Number.isNaN(rule.day);
+    case "every-n-weeks":
+      return !Number.isNaN(rule.n);
+    case "semi-monthly":
+    case "last-day-of-month":
+      return true;
+  }
 }
 
 export function DueRulePicker({ value, onChange, today, testID }: DueRulePickerProps) {
   // The next three occurrences. A year is enough for every kind the union can
   // express — an annual rule's third date is two years out, so the window is
   // widened rather than the preview silently showing fewer than three.
-  const preview = [
-    ...occurrencesBetween(value, addDaysIso(today, 1), addDaysIso(today, 1200)),
-  ].slice(0, 3);
+  //
+  // Skipped while a number is unanswered: `occurrencesBetween` would be asked
+  // for the NaNth of the month, and "no upcoming dates" is not what an empty
+  // field means.
+  const complete = isDueRuleComplete(value);
+  const preview = complete
+    ? [...occurrencesBetween(value, addDaysIso(today, 1), addDaysIso(today, 1200))].slice(0, 3)
+    : [];
 
   return (
     <View testID={testID} className="gap-3">
@@ -122,7 +163,7 @@ export function DueRulePicker({ value, onChange, today, testID }: DueRulePickerP
         <LabelledNumber
           testID="due-day"
           label="Day of the month"
-          value={String(value.day)}
+          value={numberText(value.day)}
           onChange={(text) => onChange({ ...value, day: clampDay(text) })}
           // Rule 2's clamping means 29-31 are safe to offer: they land on the
           // last day of a shorter month rather than skipping it.
@@ -135,14 +176,14 @@ export function DueRulePicker({ value, onChange, today, testID }: DueRulePickerP
           <LabelledNumber
             testID="due-every-n-months"
             label="Every how many months?"
-            value={String(value.n)}
+            value={numberText(value.n)}
             onChange={(text) => onChange({ ...value, n: clampN(text) })}
             hint="3 is quarterly, 12 is yearly."
           />
           <LabelledNumber
             testID="due-month-day"
             label="Day of the month"
-            value={String(value.day)}
+            value={numberText(value.day)}
             onChange={(text) => onChange({ ...value, day: clampDay(text) })}
           />
         </View>
@@ -153,7 +194,7 @@ export function DueRulePicker({ value, onChange, today, testID }: DueRulePickerP
           <LabelledNumber
             testID="due-every-n-weeks"
             label="Every how many weeks?"
-            value={String(value.n)}
+            value={numberText(value.n)}
             onChange={(text) => onChange({ ...value, n: clampN(text) })}
           />
           <Text className="text-sm font-medium text-fg-2 dark:text-fg-2-dark">On which day?</Text>
@@ -189,7 +230,11 @@ export function DueRulePicker({ value, onChange, today, testID }: DueRulePickerP
 
       <View testID="due-preview" className="rounded-lg bg-surface p-3 dark:bg-surface-dark">
         <Text className="text-xs font-medium text-fg-2 dark:text-fg-2-dark">Next three</Text>
-        {preview.length === 0 ? (
+        {!complete ? (
+          <Text testID="due-preview-incomplete" className="mt-1 text-sm text-fg-2 dark:text-fg-2-dark">
+            Fill in the number above to see the next dates.
+          </Text>
+        ) : preview.length === 0 ? (
           <Text className="mt-1 text-sm text-fg-2 dark:text-fg-2-dark">
             This rule has no upcoming dates.
           </Text>
@@ -222,8 +267,6 @@ function LabelledNumber({
   onChange: (text: string) => void;
   hint?: string;
 }) {
-  const [text, setText] = useState(value);
-
   return (
     <View className="gap-1">
       <Text className="text-sm font-medium text-fg-2 dark:text-fg-2-dark">{label}</Text>
@@ -231,11 +274,8 @@ function LabelledNumber({
         testID={testID}
         label={label}
         mode="integer"
-        value={text}
-        onChangeText={(next) => {
-          setText(next);
-          onChange(next);
-        }}
+        value={value}
+        onChangeText={onChange}
       />
       {hint === undefined ? null : (
         <Text className="text-xs text-fg-2 dark:text-fg-2-dark">{hint}</Text>

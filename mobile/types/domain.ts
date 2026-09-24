@@ -202,6 +202,19 @@ export type TxFilter = {
    * the ledger, where an adjustment is history the user should see.
    */
   excludeAdjustments?: boolean;
+  /**
+   * The instant the tier's history floor is measured from. NOT a window bound —
+   * `from`/`to` are the window; this only says when "the last 90 days" is being
+   * asked about (docs/05-monetization.md §3.3).
+   *
+   * OPTIONAL, AND THAT IS THE COMPROMISE. lib/clock.ts's rule is that nothing
+   * under lib/ reads `Date.now()` itself, and a repository is the last place it
+   * belongs; but the ledger screens and hooks that read through here are
+   * composition edges with no clock of their own to pass. So a clock-injected
+   * caller supplies it and gets a pinnable, reproducible floor, and a caller
+   * that omits it falls back to the wall clock exactly as before.
+   */
+  now?: EpochMs;
 };
 
 // ---------- TransferLink ----------
@@ -331,6 +344,12 @@ export type Goal = {
   updatedAt: EpochMs;
 };
 
+/**
+ * A goal progress milestone (goals rule 12): the highest of 25, 50, 75 and 100
+ * percent of `targetAmount` a balance meets, or 0 below a quarter.
+ */
+export type GoalMilestone = 0 | 25 | 50 | 75 | 100;
+
 // ---------- Loan ----------
 export type LoanDirection = "i-owe" | "owed-to-me";
 
@@ -346,7 +365,31 @@ export type Loan = {
   direction: LoanDirection;
   counterparty: string;
   principal: Centavos;
-  /** Percent 0..100, informational only (domain §3.8). */
+  /**
+   * The cash that actually changed hands at the start, or `null` when there is
+   * no second figure to hold (migration 020).
+   *
+   * ONLY A FLAT LOAN HAS TWO NUMBERS. Loans rule 2 makes a flat loan's balance
+   * "total repayable minus the sum of paymentHistory[]", so `principal` there
+   * holds `installment * count` and THIS holds the ₱5,000 in loans:43's
+   * "borrowed ₱5,000.00, repay ₱6,000.00". For amortized and free-form loans
+   * `principal` already IS the amount borrowed, and this stays `null` rather
+   * than repeating it into a column that could then disagree with it.
+   *
+   * `null` ALSO MEANS "NEVER RECORDED" on a flat loan written before migration
+   * 020, and that is not recoverable — rule 4 forbids deriving a rate for 5-6,
+   * which is the only thing that could work the figure back out. Nothing may
+   * substitute `principal` for a null here: that would claim the user borrowed
+   * the total repayable.
+   */
+  amountBorrowed: Centavos | null;
+  /**
+   * ANNUAL percent 0..100, and NOT informational: `lib/loans/loan_math.ts`
+   * reads it per annum (`rate / 100 / 12` a month) to build every amortized
+   * schedule and its installment, so a monthly figure stored here inflates
+   * the whole schedule roughly twelvefold. `null` for flat and free-form,
+   * which carry no rate at all (loans rule 4).
+   */
   interestRate: number | null;
   schedule: Installment[] | null;
   linkedWalletId: string | null;
@@ -493,6 +536,24 @@ export type BillPayment = {
   updatedAt: EpochMs;
 };
 
+/**
+ * A `BillPayment` joined to the ledger Transaction it points at.
+ *
+ * `bill_payments` HAS NO AMOUNT OR DATE COLUMN, deliberately (see
+ * lib/db/repos/bills_repo.ts): both figures live on the transaction, so the
+ * bill history and the ledger can never disagree about the same peso. The
+ * price of that is a join, and every surface showing a payment needs the same
+ * one — so `listBillStatuses` does it once and hands this down, rather than
+ * leaving each screen to fetch a transaction of its own or, as the bill detail
+ * did, print the bill's current estimate in place of what was actually paid.
+ */
+export type MatchedBillPayment = BillPayment & {
+  /** What LEFT THE WALLET — never the bill's estimate of what it costs today. */
+  amount: Centavos;
+  /** When the money moved, as opposed to `createdAt`, when the match was made. */
+  occurredAt: EpochMs;
+};
+
 // ---------- RecurringPattern ----------
 export type RecurringPeriod = "weekly" | "monthly" | "annual";
 
@@ -561,6 +622,28 @@ export type UserRuleAction =
    * could never fire, which is exactly the state it shipped in.
    */
   | { kind: "mark-transfer"; counterpartWalletId: string }
+  /**
+   * "Money on this trail pays THIS loan" — the rule a confirmed loan match
+   * teaches (docs/04-features/06-loans.md §"Flow: automatic payment matching
+   * from the ledger" step 4, read back as rule 8's signal (b)).
+   *
+   * The loan id is on the ACTION for exactly the reason the wallet is on
+   * `mark-transfer` above: the matcher can only describe the notification trail
+   * — a merchant pattern, a direction — and which loan that trail pays is not a
+   * property of the notification at all. Matcher-identifies-one-side,
+   * action-names-the-other, the shape docs/09-v2-backlog.md §2b.4 names as the
+   * worked precedent for every pairing rule.
+   *
+   * A SCORING SIGNAL, AND ONLY A SCORING SIGNAL. Loans rule 9 permits exactly
+   * one thing to auto-match — an explicit provider loan event with an
+   * unambiguous single-loan mapping — and "every other combination produces a
+   * suggestion requiring confirmation". A taught rule raises the loan's score
+   * and its rank on the card; it never records a payment on its own. Two open
+   * loans to the same counterparty is the case that makes the difference
+   * concrete: both are plausible, only one is right, and rule 9's second
+   * sentence says the user chooses.
+   */
+  | { kind: "mark-loan-payment"; loanId: string }
   | { kind: "suppress-recurring"; merchant: string }
   | { kind: "ignore" };
 
@@ -624,8 +707,31 @@ export type ReviewKind =
 /**
  * Parsed-candidate payload (amount, direction, merchant, wallet/category guesses…).
  * Stored opaquely by the foundation; the ingest plan (m1) owns and narrows the shape.
+ *
+ * STILL OPAQUE — the index signature is the type, and every reader keeps its own
+ * defensive `readString`/`readAmount` because a card enqueued by an older build
+ * carries whatever THAT build wrote. The five keys named below are the ones the
+ * DedupeGate needs back out again, and they are declared only so a writer cannot
+ * misspell `channel` or put a `"SMS"` where the gate compares `"sms"`.
+ *
+ * WHY THE GATE NEEDS THEM AT ALL. A capture that hard-routes sits in the queue
+ * carrying no reference number, no channel and no provider, so its SMS twin
+ * thirty seconds later has nothing to match against and raises a second card for
+ * one movement — and the row a later confirm commits carries no reference
+ * either, so §6 rule 1's strong key can never fire for it afterwards.
  */
-export type ReviewItemPayload = Record<string, unknown>;
+export type ReviewItemPayload = Record<string, unknown> & {
+  /** §6 rule 1's strong key. Absent means the notification carried none. */
+  referenceNo?: string | null;
+  /** The provider's own balance statement, when it made one. */
+  balanceAfter?: Centavos | null;
+  /** The normalized event's own timestamp — never when the card was raised. */
+  occurredAt?: EpochMs;
+  /** §6 rule 2 is only reachable when both channels are known and differ. */
+  channel?: "push" | "sms";
+  /** The ruleset's key, not the package name — what `describesSameMovement` compares. */
+  providerKey?: string;
+};
 
 export type ReviewQueueItem = {
   id: string;
@@ -661,4 +767,20 @@ export type RawCapture = {
   bigText: string | null;
   postedAt: EpochMs;
   capturedAt: EpochMs;
+  /**
+   * `StatusBarNotification.getKey()` — Android's own identity for the
+   * notification SLOT this arrived in (`package|id|tag|user`), stable across
+   * every edit the posting app makes to it.
+   *
+   * NOT `id`, WHICH IS THE OPPOSITE FACT. `id` is minted per DELIVERY, so an
+   * app that edits its notification produces several ids for one key; that is
+   * exactly the difference `findReplayCapture` needs to tell a redelivery
+   * apart from a second, genuine transaction (see migration 018).
+   *
+   * OPTIONAL because two real populations carry none: rows stored before
+   * migration 018, and records still sitting in the native capture buffer
+   * written by a build that predates it. Absent means "cannot tell", which
+   * suppresses nothing.
+   */
+  notificationKey?: string | null;
 };

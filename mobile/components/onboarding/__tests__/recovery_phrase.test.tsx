@@ -57,6 +57,37 @@ jest.mock("@/modules/notification_listener", () => {
   return { NotAuthenticatedError };
 });
 
+// expo-screen-capture is a native module (its default export is a
+// requireNativeModule call), so it has nothing to bind to under Jest — the
+// same reason @/modules/notification_listener is mocked above.
+//
+// The factory REIMPLEMENTS the package's own usePreventScreenCapture body
+// rather than stubbing it with a bare jest.fn(): prevent on mount, allow on
+// unmount, keyed. "The guard is engaged while a phrase is on screen and
+// released when that screen goes away" is the exact claim GAP-017's fix has
+// to make, and a stubbed hook could only ever prove the hook was called at
+// all — never that it lets go. The two jest.fn()s live INSIDE the factory and
+// are read back off the imported module below, because a factory is hoisted
+// above this file's own const declarations (mockShareModule gets away with an
+// outer reference only because its Proxy dereferences lazily).
+jest.mock("expo-screen-capture", () => {
+  const { useEffect } = require("react");
+  const preventScreenCaptureAsync = jest.fn(async (_key: string) => undefined);
+  const allowScreenCaptureAsync = jest.fn(async (_key: string) => undefined);
+  return {
+    preventScreenCaptureAsync,
+    allowScreenCaptureAsync,
+    usePreventScreenCapture: (key: string) => {
+      useEffect(() => {
+        void preventScreenCaptureAsync(key);
+        return () => {
+          void allowScreenCaptureAsync(key);
+        };
+      }, [key]);
+    },
+  };
+});
+
 // A Proxy over jest.requireActual, not a plain `{...actual}` spread — the
 // same reasoning components/onboarding/__tests__/device_lock.test.tsx and
 // contexts/__tests__/lock_context.test.tsx document: spreading eagerly
@@ -77,6 +108,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-
 import { BackHandler, Share, StyleSheet } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { authenticateAsync } from "expo-local-authentication";
+import { allowScreenCaptureAsync, preventScreenCaptureAsync } from "expo-screen-capture";
 import { initializeKeys } from "@/lib/crypto/key_manager";
 import { generatePhrase } from "@/lib/crypto/recovery_phrase";
 import { NotAuthenticatedError } from "@/modules/notification_listener";
@@ -86,9 +118,18 @@ const mockInitializeKeys = initializeKeys as jest.Mock;
 const mockGeneratePhrase = generatePhrase as jest.Mock;
 const mockAuthenticateAsync = authenticateAsync as jest.Mock;
 const mockShare = Share.share as jest.Mock;
+const mockPreventScreenCapture = preventScreenCaptureAsync as jest.Mock;
+const mockAllowScreenCapture = allowScreenCaptureAsync as jest.Mock;
 
 const WORD_COUNT = 12;
 const CHALLENGE_COUNT = 3;
+
+/** The keys phrase_display.tsx and phrase_confirm.tsx pass to the guard.
+ * Pinned here because they are not decorative: the package ref-counts
+ * prevent/allow BY KEY, so two phrase surfaces sharing one would have the
+ * first unmount clear the flag out from under the second. */
+const DISPLAY_CAPTURE_KEY = "recovery-phrase-display";
+const CONFIRM_CAPTURE_KEY = "recovery-phrase-confirm";
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -343,7 +384,9 @@ test("states the stakes in plain language, and never uses crypto-wallet vocabula
   await renderScreenAndWaitForWords();
 
   const tree = JSON.stringify(screen.toJSON()).toLowerCase();
-  expect(tree).toMatch(/new phone/);
+  // Was /new phone/ until GAP-100 -- that half of the sentence was the false
+  // one. The trigger the words genuinely cover is the screen-lock reset.
+  expect(tree).toMatch(/fingerprint or pin/);
   expect(tree).toMatch(/only way back/);
   expect(tree).toMatch(/recovery words/);
   expect(tree).not.toMatch(/seed phrase/);
@@ -352,20 +395,175 @@ test("states the stakes in plain language, and never uses crypto-wallet vocabula
 });
 
 // ---------------------------------------------------------------------------
-// Rule 5: offer a copy/share action, and warn about screenshots.
+// GAP-100: the promise is scoped to THIS phone, and the scope is the point.
+// `recoveryWrap` and `recoverySalt` live in this device's SecureStore, nothing
+// copies them off it (lib/privacy/data_export.ts carries ledger rows and no
+// key material), and unwrapWithRecoveryPhrase throws "recovery wrap not
+// present" the moment they are absent (lib/crypto/key_manager.ts:171-178). So
+// the words open this phone's data after a screen-lock reset and open nothing
+// at all on a new handset. The copy this screen shipped with promised both --
+// the true half is exactly what made the false half credible -- and it was
+// false in the direction that silently loses every wallet, bill, goal and
+// loan the user has.
+//
+// These assertions pin the SCOPE, not one sentence: they fail if the old
+// wording returns, and they still pass for any rewrite that keeps the promise
+// device-bound. The last block is the general form -- a screen may mention a
+// new phone only to deny, never to promise.
 // ---------------------------------------------------------------------------
 
-test("offers a copy/share action wired to the platform share sheet, and warns about screenshots", async () => {
+test("scopes the recovery promise to this phone, and never promises data back on a new one", async () => {
   await renderScreenAndWaitForWords();
 
   const tree = JSON.stringify(screen.toJSON()).toLowerCase();
-  expect(tree).toMatch(/screenshot/);
 
-  const words = getDisplayedWords();
-  fireEvent.press(screen.getByTestId("phrase-share-button"));
+  // The true half survives intact: a screen-lock reset is what the words are
+  // for, and nobody can hand them back if they are lost.
+  expect(tree).toMatch(/fingerprint or pin/);
+  expect(tree).toMatch(/peraplano cannot recover them for you/);
 
-  expect(mockShare).toHaveBeenCalledTimes(1);
-  expect(mockShare).toHaveBeenCalledWith({ message: words.join(" ") });
+  // ...and the scope that makes it true -- the data is ALREADY here.
+  expect(tree).toMatch(/already on this phone/);
+
+  // The false half is gone, in the exact shape it shipped in.
+  expect(tree).not.toMatch(/if you ever get a new phone/);
+
+  // ...and in any other shape. Every sentence that mentions a new phone or
+  // device has to deny: "they don't move it to a new one" passes, "the only
+  // way back" sitting in the same sentence as "new phone" does not.
+  const newDeviceSentences = tree
+    .split(".")
+    .filter((sentence) => /new (phone|device|one)\b/.test(sentence));
+  expect(newDeviceSentences.length).toBeGreaterThan(0);
+  for (const sentence of newDeviceSentences) {
+    expect(sentence).toMatch(/\b(don't|do not|cannot|can't|won't|never|not)\b/);
+    expect(sentence).not.toMatch(/only way back|bring .*back|restore/);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GAP-017: the words leave this screen on paper or not at all. Rule 5 used to
+// ask for a copy/share action here; that action put the ledger's second
+// unwrap path on the OS share sheet, so the assertions below are its
+// inversion -- the affordance is gone, the clipboard route with it, and the
+// screens that show or accept the phrase hold a screen-capture guard for
+// exactly as long as they are mounted.
+// ---------------------------------------------------------------------------
+
+test("offers no share or copy affordance, and never reaches the platform share sheet", async () => {
+  await renderScreenAndWaitForWords();
+
+  expect(screen.queryByTestId("phrase-share-button")).toBeNull();
+
+  // THE WORD LIST IS EXCLUDED, AND THAT IS NOT A LOOPHOLE. `share` and `copy`
+  // are both BIP39 words, so a phrase that legitimately contains one used to
+  // fail this assertion at random -- roughly one run in a hundred, which is
+  // how it reached CI red on a branch that had not touched this screen. The
+  // claim being made is about AFFORDANCES, and an affordance cannot live
+  // inside the generated words, so scanning them proves nothing and only adds
+  // a coin flip. Everything else on the step is still scanned in full.
+  const tree = JSON.stringify(screen.toJSON(), (_key, value) =>
+    value !== null &&
+    typeof value === "object" &&
+    (value as { props?: { testID?: string } }).props?.testID === "phrase-word-list"
+      ? undefined
+      : value,
+  ).toLowerCase();
+  // The exclusion really happened. Without this, a renamed testID would make
+  // the replacer a no-op and quietly restore the coin flip it removed.
+  expect(tree).not.toMatch(/phrase-word-/);
+  expect(tree).not.toMatch(/share/);
+  expect(tree).not.toMatch(/copy/);
+
+  // Not just "no button": nothing on the display step reaches Share at all.
+  expect(mockShare).not.toHaveBeenCalled();
+});
+
+test("the displayed words are not selectable -- no long-press route to the clipboard", async () => {
+  await renderScreenAndWaitForWords();
+
+  for (let i = 0; i < WORD_COUNT; i++) {
+    expect(screen.getByTestId(`phrase-word-${i}`).props.selectable).toBeFalsy();
+  }
+});
+
+test("warns that screenshots are off here, and still tells the user to keep the words private", async () => {
+  await renderScreenAndWaitForWords();
+
+  const tree = JSON.stringify(screen.toJSON()).toLowerCase();
+  expect(tree).toMatch(/screenshots are turned off/);
+  // The guard is Android-effective, not absolute -- a camera still works, so
+  // the copy must not stop at "you're safe here".
+  //
+  // THIS USED TO PIN /on paper/, and paper used to be the only way off this
+  // screen. Since the save affordance landed there are two, so the assertion
+  // moved to the part that is true of BOTH and is the part that actually
+  // matters: wherever the words end up, only the user should be able to reach
+  // them. Pinning "on paper" now would fail the screen for offering the file
+  // the owner asked for, which is the opposite of what this test is guarding.
+  expect(tree).toMatch(/keep them somewhere only you can reach/);
+  expect(tree).toMatch(/photograph/);
+});
+
+// THE SAVE AFFORDANCE ITSELF. The button's absence would not fail any test
+// above -- the screen would simply render as it did before the owner asked for
+// this, and hand-copying twelve words would quietly come back.
+test("offers a way to save the words to a file the user chooses", async () => {
+  await renderScreenAndWaitForWords();
+
+  expect(screen.getByTestId("phrase-save-button")).toBeTruthy();
+});
+
+test("blocks screen capture while the words are displayed, and releases it on unmount", async () => {
+  await renderScreenAndWaitForWords();
+
+  // AWAITED, not asserted straight off the render. The guard runs from an
+  // effect, and the words appearing only proves the component rendered, not
+  // that React has flushed its effects yet. Asserting immediately passes on an
+  // idle machine and fails when the whole suite is running, which is the
+  // difference between a test that measures the guard and one that measures
+  // the scheduler.
+  await waitFor(() => {
+    expect(mockPreventScreenCapture).toHaveBeenCalledWith(DISPLAY_CAPTURE_KEY);
+  });
+  expect(mockAllowScreenCapture).not.toHaveBeenCalledWith(DISPLAY_CAPTURE_KEY);
+
+  // RELEASED, not left on: a guard that never lets go would silently disable
+  // screenshots everywhere else in the app, including the support flow that
+  // deliberately attaches them.
+  await act(async () => {
+    screen.unmount();
+  });
+
+  expect(mockAllowScreenCapture).toHaveBeenCalledWith(DISPLAY_CAPTURE_KEY);
+});
+
+test("the confirm step holds its own guard, and the display step's is released as it leaves", async () => {
+  await proceedToConfirm();
+
+  // Awaited for the same reason as the display guard above: the swap runs
+  // through two effects (the leaving screen's cleanup and the arriving
+  // screen's setup), and neither is guaranteed to have flushed the moment the
+  // confirm step's markup appears.
+  await waitFor(() => {
+    expect(mockPreventScreenCapture).toHaveBeenCalledWith(CONFIRM_CAPTURE_KEY);
+    expect(mockAllowScreenCapture).toHaveBeenCalledWith(DISPLAY_CAPTURE_KEY);
+  });
+  expect(mockAllowScreenCapture).not.toHaveBeenCalledWith(CONFIRM_CAPTURE_KEY);
+
+  await act(async () => {
+    screen.unmount();
+  });
+
+  expect(mockAllowScreenCapture).toHaveBeenCalledWith(CONFIRM_CAPTURE_KEY);
+});
+
+test("the confirm inputs opt out of the OS autofill service", async () => {
+  await proceedToConfirm();
+
+  for (let i = 0; i < CHALLENGE_COUNT; i++) {
+    expect(screen.getByTestId(`confirm-input-${i}`).props.importantForAutofill).toBe("no");
+  }
 });
 
 // ---------------------------------------------------------------------------

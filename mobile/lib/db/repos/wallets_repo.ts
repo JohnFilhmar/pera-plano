@@ -8,7 +8,12 @@
 import { getDatabase } from "@/lib/db/database";
 import { rowToWallet, type WalletRow } from "@/lib/db/mappers";
 import { newId } from "@/lib/ids";
-import type { Centavos, NewWallet, Wallet } from "@/types/domain";
+// THE MARKER, NOT A COPY OF IT. `RECONCILE_NOTE` is the exact string
+// `use_reconcile_cash` writes into `note`, and 017_transaction_adjustments.sql
+// backfilled the same string. Spelling it again in the SQL below would leave
+// two literals that have to agree forever with nothing checking that they do.
+import { RECONCILE_NOTE } from "@/lib/wallets/reconcile";
+import type { Centavos, EpochMs, NewWallet, Wallet } from "@/types/domain";
 
 /**
  * Thrown by `createWallet` when `name` collides with a non-archived Wallet
@@ -263,12 +268,16 @@ export async function unarchiveWallet(id: string): Promise<void> {
  * no basis for making. A Wallet whose figures genuinely match returns
  * `drift: 0`, and those two states must stay distinguishable.
  *
- * WHY COMMIT ORDER RATHER THAN `occurred_at`. This describes the CURRENT
- * balance, and the current balance is whatever the last snap to run set it to.
- * Rule 12 makes the snap unconditional, and rule 9's out-of-order suppression is
- * not implemented (see `insertTransaction`), so a late-arriving older
- * notification does re-anchor the Wallet — and the explainer must describe the
- * figure the Wallet actually holds, not a newer one that no longer governs it.
+ * WHY `occurred_at` ORDER, WITH COMMIT ORDER ONLY AS THE TIE-BREAK. This
+ * describes the CURRENT balance, so it has to name the row that actually set
+ * it. `insertTransaction` now implements rule 9's out-of-order suppression: a
+ * snap runs only when its notification is no older than the wallet's current
+ * snapshot, which makes the governing row the balance-carrying Transaction with
+ * the LATEST `occurred_at`. A late-arriving older notification keeps its
+ * `balance_after` as provenance but re-anchors nothing, and reading it here —
+ * as plain commit order would — would explain a figure the Wallet does not
+ * hold. Same-instant tellings (a push and its SMS relay) still resolve by
+ * commit order, matching which of them the snap honoured.
  *
  * Both figures are read off the transaction row rather than recomputed: the snap
  * overwrote the computed balance the instant it happened, and re-deriving it
@@ -305,7 +314,7 @@ export async function getBalanceDrift(walletId: string): Promise<{
        FROM transactions t
        JOIN wallets w ON w.id = t.wallet_id
       WHERE t.wallet_id = ? AND t.balance_after IS NOT NULL
-      ORDER BY t.created_at DESC, t.rowid DESC
+      ORDER BY t.occurred_at DESC, t.created_at DESC, t.rowid DESC
       LIMIT 1`,
     [walletId],
   );
@@ -355,4 +364,100 @@ export async function dismissBalanceDrift(
     "UPDATE wallets SET drift_dismissed_transaction_id = ?, updated_at = ? WHERE id = ?",
     [transactionId, Date.now(), walletId],
   );
+}
+
+/**
+ * The three ledger facts a cash reconciliation prompt is scheduled from
+ * (docs/04-features/02-wallets.md §cash Wallet reconciliation rule 1). One row
+ * per wallet that has at least one transaction; a wallet with an empty ledger is
+ * ABSENT rather than present with three nulls — see `listReconcileActivity`.
+ */
+export type ReconcileActivity = {
+  walletId: string;
+  /**
+   * The last reconciliation this wallet actually recorded, or `null` for one
+   * that has never been reconciled.
+   *
+   * A RECONCILIATION THAT FOUND NO GAP LEAVES NO ROW, so this means "the last
+   * reconciliation that MOVED money", not "the last time the user counted their
+   * pocket": `cashAdjustment` returns `null` when the two figures already agree
+   * and `useReconcileCash` writes nothing (lib/wallets/reconcile.ts explains why
+   * a growing column of ₱0.00 rows would be the worse answer). The cost is that
+   * confirming an already-correct balance does not push the schedule out, so the
+   * prompt returns at its own cadence — the safe direction for a nudge whose
+   * whole job is to notice drift.
+   */
+  lastReconciledAt: EpochMs | null;
+  /**
+   * The last transaction on this wallet that was NOT an adjustment — real
+   * spending, real income, a transfer leg.
+   *
+   * ADJUSTMENTS ARE EXCLUDED (`is_adjustment`, migration 017) for the same
+   * reason `TxFilter.excludeAdjustments` exists: a reconciliation and a starting
+   * balance correction are the app's own bookkeeping, not the user's activity.
+   * Counting them would make trigger (c) — "after 14 days with no cash activity
+   * at all" — unreachable, because answering the prompt would itself reset the
+   * idle clock the prompt is measured against.
+   */
+  lastActivityAt: EpochMs | null;
+  /**
+   * The last time money ARRIVED in this wallet through a Transfer Link — the
+   * ATM/cash-out leg behind trigger (b) ("right after an ATM/cash-out Transfer
+   * Link lands money in the cash Wallet").
+   *
+   * IDENTIFIED BY `transfer_link_id`, not by a merchant string or a note. That
+   * column is the schema's one expression of "this money moved between the
+   * user's own wallets" (invariant I2) and it is not user-editable
+   * (`TransactionPatch` omits it); an incoming leg on a wallet nothing routes to
+   * is a cash-out by construction, since no provider pushes money into a wallet
+   * with no matchers.
+   */
+  lastCashInAt: EpochMs | null;
+};
+
+type ReconcileActivityRow = {
+  wallet_id: string;
+  last_reconciled_at: number | null;
+  last_activity_at: number | null;
+  last_cash_in_at: number | null;
+};
+
+/**
+ * Every wallet's reconciliation facts in ONE query, for
+ * `lib/wallets/reconcile_scheduler.ts`.
+ *
+ * ONE GROUPED READ RATHER THAN THREE PER WALLET. The scheduler runs at launch
+ * and after every debounced ledger commit, and most passes decide to do nothing
+ * at all; a per-wallet shape would be three statements times however many
+ * wallets the user has, every time.
+ *
+ * NOT FILTERED TO CASH WALLETS HERE. Which wallets are "cash" is `walletKind`'s
+ * question (lib/wallets/summary.ts) and it is answered from `matcher_count`,
+ * which this table knows nothing about — re-deriving it in SQL would put that
+ * rule in a second place. Grouping over every wallet costs one scan either way.
+ *
+ * `occurred_at`, NOT `created_at`, because all three facts are about WHEN THE
+ * MONEY MOVED. An expense entered today for last Tuesday made the wallet stale
+ * last Tuesday, and the idle trigger has to agree with the ledger the user is
+ * looking at.
+ */
+export async function listReconcileActivity(): Promise<ReconcileActivity[]> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<ReconcileActivityRow>(
+    `SELECT wallet_id,
+            MAX(CASE WHEN is_adjustment = 1 AND source = 'manual' AND note = ?
+                     THEN occurred_at END) AS last_reconciled_at,
+            MAX(CASE WHEN is_adjustment = 0 THEN occurred_at END) AS last_activity_at,
+            MAX(CASE WHEN direction = 'in' AND transfer_link_id IS NOT NULL
+                     THEN occurred_at END) AS last_cash_in_at
+       FROM transactions
+      GROUP BY wallet_id`,
+    [RECONCILE_NOTE],
+  );
+  return rows.map((row) => ({
+    walletId: row.wallet_id,
+    lastReconciledAt: row.last_reconciled_at,
+    lastActivityAt: row.last_activity_at,
+    lastCashInAt: row.last_cash_in_at,
+  }));
 }

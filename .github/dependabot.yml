@@ -1,0 +1,39 @@
+version: 2
+
+updates:
+  # mobile/ IS SECURITY-ONLY, DELIBERATELY. `open-pull-requests-limit: 0` disables
+  # version-update pull requests for an ecosystem while leaving security updates
+  # untouched, which is what this package wants: an Expo SDK pins several native
+  # dependencies to exact versions (react-native, async-storage, datetimepicker and
+  # friends) and bumping one off the SDK's matrix breaks the prebuild rather than the
+  # tests. Expo's own `expo install --check` is the tool for those. A vulnerability still
+  # opens a pull request.
+  - package-ecosystem: npm
+    directory: /mobile
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 0
+
+  # server/ is an ordinary npm workspace with no native pins, so version updates are
+  # welcome. Grouped so one Monday is one review rather than a dozen.
+  - package-ecosystem: npm
+    directory: /server
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        dependency-type: development
+      production-dependencies:
+        dependency-type: production
+
+  # The workflows pin actions by major tag, and a stale major is how a pipeline quietly
+  # keeps running on a deprecated runner image.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3

@@ -41,7 +41,7 @@ Bills live in the **Plan** tab alongside Limits, Goals, and Loans.
 4. Due rule: pick a pattern (see Rules §Due rules) — e.g., "Every 20th," "Last day of the month (*katapusan*)," "Every 15th and *katapusan*," "Every 2 weeks on Friday" — plus weekend adjustment (none / earlier / later).
 5. Reminders: default preset **3 days before + on the due date**; editable offsets.
 6. Category: defaults to Bills & Utilities; editable.
-7. Auto-match (optional but encouraged): the app proposes merchant keywords from ledger history that look like this biller; user can accept, edit, or skip.
+7. Auto-match (optional but encouraged): the app proposes a merchant pattern from ledger history that looks like this biller; user can accept, edit, or skip. One pattern, not a set (see rule 13).
 8. Save → next due date and reminder schedule are shown for confirmation ("Next due: February 20. We'll remind you February 17 and February 20.").
 
 ### Flow: auto-match confirmation
@@ -107,7 +107,7 @@ Reminders are the app's **own** notifications (they require the POST_NOTIFICATIO
 
 ### Auto-match
 
-13. The `autoMatchRule` is: merchant keyword set + amount tolerance + date window. Confirmation ladder: matches 1 and 2 for a bill require one-tap confirmation; from match 3 onward (consecutive confirmations, no rejections) matching is silent with undo. Any rejection resets the ladder to confirmation mode.
+13. The `autoMatchRule` is: **one** merchant pattern + amount tolerance + date window. It is a single normalized substring, matched with `merchant.includes(pattern)` and falling back to the Bill's own name when no pattern is set (`mobile/lib/bills/bills_service.ts`), not a set of keywords. Rejections DO accumulate as a list: each "No" adds the offending keyword to an exclusion list that later candidates are filtered against. Confirmation ladder: matches 1 and 2 for a bill require one-tap confirmation; from match 3 onward (consecutive confirmations, no rejections) matching is silent with undo. Any rejection resets the ladder to confirmation mode.
 14. Amount tolerance: **fixed** bills match within ±₱30.00 or ±3% of the amount, whichever is greater (absorbs biller convenience fees, e.g., an e-wallet's ₱7.00 bills-payment fee); **estimated** bills match within ±30% of the current estimate.
 15. Date window: opens 7 days before the (adjusted) due date and closes 15 days after it, but never wider than half the bill's period (so weekly bills use a proportionally tighter window).
 16. Only transactions with `direction: out` are candidates. Transfer-linked transactions are never candidates — an internal movement cannot pay a bill (consistent with the Transfer Link invariant in [../02-domain-model.md](../02-domain-model.md)).

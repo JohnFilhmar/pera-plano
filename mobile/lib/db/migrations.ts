@@ -15,7 +15,14 @@ import walletTraitsSql from "./migrations/013_wallet_traits.sql";
 import dropWalletTypeSql from "./migrations/014_drop_wallet_type.sql";
 import supportReportsSql from "./migrations/015_support_reports.sql";
 import goalSoftDeleteSql from "./migrations/016_goal_soft_delete.sql";
+import rawNotificationKeySql from "./migrations/018_raw_notification_key.sql";
 import transactionAdjustmentsSql from "./migrations/017_transaction_adjustments.sql";
+import loanMatchRejectionsSql from "./migrations/019_loan_match_rejections.sql";
+import loanAmountBorrowedSql from "./migrations/020_loan_amount_borrowed.sql";
+import rawNotificationBodyDiscardedSql from "./migrations/021_raw_notification_body_discarded.sql";
+import goalMilestoneSql from "./migrations/022_goal_milestone.sql";
+import contributionDecisionsSql from "./migrations/023_contribution_decisions.sql";
+import reviewResolutionSql from "./migrations/024_review_resolution.sql";
 
 export type Migration = {
   version: number;
@@ -59,6 +66,36 @@ export class MigrationIntegrityError extends Error {
       `Migration ${version} left ${violationCount} orphaned foreign-key row(s); rolled back.`,
     );
     this.name = "MigrationIntegrityError";
+  }
+}
+
+/**
+ * The database was written by a NEWER build than the one now opening it.
+ *
+ * There are no down migrations, which is the right call for SQLite, so this is
+ * not recoverable by running anything: the only fix is to put the newer build
+ * back. What makes it reachable is OTA. `app.json` carries `runtimeVersion`
+ * and `updates.url`, so a JS bundle can be rolled back on a device whose
+ * database has already migrated forward, and an older bundle's repositories
+ * then read a schema that no longer matches. Migration 014 dropped
+ * `wallets.type`; a build whose registry ends before it selects that column
+ * and crashes on the first wallet query. The additive migrations are worse in
+ * their way, because they do not crash: they silently read a table missing the
+ * columns the newer build wrote.
+ *
+ * Refusing to open is therefore the SAFE outcome, not a harsh one. The
+ * alternative is a beta tester's real ledger being half-read by a build that
+ * cannot see all of it.
+ */
+export class SchemaTooNewError extends Error {
+  constructor(
+    readonly appliedVersion: number,
+    readonly registryVersion: number,
+  ) {
+    super(
+      `Database is at schema version ${appliedVersion} but this build only knows ${registryVersion}; refusing to open.`,
+    );
+    this.name = "SchemaTooNewError";
   }
 }
 
@@ -136,6 +173,30 @@ export const MIGRATIONS: Migration[] = [
   // Additive column plus a backfill of the rows two reconciliation hooks
   // already wrote. No rebuild, so no `disablesForeignKeys`.
   { version: 17, name: "transaction_adjustments", sql: transactionAdjustmentsSql },
+  // Additive column plus an index. No rebuild, so no `disablesForeignKeys`.
+  { version: 18, name: "raw_notification_key", sql: rawNotificationKeySql },
+  // A new table and its index. No rebuild, so no `disablesForeignKeys`.
+  { version: 19, name: "loan_match_rejections", sql: loanMatchRejectionsSql },
+  // One additive nullable column on `loans`, no backfill and no index — the
+  // borrowed figure a flat loan's form has always asked for and never been
+  // able to store (GAP-082). See that file's own header for why it is neither
+  // `principal` nor derivable from it. No rebuild, so no `disablesForeignKeys`.
+  { version: 20, name: "loan_amount_borrowed", sql: loanAmountBorrowedSql },
+  // One additive nullable column on `raw_notifications`, guarded by a CHECK,
+  // no backfill and no index: the minimal record a non-money buffered capture
+  // leaves (GAP-107). No rebuild, so no `disablesForeignKeys`.
+  { version: 21, name: "raw_notification_body_discarded", sql: rawNotificationBodyDiscardedSql },
+  // One additive column on `goals` with a CHECK, backfilled from each goal's
+  // current progress: the milestone high-water mark goals rule 12 needs
+  // (GAP-055). No rebuild, so no `disablesForeignKeys`.
+  { version: 22, name: "goal_milestone", sql: goalMilestoneSql },
+  // A new table, nothing rebuilt, so no `disablesForeignKeys`: the user's
+  // recorded-or-skipped decision about a payday's goal contribution (GAP-056).
+  { version: 23, name: "contribution_decisions", sql: contributionDecisionsSql },
+  // One additive nullable column on `review_queue_items`, tied to
+  // `resolved_at` by a CHECK: which answer closed a card (GAP-057). No
+  // rebuild, so no `disablesForeignKeys`.
+  { version: 24, name: "review_resolution", sql: reviewResolutionSql },
 ];
 
 /**
@@ -157,6 +218,27 @@ export async function runMigrations(
     "SELECT version FROM schema_migrations",
   );
   const done = new Set(rows.map((r) => r.version));
+
+  // BEFORE ANY MIGRATION RUNS, and before the pending list is even built. A
+  // database further ahead than this build's registry is not something to
+  // catch up with -- there is nothing to apply, `pending` comes out empty, and
+  // the old code sailed straight past into repositories that read columns a
+  // later migration had already dropped.
+  //
+  // A FRESH INSTALL MUST NOT TRIP THIS. `rows` is empty there, and
+  // `Math.max()` of nothing is -Infinity, which would compare as "not newer"
+  // by luck rather than by intent -- so the empty case is stated explicitly
+  // instead. A registry that is somehow empty is left alone too: that is a
+  // programming error in the registry, not a too-new database, and reporting
+  // it as one would send the user to the app store over a bug they cannot fix.
+  if (rows.length > 0 && migrations.length > 0) {
+    const maxApplied = Math.max(...rows.map((r) => r.version));
+    const registryMax = Math.max(...migrations.map((m) => m.version));
+    if (maxApplied > registryMax) {
+      throw new SchemaTooNewError(maxApplied, registryMax);
+    }
+  }
+
   const pending = [...migrations]
     .sort((a, b) => a.version - b.version)
     .filter((m) => !done.has(m.version));

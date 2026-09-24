@@ -12,7 +12,9 @@
 //     on `Transaction`. Both are assembled here (see `recentEventsFor`).
 //   - DURABILITY. `drainPendingCaptures()` is destructive: the instant it
 //     returns, the native buffer is empty and a JavaScript array is the only
-//     copy of up to 500 captures. See `startIngest`.
+//     copy of up to 500 captures, so the batch is written to
+//     `raw_notifications` in ONE transaction before any of it is processed.
+//     See `startIngest`.
 //   - THE SCORE ARITHMETIC. The categorizer returns a penalty for this file to
 //     subtract, which makes this the one place float dust can push a clean
 //     auto-commit into the Review Queue. See `applyPenalty`.
@@ -25,9 +27,19 @@ import { emitAppEvent } from "@/lib/events/app_events";
 import { getActiveRuleset } from "@/lib/db/repos/parser_rulesets_repo";
 import { recordParseResult } from "@/lib/diagnostics/parse_stats_repo";
 import { getSetting } from "@/lib/db/repos/app_settings_repo";
-import { getRawCapture, hasRawCapture, storeRawCapture } from "@/lib/db/repos/raw_notifications_repo";
+import {
+  discardRawCaptureBody,
+  findReplayCapture,
+  getRawCapture,
+  hasRawCapture,
+  isRawCaptureUnreferenced,
+  listUnprocessedRawCaptures,
+  storeDiscardedCapture,
+  storeRawCapture,
+} from "@/lib/db/repos/raw_notifications_repo";
 import {
   insertTransaction,
+  listFullLedger,
   listTransactions,
   supersedeMintedLeg,
 } from "@/lib/db/repos/transactions_repo";
@@ -45,16 +57,29 @@ import {
 } from "@/lib/db/repos/wallet_traits_repo";
 import { classifyOwed, scoreBalanceMovement, scoreText } from "@/lib/wallets/classification";
 import type { OwedPrior, TraitEvidence } from "@/lib/wallets/classification";
-import { enqueue } from "@/lib/db/repos/review_queue_repo";
+import {
+  enqueue,
+  findOpenForRawNotification,
+  findOpenTwin,
+  resolve,
+} from "@/lib/db/repos/review_queue_repo";
 import { routeCapture } from "@/lib/ingest/source_router";
 import { UNCATEGORIZED_ID } from "@/lib/db/repos/categories_repo";
+import { withUnitOfWork } from "@/lib/db/unit_of_work";
 import { addCaptureListener, drainPendingCaptures } from "@/modules/notification_listener";
 
 import type { NormalizedEvent } from "@/lib/ingest/normalizer";
 import type { ProviderRuleset, RulesetBundle } from "@/lib/ingest/ruleset_types";
 import type { RecentEvent } from "@/lib/ingest/dedupe_gate";
 import type { MarkTransferRule } from "@/lib/ingest/transfer_detector";
-import type { Centavos, RawCapture, ReviewKind, Transaction, UserRule } from "@/types/domain";
+import type {
+  Centavos,
+  RawCapture,
+  ReviewKind,
+  ReviewQueueItem,
+  Transaction,
+  UserRule,
+} from "@/types/domain";
 
 /**
  * Contract §5 — do not reshape. `"unreadable"` ADDED 2026-08-20 (see
@@ -63,13 +88,26 @@ import type { Centavos, RawCapture, ReviewKind, Transaction, UserRule } from "@/
  * review floor now discards that case rather than filling the Review Queue
  * with a card carrying nothing to act on. Additive only — every existing
  * reason keeps its exact meaning.
+ *
+ * `"queued-twin"` ADDED for GAP-012, and kept distinct from `"duplicate"`
+ * because the two are suppressed against different evidence: `"duplicate"` means
+ * a COMMITTED row already holds this movement, `"queued-twin"` means an OPEN
+ * card is still waiting on it. Collapsing them would make the outcome unable to
+ * say whether the ledger has the money yet, which is the one thing a caller
+ * reading this would want to know.
  */
 export type PipelineOutcome =
   | { kind: "committed"; transactionId: string }
   | { kind: "queued"; reviewItemId: string }
   | {
       kind: "ignored";
-      reason: "not_financial" | "duplicate" | "unknown-provider" | "paused" | "unreadable";
+      reason:
+        | "not_financial"
+        | "duplicate"
+        | "queued-twin"
+        | "unknown-provider"
+        | "paused"
+        | "unreadable";
     }
   // The late-arriving bank notification for a leg the user already minted
   // (Task 15): the placeholder row was overwritten in place rather than a
@@ -199,13 +237,147 @@ function isDismissedPackage(rules: UserRule[], packageName: string): boolean {
   );
 }
 
+/**
+ * What Stage 1 plus the dismissal rule decided about one capture.
+ *
+ * A REASON, NOT A BOOLEAN, and the two drop reasons are not the same fact.
+ * `"not_financial"` means the router never admitted the notification at all;
+ * `"unknown-provider"` means it did and the user has since said this source is
+ * not money. `processCapture` reports each one to its caller unchanged, so
+ * collapsing them into one flag would leave the outcome unable to say which
+ * happened — and the two are diagnosed completely differently.
+ */
+type Preflight =
+  | { kind: "known"; provider: ProviderRuleset }
+  | { kind: "unknown" }
+  | { kind: "drop"; reason: "not_financial" | "unknown-provider" };
+
+/**
+ * The routing-time guards, in ONE place for both entry points (GAP-048).
+ *
+ * The live path and the buffered path used to disagree here: `processCapture`
+ * dropped a capture whose package the user had marked "not money", and
+ * `processStored` queued an `unknown-provider` card for it anyway — so a muted
+ * source raised a fresh card for every notification it had posted while the app
+ * was dead, on every cold start. That is exactly the "re-queueing it every time
+ * would make the Review Queue useless" failure `isDismissedPackage` above
+ * exists to prevent, reached through the door that never asked it.
+ *
+ * EVALUATED AT ROUTING TIME, NOT AT POSTING TIME.
+ * docs/04-features/08-review-queue.md places the mute at the SourceRouter stage
+ * and states it as "a mute at the source level stops future captures from that
+ * source"; the mute is a standing statement about the PACKAGE, not about one
+ * notification, so a capture buffered before the user muted its source and
+ * routed after is dropped too. That is also the only rule under which the two
+ * paths can agree, since the buffered path routes whenever it happens to run.
+ *
+ * WHAT IS DELIBERATELY NOT HERE. The pause switch and the two replay checks
+ * belong to exactly one caller each and are documented at their call sites:
+ * pause guards an ENTRY (`processCapture` for live, `startIngest` for the whole
+ * buffered path), and the replay checks compare against rows only the path that
+ * has not stored anything yet can meaningfully ask about.
+ *
+ * THE RULES LOAD LAZILY, which is not tidiness. `listUserRules` is consulted
+ * only on the `unknown` branch, so a private chat message — most of what a
+ * phone with an empty provider filter hands this pipeline — still costs zero
+ * extra queries, and the drain can hand a batch of up to 500 captures one
+ * already-read list instead of reading the table 500 times.
+ */
+async function preflight(
+  capture: RawCapture,
+  bundle: RulesetBundle,
+  loadRules: () => Promise<UserRule[]>,
+): Promise<Preflight> {
+  const routed = routeCapture(capture, bundle);
+  if (routed.kind === "not_financial") return { kind: "drop", reason: "not_financial" };
+  if (routed.kind === "known") return { kind: "known", provider: routed.provider };
+
+  return isDismissedPackage(await loadRules(), capture.packageName)
+    ? { kind: "drop", reason: "unknown-provider" }
+    : { kind: "unknown" };
+}
+
 async function queue(
   kind: ReviewKind,
   rawNotificationId: string,
   payload: Record<string, unknown>,
 ): Promise<PipelineOutcome> {
+  // ONE OPEN CARD PER CAPTURE — the second layer, not a replacement for
+  // `findReplayCapture`. That one stops a REDELIVERED notification from ever
+  // being stored twice, which is where the owner's duplicate cards came from.
+  // This one covers anything that reaches the stages twice over ONE stored
+  // capture: `processStored` running again after a crash mid-batch, or a future
+  // caller that reprocesses. Returning the existing card rather than a new one
+  // keeps `PipelineOutcome` honest — a card IS queued for this capture, and
+  // `reviewItemId` points at the one the user will actually see.
+  //
+  // NOTE WHAT THIS DELIBERATELY DOES NOT DO: it never compares two DIFFERENT
+  // captures' payloads. Two genuine ₱100.00 purchases agree on every parsed
+  // field, and suppressing the second would delete a real transaction — see
+  // `findOpenForRawNotification`'s own note and `pipeline.test.ts`'s
+  // "two distinct captures ... still reach the DedupeGate".
+  const existing = await findOpenForRawNotification(rawNotificationId);
+  if (existing !== null) {
+    return { kind: "queued", reviewItemId: existing.id };
+  }
+
   const item = await enqueue({ kind, rawNotificationId, payload });
   return { kind: "queued", reviewItemId: item.id };
+}
+
+/**
+ * Records that this capture was answered by the card already open for its twin,
+ * so the recovery sweep stops treating it as work nothing finished.
+ *
+ * THE MARKER `mergeDuplicate` WRITES, FOR THE SAME REASON AND BY THE SAME
+ * MECHANISM (see `markCaptureMerged` in lib/review/resolve_actions.ts).
+ * `listUnprocessedRawCaptures` calls a stored capture that points at neither a
+ * Transaction nor a queue card unprocessed work and re-runs the stages over it
+ * on every launch, and this path deliberately produces neither. Re-running is
+ * harmless only while the twin card stays OPEN; the moment the user dismisses
+ * that card the next sweep finds nothing to suppress against and raises a fresh
+ * card for a notification they already answered. A resolved row is the durable
+ * "settled" this table can record without a column and without a migration: it
+ * is never open, so `listOpen` and `countOpen` never show it, and `purgeExpired`
+ * deletes only UNRESOLVED rows, so it outlives the capture it protects.
+ *
+ * ONLY WHEN NOTHING ELSE POINTS AT THE CAPTURE, exactly as the merge decides it
+ * — `isRawCaptureUnreferenced` is the sweep's own predicate, so a second run
+ * over the same capture cannot leave a second marker claiming the user was asked
+ * twice.
+ *
+ * ONE UNIT OF WORK. The enqueue and the resolve are the same fact; a marker left
+ * open by a crash between them is a card about a suppressed twin that the user
+ * would be shown and could not usefully answer.
+ */
+async function markCaptureQueuedTwin(
+  capture: RawCapture,
+  event: NormalizedEvent,
+  twin: ReviewQueueItem,
+): Promise<void> {
+  if (!(await isRawCaptureUnreferenced(capture.id))) return;
+
+  await withUnitOfWork(async () => {
+    const marker = await enqueue({
+      kind: "possible-duplicate",
+      rawNotificationId: capture.id,
+      payload: {
+        amount: event.amount,
+        direction: event.direction,
+        merchant: event.merchant ?? null,
+        walletId: event.walletId,
+        referenceNo: event.referenceNo ?? null,
+        occurredAt: event.occurredAt,
+        channel: event.channel,
+        providerKey: event.providerKey,
+        // The open card this capture was folded into — the queue-side
+        // counterpart of `duplicateOfTransactionId`, which cannot be written
+        // here because no row has been committed for either telling yet.
+        duplicateOfReviewItemId: twin.id,
+      },
+    });
+    await resolve(marker.id, "confirmed");
+  });
 }
 
 /**
@@ -215,8 +387,12 @@ async function queue(
  * happen before any parsing:
  *
  *   1. The pause switch, so a paused app does no work and stores nothing.
- *   2. Routing, so a private chat message is dropped before it can be persisted
- *      (§1 principle 2 — non-financial text never touches the database).
+ *   2. `preflight` — routing, so a private chat message never has its TEXT
+ *      persisted (§1 principle 2), plus the muted-source rule, which stores
+ *      nothing at all. Shared with `processStored` so the two entry points
+ *      cannot drift apart again. Since the owner's ruling of 2026-09-24 a
+ *      non-money capture does leave the app and the times behind, the same
+ *      minimal record the drain leaves; only the text is refused.
  *   3. The replay check, because `drainPendingCaptures` is at-least-once by
  *      design and the same batch can come back after a crash.
  *
@@ -239,14 +415,15 @@ export async function processCapture(
     return { kind: "ignored", reason: "not_financial" };
   }
 
-  const routed = routeCapture(capture, bundle);
-  if (routed.kind === "not_financial") {
-    return { kind: "ignored", reason: "not_financial" };
-  }
-
-  const userRules = await listUserRules();
-  if (routed.kind === "unknown" && isDismissedPackage(userRules, capture.packageName)) {
-    return { kind: "ignored", reason: "unknown-provider" };
+  // Routing and the muted-source rule, both of them, from the one function
+  // `processStored` also calls — the reason is carried out verbatim rather
+  // than folded into a single "ignored", see `Preflight`.
+  const decision = await preflight(capture, bundle, listUserRules);
+  // A MUTED SOURCE LEAVES NOTHING AT ALL, and that is the one drop that still
+  // returns here. The user said this package is not money, so PeraPlano has
+  // nothing to account for; the drain skips such a capture for the same reason.
+  if (decision.kind === "drop" && decision.reason === "unknown-provider") {
+    return { kind: "ignored", reason: decision.reason };
   }
 
   // Rule 11: at-least-once delivery means the identical capture can arrive
@@ -257,9 +434,33 @@ export async function processCapture(
     return { kind: "ignored", reason: "duplicate" };
   }
 
+  // ...AND THE SAME NOTIFICATION ARRIVING UNDER A NEW ID, which the check
+  // above structurally cannot see: `capture.id` is minted per delivery, and
+  // Android redelivers a notification every time the posting app edits it.
+  // See `findReplayCapture` for why the comparison is the notification's SLOT
+  // plus its text rather than the id, why the text alone will not do, and why
+  // it is bounded to the twin window.
+  if ((await findReplayCapture(capture, bundle.tunables.dedupeTwinWindowMs)) !== null) {
+    return { kind: "ignored", reason: "duplicate" };
+  }
+
+  // NOT MONEY, SO THE RECORD IS THE APP AND THE TIMES AND NOTHING ELSE (owner's
+  // ruling, 2026-09-24). Both paths now leave the same trace, where the live one
+  // used to leave none: a user looking at the Privacy centre for a notification
+  // they watched arrive found nothing if the app happened to be open. None of the
+  // text is stored either way, which is what §1 principle 2 actually forbids.
+  //
+  // AFTER THE TWO DUPLICATE CHECKS, matching the drain's order. An app that edits
+  // its notification redelivers it under a fresh id, and the checks above are
+  // what keep one notification from becoming several rows.
+  if (decision.kind === "drop") {
+    await storeDiscardedCapture(capture, now);
+    return { kind: "ignored", reason: decision.reason };
+  }
+
   await storeRawCapture(capture, now);
 
-  if (routed.kind === "unknown") {
+  if (decision.kind === "unknown") {
     return queue("unknown-provider", capture.id, {
       amount: null,
       direction: null,
@@ -267,7 +468,7 @@ export async function processCapture(
     });
   }
 
-  return runStages(capture, routed.provider, bundle, now);
+  return runStages(capture, decision.provider, bundle, now);
 }
 
 /** The seven stages, for a capture already stored and known to be from a real provider. */
@@ -370,7 +571,14 @@ async function runStages(
     return { kind: "superseded", transactionId: verdicts.dedupe.ofTransactionId };
   }
 
-  const history = await listTransactions({});
+  // THE WHOLE LEDGER, DELIBERATELY, AND NOT `listTransactions({})` (GAP-111).
+  // `categorize` uses this for one thing — counting how many times this user has
+  // already filed this merchant into each category — and §8 rule 3 sets no
+  // window on that count. An empty `TxFilter` reads as "everything" at this call
+  // site but comes back clamped to the tier's 90-day browsing floor, so on Free
+  // the app would forget a merchant it had learned. `listFullLedger` states the
+  // bound here and does not move with the tier.
+  const history = await listFullLedger();
   const category = categorize(event, rules, history);
   const confidence = applyPenalty(event.confidence, category.penalty);
 
@@ -394,6 +602,41 @@ async function runStages(
   });
 
   if (decision.route !== "auto_commit") {
+    // THE HALF OF §6 RULE 2 THE GATE CANNOT REACH (GAP-012). `checkDuplicate`
+    // above compared this event against COMMITTED rows only, so a twin whose
+    // first leg is still sitting in the Review Queue — a push that hard-routed
+    // on an unmapped wallet or a score under the floor — reads as `unique`
+    // there. Left alone it raises a SECOND card for one movement, and "Looks
+    // right" on each puts the payment in the ledger twice, because neither
+    // confirm has a committed row to compare against either.
+    //
+    // ON THE QUEUE PATH ONLY, DELIBERATELY. An auto-commit is the high-score
+    // path and must not be blocked by an unanswered card, nor made to depend on
+    // a `review_queue_items` read it otherwise never needs — the queue is the
+    // one aggregate the commit path is free of, and "a queue fault never costs a
+    // commit" is a property this file already protects elsewhere. The mirror
+    // case (this telling auto-commits while its twin's card is still open) is
+    // caught where it actually costs a row: `correctItem`'s own `checkDuplicate`
+    // call in lib/review/resolve_actions.ts, when that card is confirmed.
+    //
+    // RUN FOR `possible-duplicate` TOO, not only for `unique`. That verdict is
+    // §6 rule 4's undecidable SAME-channel pair; an open card on the OTHER
+    // channel is rule 2 evidence, and rule 2 outranks rule 4 in the gate's own
+    // precedence.
+    const queuedTwin = await findOpenTwin({
+      providerKey: event.providerKey,
+      amount: event.amount,
+      direction: event.direction,
+      channel: event.channel,
+      occurredAt: event.occurredAt,
+      referenceNo: event.referenceNo ?? null,
+      windowMs: tunables.dedupeTwinWindowMs,
+    });
+    if (queuedTwin !== null) {
+      await markCaptureQueuedTwin(capture, event, queuedTwin);
+      return { kind: "ignored", reason: "queued-twin" };
+    }
+
     return queue(reviewKindFor(verdicts), capture.id, {
       amount: event.amount,
       direction: event.direction,
@@ -401,6 +644,29 @@ async function runStages(
       walletId: event.walletId,
       categoryId: category.categoryId,
       confidence,
+      // THE FOUR FACTS THE DEDUPEGATE NEEDS AND THE CARD USED TO LOSE
+      // (GAP-012). Everything above is what the card DISPLAYS; these are what
+      // the next capture — and the confirm that eventually commits this one —
+      // has to compare against:
+      //
+      //   `referenceNo` is §6 rule 1's strong key. Dropped here, the row a
+      //   confirm writes carries none, and the same movement's late SMS relay
+      //   two hours later cannot be matched to it at all.
+      //   `channel` and `providerKey` are what `findOpenTwin` compares; without
+      //   both, one movement raises a card on each channel.
+      //   `occurredAt` is the event's own timestamp. The card had nothing but
+      //   `capture.postedAt` and its own `createdAt` to fall back on, and a
+      //   window measured from when the card was RAISED is not §6's window.
+      //
+      // `balanceAfter` rides along as the provider's own statement, for the
+      // audit trail and for whatever later decides to re-anchor from it. It is
+      // deliberately NOT passed into the Transaction a confirm writes — see
+      // `proposalFrom` in lib/review/resolve_actions.ts.
+      referenceNo: event.referenceNo ?? null,
+      balanceAfter: event.balanceAfter ?? null,
+      occurredAt: event.occurredAt,
+      channel: event.channel,
+      providerKey: event.providerKey,
       // UNREACHABLE ON THIS PATH, HANDLED ANYWAY: `hasAmount` above is always
       // `true` (the parser refuses to return a `ParsedEvent` without an
       // amount), and `decideRoute` only ever chooses "discard" when
@@ -625,10 +891,14 @@ async function commit(
   recentRows: Transaction[],
   bundle: RulesetBundle,
 ): Promise<PipelineOutcome> {
+  // `auto_commit` requires a resolved wallet (`walletId === null` is one of the
+  // gate's hard routes), so this cannot happen. Thrown rather than cast, so a
+  // gate change that broke that promise fails here instead of writing a NULL
+  // wallet (GAP-057).
+  if (event.walletId === null) throw new Error("commit reached without a resolved wallet");
+  const walletId = event.walletId;
   const row = await insertTransaction({
-    // `auto_commit` requires a resolved wallet, so this cannot be null here —
-    // `walletId === null` is one of the gate's hard routes.
-    walletId: event.walletId as string,
+    walletId,
     categoryId: categoryId === "" ? UNCATEGORIZED_ID : categoryId,
     amount: event.amount,
     direction: event.direction,
@@ -722,9 +992,46 @@ async function linkAutoDetected(
  */
 let inFlight: Promise<void> = Promise.resolve();
 
+/**
+ * How many stranded captures one sweep will re-run before leaving the rest for
+ * the next launch.
+ *
+ * A cap, not a page: `recoverUnprocessed` runs the FULL stage set per capture —
+ * several queries each — ahead of the drain and ahead of every live capture, so
+ * an unbounded sweep on a device that accumulated failures would hold up live
+ * tracking at exactly the moment the user opened the app. The list is
+ * oldest-first, so what the cap leaves behind is what the next sweep takes
+ * first, and nothing is skipped permanently.
+ */
+const RECOVERY_SWEEP_LIMIT = 100;
+
+/**
+ * How many times one stored capture may throw before the user is shown a card
+ * about it instead of it being retried again.
+ */
+const MAX_STAGE_ATTEMPTS = 3;
+
+/**
+ * Failed stage attempts per capture id, FOR THIS PROCESS ONLY.
+ *
+ * The poison-pill guard, and the reason it is in memory rather than in a table:
+ * recording an attempt durably means a column, and a column means a migration.
+ * A counter that resets on every launch is the weaker guard — a capture that
+ * fails once per launch never reaches the ceiling — but it is the one that
+ * matters, because the failure this actually protects against is a capture the
+ * sweep re-runs and re-fails within a single session, which without a ceiling
+ * is an unbounded loop over a row nothing can ever process.
+ */
+const stageFailures = new Map<string, number>();
+
 /** Test-only: resolves once the current drain and every capture it produced is done. */
 export async function __awaitIngestIdle(): Promise<void> {
   await inFlight;
+}
+
+/** Test-only: forgets the per-process failure counts, which no `freshDb()` can reach. */
+export function __resetIngestFailures(): void {
+  stageFailures.clear();
 }
 
 /**
@@ -733,14 +1040,30 @@ export async function __awaitIngestIdle(): Promise<void> {
  * RULE 10, AND IT IS THE REASON THIS FUNCTION IS SHAPED THIS WAY. The drain is
  * destructive: the moment it returns, the native buffer is empty and this
  * array is the only copy of up to 500 captures. So the whole batch is written
- * to `raw_notifications` in one pass BEFORE any of it is processed. After that
- * a crash costs nothing — every capture can be reprocessed from the table on
- * the next launch. Processing them one at a time straight from the array would
- * lose everything not yet reached, silently.
+ * to `raw_notifications` in ONE SQL TRANSACTION BEFORE any of it is processed.
+ * After that a crash costs nothing — every capture can be reprocessed from the
+ * table on the next launch. Processing them one at a time straight from the
+ * array would lose everything not yet reached, silently.
+ *
+ * ONE TRANSACTION AND NOT ONE PASS, WHICH IS NOT THE SAME PROMISE. A pass of
+ * autocommit inserts still leaves a kill mid-batch with the captures before the
+ * cut durable and every one after it gone — a half-written drain nothing can
+ * detect, because a short table and a complete one look identical. Wrapping the
+ * pass makes the batch atomic, so the answer is always "all of it" or "none of
+ * it". "None of it" is still a loss today: the native ack has already happened,
+ * so the window is at-most-once, and closing it means peeking the buffer and
+ * acking only after this transaction commits (GAP-051's change, on the native
+ * side, which needs a batch that is whole to redeliver against).
  *
  * RULE 8: buffered captures are processed in `postedAt` order and before live
  * ones, so an older buffered capture can never be committed after a newer live
  * one.
+ *
+ * AND BEFORE EITHER OF THEM, THE RECOVERY SWEEP. Rule 10 makes a capture
+ * durable before it is processed, which is only half a guarantee: something has
+ * to come back for the rows whose processing then failed. `recoverUnprocessed`
+ * is that half, and it runs first because those captures are older than
+ * anything either source is holding.
  *
  * The live subscription is installed even when the drain fails. The bridge
  * rejects when the app is outside the Keystore auth window; those captures are
@@ -766,11 +1089,32 @@ export async function startIngest(): Promise<() => void> {
   let chain: Promise<void>;
 
   const unsubscribe = addCaptureListener((capture) => {
-    chain = chain.then(() => runGuarded(capture));
+    // BOTH handlers, and they are the same handler. `.then(onFulfilled)` on a
+    // REJECTED promise skips the callback and passes the rejection along, so a
+    // single link that rejected would mean every capture appended after it is
+    // never processed for the rest of the process -- the exact failure the
+    // comment above says this chain exists to prevent, reached the other way.
+    // Passing an onRejected as well keeps the chain alive: the rejection is
+    // logged once, here, and this capture still runs.
+    chain = chain.then(
+      () => runGuarded(capture),
+      (error: unknown) => {
+        console.error("ingest: the capture chain rejected; continuing", error);
+        return runGuarded(capture);
+      },
+    );
     inFlight = chain;
   });
 
   chain = (async () => {
+    // BEFORE THE DRAIN, and inside the chain rather than awaited by
+    // `startIngest` itself. These captures are older than anything the buffer
+    // is holding — they were stored in an earlier session — so rule 8's
+    // "older is processed first" puts them at the head, and putting them
+    // inside the chain is what keeps a live capture arriving mid-sweep behind
+    // them instead of racing them.
+    await recoverUnprocessed(systemClock.now());
+
     let buffered: RawCapture[] = [];
     try {
       buffered = await drainPendingCaptures();
@@ -802,21 +1146,128 @@ export async function startIngest(): Promise<() => void> {
 
     const ordered = [...buffered].sort((a, b) => a.postedAt - b.postedAt);
 
-    // Rule 10: durable first, all of it, before any processing. One clock read
+    // Rule 10: durable first, ALL of it, before any processing. One clock read
     // for the whole batch, so every capture drained together shares a TTL
     // anchor rather than drifting apart by however long the writes took.
     const storedAt = systemClock.now();
-    const fresh: RawCapture[] = [];
+
+    // ONE read for the whole batch, for the replay window below. A drain of up
+    // to 500 buffered captures must not fetch the ruleset 500 times, and
+    // nothing in this loop can change it. `null` means no ruleset is seeded
+    // yet, in which case the id check below stands alone — the same fallback
+    // `processStored` already makes when it finds no bundle.
+    const drainBundle = await getActiveRuleset();
+    const replayWindowMs = drainBundle?.tunables.dedupeTwinWindowMs ?? null;
+
+    // THE MUTED-SOURCE GUARD, AHEAD OF THE STORE (GAP-048). `processCapture`
+    // drops a capture from a package the user marked "not money" BEFORE
+    // `storeRawCapture`, so the live path keeps none of its text and raises no
+    // card. The drain used to store the whole batch unrouted and only ask
+    // afterwards, which is how a muted source still produced one
+    // `unknown-provider` card per buffered notification on every cold start.
+    //
+    // WHY NOT IN `processStored` ALONE. That runs after the row is durable, so
+    // dropping there leaves a capture pointing at neither a Transaction nor a
+    // card — which is precisely what `listUnprocessedRawCaptures` calls
+    // unprocessed work. A chatty muted source would then fill the oldest-first
+    // `RECOVERY_SWEEP_LIMIT` on every launch for the row's whole 30-day life and
+    // starve the sweep of the captures it exists for, and those are real
+    // transactions whose stages threw. Dropping before the store leaves nothing
+    // to strand.
+    //
+    // AND IT CANNOT COST A TRANSACTION. It fires only on the `unknown` route —
+    // no provider ruleset claims the package — where the only outcome this
+    // pipeline could ever have produced is the `unknown-provider` card the user
+    // muted. A `known` provider is never touched, whatever rules exist.
+    //
+    // A `not_financial` VERDICT IS TRIMMED HERE, NOT DROPPED (GAP-107, owner
+    // decision 2026-09-09). The money-signal test is a heuristic whose false
+    // negatives lose a transaction silently (source_router.ts's asymmetry note),
+    // so dropping the capture would take a missed transaction's only trace with
+    // it. Storing it whole, which this drain did until GAP-107, broke docs/03 §1
+    // principle 2 instead: on an install whose provider filter admits every app,
+    // a friend's message sat in `raw_notifications` for thirty days. So the row
+    // keeps the app and the two times and none of the text, and it never reaches
+    // the stages, because nothing is left in it that any of them could read. The
+    // dismissal is still dropped outright: it is not a heuristic, it is the
+    // user's own standing instruction about that package.
+    //
+    // WITH NO USABLE RULESET NOTHING CAN BE ROUTED, so that batch is stored
+    // whole as before; the recovery sweep trims its non-money rows once a
+    // ruleset exists (see `processStored`).
+    //
+    // ONE `listUserRules` FOR THE WHOLE BATCH, for the same reason the ruleset
+    // above is read once: nothing in this pass can change the table.
+    const drainRules = drainBundle === null ? [] : await listUserRules();
+    const loadDrainRules = (): Promise<UserRule[]> => Promise.resolve(drainRules);
+
+    const admitted: RawCapture[] = [];
+    const trimmed = new Set<string>();
     for (const capture of ordered) {
-      if (await hasRawCapture(capture.id)) continue;
-      await storeRawCapture(capture, storedAt);
-      fresh.push(capture);
+      if (drainBundle !== null) {
+        const decision = await preflight(capture, drainBundle, loadDrainRules);
+        if (decision.kind === "drop") {
+          if (decision.reason === "unknown-provider") continue;
+          trimmed.add(capture.id);
+        }
+      }
+      admitted.push(capture);
     }
 
+    // ONE SQL TRANSACTION FOR THE WHOLE BATCH, not one autocommit per capture.
+    // The batch is a hundred-odd separate inserts and the native ack already
+    // happened, so a kill landing between two of them used to leave the drain
+    // half-written: the captures before the cut durable, every one after it
+    // gone with no row, no card and no error. All-or-nothing is what makes the
+    // outcome KNOWABLE — the rest of it is recoverable only by not acking the
+    // native buffer until this commits, which is GAP-051's change, and that
+    // redelivery only works against a batch that is whole. See `startIngest`'s
+    // rule 10 note.
+    //
+    // The reads stay inside it deliberately: `findReplayCapture` has to see the
+    // rows this same loop just wrote, or two edits of one notification sitting
+    // in the same drain both survive it.
+    const fresh = await withUnitOfWork(async () => {
+      const stored: RawCapture[] = [];
+      for (const capture of admitted) {
+        if (await hasRawCapture(capture.id)) continue;
+        // The buffered path needs this guard for the same reason the live one
+        // does, and needs it MORE: the buffer holds whatever accumulated while
+        // no JS was alive, so every edit an app made to a notification over
+        // those hours is sitting in it as a separate record with its own id.
+        if (replayWindowMs !== null && (await findReplayCapture(capture, replayWindowMs)) !== null) {
+          continue;
+        }
+        if (trimmed.has(capture.id)) {
+          await storeDiscardedCapture(capture, storedAt);
+          continue;
+        }
+        await storeRawCapture(capture, storedAt);
+        stored.push(capture);
+      }
+      return stored;
+    });
+
+    // OUTSIDE the transaction, and that is the point of the split. The stages
+    // run several queries per capture and `processStored` swallows each
+    // capture's own failure so one bad row does not take the batch with it —
+    // holding the batch's write transaction open across all of that would both
+    // serialise the database for the length of the drain and undo that
+    // isolation, rolling the durable rows back on the first stage that threw.
     for (const capture of fresh) {
       await processStored(capture, storedAt);
     }
-  })();
+  })().catch((error: unknown) => {
+    // The batch is atomic now, so one bad row fails the whole store rather
+    // than just its own capture -- which makes a rejected head of the chain
+    // both likelier and more costly. Swallowing it HERE, loudly, is what
+    // keeps `chain` settled fulfilled: the listener above can then append
+    // live captures normally, and `__awaitIngestIdle` does not reject for
+    // every caller that merely wanted to know the queue had drained. The
+    // batch itself is not lost, it was rolled back whole and the recovery
+    // sweep re-runs it on the next launch.
+    console.error("ingest: the buffered batch failed; live capture continues", error);
+  });
 
   inFlight = chain;
 
@@ -826,20 +1277,85 @@ export async function startIngest(): Promise<() => void> {
 }
 
 /**
+ * Puts stranded captures back through the stages.
+ *
+ * WHAT "STRANDED" MEANS AND WHY IT WAS UNREACHABLE. Rule 2 stores the raw row
+ * before any stage runs, so a stage that throws leaves a durable capture that
+ * produced nothing — and `hasRawCapture` then answers "seen it" to every later
+ * delivery of the same notification, so the native drain can never hand it back
+ * either. The comment on the catch below promised the capture "can be
+ * reprocessed later"; until this function existed, nothing ever did. A real
+ * transaction vanished with no ledger row, no card and no error, leaving only
+ * its text in the Privacy centre.
+ *
+ * SWALLOWS ITS OWN READ FAILURE. If the recovery query itself throws there is
+ * nothing to recover from, and taking the drain down with it would strand the
+ * whole native buffer to save rows that are already durable — the sweep is the
+ * repair pass, never a precondition for ingest.
+ */
+async function recoverUnprocessed(now: number): Promise<void> {
+  let stranded: RawCapture[] = [];
+  try {
+    stranded = await listUnprocessedRawCaptures(now, RECOVERY_SWEEP_LIMIT);
+  } catch (error) {
+    console.error("[ingest] could not read stranded captures; skipping the recovery sweep", error);
+    return;
+  }
+
+  for (const capture of stranded) {
+    await processStored(capture, now);
+  }
+}
+
+/**
  * Runs the stages for a capture already written to `raw_notifications`.
  *
  * Re-entering `processCapture` would see its own stored row and return
  * `ignored: "duplicate"` — the replay check doing its job against the durable
  * write rule 10 just made. So the batch path skips straight to the stages.
+ *
+ * THE SAME `preflight` THE LIVE PATH RUNS, AND THE SAME ANSWER (GAP-048).
+ * Routing was always shared in spirit; the muted-source rule was not, so this
+ * function used to raise an `unknown-provider` card for a package the user had
+ * explicitly marked "not money". It no longer does. See `preflight` for why the
+ * mute is applied at routing time, which makes it reach a capture that was
+ * buffered before the user muted its source.
+ *
+ * `startIngest` DROPS MUTED CAPTURES BEFORE STORING THEM, so on the drain path
+ * this branch is normally unreachable. It is still needed for the recovery
+ * sweep, whose captures were stored in an earlier session — possibly before the
+ * mute existed. Those few rows then point at neither a Transaction nor a card
+ * and stay on `listUnprocessedRawCaptures` until their TTL expires; the sweep
+ * re-runs them, re-drops them and writes nothing, which is why it is affordable
+ * HERE and not affordable for a whole drained batch.
+ *
+ * A `not_financial` ROW IS TRIMMED INSTEAD (GAP-107). The drain now stores
+ * one already trimmed, so a row reaching this branch was stored whole by an
+ * earlier build, or by a drain that had no ruleset to route with. Reducing it
+ * to its minimal record honours docs/03 §1 principle 2 late rather than never,
+ * and settles the row, so the sweep stops coming back for it.
+ *
+ * THE PAUSE SWITCH IS NOT RE-ASKED PER CAPTURE, DELIBERATELY. `startIngest` is
+ * this function's only caller, through the drain loop and `recoverUnprocessed`,
+ * and it returns before either of them when `capture_enabled` is false — so the
+ * buffered path already sits behind the same switch `processCapture` checks for
+ * a live one. Repeating it here would add a settings read to every capture of a
+ * 500-capture drain to close one race, the user pausing mid-drain, and would
+ * close it the worst possible way: these rows are already durable, so returning
+ * early abandons them with no Transaction and no card and hands them to the
+ * sweep to re-run on every launch. The switch guards the entry, once.
  */
 async function processStored(capture: RawCapture, now: number): Promise<void> {
   try {
     const bundle = await getActiveRuleset();
     if (bundle === null) return;
 
-    const routed = routeCapture(capture, bundle);
-    if (routed.kind === "not_financial") return;
-    if (routed.kind === "unknown") {
+    const decision = await preflight(capture, bundle, listUserRules);
+    if (decision.kind === "drop") {
+      if (decision.reason === "not_financial") await discardRawCaptureBody(capture.id, now);
+      return;
+    }
+    if (decision.kind === "unknown") {
       await queue("unknown-provider", capture.id, {
         amount: null,
         direction: null,
@@ -848,18 +1364,65 @@ async function processStored(capture: RawCapture, now: number): Promise<void> {
       return;
     }
 
-    await runStages(capture, routed.provider, bundle, now);
-  } catch {
+    await runStages(capture, decision.provider, bundle, now);
+  } catch (error) {
     // One malformed capture must not take the rest of the batch with it. The
-    // raw row is already durable, so this one can be reprocessed later.
+    // raw row is already durable, and `recoverUnprocessed` is what actually
+    // comes back for it on the next `startIngest`.
+    await recordStageFailure(capture, error);
   }
 }
 
 async function runGuarded(capture: RawCapture): Promise<void> {
   try {
     await processCapture(capture);
-  } catch {
+  } catch (error) {
     // Same isolation for live captures. The raw row is written before any
     // stage runs, so the capture survives its own crash.
+    await recordStageFailure(capture, error);
+  }
+}
+
+/**
+ * Logs one failed attempt, and after `MAX_STAGE_ATTEMPTS` of them raises a card
+ * so the capture stops being invisible.
+ *
+ * THE LOG CARRIES THE ID AND NOTHING ELSE FROM THE CAPTURE. It is a
+ * development aid (`transform-remove-console` strips it from production
+ * bundles) and the id is enough to find the row; the capture's text is the
+ * user's notification content, which this module never writes anywhere except
+ * `raw_notifications`.
+ *
+ * THE CARD IS `unknown-provider`, DELIBERATELY. Nothing was parsed — the throw
+ * is why — so there is no amount, no direction and no merchant to put on a
+ * better-fitting kind, and `unknown-provider` is exactly the card whose payload
+ * is already "here is a package that moved money and the app could not read
+ * it". A capture the app provably cannot process is worth one card the user can
+ * act on; retrying it on every launch for thirty days is not.
+ *
+ * GUARDED AGAINST THE FOREIGN KEY. `runGuarded` reaches `processCapture` from
+ * its first line, so a throw there can predate `storeRawCapture` — and a card
+ * pointing at a row that does not exist is a constraint violation, not a
+ * warning. Nothing durable exists in that case anyway.
+ */
+async function recordStageFailure(capture: RawCapture, error: unknown): Promise<void> {
+  const attempts = (stageFailures.get(capture.id) ?? 0) + 1;
+  stageFailures.set(capture.id, attempts);
+  console.error(
+    `[ingest] capture ${capture.id} failed at stage; attempt ${attempts} of ${MAX_STAGE_ATTEMPTS}`,
+    error,
+  );
+
+  if (attempts < MAX_STAGE_ATTEMPTS) return;
+
+  try {
+    if (!(await hasRawCapture(capture.id))) return;
+    await queue("unknown-provider", capture.id, {
+      amount: null,
+      direction: null,
+      packageName: capture.packageName,
+    });
+  } catch (queueError) {
+    console.error(`[ingest] capture ${capture.id} could not be queued after failing`, queueError);
   }
 }

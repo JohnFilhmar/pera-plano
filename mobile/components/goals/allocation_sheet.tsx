@@ -9,6 +9,12 @@
 // EVERY ROW IS EDITABLE, because the proposal is a suggestion about money the
 // user is about to move by hand. If they move ₱1,800 instead of ₱2,000, the
 // ledger has to record ₱1,800 or it is simply wrong.
+//
+// THREE WAYS OUT, AND ONLY TWO OF THEM DECIDE ANYTHING (GAP-056, goals rule
+// 14). "Record these" records the checked rows and skips the unchecked ones,
+// which already say "Skipped". "Skip this payday" skips them all. "Not now"
+// decides nothing: the user may still move the money in their bank app, which
+// completes the contribution on its own, so it stays pending.
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 
@@ -27,11 +33,49 @@ export type AllocationSheetProps = {
   /** The payday the proposals came out of — the ceiling the total is shown against. */
   paydayAmount: Centavos;
   onDismiss: () => void;
-  onConfirm: (accepted: AllocationProposal[]) => void;
+  /** The checked rows to record, and the unchecked ones, which the user skipped. */
+  onConfirm: (accepted: AllocationProposal[], declined: AllocationProposal[]) => void;
+  /** "Skip this payday": every proposal, skipped. */
+  onSkip: () => void;
   busy?: boolean;
 };
 
 type RowState = { checked: boolean; text: string };
+
+/**
+ * Checked by default: the user set these rules themselves, so the sheet's job
+ * is to let them opt OUT of this payday, not to make them re-approve their own
+ * configuration.
+ *
+ * pesoInputFrom, NOT String(proposal.amount) — proposal.amount is CENTAVOS,
+ * and centavosFrom reads a seeded field as PESOS. String(200000) would seed
+ * "200000" and round-trip as ₱200,000.00, a 100x inflation baked into the
+ * default rather than typed by the user (numeric-input-system Task 11).
+ */
+function seedRows(proposals: AllocationProposal[]): Record<string, RowState> {
+  return Object.fromEntries(
+    proposals.map((proposal) => [
+      proposal.goalId,
+      { checked: true, text: pesoInputFrom(proposal.amount) },
+    ]),
+  );
+}
+
+/**
+ * What makes one sheetful of rows the WRONG rows for what is on screen now.
+ *
+ * Value-based, not the `proposals` array's identity: the parent re-renders for
+ * its own reasons and hands a fresh array every time, and reseeding on that
+ * would wipe the user's edits mid-edit. `visible` is in it because the sheet is
+ * mounted once for the app's lifetime (app/_layout.tsx) with only that prop
+ * toggling — reopening it IS the next payday, even in the case where the two
+ * paydays happen to propose identical figures.
+ */
+function seedKeyFor(visible: boolean, proposals: AllocationProposal[]): string {
+  return [visible, ...proposals.map((proposal) => `${proposal.goalId}:${proposal.amount}`)].join(
+    "|",
+  );
+}
 
 export function AllocationSheet({
   visible,
@@ -39,24 +83,28 @@ export function AllocationSheet({
   paydayAmount,
   onDismiss,
   onConfirm,
+  onSkip,
   busy = false,
 }: AllocationSheetProps) {
-  // Keyed by goal id, seeded from the proposals. Checked by default: the user
-  // set these rules themselves, so the sheet's job is to let them opt OUT of
-  // this payday, not to make them re-approve their own configuration.
-  const [rows, setRows] = useState<Record<string, RowState>>(() =>
-    Object.fromEntries(
-      proposals.map((proposal) => [
-        proposal.goalId,
-        // pesoInputFrom, NOT String(proposal.amount) — proposal.amount is
-        // CENTAVOS, and centavosFrom below reads a seeded field as PESOS.
-        // String(200000) would seed "200000" and round-trip as ₱200,000.00,
-        // a 100x inflation baked into the default rather than typed by the
-        // user (numeric-input-system Task 11).
-        { checked: true, text: pesoInputFrom(proposal.amount) },
-      ]),
-    ),
-  );
+  // Keyed by goal id, seeded from the proposals.
+  const [rows, setRows] = useState<Record<string, RowState>>(() => seedRows(proposals));
+
+  // EVERY PAYDAY STARTS FROM ITS OWN PROPOSALS. The state above is keyed by
+  // goal id and the goals do not change between paydays, so a row unchecked or
+  // edited down on one payday used to come back that way on the next — the
+  // ledger then recording an amount the user chose for a different payday.
+  //
+  // Reseeded DURING RENDER — React's own "adjusting state when a prop changes"
+  // pattern, which discards this render's output and retries immediately. Not
+  // an effect, which would paint one frame of the previous payday's rows
+  // first; and not a `key` on the sheet, which would remount it and restart
+  // its entrance animation.
+  const [seededKey, setSeededKey] = useState(() => seedKeyFor(visible, proposals));
+  const seedKey = seedKeyFor(visible, proposals);
+  if (seedKey !== seededKey) {
+    setSeededKey(seedKey);
+    setRows(seedRows(proposals));
+  }
 
   const rowFor = (proposal: AllocationProposal): RowState =>
     rows[proposal.goalId] ?? { checked: true, text: pesoInputFrom(proposal.amount) };
@@ -65,6 +113,11 @@ export function AllocationSheet({
     .map((proposal) => ({ proposal, row: rowFor(proposal) }))
     .filter(({ row }) => row.checked && centavosFrom(row.text) > 0)
     .map(({ proposal, row }) => ({ ...proposal, amount: centavosFrom(row.text) }));
+
+  // A SKIP IS AN UNCHECKED ROW AND NOTHING ELSE. A checked row cleared to
+  // zero still reads "Included", so it is neither recorded nor skipped, and its
+  // contribution stays pending.
+  const declined = proposals.filter((proposal) => !rowFor(proposal).checked);
 
   const total = accepted.reduce((sum, proposal) => sum + proposal.amount, 0);
   const overPayday = total > paydayAmount;
@@ -156,9 +209,19 @@ export function AllocationSheet({
           testID="allocation-confirm"
           disabled={accepted.length === 0 || overPayday || busy}
           loading={busy}
-          onPress={() => onConfirm(accepted)}
+          onPress={() => onConfirm(accepted, declined)}
+        />
+        <Button
+          title="Skip this payday"
+          variant="secondary"
+          testID="allocation-skip-payday"
+          disabled={busy}
+          onPress={onSkip}
         />
         <Button title="Not now" variant="ghost" testID="allocation-skip" onPress={onDismiss} />
+        <Text className="text-center text-fg-2 dark:text-fg-2-dark">
+          Not now keeps these planned. Skipping lets Safe-to-Spend count them as spendable again.
+        </Text>
       </View>
     </BottomSheet>
   );

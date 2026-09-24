@@ -19,15 +19,18 @@
 //   than `capturedAt + TTL`, which differs on every replayed or late-drained
 //   capture.
 //
-//   FIRING THE CATEGORY EDIT AND THE RULE AS TWO SEPARATE WRITES. That is the
-//   checkbox: unchecking it fires exactly one of them. A single combined
-//   mutation would make "changed this row" and "changed every future row from
-//   this merchant" indistinguishable at the call site.
+//   FIRING THE CATEGORY EDIT AND THE RULE AS TWO SEPARATE WRITES, IN THAT
+//   ORDER. Separate, because that is the checkbox: unchecking it fires exactly
+//   one of them, and a single combined mutation would make "changed this row"
+//   and "changed every future row from this merchant" indistinguishable at the
+//   call site. ORDERED, because the second is only true if the first landed —
+//   the rule is chained in the edit's `onSuccess` (GAP-077), never fired
+//   beside it. See `commitCategory`.
 //
 // Global Constraints: hooks only, no repository import, no SQL. The one
 // deliberate exception to "thin screen" is the small amount of orchestration
 // above, which has nowhere else to live.
-import { useLocalSearchParams } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { ArrowLeftRight, Tag } from "lucide-react-native";
 import { useState } from "react";
 import { ScrollView, Text, TextInput, View } from "react-native";
@@ -39,10 +42,11 @@ import {
   transferFee,
 } from "@/components/transactions/transfer_link_actions";
 import { WhyRecordedPanel } from "@/components/transactions/why_recorded_panel";
-import { AmountText } from "@/components/ui/amount_text";
-import { registerIcon } from "@/components/ui/button";
+import { AmountText, formatCentavos } from "@/components/ui/amount_text";
+import { Button, registerIcon } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Chip } from "@/components/ui/chip";
+import { ConfirmDialog } from "@/components/ui/confirm_dialog";
 import { EmptyState } from "@/components/ui/empty_state";
 import { ListRow } from "@/components/ui/list_row";
 import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
@@ -50,6 +54,7 @@ import { ProviderBadge } from "@/components/ui/provider_badge";
 import { SectionHeader } from "@/components/ui/section_header";
 import { providerKeyForPackage, providerLabelForPackage } from "@/constants/providers";
 import { useCreateUserRule } from "@/hooks/mutations/use_create_user_rule";
+import { useDeleteTransaction } from "@/hooks/mutations/use_delete_transaction";
 import { useLinkTransfer } from "@/hooks/mutations/use_link_transfer";
 import { useUnlinkTransfer } from "@/hooks/mutations/use_unlink_transfer";
 import { useUpdateTransaction } from "@/hooks/mutations/use_update_transaction";
@@ -58,9 +63,10 @@ import { useCategories } from "@/hooks/queries/use_categories";
 import { useRawCapture, useRawCaptureExpiry } from "@/hooks/queries/use_raw_capture";
 import { useRuleset } from "@/hooks/queries/use_ruleset";
 import { useTransaction } from "@/hooks/queries/use_transaction";
+import { useTransactionDeletionPlan } from "@/hooks/queries/use_transaction_deletion_plan";
 import { useTransactions } from "@/hooks/queries/use_transactions";
 import { useWallets } from "@/hooks/queries/use_wallets";
-import { formatDateTime } from "@/lib/datetime";
+import { formatDate, formatDateTime } from "@/lib/datetime";
 import type { Transaction, TxSource } from "@/types/domain";
 import { usePlaceholderColor } from "@/lib/ui/placeholder";
 
@@ -132,12 +138,21 @@ export default function TransactionDetailScreen() {
   // SafeAreaProvider comment for why each surface pads its own edges.
   const insets = useSafeAreaInsets();
 
+  const router = useRouter();
+
   const [picking, setPicking] = useState(false);
   const [choosingCategory, setChoosingCategory] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [note, setNote] = useState<string | null>(null);
 
   const { data: transaction, isPending } = useTransaction(transactionId);
-  const { data: wallets } = useWallets();
+  // ARCHIVED WALLETS INCLUDED, because this screen only ever RESOLVES A NAME —
+  // the Wallet row below and the transfer candidates' subtitles — and never
+  // offers a wallet to pick. Archiving is the only removal path in the app, so
+  // an archived wallet's rows stay in the ledger for good; the default
+  // active-only list cannot find their wallet and every one of them read
+  // "Unknown wallet".
+  const { data: wallets } = useWallets({ includeArchived: true });
   const { data: categories } = useCategories();
   const { data: ruleset } = useRuleset();
   // Every row, for the transfer-candidate list. Unfiltered on purpose: the
@@ -155,11 +170,15 @@ export default function TransactionDetailScreen() {
   const rawId = transaction?.rawNotificationId ?? null;
   const { data: capture } = useRawCapture(rawId);
   const { data: expiresAt } = useRawCaptureExpiry(rawId);
+  // What a delete would take with it, read with the row rather than on the tap
+  // — see the hook's own note.
+  const { data: deletionPlan } = useTransactionDeletionPlan(transactionId);
 
   const updateTransaction = useUpdateTransaction();
   const createUserRule = useCreateUserRule();
   const linkTransfer = useLinkTransfer();
   const unlinkTransfer = useUnlinkTransfer();
+  const deleteTransaction = useDeleteTransaction();
 
   if (isPending) {
     return (
@@ -221,6 +240,22 @@ export default function TransactionDetailScreen() {
         ? "Income"
         : "Spending";
 
+  // WHAT THE CONFIRMATION SAYS IS REMOVED (GAP-108). Rule 9's "editable in the
+  // ledger indefinitely" is what makes rule 10's "the queue never deletes a
+  // committed row" liveable, and this is the ledger side of it. The lead names
+  // the row the way the user identifies it — amount, who, when, which wallet —
+  // and states the balance consequence, because a delete that quietly moved a
+  // balance would be the app changing a number the user never agreed to move.
+  // The rest comes from the service, which is the only thing that knows what a
+  // loan or a bill still claims.
+  const deleteSubject =
+    transaction.merchant ?? transaction.counterparty ?? category?.name ?? "this transaction";
+  const deleteConfirmBody = [
+    `${formatCentavos(transaction.amount)} ${transaction.direction === "out" ? "to" : "from"} ${deleteSubject} on ${formatDate(transaction.occurredAt)} leaves the ledger, and ${wallet?.name ?? "the wallet"}'s balance goes back to what it was before it.`,
+    ...(deletionPlan?.alsoRemoves ?? []),
+    "This cannot be undone.",
+  ].join(" ");
+
   function commitNote(): void {
     if (!transaction || note === null) return;
     const trimmed = note.trim();
@@ -231,28 +266,68 @@ export default function TransactionDetailScreen() {
 
   function commitCategory(choice: { categoryId: string; createRule: boolean }): void {
     if (!transaction) return;
+    // Captured up front, and NOT named `id` — the route param above already
+    // owns that name. Read here rather than inside the callback so the rule
+    // describes the row this correction was made on, whatever the query has
+    // refetched by the time the edit settles.
+    const { id: rowId, merchant } = transaction;
     setChoosingCategory(false);
     if (choice.categoryId !== transaction.categoryId) {
-      updateTransaction.mutate({ id: transaction.id, patch: { categoryId: choice.categoryId } });
+      updateTransaction.mutate(
+        { id: rowId, patch: { categoryId: choice.categoryId } },
+        {
+          // THE RULE IS CHAINED, NOT FIRED ALONGSIDE (GAP-077). These are two
+          // writes against two aggregates, and the order between them is the
+          // correctness story: the rule says "every future row from this
+          // merchant is Transport", and it is only true because THIS row was
+          // moved to Transport. Fired side by side, a rejected row write —
+          // silent but for the global failure toast, GAP-013, with the picker
+          // already closed — left the rule standing over a row that never
+          // moved, so every future row from that merchant followed a
+          // correction the user can still see missing on the one they were
+          // looking at.
+          //
+          // ORDERING, NOT A UNIT OF WORK. `withUnitOfWork` is what
+          // lib/review/resolve_actions.ts reaches for, and it is right there
+          // because a partial landing is destructive in BOTH directions: a
+          // committed Transaction beside an unresolved queue item puts the
+          // same card back in front of the user and the ledger ends up holding
+          // one purchase twice. Here the halves are not symmetric. A row moved
+          // without its rule is exactly what unchecking the box asks for and
+          // costs one more correction next month; a rule without its row
+          // rewrites transactions nobody looked at. Doing the write that can
+          // fail first, and the one that only teaches second, removes the
+          // damaging half — and a transaction cannot span a screen callback
+          // anyway without dragging both writes behind one repository door.
+          onSuccess: () => {
+            // RULE 6, AND THE CHECKBOX IS THE WHOLE CONDITION. A user who
+            // unchecked it said "this row, not this merchant" — making the rule
+            // anyway would recategorize transactions they never looked at.
+            //
+            // The SHIPPED UserRule shape: a matcher/action pair. There is no
+            // "kind: merchant_category" in this codebase, and `merchantPattern`
+            // is a case-insensitive SUBSTRING (lib/ingest/categorizer.ts),
+            // never a regex — so the merchant string goes in verbatim,
+            // unescaped and unanchored.
+            if (choice.createRule && merchant) {
+              createUserRule.mutate({
+                matcher: { merchantPattern: merchant },
+                action: { kind: "set-category", categoryId: choice.categoryId },
+                // Invariant I15 / §3.11 invariant 1: every rule is traceable to
+                // what created it, so the settings screen can say where it came
+                // from.
+                createdFrom: rowId,
+              });
+            }
+          },
+        },
+      );
     }
-
-    // RULE 6, AND THE CHECKBOX IS THE WHOLE CONDITION. A user who unchecked it
-    // said "this row, not this merchant" — making the rule anyway would
-    // recategorize transactions they never looked at.
-    //
-    // The SHIPPED UserRule shape: a matcher/action pair. There is no
-    // "kind: merchant_category" in this codebase, and `merchantPattern` is a
-    // case-insensitive SUBSTRING (lib/ingest/categorizer.ts), never a regex —
-    // so the merchant string goes in verbatim, unescaped and unanchored.
-    if (choice.createRule && transaction.merchant) {
-      createUserRule.mutate({
-        matcher: { merchantPattern: transaction.merchant },
-        action: { kind: "set-category", categoryId: choice.categoryId },
-        // Invariant I15 / §3.11 invariant 1: every rule is traceable to what
-        // created it, so the settings screen can say where it came from.
-        createdFrom: transaction.id,
-      });
-    }
+    // NOTHING RUNS OUTSIDE THAT BRANCH, and no case is lost by that:
+    // `CategoryPicker` offers the checkbox only while the category is actually
+    // changing (`offersRule` requires `changed`), so `createRule` cannot arrive
+    // true on a category that stayed put. docs/07 §2.8 ties a rule to a
+    // correction that happened; with no correction there is nothing to teach.
   }
 
   function link(counterpart: Transaction): void {
@@ -369,6 +444,12 @@ export default function TransactionDetailScreen() {
                     <ProviderBadge providerKey={walletProviderKey} size={28} />
                   ) : undefined
                 }
+                // Says the wallet is gone from the pickers WITHOUT taking its
+                // name away — the row is still money that moved through it. In
+                // the `right` slot rather than the title or a subtitle, so an
+                // ACTIVE wallet's row renders the bare name the exact-text
+                // assertion above depends on.
+                right={wallet?.isArchived ? <Chip label="ARCHIVED" /> : undefined}
               />
               {/* The one field that opens something. Rule 1 makes the category
                   editable; the picker owns the rule checkbox. */}
@@ -420,6 +501,41 @@ export default function TransactionDetailScreen() {
             </Card>
           </View>
 
+          {/* GAP-061. The fields above that are NOT editable in place — amount,
+              direction, wallet and merchant — are editable here, which is what
+              makes docs/07's right-to-rectification row true. Category and note
+              keep their own inline controls: they are the two a user changes
+              casually and often, and sending them through a route would be a
+              step backwards for both.
+
+              ON A TRANSFER LEG THIS IS A SENTENCE, NOT A BUTTON (owner's
+              ruling, 2026-09-18). The two legs are one movement described
+              twice, so editing one alone would leave the pair contradicting
+              itself with nothing to detect it. The unlink that resolves it is
+              already on this screen, in TransferLinkActions below. */}
+          <View className="px-4 pt-6">
+            {isTransfer ? (
+              <Text
+                testID="transaction-edit-transfer-note"
+                className="text-center text-fg-2 dark:text-fg-2-dark"
+              >
+                Linked as a transfer. Unlink it below to change the amount, direction or wallet.
+              </Text>
+            ) : (
+              <Button
+                title="Edit transaction"
+                variant="secondary"
+                testID="transaction-edit"
+                onPress={() =>
+                  router.push({
+                    pathname: "/transaction/[id]/edit",
+                    params: { id: transaction.id },
+                  })
+                }
+              />
+            )}
+          </View>
+
           {/* RULE 2. The app's honesty mechanism — see the component's header. */}
           <WhyRecordedPanel
             source={transaction.source}
@@ -439,6 +555,57 @@ export default function TransactionDetailScreen() {
             onLink={link}
             onUnlink={() => {
               if (transaction.transferLinkId) unlinkTransfer.mutate(transaction.transferLinkId);
+            }}
+          />
+
+          {/* THE LEDGER'S ONE DESTRUCTIVE ACTION, and the only way back from a
+              mis-tapped Confirm in the Review Queue. Last on the screen on
+              purpose: everything above it is a way to CORRECT the row, and a
+              user who scrolls past all of them has established that none of
+              them is what they want. */}
+          <View className="px-4 pt-6">
+            <Button
+              title="Delete transaction"
+              variant="destructive"
+              testID="transaction-delete"
+              // Disabled while the plan is still loading, not merely while it
+              // refuses: a confirmation opened over an unread plan would name
+              // no link and promise a delete the service is about to refuse.
+              disabled={deletionPlan === undefined || deletionPlan.refusal !== null}
+              loading={deleteTransaction.isPending}
+              onPress={() => setConfirmingDelete(true)}
+            />
+            {/* THE REFUSAL IS RENDERED, NOT SWALLOWED. Without it the button is
+                simply dead and the user has no idea why — and the alternative,
+                letting the tap through, is the raw "FOREIGN KEY constraint
+                failed" this whole path exists to keep off the screen. The
+                sentence names the transfer and points at the unlink action
+                sitting directly above it. */}
+            {deletionPlan?.refusal ? (
+              <Text
+                testID="transaction-delete-blocked"
+                className="pt-2 text-secondary text-fg-2 dark:text-fg-2-dark"
+              >
+                {deletionPlan.refusal}
+              </Text>
+            ) : null}
+          </View>
+
+          <ConfirmDialog
+            visible={confirmingDelete}
+            title="Delete this transaction?"
+            body={deleteConfirmBody}
+            confirmLabel="Delete transaction"
+            destructive
+            onCancel={() => setConfirmingDelete(false)}
+            onConfirm={() => {
+              setConfirmingDelete(false);
+              // `mutate` with a per-call `onSuccess`, not `await mutateAsync`:
+              // the screen must only leave once the row is actually gone. A
+              // rejected delete keeps the user here with the global failure
+              // toast over it, rather than navigating back to a ledger that
+              // still holds the row they think they removed.
+              deleteTransaction.mutate(transaction.id, { onSuccess: () => router.back() });
             }}
           />
 

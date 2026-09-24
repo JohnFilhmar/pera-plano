@@ -16,7 +16,7 @@
 // id, so they cannot be one call — and doing the matchers first would mean
 // binding a provider to a wallet that might fail to save on a duplicate name.
 import { useRouter } from "expo-router";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -42,6 +42,22 @@ export default function NewWalletScreen() {
   const insets = useSafeAreaInsets();
   const [error, setError] = useState<string | null>(null);
   const [capped, setCapped] = useState(false);
+  // The whole two-write chain, as a REF plus a piece of state (GAP-060,
+  // GAP-079).
+  //
+  // THE REF IS THE GUARD. `WalletForm` already short-circuits on `submitting`,
+  // but what it was given was `isPending` alone, and React Query notifies its
+  // observers on a timer — so two presses inside ONE JS tick both read `false`
+  // and both create, and the second lands on the name the first has just
+  // taken. The user's reward for a fast double tap is a wallet AND a
+  // duplicate-name refusal for it. A `useState` would not fix that either: a
+  // setter does not change what the current render's `save` closure holds.
+  //
+  // THE STATE IS THE RENDER, and it is cleared only when the CHAIN settles,
+  // not when the first write does — otherwise the gap between the wallet and
+  // its matchers is a second opening for the same double tap.
+  const saveInFlight = useRef(false);
+  const [saving, setSaving] = useState(false);
 
   // Archived wallets are included so a pair held by one can still be NAMED in
   // the picker's move warning; the cap below counts only the active ones.
@@ -68,23 +84,47 @@ export default function NewWalletScreen() {
   const activeWallets = wallets.filter((wallet) => !wallet.isArchived);
 
   function save(values: WalletFormValues): void {
+    if (saveInFlight.current || createWallet.isPending || setMatchers.isPending) return;
     if (!canCreateWallet(activeWallets.length)) {
       setCapped(true);
       return;
     }
 
     setError(null);
+    saveInFlight.current = true;
+    setSaving(true);
     createWallet.mutate(
       { name: values.name, openingBalance: values.openingBalance },
       {
         onSuccess: (wallet) => {
           if (values.matchers.length === 0) {
+            saveInFlight.current = false;
+            setSaving(false);
             router.back();
             return;
           }
           setMatchers.mutate(
             { walletId: wallet.id, matchers: values.matchers },
-            { onSuccess: () => router.back() },
+            {
+              onSuccess: () => router.back(),
+              // THE WALLET IS ALREADY SAVED BY THE TIME THIS FIRES, and that is
+              // what makes a bare error message the wrong answer here: this
+              // form's only button would retry the pair from the top and hit
+              // `DuplicateNameError` on the name it just took, with the
+              // matchers still unbound and nothing on screen explaining why.
+              // So the user is put where the work actually is — the created
+              // wallet's own edit screen, whose matcher picker is the same one
+              // and whose save is the half that failed. `replace`, not `push`:
+              // this form has done its job and is not somewhere to come back
+              // to. The global failure toast (GAP-013) is what says the
+              // matchers did not save.
+              onError: () =>
+                router.replace({ pathname: "/wallet/[id]/edit", params: { id: wallet.id } }),
+              onSettled: () => {
+                saveInFlight.current = false;
+                setSaving(false);
+              },
+            },
           );
         },
         onError: (failure) => {
@@ -95,6 +135,11 @@ export default function NewWalletScreen() {
               ? `You already have a wallet called "${failure.walletName}". Pick another name.`
               : "That wallet could not be saved. Try again.",
           );
+          // Only on THIS arm: the success arm either navigates away or hands
+          // the flag to the matcher write above, and clearing it here as well
+          // would open the second write's window to a double tap.
+          saveInFlight.current = false;
+          setSaving(false);
         },
       },
     );
@@ -141,7 +186,7 @@ export default function NewWalletScreen() {
         <WalletForm
           submitLabel="Add wallet"
           onSubmit={save}
-          submitting={createWallet.isPending || setMatchers.isPending}
+          submitting={createWallet.isPending || setMatchers.isPending || saving}
           errorMessage={error}
           providers={ruleset?.providers ?? []}
           owners={ownersFrom(matchers ?? [], wallets)}

@@ -157,15 +157,25 @@ export function ReportProblemForm({
         </View>
       ) : null}
 
-      {/* The one sentence that makes the feature legible: the report leaves the
+      {/* The one paragraph that makes the feature legible: the report leaves the
           phone, and only the parts below travel. Stated before Send, not after
           — this app's Privacy Centre makes the same promise about telemetry in
           the same place, and a report is the one payload that carries what the
-          user typed. */}
-      <Text className="text-micro text-fg-2 dark:text-fg-2-dark">
+          user typed.
+
+          IT NAMES EVERY FIELD ON THE WIRE, and it used to name only four of
+          them before claiming nothing else was included. The rest —
+          `services/support_reports.ts`'s reportId/createdAt/attemptCount and
+          `services/device_info.ts`'s four headers — are harmless, but an
+          absolute claim the payload does not meet is not, least of all on the
+          one screen where the user consents to sending anything.
+          `__tests__/report_problem_form.test.tsx` walks both of those sources
+          and fails on a field this sentence does not mention. */}
+      <Text testID="support-disclosure" className="text-micro text-fg-2 dark:text-fg-2-dark">
         Sending this shares your title, description, topic and any files you attached with the
-        PeraPlano developer. Nothing else from the app is included, and nothing is sent until you
-        press Send.
+        PeraPlano developer. It also carries a report id, when you wrote it, how many send attempts
+        it took, and the app version, phone system and system version of the mobile app you are
+        using. Nothing else from the app is included, and nothing is sent until you press Send.
       </Text>
 
       <Button

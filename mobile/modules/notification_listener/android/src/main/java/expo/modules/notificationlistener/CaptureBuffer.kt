@@ -1,6 +1,7 @@
 package expo.modules.notificationlistener
 
 import android.content.Context
+import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.UserNotAuthenticatedException
 import android.util.Log
 import java.io.File
@@ -229,6 +230,24 @@ object CaptureBuffer {
         // Not a per-line failure -- see the class doc. Aborts the whole
         // drain before the file is ever deleted.
         throw notAuthenticated
+      } catch (invalidated: KeyPermanentlyInvalidatedException) {
+        // ALSO NOT A PER-LINE FAILURE, AND IT USED TO BE TREATED AS ONE
+        // (GAP-059). This extends InvalidKeyException, so before this branch
+        // existed it fell into the generic `catch` below, every line was
+        // counted as skipped, and `drain` then deleted the file: a device
+        // whose key died discarded its whole buffer and resolved `[]`, while
+        // `lastCaptureAt` kept advancing and the health card kept saying the
+        // listener was fine.
+        //
+        // ORDER MATTERS HERE. Kotlin takes the first matching catch, so this
+        // must stay above `catch (error: Exception)` or it becomes dead code.
+        //
+        // Aborting is the honest answer: nothing in this file can recover a
+        // capture sealed to a private key that no longer exists, so the choice
+        // is between losing the buffer silently and telling JS. JS clears it
+        // explicitly through `clearCaptureBuffer` once it has recreated the
+        // keypair and decided the loss is acceptable.
+        throw invalidated
       } catch (error: Exception) {
         skipped++
         null // one unreadable line must not cost us the rest

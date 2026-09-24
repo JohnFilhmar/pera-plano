@@ -20,11 +20,12 @@ function workedExample(): SafeToSpendInput {
         spendInPeriod: 620_000, // ₱6,200.00 committed Aug 1–11
         filtered: false,
         filterLabel: null,
+        categoryIds: null,
       },
     ],
     unpaidBills: [
-      { id: "bill-1", name: "Meralco", amount: 230_000, dueDate: "2026-08-20" },
-      { id: "bill-2", name: "PLDT", amount: 169_900, dueDate: "2026-08-25" },
+      { id: "bill-1", name: "Meralco", amount: 230_000, dueDate: "2026-08-20", categoryId: "cat_bills" },
+      { id: "bill-2", name: "PLDT", amount: 169_900, dueDate: "2026-08-25", categoryId: "cat_bills" },
     ],
     plannedContributions: [{ goalId: "goal-1", amount: 100_000, date: "2026-08-15" }],
     reviewQueueCount: 0,
@@ -39,6 +40,7 @@ function limit(over: Partial<CandidateLimit> = {}): CandidateLimit {
     spendInPeriod: 0,
     filtered: false,
     filterLabel: null,
+    categoryIds: null,
     ...over,
   };
 }
@@ -162,7 +164,7 @@ test("AN OVERDUE BILL KEEPS SUBTRACTING — MONEY OWED IS MONEY NOT SPENDABLE", 
   // `dueDate >= today` filter would drop exactly these, which are the bills the
   // user most needs counted.
   const input = workedExample();
-  input.unpaidBills.push({ id: "bill-late", name: "Maynilad", amount: 90_000, dueDate: "2026-08-05" });
+  input.unpaidBills.push({ id: "bill-late", name: "Maynilad", amount: 90_000, dueDate: "2026-08-05" , categoryId: "cat_bills" });
 
   const result = computeSafeToSpend(input);
 
@@ -173,7 +175,7 @@ test("AN OVERDUE BILL KEEPS SUBTRACTING — MONEY OWED IS MONEY NOT SPENDABLE", 
 test("a bill due AFTER the period end is not counted", () => {
   // It is next month's problem, and next month's headroom.
   const input = workedExample();
-  input.unpaidBills.push({ id: "bill-next", name: "Rent", amount: 800_000, dueDate: "2026-09-05" });
+  input.unpaidBills.push({ id: "bill-next", name: "Rent", amount: 800_000, dueDate: "2026-09-05" , categoryId: "cat_bills" });
 
   expect(computeSafeToSpend(input).billsTerm).toBe(399_900);
 });
@@ -185,8 +187,8 @@ test("A DAILY LIMIT ONLY SUBTRACTS TODAY'S BILLS", () => {
   const input = workedExample();
   input.limits = [limit({ id: "lim-daily", scope: "daily", effectiveValue: 100_000 })];
   input.unpaidBills = [
-    { id: "b-today", name: "Water", amount: 20_000, dueDate: "2026-08-12" },
-    { id: "b-later", name: "Meralco", amount: 230_000, dueDate: "2026-08-20" },
+    { id: "b-today", name: "Water", amount: 20_000, dueDate: "2026-08-12" , categoryId: "cat_bills" },
+    { id: "b-later", name: "Meralco", amount: 230_000, dueDate: "2026-08-20" , categoryId: "cat_bills" },
   ];
   input.plannedContributions = [];
 
@@ -270,7 +272,17 @@ test("THE PER-DAY FIGURE ROUNDS DOWN, NEVER UP", () => {
   input.plannedContributions = [];
   input.limits[0].spendInPeriod = 1_500_000 - 19; // 19 centavos over 20 days
 
-  expect(computeSafeToSpend(input).perDay).toBe(0);
+  // THE STATE IS ASSERTED WITH THE FIGURE, and it is the half that makes this
+  // case mean anything. `perDay: 0` is also what `numerator <= 0` returns —
+  // the over branch floors at zero too — so on its own this assertion holds
+  // against an implementation that had run out of headroom entirely, which is
+  // the opposite of the claim in the title. ₱0.19 still unspent, and floored
+  // to nothing per day, is the rounding direction under test.
+  const nearlyOut = computeSafeToSpend(input);
+  expect(nearlyOut.headroom).toBe(19);
+  expect(nearlyOut.overBy).toBe(0);
+  expect(nearlyOut.state).toBe("tight");
+  expect(nearlyOut.perDay).toBe(0);
 
   input.limits[0].spendInPeriod = 1_500_000 - 39; // 39 centavos over 20 days
   expect(computeSafeToSpend(input).perDay).toBe(1);
@@ -355,15 +367,31 @@ function reportedScreen(): SafeToSpendInput {
   };
 }
 
+/**
+ * The same day, but commitment-driven through the one route still open to a
+ * filtered limit: a bill IN its categories. Since the commitment scoping
+ * landed, a goal contribution can no longer put a category cap under water —
+ * see the test immediately below, which pins exactly that.
+ */
+function committedByBill(): SafeToSpendInput {
+  const input = reportedScreen();
+  input.limits[0].categoryIds = ["cat_bills"];
+  input.plannedContributions = [];
+  input.unpaidBills = [
+    { id: "b-today", name: "Meralco", amount: 250_000, dueDate: "2026-08-31", categoryId: "cat_bills" },
+  ];
+  return input;
+}
+
 test("A FILTERED LIMIT IS NOT 'OVER' WHEN ONLY COMMITMENTS EXCEED IT", () => {
-  const result = computeSafeToSpend(reportedScreen());
+  const result = computeSafeToSpend(committedByBill());
 
   expect(result.state).toBe("committed");
   // The money is still reserved — this is a change of ATTRIBUTION, not of
-  // arithmetic. Spending today would still eat the goal transfer.
+  // arithmetic. Spending today would still eat the bill.
   expect(result.perDay).toBe(0);
   expect(result.headroom).toBe(28_000);
-  expect(result.contributionsTerm).toBe(250_000);
+  expect(result.billsTerm).toBe(250_000);
   // Nothing was overspent, so there is no "over by" figure to quote.
   expect(result.overBy).toBe(0);
 });
@@ -371,14 +399,25 @@ test("A FILTERED LIMIT IS NOT 'OVER' WHEN ONLY COMMITMENTS EXCEED IT", () => {
 test("a FILTERED limit whose own spend really does exceed it is still over", () => {
   // The distinction is the whole point: headroom below zero means the user
   // genuinely spent past this limit, and softening that would hide a real
-  // overspend behind a savings transfer.
-  const input = reportedScreen();
+  // overspend behind a bill.
+  const input = committedByBill();
   input.limits[0].spendInPeriod = 30_000; // ₱300 spent against a ₱280 cap
 
   const result = computeSafeToSpend(input);
 
   expect(result.state).toBe("over");
   expect(result.overBy).toBe(252_000); // |(28,000 − 30,000) − 250,000|
+});
+
+test("A GOAL CONTRIBUTION CAN NO LONGER PUT A FILTERED LIMIT UNDER WATER", () => {
+  // The owner's 2026-09-01 question, as an assertion. Same fixture that used
+  // to report `committed` on a ₱2,500 transfer: the cap is untouched now, and
+  // the day reads as the ordinary day it always was.
+  const result = computeSafeToSpend(reportedScreen());
+
+  expect(result.state).toBe("healthy");
+  expect(result.perDay).toBe(28_000);
+  expect(result.contributionsTerm).toBe(0);
 });
 
 test("AN UNFILTERED LIMIT KEEPS THE SPEC'S OVER SEMANTICS UNDER THE SAME COMMITMENTS", () => {
@@ -406,6 +445,96 @@ test("the spec's own over-variant is unfiltered, so it is untouched by this chan
   expect(input.limits[0].filtered).toBe(false);
   expect(result.state).toBe("over");
   expect(result.overBy).toBe(349_900);
+});
+
+// ---------------------------------------------------------------------------
+// Commitments are scoped to what the limit actually measures.
+//
+// Owner's 2026-09-01 question: with every limit at 0% consumed, why is
+// Safe-to-Spend ₱0.00? Because a ₱2,500 goal contribution was subtracted from
+// a ₱1,965.38 weekly CATEGORY cap. Those are different pots. A goal
+// contribution is committed as two legs joined by `linkTransfer`
+// (lib/goals/goals_service.ts), and invariant I2 keeps transfer legs out of
+// every limit's spend — so it can never consume a category cap's headroom, and
+// subtracting it there is comparing a slice against money that will never
+// touch that slice.
+//
+// Same rule for bills, which DO become spend: a bill consumes a filtered
+// limit only when its own category sits inside that limit's filter.
+//
+// UNFILTERED LIMITS ARE UNTOUCHED. One is the closest thing to "your whole
+// budget", which is the reading the spec's canonical formula and worked
+// example are written against — and that example must keep coming out at
+// ₱190.05.
+// ---------------------------------------------------------------------------
+
+test("A BILL OUTSIDE A FILTERED LIMIT'S CATEGORIES IS NOT DEDUCTED", () => {
+  const input = workedExample();
+  input.limits = [
+    limit({ id: "lim-food", filtered: true, filterLabel: "Food", categoryIds: ["cat_food"] }),
+  ];
+  input.plannedContributions = [];
+
+  const result = computeSafeToSpend(input);
+
+  // Both bills are `cat_bills`; a Food cap never pays an electricity bill.
+  expect(result.billsTerm).toBe(0);
+  expect(result.headroom).toBe(1_500_000);
+});
+
+test("a bill INSIDE a filtered limit's categories is still deducted", () => {
+  const input = workedExample();
+  input.limits = [
+    limit({ id: "lim-bills", filtered: true, filterLabel: "Bills", categoryIds: ["cat_bills"] }),
+  ];
+  input.plannedContributions = [];
+
+  expect(computeSafeToSpend(input).billsTerm).toBe(399_900);
+});
+
+test("an UNFILTERED limit still deducts every bill, whatever its category", () => {
+  const input = workedExample();
+  input.plannedContributions = [];
+
+  expect(computeSafeToSpend(input).billsTerm).toBe(399_900);
+});
+
+test("GOAL CONTRIBUTIONS NEVER REDUCE A FILTERED LIMIT — a transfer is in no category", () => {
+  const input = workedExample();
+  input.limits = [
+    limit({ id: "lim-food", filtered: true, filterLabel: "Food", categoryIds: ["cat_food"] }),
+  ];
+
+  expect(computeSafeToSpend(input).contributionsTerm).toBe(0);
+});
+
+test("an unfiltered limit keeps reserving contributions — the canonical formula is unchanged", () => {
+  expect(computeSafeToSpend(workedExample()).contributionsTerm).toBe(100_000);
+});
+
+test("REPORTED DEVICE, 2026-09-01: every limit at 0% now yields a real figure, not ₱0.00", () => {
+  // Four filtered limits sliced from one annual budget, nothing spent, and a
+  // ₱2,500 kinsenas allocation dated the day the week started.
+  const input: SafeToSpendInput = {
+    today: "2026-09-01",
+    limits: [
+      limit({ id: "daily", scope: "daily", effectiveValue: 28_000, filtered: true, filterLabel: "8 categories", categoryIds: ["cat_food"] }),
+      limit({ id: "weekly", scope: "weekly", effectiveValue: 196_538, filtered: true, filterLabel: "8 categories", categoryIds: ["cat_food"] }),
+      limit({ id: "monthly", scope: "monthly", effectiveValue: 851_667, filtered: true, filterLabel: "8 categories", categoryIds: ["cat_food"] }),
+    ],
+    unpaidBills: [],
+    plannedContributions: [{ goalId: "goal-1", amount: 250_000, date: "2026-08-31" }],
+    reviewQueueCount: 0,
+  };
+
+  const result = computeSafeToSpend(input);
+
+  // The daily cap is the tightest per-day figure: ₱280.00 against the weekly's
+  // ₱1,965.38 / 6 = ₱327.56 and the monthly's larger still.
+  expect(result.state).toBe("healthy");
+  expect(result.perDay).toBe(28_000);
+  expect(result.drivingLimitId).toBe("daily");
+  expect(result.contributionsTerm).toBe(0);
 });
 
 test("committed requires headroom above zero — a filtered limit spent exactly to its cap is over", () => {

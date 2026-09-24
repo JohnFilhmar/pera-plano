@@ -24,6 +24,20 @@
 // the plaintext it came from. The `console.warn` in createCacheCodec logs a
 // COUNT only -- never the blob, never the key, never the decrypted or
 // attempted plaintext.
+//
+// ORDERING GUARANTEE (write side). KeyManager.lock() destroys the DEK by
+// zeroing the buffer IN PLACE, which is correct and stays that way -- so any
+// buffer this module resolved BEFORE an `await` can be 32 zero bytes by the
+// time it resumes. encryptCacheValue therefore takes a GETTER, not a key,
+// draws its nonce FIRST, and reads the key at the last possible moment: with
+// no `await` between the read and the gcm() call, and nothing between them
+// that could run app code (the JSON.stringify sits above the read for that
+// reason). Since JS runs that stretch to completion, the only two outcomes
+// of a write still in flight when the app locks are "encrypted under the
+// live DEK" and "rejected, nothing written" -- never "encrypted under the
+// zeroed remains of one". Callers must pass a getter that re-reads the key
+// on every call (lib/query_client.ts passes `() => cacheEncryptionKey`),
+// never a value captured once.
 
 import { gcm } from "@noble/ciphers/aes.js";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
@@ -72,30 +86,51 @@ export class CacheDecryptionError extends Error {
   }
 }
 
+/**
+ * An all-zero buffer is never a real DEK -- key_manager.ts draws it from the
+ * CSPRNG -- so encountering one can only mean it is the scrubbed remains of
+ * a DEK that lock()/wipeKeys() zeroed in place. Refusing it is the backstop
+ * under this file's ordering guarantee: even a caller that hands over a
+ * buffer zeroed beneath it fails closed instead of writing the ledger under
+ * a key an attacker already knows. ORs every byte instead of returning early
+ * so the check does not run for a length that depends on the key's contents.
+ */
+function isZeroed(key: Uint8Array): boolean {
+  let accumulator = 0;
+  for (const byte of key) accumulator |= byte;
+  return accumulator === 0;
+}
+
 function requireKey(key: Uint8Array | null | undefined): Uint8Array {
-  if (key === null || key === undefined || key.length === 0) {
+  if (key === null || key === undefined || key.length === 0 || isZeroed(key)) {
     throw new CacheCipherKeyMissingError();
   }
   return key;
 }
 
 /**
- * Encrypts any JSON-serializable value under `key` with AES-256-GCM and a
- * fresh random nonce per call -- reusing a nonce under the same key is a
- * total break of GCM's confidentiality guarantee, which is why this is
- * drawn fresh here rather than accepted as a parameter. Returns hex: nonce
- * || ciphertext (the ciphertext already carries the GCM authentication
+ * Encrypts any JSON-serializable value under the key `getKey` returns, with
+ * AES-256-GCM and a fresh random nonce per call -- reusing a nonce under the
+ * same key is a total break of GCM's confidentiality guarantee, which is why
+ * this is drawn fresh here rather than accepted as a parameter. Returns hex:
+ * nonce || ciphertext (the ciphertext already carries the GCM authentication
  * tag), so the returned string is the complete, self-contained on-disk
  * blob -- the same nonce-prefix convention key_manager.ts's wrap functions
  * use.
+ *
+ * Rejects with CacheCipherKeyMissingError when `getKey` returns nothing at
+ * the moment the encryption actually happens, which is what a lock landing
+ * inside the nonce draw looks like from here. The statement order below is
+ * load-bearing, not stylistic -- see this file's ORDERING GUARANTEE header.
  */
 export async function encryptCacheValue(
-  key: Uint8Array | null | undefined,
+  getKey: () => Uint8Array | null | undefined,
   value: unknown,
 ): Promise<string> {
-  const realKey = requireKey(key);
   const nonce = await Crypto.getRandomBytesAsync(GCM_NONCE_BYTES);
   const plaintext = new TextEncoder().encode(JSON.stringify(value));
+  // Nothing may be inserted between these two lines.
+  const realKey = requireKey(getKey());
   const ciphertext = gcm(realKey, nonce).encrypt(plaintext);
 
   const blob = new Uint8Array(nonce.length + ciphertext.length);
@@ -146,7 +181,9 @@ export function resetDiscardedCacheReadsForTests(): void {
 
 /**
  * Builds the {serialize, deserialize} pair createAsyncStoragePersister
- * needs (lib/query_client.ts), bound to `key`.
+ * needs (lib/query_client.ts), reading the key through `getKey` on every
+ * call rather than binding a value -- a bound value is exactly the capture
+ * this file's ORDERING GUARANTEE header exists to forbid.
  *
  * serialize rejects with CacheCipherKeyMissingError when `key` is absent --
  * deliberately loud, even though @tanstack/query-async-storage-persister's
@@ -169,15 +206,15 @@ export function resetDiscardedCacheReadsForTests(): void {
  * encryptCacheValue and decryptCacheValue keep them distinct, separately
  * testable errors one layer down.
  */
-export function createCacheCodec(key: Uint8Array | null | undefined): {
+export function createCacheCodec(getKey: () => Uint8Array | null | undefined): {
   serialize: (value: unknown) => Promise<string>;
   deserialize: (cached: string) => unknown;
 } {
   return {
-    serialize: (value: unknown) => encryptCacheValue(key, value),
+    serialize: (value: unknown) => encryptCacheValue(getKey, value),
     deserialize: (cached: string) => {
       try {
-        return decryptCacheValue(key, cached);
+        return decryptCacheValue(getKey(), cached);
       } catch {
         discardedCacheReads += 1;
         console.warn(

@@ -731,10 +731,12 @@ function LoanMatchBody({
   item,
   candidates,
   onChooseLoan,
+  busy,
 }: {
   item: ReviewQueueItem;
   candidates: readonly LoanCandidateView[];
   onChooseLoan?: (item: ReviewQueueItem, loanId: string) => void;
+  busy: boolean;
 }) {
   const choosing = candidates.length > 1;
 
@@ -772,7 +774,11 @@ function LoanMatchBody({
               title={`Record on ${candidate.counterparty}`}
               variant="secondary"
               size="md"
-              disabled={onChooseLoan === undefined}
+              // `disabled`, not `loading`: with two or more candidates there is
+              // one button per loan and only one of them was pressed, so
+              // spinning all of them would say the app is writing to every loan
+              // on the card. The card's primary carries the spinner instead.
+              disabled={onChooseLoan === undefined || busy}
               onPress={
                 onChooseLoan ? () => onChooseLoan(item, candidate.loanId) : () => undefined
               }
@@ -864,6 +870,22 @@ export type ReviewCardProps = {
    * already opens the sheet there is nothing for it to add.
    */
   onEditDetails?: (item: ReviewQueueItem) => void;
+  /**
+   * A triage write already in flight FOR THIS CARD (GAP-079). Every button that
+   * commits an outcome is disabled for exactly that long.
+   *
+   * OWNED BY THE SCREEN, and it has to be: `useReviewAction` is ONE mutation
+   * shared by the whole queue (see that hook's header), so a card cannot tell
+   * "a write for me" from "a write for the card above" on its own — the screen
+   * joins `triage.isPending` to `triage.variables.itemId`. It is also the only
+   * thing that knows when the write settles, which a card-local latch could
+   * never learn: the queue keeps a FAILED card on screen, and a latch with no
+   * way to clear would strand the user on it.
+   *
+   * Defaults to `false`, so a caller with no write behind it — every one of
+   * this file's own component tests — keeps today's behaviour.
+   */
+  busy?: boolean;
   testID?: string;
 };
 
@@ -918,6 +940,7 @@ export function ReviewCard({
   onChooseTransferWallet,
   onRecordAutofill,
   onEditDetails,
+  busy = false,
   testID,
 }: ReviewCardProps) {
   const actions = REVIEW_ACTIONS[item.kind];
@@ -999,11 +1022,18 @@ export function ReviewCard({
     isOneSidedTransfer && transferWalletId !== null && onChooseTransferWallet !== undefined
       ? () => onChooseTransferWallet(item, transferWalletId, transferFee)
       : undefined;
-  const primaryDisabled = isOneSidedTransfer
-    ? transferPrimary === undefined
-    : autofillCommit !== null
-      ? autofillPrimary === undefined
-      : onPrimary === undefined || missingField !== null;
+  // `busy` is ORed in LAST and applies to every kind, because a triage write
+  // already in flight for this card outranks every per-kind reason the primary
+  // could otherwise have to be live. Nothing under `useReviewAction` dedupes a
+  // second outcome for the same item, so the refusal has to happen at the
+  // button (GAP-079).
+  const primaryDisabled =
+    busy ||
+    (isOneSidedTransfer
+      ? transferPrimary === undefined
+      : autofillCommit !== null
+        ? autofillPrimary === undefined
+        : onPrimary === undefined || missingField !== null);
   const primaryOnPress = isOneSidedTransfer
     ? (transferPrimary ?? (() => undefined))
     : autofillCommit !== null
@@ -1081,7 +1111,12 @@ export function ReviewCard({
                 />
               )}
               {loans.length === 0 ? null : (
-                <LoanMatchBody item={item} candidates={loans} onChooseLoan={onChooseLoan} />
+                <LoanMatchBody
+                  item={item}
+                  candidates={loans}
+                  onChooseLoan={onChooseLoan}
+                  busy={busy}
+                />
               )}
               {isOneSidedTransfer ? (
                 <OneSidedTransferBody
@@ -1144,17 +1179,25 @@ export function ReviewCard({
             title={primaryTitle}
             variant="primary"
             disabled={primaryDisabled}
+            // The card's one spinner. Every other control here is refused with
+            // a reason the user can read; an in-flight write is the one refusal
+            // with no field to go and fix, so it shows its reason the way
+            // manual_entry_form.tsx's Save does.
+            loading={busy}
             onPress={primaryOnPress}
           />
           {/* "Correct" stays enabled even while the primary is blocked —
               supplying the amount is exactly the way forward, and disabling
-              the one path off this card would strand the user on it. */}
+              the one path off this card would strand the user on it. `busy` is
+              the one exception, and a narrow one: while a write for THIS card
+              is in flight the secondary is a second outcome for an item that
+              is already being resolved, not a way forward. */}
           <Button
             testID={`review-secondary-${item.id}`}
             title={actions.secondary}
             variant="secondary"
             size="md"
-            disabled={onSecondary === undefined}
+            disabled={onSecondary === undefined || busy}
             onPress={onSecondary ? () => onSecondary(item) : () => undefined}
           />
 

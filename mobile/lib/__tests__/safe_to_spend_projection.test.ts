@@ -18,11 +18,12 @@ function workedExample(): SafeToSpendInput {
         spendInPeriod: 620_000,
         filtered: false,
         filterLabel: null,
+        categoryIds: null,
       },
     ],
     unpaidBills: [
-      { id: "bill-1", name: "Meralco", amount: 230_000, dueDate: "2026-08-20" },
-      { id: "bill-2", name: "PLDT", amount: 169_900, dueDate: "2026-08-25" },
+      { id: "bill-1", name: "Meralco", amount: 230_000, dueDate: "2026-08-20" , categoryId: "cat_bills" },
+      { id: "bill-2", name: "PLDT", amount: 169_900, dueDate: "2026-08-25" , categoryId: "cat_bills" },
     ],
     plannedContributions: [{ goalId: "goal-1", amount: 100_000, date: "2026-08-15" }],
     reviewQueueCount: 0,
@@ -89,7 +90,7 @@ test("A BILL'S DUE DATE IS MARKED WITHOUT THE ALLOWANCE LINE DIPPING", () => {
 
 test("two bills on the same date are summed into one marker", () => {
   const input = workedExample();
-  input.unpaidBills.push({ id: "bill-3", name: "Water", amount: 50_000, dueDate: "2026-08-20" });
+  input.unpaidBills.push({ id: "bill-3", name: "Water", amount: 50_000, dueDate: "2026-08-20" , categoryId: "cat_bills" });
 
   const points = project(input);
   const twentieth = points.find((point) => point.date === "2026-08-20");
@@ -144,6 +145,7 @@ test("A DAILY LIMIT PROJECTS EXACTLY ONE POINT", () => {
       spendInPeriod: 20_000,
       filtered: false,
       filterLabel: null,
+      categoryIds: null,
     },
   ];
   input.unpaidBills = [];
@@ -180,7 +182,7 @@ test("a bill due AFTER the period end is not marked on the curve", () => {
   // It belongs to next month's projection, and marking it here would put a
   // deduction on a day the chart does not draw.
   const input = workedExample();
-  input.unpaidBills.push({ id: "bill-next", name: "Rent", amount: 800_000, dueDate: "2026-09-05" });
+  input.unpaidBills.push({ id: "bill-next", name: "Rent", amount: 800_000, dueDate: "2026-09-05" , categoryId: "cat_bills" });
 
   const points = project(input);
 

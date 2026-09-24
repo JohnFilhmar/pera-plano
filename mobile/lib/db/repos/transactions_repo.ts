@@ -1,6 +1,6 @@
 // lib/db/repos/transactions_repo.ts — the only SQL surface for the ledger
 // (interface contract §3). Windows are [from, to): `from` inclusive, `to` exclusive.
-import { addDaysIso } from "@/lib/dates";
+import { addDaysIso, startOfLocalDayBefore } from "@/lib/dates";
 import { getDatabase } from "@/lib/db/database";
 import { rowToTransaction, transactionToRow, type TransactionRow } from "@/lib/db/mappers";
 import { historyWindowDays } from "@/lib/entitlements";
@@ -56,10 +56,23 @@ async function settleBalance(
  * Earliest `occurred_at` the current tier may see, or null when unlimited.
  * A VISIBILITY floor only — nothing is deleted and wallet balances are
  * unaffected (docs/05-monetization.md §2/§3.3).
+ *
+ * A LOCAL-MIDNIGHT FLOOR, AND `now` IS AN ARGUMENT. Both halves matter and both
+ * were wrong. `Date.now() - 90 * DAY_MS` put a live wall-clock read inside a
+ * repository, which lib/clock.ts forbids outright — "no engine or service under
+ * lib/ calls `Date.now()`... only the composition edges reach for
+ * `systemClock`" — so nothing downstream could pin the floor, and a Free-tier
+ * fixture written 90 days before a test ran would quietly stop being visible.
+ * It also made the cutoff an instant rather than a day: at 09:00 the floor sat
+ * at 09:00 on the boundary day, so a credit stamped 08:00 that day was hidden
+ * while one stamped 10:00 was shown, and the boundary crept forward hour by
+ * hour. §3.3 hides records "older than 90 days", which is a claim about the
+ * calendar; `startOfLocalDayBefore` makes the whole boundary day visible and
+ * moves the floor only when the local date does.
  */
-function historyFloor(): number | null {
+function historyFloor(now: number): number | null {
   const days = historyWindowDays();
-  return days === null ? null : Date.now() - days * DAY_MS;
+  return days === null ? null : startOfLocalDayBefore(now, days);
 }
 
 /** The wallet's balance as it stands right now, or 0 when the id has no row. */
@@ -72,6 +85,31 @@ async function currentBalance(
     [walletId],
   );
   return row?.balance ?? 0;
+}
+
+/**
+ * When the wallet's current balance snapshot was reported, or `null` when no
+ * transaction has ever carried one — rule 9's "the current snapshot's"
+ * timestamp.
+ *
+ * MAX(`occurred_at`), NOT THE LAST COMMITTED ROW. Every snap that actually ran
+ * was newer than the one before it, so the maximum IS the snapshot governing
+ * the balance; a suppressed row keeps its `balance_after` for provenance and is
+ * older than the governing one by construction, so including it changes
+ * nothing. `getBalanceDrift` picks the same row by the same ordering.
+ */
+async function currentSnapshotAt(
+  db: Awaited<ReturnType<typeof getDatabase>>,
+  walletId: string,
+): Promise<EpochMs | null> {
+  const row = await db.getFirstAsync<{ occurred_at: number }>(
+    `SELECT occurred_at FROM transactions
+      WHERE wallet_id = ? AND balance_after IS NOT NULL
+      ORDER BY occurred_at DESC
+      LIMIT 1`,
+    [walletId],
+  );
+  return row?.occurred_at ?? null;
 }
 
 /**
@@ -100,12 +138,27 @@ async function currentBalance(
  * applied outside it would survive a rejected insert — a wallet claiming a
  * balance with nothing in the ledger to explain it.
  *
- * NOT IMPLEMENTED HERE: spec rule 9's second half, "out-of-order arrivals snap
- * only if the notification timestamp is newer than the current snapshot's". A
- * late-arriving older notification therefore re-anchors the wallet to its own
- * (stale) figure. The data to fix it now exists — `balance_after` alongside
- * `occurred_at` — but suppressing a snap is a routing decision that belongs
- * with the reconciliation work, not with persisting the value.
+ * OUT-OF-ORDER ARRIVALS ARE SUPPRESSED (spec rule 9's second half: "out-of-order
+ * arrivals snap only if the notification timestamp is newer than the current
+ * snapshot's"). A notification delayed by a dead radio still describes the
+ * moment it was sent, so a figure from Tuesday landing after Thursday's is not
+ * a correction — it is a rewind, and letting it snap discards every movement in
+ * between and leaves the drift explainer describing a balance the bank has not
+ * held for two days.
+ *
+ * SUPPRESSED MEANS THE BALANCE IS NOT TOUCHED AT ALL, not that it falls back to
+ * the increment. The governing snapshot is NEWER than this transaction, so the
+ * provider's own figure already counts this movement (rule 2: balance = last
+ * anchor + the signed sum SINCE it); adding the amount again would book it
+ * twice. The row is still committed in full — `balance_after` and
+ * `computed_balance` included — because it is a real movement and the ledger
+ * records what the provider said, whether or not it re-anchored anything.
+ *
+ * STRICTLY OLDER, NOT "NOT NEWER". Two tellings of the same movement carry the
+ * same `occurred_at` (a push and its SMS relay), and the later-committed one is
+ * the one to trust; only a timestamp genuinely behind the snapshot is
+ * out-of-order. Rule 12 is untouched by any of this: a snap that DOES run never
+ * blocks on drift.
  */
 export async function insertTransaction(tx: NewTransaction): Promise<Transaction> {
   const db = await getDatabase();
@@ -117,8 +170,11 @@ export async function insertTransaction(tx: NewTransaction): Promise<Transaction
 
   await db.withTransactionAsync(async () => {
     // Read inside the transaction, so nothing can move the balance between the
-    // figure we record as "computed" and the snap that replaces it.
+    // figure we record as "computed" and the snap that replaces it. Both reads
+    // run BEFORE the insert, so this row is never compared against itself.
     const before = balanceAfter === null ? null : await currentBalance(db, tx.walletId);
+    const snapshotAt = balanceAfter === null ? null : await currentSnapshotAt(db, tx.walletId);
+    const snaps = balanceAfter !== null && (snapshotAt === null || tx.occurredAt >= snapshotAt);
 
     const committed: Transaction = {
       id,
@@ -180,7 +236,7 @@ export async function insertTransaction(tx: NewTransaction): Promise<Transaction
         now,
         committed.walletId,
       ]);
-    } else {
+    } else if (snaps) {
       // SET, not `balance + ?`. Compared against `balanceAfter === null` rather
       // than truthiness on purpose: a reported ₱0.00 is a drained wallet, and
       // `if (balanceAfter)` would quietly fall through to the increment for it.
@@ -190,6 +246,10 @@ export async function insertTransaction(tx: NewTransaction): Promise<Transaction
         committed.walletId,
       ]);
     }
+    // The remaining case — a reported balance older than the wallet's current
+    // snapshot — writes NOTHING to the wallet. See this function's header: the
+    // newer snapshot already counts this movement, so both a snap and an
+    // increment would misstate the balance.
 
     record = committed;
   });
@@ -215,6 +275,35 @@ export async function getTransaction(id: string): Promise<Transaction | null> {
     id,
   ]);
   return row ? rowToTransaction(row) : null;
+}
+
+/**
+ * Whether any Transaction was built from this raw capture.
+ *
+ * ONE `EXISTS`, NOT A LIST, because the only caller needs the answer and not the
+ * rows: `undoResolution` (lib/review/resolve_actions.ts) uses it to refuse to
+ * reopen a queue card whose triage COMMITTED. A reopened card with its
+ * transaction still in the ledger is a second confirmation of a movement the
+ * user has already recorded, which is the double-post the Review Queue's own
+ * duplicate defences exist to prevent.
+ *
+ * NOT CLAMPED TO THE TIER'S HISTORY FLOOR, for the reason `getTransaction`
+ * above gives: the floor is a listing rule, and a row hidden by it is still a
+ * row. A Free-tier caller told "nothing was committed" about a capture that
+ * committed 91 days ago would get exactly the wrong answer.
+ *
+ * `raw_notifications_repo.isRawCaptureUnreferenced` asks a WIDER question — no
+ * transaction AND no queue card — which is the right one for the ingest sweep
+ * and the wrong one here, where the asking card is itself a reference and would
+ * make every answer "referenced".
+ */
+export async function hasTransactionForRawCapture(rawNotificationId: string): Promise<boolean> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ committed: number }>(
+    "SELECT EXISTS (SELECT 1 FROM transactions WHERE raw_notification_id = ?) AS committed",
+    [rawNotificationId],
+  );
+  return (row?.committed ?? 0) === 1;
 }
 
 /**
@@ -518,15 +607,39 @@ export async function deleteTransaction(id: string): Promise<void> {
  * 19: invariant 5's "why was this recorded?" transparency has to survive a move,
  * or retiring a Wallet quietly destroys the provenance of its history.
  *
- * NOT HANDLED, AND KNOWN: spec rule 4 of the delete flow — a TransferLink whose
- * two legs would end up in the SAME Wallet should be dissolved and both legs
- * sent to the Review Queue for re-triage. That needs the Review Queue's write
- * path (m1c Task 10) and `unlinkTransfer`, and it is a routing decision rather
- * than a persistence one. Until it lands, moving a Wallet that holds one leg of
- * an internal transfer into the Wallet holding the other leaves a link whose
- * legs share a Wallet. It affects no total (transfer legs are excluded from
- * spend and income by invariant 2) and no balance (both legs still apply), but
- * the link is meaningless and should be re-triaged.
+ * THE PROVIDER'S BALANCE ANCHORS ARE THE ONE EXCEPTION, AND THEY DO NOT TRAVEL
+ * (GAP-080). `balance_after` is the SOURCE provider's statement about the SOURCE
+ * account at a moment, and `computed_balance` is written as its pair. Carried
+ * into another Wallet they become a claim that the DESTINATION's bank reported
+ * that figure. `getBalanceDrift` (wallets_repo.ts) takes the newest row in a
+ * wallet with a non-null `balance_after` and compares the two columns, so a
+ * moved row that happens to be the newest makes the destination compare its own
+ * ledger against a different bank's number and raise a "Balance mismatch" badge
+ * that nothing can clear until its own provider reports again. Nulling the pair
+ * is the honest answer rather than a workaround: those two columns are
+ * provenance about a WALLET, and the wallet is precisely what changed.
+ *
+ * The source's `drift_dismissed_transaction_id` is cleared for the same reason
+ * `deleteTransaction` clears it: every row has just left, so a dismissal naming
+ * one of them acknowledges a drift the wallet no longer has.
+ *
+ * A LEG WHOSE COUNTERPART IS ALREADY IN THE DESTINATION STAYS WHERE IT IS
+ * (GAP-080, owner's decision 2026-09-17). Moving it would put both legs of one
+ * internal transfer in a single Wallet, which is a transfer that moves no money.
+ *
+ * DISSOLVING THE LINK INSTEAD WAS REJECTED, AND IT IS THE TEMPTING WRONG
+ * ANSWER. `transfer_link_id` is this schema's ONLY expression of "not spending,
+ * not income" (017's own comment says so, and invariant 2 rests on it), so
+ * unlinking a pair makes an equal in-leg and out-leg start counting: reported
+ * spend AND reported income each rise by the transfer amount, to tidy up a link
+ * nobody sees. Skipping costs a few rows staying in a Wallet the user deleted,
+ * and that Wallet is soft-deleted rather than removed, so those rows remain
+ * fully visible in history like everything else it holds.
+ *
+ * The skip predicate is shared by the delta query and the UPDATE below for the
+ * same reason they already read inside one transaction: a delta measured over a
+ * different set than the one that moves settles both balances against a ledger
+ * that never existed.
  */
 export async function reassignWalletTransactions(
   fromWalletId: string,
@@ -540,9 +653,17 @@ export async function reassignWalletTransactions(
   await db.withTransactionAsync(async () => {
     // Read inside the transaction: the delta and the rows it describes must be
     // the same set, or the balances settle against a ledger that moved.
+    // One predicate, used by the delta below and the UPDATE after it.
+    const MOVABLE = `wallet_id = ?
+         AND (transfer_link_id IS NULL
+              OR NOT EXISTS (SELECT 1 FROM transactions sibling
+                              WHERE sibling.transfer_link_id = transactions.transfer_link_id
+                                AND sibling.id <> transactions.id
+                                AND sibling.wallet_id = ?))`;
+
     const rows = await db.getAllAsync<{ amount: number; direction: string }>(
-      "SELECT amount, direction FROM transactions WHERE wallet_id = ?",
-      [fromWalletId],
+      `SELECT amount, direction FROM transactions WHERE ${MOVABLE}`,
+      [fromWalletId, toWalletId],
     );
     if (rows.length === 0) return;
 
@@ -552,8 +673,18 @@ export async function reassignWalletTransactions(
     );
 
     await db.runAsync(
-      "UPDATE transactions SET wallet_id = ?, updated_at = ? WHERE wallet_id = ?",
-      [toWalletId, now, fromWalletId],
+      `UPDATE transactions SET wallet_id = ?, balance_after = NULL, computed_balance = NULL, updated_at = ? WHERE ${MOVABLE}`,
+      [toWalletId, now, fromWalletId, toWalletId],
+    );
+    // Cleared only if the dismissed row actually left. A skipped leg can stay
+    // behind and still carry the reporting `balance_after`, and dismissing a
+    // drift that is still there would hide a badge the user never acknowledged.
+    await db.runAsync(
+      `UPDATE wallets SET drift_dismissed_transaction_id = NULL
+        WHERE id = ?
+          AND drift_dismissed_transaction_id IS NOT NULL
+          AND drift_dismissed_transaction_id NOT IN (SELECT id FROM transactions WHERE wallet_id = ?)`,
+      [fromWalletId, fromWalletId],
     );
     await db.runAsync("UPDATE wallets SET balance = balance - ?, updated_at = ? WHERE id = ?", [
       delta,
@@ -574,7 +705,7 @@ export async function listTransactions(filter: TxFilter): Promise<Transaction[]>
   const clauses: string[] = [];
   const params: (string | number)[] = [];
 
-  const floor = historyFloor();
+  const floor = historyFloor(filter.now ?? Date.now());
   const from =
     floor === null ? filter.from : Math.max(filter.from ?? Number.NEGATIVE_INFINITY, floor);
   if (from !== undefined && Number.isFinite(from)) {
@@ -618,10 +749,129 @@ export async function listTransactions(filter: TxFilter): Promise<Transaction[]>
 }
 
 /**
+ * Every transaction ever recorded, newest first, with NO tier history floor and
+ * no other filter. For computations over the user's whole record; never for a
+ * screen, a search or a report — those are the three surfaces the floor exists
+ * to gate.
+ *
+ * THE FLOOR IS A BROWSING GATE, AND LEARNING IS A COMPUTATION (GAP-111) — the
+ * same line GAP-105 drew for `sumSpend` directly below. Limits rule 8
+ * (docs/04-features/03-limits.md), verbatim: "Limit totals are always computed
+ * from the full ledger, regardless of the free tier's 90-day history view gate
+ * — data is never deleted, only the browsing view is gated."
+ * docs/05-monetization.md §3.3 scopes the gate the same way: records older than
+ * 90 days go "invisible in ledger, search, and Reports" while they "still
+ * participate in Wallet balance math".
+ *
+ * THE CALLER IS THE CATEGORIZER'S LEARNED SUGGESTION. `resolveLearned`
+ * (lib/ingest/categorizer.ts) counts how many times this user has filed a
+ * merchant into each category and needs three of the same before it will repeat
+ * the choice, and §8 rule 3 puts no window on that count: "the same merchant
+ * categorized the same way three or more times in `history`", unqualified. Read
+ * through `listTransactions({})`, as it was, the count silently became "three
+ * times in the last 90 days" on Free — so a merchant the user had already filed
+ * the same way three times would be asked about all over again the moment those
+ * three rows aged past the view gate, a tier setting quietly deciding what the
+ * app remembers having learned. Latent today only because `MVP_TIER` is `plus`
+ * (lib/entitlements.ts), which leaves the floor null for everyone.
+ *
+ * A SEPARATE FUNCTION RATHER THAN A `TxFilter` FLAG, for the reason `sumSpend`
+ * is a separate function rather than a flag: a flag would hand every future
+ * caller a switch that turns the browsing gate off, and the gate is the
+ * feature. `listTransactions` keeps its floor untouched.
+ */
+export async function listFullLedger(): Promise<Transaction[]> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<TransactionRow>(
+    "SELECT * FROM transactions ORDER BY occurred_at DESC, created_at DESC",
+  );
+  return rows.map(rowToTransaction);
+}
+
+/**
+ * Every transaction in [from, to), newest first, with NO tier history floor and
+ * no other filter — `listFullLedger`'s exemption applied to a BOUNDED window.
+ * For a computation that asks for a specific span of the record; never for a
+ * screen, a search or a report.
+ *
+ * A SECOND FLOOR-EXEMPT READ RATHER THAN A WIDER USE OF `listFullLedger`
+ * (GAP-118). The function above is unfiltered ON PURPOSE, so handing it to a
+ * caller that asked for a window silently widens that window to the user's
+ * entire record. For income cadence detection that would replace a trailing
+ * 130 days with every credit ever recorded, moving `averageAmount` for exactly
+ * the long-lived users whose figure matters most — a change nobody decided.
+ *
+ * THE FLOOR IS A BROWSING GATE, AND THIS IS A COMPUTATION — the same line
+ * GAP-105 drew for `sumSpend` below and GAP-111 for `listFullLedger` above.
+ * Limits rule 8 (docs/04-features/03-limits.md), verbatim: "Limit totals are
+ * always computed from the full ledger, regardless of the free tier's 90-day
+ * history view gate — data is never deleted, only the browsing view is gated."
+ * docs/05-monetization.md §3.3 scopes the gate the same way: records older than
+ * 90 days go "invisible in ledger, search, and Reports" while they "still
+ * participate in Wallet balance math".
+ *
+ * THE FIRST CALLER IS INCOME CADENCE DETECTION. `detect`
+ * (lib/income/income_service.ts) asks for a trailing 130 days so `detectCadence`
+ * can judge 120 of them, and income rule 9 medians a cadence-sized window of
+ * paydays out of that — four for monthly, six for kinsenas, eight for weekly.
+ * Read through `listTransactions`, a Free device was handed 90 days instead — so
+ * `averageAmount`, and through `monthlyEquivalent` the base of every
+ * percent-of-income Limit (limits rule 10), moved with the tier. Nothing gates
+ * what income detection feeds, so nothing may gate its sample.
+ *
+ * THE SECOND IS RECURRING DETECTION (GAP-122), whose OUTPUT genuinely is
+ * tier-gated — which is why GAP-118 first answered the identical clamp by not
+ * running that pass on Free at all. Reports rule 19 overrules that: the Free
+ * locked preview owes the user "the count of detected patterns only", so a Free
+ * device has to detect, and three instances of an annual charge span about two
+ * years. The gate moved to the surface that renders the count
+ * (app/(tabs)/more/subscriptions.tsx); the sample it computes from is the same
+ * 800 days in both tiers, exactly as here.
+ *
+ * Both are latent today only because `MVP_TIER` is `plus`
+ * (lib/entitlements.ts), which leaves the floor null for everyone.
+ *
+ * A SEPARATE FUNCTION RATHER THAN A `TxFilter` FLAG, for the reason
+ * `listFullLedger` and `sumSpend` are separate functions rather than flags: a
+ * flag would hand every future caller a switch that turns the browsing gate
+ * off, and the gate is the feature. `listTransactions` keeps its floor
+ * untouched.
+ */
+export async function listFullLedgerBetween(args: {
+  from: EpochMs;
+  to: EpochMs;
+}): Promise<Transaction[]> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<TransactionRow>(
+    `SELECT * FROM transactions
+     WHERE occurred_at >= ? AND occurred_at < ?
+     ORDER BY occurred_at DESC, created_at DESC`,
+    [args.from, args.to],
+  );
+  return rows.map(rowToTransaction);
+}
+
+/**
  * Total money spent in [from, to). Counts `direction = 'out'` only and never
  * counts transfer legs (invariant I2) or balance adjustments
- * (017_transaction_adjustments). The window is clamped to the tier's history
- * floor so Free never reports spend it cannot show.
+ * (017_transaction_adjustments). The window is exactly the one the caller
+ * asked for: it is NOT clamped to the tier's history floor.
+ *
+ * THE FLOOR IS A BROWSING GATE, AND THIS IS A COMPUTATION (GAP-105). Limits
+ * rule 8, verbatim: "Limit totals are always computed from the full ledger,
+ * regardless of the free tier's 90-day history view gate — data is never
+ * deleted, only the browsing view is gated." docs/05-monetization.md §3.3
+ * scopes the same gate the same way: records older than 90 days go "invisible
+ * in ledger, search, and Reports" while they "still participate in Wallet
+ * balance math", and Safe-to-Spend's "today number is computed identically in
+ * both tiers". This function used to clamp `from` to `historyFloor()`, which
+ * was harmless only because MVP hardcodes `plus` so the floor is null. On
+ * Free, any window reaching further back than 90 days — an annual limit, or
+ * the previous period rule 14's carryover reads — would have summed a
+ * fraction of its own period and printed headroom the user does not have.
+ * `listTransactions` keeps the floor, because browsing is the one thing the
+ * floor is for; `dailySpend` below states the same exemption from the other
+ * side.
  *
  * THE ADJUSTMENT EXCLUSION IS NOT OPTIONAL HERE, unlike on `listTransactions`.
  * This function has exactly one meaning — "how much money did this person
@@ -639,8 +889,6 @@ export async function sumSpend(args: {
   if (args.categoryIds?.length === 0 || args.walletIds?.length === 0) return 0;
 
   const db = await getDatabase();
-  const floor = historyFloor();
-  const from = floor === null ? args.from : Math.max(args.from, floor);
 
   const clauses = [
     "direction = 'out'",
@@ -649,7 +897,7 @@ export async function sumSpend(args: {
     "occurred_at >= ?",
     "occurred_at < ?",
   ];
-  const params: (string | number)[] = [from, args.to];
+  const params: (string | number)[] = [args.from, args.to];
 
   if (args.categoryIds) {
     clauses.push(`category_id IN (${args.categoryIds.map(() => "?").join(", ")})`);

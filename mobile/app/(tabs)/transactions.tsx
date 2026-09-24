@@ -45,7 +45,12 @@ export default function TransactionsScreen() {
   const [search, setSearch] = useState("");
 
   const { data: transactions } = useTransactions(filter);
-  const { data: wallets } = useWallets();
+  // ARCHIVED INCLUDED so the ledger can still NAME the wallet of a row whose
+  // wallet was archived — archiving is the app's only removal path, and those
+  // rows never leave the list. `FilterBar` drops the archived ones from its own
+  // chip row (its `selectableWallets`), so widening this does not resurrect one
+  // as a control.
+  const { data: wallets } = useWallets({ includeArchived: true });
   const { data: categories } = useCategories();
   const { data: reviewCount } = useReviewCount();
 

@@ -11,12 +11,12 @@
 // `bill_reminders`, so nothing here reaches expo-notifications and this file
 // mocks nothing in its tests.
 import { listBillStatuses } from "@/lib/bills/bills_service";
-import { listCategories } from "@/lib/db/repos/categories_repo";
-import { listGoals } from "@/lib/db/repos/goals_repo";
+import { listCategories, listCategoryRefs } from "@/lib/db/repos/categories_repo";
 import { countOpen } from "@/lib/db/repos/review_queue_repo";
-import { addDaysIso, toDateIso } from "@/lib/dates";
-import { getIncomeSummary, type IncomeSummary } from "@/lib/income/income_service";
-import { kinsenasAnchorsBetween } from "@/lib/income/cadence_detector";
+import { addDaysIso } from "@/lib/dates";
+import { listPaydayContributions, reservedFor } from "@/lib/goals/planned_contributions";
+import { getIncomeSummary } from "@/lib/income/income_service";
+import { expandCategoryIds } from "@/lib/limits/limit_engine";
 import { getLimitStatuses } from "@/lib/limits/limit_service";
 import { limitFilterLabel } from "@/lib/limits/limit_label";
 import { daysBetweenInclusive, periodForScope } from "@/lib/period";
@@ -28,7 +28,7 @@ import {
   type SafeToSpendResult,
   type UpcomingBill,
 } from "@/lib/safe_to_spend";
-import type { Centavos, Goal, IsoDate } from "@/types/domain";
+import type { Centavos, IsoDate } from "@/types/domain";
 
 /**
  * Assembles every term the engine needs.
@@ -41,11 +41,10 @@ export async function buildSafeToSpendInput(
   today: IsoDate,
   now: number,
 ): Promise<SafeToSpendInput> {
-  // Income comes FIRST because two later steps need it: `getLimitStatuses`
-  // resolves a percent-of-income limit against the monthly equivalent (rule 4),
-  // and the contribution forecast needs the payday cadence (rule 6). One read
-  // rather than two, so the limit and the forecast cannot disagree about what
-  // the user earns.
+  // Income comes FIRST because `getLimitStatuses` resolves a percent-of-income
+  // limit against the monthly equivalent (rule 4). The contribution forecast
+  // takes NOTHING from the profile: since rule 6b it reserves from the credits
+  // that actually landed, so it reads the ledger rather than the average.
   const income = await getIncomeSummary(now);
   const limits = await candidateLimits(now, income.monthlyEquivalent);
 
@@ -58,17 +57,19 @@ export async function buildSafeToSpendInput(
     ...limits.map((limit) => daysBetweenInclusive(today, periodForScope(limit.scope, today).end)),
   );
 
-  // The widest candidate window, as dates. Contributions are forecast across
-  // ALL of it rather than from today, because rule 6 counts them "from the
-  // start of the period" — an allocation on the 15th is still reserved on the
+  // The earliest candidate period start. Contributions are gathered from
+  // there rather than from today, because rule 6 counts them "from the start
+  // of the period" — pay that arrived on the 15th is still reserved on the
   // 20th, and the engine relies on seeing it to keep it reserved.
+  //
+  // No window END is needed any more: contributions now come from pay that has
+  // ALREADY ARRIVED, so `today` is the far edge by construction.
   const starts = limits.map((limit) => periodForScope(limit.scope, today).start);
   const windowStart = starts.length > 0 ? starts.reduce((a, b) => (a < b ? a : b)) : today;
-  const windowEnd = addDaysIso(today, horizonDays);
 
   const [unpaidBills, plannedContributions, reviewQueueCount] = await Promise.all([
     unresolvedBills(now, horizonDays),
-    forecastContributions(windowStart, windowEnd, income),
+    forecastContributions(windowStart, today),
     countOpen(),
   ]);
 
@@ -96,6 +97,9 @@ async function candidateLimits(
   const categoryNames = new Map(
     (await listCategories({ includeHidden: true })).map((category) => [category.id, category.name]),
   );
+  // The parent/child pairs `expandCategoryIds` walks. Read once here rather
+  // than per limit — `candidateLimits` runs on every ledger commit.
+  const categoryRefs = await listCategoryRefs();
 
   return statuses
     .filter((status) => {
@@ -123,6 +127,15 @@ async function candidateLimits(
         (status.limit.categoryFilter?.length ?? 0) > 0 ||
         (status.limit.walletFilter?.length ?? 0) > 0,
       filterLabel: limitFilterLabel(status.limit, categoryNames),
+      // EXPANDED with `expandCategoryIds`, the same call `limit_service.ts`
+      // makes before handing the set to `sumSpend` (limits rule 4: picking a
+      // parent includes its children). Passing the raw filter would let a bill
+      // filed under a CHILD category slip past a limit that counts it, so the
+      // engine would stop deducting a bill the limit will really pay.
+      categoryIds:
+        (status.limit.categoryFilter?.length ?? 0) > 0
+          ? expandCategoryIds(status.limit.categoryFilter as string[], categoryRefs)
+          : null,
     }));
 }
 
@@ -144,6 +157,9 @@ async function unresolvedBills(now: number, horizonDays: number): Promise<Upcomi
       // (rule 5). `listBillStatuses` has already resolved which.
       amount: status.estimate.amount,
       dueDate: status.dueDate,
+      // What the payment will be filed under, so the engine can tell whether
+      // this bill could consume a given limit's headroom (rule 5a).
+      categoryId: status.bill.categoryId,
     }));
 }
 
@@ -151,81 +167,27 @@ async function unresolvedBills(now: number, horizonDays: number): Promise<Upcomi
 // Goal contributions — rule 6
 // ---------------------------------------------------------------------------
 /**
- * Scheduled contributions falling inside the window.
+ * The goal contributions term's rows: every planned contribution from pay that
+ * landed inside the window, at what it still reserves.
  *
- * A FORECAST OF SCHEDULED RULES ONLY. Rule 6: "Manual, unscheduled Goal
- * contributions are not forecast; they simply appear as spend/transfers when
- * they happen." So a goal with no `contributionRule` contributes nothing, and
- * neither does one whose cadence the app cannot project — guessing a date would
- * reserve money on a day the user was never going to move it.
+ * WHICH CONTRIBUTIONS EXIST, AND WHAT EACH ONE HOLDS BACK, ARE THE GOALS
+ * FEATURE'S TO SAY (lib/goals/planned_contributions.ts), because the payday
+ * prompt asks the user to make exactly these transfers and the two must agree.
+ * A contribution is built from pay that ARRIVED (rule 6b), never projected; it
+ * is Plus only; and a skipped one leaves the term except for what had already
+ * moved (rule 6, goals rule 15). This function only reshapes them for the
+ * engine, and drops a row that reserves nothing.
  */
 async function forecastContributions(
   windowStart: IsoDate,
-  windowEnd: IsoDate,
-  income: IncomeSummary,
+  today: IsoDate,
 ): Promise<PlannedContribution[]> {
-  // Achieved goals are excluded: the spec's Reached card offers Complete, Raise
-  // target or Keep as-is, and none of those is "keep reserving money for it".
-  const goals = (await listGoals({ includeAchieved: false })).filter(
-    (goal) => goal.contributionRule !== null,
-  );
-  if (goals.length === 0) return [];
-
-  const dates = contributionDates(windowStart, windowEnd, income.cadence, income.expectedNextAt);
-  if (dates.length === 0) return [];
-
-  const contributions: PlannedContribution[] = [];
-  for (const goal of goals) {
-    const amount = contributionAmount(goal, income.averageAmount);
-    if (amount <= 0) continue;
-    for (const date of dates) contributions.push({ goalId: goal.id, amount, date });
-  }
-  return contributions;
-}
-
-/** A fixed rule's own amount, or a percent rule's share of average pay. */
-function contributionAmount(goal: Goal, averageAmount: Centavos | null): Centavos {
-  const rule = goal.contributionRule;
-  if (rule === null) return 0;
-  if (rule.kind === "fixed") return rule.amount;
-  // Percent OF ONE PAY PACKET, not of monthly income — the rule fires on a
-  // payday and takes its cut of what arrived, which is what `averageAmount` is.
-  return Math.round(((averageAmount ?? 0) * rule.percent) / 100);
-}
-
-/**
- * The paydays a contribution rule would fire on, between two dates.
- *
- * Returns nothing for an irregular or unknown cadence, which is the honest
- * answer: a gig worker's next payday is not predictable, and inventing one
- * would reserve money against a date the app made up.
- */
-function contributionDates(
-  windowStart: IsoDate,
-  to: IsoDate,
-  cadence: string | null,
-  expectedNextAt: number | null,
-): IsoDate[] {
-  if (cadence === "kinsenas") {
-    return kinsenasAnchorsBetween(
-      new Date(`${windowStart}T00:00:00`).getTime(),
-      new Date(`${to}T23:59:59`).getTime(),
-    ).map((at) => toDateIso(new Date(at)));
-  }
-
-  if ((cadence === "weekly" || cadence === "monthly") && expectedNextAt !== null) {
-    const step = cadence === "weekly" ? 7 : 30;
-    const dates: IsoDate[] = [];
-    let cursor = toDateIso(new Date(expectedNextAt));
-    // Walk back to the window, then forward across it — an expected date in the
-    // future would otherwise skip a payday that already happened this period.
-    while (cursor > windowStart) cursor = addDaysIso(cursor, -step);
-    while (cursor <= to) {
-      if (cursor >= windowStart) dates.push(cursor);
-      cursor = addDaysIso(cursor, step);
-    }
-    return dates;
-  }
-
-  return [];
+  const contributions = await listPaydayContributions({ from: windowStart, to: today });
+  return contributions
+    .map((contribution) => ({
+      goalId: contribution.goalId,
+      amount: reservedFor(contribution),
+      date: contribution.paydayDate,
+    }))
+    .filter((contribution) => contribution.amount > 0);
 }

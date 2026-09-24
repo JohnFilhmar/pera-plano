@@ -71,6 +71,20 @@ export const queryKeys = {
     list: (filters?: object) => ["transactions", "list", filters] as const,
     detail: (id: string) => ["transactions", "detail", id] as const,
     /**
+     * What deleting this row would take with it — the loan payment, bill cycle
+     * or transfer link the confirmation has to name (GAP-108,
+     * `lib/transactions/delete_transaction_service.ts`).
+     *
+     * UNDER `detail(id)`, exactly as `wallets.drift` sits under its wallet's:
+     * every write that can change the answer — a confirmed loan match, a
+     * recorded bill payment, a transfer link or unlink — already invalidates
+     * `transactions.all` or a family that the detail screen refetches with, and
+     * prefix matching carries that straight through. A sibling key would need
+     * each of those mutations to remember a second one, and the failure mode is
+     * a confirmation dialog describing links that are no longer there.
+     */
+    deletionPlan: (id: string) => ["transactions", "detail", id, "deletion_plan"] as const,
+    /**
      * The Home hero's seven-bar strip (mobile-ui-revamp Part 2 Task 1) —
      * `dailySpend`'s per-day outflow totals, keyed on the window length so a
      * seven-day strip and any other window a future screen asks for cache
@@ -156,6 +170,8 @@ export const queryKeys = {
     /** The deleted tail — see `limits.archived` for why it is its own key. */
     archived: () => ["goals", "archived"] as const,
     detail: (id: string) => ["goals", "detail", id] as const,
+    /** Planned payday contributions still waiting on the user (GAP-056). */
+    pendingContributions: () => ["goals", "pending_contributions"] as const,
   },
   loans: {
     all: ["loans"] as const,
@@ -220,6 +236,25 @@ export const queryKeys = {
   listenerHealth: {
     all: ["listener_health"] as const,
     current: () => ["listener_health", "current"] as const,
+  },
+  /**
+   * The capture scope the listener is ACTUALLY applying, read live off the
+   * device (GAP-119; `getProviderFilter` in modules/notification_listener).
+   *
+   * A SIBLING OF `settings.pausedProviderPackages`, NOT A CHILD OR A REPLACEMENT.
+   * That key holds the app's record of which providers the user paused; this one
+   * holds the device's report of what it is enforcing, and the entire reason to
+   * cache both is that they can disagree. Nesting either under the other would
+   * make one of them look like a view of the other.
+   *
+   * INVALIDATED BY `use_set_provider_pause` ALONGSIDE THAT ROW, because a
+   * successful pause moves BOTH. Refreshing only the row would pair a new
+   * intent with a stale effect and warn about a mismatch that had just been
+   * fixed.
+   */
+  providerFilter: {
+    all: ["provider_filter"] as const,
+    current: () => ["provider_filter", "current"] as const,
   },
   /**
    * The installed parser ruleset (lib/db/repos/parser_rulesets_repo.ts).
