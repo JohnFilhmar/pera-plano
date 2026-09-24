@@ -39,58 +39,21 @@ import { Card } from "@/components/ui/card";
 import { ListRow } from "@/components/ui/list_row";
 import type { AbortFlag } from "@/lib/ai/dispatch";
 import { FIXTURE_NOW_ISO } from "@/lib/ai/eval/fixture_ledger";
+import { currentAiEval } from "@/lib/ai/eval/harness";
 import { EVAL_QUESTIONS } from "@/lib/ai/eval/questions";
 import {
   runEval,
   summariseEval,
-  type EvalDeps,
   type EvalProgress,
   type EvalReport,
 } from "@/lib/ai/eval_runner";
 import { systemClock } from "@/lib/clock";
-import type { LlamaBridge, LoadOptions } from "@/modules/llama_bridge/types";
-
-/**
- * Everything the run needs that this screen must not construct for itself.
- *
- * The bridge is native inference and the tool runner is the fixture-backed
- * handler set — a screen that reached for either directly would drag
- * `llama.rn` into every render test in the app, and would put the eval one
- * import away from the user's real ledger.
- */
-export type EvalHarness = {
-  bridge: LlamaBridge;
-  runTool: EvalDeps["runTool"];
-  /** Peak RSS in bytes, sampled once per question. */
-  readResidentBytes: () => number;
-  /**
-   * The resident model and the options it was loaded with. `id` goes on every
-   * `[ai_eval]` line; `path` and `options` let a development build load it
-   * again with thinking left on for one run, then put it back as it was.
-   */
-  model: { id: string; path: string; options: LoadOptions };
-};
-
-let harness: EvalHarness | null = null;
 
 /**
  * Fresh runs since the JS bundle loaded. It numbers the `[ai_eval]` lines so
  * one run's lines can be told from the next run's.
  */
 let runsStarted = 0;
-
-/**
- * Injected by whoever loads a model, and `null` again when it is unloaded.
- *
- * Module-scoped rather than a context for the same reason `lib/ai/session.ts`
- * is: assistant state must never reach react-query, which is persisted to
- * disk. `null` is the honest default — a phone with no model loaded can offer
- * no measurement, and this screen says so rather than rendering an empty
- * report.
- */
-export function configureAiEval(next: EvalHarness | null): void {
-  harness = next;
-}
 
 const TOTAL_QUESTIONS = EVAL_QUESTIONS.length;
 
@@ -136,6 +99,8 @@ function logReport(label: RunLabel, report: EvalReport): void {
 }
 
 export default function AiEvalScreen() {
+  // Registered by the assistant screen's model load (lib/ai/eval/harness.ts).
+  const harness = currentAiEval();
   const [state, setState] = useState<EvalRunState>({ kind: "never_run" });
   // Only a development build renders the switch that sets this.
   const [thinkingAllowed, setThinkingAllowed] = useState(false);
@@ -161,7 +126,7 @@ export default function AiEvalScreen() {
   // model around it when the run allows thinking.
   const start = useCallback(async (startIndex: number) => {
     // Captured once: the harness can be replaced or cleared while this awaits.
-    const current = harness;
+    const current = currentAiEval();
     if (current === null) return;
     const { model } = current;
     const allowThinking = run.current.thinkingAllowed;

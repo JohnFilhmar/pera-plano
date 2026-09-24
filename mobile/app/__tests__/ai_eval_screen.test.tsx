@@ -6,11 +6,12 @@
 // never carrying a prompt, an answer or a figure from a tool result.
 import { fireEvent, render, screen } from "@testing-library/react-native";
 
+import { configureAiEval } from "@/lib/ai/eval/harness";
 import { EVAL_QUESTIONS } from "@/lib/ai/eval/questions";
 import { ok } from "@/lib/ai/tools/types";
 import { fakeLlamaBridge, loadCalls, scriptLlama } from "@/test_support/llama_bridge_mock";
 
-import AiEvalScreen, { configureAiEval } from "../(tabs)/more/ai/eval";
+import AiEvalScreen from "../(tabs)/more/ai/eval";
 
 const FIGURE = "₱18,320.00";
 const OPTIONS = { contextTokens: 2048, suppressThinking: true };

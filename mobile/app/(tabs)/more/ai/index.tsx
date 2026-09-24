@@ -21,19 +21,29 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Device from "expo-device";
+import { useRouter } from "expo-router";
+import { ChevronRight } from "lucide-react-native";
 import { Text, View } from "react-native";
 
 import { ChatSurface, type SurfacePhase } from "@/components/ai/chat_surface";
 import { ModelPicker } from "@/components/ai/model_picker";
+import { registerIcon } from "@/components/ui/button";
+import { ListRow } from "@/components/ui/list_row";
 import { MODEL_CATALOGUE, type ModelSpec } from "@/lib/ai/catalogue";
 import { AI_DISCLAIMER_STORAGE_KEY } from "@/lib/ai/disclaimer";
 import { createDownloader, type DownloadState } from "@/lib/ai/downloader";
+import { runFixtureTool } from "@/lib/ai/eval/fixture_tools";
+import { configureAiEval } from "@/lib/ai/eval/harness";
+import { readResidentBytes } from "@/lib/ai/eval/resident_memory";
 import { createProductionDeps } from "@/lib/ai/model_files";
 import { configureSession } from "@/lib/ai/session";
 import { TOOL_REGISTRY } from "@/lib/ai/tools/registry";
 import { unavailable, type ToolResult } from "@/lib/ai/tools/types";
 import { llamaBridge } from "@/modules/llama_bridge";
+import type { LoadOptions } from "@/modules/llama_bridge/types";
 import type { EpochMs } from "@/types/domain";
+
+const ChevronGlyph = registerIcon(ChevronRight);
 
 /**
  * Spec §4.9's "once at first use". AsyncStorage rather than `app_settings`,
@@ -88,6 +98,7 @@ function residentCandidate(states: Record<string, DownloadState>): ModelSpec | u
 }
 
 export default function AiAssistantScreen() {
+  const router = useRouter();
   const downloader = useMemo(() => createDownloader(createProductionDeps()), []);
 
   const [phase, setPhase] = useState<SurfacePhase>("waking");
@@ -117,39 +128,56 @@ export default function AiAssistantScreen() {
 
     // The weights survive a `resetContext()` on lock — that is the whole point
     // of spec §4.5's distinction — so a still-loaded bridge is re-entry, not a
-    // reload, and must not be shown a "waking up" screen it does not need.
+    // reload, and must not be shown a "waking up" screen it does not need. The
+    // eval harness registered by that load still stands.
     if (llamaBridge.isLoaded()) {
       setPhase("ready");
       return;
     }
 
+    // Every road to the picker clears the eval's harness as well, so the eval
+    // screen never offers to measure a model that is not loaded.
+    const showPicker = () => {
+      configureAiEval(null);
+      setPhase("no_model");
+    };
+
     const resident = residentCandidate(next);
     if (resident === undefined) {
-      setPhase("no_model");
+      showPicker();
       return;
     }
 
     setPhase("waking");
     const path = await downloader.loadCandidatePath(resident);
     if (path === null) {
-      setPhase("no_model");
+      showPicker();
       return;
     }
 
+    const options: LoadOptions = {
+      contextTokens: resident.contextTokens,
+      suppressThinking: resident.suppressThinking,
+    };
     try {
-      await llamaBridge.load(path, {
-        contextTokens: resident.contextTokens,
-        suppressThinking: resident.suppressThinking,
-      });
+      await llamaBridge.load(path, options);
       // The session learns about the bridge here rather than at app start,
       // because a user who has never downloaded a model has no bridge to hand
       // it and must still lock cleanly (see session.ts).
       configureSession({ bridge: llamaBridge });
+      // The eval measures this same resident model, and answers its tool
+      // calls from the fixture ledger, never from this user's.
+      configureAiEval({
+        bridge: llamaBridge,
+        runTool: runFixtureTool,
+        readResidentBytes,
+        model: { id: resident.id, path, options },
+      });
       setPhase("ready");
     } catch {
       // The file is on disk but will not load. The picker is the recovery: it
       // is where the model can be deleted and downloaded again.
-      setPhase("no_model");
+      showPicker();
     }
   }, [downloader]);
 
@@ -178,6 +206,18 @@ export default function AiAssistantScreen() {
       <Text className="px-4 pb-2 pt-4 text-title font-semibold text-fg dark:text-fg-dark">
         Assistant
       </Text>
+      {/* Only a loaded model can be measured, so the way to the eval arrives
+          with the chat and never with the picker. */}
+      {phase === "ready" ? (
+        <ListRow
+          testID="ai-eval-entry"
+          title="Test it on this phone"
+          subtitle="30 practice questions. Your own transactions are never read."
+          subtitleLines={3}
+          right={<ChevronGlyph size={18} className="text-fg-2 dark:text-fg-2-dark" />}
+          onPress={() => router.push("/more/ai/eval")}
+        />
+      ) : null}
       <ChatSurface
         phase={phase}
         picker={

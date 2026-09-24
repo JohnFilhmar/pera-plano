@@ -98,6 +98,19 @@ test("a finished run states this phone's own measured numbers", () => {
   expect(screen.queryByTestId("ai-eval-thinking-mode")).toBeNull();
 });
 
+test("a peak memory of 0 says it was not measured rather than showing a figure", () => {
+  render(
+    <EvalResults
+      state={{ kind: "complete", report: report({ peakResidentBytes: 0 }), total: 30 }}
+      onRun={jest.fn()}
+      onResume={jest.fn()}
+      onCancel={jest.fn()}
+    />,
+  );
+
+  expect(textOf("ai-eval-peak-memory")).toBe("Not measured on this phone");
+});
+
 test("a development run says whether the model was left to think", () => {
   // Gate 3 compares a thinking-on run against suppressed ones, so a screenshot
   // of either has to say which it was.

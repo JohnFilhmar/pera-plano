@@ -262,9 +262,16 @@ export function EvalResults({ state, onRun, onResume, onCancel, testID }: EvalRe
           value={`${report.thinkTagAnswers} of ${report.completed}`}
           testID="ai-eval-think"
         />
+        {/* A peak of 0 means /proc could not be read, not that nothing was
+            resident. docs/13 Gate 4 takes TOTAL PSS from `adb shell dumpsys
+            meminfo` either way, never from this row. */}
         <MetricRow
           label="Peak memory used"
-          value={gigabytes(report.peakResidentBytes)}
+          value={
+            report.peakResidentBytes > 0
+              ? gigabytes(report.peakResidentBytes)
+              : "Not measured on this phone"
+          }
           testID="ai-eval-peak-memory"
         />
         <MetricRow
