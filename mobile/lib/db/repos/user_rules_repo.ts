@@ -272,6 +272,43 @@ export async function listUserRules(kind?: UserRuleAction["kind"]): Promise<User
 }
 
 /**
+ * Turns one rule on or off, leaving everything else about it untouched
+ * (review-queue rule 16, GAP-128).
+ *
+ * DISABLING IS NOT DELETING, and rule 16 asks for both because they answer
+ * different worries. A user who suspects a rule is miscategorizing wants to
+ * silence it and watch what happens next; only someone certain wants it gone.
+ * A disabled rule keeps its `appliedCount` and its matcher, so turning it back
+ * on restores exactly what was there.
+ *
+ * Nothing already committed changes. This writes one column on one row, and
+ * `categorizer.ts` reads `isEnabled` on the NEXT categorization — there is no
+ * replay of past transactions in either direction, which is the same guarantee
+ * rule 16 states for deletion.
+ *
+ * A no-op (not a throw) when the id is not present, matching
+ * [deleteUserRule]'s contract: a screen that refetches while the user presses
+ * a toggle can hand this an id that has just gone, and the state the caller
+ * asked for is the state that holds.
+ *
+ * @param id - The rule to change. An unknown id does nothing.
+ * @param isEnabled - `true` lets it fire again, `false` silences it.
+ * @param now - Stamp for `updated_at`; defaults to the wall clock.
+ */
+export async function setUserRuleEnabled(
+  id: string,
+  isEnabled: boolean,
+  now: number = Date.now(),
+): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync("UPDATE user_rules SET is_enabled = ?, updated_at = ? WHERE id = ?", [
+    isEnabled ? 1 : 0,
+    now,
+    id,
+  ]);
+}
+
+/**
  * Deletes one rule. A no-op (not a throw) when the id is not present — §3.11
  * lists deletion as a user action, and a rule already gone is the outcome the
  * caller asked for.

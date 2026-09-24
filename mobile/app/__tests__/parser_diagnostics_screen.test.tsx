@@ -11,6 +11,7 @@ import type { ReactNode } from "react";
 import { ThemeProvider } from "@/contexts/theme_context";
 import { closeDatabase } from "@/lib/db/database";
 import { recordParseResult } from "@/lib/diagnostics/parse_stats_repo";
+import { createUserRule } from "@/lib/db/repos/user_rules_repo";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { systemClock } from "@/lib/clock";
 import { freshDb } from "@/test_support/db";
@@ -109,4 +110,31 @@ test("a provider past the 30-day window is not shown — the rolling window is r
 
   await screen.findByTestId("provider-success-meter-empty");
   expect(screen.queryByText("old-provider")).toBeNull();
+});
+
+// ---------------------------------------------------------------------------
+// The rules list — GAP-128, review-queue rule 16. Driven through the real
+// `createUserRule` for the same reason the stats above are: this is about what
+// the SCREEN shows for a rule that genuinely exists on the device.
+// ---------------------------------------------------------------------------
+
+test("a rule the user created is visible on this screen, in words", async () => {
+  // The whole of rule 16's first promise. Before GAP-128 no screen or hook read
+  // `listUserRules` at all, so a rule created from a correction could never be
+  // seen again.
+  await createUserRule({
+    matcher: { merchantPattern: "JOLLIBEE" },
+    action: { kind: "ignore" },
+  });
+
+  renderScreen(<ParserDiagnosticsScreen />);
+
+  await screen.findByText(/JOLLIBEE/);
+  screen.getByText("Ignore it");
+});
+
+test("a device with no rules explains where rules come from", async () => {
+  renderScreen(<ParserDiagnosticsScreen />);
+
+  await screen.findByTestId("user-rules-empty");
 });

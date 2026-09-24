@@ -1,6 +1,13 @@
 import { closeDatabase } from "@/lib/db/database";
 import { freshDb } from "@/test_support/db";
-import { createUserRule, deleteUserRule, listUserRules } from "../user_rules_repo";
+import { createWallet } from "@/lib/db/repos/wallets_repo";
+import { getTransaction, insertTransaction } from "@/lib/db/repos/transactions_repo";
+import {
+  createUserRule,
+  deleteUserRule,
+  listUserRules,
+  setUserRuleEnabled,
+} from "../user_rules_repo";
 import type { SQLiteDatabase } from "@/lib/db/database";
 
 let db: SQLiteDatabase;
@@ -482,4 +489,112 @@ test("a matcher field of the wrong type is dropped, not cast", async () => {
   } finally {
     warn.mockRestore();
   }
+});
+
+// ---------------------------------------------------------------------------
+// Enable and disable — GAP-128, review-queue rule 16
+// ---------------------------------------------------------------------------
+
+test("setUserRuleEnabled turns a rule off and back on", async () => {
+  // Rule 16 asks for disableable, not only deletable, and the distinction is the
+  // point: a user who suspects a rule is wrong should be able to silence it and
+  // see what happens without destroying it.
+  const rule = await createUserRule(
+    { matcher: { merchantPattern: "GRAB" }, action: { kind: "ignore" } },
+    T0,
+  );
+  expect(rule.isEnabled).toBe(true);
+
+  await setUserRuleEnabled(rule.id, false);
+  const afterOff = await listUserRules();
+  expect(afterOff).toHaveLength(1);
+  expect(afterOff[0].isEnabled).toBe(false);
+
+  await setUserRuleEnabled(rule.id, true);
+  const afterOn = await listUserRules();
+  expect(afterOn[0].isEnabled).toBe(true);
+});
+
+test("a disabled rule is still LISTED, because otherwise it could never be turned back on", async () => {
+  // `listUserRules`'s own doc already promises this. Pinned here because the new
+  // screen depends on it: a list that hid what it had just disabled would strand
+  // the rule permanently off.
+  const rule = await createUserRule(
+    { matcher: { merchantPattern: "GRAB" }, action: { kind: "ignore" } },
+    T0,
+  );
+  await setUserRuleEnabled(rule.id, false);
+
+  const listed = await listUserRules();
+  expect(listed.map((r) => r.id)).toEqual([rule.id]);
+});
+
+test("setUserRuleEnabled on a missing id is a no-op, not a throw", async () => {
+  // Same contract `deleteUserRule` already has: the row is gone, and the state the
+  // caller asked for is the state that holds. A screen racing its own refetch
+  // must not crash.
+  await expect(setUserRuleEnabled("rule_gone", false)).resolves.toBeUndefined();
+  expect(await listUserRules()).toEqual([]);
+});
+
+test("setUserRuleEnabled touches updated_at and leaves the matcher and action alone", async () => {
+  const rule = await createUserRule(
+    {
+      matcher: { merchantPattern: "JOLLIBEE", direction: "out" },
+      action: { kind: "set-category", categoryId: "cat_food_dining" },
+    },
+    T0,
+  );
+
+  await setUserRuleEnabled(rule.id, false, T0 + 5_000);
+
+  const [stored] = await listUserRules();
+  expect(stored.matcher).toEqual(rule.matcher);
+  expect(stored.action).toEqual(rule.action);
+  expect(stored.createdAt).toBe(T0);
+  expect(stored.updatedAt).toBe(T0 + 5_000);
+});
+
+// ---------------------------------------------------------------------------
+// Deleting leaves the ledger alone — GAP-128, review-queue rule 16 verbatim:
+// "Deleting a rule stops future replays but never reverts transactions it
+// already changed."
+// ---------------------------------------------------------------------------
+
+test("DELETING A RULE CHANGES NO TRANSACTION IT HAS ALREADY TOUCHED", async () => {
+  // Not a tautology about two tables, a regression guard on a promise made in
+  // user-facing copy. The delete confirmation tells the user their history is
+  // safe, so anything later added to this path (a cascade, an undo, a
+  // "revert what this rule did" convenience) has to fail here first.
+  await db.runAsync(
+    `INSERT INTO categories (id, name, parent_id, icon, is_system, is_hidden, created_at, updated_at)
+     VALUES ('cat_food', 'Food & Dining', NULL, 'circle-help', 1, 0, 0, 0)`,
+  );
+  const wallet = await createWallet({ name: "GCash", openingBalance: 100000 });
+  const tx = await insertTransaction({
+    walletId: wallet.id,
+    categoryId: "cat_food",
+    amount: 15000,
+    direction: "out",
+    occurredAt: T0,
+    merchant: "Jollibee",
+    source: "notification",
+    confidence: 0.94,
+  });
+
+  const rule = await createUserRule(
+    {
+      matcher: { merchantPattern: "JOLLIBEE" },
+      action: { kind: "set-category", categoryId: "cat_food" },
+    },
+    T0,
+  );
+  await deleteUserRule(rule.id);
+
+  const after = await getTransaction(tx.id);
+  expect(after).not.toBeNull();
+  expect(after?.categoryId).toBe("cat_food");
+  expect(after?.merchant).toBe("Jollibee");
+  expect(after?.amount).toBe(15000);
+  expect(await listUserRules()).toEqual([]);
 });
