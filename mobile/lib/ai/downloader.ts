@@ -18,9 +18,9 @@
 // EVERYTHING IS INJECTED — fetch, the filesystem, the metered-network reader —
 // because this module's whole job is failure handling, and failures that only
 // happen on a real 1.1 GB transfer over Philippine prepaid data are failures
-// that never get tested. The production adapters are thin and live at the call
-// site; `expo-file-system/legacy` is this repo's filesystem path, and there is
-// no network-reachability package in `package.json` yet, so `isMetered` is the
+// that never get tested. The production adapters are thin and live in
+// `model_files.ts` and `model_transfer.ts`, and there is no
+// network-reachability package in `package.json` yet, so `isMetered` is the
 // seam where one lands.
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
@@ -74,7 +74,7 @@ export type HttpResponse = {
 
 export type FetchLike = (
   url: string,
-  init?: { headers?: Record<string, string> },
+  init?: { headers?: Record<string, string>; signal?: AbortSignal },
 ) => Promise<HttpResponse>;
 
 export type FileStore = {
@@ -159,10 +159,14 @@ export function createDownloader(deps: DownloaderDeps): Downloader {
    * only that second hop returns 200. Refusing cross-host redirects would fail
    * every download on the happy path.
    */
-  async function fetchFollowing(url: string, headers: Record<string, string>): Promise<HttpResponse> {
+  async function fetchFollowing(
+    url: string,
+    headers: Record<string, string>,
+    signal: AbortSignal,
+  ): Promise<HttpResponse> {
     let target = url;
     for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
-      const response = await deps.fetch(target, { headers });
+      const response = await deps.fetch(target, { headers, signal });
       if (response.status < 300 || response.status >= 400) return response;
 
       const location = response.headers.get("location");
@@ -206,30 +210,38 @@ export function createDownloader(deps: DownloaderDeps): Downloader {
     }
 
     const headers: Record<string, string> = offset > 0 ? { Range: `bytes=${offset}-` } : {};
-    const response = await fetchFollowing(spec.url, headers);
+    // Aborted the moment this attempt is done with the network, however it
+    // ends. `expo/fetch` keeps pulling a body nobody reads, so a response
+    // abandoned on a refusal below would otherwise still arrive in full.
+    const transfer = new AbortController();
+    try {
+      const response = await fetchFollowing(spec.url, headers, transfer.signal);
 
-    if (offset > 0 && response.status === 200) {
-      // The server ignored the Range and is sending the whole file. Appending
-      // would concatenate a prefix onto a complete file and fail verification
-      // for a reason no log would explain. Start clean.
-      await deps.files.remove(part);
-      offset = 0;
-    }
+      if (offset > 0 && response.status === 200) {
+        // The server ignored the Range and is sending the whole file. Appending
+        // would concatenate a prefix onto a complete file and fail verification
+        // for a reason no log would explain. Start clean.
+        await deps.files.remove(part);
+        offset = 0;
+      }
 
-    // Rejects the common failure early instead of after streaming gigabytes.
-    const contentLength = Number(response.headers.get("content-length"));
-    const expected = spec.bytes - offset;
-    if (!Number.isFinite(contentLength) || contentLength !== expected) {
-      throw new ContentLengthError(
-        `content-length ${contentLength} for ${spec.id}, expected ${expected}`,
-      );
-    }
+      // Rejects the common failure early instead of after streaming gigabytes.
+      const contentLength = Number(response.headers.get("content-length"));
+      const expected = spec.bytes - offset;
+      if (!Number.isFinite(contentLength) || contentLength !== expected) {
+        throw new ContentLengthError(
+          `content-length ${contentLength} for ${spec.id}, expected ${expected}`,
+        );
+      }
 
-    let received = offset;
-    for await (const chunk of response.body) {
-      await deps.files.append(part, chunk);
-      received += chunk.length;
-      opts.onProgress?.(received, spec.bytes);
+      let received = offset;
+      for await (const chunk of response.body) {
+        await deps.files.append(part, chunk);
+        received += chunk.length;
+        opts.onProgress?.(received, spec.bytes);
+      }
+    } finally {
+      transfer.abort();
     }
 
     assertTransition("downloading", "verifying");

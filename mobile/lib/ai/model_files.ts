@@ -1,7 +1,9 @@
 // mobile/lib/ai/model_files.ts
 //
 // THE PRODUCTION SIDE OF `downloader.ts`: where the weights actually live on
-// this phone, and the `expo-file-system/legacy` adapter that reaches them.
+// this phone, and the adapters that reach them. The `expo-file-system/legacy`
+// store below does everything but the byte transfer, which lives in
+// `model_transfer.ts`.
 //
 // WHY IT IS HERE RATHER THAN IN THE MODELS SCREEN, where plan Task 22 first
 // wrote it. Two screens need it now — More → Assistant → Models offers the
@@ -18,6 +20,7 @@ import { MODEL_CATALOGUE } from "./catalogue";
 import type { ModelSpec } from "./catalogue";
 import { createDownloader } from "./downloader";
 import type { DownloaderDeps, FileStore } from "./downloader";
+import { appendBytes, readChunks, streamingFetch } from "./model_transfer";
 import type { RamReader } from "./ram_gate";
 
 /**
@@ -41,6 +44,13 @@ export class UnstreamableTransferError extends Error {
   }
 }
 
+/**
+ * A file store on `expo-file-system/legacy`: state, size, delete, the atomic
+ * rename and free space. `append` and `readChunks` throw, because the legacy
+ * API has neither; `createProductionDeps` replaces those two.
+ *
+ * @returns A store whose paths are `file://` URIs.
+ */
 export function createLegacyFileStore(): FileStore {
   return {
     ensureDir: async (path) => {
@@ -76,14 +86,17 @@ export function createLegacyFileStore(): FileStore {
   };
 }
 
+/**
+ * The downloader's dependencies as this phone provides them.
+ *
+ * @returns `expo/fetch` for the transfer, the legacy store with the File API's
+ *   append and bounded read in place of the two it lacks, the models
+ *   directory, and a metered-network check that always says yes.
+ */
 export function createProductionDeps(): DownloaderDeps {
   return {
-    fetch: async () => {
-      throw new UnstreamableTransferError(
-        "React Native's fetch does not expose a streaming body; the model transfer is not wired yet",
-      );
-    },
-    files: createLegacyFileStore(),
+    fetch: streamingFetch,
+    files: { ...createLegacyFileStore(), append: appendBytes, readChunks },
     modelsDir: MODELS_DIR,
     /**
      * FAILS CLOSED. No reachability package exists in this app, and guessing

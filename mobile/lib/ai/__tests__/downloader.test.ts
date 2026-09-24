@@ -203,6 +203,25 @@ describe("verification before activation", () => {
     await expect(downloader.download(SPEC)).rejects.toThrow(/length/i);
     expect(files.files.has(`${MODELS_DIR}${SPEC.id}.gguf`)).toBe(false);
   });
+
+  test("a response it refuses to read is aborted, not left to arrive in full", async () => {
+    // `expo/fetch` keeps pulling a body nobody reads. Without the abort, the
+    // refusal above would still spend the whole file's worth of mobile data.
+    const signals: (AbortSignal | undefined)[] = [];
+    const downloader = createDownloader({
+      fetch: async (_url, init) => {
+        signals.push(init?.signal);
+        return respond(WEIGHTS.subarray(0, 2048), 200);
+      },
+      files: createFakeFiles(10 * 1024 * 1024 * 1024),
+      modelsDir: MODELS_DIR,
+      isMetered: NEVER_METERED,
+    });
+
+    await expect(downloader.download(SPEC)).rejects.toThrow(/length/i);
+
+    expect(signals.map((signal) => signal?.aborted)).toEqual([true]);
+  });
 });
 
 describe("resume", () => {
