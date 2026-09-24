@@ -1536,6 +1536,37 @@ The spike's authoritative numbers, which every gate below is checked against:
 
 All of it on the **8 GB** A54 variant. The 6 GB variant remains UNKNOWN and is never assumed fine.
 
+## Reading the eval's numbers off logcat
+
+Gates 2, 3 and 5 and the tier-cut note all read the same eval runs, so the eval screen prints its
+numbers where adb can collect them. On a debug build every finished question writes one console
+line, and every finished or stopped run writes one report line. Each is `[ai_eval]` followed by one
+JSON object. The lines hold metrics only: no prompt, no answer and no tool result. A release build
+writes none, because the logging sits behind `__DEV__`.
+
+**Precondition, found 2026-09-24: the screen cannot run yet.** Nothing calls `configureAiEval()` in
+`app/(tabs)/more/ai/eval.tsx`, so the screen shows "No model is loaded" even with a model resident,
+and no fixture-backed tool runner exists to hand it. Wire that harness first, with a `runTool` that
+reads `lib/ai/eval/fixture_ledger.ts`. The `runTool` in `app/(tabs)/more/ai/index.tsx` goes through
+`lib/ai/tools/registry.ts` to the user's real ledger and must not be reused here. The screen also has
+no entry in the UI, so open it by its route:
+
+```bash
+adb logcat -c
+adb shell am start -a android.intent.action.VIEW -d "peraplano://more/ai/eval" com.filldev.peraplano.dev
+# run the 30 questions, wait for the results card, then:
+adb logcat -d -s ReactNativeJS | grep -o '\[ai_eval\] .*' > ai_eval_tier2_run1.txt
+```
+
+Every line has an `event` of `question` or `report` and names its run. `run` counts fresh runs from 1
+and starts again whenever the JS bundle reloads, `tier` is the catalogue id, and `suppressThinking`
+is the option the model was loaded with. A question line adds `index`, `id`, `score`, `nameCorrect`,
+`argsCorrect`, `ttftMs`, `tokensPerSecond`, `wallClockMs`, `residentBytes`, `constrained`,
+`malformed`, `outcome`, `cardReason`, `empty` and `thinkTag`. The report line carries every
+`EvalReport` field, among them `completed`, `toolPickAccuracy`, `ttftP90Ms`,
+`constrainedGenerations`, `malformedGenerations`, `emptyAnswers` and `thinkTagAnswers`. A resumed run
+keeps its `run` number, and its last report line covers every segment.
+
 ## Gate 1 — Does `llama.rn` load a Qwen3 GGUF and stream tokens, in the shipped app?
 
 Everything else is downstream of this. The spike answered it for the probe; this re-answers it
@@ -1578,14 +1609,29 @@ once**, none of which a unit test can:
 
 ## Gate 2 — Does llama.cpp accept the compiled GBNF, and does constrained decoding hold?
 
-**50 generations against one tool's grammar. Target: zero malformed outputs.** Phase 3 proves the
-grammar *string*, by snapshot. Only the real parser proves its *meaning*.
+**Target: zero malformed outputs.** Phase 3 proves the grammar *string*, by snapshot. Only the real
+parser proves its *meaning*.
 
-Run it against a grammar produced by `lib/ai/tools/grammar.ts`, not a hand-written one. The spike
+**Answered by counting every constrained round across Task 27's runs.** Each question that reaches
+the model runs its first round under the tool grammar, and `eval_runner.ts` reads that round's raw
+output. The output is malformed when it is neither a tool call `dispatch.ts` can parse nor exactly
+`CANNOT_ANSWER`, which is the rule the dispatch loop itself acts on. Each run reports
+`malformedGenerations` out of `constrainedGenerations`, and the results card shows the same pair as
+"Garbled tool requests". Sum them per tier across every run.
+
+**A deliberate deviation from the plan's "50 generations against one tool's grammar".** The shipped
+app never sends a one-tool grammar. Every constrained round carries the combined grammar
+`dispatch.ts` compiles from all seven tool schemas plus the `CANNOT_ANSWER` branch, so that is the
+string worth proving. The count also beats 50 at no extra device time. A run makes 28 constrained
+rounds, since the two advice questions never reach the model. Task 27's six runs give 168, and the
+two thinking-on runs for Gate 3 add 56 more under the same grammar.
+
+The eval runs the grammar `lib/ai/tools/grammar.ts` generates, never a hand-written one. The spike
 measured 0 malformed in 50 against its own hand-written grammar, so a failure here is a defect in
 the generator, not in llama.cpp.
 
-- Malformed outputs, out of 50: `________`
+- Malformed outputs, tier 1: `________` of `________` constrained rounds
+- Malformed outputs, tier 2: `________` of `________` constrained rounds
 - **Non-zero is a blocker for tier 1 specifically.** The spike measured the grammar carrying tier 1
   from 58% to 78% strict tool-pick; without it, tier 1 does not clear the bar and the menu loses
   the tier that makes this feature free for everyone.
@@ -1597,13 +1643,30 @@ them. The lever is the chat template's own flag, `enable_thinking: false` under 
 a prompt hack and not the stream-level stripper.
 
 - `<think>` visible in output, tier 1 / tier 2: `NOT RUN` / **no**, one generation, 2026-09-02
+- Median wall clock, suppressed / unsuppressed, tier 1: `NOT RUN` / `NOT RUN`
 - Median wall clock, suppressed / unsuppressed, tier 2: `NOT RUN` / `NOT RUN`
+- Empty answers in the suppressed runs, tier 1 / tier 2: `NOT RUN` / `NOT RUN`
 
 **PARTIAL, and do not read it as a pass.** One tier-2 generation produced a single clean sentence
 with no `<think>` block and no empty answer, which is the shape suppression is supposed to give. But
-this gate is a *comparison*: it needs the suppressed and unsuppressed wall clocks side by side, three
-runs each, and it must fail on an empty answer rather than on a visible tag. One generation shows the
-happy path and cannot distinguish "suppression works" from "this prompt happened not to think".
+this gate is a *comparison*: it needs the suppressed and unsuppressed wall clocks side by side, and
+it must fail on an empty answer rather than on a visible tag. One generation shows the happy path
+and cannot distinguish "suppression works" from "this prompt happened not to think".
+
+**How to answer it: one unsuppressed eval run per tier.** Task 27 already makes three suppressed runs
+per tier, and they are the suppressed side. On a debug build the eval screen has a "Let the model
+think" switch, which a release build does not have. Turn it on and run the 30 questions once per
+tier. The eval reloads the model with `suppressThinking: false` for that run, then reloads it the way
+it was before, so the chat never inherits a thinking model. The results card says "Model thinking:
+Left on" and every `[ai_eval]` line of that run says `"suppressThinking":false`, so no screenshot or
+log can pass for a suppressed run. Pair each question's `wallClockMs` with the same `id` in the
+suppressed runs, which gives 28 per-question comparisons per tier. The reload also empties the
+prompt cache, so the first question of the thinking-on run pays a full prefill; compare medians.
+
+The gate FAILS for a tier if a suppressed run has any question line with `"empty":true` (the report
+counts these as `emptyAnswers`) or `"thinkTag":true` (`thinkTagAnswers`). `thinkTag` checks every
+output of the turn, including one that grounding then replaced with a card, because a thinking block
+nobody saw was still decoded and paid for.
 - **Fail on an empty answer, not only on a visible tag.** The spike measured the stripper-only
   configuration returning `"visible_text": ""` after 11 seconds, because the `<think>` block never
   closed inside the token budget and stripping it removed the entire output. A gate written against
@@ -1666,6 +1729,36 @@ phone is a finding** and belongs in the box.
 - The spike's battery retake sat at 34.4 °C rising to 34.6 °C across a 128-token run, which is
   short enough that it says nothing about ten minutes.
 
+**Recipe: a tier-2 eval run on battery, over wireless adb.** Sample `dumpsys battery` at the start,
+once a minute, and at the end. If the run finishes inside ten minutes, press "Run it again" and keep
+sampling, because the gate asks about ten sustained minutes, not about one run.
+
+```bash
+# Once, with the phone on USB: move adb to Wi-Fi, then unplug the cable.
+adb tcpip 5555
+adb connect <phone-ip>:5555
+
+# Every "powered" line must say false, or this is a charging measurement.
+adb shell dumpsys battery | grep -E "powered|level|temperature"
+
+# Clear the log, start the run on the eval screen, then sample once a minute.
+# Stop the loop with Ctrl-C when the results card appears.
+adb logcat -c
+while true; do
+  echo "$(date +%T) $(adb shell dumpsys battery | grep -E '^ *(level|temperature):' | tr -s ' ' | tr '\n' ' ')"
+  sleep 60
+done | tee gate5_battery.txt
+
+# The end sample, then each question's decode rate in question order.
+adb shell dumpsys battery | grep -E '^ *(level|temperature):'
+adb logcat -d -s ReactNativeJS | grep -o '\[ai_eval\] .*' > gate5_eval.txt
+grep -o '"id":"[a-z0-9]*"\|"tokensPerSecond":[0-9.]*' gate5_eval.txt | paste - -
+```
+
+`temperature` is in tenths of a degree C, so `314` is 31.4 °C. Throughput drift is the trend in
+`tokensPerSecond` from the first questions to the last. The two advice questions log 0 because they
+never reach the model, so leave them out.
+
 ## Gate 6 — A real download over a Philippine mobile network
 
 **A simulated `Range` request proves the code, not the network.** `downloader.ts` is tested against
@@ -1710,6 +1803,36 @@ Scroll the chat while generating.
 - **`llama.rn` decodes on a native thread by design**, which is the reason `modules/llama_bridge`
   is a boundary module rather than a second Kotlin module. A failure here means that claim is wrong
   and the architecture argument in §1.1 needs re-opening.
+
+**Recipe: `gfxinfo` frame stats, read twice.** Read them once while scrolling with nothing
+generating, for the floor, and once while scrolling as tokens arrive. Ask three or four questions
+first so the chat is taller than the screen. The swipe coordinates suit the A54's 1080 x 2340
+display.
+
+```bash
+PKG=com.filldev.peraplano.dev
+
+# The floor: scroll the chat while nothing is generating.
+adb shell dumpsys gfxinfo $PKG reset
+for i in 1 2 3 4 5; do
+  adb shell input swipe 540 1700 540 800 300
+  adb shell input swipe 540 800 540 1700 300
+done
+adb shell dumpsys gfxinfo $PKG | grep -E "Total frames rendered|Janky frames"
+
+# The gate: send a question, then run the same loop at once, while its tokens arrive.
+adb shell dumpsys gfxinfo $PKG reset
+for i in 1 2 3 4 5; do
+  adb shell input swipe 540 1700 540 800 300
+  adb shell input swipe 540 800 540 1700 300
+done
+adb shell dumpsys gfxinfo $PKG | grep -E "Total frames rendered|Janky frames"
+```
+
+Use tier 2, whose 11.45 tok/s keeps an answer generating longest. If the answer lands before the
+loop ends, the reading mixes idle frames in and understates the effect, so repeat it. A debug build
+janks more than a release build, so the finding is the difference between the two readings, not
+either number alone.
 
 ## Gate 9 — Does streaming read as alive? Eyeball only.
 
