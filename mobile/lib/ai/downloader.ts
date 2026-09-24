@@ -121,6 +121,7 @@ export class VerificationError extends Error {}
 export class ContentLengthError extends Error {}
 export class RedirectError extends Error {}
 export class HttpStatusError extends Error {}
+export class IncompleteTransferError extends Error {}
 
 /**
  * Transfers in progress, keyed by the model's final path. Module scope on
@@ -286,6 +287,14 @@ export function createDownloader(deps: DownloaderDeps): Downloader {
         await deps.files.append(part, chunk);
         received += chunk.length;
         opts.onProgress?.(received, spec.bytes);
+      }
+
+      if (received < spec.bytes) {
+        // The body ended short without an error. What landed is still a prefix,
+        // so it stays for a resume rather than being hashed, failed and deleted.
+        throw new IncompleteTransferError(
+          `transfer for ${spec.id} ended at ${received} of ${spec.bytes} bytes`,
+        );
       }
     } finally {
       transfer.abort();

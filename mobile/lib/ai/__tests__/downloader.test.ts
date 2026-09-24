@@ -240,6 +240,29 @@ describe("verification before activation", () => {
     expect(append).not.toHaveBeenCalled();
   });
 
+  test("a body that ends short without an error keeps its .part for a resume, and is never hashed", async () => {
+    // Otherwise only the digest notices, after reading every byte, and a failed
+    // digest deletes the .part: the user pays for the same bytes twice.
+    const files = createFakeFiles(10 * 1024 * 1024 * 1024);
+    const readChunks = jest.spyOn(files, "readChunks");
+    const { fetchLike } = createFakeFetch(() => ({
+      ...respond(WEIGHTS, 200),
+      body: (async function* () {
+        yield WEIGHTS.subarray(0, 1000);
+      })(),
+    }));
+    const downloader = createDownloader({
+      fetch: fetchLike,
+      files,
+      modelsDir: MODELS_DIR,
+      isMetered: NEVER_METERED,
+    });
+
+    await expect(downloader.download(SPEC)).rejects.toThrow(/ended at 1000 of 4096/);
+    expect(files.files.get(`${MODELS_DIR}${SPEC.id}.gguf.part`)?.length).toBe(1000);
+    expect(readChunks).not.toHaveBeenCalled();
+  });
+
   test("onVerifying fires once, after the last byte is on disk", async () => {
     // Tier 2 takes long enough to hash that the screen has to say so, and it
     // can only say so if it is told when hashing starts.

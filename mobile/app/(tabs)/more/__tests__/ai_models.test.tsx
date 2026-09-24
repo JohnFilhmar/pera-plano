@@ -223,7 +223,13 @@ test("a fresh download shows its bytes as they land, then the checksum step", as
       body: (async function* () {
         yield new Uint8Array(1024);
         await bodyGate;
-        yield new Uint8Array(1024);
+        // The rest of the file, from one shared block. A body that stops short
+        // is kept for a resume and never reaches the checksum step, and the
+        // fake disk only counts bytes, so this costs no memory.
+        const block = new Uint8Array(16 * 1024 * 1024);
+        for (let left = TIER_ONE.bytes - 1024; left > 0; left -= block.length) {
+          yield block.subarray(0, Math.min(block.length, left));
+        }
       })(),
     }),
   );
