@@ -63,7 +63,7 @@ Design principles that govern every stage:
 | OEM battery manager kills the process | Silent gap in capture | Battery-optimization exemption prompt + OEM-specific guidance (§12.3); reconciliation on next open |
 | Notification posted during a gap | Missed unless still present in the status bar at reconnection | Active-notification snapshot catch-up on reconnect (§1, principle 5); reconciliation prompts; balance-after cross-check where providers include it |
 | Notification with no extractable text (custom layout, image-only) | Nothing to parse | Counted in telemetry (count only); routed to unknown-bin handling if money-like signal exists in any text field |
-| Grouped/summary notification hides per-transaction detail | Partial or merged text | Parser templates for group summaries where feasible; otherwise low confidence → Review Queue |
+| Grouped/summary notification hides per-transaction detail | Partial or merged text | Parser templates for group summaries where feasible; otherwise low confidence → Review Queue. Reaffirmed 2026-09-24 (GAP-042) against a proposal to drop `FLAG_GROUP_SUMMARY` at the listener: a summary is captured like any other notification, a duplicate of its child is suppressed by the DedupeGate (§6) rather than at capture, and a summary is sometimes the only notification an app posts. |
 
 ---
 
