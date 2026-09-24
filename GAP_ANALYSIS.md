@@ -9776,6 +9776,63 @@ Unverified, per this campaign's record on prescriptions. Either stop announcing 
 **Open questions**
 none (AGENT-ASSISTED: the ordering change needs a look at every `income:payday` subscriber)
 
+### GAP-127 [CODE] The notification channels are never created, so every alert the app posts is dropped
+
+| Field | Value |
+|---|---|
+| Severity | S1 Critical |
+| Complexity | S |
+| Difficulty | D1 Simple |
+| Risk | R1 |
+| Confidence | C1 Verified |
+| Priority score | 1.0 |
+| Agent suitability | AGENT-READY |
+| Depends on | none |
+| Blocks | none |
+| Est. agent turns | 1-2 |
+
+**Location**
+- `mobile/lib/alerts/alerts_service.ts` (`ensureNotificationChannels`, which creates `limits`, `reminders` and `goals`)
+- `mobile/lib/bootstrap.ts` (`bootstrapApp`, which had no call to it)
+- Every poster: `postAlert` and `scheduleReminder` in the same file, reached from the limit, bill, loan, payday, tracking-health and goal-milestone paths
+
+**Evidence**
+FOUND ON THE OWNER'S DEVICE ON 2026-09-24, not in any suite. `grep -rn ensureNotificationChannels` over the whole app returns the definition and `lib/alerts/__tests__/alerts_service.test.ts`, and nothing else: no production code has ever called it. On a Samsung A54 running the wave-29 preview build, creating a goal past a milestone produced this sequence in logcat, with an empty shade afterwards: `ActivityManager: Received BROADCAST intent ... act=expo.modules.notifications.NOTIFICATION_EVENT ... pkg=com.filldev.peraplano.prev`, then `expo-notifications: Notification request "e904ced5-9301-4137-93fa-9a250c162ca7" will not trigger in the future, removing.` `adb shell dumpsys notification` shows the package owns exactly one channel, `expo_notifications_fallback_notification_channel`, and no `goals`, `limits` or `reminders` channel exists. `dumpsys` also shows `POST_NOTIFICATIONS: granted=true`, so permission is not the cause.
+
+**What is wrong**
+Android drops a notification posted to a channel id that does not exist, and `immediateTrigger`/`dateTrigger` name a channel on every post. The app therefore cannot notify at all: limit thresholds (docs/06 §6.1), bill and loan reminders, the payday summary push, listener-health warnings and goal milestones are all scheduled, all accepted by expo, and all removed before presentation.
+
+**Why it matters**
+Every push feature in the spec is inert on a real device, and silently: the JS call resolves with an id, the alert audit records a post, and nothing appears. It also invalidates any on-device conclusion about alert behaviour drawn before this is fixed.
+
+**Proved on the device after the fix, and one correction to the first reading.**
+With the channels created, a goal crossing 100 percent while the app was in the
+BACKGROUND delivered `android.title=Goal update`, `android.text=Goal reached! ₱243
+of ₱240 saved for Wave29b.` on `channel=goals`. The same crossing with the app in
+the FOREGROUND still shows nothing, and that is a second, separate cause: the app
+never calls `setNotificationHandler`, and expo-notifications suppresses a
+foreground notification without one. The first reading of this entry blamed the
+channels for both; only the background case is settled by them. Whether an alert
+should interrupt a user who is already inside the app is a product question
+docs/06 §6.1 does not answer, so it is recorded here rather than assumed to be a
+defect.
+
+**Why no test caught it**
+Each alert suite mocks `expo-notifications` and calls `ensureNotificationChannels` itself, so it verifies that channels WOULD be right if something created them. Nothing pinned the caller. This is the "satisfiable while the user sees nothing" variant of the campaign's vacuous-test list, in its purest form.
+
+**Authority**
+docs/06-information-architecture.md §6.1 (the channels and what posts on them) and §6.2 (the anti-spam rules those channels carry).
+
+**Proposed fix**
+Done in wave 29, `aa82f0d`: `bootstrapApp` awaits `ensureNotificationChannels` before anything that posts, swallowing its own failure like the other non-essential startup work. Awaited inside bootstrap rather than fired from a layout effect, because the posting subscribers start the moment bootstrap reports ready and would race it.
+
+**Acceptance criteria**
+- [x] A launch creates the three channels, pinned by a test that fails when the call is removed.
+- [x] On a device, an alert posted after a launch appears in the shade (2026-09-24, backgrounded).
+
+**Open questions**
+Should an alert appear while the app is in the foreground? It does not today, and nothing in the app asks for it: there is no `setNotificationHandler` anywhere. Deciding yes means adding one; deciding no means writing that down, because the next person to test alerts on a device will lose the same hour to it.
+
 ## 10. Deferred and rejected
 
 Considered and not listed, with the reason.
@@ -9946,7 +10003,8 @@ Pass-2 deferrals (S4; each has a citation in the analyst's pass-2 notes and can 
 {"id":"GAP-123","category":"CODE","title":"listPayEventsBetween takes the tier history floor, so Safe-to-Spend contributions truncate on Free for any window older than 90 days","severity":"S4","complexity":"XS","difficulty":"D2","risk":"R2","confidence":"C1","priority":0.8,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/lib/income/income_service.ts","mobile/lib/safe_to_spend_service.ts"]},
 {"id":"GAP-124","category":"TEST","title":"The recovery-phrase affordance test scanned the generated words, so a phrase containing the BIP39 word share or copy failed it at random","severity":"S3","complexity":"XS","difficulty":"D1","risk":"R1","confidence":"C1","priority":1.6,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/components/onboarding/__tests__/recovery_phrase.test.tsx","mobile/lib/crypto/wordlist.ts","mobile/components/onboarding/phrase_display.tsx"]},
 {"id":"GAP-125","category":"CODE","title":"The listener records no observed packages until a notification arrives, so the provider picker is near-empty even in its corrected position","severity":"S3","complexity":"S","difficulty":"D2","risk":"R2","confidence":"C1","priority":1.0,"suitability":"AGENT-ASSISTED","depends_on":[],"blocks":[],"files":["mobile/modules/notification_listener/android/src/main/java/expo/modules/notificationlistener/PeraPlanoNotificationListenerService.kt","mobile/modules/notification_listener/android/src/test/java/expo/modules/notificationlistener/PeraPlanoNotificationListenerServiceTest.kt","mobile/app/(onboarding)/providers.tsx","docs/04-features/01-onboarding.md","docs/13-on-device-verification.md"]},
-{"id":"GAP-126","category":"CODE","title":"A payday first detected at launch is announced to no listener, and then never again","severity":"S3","complexity":"S","difficulty":"D2","risk":"R2","confidence":"C1","priority":1.0,"suitability":"AGENT-ASSISTED","depends_on":[],"blocks":[],"files":["mobile/lib/bootstrap.ts","mobile/lib/income/income_service.ts","mobile/app/_layout.tsx","mobile/lib/income/payday_notification_subscriber.ts"]}
+{"id":"GAP-126","category":"CODE","title":"A payday first detected at launch is announced to no listener, and then never again","severity":"S3","complexity":"S","difficulty":"D2","risk":"R2","confidence":"C1","priority":1.0,"suitability":"AGENT-ASSISTED","depends_on":[],"blocks":[],"files":["mobile/lib/bootstrap.ts","mobile/lib/income/income_service.ts","mobile/app/_layout.tsx","mobile/lib/income/payday_notification_subscriber.ts"]},
+{"id":"GAP-127","category":"CODE","title":"The notification channels are never created, so every alert the app posts is dropped","severity":"S1","complexity":"S","difficulty":"D1","risk":"R1","confidence":"C1","priority":1.0,"suitability":"AGENT-READY","depends_on":[],"blocks":[],"files":["mobile/lib/alerts/alerts_service.ts","mobile/lib/bootstrap.ts"]}
 ]
 ```
 
