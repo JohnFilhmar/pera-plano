@@ -333,7 +333,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   onboarding_complete: false,
   onboarding_step: "welcome",
   capture_enabled: true,
-  telemetry_enabled: true,
+  // OFF UNTIL THE USER TURNS IT ON (owner's ruling, 2026-09-24, GAP-021).
+  // docs/07 §2 now processes diagnostics on CONSENT rather than legitimate
+  // interest, and a consent that is pre-ticked is not consent. Nothing is sent
+  // until the Settings row is switched on; `services/telemetry.ts` reads this
+  // same key before every send.
+  telemetry_enabled: false,
   cash_reconcile_prompt_at: null,
   parser_rules_checked_at: null,
   income_detection_state: UNKNOWN_INCOME_DETECTION,

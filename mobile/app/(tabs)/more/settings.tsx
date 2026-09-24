@@ -326,7 +326,7 @@ export default function SettingsScreen() {
         // notification content, no amounts, no merchants." Telemetry itself
         // ships in m3c Task 6; this copy is the contract that implementation
         // must satisfy, not the other way around.
-        subtitle="When on, PeraPlano shares only counts of successful and failed notification parses, per provider. Never notification content, amounts, or merchant names."
+        subtitle="Off unless you turn it on. When on, PeraPlano shares only counts of successful and failed notification parses, per provider. Never notification content, amounts, or merchant names."
         // 153 characters beside a bare Switch — fix-round-1, the Critical
         // finding: this is the row whose clipped last clause was the
         // "never notification content, amounts, or merchant names"

@@ -284,7 +284,7 @@ Feature docs own their local `## Open questions` sections; this index is the rol
 | [04-features/08-review-queue.md](04-features/08-review-queue.md) | Expiry destination (discard vs recoverable holding state) · auto-confirm ramp · digest trigger/timing tuning |
 | [04-features/09-safe-to-spend.md](04-features/09-safe-to-spend.md) | Nearly-exhausted filtered Limit overriding the driver · negative rollover (joint with Limits) · payday markers on the projection curve |
 | [04-features/10-reports.md](04-features/10-reports.md) | Refund netting against category spend · kinsenas-aligned trend periods · default trend metric (spend vs net) |
-| [04-features/11-settings-privacy.md](04-features/11-settings-privacy.md) | Telemetry-sharing default (on vs opt-in — decide with the NPC compliance review, §3.1 #1) · export of in-flight Review Queue items · cloud-copy grace period on downgrade |
+| [04-features/11-settings-privacy.md](04-features/11-settings-privacy.md) | ~~Telemetry-sharing default (on vs opt-in)~~ **CLOSED 2026-09-24: opt-in. Consent, off until switched on ([07-privacy-and-compliance.md](07-privacy-and-compliance.md) §2, §3.1, §4 row 5).** · export of in-flight Review Queue items · cloud-copy grace period on downgrade |
 
 ---
 

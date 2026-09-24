@@ -43,7 +43,11 @@ void _typeLevelPin_getSettingNarrowsToItsKey;
 test("getSetting returns the documented default for every key when nothing is stored", async () => {
   expect(await getSetting("onboarding_complete")).toBe(false);
   expect(await getSetting("capture_enabled")).toBe(true);
-  expect(await getSetting("telemetry_enabled")).toBe(true);
+  // OFF UNTIL ASKED (owner's ruling, 2026-09-24, GAP-021). Diagnostics are
+  // processed on consent, not legitimate interest, so nothing is sent until the
+  // user turns the Settings row on. Capture above stays true because that is
+  // the app's entire purpose and the user granted notification access for it.
+  expect(await getSetting("telemetry_enabled")).toBe(false);
   expect(await getSetting("cash_reconcile_prompt_at")).toBeNull();
 });
 
@@ -164,7 +168,7 @@ describe("reading an unset key returns exactly its documented default, per key",
   test.each([
     ["onboarding_complete", false],
     ["capture_enabled", true],
-    ["telemetry_enabled", true],
+    ["telemetry_enabled", false],
     ["recurring_forget_multiplier", 1.5],
   ] as const)("%s defaults to %p", async (key, expected) => {
     const value = await getSetting(key);
