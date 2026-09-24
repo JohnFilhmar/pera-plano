@@ -78,6 +78,39 @@ test("bytes, then the checksum step, then nothing once the download settles", as
   expect(refresh).toHaveBeenCalledTimes(1);
 });
 
+test("a screen opened mid-download shows the running transfer, and re-reads the disk when it ends", async () => {
+  // Leaving Assistant models and coming back used to show "Paused" for the rest
+  // of the download, because the transfer lived in the state of the screen
+  // that started it.
+  const body = gate();
+  const downloader = fakeDownloader(async (opts) => {
+    opts.onProgress?.(100_000_000, SPEC.bytes);
+    await body.wait;
+  });
+  const starterRefresh = jest.fn(async () => undefined);
+  const starter = renderHook(() => useModelDownload(downloader, starterRefresh));
+  let settled: Promise<void> = Promise.resolve();
+  act(() => {
+    settled = starter.result.current.download(SPEC, false);
+  });
+
+  const laterRefresh = jest.fn(async () => undefined);
+  const later = renderHook(() => useModelDownload(downloader, laterRefresh));
+  expect(later.result.current.transfers[SPEC.id]).toEqual({
+    phase: "downloading",
+    received: 100_000_000,
+    total: SPEC.bytes,
+  });
+
+  await act(async () => {
+    body.open();
+    await settled;
+  });
+  expect(later.result.current.transfers).toEqual({});
+  expect(laterRefresh).toHaveBeenCalledTimes(1);
+  expect(starterRefresh).toHaveBeenCalledTimes(1);
+});
+
 test("a refused download still re-reads the disk, and rejects with the downloader's own error", async () => {
   const refresh = jest.fn(async () => undefined);
   const downloader = fakeDownloader(async (opts) => {
