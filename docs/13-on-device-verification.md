@@ -1544,12 +1544,12 @@ line, and every finished or stopped run writes one report line. Each is `[ai_eva
 JSON object. The lines hold metrics only: no prompt, no answer and no tool result. A release build
 writes none, because the logging sits behind `__DEV__`.
 
-**Precondition, found 2026-09-24: the screen cannot run yet.** Nothing calls `configureAiEval()` in
-`app/(tabs)/more/ai/eval.tsx`, so the screen shows "No model is loaded" even with a model resident,
-and no fixture-backed tool runner exists to hand it. Wire that harness first, with a `runTool` that
-reads `lib/ai/eval/fixture_ledger.ts`. The `runTool` in `app/(tabs)/more/ai/index.tsx` goes through
-`lib/ai/tools/registry.ts` to the user's real ledger and must not be reused here. The screen also has
-no entry in the UI, so open it by its route:
+**Wired 2026-09-25 (`e214f8b`).** Until then nothing registered the harness, so the screen said "No
+model is loaded" with a model resident. Now `app/(tabs)/more/ai/index.tsx` calls `configureAiEval()`
+(in `lib/ai/eval/harness.ts`) once a model loads, with `runFixtureTool` from
+`lib/ai/eval/fixture_tools.ts`, which answers every tool call from `fixture_ledger.ts` and never from
+the user's ledger. The Assistant screen shows a "Test it on this phone" row whenever a model is ready,
+and the route also opens directly:
 
 ```bash
 adb logcat -c
@@ -1877,6 +1877,10 @@ android/gradle.properties
 CPU-dispatch variants (`librnllama_v8.so` through
 `librnllama_v8_2_dotprod_i8mm_hexagon_opencl.so`) plus `assets/ggml-hexagon/`.
 
+**Re-checked 2026-09-25** after the branch took master's 233 commits: a fresh prebuild still prints the
+expected `expo-secure-store` warning, both rule files still carry all three lines, and the 159.5 MB
+`app-debug.apk` still holds `lib/arm64-v8a` alone with all fourteen variants.
+
 **A defect this gate caught that no unit test could.** The first prebuild produced a `backup_rules.xml`
 containing ONLY the `models/` exclusion. `expo-secure-store` had backed off (see the expected warning
 above) and its rules were gone — including
@@ -1907,9 +1911,11 @@ Expect `@xml/backup_rules` and `@xml/data_extraction_rules` on `<application>`, 
 must appear in **both** `<cloud-backup>` and `<device-transfer>`), and
 `reactNativeArchitectures=arm64-v8a`.
 
-- **A missing exclusion is not a cosmetic failure.** `app.json` sets no app-wide
-  `android:allowBackup="false"`, so Android's default is to try, and 3.3 GB of public weights into
-  a user's Google backup quota is both absurd and a support incident.
+- **A missing exclusion is not a cosmetic failure.** Since 2026-09-24 `app.json` sets
+  `android:allowBackup="false"`, which stops cloud backup. On Android 12 and later it does not stop
+  a device-to-device transfer, so the `<device-transfer>` exclusion is what keeps 1.5 GB of public
+  weights out of a phone-to-phone migration. The `<cloud-backup>` one holds the line if
+  `allowBackup` is ever turned back on.
 - The unit tests in `modules/llama_bridge/__tests__/app_plugin.test.ts` prove the plugin transforms
   a fixture correctly. They cannot prove the plugin is **registered and runs**. That is what the
   prebuild above is for.
