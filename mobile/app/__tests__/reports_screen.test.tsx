@@ -28,6 +28,8 @@ import ReportsScreen from "../(tabs)/more/reports";
 
 const TODAY = toDateIso(new Date(systemClock.now()));
 const LAST_MONTH = addMonthsClampedIso(`${TODAY.slice(0, 7)}-01`, -1).slice(0, 7);
+/** Four months back: past the Free tier's 90-day window whatever today's date is. */
+const OUTSIDE_WINDOW_MONTH = addMonthsClampedIso(`${TODAY.slice(0, 7)}-01`, -4).slice(0, 7);
 
 function makeTestClient(): QueryClient {
   const defaults = appQueryClient.getDefaultOptions();
@@ -99,22 +101,27 @@ test("THE EMPTY STATE RENDERS WHEN NOTHING IS TRACKED THIS PERIOD", async () => 
 });
 
 test("A SCOPE THE TIER CAN NO LONGER HONOR EXPLAINS ITSELF RATHER THAN FAILING SILENTLY", async () => {
-  // reports_service.ts's resolveScope: Free clamps ANY non-current-month
-  // scope back to the current month and sets `truncatedByTier` rather than
-  // erroring. Reached here the way it would happen for real — pick a past
-  // month as Plus, then lose Plus mid-session (a lapsed subscription) — and
-  // refresh the same cached scope, rather than contriving the flag directly.
+  // reports_service.ts's resolveScope: Free browses the history window and
+  // clamps anything OLDER than it back to the current month, setting
+  // `truncatedByTier` rather than erroring (owner's ruling, 2026-09-24).
+  // Reached here the way it would happen for real — pick a past month as Plus,
+  // then lose Plus mid-session (a lapsed subscription) — and refresh the same
+  // cached scope, rather than contriving the flag directly.
+  //
+  // FOUR MONTHS BACK, NOT ONE. Last month is inside the 90-day window now, so
+  // Free honours it and there is nothing to explain; this test needs a scope
+  // the tier genuinely cannot serve.
   __setTierForTests("plus");
   const { client } = renderScreen(<ReportsScreen />);
 
   await screen.findByTestId("range-picker-month-trigger", {}, { timeout: 30_000 });
   fireEvent.press(screen.getByTestId("range-picker-month-trigger"));
-  // The sheet opens on the SELECTED month's year, so reaching last month needs
-  // a year step every January and none of the other eleven months.
-  if (LAST_MONTH.slice(0, 4) !== TODAY.slice(0, 4)) {
+  // The sheet opens on the SELECTED month's year, so reaching a month in the
+  // previous calendar year needs one year step.
+  if (OUTSIDE_WINDOW_MONTH.slice(0, 4) !== TODAY.slice(0, 4)) {
     fireEvent.press(screen.getByTestId("range-picker-year-prev"));
   }
-  fireEvent.press(screen.getByTestId(`range-picker-month-${LAST_MONTH}`));
+  fireEvent.press(screen.getByTestId(`range-picker-month-${OUTSIDE_WINDOW_MONTH}`));
   await waitFor(() => expect(screen.queryByTestId("reports-truncated-notice")).not.toBeOnTheScreen(), {
     timeout: 30_000,
   });
