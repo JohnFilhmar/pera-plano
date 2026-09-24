@@ -10,8 +10,8 @@
 // The descriptions are load-bearing too: the model narrates from them, so a
 // description that omits an exclusion produces a sentence that misstates what
 // the number counts.
+import { LIMIT_MAX, LIMIT_MIN } from "../list_limit";
 import { AI_PERIODS } from "../period_range";
-import { LIMIT_MAX, LIMIT_MIN } from "../handlers/list_transactions";
 import { TOOL_REGISTRY } from "../registry";
 import { TOOL_SCHEMAS } from "../schemas";
 

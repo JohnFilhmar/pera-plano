@@ -15,8 +15,8 @@
 // THE DESCRIPTIONS ARE LOAD-BEARING. The model narrates from them. A
 // description that omits an exclusion produces a sentence that misstates what
 // the number counts, and the user has no way to tell.
+import { LIMIT_MAX, LIMIT_MIN } from "./list_limit";
 import { AI_PERIODS } from "./period_range";
-import { LIMIT_MAX, LIMIT_MIN } from "./handlers/list_transactions";
 
 export type JsonSchemaProperty = {
   type: "string" | "integer";

@@ -18,14 +18,11 @@ import { toDateIso } from "@/lib/dates";
 import { isDatabaseUnlocked } from "@/lib/db/database";
 import { listTransactions } from "@/lib/db/repos/transactions_repo";
 import type { EpochMs, TxDirection } from "@/types/domain";
+import { clampLimit } from "../list_limit";
 import { AI_PERIODS, resolvePeriod, type AiPeriod } from "../period_range";
 import { empty, locked, ok, safeText, type DisplayField, type ToolResult } from "../types";
 
 const TOOL = "list_transactions";
-
-export const LIMIT_MIN = 1;
-export const LIMIT_MAX = 20;
-const LIMIT_DEFAULT = 5;
 
 export type ListTransactionsData = {
   period: string;
@@ -37,13 +34,6 @@ function readPeriod(args: Record<string, unknown>): AiPeriod {
   return (AI_PERIODS as readonly string[]).includes(raw as string)
     ? (raw as AiPeriod)
     : "this_month";
-}
-
-/** Clamps into 1..20. A non-number, a NaN and an out-of-range value all land inside. */
-export function clampLimit(raw: unknown): number {
-  const parsed = typeof raw === "number" ? raw : Number(raw);
-  if (!Number.isFinite(parsed)) return LIMIT_DEFAULT;
-  return Math.min(LIMIT_MAX, Math.max(LIMIT_MIN, Math.floor(parsed)));
 }
 
 function readDirection(args: Record<string, unknown>): TxDirection | undefined {

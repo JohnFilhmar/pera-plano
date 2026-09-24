@@ -20,10 +20,8 @@ import type { LimitsData } from "@/lib/ai/tools/handlers/get_limits";
 import type { SafeToSpendData } from "@/lib/ai/tools/handlers/get_safe_to_spend";
 import type { SpendByCategoryData } from "@/lib/ai/tools/handlers/get_spend_by_category";
 import type { WalletsData } from "@/lib/ai/tools/handlers/get_wallets";
-import {
-  clampLimit,
-  type ListTransactionsData,
-} from "@/lib/ai/tools/handlers/list_transactions";
+import type { ListTransactionsData } from "@/lib/ai/tools/handlers/list_transactions";
+import { clampLimit } from "@/lib/ai/tools/list_limit";
 import { AI_PERIODS, resolvePeriod, type AiPeriod } from "@/lib/ai/tools/period_range";
 import {
   empty,
