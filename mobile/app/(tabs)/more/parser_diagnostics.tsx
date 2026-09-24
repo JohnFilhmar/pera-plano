@@ -23,11 +23,22 @@
 import { ScrollView, Text, View } from "react-native";
 
 import { ProviderSuccessMeter } from "@/components/privacy/provider_success_meter";
+import { UserRulesList } from "@/components/privacy/user_rules_list";
 import { LoadingSkeleton } from "@/components/ui/loading_skeleton";
+import { useDeleteUserRule } from "@/hooks/mutations/use_delete_user_rule";
+import { useSetUserRuleEnabled } from "@/hooks/mutations/use_set_user_rule_enabled";
+import { useCategories } from "@/hooks/queries/use_categories";
 import { useParseStats } from "@/hooks/queries/use_parse_stats";
+import { useUserRules } from "@/hooks/queries/use_user_rules";
+import { useWallets } from "@/hooks/queries/use_wallets";
 
 export default function ParserDiagnosticsScreen() {
   const { data: stats } = useParseStats();
+  const { data: rules } = useUserRules();
+  const { data: categories } = useCategories();
+  const { data: wallets } = useWallets();
+  const setEnabled = useSetUserRuleEnabled();
+  const deleteRule = useDeleteUserRule();
 
   if (stats === undefined) {
     return (
@@ -52,6 +63,33 @@ export default function ParserDiagnosticsScreen() {
       </View>
 
       <ProviderSuccessMeter stats={stats} />
+
+      {/* Review-queue rule 16, GAP-128. Here rather than on its own screen
+          because rule 16 names this screen, and because a rule and the parse
+          counts answer the same question from two directions: why did this
+          notification come out the way it did. The list waits for all three
+          reads rather than rendering half of itself, since a rule row whose
+          category has not arrived yet would show a raw id and then change under
+          the reader. */}
+      <View className="gap-2">
+        <Text className="text-lg font-semibold text-fg dark:text-fg-dark">Your rules</Text>
+        <Text className="text-fg-2 dark:text-fg-2-dark">
+          Corrections you have made, applied to matching notifications from then on. Switching one
+          off stops it applying to anything new. Neither switching off nor deleting changes a
+          transaction it has already touched.
+        </Text>
+        {rules === undefined || categories === undefined || wallets === undefined ? (
+          <LoadingSkeleton rows={2} />
+        ) : (
+          <UserRulesList
+            rules={rules}
+            categories={categories}
+            wallets={wallets}
+            onToggle={(change) => setEnabled.mutate(change)}
+            onDelete={(id) => deleteRule.mutate(id)}
+          />
+        )}
+      </View>
 
       {/* Clears the tab bar on short devices. */}
       <View className="h-8" />
