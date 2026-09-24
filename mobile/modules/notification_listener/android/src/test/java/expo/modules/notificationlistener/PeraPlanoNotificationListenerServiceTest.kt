@@ -865,6 +865,60 @@ class PeraPlanoNotificationListenerServiceTest {
     assertEquals(1, observed.count)
   }
 
+  // =====================================================================
+  // THE GAP AN OEM KILL LEAVES (GAP-050).
+  //
+  // docs/03 principle 5: what is still on screen when the listener rebinds is
+  // the one partial recovery available for a kill, and nothing read it. The
+  // shade was enumerated for PACKAGE NAMES only (GAP-125 above); the captures
+  // themselves were never taken.
+  //
+  // BOUNDED BY THE LAST CAPTURE, and that bound is the whole design. Feeding
+  // the entire shade through on every bind would re-capture whatever is still
+  // sitting there from yesterday, hours past the replay window that would
+  // otherwise recognise it, and a re-captured bank notification becomes a
+  // SECOND transaction. Everything posted after the last capture is exactly
+  // the gap, and nothing older can be new.
+  // =====================================================================
+
+  @Test
+  fun `the shade is captured on a rebind, but only what posted after the last capture`() {
+    prefs.recordCapture(postedAt - 60_000)
+    val active = arrayOf(
+      // Already captured before the listener died, and still on screen.
+      statusBarNotification(
+        gcash,
+        notification(title = sampleTitle, text = sampleText),
+        postTime = postedAt - 120_000,
+      ),
+      // Arrived while nothing was listening: this is the one to recover.
+      statusBarNotification(
+        maya,
+        notification(title = sampleTitle, text = sampleText),
+        postTime = postedAt,
+      ),
+    )
+
+    PeraPlanoNotificationListenerService.captureActiveSince(active, prefs, bufferFile, capturedAt)
+
+    assertEquals(listOf(maya), CaptureBuffer.drain(bufferFile).map { it.packageName })
+  }
+
+  @Test
+  fun `a device that has never captured anything takes nothing from the shade`() {
+    // No floor means no gap to recover: a fresh install has no idea which of
+    // these the user has already dealt with, and the live path takes
+    // everything posted from here on. Capturing the whole shade on the first
+    // bind would hand the Review Queue a pile of history nobody asked for.
+    val active = arrayOf(
+      statusBarNotification(gcash, notification(title = sampleTitle, text = sampleText)),
+    )
+
+    PeraPlanoNotificationListenerService.captureActiveSince(active, prefs, bufferFile, capturedAt)
+
+    assertEquals(0, CaptureBuffer.size(bufferFile))
+  }
+
   @Test
   fun `a package already observed is neither re-counted nor re-stamped`() {
     // THE TEST THAT RULES OUT A LOOP OVER recordObservedPackage, which is the
