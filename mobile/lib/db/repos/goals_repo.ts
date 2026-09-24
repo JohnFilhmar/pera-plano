@@ -15,7 +15,7 @@
 // The other half — "a Goal's linkedWalletId is a savings Wallet" — has no
 // column to enforce it, so it is checked here on every write.
 import { getDatabase } from "@/lib/db/database";
-import { milestoneFor } from "@/lib/goals/goal_math";
+import { milestoneFor, previousMilestone } from "@/lib/goals/goal_math";
 import { newId } from "@/lib/ids";
 import type { Centavos, ContributionRule, Goal, GoalMilestone } from "@/types/domain";
 
@@ -137,8 +137,10 @@ export async function createGoal(input: NewGoal): Promise<Goal> {
   const now = Date.now();
   const id = newId();
 
-  // The balance the wallet already holds is stated in the creation flow (rule
-  // 4), never announced, so the goal starts at the milestone that balance meets.
+  // THE LEVEL THE GOAL STARTS AT IS ANNOUNCED; NOTHING UNDER IT IS (owner's
+  // ruling, 2026-09-24). The mark means "announced up to here", so seeding it one
+  // rung BELOW what the balance meets leaves exactly the starting level owed, and
+  // the pass the creating mutation triggers posts that one alert.
   const wallet = await db.getFirstAsync<{ balance: number }>(
     "SELECT balance FROM wallets WHERE id = ?",
     [input.linkedWalletId],
@@ -155,7 +157,7 @@ export async function createGoal(input: NewGoal): Promise<Goal> {
       input.targetDate ?? null,
       input.linkedWalletId,
       input.contributionRule ? JSON.stringify(input.contributionRule) : null,
-      milestoneFor(wallet?.balance ?? 0, input.targetAmount),
+      previousMilestone(milestoneFor(wallet?.balance ?? 0, input.targetAmount)),
       now,
       now,
     ],
@@ -259,14 +261,19 @@ export async function updateGoal(id: string, patch: Partial<NewGoal>): Promise<G
   );
 
   // A RELINK RE-BASES PROGRESS ON A BALANCE THE USER JUST CHOSE, which the edit
-  // flow's own confirmation says, so what that wallet already holds is not
-  // announced, the same as at creation (rule 4). The mark still never falls.
+  // flow's own confirmation says, so it reads like a creation: the level the goal
+  // lands on is announced and nothing under it, by seeding the rung below it.
+  // The mark still never falls, so a move onto an emptier wallet announces
+  // nothing and re-announces nothing.
   if (merged.linkedWalletId !== current.linkedWalletId) {
     const wallet = await db.getFirstAsync<{ balance: number }>(
       "SELECT balance FROM wallets WHERE id = ?",
       [merged.linkedWalletId],
     );
-    await raiseGoalMilestone(id, milestoneFor(wallet?.balance ?? 0, merged.targetAmount));
+    await raiseGoalMilestone(
+      id,
+      previousMilestone(milestoneFor(wallet?.balance ?? 0, merged.targetAmount)),
+    );
   }
 
   const updated = await getGoal(id);

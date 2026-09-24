@@ -453,12 +453,15 @@ async function fundWallet(walletId: string, amount: number): Promise<void> {
 // repository only ever raises it, and the pass in
 // lib/goals/goal_milestone_subscriber.ts decides when.
 // ---------------------------------------------------------------------------
-test("a new goal starts at the milestone its wallet already meets, so old progress is never announced", async () => {
+test("a new goal starts one milestone BELOW the level its wallet already meets, so that level is announced and nothing under it", async () => {
+  // Owner's ruling, 2026-09-24: a goal created on a wallet already at 60 percent
+  // announces 50 and not 25. The mark means "announced up to here", so seeding it
+  // at 25 leaves exactly one level owed, which the next pass posts.
   await fundWallet(savings.id, 300000); // ₱3,000 of ₱5,000: 60%
   const goal = await createGoal({ name: "Phone", targetAmount: 500000, linkedWalletId: savings.id });
 
   expect(await listGoalMilestoneStates()).toEqual([
-    { goalId: goal.id, goalName: "Phone", targetAmount: 500000, balance: 300000, milestoneReached: 50 },
+    { goalId: goal.id, goalName: "Phone", targetAmount: 500000, balance: 300000, milestoneReached: 25 },
   ]);
 });
 

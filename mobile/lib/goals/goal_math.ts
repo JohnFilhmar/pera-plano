@@ -236,3 +236,54 @@ export function milestoneFor(balance: Centavos, target: Centavos): GoalMilestone
   if (balance * 100 >= target * 25) return 25;
   return 0;
 }
+
+/**
+ * The milestones in the order they are crossed. `Exclude<GoalMilestone, 0>`
+ * because 0 is "no milestone yet", never something to announce, which is the
+ * same distinction `alert_copy.ts` makes for the notification texts.
+ */
+const MILESTONE_LADDER: readonly Exclude<GoalMilestone, 0>[] = [25, 50, 75, 100];
+
+/**
+ * Every milestone a balance now meets that has not been announced yet, lowest
+ * first.
+ *
+ * ALL OF THEM, NOT JUST THE HIGHEST (owner's ruling, 2026-09-24). One deposit
+ * that carries a goal from nothing to 80 percent owes 25, 50 and 75. Limits
+ * behave the other way, announcing only the highest crossed (docs/06 §6.2 rule
+ * 2), and goals deliberately do not follow them here. A burst of more than three
+ * is still collapsed into one summary by §6.2 rule 6, which is
+ * lib/alerts/alerts_service.ts's job rather than this function's.
+ *
+ * @param announced - The highest milestone already announced for this goal, from
+ *   `goals.milestone_reached`. Everything at or below it is owed nothing.
+ * @param balance - The linked wallet's balance, in centavos.
+ * @param target - The goal's target, in centavos.
+ * @returns The milestones to announce, ascending. Empty when the balance has
+ *   passed nothing new, which includes every dip and re-cross.
+ */
+export function milestonesCrossed(
+  announced: GoalMilestone,
+  balance: Centavos,
+  target: Centavos,
+): Exclude<GoalMilestone, 0>[] {
+  const reached = milestoneFor(balance, target);
+  return MILESTONE_LADDER.filter((milestone) => milestone > announced && milestone <= reached);
+}
+
+/**
+ * The milestone one rung below `milestone`, and 0 below 25.
+ *
+ * WHAT IT IS FOR: seeding a goal that is created on, or moved onto, a wallet
+ * already past a milestone. `goals.milestone_reached` means "announced up to
+ * here", so storing the rung BELOW the level the goal starts at leaves exactly
+ * that level owed, and the next pass announces it and nothing under it (owner's
+ * ruling, 2026-09-24).
+ *
+ * @param milestone - The level the goal starts at.
+ * @returns The level below it.
+ */
+export function previousMilestone(milestone: GoalMilestone): GoalMilestone {
+  const below: Record<GoalMilestone, GoalMilestone> = { 0: 0, 25: 0, 50: 25, 75: 50, 100: 75 };
+  return below[milestone];
+}

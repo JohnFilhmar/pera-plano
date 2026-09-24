@@ -4,6 +4,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/constants/query_keys";
 import { createGoal } from "@/lib/db/repos/goals_repo";
 import type { NewGoal } from "@/lib/db/repos/goals_repo";
+import { emitAppEvent } from "@/lib/events/app_events";
 import type { Goal } from "@/types/domain";
 
 import { invalidateKeys } from "./invalidate_keys";
@@ -25,6 +26,14 @@ export function useCreateGoal() {
 
   return useMutation({
     mutationFn: (input: NewGoal): Promise<Goal> => createGoal(input),
-    onSuccess: () => invalidateKeys(queryClient, [queryKeys.goals.all, queryKeys.wallets.all]),
+    onSuccess: (goal) => {
+      // A goal created on a wallet that already sits past a milestone announces
+      // the level it starts at, and the milestone pass's own wake-ups are a
+      // launch and a ledger commit, neither of which this is. Announced through
+      // the bus rather than by calling the pass, so this hook never imports the
+      // notification transport; see `goals:changed`.
+      void emitAppEvent("goals:changed", { goalId: goal.id });
+      invalidateKeys(queryClient, [queryKeys.goals.all, queryKeys.wallets.all]);
+    },
   });
 }

@@ -80,6 +80,25 @@ export type AppEventMap = {
   };
 
   /**
+   * A Goal was created, or edited in a way that can move its progress: a
+   * relink onto another Wallet, or a changed target.
+   *
+   * WHY AN EVENT RATHER THAN A DIRECT CALL. The milestone pass is the only thing
+   * that listens, and it lives behind `lib/alerts/alerts_service.ts`, which
+   * imports expo-notifications and the native notification listener. A mutation
+   * that called the pass directly would drag that whole stack into every screen
+   * and every test that creates a goal; `app/(onboarding)` and `app/goal/*` have
+   * no business loading the notification transport. The bus is the seam that
+   * keeps them apart, exactly as it does for the ledger.
+   *
+   * WHAT THE SUBSCRIBER DOES WITH IT: a milestone pass, because a goal created
+   * on, or moved onto, a Wallet that already sits past a milestone announces the
+   * level it starts at (goals rule 12, owner's ruling 2026-09-24), and neither of
+   * the pass's other wake-ups, a launch and a ledger commit, covers that.
+   */
+  "goals:changed": { goalId: string };
+
+  /**
    * A problem report in the offline outbox changed state — sent, rescheduled
    * after a failure, or refused (`lib/support/outbox_runner.ts`).
    *

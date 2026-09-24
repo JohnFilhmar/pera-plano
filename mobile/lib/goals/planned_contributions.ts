@@ -12,13 +12,12 @@
 //   skipped    the user said so (14c, contribution_decisions);
 //   pending    anything else.
 //
-// EXPIRY (14d) IS ONLY HALF HERE, ON PURPOSE. Only the latest payday's
-// contribution is offered as pending, and not once 31 days have passed, so a
-// prompt ends when the next pay lands. Whether an unmatched contribution's
-// RESERVATION ends then too is a contradiction in the spec: safe-to-spend rule
-// 6 says expired contributions leave the term, and rule 6b says reserving from
-// arrived pay "removes the need for any expiry rule". Until that is ruled, the
-// term keeps rule 6b's behaviour (GAP-056's open question).
+// NOTHING EXPIRES, AND THE 31 DAYS BELONG TO THE PROMPT ALONE. The owner ruled
+// on 2026-09-24 that an unmatched contribution's RESERVATION never ends: the
+// reservation is built from pay that already arrived (safe-to-spend rule 6b), so
+// there is no stale reservation to time out, and goals rule 14 now has no expired
+// state at all. What the 31 days do is stop the CARD from asking: only the latest
+// payday's contribution is offered, and not once a pay period has passed.
 //
 // WHAT SAFE-TO-SPEND HOLDS BACK (`reservedFor`). A pending or completed
 // contribution reserves its whole plan: a completed one is a transfer, which
@@ -181,7 +180,7 @@ export async function listPaydayContributions(range: {
 /**
  * The contributions still waiting on the user, at most one per goal: the
  * latest payday's, while nothing has settled it and its pay period has not run
- * out (see the file header on expiry).
+ * out. The window silences the CARD only; see the file header.
  *
  * @param now - The instant the pay period is measured back from.
  * @returns What is still outstanding for each such goal. Empty on the free tier.
