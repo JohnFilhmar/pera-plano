@@ -89,6 +89,14 @@ jest.mock("@/lib/alerts/tracking_health_subscriber", () => ({
   startTrackingHealthSubscriber: jest.fn(() => jest.fn()),
 }));
 
+// GAP-126. The launch payday announcement is the one call that can spend a
+// payday's only announcement, so this file asserts both that the shell makes it
+// and that it makes it after the subscribers who need to hear it are live.
+jest.mock("@/lib/income/income_ledger_subscriber", () => ({
+  startIncomeLedgerSubscriber: jest.fn(() => jest.fn()),
+  announcePendingPayday: jest.fn().mockResolvedValue(undefined),
+}));
+
 jest.mock("@/lib/goals/goal_milestone_subscriber", () => ({
   startGoalMilestoneSubscriber: jest.fn(() => jest.fn()),
 }));
@@ -110,6 +118,7 @@ import { useTheme } from "@/contexts/theme_context";
 import { useLock } from "@/contexts/lock_context";
 import { startTrackingHealthSubscriber } from "@/lib/alerts/tracking_health_subscriber";
 import { startGoalMilestoneSubscriber } from "@/lib/goals/goal_milestone_subscriber";
+import { announcePendingPayday } from "@/lib/income/income_ledger_subscriber";
 import { startPaydayNotificationSubscriber } from "@/lib/income/payday_notification_subscriber";
 import { startLimitLedgerSubscriber } from "@/lib/limits/limit_ledger_subscriber";
 
@@ -121,6 +130,7 @@ const mockStartLimits = startLimitLedgerSubscriber as jest.Mock;
 const mockStartPayday = startPaydayNotificationSubscriber as jest.Mock;
 const mockStartTracking = startTrackingHealthSubscriber as jest.Mock;
 const mockStartGoals = startGoalMilestoneSubscriber as jest.Mock;
+const mockAnnouncePayday = announcePendingPayday as jest.Mock;
 
 const SUBSCRIBERS: Array<[string, jest.Mock]> = [
   ["limits ledger", mockStartLimits],
@@ -220,6 +230,28 @@ describe.each(SUBSCRIBERS)("the %s subscriber", (_name, start) => {
     warn.mockRestore();
   });
 });
+
+test("the launch payday announcement runs, and only after the push subscriber is live", async () => {
+  // GAP-126. Bootstrap no longer announces, because it resolves before any
+  // subscriber exists. This is the replacement, and its ORDER is the whole
+  // point: `maybeEmitPayday` marks a payday announced before it emits, so an
+  // announcement made while the push subscriber is unstarted is spent on
+  // nobody and never repeated. The in-app half rides on the same event through
+  // <PaydaySheets />, whose child effects run before this parent's.
+  renderApp();
+
+  await waitFor(() => expect(mockAnnouncePayday).toHaveBeenCalledTimes(1));
+  expect(mockStartPayday).toHaveBeenCalledTimes(1);
+  expect(mockAnnouncePayday.mock.invocationCallOrder[0]).toBeGreaterThan(
+    mockStartPayday.mock.invocationCallOrder[0],
+  );
+});
+
+// The announcement's own failure is NOT tested here, deliberately. Rejecting the
+// mock would prove only that the mock rejects: the shell calls
+// `announcePendingPayday` with a bare `void`, which is safe because the real
+// function swallows internally, and that swallow is pinned against the real
+// function in lib/income/__tests__/income_ledger_subscriber.test.ts.
 
 test("all three subscribers start on one launch", async () => {
   // Per-subscriber tests above would all pass if the shell started only the one

@@ -90,7 +90,10 @@ import {
   runGoalMilestonePass,
   startGoalMilestoneSubscriber,
 } from "@/lib/goals/goal_milestone_subscriber";
-import { startIncomeLedgerSubscriber } from "@/lib/income/income_ledger_subscriber";
+import {
+  announcePendingPayday,
+  startIncomeLedgerSubscriber,
+} from "@/lib/income/income_ledger_subscriber";
 import { startPaydayNotificationSubscriber } from "@/lib/income/payday_notification_subscriber";
 import { startLimitLedgerSubscriber } from "@/lib/limits/limit_ledger_subscriber";
 import { resolveAlertRoute } from "@/lib/alerts/alert_routes";
@@ -512,6 +515,24 @@ function AppShell({ fontsLoaded }: { fontsLoaded: boolean }) {
   useEffect(() => {
     if (bootstrapState !== "ready") return;
     return startSubscriber("payday summary push", startPaydayNotificationSubscriber);
+  }, [bootstrapState]);
+
+  // The launch payday announcement (GAP-126), and it MUST STAY BELOW THE PUSH
+  // SUBSCRIBER ABOVE. `bootstrapApp` refreshes the income profile but no longer
+  // announces, because it resolves before `bootstrapState` can be "ready" and so
+  // before any subscriber exists; `maybeEmitPayday` marks a payday announced
+  // before emitting, so that one call would have spent the payday's only
+  // announcement on an empty bus. This is the replacement, and effects run in
+  // declaration order, which is the whole reason for the placement: announcing
+  // from a position above the push subscriber would reach the in-app sheet (a
+  // child, whose effects run first) and miss the push. Moving this block up is a
+  // silent regression of exactly the defect it fixes.
+  //
+  // A payday detected from a later ledger commit needs none of this: the
+  // debounced pass in `startIncomeLedgerSubscriber` runs long after both.
+  useEffect(() => {
+    if (bootstrapState !== "ready") return;
+    void announcePendingPayday(systemClock.now());
   }, [bootstrapState]);
 
   // Listener-health notices (docs/06 §6.1's "Listener health" row). Home's
