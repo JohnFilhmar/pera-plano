@@ -56,8 +56,20 @@ import type { ToolResult } from "./tools/types";
  *
  * The lookbehind keeps the sign out of a range like `₱100.00-₱200.00`, where
  * the hyphen belongs to the prose, and keeps `P` from firing inside a word.
+ *
+ * A space after the prefix and a lowercase `php` are matched too, so "₱ 549"
+ * and "php 549" are caught rather than waved through (final review, 2026-09-25).
  */
-const AMOUNT_PATTERN = /(?<![\p{L}\d.,])[-−]?(?:₱|PHP ?|Php ?|P)\d+(?:,\d+)*(?:\.\d+)?/gu;
+const AMOUNT_PATTERN = /(?<![\p{L}\d.,])[-−]?(?:₱|PHP|Php|php|P)\s?\d+(?:,\d+)*(?:\.\d+)?/gu;
+
+/**
+ * Peso amounts written with the currency AFTER the number: "13 pesos", "50 piso",
+ * "549 PHP". A figure in the records is always written ₱1,234.56, so every one of
+ * these is retyped or remembered and can never be in the corpus. Without this,
+ * free chat could show "The minimum fare is 13 pesos." under a line promising every
+ * peso figure comes from the records (final review, 2026-09-25).
+ */
+const SUFFIX_AMOUNT_PATTERN = /(?<![\p{L}\d.,])\d+(?:,\d+)*(?:\.\d+)?\s?(?:pesos?|piso|php)(?!\p{L})/giu;
 
 /**
  * Date-shaped substrings. Handlers emit ISO (`2026-03-31`) exclusively, so
@@ -103,6 +115,7 @@ function collect(prose: string, pattern: RegExp, into: Figure[]): void {
 function extractFigures(prose: string): string[] {
   const found: Figure[] = [];
   collect(prose, AMOUNT_PATTERN, found);
+  collect(prose, SUFFIX_AMOUNT_PATTERN, found);
   collect(prose, DATE_PATTERN, found);
   found.sort((a, b) => a.index - b.index);
 

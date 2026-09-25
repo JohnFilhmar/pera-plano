@@ -123,3 +123,24 @@ describe("diagnostics", () => {
     expect(ungroundedFigures("₱2,400.00 and ₱9,999.00", corpus)).toEqual(["₱9,999.00"]);
   });
 });
+
+describe("amounts written after the number, spaced or in lowercase (final review, 2026-09-25)", () => {
+  test.each([
+    ["The minimum fare is 13 pesos.", "13 pesos"],
+    ["It costs 50 piso.", "50 piso"],
+    ["That is 1 peso.", "1 peso"],
+    ["The plan is 549 PHP a month.", "549 PHP"],
+    ["The plan is ₱ 549 a month.", "₱ 549"],
+    ["The plan is php 549 a month.", "php 549"],
+  ])("%s is caught as an ungrounded figure", (prose, figure) => {
+    expect(ungroundedFigures(prose, new Set(["₱549.00"]))).toContain(figure);
+  });
+
+  test("a retyped ledger figure in words is rejected", () => {
+    expect(isGrounded("You have 18,230 pesos.", new Set(["₱18,230.00"]))).toBe(false);
+  });
+
+  test("the display string itself still passes", () => {
+    expect(isGrounded("You have ₱18,230.00 in total.", new Set(["₱18,230.00"]))).toBe(true);
+  });
+});
