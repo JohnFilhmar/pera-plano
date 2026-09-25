@@ -29,6 +29,7 @@ import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { ChatSurface, type SurfacePhase } from "@/components/ai/chat_surface";
+import { LevelPicker } from "@/components/ai/LevelPicker";
 import { ModelPicker } from "@/components/ai/model_picker";
 import { registerIcon } from "@/components/ui/button";
 import { ListRow } from "@/components/ui/list_row";
@@ -39,7 +40,15 @@ import { createDownloader, type DownloadState } from "@/lib/ai/downloader";
 import { runFixtureTool } from "@/lib/ai/eval/fixture_tools";
 import { configureAiEval } from "@/lib/ai/eval/harness";
 import { readResidentBytes } from "@/lib/ai/eval/resident_memory";
-import { DEFAULT_ANSWER_LEVEL } from "@/lib/ai/levels";
+import {
+  AI_ANSWER_LEVEL_STORAGE_KEY,
+  AI_LEVELS_ACCEPTED_STORAGE_KEY,
+  ANSWER_LEVELS,
+  DEFAULT_ANSWER_LEVEL,
+  effectiveAnswerLevel,
+  parseAnswerLevel,
+  type AnswerLevel,
+} from "@/lib/ai/levels";
 import { createProductionDeps } from "@/lib/ai/model_files";
 import { configureSession } from "@/lib/ai/session";
 import { TOOL_REGISTRY } from "@/lib/ai/tools/registry";
@@ -115,10 +124,22 @@ export default function AiAssistantScreen() {
   // vanish once AsyncStorage answers. A disclosure that appears for one frame
   // has not been made.
   const [disclaimerAcknowledged, setDisclaimerAcknowledged] = useState(true);
+  const [storedLevel, setStoredLevel] = useState<AnswerLevel>(DEFAULT_ANSWER_LEVEL);
+  const [levelsAccepted, setLevelsAccepted] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  // Which catalogue entry is resident, for its knowledge-limit month and context size.
+  const [residentSpec, setResidentSpec] = useState<ModelSpec | null>(null);
+  const level = effectiveAnswerLevel(storedLevel);
 
   useEffect(() => {
     void AsyncStorage.getItem(AI_DISCLAIMER_STORAGE_KEY).then((seen) => {
       setDisclaimerAcknowledged(seen === "1");
+    });
+    void AsyncStorage.getItem(AI_ANSWER_LEVEL_STORAGE_KEY).then((raw) => {
+      setStoredLevel(parseAnswerLevel(raw));
+    });
+    void AsyncStorage.getItem(AI_LEVELS_ACCEPTED_STORAGE_KEY).then((raw) => {
+      setLevelsAccepted(raw === "1");
     });
   }, []);
 
@@ -127,12 +148,24 @@ export default function AiAssistantScreen() {
     void AsyncStorage.setItem(AI_DISCLAIMER_STORAGE_KEY, "1");
   }, []);
 
+  const chooseLevel = useCallback((next: AnswerLevel, acceptedNow: boolean) => {
+    setStoredLevel(next);
+    setPickerOpen(false);
+    void AsyncStorage.setItem(AI_ANSWER_LEVEL_STORAGE_KEY, String(next));
+    if (acceptedNow) {
+      setLevelsAccepted(true);
+      void AsyncStorage.setItem(AI_LEVELS_ACCEPTED_STORAGE_KEY, "1");
+    }
+  }, []);
+
   const refresh = useCallback(async () => {
     const next: Record<string, DownloadState> = {};
     for (const spec of MODEL_CATALOGUE) {
       next[spec.id] = await downloader.stateOf(spec);
     }
     setStates(next);
+    const resident = residentCandidate(next);
+    setResidentSpec(resident ?? null);
 
     // The weights survive a `resetContext()` on lock — that is the whole point
     // of spec §4.5's distinction — so a still-loaded bridge is re-entry, not a
@@ -150,7 +183,6 @@ export default function AiAssistantScreen() {
       setPhase("no_model");
     };
 
-    const resident = residentCandidate(next);
     if (resident === undefined) {
       showPicker();
       return;
@@ -217,19 +249,29 @@ export default function AiAssistantScreen() {
       <Text className="px-4 pb-2 pt-4 text-title font-semibold text-fg dark:text-fg-dark">
         Assistant
       </Text>
-      {/* Only a loaded model can be measured, so the way to the eval arrives
-          with the chat and never with the picker. */}
+      {/* Only a loaded model can be measured or given a level, so both rows
+          arrive with the chat and never with the picker. */}
       {phase === "ready" ? (
-        <ListRow
-          testID="ai-eval-entry"
-          title="Test it on this phone"
-          subtitle="8 practice questions. Your own transactions are never read."
-          subtitleLines={3}
-          right={<ChevronGlyph size={18} className="text-fg-2 dark:text-fg-2-dark" />}
-          onPress={() => router.push("/more/ai/eval")}
-        />
+        <>
+          <ListRow
+            testID="ai-eval-entry"
+            title="Test it on this phone"
+            subtitle="8 practice questions. Your own transactions are never read."
+            subtitleLines={3}
+            right={<ChevronGlyph size={18} className="text-fg-2 dark:text-fg-2-dark" />}
+            onPress={() => router.push("/more/ai/eval")}
+          />
+          <ListRow
+            testID="ai-level-entry"
+            title="Answer style"
+            subtitle={`Level ${level} · ${ANSWER_LEVELS[level].name}`}
+            right={<ChevronGlyph size={18} className="text-fg-2 dark:text-fg-2-dark" />}
+            onPress={() => setPickerOpen(true)}
+          />
+        </>
       ) : null}
       <ChatSurface
+        key={level}
         phase={phase}
         picker={
           <ModelPicker
@@ -245,9 +287,19 @@ export default function AiAssistantScreen() {
         now={() => Date.now()}
         disclaimerAcknowledged={disclaimerAcknowledged}
         onAcknowledgeDisclaimer={acknowledgeDisclaimer}
-        level={DEFAULT_ANSWER_LEVEL}
-        model={null}
+        level={level}
+        model={residentSpec}
       />
+      {residentSpec === null ? null : (
+        <LevelPicker
+          visible={pickerOpen}
+          level={level}
+          accepted={levelsAccepted}
+          knowledgeLimit={residentSpec.knowledgeLimit}
+          onChoose={chooseLevel}
+          onDismiss={() => setPickerOpen(false)}
+        />
+      )}
     </KeyboardAvoidingView>
   );
 }

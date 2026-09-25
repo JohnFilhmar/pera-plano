@@ -18,6 +18,7 @@ jest.mock("@/lib/support/attachments", () => ({
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
+import { AI_ANSWER_LEVEL_STORAGE_KEY, AI_LEVELS_ACCEPTED_STORAGE_KEY } from "@/lib/ai/levels";
 import { closeDatabase } from "@/lib/db/database";
 import { getSetting, setSetting } from "@/lib/db/repos/app_settings_repo";
 import { freshDb } from "@/test_support/db";
@@ -373,4 +374,14 @@ test("wipeAllData erases the persisted theme preference from AsyncStorage", asyn
   await wipeAllData();
 
   expect(await AsyncStorage.getItem(THEME_STORAGE_KEY)).toBeNull();
+});
+
+test("wipeAllData erases the assistant's answer level and its accepted notice", async () => {
+  await AsyncStorage.setItem(AI_ANSWER_LEVEL_STORAGE_KEY, "5");
+  await AsyncStorage.setItem(AI_LEVELS_ACCEPTED_STORAGE_KEY, "1");
+
+  await wipeAllData();
+
+  expect(await AsyncStorage.getItem(AI_ANSWER_LEVEL_STORAGE_KEY)).toBeNull();
+  expect(await AsyncStorage.getItem(AI_LEVELS_ACCEPTED_STORAGE_KEY)).toBeNull();
 });

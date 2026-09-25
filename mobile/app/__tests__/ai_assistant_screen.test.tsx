@@ -15,7 +15,8 @@ jest.mock("@/lib/ai/model_files", () => ({
   createProductionDeps: () => mockDeps,
 }));
 
-import { fireEvent, render, screen } from "@testing-library/react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { MODEL_CATALOGUE } from "@/lib/ai/catalogue";
@@ -24,6 +25,8 @@ import { runFixtureTool } from "@/lib/ai/eval/fixture_tools";
 import { configureAiEval, currentAiEval } from "@/lib/ai/eval/harness";
 import { readResidentBytes } from "@/lib/ai/eval/resident_memory";
 import { FIXED_QUESTIONS } from "@/lib/ai/fixed_questions";
+import { AI_ANSWER_LEVEL_STORAGE_KEY, AI_LEVELS_ACCEPTED_STORAGE_KEY } from "@/lib/ai/levels";
+import { __setTierForTests } from "@/lib/entitlements";
 import { llamaBridge } from "@/modules/llama_bridge";
 
 import AiAssistantScreen from "../(tabs)/more/ai";
@@ -136,4 +139,54 @@ test("a model that will not load clears the eval and offers no way to it", async
 
   expect(currentAiEval()).toBeNull();
   expect(screen.queryByTestId("ai-eval-entry")).toBeNull();
+});
+
+describe("the answer level (assistant levels spec §6)", () => {
+  beforeEach(async () => {
+    await AsyncStorage.clear();
+  });
+
+  afterEach(() => {
+    __setTierForTests(null);
+  });
+
+  test("starts at level 2", async () => {
+    render(<AiAssistantScreen />);
+    expect(await screen.findByTestId("ai-level-entry")).toHaveTextContent(/Level 2 · Typed asks/);
+  });
+
+  test("a chosen level is kept", async () => {
+    render(<AiAssistantScreen />);
+    fireEvent.press(await screen.findByTestId("ai-level-entry"));
+    fireEvent.press(screen.getByTestId("ai-level-3"));
+
+    await waitFor(async () => {
+      expect(await AsyncStorage.getItem(AI_ANSWER_LEVEL_STORAGE_KEY)).toBe("3");
+    });
+    expect(screen.getByTestId("ai-level-entry")).toHaveTextContent(/Level 3 · Chat/);
+  });
+
+  test("level 5 asks for acceptance first, and remembers it", async () => {
+    render(<AiAssistantScreen />);
+    fireEvent.press(await screen.findByTestId("ai-level-entry"));
+    fireEvent.press(screen.getByTestId("ai-level-5"));
+    fireEvent.press(screen.getByTestId("confirm-dialog-confirm"));
+
+    await waitFor(async () => {
+      expect(await AsyncStorage.getItem(AI_LEVELS_ACCEPTED_STORAGE_KEY)).toBe("1");
+    });
+    expect(await AsyncStorage.getItem(AI_ANSWER_LEVEL_STORAGE_KEY)).toBe("5");
+  });
+
+  test("a stored level 5 runs as level 3 on the free tier, and stays stored", async () => {
+    __setTierForTests("free");
+    await AsyncStorage.setItem(AI_ANSWER_LEVEL_STORAGE_KEY, "5");
+
+    render(<AiAssistantScreen />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("ai-level-entry")).toHaveTextContent(/Level 3 · Chat/);
+    });
+    expect(await AsyncStorage.getItem(AI_ANSWER_LEVEL_STORAGE_KEY)).toBe("5");
+  });
 });
