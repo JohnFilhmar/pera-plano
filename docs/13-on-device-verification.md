@@ -1604,8 +1604,11 @@ All of it on the **8 GB** A54 variant. The 6 GB variant remains UNKNOWN and is n
 
 ## Reading the eval's numbers off logcat
 
-Gates 2, 3 and 5 and the tier-cut note all read the same eval runs, so the eval screen prints its
-numbers where adb can collect them. On a debug build every finished question writes one console
+Gates 3 and 5 read the eval's runs, so the eval screen prints its numbers where adb can collect them.
+**Since 2026-09-25 the eval measures narration, not tool choice** (spec §7.4): it asks the 8 fixed
+questions in `lib/ai/fixed_questions.ts`, whose tools are already decided. These lines need a
+development bundle, and a development bundle currently crashes after unlock (finding 7 above); until
+that is fixed, read each run off the results card instead. On a debug build every finished question writes one console
 line, and every finished or stopped run writes one report line. Each is `[ai_eval]` followed by one
 JSON object. The lines hold metrics only: no prompt, no answer and no tool result. A release build
 writes none, because the logging sits behind `__DEV__`.
@@ -1620,18 +1623,18 @@ and the route also opens directly:
 ```bash
 adb logcat -c
 adb shell am start -a android.intent.action.VIEW -d "peraplano://more/ai/eval" com.filldev.peraplano.dev
-# run the 30 questions, wait for the results card, then:
+# run the 8 questions, wait for the results card, then:
 adb logcat -d -s ReactNativeJS | grep -o '\[ai_eval\] .*' > ai_eval_tier2_run1.txt
 ```
 
 Every line has an `event` of `question` or `report` and names its run. `run` counts fresh runs from 1
 and starts again whenever the JS bundle reloads, `tier` is the catalogue id, and `suppressThinking`
-is the option the model was loaded with. A question line adds `index`, `id`, `score`, `nameCorrect`,
-`argsCorrect`, `ttftMs`, `tokensPerSecond`, `wallClockMs`, `residentBytes`, `constrained`,
-`malformed`, `outcome`, `cardReason`, `empty` and `thinkTag`. The report line carries every
-`EvalReport` field, among them `completed`, `toolPickAccuracy`, `ttftP90Ms`,
-`constrainedGenerations`, `malformedGenerations`, `emptyAnswers` and `thinkTagAnswers`. A resumed run
-keeps its `run` number, and its last report line covers every segment.
+is the option the model was loaded with. A question line adds `index`, `id`, `ttftMs`,
+`tokensPerSecond`, `wallClockMs`, `residentBytes`, `outcome`, `cardReason`, `empty` and `thinkTag`.
+The report line carries every `EvalReport` field: `completed`, `ttftMedianMs`, `ttftP90Ms`,
+`decodeMedianTps`, `decodeWorstTps`, `cardAnswers`, `ungroundedAnswers`, `emptyAnswers`,
+`thinkTagAnswers`, `peakResidentBytes` and `totalWallClockMs`. A resumed run keeps its `run` number,
+and its last report line covers every segment.
 
 ## Gate 1 — Does `llama.rn` load a Qwen3 GGUF and stream tokens, in the shipped app?
 
@@ -1641,10 +1644,10 @@ through `modules/llama_bridge/index.ts`, which is a different binding: `initLlam
 tokens re-published as an `AsyncIterable`.
 
 - Model loads, first token arrives, stream completes: **YES. PASS, 2026-09-02.**
-- Load time, tier 1 / tier 2: `NOT MEASURED` / `NOT MEASURED` — the screen loads a model on mount,
-  which happened before the log buffer was cleared. Re-take with a cleared buffer before mounting.
-- **A failure here stops the feature.** There is no fallback that keeps a chat surface; §7.4's
-  button-driven design is what ships instead, and the seven tool handlers are unchanged by it.
+- Load time, tier 1 / tier 2: **3.04 s** / **5.31 s**, 2026-09-25, from `RNLlama loadModel` log
+  timestamps with the buffer cleared first.
+- **A failure here stops the feature.** Since 2026-09-25 §7.4's button-driven design is what ships
+  (tier-cut note below), and it still needs this gate: the model narrates every answer.
 
 **What was actually observed.** More → Assistant, asked "How much did I spend this month" against an
 empty ledger. The answer rendered as prose:
@@ -1675,6 +1678,11 @@ once**, none of which a unit test can:
 
 ## Gate 2 — Does llama.cpp accept the compiled GBNF, and does constrained decoding hold?
 
+**RETIRED 2026-09-25 with spec §7.4.** The model no longer emits a tool call, so no grammar is sent
+and `lib/ai/tools/grammar.ts` is deleted. Before it went, the gate passed: **0 malformed in 140
+constrained rounds for tier 1** (five runs, one with thinking on) **and 0 in 112 for tier 2** (four
+runs). The text below is kept as the record of what was measured.
+
 **Target: zero malformed outputs.** Phase 3 proves the grammar *string*, by snapshot. Only the real
 parser proves its *meaning*.
 
@@ -1696,8 +1704,8 @@ The eval runs the grammar `lib/ai/tools/grammar.ts` generates, never a hand-writ
 measured 0 malformed in 50 against its own hand-written grammar, so a failure here is a defect in
 the generator, not in llama.cpp.
 
-- Malformed outputs, tier 1: `________` of `________` constrained rounds
-- Malformed outputs, tier 2: `________` of `________` constrained rounds
+- Malformed outputs, tier 1: **0** of **140** constrained rounds
+- Malformed outputs, tier 2: **0** of **112** constrained rounds
 - **Non-zero is a blocker for tier 1 specifically.** The spike measured the grammar carrying tier 1
   from 58% to 78% strict tool-pick; without it, tier 1 does not clear the bar and the menu loses
   the tier that makes this feature free for everyone.
@@ -1818,12 +1826,12 @@ done | tee gate5_battery.txt
 # The end sample, then each question's decode rate in question order.
 adb shell dumpsys battery | grep -E '^ *(level|temperature):'
 adb logcat -d -s ReactNativeJS | grep -o '\[ai_eval\] .*' > gate5_eval.txt
-grep -o '"id":"[a-z0-9]*"\|"tokensPerSecond":[0-9.]*' gate5_eval.txt | paste - -
+grep -o '"id":"[a-z0-9_]*"\|"tokensPerSecond":[0-9.]*' gate5_eval.txt | paste - -
 ```
 
 `temperature` is in tenths of a degree C, so `314` is 31.4 °C. Throughput drift is the trend in
-`tokensPerSecond` from the first questions to the last. The two advice questions log 0 because they
-never reach the model, so leave them out.
+`tokensPerSecond` from the first questions to the last. A run is now 8 questions, so a ten-minute
+check means several runs back to back.
 
 ## Gate 6 — A real download over a Philippine mobile network
 
