@@ -145,3 +145,21 @@ describe("the table is data, and every row is well formed", () => {
     }
   });
 });
+
+describe("level 5 needs a money word before an advice row counts (levels spec §3)", () => {
+  test("a non-money should-I goes on to the model at level 5", () => {
+    expect(classify("Should I learn Python or Java?", 5)).toEqual({ kind: "explanatory" });
+  });
+
+  test("the same question is still an advice row below level 5", () => {
+    expect(classify("Should I learn Python or Java?", 4).kind).toBe("advice");
+  });
+
+  test("a money should-I is still redirected at level 5", () => {
+    expect(classify("Should I buy a new phone?", 5).kind).toBe("advice");
+  });
+
+  test("Filipino money advice is still redirected at level 5", () => {
+    expect(classify("Dapat ba akong mag-ipon?", 5).kind).toBe("advice");
+  });
+});

@@ -19,6 +19,8 @@
 //
 // SMALL TALK IS CHECKED FIRST, and only a whole message counts (see
 // `small_talk.ts`), so a greeting can never hide an advice question.
+import type { AnswerLevel } from "./levels";
+import { mentionsMoney } from "./moneyWords";
 import { normalise } from "./normalise";
 import { matchSmallTalk, type ReplyLanguage, type SmallTalk } from "./small_talk";
 
@@ -166,10 +168,12 @@ export const ADVICE_ROWS: AdviceRow[] = [
  * Sorts typed text into small talk, an advice question, or everything else.
  *
  * @param input - The message as typed.
+ * @param level - The answer level in force. At level 5 an advice row counts
+ *   only when the message is about money (assistant levels spec §3).
  * @returns `smalltalk` for a whole-message greeting, thanks, help or goodbye;
  *   `advice` with the tools its redirect shows; otherwise `explanatory`.
  */
-export function classify(input: string): TriageVerdict {
+export function classify(input: string, level: AnswerLevel = 1): TriageVerdict {
   const text = normalise(input);
   if (text.length === 0) return { kind: "explanatory" };
 
@@ -183,7 +187,7 @@ export function classify(input: string): TriageVerdict {
   }
 
   const row = ADVICE_ROWS.find((candidate) => candidate.pattern.test(text));
-  if (row) {
+  if (row && (level < 5 || mentionsMoney(input))) {
     return { kind: "advice", klass: row.klass, redirectTools: row.redirectTools };
   }
 

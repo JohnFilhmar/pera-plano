@@ -28,6 +28,9 @@
 // phrasing that gets past this on a real device becomes a new row AND a new
 // test case, in the same commit.
 
+import type { AnswerLevel } from "./levels";
+import { mentionsMoney } from "./moneyWords";
+
 export type GuardReason = "prescriptive" | "imperative" | "contact";
 
 export type GuardVerdict = { suppressed: false } | { suppressed: true; reason: GuardReason };
@@ -138,4 +141,25 @@ export function guard(prose: string): GuardVerdict {
     return { suppressed: true, reason: "imperative" };
   }
   return { suppressed: false };
+}
+
+/**
+ * The guard as a given answer level applies it. Assistant levels spec §5.1.
+ *
+ * Levels 1 to 4 run the whole guard. Level 5 answers any topic, so advice
+ * wording ("you should bring an umbrella") is suppressed only when the question
+ * or the answer is about money. Contact details are suppressed at every level:
+ * a phone number next to a real balance is the worst thing this app can render.
+ *
+ * @param prose - The raw answer.
+ * @param context.level - The level the answer was generated at.
+ * @param context.question - The user's message, so a money question keeps the full guard.
+ * @returns The same verdict shape as `guard`.
+ */
+export function guardAtLevel(prose: string, context: { level: AnswerLevel; question: string }): GuardVerdict {
+  if (context.level === 5 && !mentionsMoney(context.question) && !mentionsMoney(prose)) {
+    const contact = matchesAny(prose, URL_PATTERNS) || matchesAny(prose, PHONE_PATTERNS);
+    return contact ? { suppressed: true, reason: "contact" } : { suppressed: false };
+  }
+  return guard(prose);
 }

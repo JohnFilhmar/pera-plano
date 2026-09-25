@@ -10,7 +10,7 @@
 // the surface then degrades to a card for no reason the user can see. Every
 // pattern here is word-boundary matched, and the imperative class is anchored
 // to sentence position.
-import { guard } from "../output_guard";
+import { guard, guardAtLevel } from "../output_guard";
 
 describe("prescriptive modals", () => {
   test.each([
@@ -93,5 +93,41 @@ describe("the verdict carries the class that fired", () => {
     // Contact is checked first: it is the hard discard, and it is the class a
     // reviewer most needs to see in the log.
     expect(verdict).toEqual({ suppressed: true, reason: "contact" });
+  });
+});
+
+describe("the guard at each level (levels spec §5.1)", () => {
+  test("level 5: non-money advice wording survives", () => {
+    expect(guardAtLevel("You should bring an umbrella today.", { level: 5, question: "Will it rain?" })).toEqual({
+      suppressed: false,
+    });
+  });
+
+  test("level 5: advice wording about money is still suppressed, found in the answer", () => {
+    expect(guardAtLevel("You should buy the cheaper phone.", { level: 5, question: "Which phone is nicer?" })).toEqual({
+      suppressed: true,
+      reason: "prescriptive",
+    });
+  });
+
+  test("level 5: advice wording is suppressed when the question was about money", () => {
+    expect(guardAtLevel("You should do it next month.", { level: 5, question: "When should I pay my loan?" })).toEqual({
+      suppressed: true,
+      reason: "prescriptive",
+    });
+  });
+
+  test("level 5: contact details are suppressed whatever the topic", () => {
+    expect(guardAtLevel("Visit example.com for the forecast.", { level: 5, question: "Will it rain?" })).toEqual({
+      suppressed: true,
+      reason: "contact",
+    });
+  });
+
+  test("levels 1 to 4 keep the whole guard", () => {
+    expect(guardAtLevel("You should bring an umbrella today.", { level: 4, question: "Will it rain?" })).toEqual({
+      suppressed: true,
+      reason: "prescriptive",
+    });
   });
 });
