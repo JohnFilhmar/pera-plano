@@ -16,6 +16,7 @@ jest.mock("@/lib/ai/model_files", () => ({
 }));
 
 import { fireEvent, render, screen } from "@testing-library/react-native";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { MODEL_CATALOGUE } from "@/lib/ai/catalogue";
 import type { DownloaderDeps } from "@/lib/ai/downloader";
@@ -96,6 +97,29 @@ test("re-entry with the model still loaded keeps the registration its load made"
 
   expect(load).toHaveBeenCalledTimes(1);
   expect(currentAiEval()).toBe(registered);
+});
+
+// Found on the A54, 2026-09-25: the keyboard covered the composer and the
+// chips, because edge-to-edge Android no longer resizes the window for it. The
+// offset is the part that fails quietly. The avoiding view measures itself from
+// its parent, and the tab navigator starts every screen `insets.top` below the
+// window's top, so an offset of 0 leaves the composer that far under the keys.
+test("the screen lifts the composer above the keyboard, offset by the tab navigator's top inset", async () => {
+  render(
+    <SafeAreaProvider
+      initialMetrics={{
+        frame: { x: 0, y: 0, width: 320, height: 640 },
+        insets: { top: 24, bottom: 48, left: 0, right: 0 },
+      }}
+    >
+      <AiAssistantScreen />
+    </SafeAreaProvider>,
+  );
+  await screen.findByTestId("ai-eval-entry");
+
+  const root = screen.getByTestId("ai-assistant-screen");
+  expect(root.props.behavior).toBe("padding");
+  expect(root.props.keyboardVerticalOffset).toBe(24);
 });
 
 test("a model that will not load clears the eval and offers no way to it", async () => {

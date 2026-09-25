@@ -345,6 +345,9 @@ export function ChatSurface({
         contentContainerClassName="gap-3 p-4"
         keyboardShouldPersistTaps="handled"
         onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
+        // The keyboard shrinks this from the bottom and the scroll offset stays
+        // put, so without this the newest message slides under the composer.
+        onLayout={() => scrollRef.current?.scrollToEnd({ animated: false })}
         ref={scrollRef}
       >
         {messages.length === 0 && !generating ? (

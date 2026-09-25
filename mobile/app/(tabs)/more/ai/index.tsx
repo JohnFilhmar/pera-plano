@@ -23,7 +23,10 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Device from "expo-device";
 import { useRouter } from "expo-router";
 import { ChevronRight } from "lucide-react-native";
-import { Text, View } from "react-native";
+import { cssInterop } from "nativewind";
+import { Text } from "react-native";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { ChatSurface, type SurfacePhase } from "@/components/ai/chat_surface";
 import { ModelPicker } from "@/components/ai/model_picker";
@@ -45,6 +48,8 @@ import type { LoadOptions } from "@/modules/llama_bridge/types";
 import type { EpochMs } from "@/types/domain";
 
 const ChevronGlyph = registerIcon(ChevronRight);
+
+cssInterop(KeyboardAvoidingView, { className: "style" });
 
 /**
  * Spec §4.9's "once at first use". AsyncStorage rather than `app_settings`,
@@ -100,6 +105,7 @@ function residentCandidate(states: Record<string, DownloadState>): ModelSpec | u
 
 export default function AiAssistantScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const downloader = useMemo(() => createDownloader(createProductionDeps()), []);
 
   const [phase, setPhase] = useState<SurfacePhase>("waking");
@@ -197,7 +203,16 @@ export default function AiAssistantScreen() {
   );
 
   return (
-    <View testID="ai-assistant-screen" className="flex-1 bg-bg dark:bg-bg-dark">
+    // EDGE-TO-EDGE ANDROID NO LONGER RESIZES THE WINDOW FOR THE KEYBOARD, so the
+    // composer sat under it. This view measures itself from its parent, not the
+    // window, so the offset is the top inset the tab navigator pads every screen
+    // by (app/(tabs)/_layout.tsx). Change one and the other has to follow.
+    <KeyboardAvoidingView
+      testID="ai-assistant-screen"
+      behavior="padding"
+      keyboardVerticalOffset={insets.top}
+      className="flex-1 bg-bg dark:bg-bg-dark"
+    >
       <Text className="px-4 pb-2 pt-4 text-title font-semibold text-fg dark:text-fg-dark">
         Assistant
       </Text>
@@ -230,6 +245,6 @@ export default function AiAssistantScreen() {
         disclaimerAcknowledged={disclaimerAcknowledged}
         onAcknowledgeDisclaimer={acknowledgeDisclaimer}
       />
-    </View>
+    </KeyboardAvoidingView>
   );
 }
