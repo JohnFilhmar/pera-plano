@@ -26,7 +26,7 @@
 // EVERY RULE ON THE OUTPUT READS RAW TEXT, NEVER A `.trim()`ED COPY, and the
 // `{`-fragment rule still sits ahead of grounding: a JSON fragment holds no
 // currency figure, so grounding alone would wave it through as an answer.
-import type { LlamaBridge } from "@/modules/llama_bridge/types";
+import type { GenerateHandle, LlamaBridge } from "@/modules/llama_bridge/types";
 import type { EpochMs } from "@/types/domain";
 
 import type { FixedQuestion } from "./fixed_questions";
@@ -100,11 +100,19 @@ export type DispatchDeps = {
 };
 
 /** True when the first non-space character is `{`, over RAW output. */
-function opensWithBrace(raw: string): boolean {
+export function opensWithBrace(raw: string): boolean {
   return raw.trimStart().startsWith("{");
 }
 
-async function runToolSafely(
+/**
+ * Runs one tool, turning a throw into an ordinary refusal.
+ *
+ * @param deps - The tool runner and the clock.
+ * @param name - The tool's wire name.
+ * @param args - Its arguments.
+ * @returns The tool's result, or an `unavailable` refusal when the handler threw.
+ */
+export async function runToolSafely(
   deps: Pick<DispatchDeps, "runTool" | "now">,
   name: string,
   args: Record<string, unknown>,
@@ -117,6 +125,44 @@ async function runToolSafely(
     // failed are ours, not the user's.
     return unavailable(name, "That information could not be read just now.");
   }
+}
+
+/** How a streamed answer ended. */
+export type StreamResult = { kind: "text"; raw: string } | { kind: "cancelled" } | { kind: "error" };
+
+/**
+ * Reads a generation to the end, honouring the abort flag before and after every
+ * token and passing each token to the preview hook.
+ *
+ * @param handle - The generation to read.
+ * @param deps - The optional abort flag and token hook.
+ * @returns The raw text; `cancelled` once the flag is raised, with the handle
+ *   cancelled too; or `error` when the bridge failed mid-stream.
+ */
+export async function readStream(
+  handle: GenerateHandle,
+  deps: Pick<DispatchDeps, "abort" | "onToken">,
+): Promise<StreamResult> {
+  let raw = "";
+  try {
+    for await (const token of handle.tokens) {
+      if (deps.abort?.aborted) {
+        handle.cancel();
+        return { kind: "cancelled" };
+      }
+      raw += token;
+      deps.onToken?.(token);
+      if (deps.abort?.aborted) {
+        // The flag can be set BY the render itself, a lock landing while the
+        // surface paints. Checked again so the next token never arrives.
+        handle.cancel();
+        return { kind: "cancelled" };
+      }
+    }
+  } catch {
+    return { kind: "error" };
+  }
+  return { kind: "text", raw };
 }
 
 /**
@@ -141,27 +187,10 @@ export async function answerQuestion(
     transcript: [{ role: "user", text: question.label }],
     toolResults: results,
   });
-  const handle = deps.bridge.generate(prompt);
-
-  let raw = "";
-  try {
-    for await (const token of handle.tokens) {
-      if (deps.abort?.aborted) {
-        handle.cancel();
-        return { kind: "cancelled" };
-      }
-      raw += token;
-      deps.onToken?.(token);
-      if (deps.abort?.aborted) {
-        // The flag can be set BY the render itself, a lock landing while the
-        // surface paints. Checked again so the next token never arrives.
-        handle.cancel();
-        return { kind: "cancelled" };
-      }
-    }
-  } catch {
-    return { kind: "card", reason: "error", results };
-  }
+  const streamed = await readStream(deps.bridge.generate(prompt), deps);
+  if (streamed.kind === "cancelled") return { kind: "cancelled" };
+  if (streamed.kind === "error") return { kind: "card", reason: "error", results };
+  const raw = streamed.raw;
 
   if (opensWithBrace(raw)) return { kind: "card", reason: "fragment", results };
   if (raw.trim().length === 0) return { kind: "card", reason: "empty", results };
