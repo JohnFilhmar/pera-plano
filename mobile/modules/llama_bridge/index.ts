@@ -12,19 +12,20 @@
 // 8), and `digest.ts` is its JS side. Autolinking builds that Kotlin but never
 // runs a config plugin, so the plugin is registered by path in `app.json`.
 //
-// WHY THE SYSTEM PROMPT IS IMPORTED HERE AND NOWHERE ELSE. `prompt.ts` builds
-// the TURN and says so: "the system prompt is passed separately by the bridge
-// so that the two can never be accidentally welded together". Sending it as its
-// own `messages` entry rather than concatenating it onto the turn is also what
-// makes §3.2's injection compartment structural — tool data can only ever
-// arrive inside the user message — and it is the only way `enable_thinking`
-// reaches the chat template at all, since that flag is a jinja argument and is
-// silently ignored when a raw `prompt` string is passed instead of `messages`.
+// WHY THE DEFAULT SYSTEM PROMPT IS IMPORTED HERE. `prompt.ts` builds the TURN
+// and says so: "the system prompt is passed separately by the bridge so that the
+// two can never be accidentally welded together". Chip narration leaves it to
+// this default; free chat passes its level's prompt (assistant levels spec
+// §4.2). Either way it is its own `messages` entry, which is what makes §3.2's
+// injection compartment structural (tool data can only ever arrive inside the
+// user message), and it is the only way `enable_thinking` reaches the chat
+// template at all, since that flag is a jinja argument and is silently ignored
+// when a raw `prompt` string is passed instead of `messages`.
 import { initLlama, type LlamaContext, type TokenData } from "llama.rn";
 
 import { SYSTEM_PROMPT } from "@/lib/ai/prompt";
 
-import type { GenerateHandle, LlamaBridge, LoadOptions } from "./types";
+import { MAX_RESPONSE_TOKENS, type GenerateHandle, type LlamaBridge, type LoadOptions } from "./types";
 
 /**
  * ONE SEQUENCE, NOT `llama.rn`'s DEFAULT OF EIGHT.
@@ -36,16 +37,6 @@ import type { GenerateHandle, LlamaBridge, LoadOptions } from "./types";
  * is calibrated against.
  */
 const PARALLEL_SEQUENCES = 1;
-
-/**
- * A CEILING, NOT A TARGET.
- *
- * An unconstrained round has no structural stopping point, so without a cap it
- * decodes until the context window fills. At tier 2's measured 11.45 tok/s a
- * full 2048-token window is roughly three minutes of a user watching tokens
- * arrive for an answer the system prompt asked to be one or two sentences long.
- */
-const MAX_RESPONSE_TOKENS = 256;
 
 /**
  * THE RESIDENT MODEL. Module scope is what "one model resident at a time"
@@ -74,7 +65,7 @@ export async function load(modelPath: string, opts: LoadOptions): Promise<void> 
   suppressThinking = opts.suppressThinking;
 }
 
-export function generate(prompt: string): GenerateHandle {
+export function generate(prompt: string, systemPrompt: string = SYSTEM_PROMPT): GenerateHandle {
   const resident = context;
   if (!resident) {
     // Loud rather than an empty stream: "no model loaded" and "the model had
@@ -99,7 +90,7 @@ export function generate(prompt: string): GenerateHandle {
     .completion(
       {
         messages: [
-          { role: "system", content: SYSTEM_PROMPT },
+          { role: "system", content: systemPrompt },
           { role: "user", content: prompt },
         ],
         // Without jinja the chat template is never applied, and
@@ -158,6 +149,15 @@ export function generate(prompt: string): GenerateHandle {
   };
 }
 
+export async function countTokens(text: string): Promise<number> {
+  const resident = context;
+  if (!resident) {
+    throw new Error("llama_bridge: countTokens() called with no model loaded");
+  }
+  const { tokens } = await resident.tokenize(text);
+  return tokens.length;
+}
+
 export async function resetContext(): Promise<void> {
   // `clearData: true`. The cheaper call drops only the cache metadata and
   // leaves the conversation's tensor data in the buffer — exactly what §4.5
@@ -188,6 +188,7 @@ export function isLoaded(): boolean {
 export const llamaBridge: LlamaBridge = {
   load,
   generate,
+  countTokens,
   resetContext,
   unload,
   isLoaded,

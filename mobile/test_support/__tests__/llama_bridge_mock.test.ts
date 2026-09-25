@@ -8,6 +8,7 @@
 import {
   generateCallCount,
   lastPromptGiven,
+  lastSystemPromptGiven,
   loadCalls,
   resetLlamaScript,
   scriptLlama,
@@ -191,4 +192,18 @@ describe("resetLlamaScript", () => {
     expect(lastPromptGiven()).toBe("");
     expect(fakeLlamaBridge.isLoaded()).toBe(false);
   });
+});
+
+test("records the system prompt a free-chat turn sends, and null for the default", async () => {
+  scriptLlama([{ emit: "a" }, { emit: "b" }]);
+
+  await drain(fakeLlamaBridge.generate("p"));
+  expect(lastSystemPromptGiven()).toBeNull();
+
+  await drain(fakeLlamaBridge.generate("p", "LEVEL PROMPT"));
+  expect(lastSystemPromptGiven()).toBe("LEVEL PROMPT");
+});
+
+test("counts four characters to a token", async () => {
+  await expect(fakeLlamaBridge.countTokens("123456789")).resolves.toBe(3);
 });

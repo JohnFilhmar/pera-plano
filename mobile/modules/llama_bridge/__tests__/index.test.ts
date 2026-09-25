@@ -114,6 +114,19 @@ describe("llama_bridge — thinking suppression", () => {
     // is never applied and the flag is silently ignored.
     expect(params.jinja).toBe(true);
   });
+
+  it("sends a free-chat level's system prompt in place of the default when one is given", async () => {
+    await bridge.load(TIER_2_PATH, { contextTokens: CONTEXT_TOKENS, suppressThinking: true });
+    runtime.scriptLlamaTokens([["ok"]]);
+
+    await drain(bridge.generate("User: hi", "LEVEL 3 PROMPT").tokens);
+
+    const [params] = runtime.completionCalls();
+    expect(params.messages).toEqual([
+      { role: "system", content: "LEVEL 3 PROMPT" },
+      { role: "user", content: "User: hi" },
+    ]);
+  });
 });
 
 describe("llama_bridge — generation", () => {
@@ -193,6 +206,20 @@ describe("llama_bridge — context reset", () => {
   });
 });
 
+describe("llama_bridge: token counting", () => {
+  it("counts with the resident model's own tokenizer", async () => {
+    await bridge.load(TIER_1_PATH, { contextTokens: CONTEXT_TOKENS, suppressThinking: true });
+
+    // The runtime fake makes four characters one token.
+    await expect(bridge.countTokens("12345678")).resolves.toBe(2);
+    expect(runtime.llamaRuntimeCalls()).toContain("tokenize");
+  });
+
+  it("refuses to count with no model resident", async () => {
+    await expect(bridge.countTokens("x")).rejects.toThrow(/no model/i);
+  });
+});
+
 describe("llama_bridge — the exported value", () => {
   it("satisfies the LlamaBridge contract the rest of the app injects", () => {
     // `dispatch.ts` and `session.ts` take the bridge through a deps bag, so the
@@ -202,5 +229,6 @@ describe("llama_bridge — the exported value", () => {
     expect(typeof bridge.llamaBridge.resetContext).toBe("function");
     expect(typeof bridge.llamaBridge.unload).toBe("function");
     expect(typeof bridge.llamaBridge.isLoaded).toBe("function");
+    expect(typeof bridge.llamaBridge.countTokens).toBe("function");
   });
 });

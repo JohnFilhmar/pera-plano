@@ -47,6 +47,7 @@ export type ScriptedTurn =
 let script: ScriptedTurn[] = [];
 let generateCalls = 0;
 let lastPrompt = "";
+let lastSystemPrompt: string | null = null;
 let loads: { path: string; opts: LoadOptions }[] = [];
 let calls: string[] = [];
 let loaded = false;
@@ -57,6 +58,11 @@ export function scriptLlama(turns: ScriptedTurn[]): void {
 
 export function lastPromptGiven(): string {
   return lastPrompt;
+}
+
+/** The system prompt the last `generate` was given, or null when it used the default. */
+export function lastSystemPromptGiven(): string | null {
+  return lastSystemPrompt;
 }
 
 export function generateCallCount(): number {
@@ -81,6 +87,7 @@ export function resetLlamaScript(): void {
   script = [];
   generateCalls = 0;
   lastPrompt = "";
+  lastSystemPrompt = null;
   loads = [];
   calls = [];
   loaded = false;
@@ -116,7 +123,7 @@ function tokensFor(turn: ScriptedTurn): string[] {
   return [];
 }
 
-function generate(prompt: string): GenerateHandle {
+function generate(prompt: string, systemPrompt?: string): GenerateHandle {
   const shifted = script.shift();
   if (shifted === undefined) {
     // Loud, because silence is a real branch in dispatch ("the model had
@@ -129,6 +136,7 @@ function generate(prompt: string): GenerateHandle {
 
   generateCalls += 1;
   lastPrompt = prompt;
+  lastSystemPrompt = systemPrompt ?? null;
 
   let cancelled = false;
 
@@ -170,6 +178,10 @@ export const fakeLlamaBridge: LlamaBridge = {
     loaded = true;
   },
   generate,
+  /** Four characters to a token, the same stand-in ratio as `llama_rn_mock.ts`. */
+  async countTokens(text: string): Promise<number> {
+    return Math.ceil(text.length / 4);
+  },
   async resetContext(): Promise<void> {
     // Records only. The weights stay resident — that is the point of §4.5's
     // distinction and the reason re-entry after unlock is fast.

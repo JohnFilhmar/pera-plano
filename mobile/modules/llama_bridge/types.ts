@@ -48,6 +48,14 @@ export type GenerateHandle = {
 };
 
 /**
+ * A CEILING, NOT A TARGET, and shared across the boundary because
+ * `lib/ai/promptBudget.ts` reserves exactly this much of the context for the
+ * reply before fitting anything else into it. At tier 2's measured 11.45 tok/s
+ * an uncapped round could decode for minutes toward a full 2,048-token window.
+ */
+export const MAX_RESPONSE_TOKENS = 256;
+
+/**
  * The whole native surface the assistant needs.
  *
  * `generate` takes no grammar. Since spec §7.4 (2026-09-25) the model only
@@ -57,7 +65,17 @@ export type GenerateHandle = {
  */
 export type LlamaBridge = {
   load(modelPath: string, opts: LoadOptions): Promise<void>;
-  generate(prompt: string): GenerateHandle;
+  /**
+   * @param systemPrompt - Omitted for chip narration, which uses `SYSTEM_PROMPT`.
+   *   Free chat passes its level's prompt (assistant levels spec §4.2). Either
+   *   way it travels as its own message, never welded onto the turn.
+   */
+  generate(prompt: string, systemPrompt?: string): GenerateHandle;
+  /**
+   * How many tokens the resident model's own tokenizer makes of `text`, so a
+   * free-chat prompt is fitted to the context by count rather than estimate.
+   */
+  countTokens(text: string): Promise<number>;
   /**
    * Drops the conversation, keeps the weights.
    *

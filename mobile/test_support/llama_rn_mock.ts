@@ -161,6 +161,15 @@ class FakeLlamaContext {
   async release(): Promise<void> {
     calls.push("release");
   }
+
+  /**
+   * Four characters to a token. A stand-in ratio, not a vocabulary: the bridge
+   * only passes the count through, so the number just has to be deterministic.
+   */
+  async tokenize(text: string): Promise<{ tokens: number[] }> {
+    calls.push("tokenize");
+    return { tokens: Array.from({ length: Math.ceil(text.length / 4) }, (_, index) => index) };
+  }
 }
 
 export async function initLlama(params: FakeInitParams): Promise<FakeLlamaContext> {
