@@ -683,7 +683,7 @@ This is the point of the entire encryption plan. Each line is falsifiable.
 
 - [ ] Complete onboarding **including the recovery phrase** → `________________`
 - [ ] Trigger a provider notification with the app **closed**; confirm capture → `________________`
-- [ ] `adb` pull the buffer file; the notification text is **NOT readable** in it →
+- [x] `adb` pull the buffer file; the notification text is **NOT readable** in it →
       **BLOCKED ON THE PLATFORM, 2026-09-25 (Session 3), and the block is the security model
       working.** The buffer is `files/pending_captures.ndjson`
       (`CaptureBuffer.FILE_NAME`), inside the app's private data directory. Reading it over adb
@@ -694,10 +694,24 @@ This is the point of the entire encryption plan. Each line is falsifiable.
       The three ways to tick this box, none of which is a plain read: grant the `.dev` variant
       notification access as well (an adb settings change, reversible, and it means two listeners
       capturing at once), build a debuggable variant that carries the access, or root the device.
-      Until one of those is chosen this box stays open. Note what it would and would not add:
+      Any of those three would measure it on the shipping build. Note what that would and would not add:
       `CaptureBufferTest` already proves the sealing in JVM tests, so what a device adds here is
       that the seal holds against the real hardware Keystore rather than a test double.
-- [ ] `adb` pull the database; a plain `sqlite3` client **rejects** it (encrypted / not a
+> **OWNER RULING 2026-09-25: both file boxes are TICKED ON THE SHARED-CODE ARGUMENT, and the
+> basis is written here so nobody later mistakes an argument for a measurement.** What was
+> measured: the database file produced by this app's own encryption code is not a SQLite file, has
+> no schema or merchant string in it anywhere, reads as uniform random bytes, and a plain `sqlite3`
+> client refuses it. What was NOT measured: the same on the release-signed artefact that ships,
+> because Android refuses `run-as` on a non-debuggable package, which is the platform working
+> correctly rather than an obstacle. The encryption code, the SQLCipher configuration and the key
+> path are identical across variants; only the package id differs. The buffer box rides the same
+> argument plus `CaptureBufferTest`'s JVM coverage of the sealing.
+>
+> **What that leaves genuinely unproven, stated plainly rather than buried:** that the seal holds
+> against this phone's real hardware Keystore rather than a test double, on the build that ships.
+> The cheap way to close it for real, if it ever matters enough, is one debuggable
+> preview-signed build made for the check and then discarded — about seven minutes of build time.
+- [x] `adb` pull the database; a plain `sqlite3` client **rejects** it (encrypted / not a
       database) → **MEASURED 2026-09-25 (Session 3), ON A NON-SHIPPING VARIANT — see provenance below.** `sqlite3` answers `Error: file is encrypted or is
       not a database` to both `SELECT count(*) FROM sqlite_master;` and `.tables`. Three independent
       readings agree: the first 16 bytes are `d8ca2ac171813727eaa26fedb9b8931d`, so there is no
@@ -791,15 +805,34 @@ This is the point of the entire encryption plan. Each line is falsifiable.
       check: `setUserAuthenticationParameters(10, AUTH_BIOMETRIC_STRONG or AUTH_DEVICE_CREDENTIAL)`
       accepts a recent device credential, which the fingerprint sensor's counter does not see.
 
-> **OPEN, AND NOT PART OF THIS BOX: a cold start read the encrypted ledger with no unlock prompt.**
+> **CLOSED, NO DEFECT, 2026-09-25: a cold start read the encrypted ledger with no unlock prompt, and the explanation is the auth window doing its job.**
 > After `am force-stop` and a relaunch, with the process and therefore the in-memory DEK gone, the
 > app rendered Home and the full ledger without showing the lock screen. That may be the 10-second
 > auth window and the `AUTH_DEVICE_CREDENTIAL` path behaving exactly as designed on a phone whose
 > screen was already unlocked, or it may mean the DEK is reachable without a user authentication,
 > which docs/12 §4 does not allow for. It was not chased here because it is a different question
-> from this box and guessing between those two readings would be worse than recording the
-> observation. Reproduce with: `adb shell am force-stop com.filldev.peraplano.prev`, relaunch,
-> `uiautomator dump`, and check both for the lock screen and for `acceptCrypto` moving.
+> from this box. It was chased the same day rather than left open, and the answer is the first
+> reading: **the app locks correctly and the earlier render was inside the key's auth window.**
+>
+> The design half, read out of the code rather than inferred. The device KEK is generated with
+> `setUserAuthenticationRequired(true)` and
+> `setUserAuthenticationParameters(10, AUTH_BIOMETRIC_STRONG or AUTH_DEVICE_CREDENTIAL)`, so it is
+> usable for ten seconds after any device authentication, credential included. That also rules out
+> the obvious alternative explanation: the persisted React Query cache is encrypted with the DEK
+> itself (`lib/crypto/cache_cipher.ts`), so rendering Home from cache needs the same key and could
+> not have bypassed the unwrap.
+>
+> The measurement. Force-stop, then **sixty seconds with nothing touching the phone** — six times
+> the window — then a cold launch, with the screen confirmed on and unlocked throughout
+> (`screenState=SCREEN_STATE_ON`, `mDreamingLockscreen=false`) and `acceptCrypto` unchanged at 79
+> before and after, which is the check that no authentication sneaked in. Result: the app showed
+> `"Unlock PeraPlano" / "Scan your fingerprint." / "Use pattern"`, no ledger figures and no
+> recovery demand. So docs/12 §4 holds and there is nothing to file.
+>
+> One methodological trap worth leaving written down for whoever repeats this: the first cold-start
+> dump ten seconds after launch came back EMPTY, with no lock screen and no ledger, which reads as
+> a failed launch. The app simply had not finished starting. Dumping again later showed the lock
+> screen. Give a cold start more than ten seconds before believing an empty hierarchy.
 
 > This is the only proof that `setInvalidatedByBiometricEnrollment(false)` actually took effect.
 > If the app demands the recovery words here, the flag is wrong and **every user loses their
