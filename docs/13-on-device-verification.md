@@ -985,8 +985,25 @@ grep -c "READ_EXTERNAL_STORAGE\|WRITE_EXTERNAL_STORAGE\|SYSTEM_ALERT_WINDOW" \
   android/app/build/intermediates/merged_manifest/debug/AndroidManifest.xml   # expect 0 in the MERGED one
 ```
 
-- [ ] Source manifest count is 0 → `________________`
-- [ ] **Merged** manifest count is 0 → `________________`
+- [ ] Source manifest count is 0 → **NOT RUN, AND THIS BOX CONTRADICTS THE PARAGRAPH ABOVE IT.**
+      The text says the three permissions get tagged `tools:node="remove"` in the base manifest,
+      which means the base manifest CONTAINS their names and a grep would count 3, not 0. Either the
+      expectation or the description is wrong. Resolving it needs a prebuild, so it is left for
+      whoever runs one rather than guessed at. Box 2 below is the one that carries the claim anyway:
+      what matters is absence from the artefact, not from an intermediate.
+- [x] **Merged** manifest count is 0 → **PASS, 2026-09-25, AND MEASURED ON SOMETHING BETTER THAN THE
+      MERGED MANIFEST: the installed release-signed APK itself.** `adb shell dumpsys package
+      com.filldev.peraplano.prev` reports 31 requested permissions and **zero** matches for
+      `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE` or `SYSTEM_ALERT_WINDOW`. That is a stronger
+      reading than this box asks for: the procedure above greps a DEBUG build's merged manifest,
+      which is an intermediate of a different variant, while this is what Android says the shipped
+      artefact actually declares. Since the installed APK has none of the three, the merged manifest
+      it was built from cannot have had them either.
+      Done this way deliberately rather than by running the commands above: `expo prebuild --clean`
+      half-deletes `android/` when a Gradle daemon still holds `classes.dex` (EBUSY), which has cost
+      a rebuild before, and the check needed nothing destructive. Re-run as
+      `adb shell dumpsys package <pkg> | grep -cE "READ_EXTERNAL_STORAGE|WRITE_EXTERNAL_STORAGE|SYSTEM_ALERT_WINDOW"`,
+      expecting 0, against whichever build is installed.
 
 The merged one is the check that matters. The source manifest can be clean while a library
 re-injects a permission during the merge — that is the entire failure mode this exists to catch.
