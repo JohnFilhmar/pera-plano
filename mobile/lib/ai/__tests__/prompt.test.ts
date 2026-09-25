@@ -55,6 +55,14 @@ describe("the system prompt", () => {
   });
 });
 
+test("the turn tells the model the records are the user's, so it answers with you, not I", () => {
+  // On the A54 on 2026-09-25, "How much money do I have?" came back as "I have
+  // ₱50.00 in total.": the model echoed the question's first person as if the
+  // money were its own.
+  const prompt = buildTurnPrompt({ transcript: TRANSCRIPT, toolResults: TOOL_RESULTS });
+  expect(prompt).toMatch(/speak to the user as "you"/i);
+});
+
 describe("the delimited tool channel", () => {
   const prompt = buildTurnPrompt({ transcript: TRANSCRIPT, toolResults: TOOL_RESULTS });
 

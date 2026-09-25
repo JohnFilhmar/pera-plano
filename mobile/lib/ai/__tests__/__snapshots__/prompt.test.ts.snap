@@ -9,7 +9,7 @@ User: And in February?
 {"tool":"get_spend_by_category","data":{"topCategory":"Groceries"},"display":[{"key":"groceries","value":"₱2,400.00","kind":"amount"}]}
 [[/TOOL_RESULTS]]
 
-Answer the last user message using only the values above."
+Answer the last user message using only the values above. Speak to the user as "you": these are their records, not yours."
 `;
 
 exports[`the system prompt is pinned, so advisory framing cannot re-enter without review 1`] = `

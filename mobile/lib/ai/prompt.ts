@@ -94,5 +94,8 @@ export function buildTurnPrompt(opts: {
     TOOL_CHANNEL_CLOSE,
   ].join("\n");
 
-  return `${conversation}\n\n${channel}\n\nAnswer the last user message using only the values above.`;
+  // "Speak to the user as you": a question asked in the first person ("How much
+  // money do I have?") was answered in the first person on the phone, as if the
+  // money were the model's.
+  return `${conversation}\n\n${channel}\n\nAnswer the last user message using only the values above. Speak to the user as "you": these are their records, not yours.`;
 }
