@@ -769,7 +769,37 @@ This is the point of the entire encryption plan. Each line is falsifiable.
 > reboot on a real phone behaves the same way.
 
 ### Enroll an additional fingerprint
-- [ ] **The key must SURVIVE.** → `________________`
+- [x] **The key must SURVIVE.** → **PASS, 2026-09-25 (Session 3), on the preview build
+      `com.filldev.peraplano.prev`.** Enrolled fingerprint count went 2 → 3, read from
+      `dumpsys fingerprint`'s `"count"` before and after rather than taken on trust. The app then
+      opened to Home with the ledger intact and **did not ask for the recovery words**.
+      The figures are identical across the enrollment, compared field by field rather than by
+      glancing at the screen: balance ₱1,945.97, spent so far ₱15,971.48, saved ₱91.51, the same
+      ₱7,454.81-over line, and both upcoming bills (Fiberblaze ₱649.00 due in 5d, Antrhopic Claude
+      ₱7,000.00 due in 20d). The review queue rose from 3 items to 5, which is the listener
+      working rather than a discrepancy.
+      **THIS IS THE STRONG READING AND IT DOES NOT DEPEND ON WHICH AUTH PATH RAN.** An invalidated
+      key makes the database unreadable outright, so a rendered ledger is the proof;
+      `setInvalidatedByBiometricEnrollment(false)` therefore took effect and the routine
+      settings-change data loss this box exists to catch does not happen.
+      Worth recording about the method, because it nearly produced a false pass: the FIRST reading
+      was inconclusive and was not accepted. The app resumed an already-unlocked session, so the
+      in-memory DEK was never re-derived, and `dumpsys fingerprint`'s `acceptCrypto` stayed at 79
+      across the whole check — no new crypto-backed authentication happened at all. The app was
+      force-stopped and cold-launched to clear the process before the reading above was taken.
+      `acceptCrypto` not moving is explained by the KEK's own policy rather than by an absent
+      check: `setUserAuthenticationParameters(10, AUTH_BIOMETRIC_STRONG or AUTH_DEVICE_CREDENTIAL)`
+      accepts a recent device credential, which the fingerprint sensor's counter does not see.
+
+> **OPEN, AND NOT PART OF THIS BOX: a cold start read the encrypted ledger with no unlock prompt.**
+> After `am force-stop` and a relaunch, with the process and therefore the in-memory DEK gone, the
+> app rendered Home and the full ledger without showing the lock screen. That may be the 10-second
+> auth window and the `AUTH_DEVICE_CREDENTIAL` path behaving exactly as designed on a phone whose
+> screen was already unlocked, or it may mean the DEK is reachable without a user authentication,
+> which docs/12 §4 does not allow for. It was not chased here because it is a different question
+> from this box and guessing between those two readings would be worse than recording the
+> observation. Reproduce with: `adb shell am force-stop com.filldev.peraplano.prev`, relaunch,
+> `uiautomator dump`, and check both for the lock screen and for `acceptCrypto` moving.
 
 > This is the only proof that `setInvalidatedByBiometricEnrollment(false)` actually took effect.
 > If the app demands the recovery words here, the flag is wrong and **every user loses their
