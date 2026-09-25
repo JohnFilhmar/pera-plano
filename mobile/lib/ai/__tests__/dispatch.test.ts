@@ -16,7 +16,6 @@ import { ok, unavailable, type ToolResult } from "../tools/types";
 import {
   fakeLlamaBridge,
   generateCallCount,
-  lastGrammarGiven,
   lastPromptGiven,
   resetLlamaScript,
   scriptLlama,
@@ -142,12 +141,6 @@ describe("a tapped question", () => {
     const prompt = lastPromptGiven();
     expect(prompt.startsWith(`User: ${SPEND_QUESTION.label}\n\n${TOOL_CHANNEL_OPEN}`)).toBe(true);
     expect(prompt).not.toContain("Assistant:");
-  });
-
-  test("the narration round runs with no grammar", async () => {
-    scriptLlama([{ emit: "You spent ₱2,400.00 on Groceries." }]);
-    await answerQuestion(SPEND_QUESTION, depsWith());
-    expect(lastGrammarGiven()).toBeNull();
   });
 
   test.each(FIXED_QUESTIONS.map((question) => [question.id, question] as const))(

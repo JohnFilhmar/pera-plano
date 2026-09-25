@@ -141,9 +141,7 @@ export async function answerQuestion(
     transcript: [{ role: "user", text: question.label }],
     toolResults: results,
   });
-  // No grammar: there is no tool call left for one to shape, and the spike
-  // measured that a grammar cannot forbid a format anyway.
-  const handle = deps.bridge.generate(prompt, null);
+  const handle = deps.bridge.generate(prompt);
 
   let raw = "";
   try {

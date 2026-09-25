@@ -85,10 +85,10 @@ describe("llama_bridge — thinking suppression", () => {
   it("suppresses thinking per load rather than as a module-level flag", async () => {
     await bridge.load(TIER_2_PATH, { contextTokens: CONTEXT_TOKENS, suppressThinking: true });
     runtime.scriptLlamaTokens([["a"], ["b"]]);
-    await drain(bridge.generate("first", null).tokens);
+    await drain(bridge.generate("first").tokens);
 
     await bridge.load(TIER_1_PATH, { contextTokens: CONTEXT_TOKENS, suppressThinking: false });
-    await drain(bridge.generate("second", null).tokens);
+    await drain(bridge.generate("second").tokens);
 
     const [suppressed, unsuppressed] = runtime.completionCalls();
     expect(suppressed.enable_thinking).toBe(false);
@@ -101,7 +101,7 @@ describe("llama_bridge — thinking suppression", () => {
     await bridge.load(TIER_2_PATH, { contextTokens: CONTEXT_TOKENS, suppressThinking: true });
     runtime.scriptLlamaTokens([["ok"]]);
 
-    await drain(bridge.generate("User: how much did I spend?", null).tokens);
+    await drain(bridge.generate("User: how much did I spend?").tokens);
 
     const [params] = runtime.completionCalls();
     // Two roles, never one concatenated string: the compartment in §3.2's
@@ -122,31 +122,29 @@ describe("llama_bridge — generation", () => {
     runtime.scriptLlamaTokens([["You ", "spent ", "₱2,400.00"]]);
 
     const seen: string[] = [];
-    for await (const token of bridge.generate("q", null).tokens) seen.push(token);
+    for await (const token of bridge.generate("q").tokens) seen.push(token);
 
     expect(seen).toEqual(["You ", "spent ", "₱2,400.00"]);
   });
 
-  it("passes a grammar through, and omits the key entirely when unconstrained", async () => {
+  it("never sends a grammar: the model only narrates", async () => {
     await bridge.load(TIER_1_PATH, { contextTokens: CONTEXT_TOKENS, suppressThinking: true });
-    runtime.scriptLlamaTokens([["x"], ["y"]]);
+    runtime.scriptLlamaTokens([["x"]]);
 
-    await drain(bridge.generate("q", 'root ::= "a"').tokens);
-    await drain(bridge.generate("q", null).tokens);
+    await drain(bridge.generate("q").tokens);
 
-    const [constrained, unconstrained] = runtime.completionCalls();
-    expect(constrained.grammar).toBe('root ::= "a"');
-    // The forced-answer round runs with NO grammar at all — the spike measured
-    // that GBNF compels a format and cannot forbid one. An empty-string grammar
-    // would be a grammar, and llama.cpp would try to parse it.
-    expect(unconstrained).not.toHaveProperty("grammar");
+    // Spec §7.4: there is no tool call left for a grammar to shape. An
+    // empty-string grammar would still be a grammar, and llama.cpp would try to
+    // parse it, so the key must be absent rather than empty.
+    const [call] = runtime.completionCalls();
+    expect(call).not.toHaveProperty("grammar");
   });
 
   it("stops the iterable and the decoder when cancelled mid-stream", async () => {
     await bridge.load(TIER_1_PATH, { contextTokens: CONTEXT_TOKENS, suppressThinking: true });
     runtime.scriptLlamaTokens([["one ", "two ", "three ", "four ", "five"]]);
 
-    const handle = bridge.generate("q", null);
+    const handle = bridge.generate("q");
     const seen: string[] = [];
     for await (const token of handle.tokens) {
       seen.push(token);
@@ -164,14 +162,14 @@ describe("llama_bridge — generation", () => {
     runtime.scriptLlamaTokens([["one ", "two ", "three "]]);
     runtime.failNextCompletionAfter(2);
 
-    const handle = bridge.generate("q", null);
+    const handle = bridge.generate("q");
     // Swallowing it would hand the surface a short, clean-looking answer that
     // silently lost its ending.
     await expect(drain(handle.tokens)).rejects.toThrow(/scripted native failure/);
   });
 
   it("refuses to generate with no model resident", async () => {
-    expect(() => bridge.generate("q", null)).toThrow(/no model/i);
+    expect(() => bridge.generate("q")).toThrow(/no model/i);
   });
 });
 

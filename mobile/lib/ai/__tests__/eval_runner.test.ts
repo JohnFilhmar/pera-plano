@@ -62,8 +62,8 @@ async function collect(deps: EvalDeps): Promise<EvalProgress[]> {
 function abortingBridge(abort: { aborted: boolean }): LlamaBridge {
   return {
     ...fakeLlamaBridge,
-    generate: (prompt, grammar) => {
-      const handle = fakeLlamaBridge.generate(prompt, grammar);
+    generate: (prompt) => {
+      const handle = fakeLlamaBridge.generate(prompt);
       async function* tokens(): AsyncGenerator<string> {
         for await (const token of handle.tokens) {
           abort.aborted = true;

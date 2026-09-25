@@ -74,7 +74,7 @@ export async function load(modelPath: string, opts: LoadOptions): Promise<void> 
   suppressThinking = opts.suppressThinking;
 }
 
-export function generate(prompt: string, grammar: string | null): GenerateHandle {
+export function generate(prompt: string): GenerateHandle {
   const resident = context;
   if (!resident) {
     // Loud rather than an empty stream: "no model loaded" and "the model had
@@ -108,10 +108,6 @@ export function generate(prompt: string, grammar: string | null): GenerateHandle
         // ONLY EVER SUPPRESSED, never asserted. Passing `true` to a 2507
         // instruct template tells a model that does not think to start.
         ...(suppressThinking ? { enable_thinking: false } : {}),
-        // An empty string would still be a grammar, and llama.cpp would try to
-        // parse it. `null` means the forced-answer round, which runs
-        // unconstrained on purpose.
-        ...(grammar === null ? {} : { grammar }),
         n_predict: MAX_RESPONSE_TOKENS,
       },
       (data: TokenData) => {

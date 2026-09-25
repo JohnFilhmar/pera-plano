@@ -48,16 +48,16 @@ export type GenerateHandle = {
 };
 
 /**
- * `grammar` is `null` for an unconstrained round.
+ * The whole native surface the assistant needs.
  *
- * That is not an oversight, it is the spike's finding: GBNF compels a format
- * and cannot forbid one, so the forced-answer round runs with no grammar at all
- * and `dispatch.ts` refuses to act on a tool call in that round. See
- * `lib/ai/tools/grammar.ts`.
+ * `generate` takes no grammar. Since spec §7.4 (2026-09-25) the model only
+ * narrates a result the app already fetched, so there is no tool call for a
+ * grammar to shape, and the spike measured that a grammar cannot forbid a
+ * format anyway.
  */
 export type LlamaBridge = {
   load(modelPath: string, opts: LoadOptions): Promise<void>;
-  generate(prompt: string, grammar: string | null): GenerateHandle;
+  generate(prompt: string): GenerateHandle;
   /**
    * Drops the conversation, keeps the weights.
    *

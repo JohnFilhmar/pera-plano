@@ -1,33 +1,25 @@
 // mobile/test_support/llama_bridge_mock.ts
 //
-// A SCRIPTED ACTOR, NOT A CONSTRAINED DECODER. Spec §5.3. It lets the entire
-// dispatch loop — the round cap, the turn cache, grounding, the output guard
-// and every degradation path — be tested with ZERO inference.
+// A SCRIPTED ACTOR, NOT A DECODER. Spec §5.3. It lets the narration round,
+// grounding, the output guard and every degradation path be tested with ZERO
+// inference.
 //
-// FOUR DECISIONS, EACH WITH ITS REASON:
+// THREE DECISIONS, EACH WITH ITS REASON:
 //
 //   1. IT EMITS TOKEN BY TOKEN, never a resolved whole string. "Half the
-//      surface's bugs live in streaming: a partial tool call rendering as prose
-//      before its closing brace, a cancel landing mid-token, a `<think>` tag
-//      split across two tokens. A fake that resolves whole strings tests none
-//      of them." `perTokenDelayMs` defaults to 0 so the suite stays fast; the
-//      stall and cancel tests use fake timers.
+//      surface's bugs live in streaming: a partial JSON object rendering as
+//      prose before its closing brace, a cancel landing mid-token, a `<think>`
+//      tag split across two tokens. A fake that resolves whole strings tests
+//      none of them." `perTokenDelayMs` defaults to 0 so the suite stays fast;
+//      the stall and cancel tests use fake timers.
 //
-//   2. IT DOES NOT VALIDATE AGAINST THE GRAMMAR. It RECORDS the grammar so a
-//      test can assert the right one was passed — including `null` for the
-//      forced-answer round, which is how that round is proved unconstrained.
-//      Proving a grammar constrains anything is llama.cpp's job (§5.6), not a
-//      claim any fake can make.
+//   2. `emitRaw` EXISTS SO MALFORMED OUTPUT HAS DEFINED BEHAVIOUR. Since spec
+//      §7.4 no grammar is sent at all, so nothing stops the model writing JSON
+//      where a sentence belongs. `emitRaw` passes the string through UNTOUCHED,
+//      leading space included, because `dispatch.ts` must judge raw output: a
+//      leading space is invisible after `.trim()`.
 //
-//   3. `emitRaw` EXISTS SO MALFORMED OUTPUT HAS DEFINED BEHAVIOUR. "GBNF makes
-//      malformed output impossible" is a claim about the real decoder. The loop
-//      still needs a specified response if it ever sees garbage — a grammar
-//      bug, or a future backend with no grammar support at all. It passes the
-//      string through UNTOUCHED, leading space included, because the spike
-//      measured a leading space smuggling a tool call past a grammar that
-//      forbade one, and `dispatch.ts` must parse raw output to catch it.
-//
-//   4. IT RECORDS AND DOES NOT ENFORCE. `bridgeCalls()` gives the ordered log so
+//   3. IT RECORDS AND DOES NOT ENFORCE. `bridgeCalls()` gives the ordered log so
 //      the one-model-resident invariant (unload before the second load) can be
 //      asserted against the REAL bridge once `modules/llama_bridge/index.ts`
 //      exists. If this fake auto-unloaded, that test would be testing this file.
@@ -45,8 +37,6 @@ import type { GenerateHandle, LlamaBridge, LoadOptions } from "@/modules/llama_b
 export type ScriptedTurn =
   /** Prose, split into tokens. */
   | { emit: string; perTokenDelayMs?: number }
-  /** Serialised exactly as `grammar.ts` compels the real decoder to emit it. */
-  | { emitToolCall: { name: string; args: unknown } }
   /** Deliberately malformed output, passed through byte for byte. */
   | { emitRaw: string }
   /** No tokens for n ms. */
@@ -57,7 +47,6 @@ export type ScriptedTurn =
 let script: ScriptedTurn[] = [];
 let generateCalls = 0;
 let lastPrompt = "";
-let lastGrammar: string | null = null;
 let loads: { path: string; opts: LoadOptions }[] = [];
 let calls: string[] = [];
 let loaded = false;
@@ -68,10 +57,6 @@ export function scriptLlama(turns: ScriptedTurn[]): void {
 
 export function lastPromptGiven(): string {
   return lastPrompt;
-}
-
-export function lastGrammarGiven(): string | null {
-  return lastGrammar;
 }
 
 export function generateCallCount(): number {
@@ -96,7 +81,6 @@ export function resetLlamaScript(): void {
   script = [];
   generateCalls = 0;
   lastPrompt = "";
-  lastGrammar = null;
   loads = [];
   calls = [];
   loaded = false;
@@ -114,9 +98,9 @@ function proseTokens(text: string): string[] {
 }
 
 /**
- * A tool call splits on a fixed width rather than on whitespace: it contains
- * none, and the bug worth reproducing is a consumer rendering `{"tool":"get_wal`
- * as prose before the closing brace ever arrives.
+ * Raw output splits on a fixed width rather than on whitespace: JSON has none,
+ * and the bug worth reproducing is a consumer rendering `{"tool":"get_wal` as
+ * prose before the closing brace ever arrives.
  */
 function chunk(text: string, width: number): string[] {
   const pieces: string[] = [];
@@ -129,15 +113,10 @@ function chunk(text: string, width: number): string[] {
 function tokensFor(turn: ScriptedTurn): string[] {
   if ("emit" in turn) return proseTokens(turn.emit);
   if ("emitRaw" in turn) return chunk(turn.emitRaw, 8);
-  if ("emitToolCall" in turn) {
-    // Key order matters: this is the shape `grammar.ts` compels.
-    const serialised = JSON.stringify({ tool: turn.emitToolCall.name, args: turn.emitToolCall.args });
-    return chunk(serialised, 8);
-  }
   return [];
 }
 
-function generate(prompt: string, grammar: string | null): GenerateHandle {
+function generate(prompt: string): GenerateHandle {
   const shifted = script.shift();
   if (shifted === undefined) {
     // Loud, because silence is a real branch in dispatch ("the model had
@@ -150,7 +129,6 @@ function generate(prompt: string, grammar: string | null): GenerateHandle {
 
   generateCalls += 1;
   lastPrompt = prompt;
-  lastGrammar = grammar;
 
   let cancelled = false;
 

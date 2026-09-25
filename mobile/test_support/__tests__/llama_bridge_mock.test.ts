@@ -7,7 +7,6 @@
 // dispatch suite goes green while the real surface is broken.
 import {
   generateCallCount,
-  lastGrammarGiven,
   lastPromptGiven,
   loadCalls,
   resetLlamaScript,
@@ -30,15 +29,15 @@ describe("the queue", () => {
   test("one scripted turn is consumed per generate()", async () => {
     scriptLlama([{ emit: "first answer" }, { emit: "second answer" }]);
 
-    expect((await drain(fakeLlamaBridge.generate("p1", null))).join("")).toBe("first answer");
-    expect((await drain(fakeLlamaBridge.generate("p2", null))).join("")).toBe("second answer");
+    expect((await drain(fakeLlamaBridge.generate("p1"))).join("")).toBe("first answer");
+    expect((await drain(fakeLlamaBridge.generate("p2"))).join("")).toBe("second answer");
     expect(generateCallCount()).toBe(2);
   });
 
   test("generating with an empty script fails loudly rather than returning silence", () => {
     // Silence is indistinguishable from "the model had nothing to say", which
     // is a real branch in dispatch. A missing script must not impersonate it.
-    expect(() => fakeLlamaBridge.generate("p", null)).toThrow(/script/i);
+    expect(() => fakeLlamaBridge.generate("p")).toThrow(/script/i);
   });
 });
 
@@ -47,39 +46,30 @@ describe("streaming", () => {
     // "Half the surface's bugs live in streaming: a partial tool call rendering
     // as prose before its closing brace, a cancel landing mid-token."
     scriptLlama([{ emit: "You spent ₱2,400.00 today" }]);
-    const tokens = await drain(fakeLlamaBridge.generate("p", null));
+    const tokens = await drain(fakeLlamaBridge.generate("p"));
     expect(tokens.length).toBeGreaterThan(1);
     expect(tokens.join("")).toBe("You spent ₱2,400.00 today");
   });
 
-  test("a tool call is serialised the way the grammar would emit it, and split across tokens", async () => {
-    scriptLlama([{ emitToolCall: { name: "get_spend_by_category", args: { period: "this_month" } } }]);
-    const tokens = await drain(fakeLlamaBridge.generate("p", null));
-    expect(tokens.join("")).toBe(
-      '{"tool":"get_spend_by_category","args":{"period":"this_month"}}',
-    );
+  test("emitRaw passes the string through untouched, however malformed, split across tokens", async () => {
+    scriptLlama([{ emitRaw: '{"tool":"get_wal' }]);
+    const tokens = await drain(fakeLlamaBridge.generate("p"));
+    expect(tokens.join("")).toBe('{"tool":"get_wal');
     // Split, so a consumer that renders before the closing brace is caught.
     expect(tokens.length).toBeGreaterThan(1);
   });
 
-  test("emitRaw passes the string through untouched, however malformed", async () => {
-    scriptLlama([{ emitRaw: '{"tool":"get_wal' }]);
-    const tokens = await drain(fakeLlamaBridge.generate("p", null));
-    expect(tokens.join("")).toBe('{"tool":"get_wal');
-  });
-
-  test("a leading space survives, because dispatch must parse RAW output", async () => {
-    // The spike's finding: a leading space in front of a tool call is invisible
-    // after `.trim()` and turns a forbidden round into a dispatched one. The
-    // fake must be able to reproduce that exactly.
+  test("a leading space survives, because dispatch must judge RAW output", async () => {
+    // A leading space in front of JSON is invisible after `.trim()`. The fake
+    // must be able to reproduce that exactly.
     scriptLlama([{ emitRaw: ' {"tool":"get_wallets","args":{}}' }]);
-    const tokens = await drain(fakeLlamaBridge.generate("p", null));
+    const tokens = await drain(fakeLlamaBridge.generate("p"));
     expect(tokens.join("")).toBe(' {"tool":"get_wallets","args":{}}');
   });
 
   test("throwAfter emits its tokens and then fails mid-stream", async () => {
     scriptLlama([{ throwAfter: 3 }]);
-    const handle = fakeLlamaBridge.generate("p", null);
+    const handle = fakeLlamaBridge.generate("p");
     const seen: string[] = [];
     await expect(
       (async () => {
@@ -95,7 +85,7 @@ describe("stall, under fake timers", () => {
     jest.useFakeTimers();
     try {
       scriptLlama([{ stall: 5000 }]);
-      const handle = fakeLlamaBridge.generate("p", null);
+      const handle = fakeLlamaBridge.generate("p");
       let done = false;
       const drained = drain(handle).then(() => {
         done = true;
@@ -116,7 +106,7 @@ describe("stall, under fake timers", () => {
 describe("cancellation", () => {
   test("cancel() stops the iterable", async () => {
     scriptLlama([{ emit: "one two three four five six seven eight" }]);
-    const handle = fakeLlamaBridge.generate("p", null);
+    const handle = fakeLlamaBridge.generate("p");
 
     const seen: string[] = [];
     for await (const token of handle.tokens) {
@@ -129,17 +119,13 @@ describe("cancellation", () => {
 });
 
 describe("what the fake records", () => {
-  test("the prompt and the grammar of the most recent call", async () => {
+  test("the prompt of the most recent call", async () => {
     scriptLlama([{ emit: "a" }, { emit: "b" }]);
-    await drain(fakeLlamaBridge.generate("first prompt", "root ::= tool-call"));
+    await drain(fakeLlamaBridge.generate("first prompt"));
     expect(lastPromptGiven()).toBe("first prompt");
-    expect(lastGrammarGiven()).toBe("root ::= tool-call");
 
-    await drain(fakeLlamaBridge.generate("second prompt", null));
+    await drain(fakeLlamaBridge.generate("second prompt"));
     expect(lastPromptGiven()).toBe("second prompt");
-    // null is a MEANINGFUL value here, not "unset": it is how the forced-answer
-    // round is proved to have been unconstrained.
-    expect(lastGrammarGiven()).toBeNull();
   });
 
   test("loads, with their per-load options", async () => {
@@ -194,7 +180,7 @@ describe("what the fake records", () => {
 describe("resetLlamaScript", () => {
   test("clears everything, so one suite cannot leak into the next", async () => {
     scriptLlama([{ emit: "a" }]);
-    await drain(fakeLlamaBridge.generate("p", "g"));
+    await drain(fakeLlamaBridge.generate("p"));
     await fakeLlamaBridge.load("/models/a.gguf", { contextTokens: 2048, suppressThinking: true });
 
     resetLlamaScript();
@@ -203,7 +189,6 @@ describe("resetLlamaScript", () => {
     expect(loadCalls()).toEqual([]);
     expect(bridgeCalls()).toEqual([]);
     expect(lastPromptGiven()).toBe("");
-    expect(lastGrammarGiven()).toBeNull();
     expect(fakeLlamaBridge.isLoaded()).toBe(false);
   });
 });
