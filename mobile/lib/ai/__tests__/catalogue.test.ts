@@ -47,6 +47,14 @@ describe("the catalogue is pinned data", () => {
     const spec = MODEL_CATALOGUE.find((entry) => entry.id === id);
     expect(spec?.bytes).toBe(EXPECTED_BYTES[id]);
   });
+
+  test.each(EXPECTED_IDS)("%s names its release month as its knowledge limit", (id) => {
+    // Qwen publishes no training cutoff for Qwen3. The release month is the
+    // fact that can be checked: Hugging Face's API lists both repos as created
+    // on 2025-04-27. Assistant levels spec §5.3.
+    const spec = MODEL_CATALOGUE.find((entry) => entry.id === id);
+    expect(spec?.knowledgeLimit).toBe("April 2025");
+  });
 });
 
 describe("every entry", () => {
@@ -92,12 +100,4 @@ describe("every entry", () => {
       expect(spec.suppressThinking).toBe(true);
     },
   );
-
-  test.each(EXPECTED_IDS)("%s names its release month as its knowledge limit", (id) => {
-    // Qwen publishes no training cutoff for Qwen3. The release month is the
-    // fact that can be checked: Hugging Face's API lists both repos as created
-    // on 2025-04-27. Assistant levels spec §5.3.
-    const spec = MODEL_CATALOGUE.find((entry) => entry.id === id);
-    expect(spec?.knowledgeLimit).toBe("April 2025");
-  });
 });
