@@ -7,7 +7,7 @@
 import { fireEvent, render, screen } from "@testing-library/react-native";
 
 import { configureAiEval } from "@/lib/ai/eval/harness";
-import { EVAL_QUESTIONS } from "@/lib/ai/eval/questions";
+import { FIXED_QUESTIONS } from "@/lib/ai/fixed_questions";
 import { ok } from "@/lib/ai/tools/types";
 import { fakeLlamaBridge, loadCalls, scriptLlama } from "@/test_support/llama_bridge_mock";
 
@@ -27,14 +27,8 @@ beforeEach(() => {
     readResidentBytes: () => 1_000_000,
     model: { id: "qwen3-0.6b-q4", path: "/models/qwen3-0.6b-q4.gguf", options: OPTIONS },
   });
-  // Every question that reaches the model calls a tool, then answers with the
-  // figure. Advice questions consume nothing, so a few turns go unused.
-  scriptLlama(
-    EVAL_QUESTIONS.flatMap(() => [
-      { emitToolCall: { name: "get_balance_total", args: {} } },
-      { emit: `You have ${FIGURE}.` },
-    ]),
-  );
+  // One narration per question, each stating the tool result's figure.
+  scriptLlama(FIXED_QUESTIONS.map(() => ({ emit: `You have ${FIGURE}.` })));
 });
 
 afterEach(() => {
@@ -81,21 +75,53 @@ test("one [ai_eval] line per question and one per report, with no text in any of
   await screen.findByTestId("ai-eval-complete");
 
   const lines = evalLines();
-  expect(lines).toHaveLength(EVAL_QUESTIONS.length + 1);
+  expect(lines).toHaveLength(FIXED_QUESTIONS.length + 1);
   for (const line of lines) {
     expect(line).toContain('"tier":"qwen3-0.6b-q4"');
     // Every answer and every tool result in this run carries the figure.
     expect(line).not.toContain(FIGURE);
-    for (const question of EVAL_QUESTIONS) expect(line).not.toContain(question.prompt);
+    for (const question of FIXED_QUESTIONS) expect(line).not.toContain(question.label);
   }
+
+  // docs/13's logcat recipes read these fields by name, and `toEqual` fails
+  // on any field added or dropped.
+  const question: unknown = JSON.parse(lines[0].slice("[ai_eval] ".length));
+  expect(question).toEqual({
+    event: "question",
+    run: expect.any(Number),
+    tier: "qwen3-0.6b-q4",
+    suppressThinking: true,
+    index: 0,
+    id: FIXED_QUESTIONS[0].id,
+    ttftMs: expect.any(Number),
+    tokensPerSecond: expect.any(Number),
+    wallClockMs: expect.any(Number),
+    residentBytes: 1_000_000,
+    outcome: "prose",
+    cardReason: null,
+    empty: false,
+    thinkTag: false,
+  });
 
   const report: unknown = JSON.parse(lines[lines.length - 1].slice("[ai_eval] ".length));
   expect(report).toMatchObject({
     event: "report",
-    completed: EVAL_QUESTIONS.length,
-    // Gate 2's denominator: one constrained round per question that reached
-    // the model, which docs/13 states as 28 per run.
-    constrainedGenerations: EVAL_QUESTIONS.filter((q) => q.expected.kind !== "advice").length,
-    malformedGenerations: 0,
+    completed: FIXED_QUESTIONS.length,
+    cardAnswers: 0,
+    ungroundedAnswers: 0,
+    emptyAnswers: 0,
+    thinkTagAnswers: 0,
   });
+});
+
+test("a stop inside the first question brings back the offer, not a report of zeroes", async () => {
+  // Slow enough that the stop lands before the first answer finishes.
+  scriptLlama([{ emit: `You have ${FIGURE} in all your wallets.`, perTokenDelayMs: 200 }]);
+
+  render(<AiEvalScreen />);
+  fireEvent.press(screen.getByTestId("ai-eval-run"));
+  fireEvent.press(await screen.findByTestId("ai-eval-cancel"));
+
+  await screen.findByTestId("ai-eval-never-run");
+  expect(screen.queryByTestId("ai-eval-headline")).toBeNull();
 });

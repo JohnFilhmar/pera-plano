@@ -207,7 +207,7 @@ export default function AiAssistantScreen() {
         <ListRow
           testID="ai-eval-entry"
           title="Test it on this phone"
-          subtitle="30 practice questions. Your own transactions are never read."
+          subtitle="8 practice questions. Your own transactions are never read."
           subtitleLines={3}
           right={<ChevronGlyph size={18} className="text-fg-2 dark:text-fg-2-dark" />}
           onPress={() => router.push("/more/ai/eval")}

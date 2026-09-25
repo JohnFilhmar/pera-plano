@@ -1,10 +1,13 @@
 // components/ai/eval_results.tsx — AI plan Task 24.
 //
-// THIS PHONE'S NUMBERS, NEVER A SPEC SHEET. "On your phone: 11 tokens/second,
-// picked the right tool 26 times out of 30." A number measured on the phone in
-// the user's hand is the only honest thing to show, and it is also more
-// persuasive than any benchmark table — the table was written on a different
-// chip, at a different temperature, with a different amount of free RAM.
+// THIS PHONE'S NUMBERS, NEVER A SPEC SHEET. "On your phone: the first word in
+// 1.2 s, then 11.2 tokens per second." A number measured on the phone in the
+// user's hand is the only honest thing to show, and it is also more persuasive
+// than any benchmark table. The table was written on a different chip, at a
+// different temperature, with a different amount of free RAM.
+//
+// NOTHING HERE MEASURES TOOL CHOICE. Since spec §7.4 each question names its own
+// tool, so the model only narrates, and narration is what the rows describe.
 //
 // THE PROPS ARE THE ENFORCEMENT. This component takes an `EvalReport` and
 // nothing else that carries a figure: there is no `spec`, no `tier`, and no
@@ -27,10 +30,10 @@ import type { EvalReport } from "@/lib/ai/eval_runner";
 /**
  * `stopped` is a first-class state, not `complete` with a smaller number.
  *
- * Thirty questions at 4 tok/s is well over ten minutes, so the run is meant to
- * be escapable — and a partial result rendered in the finished layout is a lie
- * the user has no way to detect. `total` rides along so the partial notice can
- * say what fraction of the set actually ran.
+ * A run on a slow phone takes minutes, so it is meant to be escapable, and a
+ * partial result rendered in the finished layout is a lie the user has no way
+ * to detect. `total` rides along so the offer can say how many questions there
+ * are, and the partial notice what fraction of them actually ran.
  *
  * `suppressThinking` is the load option the run's model had, and only a
  * development build sets it. There the eval screen can load the model with
@@ -38,7 +41,7 @@ import type { EvalReport } from "@/lib/ai/eval_runner";
  * to say which kind it was.
  */
 export type EvalRunState =
-  | { kind: "never_run" }
+  | { kind: "never_run"; total: number }
   | { kind: "running"; completed: number; total: number }
   | { kind: "stopped"; report: EvalReport; total: number; suppressThinking?: boolean }
   | { kind: "complete"; report: EvalReport; total: number; suppressThinking?: boolean };
@@ -47,7 +50,7 @@ export type EvalResultsProps = {
   state: EvalRunState;
   /** Starts from question one, discarding any partial run. */
   onRun: () => void;
-  /** Continues from the first question with no verdict yet. */
+  /** Continues from the first question with no result yet. */
   onResume: () => void;
   onCancel: () => void;
   testID?: string;
@@ -89,24 +92,11 @@ function gigabytes(bytes: number): string {
   return `${(bytes / 1e9).toFixed(1)} GB`;
 }
 
-/**
- * A rate back to the count it came from.
- *
- * `toolPickAccuracy` is a mean of 0/1 scores, so `rate * completed` is a whole
- * number up to float error — 26/30 × 30 is 25.999999999999996. Rounding
- * restores the count the runner actually recorded; printing the product would
- * put that string on a screen the user is being asked to trust.
- */
-function countFromRate(rate: number, completed: number): number {
-  return Math.round(rate * completed);
-}
-
 function headlineFor(report: EvalReport, partial: boolean): string {
   const opening = partial ? "On your phone so far" : "On your phone";
-  const correct = countFromRate(report.toolPickAccuracy, report.completed);
   return (
-    `${opening}: ${report.decodeMedianTps.toFixed(1)} tokens per second, ` +
-    `picked the right tool ${correct} times out of ${report.completed}.`
+    `${opening}: the first word in ${seconds(report.ttftMedianMs)}, ` +
+    `then ${report.decodeMedianTps.toFixed(1)} tokens per second.`
   );
 }
 
@@ -137,16 +127,16 @@ export function EvalResults({ state, onRun, onResume, onCancel, testID }: EvalRe
           Nothing measured yet
         </Text>
         {/* NO ZEROED REPORT HERE. A never-run screen that renders an empty
-            `EvalReport` says "picked the right tool 0 times out of 30" — a
-            damning measurement the device never took. The offer replaces the
-            numbers rather than sitting under them. */}
+            `EvalReport` says "the first word in 0.0 s", a measurement the
+            device never took. The offer replaces the numbers rather than
+            sitting under them. */}
         <Text className="mt-1 text-secondary text-fg-2 dark:text-fg-2-dark">
-          PeraPlano can time the assistant on this phone and count how often it reaches for the
-          right tool. It asks 30 questions against a built-in practice ledger, so your own
-          transactions are never read, and nothing leaves the phone.
+          PeraPlano can time the assistant on this phone and count how often an answer has to be
+          replaced by a card. It asks {state.total} questions about a built-in practice ledger, so
+          your own transactions are never read, and nothing leaves the phone.
         </Text>
         <View className="mt-4">
-          <Button testID="ai-eval-run" title="Run the 30 questions" onPress={onRun} />
+          <Button testID="ai-eval-run" title={`Run the ${state.total} questions`} onPress={onRun} />
         </View>
       </Card>
     );
@@ -232,25 +222,18 @@ export function EvalResults({ state, onRun, onResume, onCancel, testID }: EvalRe
           value={seconds(report.ttftP90Ms)}
           testID="ai-eval-ttft-p90"
         />
-        {/* The denominator is `completed`, never `total`: on a stopped run,
-            "9 of 30" reads as a far worse model than the run measured. */}
-        <MetricRow
-          label="Reached for the right tool"
-          value={`${countFromRate(report.toolPickAccuracy, report.completed)} of ${report.completed}`}
-          testID="ai-eval-tool-pick"
-        />
+        {/* Every count is out of `completed`, never `total`, because a question
+            a stopped run never asked was neither answered nor replaced.
+            Misquoted and blank answers are also in the card count. */}
         <MetricRow
           label="Answers replaced by a card"
-          value={`${countFromRate(report.groundingRejectionRate, report.completed)} of ${report.completed}`}
-          testID="ai-eval-grounding"
+          value={`${report.cardAnswers} of ${report.completed}`}
+          testID="ai-eval-cards"
         />
-        {/* docs/13 Gates 2 and 3. A garbled request is counted against the
-            rounds the tool grammar actually ran, never against `completed`:
-            an advice question never reaches the model at all. */}
         <MetricRow
-          label="Garbled tool requests"
-          value={`${report.malformedGenerations} of ${report.constrainedGenerations}`}
-          testID="ai-eval-malformed"
+          label="Answers that misquoted a figure"
+          value={`${report.ungroundedAnswers} of ${report.completed}`}
+          testID="ai-eval-grounding"
         />
         <MetricRow
           label="Blank answers"
@@ -285,15 +268,15 @@ export function EvalResults({ state, onRun, onResume, onCancel, testID }: EvalRe
           by nothing, so this screen must not let a good score be read as a
           promise that the answers read well. */}
       <Text testID="ai-eval-caveat" className="mt-3 text-secondary text-fg-2 dark:text-fg-2-dark">
-        This measures speed and tool choice on this phone, against a built-in practice ledger. It
-        cannot tell you whether an answer reads well.
+        This measures speed on this phone, against a built-in practice ledger. It cannot tell you
+        whether an answer reads well.
       </Text>
 
       <View className="mt-4 gap-2">
         {partial ? (
-          // Resuming starts at the first question with no verdict rather than
-          // replaying the ones already answered — the whole reason
-          // `eval_runner` takes a `startIndex`.
+          // Resuming starts at the first question with no result rather than
+          // replaying the ones already answered, which is why `eval_runner`
+          // takes a `startIndex`.
           <Button testID="ai-eval-resume" title="Continue the run" onPress={onResume} />
         ) : null}
         <Button

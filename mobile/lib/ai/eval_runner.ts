@@ -4,121 +4,78 @@
 // speed is measured on the phone in the user's hand, never carried over from a
 // table written on a different chip.
 //
-// THE RUN IS CANCELLABLE AND RESUMABLE, and that is a product requirement, not
-// a nicety: "thirty questions at 4 tok/s on tier 5 is well over ten minutes,
-// and a modal that cannot be escaped for ten minutes is a bug." Cancelling
-// stops before the next question is issued; resuming starts at `startIndex`
-// rather than replaying questions that already have a verdict.
+// SINCE 2026-09-25 THE MODEL ONLY NARRATES (spec §7.4), so there is no tool
+// choice left to score: each fixed question names its own tool. What the run
+// measures is the one generation `answerQuestion` makes per question:
 //
-// THE SIX METRICS, and why each one is here rather than being interesting:
+//   - Time to the first token, median and p90, counted from the tap, so it
+//     holds the tool run and the prefill the user actually waits through. The
+//     p90 is what makes a surface feel broken, and a median hides it.
+//   - Decode tok/s, median and worst, from the first token to the last.
+//   - Answers replaced by a card, and of those, how many misquoted a figure:
+//     the user lost a sentence and kept a card.
+//   - Blank answers and answers containing `<think>`, which docs/13 Gate 3 reads.
+//   - Peak resident memory, the only honest input to `minRamBytes`, and total
+//     wall clock, which decides whether anyone sits through the run.
 //
-//   - Strict tool-pick accuracy — the single number that says whether the
-//     feature works at all.
-//   - Decode tok/s, median AND worst — whether an answer arrives before the
-//     user leaves. The worst case is the one that loses them.
-//   - Time-to-first-token, median AND p90 — the p90 is what makes a surface
-//     FEEL broken, and a median hides it completely.
-//   - Peak resident memory — the real verdict on a big tier on a small phone,
-//     and the only honest input to `minRamBytes`.
-//   - Grounding-rejection rate — how often the answer had to be thrown away.
-//     The felt-quality number: the user lost a sentence and kept a card.
-//   - Total wall clock — whether the user will sit through the eval at all.
-//
-// THE GATE COUNTERS RIDE ALONG, and they are diagnostics, not a seventh
-// metric. docs/13's Session 3 reads Gate 2 (malformed output under the tool
-// grammar) and Gate 3 (empty answers, `<think>` in the output) off the same
-// runs Task 27 makes anyway, so no separate harness has to exist for either.
+// THE RUN IS CANCELLABLE AND RESUMABLE. The abort flag stops the answer in
+// flight and asks no further question. A question stopped before its answer
+// finished is not recorded, so resuming at `startIndex` asks it again.
 //
 // EVERY TIMING IS A DIFFERENCE OF INJECTED CLOCK READINGS, never `Date.now()`
-// reached for inside this module. `lib/clock.ts` already establishes that rule
-// for the rest of the app; here it also makes the metrics exactly assertable
-// rather than checkable to within a tolerance.
-import type { EpochMs } from "@/types/domain";
-import type { GenerateHandle, LlamaBridge } from "@/modules/llama_bridge/types";
+// reached for inside this module. `lib/clock.ts` already sets that rule for the
+// rest of the app; here it also makes the metrics exactly assertable.
+import { answerQuestion, type CardReason, type DispatchDeps, type TurnOutcome } from "./dispatch";
+import { FIXED_QUESTIONS, type FixedQuestion } from "./fixed_questions";
 
-import {
-  parseToolCall,
-  runTurn,
-  type AbortFlag,
-  type CardReason,
-  type TurnOutcome,
-} from "./dispatch";
-import { EVAL_QUESTIONS, type EvalQuestion } from "./eval/questions";
-import { scoreQuestion, type RecordedTurn, type Verdict } from "./eval/scorer";
-import { CANNOT_ANSWER, FORCED_ANSWER_GRAMMAR } from "./tools/grammar";
-import type { ToolResult } from "./tools/types";
-
+/** The measurements of one answered question. */
 export type EvalProgress = {
   /** 0-based position in the question list. Resume AFTER this index. */
   index: number;
   questionId: string;
-  verdict: Verdict;
-  /** Milliseconds from the request to the first token of the turn. */
+  /** Milliseconds from the tap to the first token. 0 when no token arrived. */
   ttftMs: number;
+  /** From the first token to the last. 0 when fewer than two tokens arrived. */
   decodeTokensPerSecond: number;
-  /** The answer was discarded for stating a figure no tool licensed. */
-  groundingRejected: boolean;
   residentBytes: number;
   wallClockMs: number;
-  /**
-   * Rounds that ran under the tool grammar and finished. Dispatch constrains
-   * only a turn's first round, so this is 1, or 0 for an advice question and
-   * for a round that was cancelled or failed mid-stream. A count rather than a
-   * flag, so the report can sum it into Gate 2's denominator.
-   */
-  constrainedGenerations: number;
-  /**
-   * Of those, outputs that were neither a tool call `parseToolCall` accepts nor
-   * exactly `CANNOT_ANSWER`. Under a grammar that holds, always 0.
-   */
-  malformedGenerations: number;
-  outcomeKind: TurnOutcome["kind"];
+  outcomeKind: Exclude<TurnOutcome["kind"], "cancelled">;
   /** Why the answer became a card, or `null` when it did not. */
   cardReason: CardReason | null;
   /**
-   * Some output of the turn contained `<think>`, counting output that grounding
-   * or the guard then replaced with a card: those thinking tokens were still
-   * decoded and paid for.
+   * The raw answer contained `<think>`, including one a card then replaced:
+   * those thinking tokens were still decoded and paid for.
    */
   thinkTag: boolean;
 };
 
+/** A run's summary. Every field is a number, so the eval screen logs it whole. */
 export type EvalReport = {
   completed: number;
-  toolPickAccuracy: number;
-  nameCorrect: number;
-  argsCorrect: number;
   decodeMedianTps: number;
   decodeWorstTps: number;
   ttftMedianMs: number;
   ttftP90Ms: number;
   peakResidentBytes: number;
-  groundingRejectionRate: number;
-  totalWallClockMs: number;
-  /** Gate 2's denominator: every constrained round that finished. */
-  constrainedGenerations: number;
-  /** Gate 2's numerator. */
-  malformedGenerations: number;
-  /** Turns the model answered with nothing at all, card reason `empty`. Gate 3. */
+  /** Answers replaced by a card, for any reason. */
+  cardAnswers: number;
+  /** Of those, the ones that stated a figure or date no tool result licensed. */
+  ungroundedAnswers: number;
+  /** Card reason `empty`: the model said nothing at all. docs/13 Gate 3. */
   emptyAnswers: number;
-  /** Turns where some output contained `<think>`. Gate 3. */
+  /** Answers whose raw text contained `<think>`. docs/13 Gate 3. */
   thinkTagAnswers: number;
+  totalWallClockMs: number;
 };
 
-export type EvalDeps = {
-  bridge: LlamaBridge;
-  runTool: (
-    name: string,
-    args: Record<string, unknown>,
-    now: EpochMs,
-  ) => Promise<ToolResult<unknown>>;
-  now: EpochMs;
-  /** Monotonic milliseconds. Injected — see the header. */
+/** What a run needs. The first four go to `answerQuestion` unchanged. */
+export type EvalDeps = Pick<DispatchDeps, "bridge" | "runTool" | "now" | "abort"> & {
+  /** Monotonic milliseconds. Injected, see the header. */
   clock: () => number;
-  /** Peak RSS in bytes, sampled once per question. */
+  /** Resident bytes, sampled once per question. */
   readResidentBytes: () => number;
-  questions?: readonly EvalQuestion[];
-  abort?: AbortFlag;
+  /** Defaults to `FIXED_QUESTIONS`. */
+  questions?: readonly FixedQuestion[];
   /** Resume point: the first question index to run. */
   startIndex?: number;
 };
@@ -131,9 +88,8 @@ function median(values: number[]): number {
 }
 
 /**
- * Nearest-rank p90. With 30 questions the distinction between interpolation
- * methods is smaller than the noise, and nearest-rank always returns a value
- * that actually happened.
+ * Nearest-rank p90, which always returns a value that actually happened. With
+ * eight questions it lands on the slowest one.
  */
 function p90(values: number[]): number {
   if (values.length === 0) return 0;
@@ -143,154 +99,87 @@ function p90(values: number[]): number {
 }
 
 /**
- * Re-yields a token stream untouched, then hands `onFinished` the whole raw
- * text. A stream that is cancelled or throws never calls it: a half-streamed
- * tool call is not malformed output, it is no output.
+ * Summarises the records of a run.
+ *
+ * @param records - Every answered question, across every resumed segment of the
+ *   run. May be empty.
+ * @returns The report. An empty list gives zeroes, never NaN, because the eval
+ *   screen prints these figures.
  */
-async function* observe(
-  tokens: AsyncIterable<string>,
-  onFinished: (raw: string) => void,
-): AsyncGenerator<string> {
-  let raw = "";
-  for await (const token of tokens) {
-    raw += token;
-    yield token;
-  }
-  onFinished(raw);
-}
-
 export function summariseEval(records: readonly EvalProgress[]): EvalReport {
-  if (records.length === 0) {
-    // Zeroes rather than NaN. A report full of NaN renders as "NaN tok/s" on a
-    // screen the user is being asked to trust.
-    return {
-      completed: 0,
-      toolPickAccuracy: 0,
-      nameCorrect: 0,
-      argsCorrect: 0,
-      decodeMedianTps: 0,
-      decodeWorstTps: 0,
-      ttftMedianMs: 0,
-      ttftP90Ms: 0,
-      peakResidentBytes: 0,
-      groundingRejectionRate: 0,
-      totalWallClockMs: 0,
-      constrainedGenerations: 0,
-      malformedGenerations: 0,
-      emptyAnswers: 0,
-      thinkTagAnswers: 0,
-    };
-  }
-
-  // Questions that never reached the model contribute no decode rate; averaging
-  // a zero in would understate the model's speed with the guardrail's success.
-  const decodeRates = records
-    .map((record) => record.decodeTokensPerSecond)
-    .filter((rate) => rate > 0);
+  // Zero is "not measured" for both timings, so a zero averaged in would make
+  // the phone look faster than it is.
+  const ttfts = records.map((record) => record.ttftMs).filter((ms) => ms > 0);
+  const rates = records.map((record) => record.decodeTokensPerSecond).filter((rate) => rate > 0);
 
   return {
     completed: records.length,
-    toolPickAccuracy:
-      records.reduce((total, record) => total + record.verdict.score, 0) / records.length,
-    nameCorrect: records.filter((record) => record.verdict.nameCorrect).length,
-    argsCorrect: records.filter((record) => record.verdict.argsCorrect).length,
-    decodeMedianTps: median(decodeRates),
-    decodeWorstTps: decodeRates.length === 0 ? 0 : Math.min(...decodeRates),
-    ttftMedianMs: median(records.map((record) => record.ttftMs)),
-    ttftP90Ms: p90(records.map((record) => record.ttftMs)),
-    peakResidentBytes: Math.max(...records.map((record) => record.residentBytes)),
-    groundingRejectionRate:
-      records.filter((record) => record.groundingRejected).length / records.length,
-    totalWallClockMs: records.reduce((total, record) => total + record.wallClockMs, 0),
-    constrainedGenerations: records.reduce(
-      (total, record) => total + record.constrainedGenerations,
-      0,
-    ),
-    malformedGenerations: records.reduce(
-      (total, record) => total + record.malformedGenerations,
-      0,
-    ),
+    decodeMedianTps: median(rates),
+    decodeWorstTps: rates.length === 0 ? 0 : Math.min(...rates),
+    ttftMedianMs: median(ttfts),
+    ttftP90Ms: p90(ttfts),
+    peakResidentBytes: Math.max(0, ...records.map((record) => record.residentBytes)),
+    cardAnswers: records.filter((record) => record.outcomeKind === "card").length,
+    ungroundedAnswers: records.filter((record) => record.cardReason === "ungrounded").length,
     emptyAnswers: records.filter((record) => record.cardReason === "empty").length,
     thinkTagAnswers: records.filter((record) => record.thinkTag).length,
+    totalWallClockMs: records.reduce((total, record) => total + record.wallClockMs, 0),
   };
 }
 
+/**
+ * Asks each question in turn and measures the answer.
+ *
+ * @param deps - The bridge, the fixture tool runner, the pinned `now`, the clock
+ *   and the memory reader, plus optional questions, abort flag and resume index.
+ * @yields One record per answered question, in order. A question the abort flag
+ *   stopped yields nothing and ends the run.
+ * @returns The summary of THIS call's records only. A resumed run summarises
+ *   every segment's records itself.
+ */
 export async function* runEval(deps: EvalDeps): AsyncGenerator<EvalProgress, EvalReport> {
-  const questions = deps.questions ?? EVAL_QUESTIONS;
+  const questions = deps.questions ?? FIXED_QUESTIONS;
   const records: EvalProgress[] = [];
 
   for (let index = deps.startIndex ?? 0; index < questions.length; index += 1) {
-    // Checked BEFORE the question is issued, so a cancel never costs the user
-    // one more model round than they asked to wait for.
-    if (deps.abort?.aborted) break;
-
     const question = questions[index];
-
-    const toolCalls: RecordedTurn["toolCalls"] = [];
-    let inferenceCalls = 0;
-    let constrainedGenerations = 0;
-    let malformedGenerations = 0;
-    let thinkTag = false;
+    let raw = "";
     let tokens = 0;
-    let firstTokenAt: number | null = null;
-
-    // Wrapping the bridge is what makes "an advice question never reached the
-    // model" a MEASURED fact here rather than an assumption inherited from the
-    // unit tests. It also reads each round's raw text for the gate counters,
-    // and judges it by the two rules dispatch itself acts on.
-    const countingBridge: LlamaBridge = {
-      ...deps.bridge,
-      generate: (prompt: string, grammar: string | null): GenerateHandle => {
-        inferenceCalls += 1;
-        const handle = deps.bridge.generate(prompt, grammar);
-        return {
-          tokens: observe(handle.tokens, (raw) => {
-            if (raw.includes("<think>")) thinkTag = true;
-            if (grammar === FORCED_ANSWER_GRAMMAR) return;
-            constrainedGenerations += 1;
-            if (parseToolCall(raw) === null && raw.trim() !== CANNOT_ANSWER) {
-              malformedGenerations += 1;
-            }
-          }),
-          cancel: () => handle.cancel(),
-        };
-      },
-    };
+    let firstTokenAt = 0;
+    let lastTokenAt = 0;
 
     const startedAt = deps.clock();
-
-    const outcome = await runTurn(question.prompt, {
-      bridge: countingBridge,
+    const outcome = await answerQuestion(question, {
+      bridge: deps.bridge,
+      runTool: deps.runTool,
       now: deps.now,
       abort: deps.abort,
-      runTool: async (name, args, now) => {
-        toolCalls.push({ name, args });
-        return deps.runTool(name, args, now);
-      },
-      onToken: () => {
+      onToken: (token) => {
+        lastTokenAt = deps.clock();
+        if (tokens === 0) firstTokenAt = lastTokenAt;
         tokens += 1;
-        if (firstTokenAt === null) firstTokenAt = deps.clock();
+        raw += token;
       },
     });
-
     const finishedAt = deps.clock();
-    const wallClockMs = finishedAt - startedAt;
-    const decodeMs = firstTokenAt === null ? 0 : finishedAt - firstTokenAt;
+
+    // Raised before this question or during it. Half an answer is not a
+    // measurement, and leaving it unrecorded is what makes a resume re-ask it.
+    if (outcome.kind === "cancelled") break;
 
     const progress: EvalProgress = {
       index,
       questionId: question.id,
-      verdict: scoreQuestion(question.expected, { toolCalls, inferenceCalls }),
-      ttftMs: firstTokenAt === null ? 0 : firstTokenAt - startedAt,
-      decodeTokensPerSecond: decodeMs > 0 ? (tokens * 1000) / decodeMs : 0,
-      groundingRejected: outcome.kind === "card" && outcome.reason === "ungrounded",
+      ttftMs: tokens === 0 ? 0 : firstTokenAt - startedAt,
+      // The first token's own decode sits inside the TTFT, so the window from
+      // the first token to the last holds one token fewer than arrived.
+      decodeTokensPerSecond:
+        lastTokenAt > firstTokenAt ? ((tokens - 1) * 1000) / (lastTokenAt - firstTokenAt) : 0,
       residentBytes: deps.readResidentBytes(),
-      wallClockMs,
-      constrainedGenerations,
-      malformedGenerations,
+      wallClockMs: finishedAt - startedAt,
       outcomeKind: outcome.kind,
       cardReason: outcome.kind === "card" ? outcome.reason : null,
-      thinkTag,
+      thinkTag: raw.includes("<think>"),
     };
 
     records.push(progress);

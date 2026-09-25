@@ -1,15 +1,13 @@
 // mobile/lib/ai/__tests__/eval_runner.test.ts
 //
-// THE RUN IS CANCELLABLE AND RESUMABLE, and that is a product requirement
-// rather than a nicety: "thirty questions at 4 tok/s on tier 5 is well over ten
-// minutes, and a modal that cannot be escaped for ten minutes is a bug."
+// THE RUN IS CANCELLABLE AND RESUMABLE, and a stopped question must come back
+// on resume rather than count as answered.
 //
 // EVERY METRIC IS COMPUTED FROM RECORDED NUMBERS, never from a wall-clock
-// guess. The clock is injected here so the assertions are exact — a metric that
-// can only be checked to within a tolerance is a metric nobody will notice
-// going wrong.
-import { runEval, summariseEval, type EvalDeps } from "../eval_runner";
-import type { EvalQuestion } from "../eval/questions";
+// guess. The clock is injected so the assertions are exact: a metric that can
+// only be checked to within a tolerance is one nobody notices going wrong.
+import { runEval, summariseEval, type EvalDeps, type EvalProgress } from "../eval_runner";
+import { FIXED_QUESTIONS } from "../fixed_questions";
 import { ok, type ToolResult } from "../tools/types";
 import type { LlamaBridge } from "@/modules/llama_bridge/types";
 import {
@@ -17,44 +15,28 @@ import {
   generateCallCount,
   resetLlamaScript,
   scriptLlama,
+  type ScriptedTurn,
 } from "@/test_support/llama_bridge_mock";
 
 const NOW = 1_773_000_000_000 as never;
 
+const FIGURE = "₱18,320.00";
+
 const RESULT = ok("get_balance_total", { total: 1 }, [
-  { key: "total", value: "₱18,320.00", kind: "amount" },
+  { key: "total", value: FIGURE, kind: "amount" },
 ]);
 
-const QUESTIONS: EvalQuestion[] = [
-  {
-    id: "q1",
-    prompt: "How much money do I have in total?",
-    language: "en",
-    category: "single_tool",
-    expected: { kind: "tool", name: "get_balance_total", args: {} },
-  },
-  {
-    id: "q2",
-    prompt: "What's the weather tomorrow?",
-    language: "en",
-    category: "out_of_scope",
-    expected: { kind: "no_tool" },
-  },
-  {
-    id: "q3",
-    prompt: "Should I buy a new phone?",
-    language: "en",
-    category: "advice",
-    expected: { kind: "advice" },
-  },
-];
+/** Three tokens once split on whitespace: "You ", "have ", the figure. */
+const GROUNDED: ScriptedTurn = { emit: `You have ${FIGURE}.` };
+
+const QUESTIONS = FIXED_QUESTIONS.slice(0, 3);
 
 /** A clock that advances a fixed amount per read, so timings are exact. */
-function steppedClock(stepMs: number) {
-  let t = 0;
+function steppedClock(stepMs: number): () => number {
+  let now = 0;
   return () => {
-    t += stepMs;
-    return t;
+    now += stepMs;
+    return now;
   };
 }
 
@@ -70,13 +52,42 @@ function depsWith(overrides: Partial<EvalDeps> = {}): EvalDeps {
   };
 }
 
-/** q1 answers with a tool call then prose; q2 declines; q3 never reaches the model. */
-function scriptTheThree() {
-  scriptLlama([
-    { emitToolCall: { name: "get_balance_total", args: {} } },
-    { emit: "You have ₱18,320.00." },
-    { emitRaw: "CANNOT_ANSWER" },
-  ]);
+async function collect(deps: EvalDeps): Promise<EvalProgress[]> {
+  const records: EvalProgress[] = [];
+  for await (const progress of runEval(deps)) records.push(progress);
+  return records;
+}
+
+/** A bridge whose stream raises `abort` as its first token arrives. */
+function abortingBridge(abort: { aborted: boolean }): LlamaBridge {
+  return {
+    ...fakeLlamaBridge,
+    generate: (prompt, grammar) => {
+      const handle = fakeLlamaBridge.generate(prompt, grammar);
+      async function* tokens(): AsyncGenerator<string> {
+        for await (const token of handle.tokens) {
+          abort.aborted = true;
+          yield token;
+        }
+      }
+      return { tokens: tokens(), cancel: () => handle.cancel() };
+    },
+  };
+}
+
+function record(overrides: Partial<EvalProgress>): EvalProgress {
+  return {
+    index: 0,
+    questionId: "q",
+    ttftMs: 100,
+    decodeTokensPerSecond: 10,
+    residentBytes: 0,
+    wallClockMs: 1_000,
+    outcomeKind: "prose",
+    cardReason: null,
+    thinkTag: false,
+    ...overrides,
+  };
 }
 
 beforeEach(() => {
@@ -84,36 +95,27 @@ beforeEach(() => {
 });
 
 describe("progress", () => {
-  test("yields one record per question, in order", async () => {
-    scriptTheThree();
-    const seen: string[] = [];
-    for await (const progress of runEval(depsWith())) seen.push(progress.questionId);
-    expect(seen).toEqual(["q1", "q2", "q3"]);
+  test("asks every fixed question by default, one generation each, in order", async () => {
+    scriptLlama(FIXED_QUESTIONS.map(() => GROUNDED));
+
+    const records = await collect(depsWith({ questions: undefined }));
+
+    expect(records.map((progress) => progress.questionId)).toEqual(
+      FIXED_QUESTIONS.map((question) => question.id),
+    );
+    expect(generateCallCount()).toBe(FIXED_QUESTIONS.length);
   });
 
-  test("each record carries the strict verdict for that question", async () => {
-    scriptTheThree();
-    const verdicts: number[] = [];
-    for await (const progress of runEval(depsWith())) verdicts.push(progress.verdict.score);
-    // q1 right tool, q2 declined without a tool, q3 never reached the model.
-    expect(verdicts).toEqual([1, 1, 1]);
-  });
-
-  test("a wrong tool scores 0 without stopping the run", async () => {
-    scriptLlama([
-      { emitToolCall: { name: "get_limits", args: {} } },
-      { emit: "You have ₱18,320.00." },
-      { emitRaw: "CANNOT_ANSWER" },
-    ]);
-    const verdicts: number[] = [];
-    for await (const progress of runEval(depsWith())) verdicts.push(progress.verdict.score);
-    expect(verdicts).toEqual([0, 1, 1]);
+  test("the index a record carries is the one to resume after", async () => {
+    scriptLlama([GROUNDED, GROUNDED, GROUNDED]);
+    const records = await collect(depsWith());
+    expect(records.map((progress) => progress.index)).toEqual([0, 1, 2]);
   });
 });
 
-describe("cancellation", () => {
-  test("cancelling mid-run stops issuing generate calls", async () => {
-    scriptTheThree();
+describe("cancellation and resume", () => {
+  test("a stop between questions asks nothing further", async () => {
+    scriptLlama([GROUNDED, GROUNDED, GROUNDED]);
     const abort = { aborted: false };
 
     const seen: string[] = [];
@@ -122,203 +124,163 @@ describe("cancellation", () => {
       abort.aborted = true;
     }
 
-    expect(seen).toEqual(["q1"]);
-    // q1 cost two generate calls; nothing was issued for q2 or q3.
+    expect(seen).toEqual([QUESTIONS[0].id]);
+    expect(generateCallCount()).toBe(1);
+  });
+
+  test("a question stopped mid-answer leaves no record, so a resume asks it again", async () => {
+    const abort = { aborted: false };
+    scriptLlama([GROUNDED, GROUNDED, GROUNDED]);
+
+    const step = await runEval(depsWith({ bridge: abortingBridge(abort), abort })).next();
+
+    expect(step).toEqual({ done: true, value: expect.objectContaining({ completed: 0 }) });
+    expect(generateCallCount()).toBe(1);
+  });
+
+  test("a resume starts at the given index rather than repeating answered questions", async () => {
+    scriptLlama([GROUNDED, GROUNDED]);
+    const records = await collect(depsWith({ startIndex: 1 }));
+    expect(records.map((progress) => progress.questionId)).toEqual([
+      QUESTIONS[1].id,
+      QUESTIONS[2].id,
+    ]);
     expect(generateCallCount()).toBe(2);
   });
 });
 
-describe("resume", () => {
-  test("continues from the recorded index rather than restarting", async () => {
-    // The user escaped the modal after q1 and came back. Re-running q1 would
-    // both waste minutes and quietly change the score.
-    scriptLlama([{ emitRaw: "CANNOT_ANSWER" }]);
+describe("timings", () => {
+  test("every timing is a difference of injected clock readings", async () => {
+    scriptLlama([GROUNDED, GROUNDED, GROUNDED]);
 
-    const seen: string[] = [];
-    for await (const progress of runEval(depsWith({ startIndex: 1 }))) {
-      seen.push(progress.questionId);
-    }
+    // Per question: a read at the tap, one per token (three), one at the end.
+    const records = await collect(depsWith());
 
-    expect(seen).toEqual(["q2", "q3"]);
-  });
-
-  test("the index a record carries is the one to resume after", async () => {
-    scriptTheThree();
-    const indices: number[] = [];
-    for await (const progress of runEval(depsWith())) indices.push(progress.index);
-    expect(indices).toEqual([0, 1, 2]);
-  });
-});
-
-describe("the six metrics", () => {
-  test("are computed from recorded numbers, not wall-clock guesses", async () => {
-    scriptTheThree();
-    const records = [];
-    for await (const progress of runEval(depsWith())) records.push(progress);
-
-    const report = summariseEval(records);
-
-    expect(report.completed).toBe(3);
-    // Strict headline: all three correct.
-    expect(report.toolPickAccuracy).toBe(1);
-    // Nothing was thrown away for stating a figure no tool licensed.
-    expect(report.groundingRejectionRate).toBe(0);
-    expect(report.peakResidentBytes).toBe(1_000_000);
-    // Every timing is a difference of injected clock readings.
-    expect(Number.isFinite(report.ttftMedianMs)).toBe(true);
-    expect(Number.isFinite(report.ttftP90Ms)).toBe(true);
-    expect(Number.isFinite(report.totalWallClockMs)).toBe(true);
-    // The gate counters: q1 and q2 each ran one constrained round, q3 none.
-    expect(report).toMatchObject({
-      constrainedGenerations: 2,
-      malformedGenerations: 0,
-      emptyAnswers: 0,
-      thinkTagAnswers: 0,
+    expect(records.map((progress) => progress.ttftMs)).toEqual([100, 100, 100]);
+    expect(records.map((progress) => progress.wallClockMs)).toEqual([400, 400, 400]);
+    // Two intervals of 100 ms between three tokens.
+    expect(records.map((progress) => progress.decodeTokensPerSecond)).toEqual([10, 10, 10]);
+    expect(summariseEval(records)).toMatchObject({
+      ttftMedianMs: 100,
+      ttftP90Ms: 100,
+      decodeMedianTps: 10,
+      decodeWorstTps: 10,
+      totalWallClockMs: 1_200,
     });
   });
 
-  test("the grounding-rejection rate counts answers that were thrown away", async () => {
-    // The felt-quality number: how often the user lost a sentence and kept the
-    // card.
-    scriptLlama([
-      { emitToolCall: { name: "get_balance_total", args: {} } },
-      { emit: "You have ₱999,999.00." },
-      { emitRaw: "CANNOT_ANSWER" },
-    ]);
+  test("the decode window runs from the first token to the last, not to the end of the checks", async () => {
+    // Tap at 0, tokens at 1,000, 1,500 and 2,000, and the grounding and guard
+    // checks run until 9,000. The checks are not decoding.
+    const readings = [0, 1_000, 1_500, 2_000, 9_000];
+    let read = 0;
+    scriptLlama([GROUNDED]);
 
-    const records = [];
-    for await (const progress of runEval(depsWith())) records.push(progress);
+    const [progress] = await collect(
+      depsWith({ questions: [QUESTIONS[0]], clock: () => readings[read++] }),
+    );
 
-    expect(records[0].groundingRejected).toBe(true);
-    expect(summariseEval(records).groundingRejectionRate).toBeCloseTo(1 / 3);
+    expect(progress.ttftMs).toBe(1_000);
+    expect(progress.decodeTokensPerSecond).toBe(2);
+    expect(progress.wallClockMs).toBe(9_000);
   });
 
+  test("a single token gives no decode rate rather than an invented one", async () => {
+    scriptLlama([{ emit: FIGURE }]);
+    const [progress] = await collect(depsWith({ questions: [QUESTIONS[0]] }));
+    expect(progress.ttftMs).toBe(100);
+    expect(progress.decodeTokensPerSecond).toBe(0);
+  });
+});
+
+describe("what became of each answer", () => {
+  test("cards are counted by reason, and a bridge failure is a card, not a stop", async () => {
+    scriptLlama([
+      GROUNDED,
+      // A figure the tool result never licensed.
+      { emit: "You have ₱999,999.00." },
+      { emit: "" },
+      { throwAfter: 2 },
+    ]);
+
+    const records = await collect(depsWith({ questions: FIXED_QUESTIONS.slice(0, 4) }));
+
+    expect(records.map((progress) => [progress.outcomeKind, progress.cardReason])).toEqual([
+      ["prose", null],
+      ["card", "ungrounded"],
+      ["card", "empty"],
+      ["card", "error"],
+    ]);
+    expect(summariseEval(records)).toMatchObject({
+      completed: 4,
+      cardAnswers: 3,
+      ungroundedAnswers: 1,
+      emptyAnswers: 1,
+    });
+  });
+
+  test("<think> counts even split across tokens, and even when a card replaced the answer", async () => {
+    scriptLlama([
+      // Eight-byte chunks split the tag itself across two tokens.
+      { emitRaw: `Ok. <think>hm</think> You have ${FIGURE}.` },
+      // Grounding throws this one away, but it was still decoded.
+      { emit: "<think>The total is ₱5.00" },
+      GROUNDED,
+    ]);
+
+    const records = await collect(depsWith());
+
+    expect(records.map((progress) => [progress.outcomeKind, progress.thinkTag])).toEqual([
+      ["prose", true],
+      ["card", true],
+      ["prose", false],
+    ]);
+    expect(summariseEval(records).thinkTagAnswers).toBe(2);
+  });
+});
+
+describe("the report", () => {
   test("peak resident memory is the maximum across the run, not the last reading", async () => {
-    scriptTheThree();
+    scriptLlama([GROUNDED, GROUNDED, GROUNDED]);
     const readings = [500, 9_000, 700];
-    let index = 0;
-    const records = [];
-    for await (const progress of runEval(
-      depsWith({ readResidentBytes: () => readings[Math.min(index++, readings.length - 1)] }),
-    )) {
-      records.push(progress);
-    }
+    let read = 0;
+
+    const records = await collect(depsWith({ readResidentBytes: () => readings[read++] }));
+
     expect(summariseEval(records).peakResidentBytes).toBe(9_000);
   });
 
-  test("an empty run summarises to zeroes rather than NaN", () => {
-    const report = summariseEval([]);
-    expect(report.completed).toBe(0);
-    expect(report.toolPickAccuracy).toBe(0);
-    expect(report.groundingRejectionRate).toBe(0);
-    expect(report.decodeMedianTps).toBe(0);
+  test("questions with no first token, or no decode window, stay out of the timings", () => {
+    const report = summariseEval([
+      record({ ttftMs: 300, decodeTokensPerSecond: 20 }),
+      record({ ttftMs: 100, decodeTokensPerSecond: 5 }),
+      record({ ttftMs: 200, decodeTokensPerSecond: 10 }),
+      // An empty answer: no token, so neither figure was measured.
+      record({ ttftMs: 0, decodeTokensPerSecond: 0, outcomeKind: "card", cardReason: "empty" }),
+    ]);
+
     expect(report).toMatchObject({
-      constrainedGenerations: 0,
-      malformedGenerations: 0,
+      completed: 4,
+      ttftMedianMs: 200,
+      ttftP90Ms: 300,
+      decodeMedianTps: 10,
+      decodeWorstTps: 5,
+    });
+  });
+
+  test("an empty run summarises to zeroes rather than NaN", () => {
+    expect(summariseEval([])).toEqual({
+      completed: 0,
+      decodeMedianTps: 0,
+      decodeWorstTps: 0,
+      ttftMedianMs: 0,
+      ttftP90Ms: 0,
+      peakResidentBytes: 0,
+      cardAnswers: 0,
+      ungroundedAnswers: 0,
       emptyAnswers: 0,
       thinkTagAnswers: 0,
+      totalWallClockMs: 0,
     });
-  });
-});
-
-describe("the gate counters", () => {
-  test("Gate 2: a tool call and the decline are well formed, and garbage is malformed", async () => {
-    // q1 calls a tool, q2 declines, q3 is advice and never reaches the model,
-    // and a fourth question gets a JSON fragment where the grammar should have
-    // forced a whole call.
-    scriptLlama([
-      { emitToolCall: { name: "get_balance_total", args: {} } },
-      { emit: "You have ₱18,320.00." },
-      { emitRaw: "CANNOT_ANSWER" },
-      { emitRaw: '{"tool":"get_bal' },
-    ]);
-
-    const records = [];
-    for await (const progress of runEval(depsWith({ questions: [...QUESTIONS, QUESTIONS[1]] }))) {
-      records.push(progress);
-    }
-
-    // Only a turn's first round runs constrained, so q1's prose round is not
-    // counted and the denominator stays one per question that reached the model.
-    expect(records.map((record) => record.constrainedGenerations)).toEqual([1, 1, 0, 1]);
-    expect(records.map((record) => record.malformedGenerations)).toEqual([0, 0, 0, 1]);
-    expect(summariseEval(records)).toMatchObject({
-      constrainedGenerations: 3,
-      malformedGenerations: 1,
-    });
-  });
-
-  test("Gate 3: empty answers, and <think> in any output, even one replaced by a card", async () => {
-    scriptLlama([
-      // Nothing at all after the tool result: card reason `empty`.
-      { emitToolCall: { name: "get_balance_total", args: {} } },
-      { emit: "" },
-      // Thinking that survives into the prose. The 8-byte chunks split the
-      // tag itself across two tokens.
-      { emitToolCall: { name: "get_balance_total", args: {} } },
-      { emitRaw: "Ok. <think>hm</think> You have ₱18,320.00." },
-      // Thinking that grounding throws away. It was still decoded.
-      { emitToolCall: { name: "get_balance_total", args: {} } },
-      { emit: "<think>The total is ₱5.00" },
-    ]);
-    const single = QUESTIONS[0];
-
-    const records = [];
-    for await (const progress of runEval(depsWith({ questions: [single, single, single] }))) {
-      records.push(progress);
-    }
-
-    expect(records.map((record) => [record.outcomeKind, record.cardReason])).toEqual([
-      ["card", "empty"],
-      ["prose", null],
-      ["card", "ungrounded"],
-    ]);
-    expect(records.map((record) => record.thinkTag)).toEqual([false, true, true]);
-    expect(summariseEval(records)).toMatchObject({ emptyAnswers: 1, thinkTagAnswers: 2 });
-  });
-
-  test("a constrained round cancelled mid-stream is neither counted nor judged", async () => {
-    // Half a tool call is not malformed output, it is no output. Counting it
-    // would charge Gate 2 for every press of Stop.
-    const abort = { aborted: false };
-    const stopsAfterOneToken: LlamaBridge = {
-      ...fakeLlamaBridge,
-      generate: (prompt, grammar) => {
-        const handle = fakeLlamaBridge.generate(prompt, grammar);
-        async function* tokens() {
-          for await (const token of handle.tokens) {
-            abort.aborted = true;
-            yield token;
-          }
-        }
-        return { tokens: tokens(), cancel: () => handle.cancel() };
-      },
-    };
-    scriptLlama([{ emitToolCall: { name: "get_balance_total", args: {} } }]);
-
-    const records = [];
-    for await (const progress of runEval(
-      depsWith({ bridge: stopsAfterOneToken, abort, questions: [QUESTIONS[0]] }),
-    )) {
-      records.push(progress);
-    }
-
-    expect(records[0].outcomeKind).toBe("cancelled");
-    expect(records[0].constrainedGenerations).toBe(0);
-    expect(records[0].malformedGenerations).toBe(0);
-  });
-});
-
-describe("advice questions inside the eval", () => {
-  test("cost zero inference, which is the whole point of scoring them here", async () => {
-    // They ride in the same 30 so the eval measures the WHOLE input path, not
-    // just the model's half of it.
-    scriptLlama([]);
-    const records = [];
-    for await (const progress of runEval(depsWith({ questions: [QUESTIONS[2]] }))) {
-      records.push(progress);
-    }
-    expect(generateCallCount()).toBe(0);
-    expect(records[0].verdict.score).toBe(1);
   });
 });

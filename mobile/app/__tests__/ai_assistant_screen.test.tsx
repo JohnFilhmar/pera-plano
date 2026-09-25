@@ -22,6 +22,7 @@ import type { DownloaderDeps } from "@/lib/ai/downloader";
 import { runFixtureTool } from "@/lib/ai/eval/fixture_tools";
 import { configureAiEval, currentAiEval } from "@/lib/ai/eval/harness";
 import { readResidentBytes } from "@/lib/ai/eval/resident_memory";
+import { FIXED_QUESTIONS } from "@/lib/ai/fixed_questions";
 import { llamaBridge } from "@/modules/llama_bridge";
 
 import AiAssistantScreen from "../(tabs)/more/ai";
@@ -66,6 +67,8 @@ test("a loaded model registers the eval on itself and the fixture ledger, and th
   fireEvent.press(await screen.findByTestId("ai-eval-entry"));
 
   expect(mockPush).toHaveBeenCalledWith("/more/ai/eval");
+  // The count is typed into the row, so a new question has to update it.
+  screen.getByText(`${FIXED_QUESTIONS.length} practice questions. Your own transactions are never read.`);
   expect(currentAiEval()).toEqual({
     bridge: llamaBridge,
     runTool: runFixtureTool,

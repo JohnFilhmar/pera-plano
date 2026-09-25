@@ -9,14 +9,12 @@
 // three of those are lifecycle, not presentation — so they live here, and the
 // component below stays renderable under Jest with no bridge at all.
 //
-// THE RUN IS GRADED AGAINST THE FIXTURE LEDGER, NEVER THE USER'S OWN. Spec
-// §5.5: the numbers must mean the same thing across runs, the expected answers
-// have to be authored to be scored at all, and "running an eval over someone's
-// real finances to grade a chatbot is a processing event nobody asked for".
-// That is why `now` below is the fixture's pinned instant and not the wall
-// clock: "this month" is a fact about when a question was asked, and a fixture
-// graded at wall-clock time would change its own right answers at midnight on
-// the first of the month.
+// THE RUN READS THE FIXTURE LEDGER, NEVER THE USER'S OWN. Spec §5.5: the
+// numbers must mean the same thing across runs, and "running an eval over
+// someone's real finances to grade a chatbot is a processing event nobody asked
+// for". That is why `now` below is the fixture's pinned instant and not the
+// wall clock. The practice transactions sit in March 2026, so at wall-clock
+// time every "this month" question would narrate an empty month.
 //
 // RECORDS ACCUMULATE ACROSS SEGMENTS, and the report is recomputed from all of
 // them. `runEval` returns a summary of the questions ITS OWN pass ran, so a
@@ -40,13 +38,13 @@ import { ListRow } from "@/components/ui/list_row";
 import type { AbortFlag } from "@/lib/ai/dispatch";
 import { FIXTURE_NOW_ISO } from "@/lib/ai/eval/fixture_ledger";
 import { currentAiEval } from "@/lib/ai/eval/harness";
-import { EVAL_QUESTIONS } from "@/lib/ai/eval/questions";
 import {
   runEval,
   summariseEval,
   type EvalProgress,
   type EvalReport,
 } from "@/lib/ai/eval_runner";
+import { FIXED_QUESTIONS } from "@/lib/ai/fixed_questions";
 import { systemClock } from "@/lib/clock";
 
 /**
@@ -55,7 +53,7 @@ import { systemClock } from "@/lib/clock";
  */
 let runsStarted = 0;
 
-const TOTAL_QUESTIONS = EVAL_QUESTIONS.length;
+const TOTAL_QUESTIONS = FIXED_QUESTIONS.length;
 
 /** The stable prefix docs/13's logcat recipes filter on. */
 const LOG_PREFIX = "[ai_eval]";
@@ -75,15 +73,10 @@ function logQuestion(label: RunLabel, progress: EvalProgress): void {
     ...label,
     index: progress.index,
     id: progress.questionId,
-    score: progress.verdict.score,
-    nameCorrect: progress.verdict.nameCorrect,
-    argsCorrect: progress.verdict.argsCorrect,
     ttftMs: progress.ttftMs,
     tokensPerSecond: progress.decodeTokensPerSecond,
     wallClockMs: progress.wallClockMs,
     residentBytes: progress.residentBytes,
-    constrained: progress.constrainedGenerations,
-    malformed: progress.malformedGenerations,
     outcome: progress.outcomeKind,
     cardReason: progress.cardReason,
     empty: progress.cardReason === "empty",
@@ -101,7 +94,10 @@ function logReport(label: RunLabel, report: EvalReport): void {
 export default function AiEvalScreen() {
   // Registered by the assistant screen's model load (lib/ai/eval/harness.ts).
   const harness = currentAiEval();
-  const [state, setState] = useState<EvalRunState>({ kind: "never_run" });
+  const [state, setState] = useState<EvalRunState>({
+    kind: "never_run",
+    total: TOTAL_QUESTIONS,
+  });
   // Only a development build renders the switch that sets this.
   const [thinkingAllowed, setThinkingAllowed] = useState(false);
 
@@ -182,6 +178,12 @@ export default function AiEvalScreen() {
     const report = summariseEval(records.current);
     logReport(label, report);
     if (!mounted.current) return;
+    // Stopped inside the first question, so nothing was measured. A report of
+    // zeroes would read as a measurement; the offer to run comes back instead.
+    if (report.completed === 0) {
+      setState({ kind: "never_run", total: TOTAL_QUESTIONS });
+      return;
+    }
     setState({
       kind: report.completed < TOTAL_QUESTIONS ? "stopped" : "complete",
       report,
@@ -199,15 +201,15 @@ export default function AiEvalScreen() {
   }, [start, thinkingAllowed]);
 
   const onResume = useCallback(() => {
-    // The first question with no verdict yet, so a resumed run never replays
-    // one that already cost the user a minute.
+    // The first question with no record yet. An answered one is never asked
+    // twice, and one stopped mid-answer left no record, so it is asked again.
     const last = records.current[records.current.length - 1];
     void start(last === undefined ? 0 : last.index + 1);
   }, [start]);
 
   const onCancel = useCallback(() => {
-    // The runner checks this BEFORE issuing the next question, so a stop never
-    // costs one more model round than the user asked to wait for.
+    // The answer in flight stops at its next token, and no further question
+    // is asked.
     abort.current.aborted = true;
   }, []);
 

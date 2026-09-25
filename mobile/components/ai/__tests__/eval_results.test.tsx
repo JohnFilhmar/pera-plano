@@ -8,8 +8,8 @@
 // tomorrow, and an import guard cannot see a number typed in as a literal.
 //
 // PRESENTATIONAL, SO NO HARNESS. `EvalResults` takes a run state and three
-// callbacks — it never imports `eval_runner`'s generator, `llama.rn`, or the
-// database — which is what lets this file render it with no mock at all.
+// callbacks. It never imports `eval_runner`'s generator, `llama.rn`, or the
+// database, which is what lets this file render it with no mock at all.
 import fs from "fs";
 import path from "path";
 
@@ -28,22 +28,18 @@ import type { EvalReport } from "@/lib/ai/eval_runner";
  */
 function report(overrides: Partial<EvalReport> = {}): EvalReport {
   return {
-    completed: 30,
-    toolPickAccuracy: 26 / 30,
-    nameCorrect: 28,
-    argsCorrect: 26,
+    completed: 8,
     decodeMedianTps: 11.24,
     decodeWorstTps: 6.41,
     ttftMedianMs: 1240,
     ttftP90Ms: 4830,
     peakResidentBytes: 1_290_000_000,
-    groundingRejectionRate: 2 / 30,
-    totalWallClockMs: 492_000,
     // Distinct on purpose, so a row reading the wrong counter shows it.
-    constrainedGenerations: 27,
-    malformedGenerations: 2,
-    emptyAnswers: 3,
-    thinkTagAnswers: 4,
+    cardAnswers: 5,
+    ungroundedAnswers: 2,
+    emptyAnswers: 1,
+    thinkTagAnswers: 3,
+    totalWallClockMs: 492_000,
     ...overrides,
   };
 }
@@ -57,11 +53,10 @@ const METRIC_TEST_IDS = [
   "ai-eval-decode-worst",
   "ai-eval-ttft-median",
   "ai-eval-ttft-p90",
-  "ai-eval-tool-pick",
+  "ai-eval-cards",
   "ai-eval-grounding",
   "ai-eval-peak-memory",
   "ai-eval-wall-clock",
-  "ai-eval-malformed",
   "ai-eval-empty",
   "ai-eval-think",
   "ai-eval-thinking-mode",
@@ -70,7 +65,7 @@ const METRIC_TEST_IDS = [
 test("a finished run states this phone's own measured numbers", () => {
   render(
     <EvalResults
-      state={{ kind: "complete", report: report(), total: 30 }}
+      state={{ kind: "complete", report: report(), total: 8 }}
       onRun={jest.fn()}
       onResume={jest.fn()}
       onCancel={jest.fn()}
@@ -78,30 +73,42 @@ test("a finished run states this phone's own measured numbers", () => {
   );
 
   expect(textOf("ai-eval-headline")).toBe(
-    "On your phone: 11.2 tokens per second, picked the right tool 26 times out of 30.",
+    "On your phone: the first word in 1.2 s, then 11.2 tokens per second.",
   );
 
   expect(textOf("ai-eval-decode-median")).toBe("11.2 tokens/second");
   expect(textOf("ai-eval-decode-worst")).toBe("6.4 tokens/second");
   expect(textOf("ai-eval-ttft-median")).toBe("1.2 s");
   expect(textOf("ai-eval-ttft-p90")).toBe("4.8 s");
-  expect(textOf("ai-eval-tool-pick")).toBe("26 of 30");
-  expect(textOf("ai-eval-grounding")).toBe("2 of 30");
+  expect(textOf("ai-eval-cards")).toBe("5 of 8");
+  expect(textOf("ai-eval-grounding")).toBe("2 of 8");
+  expect(textOf("ai-eval-empty")).toBe("1 of 8");
+  expect(textOf("ai-eval-think")).toBe("3 of 8");
   expect(textOf("ai-eval-peak-memory")).toBe("1.3 GB");
   expect(textOf("ai-eval-wall-clock")).toBe("8 min 12 s");
-  // docs/13 Gate 2 reads malformed against the constrained rounds that ran,
-  // Gate 3 reads blank and thinking answers against the questions.
-  expect(textOf("ai-eval-malformed")).toBe("2 of 27");
-  expect(textOf("ai-eval-empty")).toBe("3 of 30");
-  expect(textOf("ai-eval-think")).toBe("4 of 30");
   // No thinking mode was passed, as on a release build, so there is no row.
   expect(screen.queryByTestId("ai-eval-thinking-mode")).toBeNull();
+});
+
+test("nothing on the results claims to measure tool choice", () => {
+  // Each question names its own tool now, so a tool figure here would be a
+  // measurement of nothing.
+  render(
+    <EvalResults
+      state={{ kind: "complete", report: report(), total: 8 }}
+      onRun={jest.fn()}
+      onResume={jest.fn()}
+      onCancel={jest.fn()}
+    />,
+  );
+
+  expect(screen.queryByText(/tool/i)).toBeNull();
 });
 
 test("a peak memory of 0 says it was not measured rather than showing a figure", () => {
   render(
     <EvalResults
-      state={{ kind: "complete", report: report({ peakResidentBytes: 0 }), total: 30 }}
+      state={{ kind: "complete", report: report({ peakResidentBytes: 0 }), total: 8 }}
       onRun={jest.fn()}
       onResume={jest.fn()}
       onCancel={jest.fn()}
@@ -116,7 +123,7 @@ test("a development run says whether the model was left to think", () => {
   // of either has to say which it was.
   const { rerender } = render(
     <EvalResults
-      state={{ kind: "complete", report: report(), total: 30, suppressThinking: false }}
+      state={{ kind: "complete", report: report(), total: 8, suppressThinking: false }}
       onRun={jest.fn()}
       onResume={jest.fn()}
       onCancel={jest.fn()}
@@ -128,8 +135,8 @@ test("a development run says whether the model was left to think", () => {
     <EvalResults
       state={{
         kind: "stopped",
-        report: report({ completed: 12 }),
-        total: 30,
+        report: report({ completed: 5 }),
+        total: 8,
         suppressThinking: true,
       }}
       onRun={jest.fn()}
@@ -143,7 +150,7 @@ test("a development run says whether the model was left to think", () => {
 test("no catalogue spec figure appears anywhere on the screen", () => {
   render(
     <EvalResults
-      state={{ kind: "complete", report: report(), total: 30 }}
+      state={{ kind: "complete", report: report(), total: 8 }}
       onRun={jest.fn()}
       onResume={jest.fn()}
       onCancel={jest.fn()}
@@ -177,15 +184,13 @@ test("a stopped run says it is partial and scopes every number to what ran", () 
       state={{
         kind: "stopped",
         report: report({
-          completed: 12,
-          toolPickAccuracy: 9 / 12,
-          groundingRejectionRate: 1 / 12,
-          constrainedGenerations: 11,
-          malformedGenerations: 1,
-          emptyAnswers: 2,
+          completed: 5,
+          cardAnswers: 2,
+          ungroundedAnswers: 1,
+          emptyAnswers: 0,
           thinkTagAnswers: 0,
         }),
-        total: 30,
+        total: 8,
       }}
       onRun={jest.fn()}
       onResume={jest.fn()}
@@ -194,38 +199,36 @@ test("a stopped run says it is partial and scopes every number to what ran", () 
   );
 
   expect(textOf("ai-eval-partial-notice")).toBe(
-    "Stopped early. These numbers cover the 12 questions that ran, not all 30.",
+    "Stopped early. These numbers cover the 5 questions that ran, not all 8.",
   );
   expect(textOf("ai-eval-headline")).toBe(
-    "On your phone so far: 11.2 tokens per second, picked the right tool 9 times out of 12.",
+    "On your phone so far: the first word in 1.2 s, then 11.2 tokens per second.",
   );
-  // The denominator is what ran, never the question set's size. "9 of 30"
-  // would read as a much worse model than the run actually measured.
-  expect(textOf("ai-eval-tool-pick")).toBe("9 of 12");
-  expect(textOf("ai-eval-grounding")).toBe("1 of 12");
-  expect(textOf("ai-eval-malformed")).toBe("1 of 11");
-  expect(textOf("ai-eval-empty")).toBe("2 of 12");
-  expect(textOf("ai-eval-think")).toBe("0 of 12");
+  // The denominator is what ran, never the question set's size.
+  expect(textOf("ai-eval-cards")).toBe("2 of 5");
+  expect(textOf("ai-eval-grounding")).toBe("1 of 5");
+  expect(textOf("ai-eval-empty")).toBe("0 of 5");
+  expect(textOf("ai-eval-think")).toBe("0 of 5");
 });
 
 test("a run in progress offers a stop, and nothing else does", () => {
   const onCancel = jest.fn();
   const { rerender } = render(
     <EvalResults
-      state={{ kind: "running", completed: 12, total: 30 }}
+      state={{ kind: "running", completed: 2, total: 8 }}
       onRun={jest.fn()}
       onResume={jest.fn()}
       onCancel={onCancel}
     />,
   );
 
-  expect(textOf("ai-eval-progress")).toBe("Question 13 of 30");
+  expect(textOf("ai-eval-progress")).toBe("Question 3 of 8");
   fireEvent.press(screen.getByTestId("ai-eval-cancel"));
   expect(onCancel).toHaveBeenCalledTimes(1);
 
   rerender(
     <EvalResults
-      state={{ kind: "complete", report: report(), total: 30 }}
+      state={{ kind: "complete", report: report(), total: 8 }}
       onRun={jest.fn()}
       onResume={jest.fn()}
       onCancel={onCancel}
@@ -235,7 +238,7 @@ test("a run in progress offers a stop, and nothing else does", () => {
 
   rerender(
     <EvalResults
-      state={{ kind: "never_run" }}
+      state={{ kind: "never_run", total: 8 }}
       onRun={jest.fn()}
       onResume={jest.fn()}
       onCancel={onCancel}
@@ -249,7 +252,7 @@ test("a stopped run can be continued rather than only restarted", () => {
   const onRun = jest.fn();
   render(
     <EvalResults
-      state={{ kind: "stopped", report: report({ completed: 12 }), total: 30 }}
+      state={{ kind: "stopped", report: report({ completed: 5 }), total: 8 }}
       onRun={onRun}
       onResume={onResume}
       onCancel={jest.fn()}
@@ -267,7 +270,7 @@ test("a never-run screen offers the run instead of showing zeroes", () => {
   const onRun = jest.fn();
   render(
     <EvalResults
-      state={{ kind: "never_run" }}
+      state={{ kind: "never_run", total: 8 }}
       onRun={onRun}
       onResume={jest.fn()}
       onCancel={jest.fn()}
@@ -275,11 +278,12 @@ test("a never-run screen offers the run instead of showing zeroes", () => {
   );
 
   screen.getByTestId("ai-eval-never-run");
+  screen.getByText("Run the 8 questions");
   fireEvent.press(screen.getByTestId("ai-eval-run"));
   expect(onRun).toHaveBeenCalledTimes(1);
 
-  // A zeroed `EvalReport` renders as "0 tokens/second, picked the right tool 0
-  // times out of 30" — a measurement the device never took, and a damning one.
+  // A zeroed `EvalReport` renders as "the first word in 0.0 s, then 0.0 tokens
+  // per second", a measurement the device never took.
   expect(screen.queryByTestId("ai-eval-headline")).toBeNull();
   for (const testID of METRIC_TEST_IDS) {
     expect(screen.queryByTestId(testID)).toBeNull();
