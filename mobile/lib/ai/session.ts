@@ -3,12 +3,11 @@
 // THE SESSION IS SUBORDINATE TO THE LOCK. The lock owns the DEK; the session
 // owns nothing that can outlive it. Spec §4.5/4.6.
 //
-// THERE IS NO TRANSCRIPT, AND NOTHING IS STORED. Under spec §7.4 (chosen
-// 2026-09-25) every tapped question is answered on its own, so the model never
-// sees an earlier turn and there is no conversation to keep. What is on screen
-// lives in the chat surface's React state, which clears itself on the same lock
-// event. Not in SQLCipher, not in AsyncStorage, not in the react-query
-// persister, not in a file.
+// THE RECENT TURNS LIVE IN THE CHAT SURFACE, AND NOTHING IS STORED. A tapped
+// question is answered on its own (spec §7.4). From answer level 3 the surface
+// sends back the model exchanges still on screen (assistant levels spec §4.4),
+// held in its own memory and cleared on the same lock event. Not in SQLCipher,
+// not in AsyncStorage, not in the react-query persister, not in a file.
 //
 // WHAT THE LOCK STILL HAS TO CLEAR is the model's context. Its KV cache holds the
 // last prompt, and that prompt carried the tool result's figures inside the

@@ -14,11 +14,20 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { Text } from "react-native";
 
 import { ChatSurface } from "../chat_surface";
-import { CANNOT_ANSWER_REPLY, SMALL_TALK_REPLY } from "../chat_copy";
+import {
+  CANNOT_ANSWER_REPLY,
+  FREE_CHAT_REPLACED,
+  LEVEL_MARKER,
+  MONEY_TALK_NOTICE,
+  SMALL_TALK_REPLY,
+} from "../chat_copy";
+import type { AnswerLevel } from "@/lib/ai/levels";
 import { ok, type ToolResult } from "@/lib/ai/tools/types";
+import { emitAppEvent } from "@/lib/events/app_events";
 import {
   fakeLlamaBridge,
   generateCallCount,
+  lastPromptGiven,
   resetLlamaScript,
   scriptLlama,
 } from "@/test_support/llama_bridge_mock";
@@ -35,6 +44,16 @@ const LIMITS_RESULT: ToolResult<unknown> = ok("get_limits", { count: 2 }, [
   { key: "Groceries limit left", value: "₱1,100.00", kind: "amount" },
 ]);
 
+/** One result per snapshot tool, so free chat's corpus holds four distinct figures. */
+const SNAPSHOT_RESULTS: Record<string, ToolResult<unknown>> = {
+  get_balance_total: ok("get_balance_total", {}, [{ key: "total", value: "₱18,320.00", kind: "amount" }]),
+  get_safe_to_spend: ok("get_safe_to_spend", {}, [{ key: "safe to spend", value: "₱4,000.00", kind: "amount" }]),
+  get_limits: LIMITS_RESULT,
+  get_spend_by_category: SPEND_RESULT,
+};
+
+const byName = async (name: string): Promise<ToolResult<unknown>> => SNAPSHOT_RESULTS[name] ?? SPEND_RESULT;
+
 /** A stand-in for Task 22's picker: this surface only has to render it. */
 function StubPicker() {
   return <Text testID="model-picker">Choose a model</Text>;
@@ -46,6 +65,7 @@ type Overrides = {
     args: Record<string, unknown>,
     now: number,
   ) => Promise<ToolResult<unknown>>;
+  level?: AnswerLevel;
   disclaimerAcknowledged?: boolean;
   onAcknowledgeDisclaimer?: () => void;
 };
@@ -60,6 +80,8 @@ function readySurface(overrides: Overrides = {}) {
       now={() => NOW}
       disclaimerAcknowledged={overrides.disclaimerAcknowledged ?? true}
       onAcknowledgeDisclaimer={overrides.onAcknowledgeDisclaimer ?? (() => {})}
+      level={overrides.level ?? 1}
+      model={{ knowledgeLimit: "April 2025", contextTokens: 2048 }}
     />
   );
 }
@@ -105,6 +127,8 @@ describe("the four states", () => {
         now={() => NOW}
         disclaimerAcknowledged
         onAcknowledgeDisclaimer={() => {}}
+        level={1}
+        model={null}
       />,
     );
 
@@ -126,6 +150,8 @@ describe("the four states", () => {
         now={() => NOW}
         disclaimerAcknowledged
         onAcknowledgeDisclaimer={() => {}}
+        level={1}
+        model={null}
       />,
     );
 
@@ -354,5 +380,116 @@ describe("the disclaimer", () => {
 
     expect(screen.queryByTestId("ai-disclaimer")).toBeNull();
     expect(screen.getByTestId("ai-disclaimer-marker")).toBeTruthy();
+  });
+});
+
+describe("answer levels", () => {
+  test("level 2: a typed ledger question is answered as its chip, labelled with the question", async () => {
+    scriptLlama([{ emit: "You have ₱2,400.00 in total." }]);
+    const runTool = jest.fn(async () => SPEND_RESULT);
+    render(readySurface({ runTool, level: 2 }));
+
+    type("magkano pera ko");
+
+    await waitFor(() => {
+      expect(screen.getByText("You have ₱2,400.00 in total.")).toBeTruthy();
+    });
+    expect(screen.getByTestId("ai-answering")).toHaveTextContent("Answering: How much money do I have?");
+    expect(runTool).toHaveBeenCalledWith("get_balance_total", {}, NOW);
+  });
+
+  test("level 2: anything else typed still gets cannot-answer, with no model", async () => {
+    render(readySurface({ level: 2 }));
+    type("What is bitcoin?");
+
+    await waitFor(() => {
+      expect(screen.getByText(CANNOT_ANSWER_REPLY.en)).toBeTruthy();
+    });
+    expect(generateCallCount()).toBe(0);
+  });
+
+  test("level 3: free chat answers from the model, with no notice", async () => {
+    scriptLlama([{ emit: "Your records show ₱2,400.00 on Groceries." }]);
+    render(readySurface({ level: 3, runTool: byName }));
+    type("How was my week?");
+
+    await waitFor(() => {
+      expect(screen.getByText("Your records show ₱2,400.00 on Groceries.")).toBeTruthy();
+    });
+    expect(screen.queryByTestId("ai-answer-notice")).toBeNull();
+  });
+
+  test("level 4: a free-chat answer carries the general-knowledge notice", async () => {
+    scriptLlama([{ emit: "An emergency fund is money set aside for surprises." }]);
+    render(readySurface({ level: 4, runTool: byName }));
+    type("What is an emergency fund?");
+
+    await waitFor(() => {
+      expect(screen.getByTestId("ai-answer-notice")).toHaveTextContent(MONEY_TALK_NOTICE);
+    });
+  });
+
+  test("level 5: the notice names the model's knowledge limit", async () => {
+    scriptLlama([{ emit: "José Rizal was a Filipino writer." }]);
+    render(readySurface({ level: 5, runTool: byName }));
+    type("Who was José Rizal?");
+
+    await waitFor(() => {
+      expect(screen.getByTestId("ai-answer-notice")).toHaveTextContent(
+        "From the model's memory. It can be wrong, and it knows nothing after April 2025.",
+      );
+    });
+  });
+
+  test("a free-chat answer that fails grounding is replaced, never shown", async () => {
+    scriptLlama([{ emit: "You have ₱99,999.00 saved." }]);
+    render(readySurface({ level: 3, runTool: byName }));
+    type("Am I doing well?");
+
+    await waitFor(() => {
+      expect(screen.getByText(FREE_CHAT_REPLACED.ungrounded.en)).toBeTruthy();
+    });
+    expect(screen.queryByText(/99,999/)).toBeNull();
+  });
+
+  test("a follow-up carries the earlier exchange to the model", async () => {
+    scriptLlama([{ emit: "You have ₱18,320.00 in total." }, { emit: "That is across all your wallets." }]);
+    render(readySurface({ level: 3, runTool: byName }));
+
+    type("Tell me about my money");
+    await waitFor(() => {
+      expect(screen.getByText("You have ₱18,320.00 in total.")).toBeTruthy();
+    });
+    type("Is that a lot?");
+    await waitFor(() => {
+      expect(screen.getByText("That is across all your wallets.")).toBeTruthy();
+    });
+
+    expect(lastPromptGiven()).toContain("User: Tell me about my money");
+    expect(lastPromptGiven()).toContain("Assistant: You have ₱18,320.00 in total.");
+  });
+
+  test("the lock clears what the model would be sent back, not only the screen", async () => {
+    scriptLlama([{ emit: "You have ₱18,320.00 in total." }, { emit: "Nothing earlier is on record here." }]);
+    render(readySurface({ level: 3, runTool: byName }));
+
+    type("Tell me about my money");
+    await waitFor(() => {
+      expect(screen.getByText("You have ₱18,320.00 in total.")).toBeTruthy();
+    });
+    await act(async () => {
+      await emitAppEvent("lock:engaged", {});
+    });
+    type("What did I just ask?");
+    await waitFor(() => {
+      expect(screen.getByText("Nothing earlier is on record here.")).toBeTruthy();
+    });
+
+    expect(lastPromptGiven()).not.toContain("Tell me about my money");
+  });
+
+  test("the top line follows the level", () => {
+    render(readySurface({ level: 5 }));
+    expect(screen.getByTestId("ai-disclaimer-marker")).toHaveTextContent(LEVEL_MARKER[5]);
   });
 });

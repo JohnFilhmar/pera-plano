@@ -39,6 +39,7 @@ import { createDownloader, type DownloadState } from "@/lib/ai/downloader";
 import { runFixtureTool } from "@/lib/ai/eval/fixture_tools";
 import { configureAiEval } from "@/lib/ai/eval/harness";
 import { readResidentBytes } from "@/lib/ai/eval/resident_memory";
+import { DEFAULT_ANSWER_LEVEL } from "@/lib/ai/levels";
 import { createProductionDeps } from "@/lib/ai/model_files";
 import { configureSession } from "@/lib/ai/session";
 import { TOOL_REGISTRY } from "@/lib/ai/tools/registry";
@@ -244,6 +245,8 @@ export default function AiAssistantScreen() {
         now={() => Date.now()}
         disclaimerAcknowledged={disclaimerAcknowledged}
         onAcknowledgeDisclaimer={acknowledgeDisclaimer}
+        level={DEFAULT_ANSWER_LEVEL}
+        model={null}
       />
     </KeyboardAvoidingView>
   );
