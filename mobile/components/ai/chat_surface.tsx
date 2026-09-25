@@ -38,17 +38,15 @@ import { ActivityIndicator, ScrollView, Text, TextInput, View } from "react-nati
 import { Button } from "@/components/ui/button";
 import { answerQuestion, replyToText, type AbortFlag } from "@/lib/ai/dispatch";
 import type { FixedQuestion } from "@/lib/ai/fixed_questions";
-import type { ReplyLanguage, SmallTalk } from "@/lib/ai/small_talk";
 import type { ToolResult } from "@/lib/ai/tools/types";
-import type { AdviceClass } from "@/lib/ai/triage";
 import { onAppEvent } from "@/lib/events/app_events";
 import { usePlaceholderColor } from "@/lib/ui/placeholder";
 import type { LlamaBridge } from "@/modules/llama_bridge/types";
 import type { EpochMs } from "@/types/domain";
 
-import { CANNOT_ANSWER_REPLY, EMPTY_CHAT, REDIRECT_LINE, SMALL_TALK_REPLY } from "./chat_copy";
-import { GroundedCard } from "./grounded_card";
+import { EMPTY_CHAT } from "./chat_copy";
 import { QuestionChips } from "./question_chips";
+import { TranscriptMessage, type Message } from "./TranscriptMessage";
 
 export type SurfacePhase =
   /** Nothing downloaded. The surface is the picker; see `picker`. */
@@ -87,14 +85,6 @@ export type ChatSurfaceProps = {
   onAcknowledgeDisclaimer: () => void;
   testID?: string;
 };
-
-type Message =
-  | { id: string; kind: "user"; text: string }
-  | { id: string; kind: "assistant"; text: string }
-  | { id: string; kind: "card"; results: ToolResult<unknown>[] }
-  | { id: string; kind: "redirect"; klass: AdviceClass; results: ToolResult<unknown>[] }
-  | { id: string; kind: "smalltalk"; talk: SmallTalk; language: ReplyLanguage }
-  | { id: string; kind: "cannot_answer"; language: ReplyLanguage };
 
 /**
  * Filling the dead air, per spec §4.7: at 4–8 tok/s a tool round is seconds of
@@ -354,52 +344,9 @@ export function ChatSurface({
           <Text className="text-body text-fg-2 dark:text-fg-2-dark">{EMPTY_CHAT}</Text>
         ) : null}
 
-        {messages.map((message) => {
-          if (message.kind === "user") {
-            return (
-              <View
-                key={message.id}
-                className="self-end rounded-2xl bg-brand px-4 py-3 dark:bg-brand-dark"
-              >
-                <Text className="text-body text-on-brand dark:text-on-brand-dark">
-                  {message.text}
-                </Text>
-              </View>
-            );
-          }
-          if (message.kind === "assistant") {
-            return (
-              <Text key={message.id} className="text-body text-fg dark:text-fg-dark">
-                {message.text}
-              </Text>
-            );
-          }
-          if (message.kind === "smalltalk") {
-            return (
-              <Text key={message.id} className="text-body text-fg dark:text-fg-dark">
-                {SMALL_TALK_REPLY[message.talk][message.language]}
-              </Text>
-            );
-          }
-          if (message.kind === "cannot_answer") {
-            return (
-              <Text key={message.id} className="text-body text-fg-2 dark:text-fg-2-dark">
-                {CANNOT_ANSWER_REPLY[message.language]}
-              </Text>
-            );
-          }
-          if (message.kind === "redirect") {
-            return (
-              <View key={message.id} className="gap-2">
-                <Text className="text-body text-fg dark:text-fg-dark">
-                  {REDIRECT_LINE[message.klass]}
-                </Text>
-                <GroundedCard results={message.results} />
-              </View>
-            );
-          }
-          return <GroundedCard key={message.id} results={message.results} />;
-        })}
+        {messages.map((message) => (
+          <TranscriptMessage key={message.id} message={message} />
+        ))}
 
         {activity === null ? null : (
           <Text testID="ai-activity" className="text-body text-fg-2 dark:text-fg-2-dark">
