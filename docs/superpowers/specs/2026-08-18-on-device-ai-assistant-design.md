@@ -1230,6 +1230,9 @@ switch on the available A54; tok/s within the estimated bands.
 >   back at the questions, in English or Filipino (`mobile/lib/ai/small_talk.ts`,
 >   `mobile/components/ai/chat_copy.ts`). The owner asked for both replies after "hello" was answered
 >   with a list of wallets.
+> - **Amended the same day by `2026-09-25-assistant-levels-design.md`:** five answer levels. Typed text
+>   still never reaches the model at levels 1 and 2 (2 is the default); from level 3 up it does,
+>   because the user chose it.
 
 If tool selection is the thing that fails, **the feature survives by moving tool selection out of the
 model and into the UI**: the user taps one of a fixed set of questions ("Where did my money go this
