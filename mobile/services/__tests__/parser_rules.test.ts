@@ -44,7 +44,8 @@ import { freshDb } from "@/test_support/db";
 import type { SQLiteDatabase } from "@/lib/db/database";
 
 import { apiClient } from "../api";
-import { checkForRulesetUpdate } from "../parser_rules";
+import { getSetting, setSetting } from "@/lib/db/repos/app_settings_repo";
+import { checkForRulesetUpdate, isInRollout } from "../parser_rules";
 
 let db: SQLiteDatabase;
 const originalAdapter = apiClient.defaults.adapter;
@@ -513,4 +514,120 @@ test("an oversized body is refused without the signature ever being checked", as
   } finally {
     warn.mockRestore();
   }
+});
+
+// ---------------------------------------------------------------------------
+// Staged rollout — GAP-043 rule 4.
+// ---------------------------------------------------------------------------
+
+describe("isInRollout", () => {
+  test("an absent percentage means every device, whatever its bucket", () => {
+    // Every bundle published before the field existed must keep installing.
+    for (const bucket of [0, 1, 37, 99]) {
+      expect(isInRollout(undefined, bucket)).toBe(true);
+    }
+  });
+
+  test("a rollout of 10 admits exactly ten buckets, 0 through 9", () => {
+    // `<` and not `<=`: at 10 the eleventh bucket would make it eleven percent,
+    // and the same off-by-one at 100 would exclude nobody but still be wrong.
+    const admitted = [];
+    for (let bucket = 0; bucket < 100; bucket++) {
+      if (isInRollout(10, bucket)) admitted.push(bucket);
+    }
+    expect(admitted).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  });
+
+  test("a rollout of 100 admits every bucket, and of 1 admits only bucket 0", () => {
+    for (let bucket = 0; bucket < 100; bucket++) {
+      expect(isInRollout(100, bucket)).toBe(true);
+    }
+    expect(isInRollout(1, 0)).toBe(true);
+    expect(isInRollout(1, 1)).toBe(false);
+  });
+
+  test("EVERY BUCKET IS ADMITTED BY SOME PERCENTAGE, so no device is permanently excluded", () => {
+    // A device stuck outside every rollout would silently stop receiving parser
+    // fixes forever, and nothing on the phone would say so.
+    for (let bucket = 0; bucket < 100; bucket++) {
+      expect(isInRollout(100, bucket)).toBe(true);
+    }
+  });
+});
+
+// The gate in place, not just the predicate. These drive the real
+// `checkForRulesetUpdate` with the device's bucket pinned, because a rollout
+// that computes correctly and then installs anyway is the failure worth
+// catching.
+
+test("A DEVICE OUTSIDE THE ROLLOUT DOES NOT INSTALL, and keeps what it has", async () => {
+  await upsertRuleset({ version: 1, providers: [provider({ providerKey: "installed" })] });
+  await setSetting("parser_rules_rollout_bucket", 50);
+  apiClient.defaults.adapter = respondWith(200, {
+    version: 2,
+    providers: [provider({ providerKey: "staged" })],
+    rolloutPercent: 10,
+  });
+
+  const result = await checkForRulesetUpdate(1_000);
+
+  expect(result).toEqual({ updated: false, version: 1 });
+  expect(await getActiveVersion()).toBe(1);
+  expect((await getActiveRuleset())!.providers[0].providerKey).toBe("installed");
+});
+
+test("a device inside the rollout installs the staged bundle", async () => {
+  await upsertRuleset({ version: 1, providers: [provider({ providerKey: "installed" })] });
+  await setSetting("parser_rules_rollout_bucket", 3);
+  apiClient.defaults.adapter = respondWith(200, {
+    version: 2,
+    providers: [provider({ providerKey: "staged" })],
+    rolloutPercent: 10,
+  });
+
+  const result = await checkForRulesetUpdate(1_000);
+
+  expect(result).toEqual({ updated: true, version: 2 });
+  expect((await getActiveRuleset())!.providers[0].providerKey).toBe("staged");
+});
+
+test("an excluded device still records the check, so it does not re-ask immediately", async () => {
+  // Being outside a rollout is a normal answer, not a missed request. Without
+  // this the device would hammer the endpoint on every launch and foreground.
+  await upsertRuleset({ version: 1, providers: [provider({ providerKey: "installed" })] });
+  await setSetting("parser_rules_rollout_bucket", 90);
+  apiClient.defaults.adapter = respondWith(200, {
+    version: 2,
+    providers: [provider({ providerKey: "staged" })],
+    rolloutPercent: 5,
+  });
+
+  await checkForRulesetUpdate(1_000);
+
+  expect(await getSetting("parser_rules_checked_at")).toBe(1_000);
+});
+
+test("THE BUCKET IS ASSIGNED ONCE AND THEN NEVER MOVES", async () => {
+  // A bucket re-rolled per check would put the device in and out of a rollout on
+  // successive days, which is not a staged rollout of anything.
+  await upsertRuleset({ version: 1, providers: [provider({ providerKey: "installed" })] });
+  expect(await getSetting("parser_rules_rollout_bucket")).toBeNull();
+
+  // A 200 WITH A BUNDLE, not a 204: the bucket is assigned lazily, only when a
+  // bundle is actually being considered, so a device that never receives one never
+  // has a bucket written. That is deliberate and this test would have hidden it.
+  apiClient.defaults.adapter = respondWith(200, {
+    version: 2,
+    providers: [provider({ providerKey: "staged" })],
+  });
+  await checkForRulesetUpdate(1_000);
+  const first = await getSetting("parser_rules_rollout_bucket");
+
+  await checkForRulesetUpdate(2_000);
+  await checkForRulesetUpdate(3_000);
+
+  expect(first).not.toBeNull();
+  expect(first).toBeGreaterThanOrEqual(0);
+  expect(first).toBeLessThan(100);
+  expect(await getSetting("parser_rules_rollout_bucket")).toBe(first);
 });

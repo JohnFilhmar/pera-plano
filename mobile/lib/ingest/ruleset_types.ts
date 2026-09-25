@@ -163,6 +163,19 @@ export type PartialPipelineTunables = Partial<Omit<PipelineTunables, "penalties"
 export type RulesetBundleInput = Omit<RulesetBundle, "tunables" | "traitSignals"> & {
   tunables?: PartialPipelineTunables;
   traitSignals?: TraitSignal[];
+  /**
+   * The share of devices this version is for, 1 to 100 (docs/03 §11.2 rule 4,
+   * GAP-043). Absent means every device.
+   *
+   * ON THE INPUT TYPE ONLY, never on `RulesetBundle`. It says who should install
+   * a bundle, which is a fact about the delivery of one version and not about
+   * the ruleset itself: once installed, every device runs the same rules and the
+   * percentage that selected it is meaningless. `parser_rulesets_repo` stores
+   * the parsed bundle, and a stored percentage would be a number nothing reads,
+   * sitting where a later reader could mistake it for something the pipeline
+   * consults.
+   */
+  rolloutPercent?: number;
 };
 
 /**
