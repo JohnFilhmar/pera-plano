@@ -494,4 +494,15 @@ describe("answer levels", () => {
     render(readySurface({ level: 5 }));
     expect(screen.getByTestId("ai-disclaimer-marker")).toHaveTextContent(LEVEL_MARKER[5]);
   });
+
+  test("a tapped chip at level 5 carries no notice", async () => {
+    scriptLlama([{ emit: "Groceries took ₱2,400.00 this month." }]);
+    render(readySurface({ level: 5 }));
+    tap("spend_this_month");
+
+    await waitFor(() => {
+      expect(screen.getByText("Groceries took ₱2,400.00 this month.")).toBeTruthy();
+    });
+    expect(screen.queryByTestId("ai-answer-notice")).toBeNull();
+  });
 });

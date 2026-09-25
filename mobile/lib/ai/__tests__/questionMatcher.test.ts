@@ -31,6 +31,8 @@ const CASES: Array<[string, string]> = [
   ["What's my income?", "income"],
   ["How much do I earn?", "income"],
   ["Magkano ang sahod ko?", "income"],
+  ["spending this month", "spend_this_month"],
+  ["What did I buy last month?", "spend_last_month"],
 ];
 
 test.each(CASES)("%s asks %s", (text, questionId) => {

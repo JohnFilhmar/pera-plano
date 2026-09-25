@@ -30,7 +30,7 @@ export const QUESTION_MATCH_ROWS: readonly QuestionMatchRow[] = [
     id: "spend_last_month_en",
     questionId: "spend_last_month",
     language: "en",
-    pattern: /^(?=.*\blast month\b)(?=.*\b(spend|spent|spending|expenses|money go)\b)/,
+    pattern: /^(?=.*\blast month\b)(?=.*\b(spend|spent|spending|expenses|money go|buy|bought|purchases)\b)/,
   },
   {
     id: "spend_last_month_fil",
@@ -54,7 +54,7 @@ export const QUESTION_MATCH_ROWS: readonly QuestionMatchRow[] = [
     id: "spend_this_month_en",
     questionId: "spend_this_month",
     language: "en",
-    pattern: /\b(where (did|does) (all )?my money go|my spending|how much (did|have) i (spend|spent))\b/,
+    pattern: /\b(spending this month|where (did|does) (all )?my money go|my spending|how much (did|have) i (spend|spent))\b/,
   },
   {
     id: "spend_this_month_fil",

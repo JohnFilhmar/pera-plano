@@ -19,6 +19,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
+import { CANNOT_ANSWER_REPLY } from "@/components/ai/chat_copy";
 import { MODEL_CATALOGUE } from "@/lib/ai/catalogue";
 import type { DownloaderDeps } from "@/lib/ai/downloader";
 import { runFixtureTool } from "@/lib/ai/eval/fixture_tools";
@@ -188,5 +189,20 @@ describe("the answer level (assistant levels spec §6)", () => {
       expect(screen.getByTestId("ai-level-entry")).toHaveTextContent(/Level 3 · Chat/);
     });
     expect(await AsyncStorage.getItem(AI_ANSWER_LEVEL_STORAGE_KEY)).toBe("5");
+  });
+
+  test("switching level clears the chat", async () => {
+    render(<AiAssistantScreen />);
+    await screen.findByTestId("ai-level-entry");
+    fireEvent.changeText(screen.getByTestId("ai-composer-input"), "What is bitcoin?");
+    fireEvent.press(screen.getByTestId("ai-composer-send"));
+    await screen.findByText(CANNOT_ANSWER_REPLY.en);
+
+    fireEvent.press(screen.getByTestId("ai-level-entry"));
+    fireEvent.press(screen.getByTestId("ai-level-1"));
+
+    await waitFor(() => {
+      expect(screen.queryByText(CANNOT_ANSWER_REPLY.en)).toBeNull();
+    });
   });
 });

@@ -46,6 +46,7 @@ import type { FixedQuestion } from "@/lib/ai/fixed_questions";
 import { answerFreely } from "@/lib/ai/freeChat";
 import { isFreeChatLevel, type AnswerLevel } from "@/lib/ai/levels";
 import type { Turn } from "@/lib/ai/prompt";
+import { guessLanguage } from "@/lib/ai/small_talk";
 import type { ToolResult } from "@/lib/ai/tools/types";
 import { onAppEvent } from "@/lib/events/app_events";
 import { usePlaceholderColor } from "@/lib/ui/placeholder";
@@ -288,7 +289,12 @@ export function ChatSurface({
   // Levels 3 to 5: the model answers typed text from a fresh records snapshot
   // and the exchanges still on screen.
   const runFreeChat = async (text: string) => {
-    if (bridge === null || model === null || !isFreeChatLevel(level)) return;
+    if (bridge === null || model === null || !isFreeChatLevel(level)) {
+      // Unreachable in the app today (the screen sets the model before "ready"),
+      // but a typed message must never go unanswered.
+      setMessages((prior) => [...prior, { id: nextId(), kind: "cannot_answer", language: guessLanguage(text) }]);
+      return;
+    }
     const freeLevel = level;
     const resident = model;
 
