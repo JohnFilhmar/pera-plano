@@ -8,8 +8,10 @@
 // a cancel that leaves nothing behind, and a bad sentence collapsing to the
 // card that still carries the true figure.
 //
-// UNDER §7.4 A CHIP IS THE ONLY WAY TO THE MODEL. Typed text gets the app's own
-// reply, and `generateCallCount()` staying at zero is how these tests prove it.
+// AT LEVEL 1 A CHIP IS THE ONLY WAY TO THE MODEL (spec §7.4), and
+// `generateCallCount()` staying at zero is how the level-1 tests prove typed text
+// gets the app's own reply. The "answer levels" block covers levels 2 to 5, where
+// a matched question or free chat does reach it.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
 import { Text } from "react-native";
 

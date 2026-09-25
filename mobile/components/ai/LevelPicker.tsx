@@ -19,6 +19,7 @@ import { ANSWER_LEVELS, LEVEL_ORDER, describeLevel, type AnswerLevel } from "@/l
 
 const CheckGlyph = registerIcon(Check);
 
+/** Props for the answer-level sheet. */
 export type LevelPickerProps = {
   visible: boolean;
   /** The level in force now. */

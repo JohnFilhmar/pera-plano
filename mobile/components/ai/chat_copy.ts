@@ -1,9 +1,11 @@
 // components/ai/chat_copy.ts
 //
-// EVERY REPLY THE APP WRITES ITSELF, as opposed to one the model narrates. Under
-// spec §7.4 typed text never reaches the model, so these lines are the whole
-// voice of the chat for anything that is not a tapped question. Each one points
-// back at the question chips, because they are the way in.
+// EVERY LINE THE APP WRITES ITSELF, as opposed to what the model narrates: its
+// replies to small talk and advice, the cannot-answer and replacement lines, and
+// the notices and top line the answer levels add
+// (docs/superpowers/specs/2026-09-25-assistant-levels-design.md §5). The replies
+// point back at the question chips, because they are the way in to the user's
+// own records.
 //
 // FILIPINO COPY IS A FIRST DRAFT for the owner to read, not a translation anyone
 // has checked yet.
@@ -93,16 +95,16 @@ export function answeringLabel(questionLabel: string): string {
 /** What replaces a free-chat answer that failed a check (spec §5.2). */
 export const FREE_CHAT_REPLACED: Record<FreeChatFailure, Record<ReplyLanguage, string>> = {
   ungrounded: {
-    en: "That answer had an amount or a date that isn't in your records, so I didn't show it. Tap a question below for the exact figure.",
-    fil: "May halaga o petsa sa sagot na wala sa records mo, kaya hindi ko ito ipinakita. Pumili ng tanong sa ibaba para sa eksaktong halaga.",
+    en: "That answer had an amount or a date that isn't in your records, so I removed it. Tap a question below for the exact figure.",
+    fil: "May halaga o petsa sa sagot na wala sa records mo, kaya inalis ko ito. Pumili ng tanong sa ibaba para sa eksaktong halaga.",
   },
   advice: {
     en: "I can't tell you what to do with your money. Tap a question below to see what your records say.",
     fil: "Hindi ako makakapagpayo kung ano ang gagawin mo sa pera mo. Pumili ng tanong sa ibaba para makita ang records mo.",
   },
   contact: {
-    en: "That answer included a link or a phone number, so I didn't show it.",
-    fil: "May link o numero ng telepono sa sagot, kaya hindi ko ito ipinakita.",
+    en: "That answer included a link or a phone number, so I removed it.",
+    fil: "May link o numero ng telepono sa sagot, kaya inalis ko ito.",
   },
   unreadable: {
     en: "I couldn't put that into words. Try asking another way.",
