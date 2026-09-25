@@ -6,8 +6,9 @@
 //
 //   tapped question → its fixed tool → ONE narration round → grounding check
 //     → output guard → render
-//   typed text      → triage → advice redirect, small talk, or cannot-answer,
-//     with ZERO inference in every branch
+//   typed text      → small talk, the advice redirect, a fixed question
+//     (answer level 2+), free chat (level 3+), or cannot-answer. See
+//     docs/superpowers/specs/2026-09-25-assistant-levels-design.md.
 //
 // The grammar, the tool-round cap, the turn cache and the malformed-output rule
 // went with the model's freedom to choose, as the plan's §7.4 substitution for
@@ -30,12 +31,14 @@ import type { GenerateHandle, LlamaBridge } from "@/modules/llama_bridge/types";
 import type { EpochMs } from "@/types/domain";
 
 import type { FixedQuestion } from "./fixed_questions";
+import type { AnswerLevel } from "./levels";
 import { buildCorpus, isGrounded, ungroundedFigures } from "./grounding";
 import { guard, type GuardReason } from "./output_guard";
 import { buildTurnPrompt } from "./prompt";
 import { guessLanguage, type ReplyLanguage, type SmallTalk } from "./small_talk";
 import { unavailable, type ToolResult } from "./tools/types";
 import { classify, type AdviceClass } from "./triage";
+import { matchFixedQuestion } from "./questionMatcher";
 
 export type CardReason =
   /** The prose stated a figure or date no tool result licensed. */
@@ -64,11 +67,15 @@ export type TurnOutcome =
   /** No assistant message at all. See `abort` below. */
   | { kind: "cancelled" };
 
-/** What typed text produced. None of these came from the model. */
+/** What typed text produced. The app answers all but `question` and `free_chat` itself. */
 export type TextReply =
   | { kind: "redirect"; klass: AdviceClass; results: ToolResult<unknown>[] }
   | { kind: "smalltalk"; talk: SmallTalk; language: ReplyLanguage }
-  /** Anything else typed. The questions on screen are the way in, and the reply says so. */
+  /** Level 2 and up: the message asks a fixed question. Answer it with `answerQuestion`. */
+  | { kind: "question"; question: FixedQuestion }
+  /** Level 3 and up: nothing deterministic applies, so answer it with `answerFreely`. */
+  | { kind: "free_chat" }
+  /** Levels 1 and 2, anything else typed. The questions on screen are the way in. */
   | { kind: "cannot_answer"; language: ReplyLanguage };
 
 /**
@@ -214,19 +221,20 @@ export async function answerQuestion(
 }
 
 /**
- * Replies to typed text. The model is never consulted.
+ * Decides who answers typed text: the app, a fixed question, or the model.
+ * Assistant levels spec §1: small talk, then money advice, then (level 2+) a
+ * fixed question, then (level 3+) free chat, otherwise cannot-answer.
  *
  * @param input - The message as typed.
- * @param deps - The tool runner and clock, used only by the advice redirect.
- * @returns `smalltalk` for a whole-message greeting, thanks, help or goodbye;
- *   `redirect` with the facts an advice question needs; otherwise
- *   `cannot_answer`, in the language the message looks to be written in.
+ * @param deps - The tool runner and clock, used only by the advice redirect,
+ *   and the answer level in force.
+ * @returns The app's own reply, or which path must answer it next.
  */
 export async function replyToText(
   input: string,
-  deps: Pick<DispatchDeps, "runTool" | "now">,
+  deps: Pick<DispatchDeps, "runTool" | "now"> & { level: AnswerLevel },
 ): Promise<TextReply> {
-  const verdict = classify(input);
+  const verdict = classify(input, deps.level);
 
   if (verdict.kind === "smalltalk") {
     return { kind: "smalltalk", talk: verdict.talk, language: verdict.language };
@@ -241,6 +249,13 @@ export async function replyToText(
     }
     return { kind: "redirect", klass: verdict.klass, results };
   }
+
+  if (deps.level >= 2) {
+    const question = matchFixedQuestion(input);
+    if (question !== null) return { kind: "question", question };
+  }
+
+  if (deps.level >= 3) return { kind: "free_chat" };
 
   return { kind: "cannot_answer", language: guessLanguage(input) };
 }

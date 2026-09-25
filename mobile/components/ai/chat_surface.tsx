@@ -263,7 +263,7 @@ export function ChatSurface({
     setGenerating(true);
 
     try {
-      const reply = await replyToText(text, { runTool, now: now() });
+      const reply = await replyToText(text, { runTool, now: now(), level: 1 });
       if (reply.kind === "redirect") {
         setMessages((prior) => [
           ...prior,
@@ -274,7 +274,7 @@ export function ChatSurface({
           ...prior,
           { id: nextId(), kind: "smalltalk", talk: reply.talk, language: reply.language },
         ]);
-      } else {
+      } else if (reply.kind === "cannot_answer") {
         setMessages((prior) => [
           ...prior,
           { id: nextId(), kind: "cannot_answer", language: reply.language },

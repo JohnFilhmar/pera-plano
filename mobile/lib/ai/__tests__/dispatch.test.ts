@@ -57,9 +57,9 @@ beforeEach(() => {
   resetLlamaScript();
 });
 
-describe("typed text never reaches the model", () => {
+describe("at level 1, typed text never reaches the model", () => {
   test("an advice question is redirected with zero inference", async () => {
-    const reply = await replyToText("Should I buy a new phone?", depsWith());
+    const reply = await replyToText("Should I buy a new phone?", { ...depsWith(), level: 1 });
 
     expect(generateCallCount()).toBe(0);
     expect(reply.kind).toBe("redirect");
@@ -67,7 +67,7 @@ describe("typed text never reaches the model", () => {
 
   test("the redirect still carries data, because a refusal with no data is a failed redirect", async () => {
     const calls: ToolCallLog = [];
-    const reply = await replyToText("Can I afford a new phone?", depsWith({}, calls));
+    const reply = await replyToText("Can I afford a new phone?", { ...depsWith({}, calls), level: 1 });
 
     if (reply.kind !== "redirect") throw new Error("expected a redirect");
     expect(reply.results.length).toBeGreaterThan(0);
@@ -77,7 +77,7 @@ describe("typed text never reaches the model", () => {
 
   test("small talk gets a fixed reply, with no model and no tool", async () => {
     const calls: ToolCallLog = [];
-    const reply = await replyToText("hello", depsWith({}, calls));
+    const reply = await replyToText("hello", { ...depsWith({}, calls), level: 1 });
 
     expect(reply).toEqual({ kind: "smalltalk", talk: "greeting", language: "en" });
     expect(calls).toEqual([]);
@@ -89,7 +89,7 @@ describe("typed text never reaches the model", () => {
     // model failing at, so typed text does not get a guess, from the model or
     // from anything else.
     const calls: ToolCallLog = [];
-    const reply = await replyToText("How much money do I have?", depsWith({}, calls));
+    const reply = await replyToText("How much money do I have?", { ...depsWith({}, calls), level: 1 });
 
     expect(reply).toEqual({ kind: "cannot_answer", language: "en" });
     expect(calls).toEqual([]);
@@ -97,8 +97,51 @@ describe("typed text never reaches the model", () => {
   });
 
   test("cannot-answer follows the message's language", async () => {
-    const reply = await replyToText("Magkano pera ko?", depsWith());
+    const reply = await replyToText("Magkano pera ko?", { ...depsWith(), level: 1 });
     expect(reply).toEqual({ kind: "cannot_answer", language: "fil" });
+  });
+});
+
+describe("typed text, by answer level (levels spec §1)", () => {
+  test("level 2: a typed ledger question becomes its fixed question, with no tool run yet", async () => {
+    const calls: ToolCallLog = [];
+    const reply = await replyToText("Magkano pera ko?", { ...depsWith({}, calls), level: 2 });
+
+    expect(reply).toEqual({
+      kind: "question",
+      question: FIXED_QUESTIONS.find((question) => question.id === "balance_total"),
+    });
+    expect(calls).toEqual([]);
+    expect(generateCallCount()).toBe(0);
+  });
+
+  test("level 2: anything else typed still gets cannot-answer", async () => {
+    expect(await replyToText("What is bitcoin?", { ...depsWith(), level: 2 })).toEqual({
+      kind: "cannot_answer",
+      language: "en",
+    });
+  });
+
+  test("level 3: a typed ledger question still goes to its chip, never to free chat", async () => {
+    const reply = await replyToText("How much money do I have?", { ...depsWith(), level: 3 });
+    expect(reply.kind).toBe("question");
+  });
+
+  test("level 3: anything else goes to free chat", async () => {
+    expect(await replyToText("What is bitcoin?", { ...depsWith(), level: 3 })).toEqual({ kind: "free_chat" });
+  });
+
+  test("level 5: a non-money should-I goes to free chat, a money one is redirected", async () => {
+    expect(await replyToText("Should I learn Python?", { ...depsWith(), level: 5 })).toEqual({ kind: "free_chat" });
+    expect((await replyToText("Should I buy a new phone?", { ...depsWith(), level: 5 })).kind).toBe("redirect");
+  });
+
+  test.each([1, 2, 3, 4, 5] as const)("level %s: small talk is still the app's own reply", async (level) => {
+    expect(await replyToText("hello", { ...depsWith(), level })).toEqual({
+      kind: "smalltalk",
+      talk: "greeting",
+      language: "en",
+    });
   });
 });
 
