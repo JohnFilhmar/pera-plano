@@ -19,7 +19,7 @@
 - Knowledge-limit month is `"April 2025"` for both catalogue models (Hugging Face createdAt 2025-04-27). Never write "January 2025": Qwen publishes no Qwen3 cutoff.
 - Storage keys: `peraplano.ai_answer_level`, `peraplano.ai_levels_accepted`. Start-over clears both.
 - Chip narration keeps today's `SYSTEM_PROMPT` and closing line at every level. Level prompts apply only to free chat.
-- TypeScript: no `any`, no `as` to silence an error, no `@ts-ignore`. Identifiers camelCase, types PascalCase, files snake_case like their neighbours in `mobile/`.
+- TypeScript: no `any`, no `as` to silence an error, no `@ts-ignore`. Identifiers camelCase, types PascalCase. New files follow the project `CLAUDE.md`'s `mobile/` convention: non-component files camelCase (`moneyWords.ts`), component files PascalCase (`LevelPicker.tsx`). Existing snake_case files keep their names; a test file copies its subject's name.
 - Styling: NativeWind `className` only. Third-party components get `cssInterop` or `registerIcon`.
 - JSDoc on every exported function, component and props type. Inline comments only for a workaround, an ordering dependency or a deliberate deviation.
 - All copy and comments: no em dashes, no AI vocabulary, sentence case. Filipino copy is a first draft for the owner.
@@ -33,13 +33,13 @@
 | File | Status | Responsibility |
 |---|---|---|
 | `mobile/lib/ai/normalise.ts` | create | The one normaliser every typed-text table matches against (moved out of `triage.ts`). |
-| `mobile/lib/ai/money_words.ts` | create | `mentionsMoney`, the level-5 money test. |
+| `mobile/lib/ai/moneyWords.ts` | create | `mentionsMoney`, the level-5 money test. |
 | `mobile/lib/ai/levels.ts` | create | Level type, metadata, default, storage keys, parsing, entitlement clamp. |
-| `mobile/lib/ai/question_matcher.ts` | create | Level 2's phrase table from typed text to a fixed question. |
-| `mobile/lib/ai/prompt_budget.ts` | create | Fits a free-chat prompt into the context. |
-| `mobile/lib/ai/free_chat.ts` | create | `answerFreely`: snapshot, prompt, generate, guards. |
-| `mobile/components/ai/transcript_message.tsx` | create | Renders one chat message by kind (moved out of `chat_surface.tsx`). |
-| `mobile/components/ai/level_picker.tsx` | create | The answer-level sheet and the accept notice. |
+| `mobile/lib/ai/questionMatcher.ts` | create | Level 2's phrase table from typed text to a fixed question. |
+| `mobile/lib/ai/promptBudget.ts` | create | Fits a free-chat prompt into the context. |
+| `mobile/lib/ai/freeChat.ts` | create | `answerFreely`: snapshot, prompt, generate, guards. |
+| `mobile/components/ai/TranscriptMessage.tsx` | create | Renders one chat message by kind (moved out of `chat_surface.tsx`). |
+| `mobile/components/ai/LevelPicker.tsx` | create | The answer-level sheet and the accept notice. |
 | `mobile/lib/entitlements.ts` | modify | `canUseAssistantLevel`. |
 | `mobile/lib/ai/triage.ts` | modify | Imports `normalise`; level-aware `classify`. |
 | `mobile/lib/ai/output_guard.ts` | modify | `guardAtLevel`. |
@@ -61,12 +61,12 @@
 
 **Files:**
 - Create: `mobile/lib/ai/normalise.ts`
-- Create: `mobile/lib/ai/money_words.ts`
+- Create: `mobile/lib/ai/moneyWords.ts`
 - Modify: `mobile/lib/ai/triage.ts` (remove its private `normalise`, import the shared one)
-- Test: `mobile/lib/ai/__tests__/normalise.test.ts`, `mobile/lib/ai/__tests__/money_words.test.ts`
+- Test: `mobile/lib/ai/__tests__/normalise.test.ts`, `mobile/lib/ai/__tests__/moneyWords.test.ts`
 
 **Interfaces:**
-- Produces: `normalise(input: string): string` from `@/lib/ai/normalise`; `mentionsMoney(text: string): boolean` from `@/lib/ai/money_words`.
+- Produces: `normalise(input: string): string` from `@/lib/ai/normalise`; `mentionsMoney(text: string): boolean` from `@/lib/ai/moneyWords`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -92,15 +92,15 @@ test("drops the peso sign, which is why mentionsMoney checks for it first", () =
 });
 ```
 
-`mobile/lib/ai/__tests__/money_words.test.ts`:
+`mobile/lib/ai/__tests__/moneyWords.test.ts`:
 
 ```ts
-// mobile/lib/ai/__tests__/money_words.test.ts
+// mobile/lib/ai/__tests__/moneyWords.test.ts
 //
 // Assistant levels spec §3. Level 5 lets a "should I" question reach the model
 // unless it is about money; this list decides "about money". Both known error
 // directions are pinned so the accepted behaviour stays visible.
-import { mentionsMoney } from "../money_words";
+import { mentionsMoney } from "../moneyWords";
 
 test.each([
   "Should I buy a new phone?",
@@ -135,8 +135,8 @@ test("the accepted false negative: a purchase question with no money word", () =
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `npx jest lib/ai/__tests__/normalise.test.ts lib/ai/__tests__/money_words.test.ts`
-Expected: FAIL, "Cannot find module '../normalise'" and "Cannot find module '../money_words'".
+Run: `npx jest lib/ai/__tests__/normalise.test.ts lib/ai/__tests__/moneyWords.test.ts`
+Expected: FAIL, "Cannot find module '../normalise'" and "Cannot find module '../moneyWords'".
 
 - [ ] **Step 3: Create `normalise.ts`**
 
@@ -178,10 +178,10 @@ import { normalise } from "./normalise";
 import { matchSmallTalk, type ReplyLanguage, type SmallTalk } from "./small_talk";
 ```
 
-- [ ] **Step 5: Create `money_words.ts`**
+- [ ] **Step 5: Create `moneyWords.ts`**
 
 ```ts
-// mobile/lib/ai/money_words.ts
+// mobile/lib/ai/moneyWords.ts
 //
 // LEVEL 5 ONLY. Assistant levels spec §3: at level 5 a "should I" question
 // reaches the model unless it is about money, and the advice-wording guard
@@ -227,13 +227,13 @@ export function mentionsMoney(text: string): boolean {
 
 - [ ] **Step 6: Run the new tests and triage's**
 
-Run: `npx jest lib/ai/__tests__/normalise.test.ts lib/ai/__tests__/money_words.test.ts lib/ai/__tests__/triage.test.ts lib/ai/__tests__/small_talk.test.ts`
+Run: `npx jest lib/ai/__tests__/normalise.test.ts lib/ai/__tests__/moneyWords.test.ts lib/ai/__tests__/triage.test.ts lib/ai/__tests__/small_talk.test.ts`
 Expected: PASS, all suites.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add mobile/lib/ai/normalise.ts mobile/lib/ai/money_words.ts mobile/lib/ai/triage.ts mobile/lib/ai/__tests__/normalise.test.ts mobile/lib/ai/__tests__/money_words.test.ts
+git add mobile/lib/ai/normalise.ts mobile/lib/ai/moneyWords.ts mobile/lib/ai/triage.ts mobile/lib/ai/__tests__/normalise.test.ts mobile/lib/ai/__tests__/moneyWords.test.ts
 git commit -m "feat(mobile): share triage's normaliser and add the level-5 money-word test"
 ```
 
@@ -508,8 +508,8 @@ git commit -m "feat(mobile): define the five assistant answer levels and their P
 ### Task 3: Level 2's question matcher
 
 **Files:**
-- Create: `mobile/lib/ai/question_matcher.ts`
-- Test: `mobile/lib/ai/__tests__/question_matcher.test.ts`
+- Create: `mobile/lib/ai/questionMatcher.ts`
+- Test: `mobile/lib/ai/__tests__/questionMatcher.test.ts`
 
 **Interfaces:**
 - Consumes: `normalise` (Task 1), `FIXED_QUESTIONS` and `FixedQuestion` from `lib/ai/fixed_questions.ts`.
@@ -518,13 +518,13 @@ git commit -m "feat(mobile): define the five assistant answer levels and their P
 - [ ] **Step 1: Write the failing test**
 
 ```ts
-// mobile/lib/ai/__tests__/question_matcher.test.ts
+// mobile/lib/ai/__tests__/questionMatcher.test.ts
 //
 // Assistant levels spec §2. From level 2, typed text can ask one of the eight
 // questions, and the app answers it exactly as if the chip were tapped. First
 // match wins, so the order of the rows is part of what is tested here.
 import { FIXED_QUESTIONS } from "../fixed_questions";
-import { QUESTION_MATCH_ROWS, matchFixedQuestion } from "../question_matcher";
+import { QUESTION_MATCH_ROWS, matchFixedQuestion } from "../questionMatcher";
 
 const CASES: Array<[string, string]> = [
   ["How much money do I have?", "balance_total"],
@@ -584,13 +584,13 @@ test("every fixed question can be typed in English and in Filipino", () => {
 
 - [ ] **Step 2: Run it to verify it fails**
 
-Run: `npx jest lib/ai/__tests__/question_matcher.test.ts`
-Expected: FAIL, "Cannot find module '../question_matcher'".
+Run: `npx jest lib/ai/__tests__/questionMatcher.test.ts`
+Expected: FAIL, "Cannot find module '../questionMatcher'".
 
-- [ ] **Step 3: Create `question_matcher.ts`**
+- [ ] **Step 3: Create `questionMatcher.ts`**
 
 ```ts
-// mobile/lib/ai/question_matcher.ts
+// mobile/lib/ai/questionMatcher.ts
 //
 // LEVEL 2 AND UP: TYPED TEXT CAN ASK ONE OF THE EIGHT QUESTIONS. Assistant
 // levels spec §2. The app maps the message to a fixed question and answers it
@@ -718,13 +718,13 @@ export function matchFixedQuestion(input: string): FixedQuestion | null {
 
 - [ ] **Step 4: Run the test**
 
-Run: `npx jest lib/ai/__tests__/question_matcher.test.ts`
+Run: `npx jest lib/ai/__tests__/questionMatcher.test.ts`
 Expected: PASS, 32 tests. If a case fails, fix the row's pattern, never the case: the cases are the phrasings users type.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add mobile/lib/ai/question_matcher.ts mobile/lib/ai/__tests__/question_matcher.test.ts
+git add mobile/lib/ai/questionMatcher.ts mobile/lib/ai/__tests__/questionMatcher.test.ts
 git commit -m "feat(mobile): match typed ledger questions to the fixed questions"
 ```
 
@@ -816,7 +816,7 @@ In `mobile/lib/ai/triage.ts`, add the imports:
 
 ```ts
 import type { AnswerLevel } from "./levels";
-import { mentionsMoney } from "./money_words";
+import { mentionsMoney } from "./moneyWords";
 ```
 
 Replace the `classify` JSDoc and function with:
@@ -859,7 +859,7 @@ In `mobile/lib/ai/output_guard.ts`, add the imports at the top of the file, belo
 
 ```ts
 import type { AnswerLevel } from "./levels";
-import { mentionsMoney } from "./money_words";
+import { mentionsMoney } from "./moneyWords";
 ```
 
 Append after `guard`:
@@ -1054,7 +1054,7 @@ In `mobile/modules/llama_bridge/types.ts`, add after `GenerateHandle`:
 ```ts
 /**
  * A CEILING, NOT A TARGET, and shared across the boundary because
- * `lib/ai/prompt_budget.ts` reserves exactly this much of the context for the
+ * `lib/ai/promptBudget.ts` reserves exactly this much of the context for the
  * reply before fitting anything else into it. At tier 2's measured 11.45 tok/s
  * an uncapped round could decode for minutes toward a full 2,048-token window.
  */
@@ -1362,8 +1362,8 @@ git commit -m "feat(mobile): add the pinned system prompts for free-chat levels 
 ### Task 8: Fitting a free-chat prompt into the context
 
 **Files:**
-- Create: `mobile/lib/ai/prompt_budget.ts`
-- Test: `mobile/lib/ai/__tests__/prompt_budget.test.ts`
+- Create: `mobile/lib/ai/promptBudget.ts`
+- Test: `mobile/lib/ai/__tests__/promptBudget.test.ts`
 
 **Interfaces:**
 - Consumes: `MAX_RESPONSE_TOKENS` (Task 6), `buildTurnPrompt` and `Turn` (Task 7).
@@ -1372,14 +1372,14 @@ git commit -m "feat(mobile): add the pinned system prompts for free-chat levels 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
-// mobile/lib/ai/__tests__/prompt_budget.test.ts
+// mobile/lib/ai/__tests__/promptBudget.test.ts
 //
 // Assistant levels spec §4.3: the oldest turns give way first, then the
 // spending breakdown, then the limits; balance and safe-to-spend always stay.
 // A one-character-per-token counter makes every budget here exact.
 import { MAX_RESPONSE_TOKENS } from "@/modules/llama_bridge/types";
 
-import { TEMPLATE_MARGIN_TOKENS, fitFreeChatPrompt } from "../prompt_budget";
+import { TEMPLATE_MARGIN_TOKENS, fitFreeChatPrompt } from "../promptBudget";
 import { buildTurnPrompt, type Turn } from "../prompt";
 import { ok, type ToolResult } from "../tools/types";
 
@@ -1461,13 +1461,13 @@ test("a message too long even for the smallest prompt is refused", async () => {
 
 - [ ] **Step 2: Run it to verify it fails**
 
-Run: `npx jest lib/ai/__tests__/prompt_budget.test.ts`
-Expected: FAIL, "Cannot find module '../prompt_budget'".
+Run: `npx jest lib/ai/__tests__/promptBudget.test.ts`
+Expected: FAIL, "Cannot find module '../promptBudget'".
 
-- [ ] **Step 3: Create `prompt_budget.ts`**
+- [ ] **Step 3: Create `promptBudget.ts`**
 
 ```ts
-// mobile/lib/ai/prompt_budget.ts
+// mobile/lib/ai/promptBudget.ts
 //
 // FITTING A FREE-CHAT TURN INTO THE CONTEXT. Assistant levels spec §4.3. Both
 // catalogue models run a 2,048-token context and the answer keeps 256 of it.
@@ -1550,13 +1550,13 @@ export async function fitFreeChatPrompt(input: FitInput): Promise<FittedPrompt> 
 
 - [ ] **Step 4: Run the test**
 
-Run: `npx jest lib/ai/__tests__/prompt_budget.test.ts`
+Run: `npx jest lib/ai/__tests__/promptBudget.test.ts`
 Expected: PASS, 5 tests.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add mobile/lib/ai/prompt_budget.ts mobile/lib/ai/__tests__/prompt_budget.test.ts
+git add mobile/lib/ai/promptBudget.ts mobile/lib/ai/__tests__/promptBudget.test.ts
 git commit -m "feat(mobile): fit free-chat prompts to the model's context by token count"
 ```
 
@@ -1565,9 +1565,9 @@ git commit -m "feat(mobile): fit free-chat prompts to the model's context by tok
 ### Task 9: Free chat
 
 **Files:**
-- Create: `mobile/lib/ai/free_chat.ts`
+- Create: `mobile/lib/ai/freeChat.ts`
 - Modify: `mobile/lib/ai/dispatch.ts` (export `runToolSafely`)
-- Test: `mobile/lib/ai/__tests__/free_chat.test.ts`
+- Test: `mobile/lib/ai/__tests__/freeChat.test.ts`
 
 **Interfaces:**
 - Consumes: `runToolSafely`, `AbortFlag`, `DispatchDeps` (dispatch), `guardAtLevel` (Task 4), `freeChatSystemPrompt`, `Turn` (Task 7), `fitFreeChatPrompt` (Task 8), `FreeChatLevel` (Task 2).
@@ -1576,14 +1576,14 @@ git commit -m "feat(mobile): fit free-chat prompts to the model's context by tok
 - [ ] **Step 1: Write the failing test**
 
 ```ts
-// mobile/lib/ai/__tests__/free_chat.test.ts
+// mobile/lib/ai/__tests__/freeChat.test.ts
 //
 // Assistant levels spec §4 and §5. Free chat is the only path where typed words
 // reach the model, so every guarantee the chip path makes is re-proved here:
 // records only inside the channel, figures copied from them or the answer is
 // replaced, advice and contact details replaced, nothing earlier than what is
 // on screen.
-import { SNAPSHOT_TOOLS, answerFreely, type FreeChatDeps } from "../free_chat";
+import { SNAPSHOT_TOOLS, answerFreely, type FreeChatDeps } from "../freeChat";
 import { TOOL_CHANNEL_CLOSE, TOOL_CHANNEL_OPEN, freeChatSystemPrompt } from "../prompt";
 import { ok, type ToolResult } from "../tools/types";
 import {
@@ -1731,8 +1731,8 @@ test("a raised abort flag stops the turn before any tool runs", async () => {
 
 - [ ] **Step 2: Run it to verify it fails**
 
-Run: `npx jest lib/ai/__tests__/free_chat.test.ts`
-Expected: FAIL, "Cannot find module '../free_chat'".
+Run: `npx jest lib/ai/__tests__/freeChat.test.ts`
+Expected: FAIL, "Cannot find module '../freeChat'".
 
 - [ ] **Step 3: Export `runToolSafely`**
 
@@ -1749,10 +1749,10 @@ In `mobile/lib/ai/dispatch.ts`, replace `async function runToolSafely(` with `ex
  */
 ```
 
-- [ ] **Step 4: Create `free_chat.ts`**
+- [ ] **Step 4: Create `freeChat.ts`**
 
 ```ts
-// mobile/lib/ai/free_chat.ts
+// mobile/lib/ai/freeChat.ts
 //
 // LEVELS 3 TO 5: TYPED TEXT REACHES THE MODEL, BECAUSE THE USER CHOSE IT.
 // Assistant levels spec §4. What the chip path guarantees still holds: the
@@ -1772,7 +1772,7 @@ import { buildCorpus, isGrounded } from "./grounding";
 import type { FreeChatLevel } from "./levels";
 import { guardAtLevel } from "./output_guard";
 import { freeChatSystemPrompt, type Turn } from "./prompt";
-import { fitFreeChatPrompt } from "./prompt_budget";
+import { fitFreeChatPrompt } from "./promptBudget";
 import { guessLanguage, type ReplyLanguage } from "./small_talk";
 import type { ToolResult } from "./tools/types";
 
@@ -1874,13 +1874,13 @@ export async function answerFreely(message: string, deps: FreeChatDeps): Promise
 
 - [ ] **Step 5: Run the test**
 
-Run: `npx jest lib/ai/__tests__/free_chat.test.ts lib/ai/__tests__/dispatch.test.ts`
+Run: `npx jest lib/ai/__tests__/freeChat.test.ts lib/ai/__tests__/dispatch.test.ts`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add mobile/lib/ai/free_chat.ts mobile/lib/ai/dispatch.ts mobile/lib/ai/__tests__/free_chat.test.ts
+git add mobile/lib/ai/freeChat.ts mobile/lib/ai/dispatch.ts mobile/lib/ai/__tests__/freeChat.test.ts
 git commit -m "feat(mobile): answer free chat at levels 3 to 5 from a records snapshot"
 ```
 
@@ -1963,7 +1963,7 @@ In `mobile/lib/ai/dispatch.ts`, add the imports:
 
 ```ts
 import type { AnswerLevel } from "./levels";
-import { matchFixedQuestion } from "./question_matcher";
+import { matchFixedQuestion } from "./questionMatcher";
 ```
 
 Replace `TextReply` with:
@@ -2055,13 +2055,13 @@ git commit -m "feat(mobile): route typed text by answer level"
 
 **Files:**
 - Modify: `mobile/components/ai/chat_copy.ts`
-- Create: `mobile/components/ai/transcript_message.tsx`
+- Create: `mobile/components/ai/TranscriptMessage.tsx`
 - Modify: `mobile/components/ai/chat_surface.tsx` (use `TranscriptMessage`; no behaviour change)
-- Test: `mobile/components/ai/__tests__/transcript_message.test.tsx`, `mobile/components/ai/__tests__/chat_copy.test.ts`
+- Test: `mobile/components/ai/__tests__/TranscriptMessage.test.tsx`, `mobile/components/ai/__tests__/chat_copy.test.ts`
 
 **Interfaces:**
 - Consumes: `FreeChatFailure` (Task 9), `AnswerLevel` and `FreeChatLevel` (Task 2).
-- Produces: from `chat_copy.ts`: `LEVEL_MARKER`, `MONEY_TALK_NOTICE`, `answerNotice(level: FreeChatLevel, knowledgeLimit: string): string | undefined`, `answeringLabel(label: string): string`, `FREE_CHAT_REPLACED`, `TOO_LONG_REPLY`, `FREE_CHAT_ACTIVITY`. From `transcript_message.tsx`: `type Message` (all eight kinds) and `TranscriptMessage({ message })`. Test ids: `ai-answering`, `ai-answer-notice`.
+- Produces: from `chat_copy.ts`: `LEVEL_MARKER`, `MONEY_TALK_NOTICE`, `answerNotice(level: FreeChatLevel, knowledgeLimit: string): string | undefined`, `answeringLabel(label: string): string`, `FREE_CHAT_REPLACED`, `TOO_LONG_REPLY`, `FREE_CHAT_ACTIVITY`. From `TranscriptMessage.tsx`: `type Message` (all eight kinds) and `TranscriptMessage({ message })`. Test ids: `ai-answering`, `ai-answer-notice`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2086,17 +2086,17 @@ test("level 5 names the month the model's knowledge stops", () => {
 });
 ```
 
-`mobile/components/ai/__tests__/transcript_message.test.tsx`:
+`mobile/components/ai/__tests__/TranscriptMessage.test.tsx`:
 
 ```tsx
-// components/ai/__tests__/transcript_message.test.tsx
+// components/ai/__tests__/TranscriptMessage.test.tsx
 //
 // One message, by kind. The kinds added for the answer levels are pinned here;
 // the older kinds are exercised end to end by chat_surface.test.tsx.
 import { render, screen } from "@testing-library/react-native";
 
 import { FREE_CHAT_REPLACED, TOO_LONG_REPLY, answeringLabel } from "../chat_copy";
-import { TranscriptMessage } from "../transcript_message";
+import { TranscriptMessage } from "../TranscriptMessage";
 
 test("an answer to a typed question is labelled with the question it answered", () => {
   render(
@@ -2135,15 +2135,15 @@ test("a too-long message gets its line in the message's language", () => {
 
 - [ ] **Step 2: Run them to verify they fail**
 
-Run: `npx jest components/ai/__tests__/chat_copy.test.ts components/ai/__tests__/transcript_message.test.tsx`
-Expected: FAIL, "answerNotice is not a function" and "Cannot find module '../transcript_message'".
+Run: `npx jest components/ai/__tests__/chat_copy.test.ts components/ai/__tests__/TranscriptMessage.test.tsx`
+Expected: FAIL, "answerNotice is not a function" and "Cannot find module '../TranscriptMessage'".
 
 - [ ] **Step 3: Add the copy**
 
 Append to `mobile/components/ai/chat_copy.ts`, and add the imports at the top:
 
 ```ts
-import type { FreeChatFailure } from "@/lib/ai/free_chat";
+import type { FreeChatFailure } from "@/lib/ai/freeChat";
 import type { AnswerLevel, FreeChatLevel } from "@/lib/ai/levels";
 ```
 
@@ -2220,16 +2220,16 @@ export const TOO_LONG_REPLY: Record<ReplyLanguage, string> = {
 export const FREE_CHAT_ACTIVITY = "Reading your records…";
 ```
 
-- [ ] **Step 4: Create `transcript_message.tsx`**
+- [ ] **Step 4: Create `TranscriptMessage.tsx`**
 
 ```tsx
-// components/ai/transcript_message.tsx
+// components/ai/TranscriptMessage.tsx
 //
 // ONE MESSAGE IN THE CHAT, BY KIND. Moved out of `chat_surface.tsx` when the
 // answer levels added kinds of their own and that file had passed 400 lines.
 import { Text, View } from "react-native";
 
-import type { FreeChatFailure } from "@/lib/ai/free_chat";
+import type { FreeChatFailure } from "@/lib/ai/freeChat";
 import type { ReplyLanguage, SmallTalk } from "@/lib/ai/small_talk";
 import type { ToolResult } from "@/lib/ai/tools/types";
 import type { AdviceClass } from "@/lib/ai/triage";
@@ -2334,7 +2334,7 @@ In `mobile/components/ai/chat_surface.tsx`:
         ))}
 ```
 
-3. Replace the imports of `CANNOT_ANSWER_REPLY`, `REDIRECT_LINE`, `SMALL_TALK_REPLY` and `GroundedCard` with `import { TranscriptMessage, type Message } from "./transcript_message";`, keep `EMPTY_CHAT` imported from `./chat_copy`, and remove the now-unused `ReplyLanguage`, `SmallTalk` and `AdviceClass` type imports.
+3. Replace the imports of `CANNOT_ANSWER_REPLY`, `REDIRECT_LINE`, `SMALL_TALK_REPLY` and `GroundedCard` with `import { TranscriptMessage, type Message } from "./TranscriptMessage";`, keep `EMPTY_CHAT` imported from `./chat_copy`, and remove the now-unused `ReplyLanguage`, `SmallTalk` and `AdviceClass` type imports.
 
 - [ ] **Step 6: Run the tests and the type check**
 
@@ -2346,7 +2346,7 @@ Expected: exit 0.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add mobile/components/ai/chat_copy.ts mobile/components/ai/transcript_message.tsx mobile/components/ai/chat_surface.tsx mobile/components/ai/__tests__/chat_copy.test.ts mobile/components/ai/__tests__/transcript_message.test.tsx
+git add mobile/components/ai/chat_copy.ts mobile/components/ai/TranscriptMessage.tsx mobile/components/ai/chat_surface.tsx mobile/components/ai/__tests__/chat_copy.test.ts mobile/components/ai/__tests__/TranscriptMessage.test.tsx
 git commit -m "refactor(mobile): render chat messages in their own component, with the levels' copy"
 ```
 
@@ -2554,7 +2554,7 @@ import { ActivityIndicator, ScrollView, Text, TextInput, View } from "react-nati
 import { Button } from "@/components/ui/button";
 import { answerQuestion, replyToText, type AbortFlag } from "@/lib/ai/dispatch";
 import type { FixedQuestion } from "@/lib/ai/fixed_questions";
-import { answerFreely } from "@/lib/ai/free_chat";
+import { answerFreely } from "@/lib/ai/freeChat";
 import { isFreeChatLevel, type AnswerLevel } from "@/lib/ai/levels";
 import type { Turn } from "@/lib/ai/prompt";
 import type { ToolResult } from "@/lib/ai/tools/types";
@@ -2565,7 +2565,7 @@ import type { EpochMs } from "@/types/domain";
 
 import { EMPTY_CHAT, FREE_CHAT_ACTIVITY, LEVEL_MARKER, answerNotice } from "./chat_copy";
 import { QuestionChips } from "./question_chips";
-import { TranscriptMessage, type Message } from "./transcript_message";
+import { TranscriptMessage, type Message } from "./TranscriptMessage";
 
 export type SurfacePhase =
   /** Nothing downloaded. The surface is the picker; see `picker`. */
@@ -3003,8 +3003,8 @@ git commit -m "feat(mobile): run the assistant chat at an answer level, with fre
 
 **Files:**
 - Modify: `mobile/components/gates/upgrade_sheet.tsx` (`PlusCapability`, `CAPABILITY_COPY`)
-- Create: `mobile/components/ai/level_picker.tsx`
-- Test: `mobile/components/ai/__tests__/level_picker.test.tsx`, `mobile/components/gates/__tests__/gates.test.tsx` (append)
+- Create: `mobile/components/ai/LevelPicker.tsx`
+- Test: `mobile/components/ai/__tests__/LevelPicker.test.tsx`, `mobile/components/gates/__tests__/gates.test.tsx` (append)
 
 **Interfaces:**
 - Consumes: `ANSWER_LEVELS`, `LEVEL_ORDER`, `describeLevel`, `AnswerLevel` (Task 2); `PlusGate`; `BottomSheet`; `ConfirmDialog`; `ListRow`; `registerIcon`.
@@ -3012,10 +3012,10 @@ git commit -m "feat(mobile): run the assistant chat at an answer level, with fre
 
 - [ ] **Step 1: Write the failing tests**
 
-`mobile/components/ai/__tests__/level_picker.test.tsx`:
+`mobile/components/ai/__tests__/LevelPicker.test.tsx`:
 
 ```tsx
-// components/ai/__tests__/level_picker.test.tsx
+// components/ai/__tests__/LevelPicker.test.tsx
 //
 // Assistant levels spec §6: five rows, 4 and 5 behind Plus and, the first time,
 // behind a read-and-accept notice that changes nothing until it is accepted.
@@ -3024,7 +3024,7 @@ import { fireEvent, render, screen } from "@testing-library/react-native";
 
 import { __setTierForTests } from "@/lib/entitlements";
 
-import { LevelPicker, acceptNotice } from "../level_picker";
+import { LevelPicker, acceptNotice } from "../LevelPicker";
 
 const MONTH = "April 2025";
 
@@ -3111,8 +3111,8 @@ Append to `components/gates/__tests__/gates.test.tsx`, inside `describe("Upgrade
 
 - [ ] **Step 2: Run them to verify they fail**
 
-Run: `npx jest components/ai/__tests__/level_picker.test.tsx components/gates/__tests__/gates.test.tsx`
-Expected: FAIL, "Cannot find module '../level_picker'" and no `upgrade-row-assistant_levels`.
+Run: `npx jest components/ai/__tests__/LevelPicker.test.tsx components/gates/__tests__/gates.test.tsx`
+Expected: FAIL, "Cannot find module '../LevelPicker'" and no `upgrade-row-assistant_levels`.
 
 - [ ] **Step 3: Add the capability**
 
@@ -3128,10 +3128,10 @@ In `mobile/components/gates/upgrade_sheet.tsx`, add `| "assistant_levels"` to th
   },
 ```
 
-- [ ] **Step 4: Create `level_picker.tsx`**
+- [ ] **Step 4: Create `LevelPicker.tsx`**
 
 ```tsx
-// components/ai/level_picker.tsx
+// components/ai/LevelPicker.tsx
 //
 // THE ANSWER-LEVEL SHEET. Assistant levels spec §6: five rows with their
 // descriptions and a check on the current one. Levels 4 and 5 sit inside the
@@ -3236,13 +3236,13 @@ export function LevelPicker({ visible, level, accepted, knowledgeLimit, onChoose
 
 - [ ] **Step 5: Run the tests**
 
-Run: `npx jest components/ai/__tests__/level_picker.test.tsx components/gates/__tests__/gates.test.tsx`
+Run: `npx jest components/ai/__tests__/LevelPicker.test.tsx components/gates/__tests__/gates.test.tsx`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add mobile/components/gates/upgrade_sheet.tsx mobile/components/ai/level_picker.tsx mobile/components/ai/__tests__/level_picker.test.tsx mobile/components/gates/__tests__/gates.test.tsx
+git add mobile/components/gates/upgrade_sheet.tsx mobile/components/ai/LevelPicker.tsx mobile/components/ai/__tests__/LevelPicker.test.tsx mobile/components/gates/__tests__/gates.test.tsx
 git commit -m "feat(mobile): add the answer-level picker, with levels 4 and 5 behind Plus"
 ```
 
@@ -3350,7 +3350,7 @@ In `mobile/lib/privacy/data_wipe.ts`, add `import { AI_ANSWER_LEVEL_STORAGE_KEY,
 
 In `mobile/app/(tabs)/more/ai/index.tsx`:
 
-1. Imports: add `import { LevelPicker } from "@/components/ai/level_picker";` and replace the `DEFAULT_ANSWER_LEVEL` import from Task 12 with:
+1. Imports: add `import { LevelPicker } from "@/components/ai/LevelPicker";` and replace the `DEFAULT_ANSWER_LEVEL` import from Task 12 with:
 
 ```ts
 import {

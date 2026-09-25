@@ -67,7 +67,7 @@ The month in level 5's description comes from the resident model's catalogue ent
 
 ## 2. Level 2: the question matcher
 
-`mobile/lib/ai/question_matcher.ts` holds a phrase table in the shape of the advice table: one row per
+`mobile/lib/ai/questionMatcher.ts` holds a phrase table in the shape of the advice table: one row per
 phrasing, each naming a fixed question id from `lib/ai/fixed_questions.ts` and a language. Examples of
 what the rows must cover, for the plan to turn into rows and tests:
 
@@ -100,7 +100,7 @@ Rules:
 
 ## 3. The level-5 money-word rule
 
-`mobile/lib/ai/money_words.ts` exports `mentionsMoney(text)`, a word list in English and Filipino over
+`mobile/lib/ai/moneyWords.ts` exports `mentionsMoney(text)`, a word list in English and Filipino over
 the same normalised text. The list covers at least: money, pera, peso, pesos, ₱, php, buy, bought,
 purchase, bili, bumili, bilhin, afford, spend, spent, gastos, gumastos, gastusin, save, savings, ipon,
 mag-ipon, invest, investment, stock, stocks, crypto, bitcoin, fund, loan, utang, borrow, lend, pautang,
@@ -290,7 +290,7 @@ first-word limit still applies. Stop works exactly as today.
 
 ### 8.1 Unit and component tests
 
-- `question_matcher`: every row, and near-misses that must not match, in English and Filipino.
+- `questionMatcher`: every row, and near-misses that must not match, in English and Filipino.
 - `mentionsMoney`: the word list, and the false-positive and false-negative examples from section 3,
   pinned so the accepted behaviour stays visible.
 - The pipeline: one case per step per level, with the llama mock, including a level-5 non-money "should
