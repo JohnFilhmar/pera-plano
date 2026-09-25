@@ -3,8 +3,9 @@
 // THE HASHER IS REAL. Spec §5.2/6 is explicit that verification is tested with
 // the real `@noble/hashes` SHA-256 against a fixture with a precomputed digest:
 // "a mocked hasher tests the plumbing and not the thing". The fake filesystem
-// below holds real bytes, and the digest asserted is one this test computes
-// from those bytes with the same library the production path uses.
+// below holds real bytes and hashes them with that library. On the phone the
+// hash is Kotlin (`modules/llama_bridge`), and `FileDigestTest.kt` checks that
+// one against a published test vector.
 //
 // WHY A TRUNCATED FILE IS THE FAILURE THAT MATTERS. llama.cpp will happily mmap
 // a short GGUF and decode noise rather than failing loudly (spec §2.3 rule 1),
@@ -62,12 +63,10 @@ function createFakeFiles(freeSpace: number): FileStore & { files: Map<string, Ui
       next.set(chunk, existing.length);
       files.set(path, next);
     },
-    readChunks: async function* (path, chunkSize) {
+    sha256: async (path) => {
       const bytes = files.get(path);
-      if (!bytes) return;
-      for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-        yield bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length));
-      }
+      if (!bytes) throw new Error(`no file at ${path}`);
+      return bytesToHex(sha256(bytes));
     },
     remove: async (path) => {
       files.delete(path);
@@ -244,7 +243,7 @@ describe("verification before activation", () => {
     // Otherwise only the digest notices, after reading every byte, and a failed
     // digest deletes the .part: the user pays for the same bytes twice.
     const files = createFakeFiles(10 * 1024 * 1024 * 1024);
-    const readChunks = jest.spyOn(files, "readChunks");
+    const hash = jest.spyOn(files, "sha256");
     const { fetchLike } = createFakeFetch(() => ({
       ...respond(WEIGHTS, 200),
       body: (async function* () {
@@ -260,7 +259,7 @@ describe("verification before activation", () => {
 
     await expect(downloader.download(SPEC)).rejects.toThrow(/ended at 1000 of 4096/);
     expect(files.files.get(`${MODELS_DIR}${SPEC.id}.gguf.part`)?.length).toBe(1000);
-    expect(readChunks).not.toHaveBeenCalled();
+    expect(hash).not.toHaveBeenCalled();
   });
 
   test("onVerifying fires once, after the last byte is on disk", async () => {
@@ -283,41 +282,6 @@ describe("verification before activation", () => {
     });
 
     expect(partSizes).toEqual([WEIGHTS.length]);
-  });
-
-  test("hashing hands the JS thread back while it runs", async () => {
-    // `for await` resumes as a microtask, and a chain of microtasks never lets a
-    // timer, a touch or a frame in. Without a real yield, hashing 1.1 GB holds
-    // the thread for the whole digest (docs/13 Gate 7).
-    const files = createFakeFiles(10 * 1024 * 1024 * 1024);
-    let timerFired = false;
-    const timerFiredAtRead: boolean[] = [];
-    // Pieces far smaller than the downloader asks for, so one file takes many reads.
-    files.readChunks = async function* (path) {
-      const bytes = files.files.get(path) ?? new Uint8Array(0);
-      for (let at = 0; at < bytes.length; at += 64) {
-        timerFiredAtRead.push(timerFired);
-        yield bytes.subarray(at, at + 64);
-      }
-    };
-    const { fetchLike } = createFakeFetch(() => respond(WEIGHTS, 200));
-    const downloader = createDownloader({
-      fetch: fetchLike,
-      files,
-      modelsDir: MODELS_DIR,
-      isMetered: NEVER_METERED,
-    });
-
-    await downloader.download(SPEC, {
-      onVerifying: () => {
-        setTimeout(() => {
-          timerFired = true;
-        }, 0);
-      },
-    });
-
-    expect(await downloader.stateOf(SPEC)).toBe("ready");
-    expect(timerFiredAtRead.some(Boolean)).toBe(true);
   });
 });
 

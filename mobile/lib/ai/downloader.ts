@@ -18,13 +18,9 @@
 // EVERYTHING IS INJECTED — fetch, the filesystem, the metered-network reader —
 // because this module's whole job is failure handling, and failures that only
 // happen on a real 1.1 GB transfer over Philippine prepaid data are failures
-// that never get tested. The production adapters are thin and live in
-// `model_files.ts` and `model_transfer.ts`, and there is no
-// network-reachability package in `package.json` yet, so `isMetered` is the
-// seam where one lands.
-import { sha256 } from "@noble/hashes/sha2.js";
-import { bytesToHex } from "@noble/hashes/utils.js";
-
+// that never get tested. The production adapters are thin and are all wired
+// together in `model_files.ts`, and there is no network-reachability package
+// in `package.json` yet, so `isMetered` is the seam where one lands.
 import type { ModelSpec } from "./catalogue";
 
 export type DownloadState = "absent" | "downloading" | "verifying" | "ready" | "active";
@@ -34,19 +30,6 @@ export type DownloadState = "absent" | "downloading" | "verifying" | "ready" | "
  * and the user still needs room for photos.
  */
 export const FREE_SPACE_SLACK_BYTES = 500 * 1024 * 1024;
-
-/** Hashing reads the file back in pieces; a 1.1 GB `Uint8Array` is not an option. */
-const HASH_CHUNK_BYTES = 1024 * 1024;
-
-/**
- * Hashing hands the JS thread back after this many pieces. `for await` resumes
- * as a microtask, and a chain of microtasks never lets a timer, a touch or a
- * frame in, so without a real yield the digest holds the thread for its whole
- * run.
- */
-// ponytail: a fixed slice of 4 MiB. If docs/13 Gate 7 still shows jank or too
-// long a digest, spec §6 risk 8's native digest replaces this loop.
-const YIELD_EVERY_PIECES = 4;
 
 /** Hugging Face answers a pinned URL with a 302 to a CDN host. One hop is normal, five is a loop. */
 const MAX_REDIRECTS = 5;
@@ -93,7 +76,12 @@ export type FileStore = {
   /** The resume offset comes from HERE, so it survives a process kill. */
   size(path: string): Promise<number>;
   append(path: string, chunk: Uint8Array): Promise<void>;
-  readChunks(path: string, chunkSize: number): AsyncIterable<Uint8Array>;
+  /**
+   * SHA-256 of the file's bytes as they are on disk, as 64 lowercase hex
+   * characters. Rejects when there is no file at `path`. Production hashes in
+   * Kotlin, because the JS hasher managed 0.42 MB/s on the A54 and froze the app.
+   */
+  sha256(path: string): Promise<string>;
   remove(path: string): Promise<void>;
   rename(from: string, to: string): Promise<void>;
   freeSpace(): Promise<number>;
@@ -130,11 +118,6 @@ export class IncompleteTransferError extends Error {}
  * user already paid for.
  */
 const inFlight = new Map<string, Promise<void>>();
-
-/** Resolves on a later macrotask, so whatever is already queued on the JS thread runs first. */
-function yieldToEventLoop(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
-}
 
 /**
  * Decimal GB, because that is what a data plan is sold in.
@@ -209,18 +192,6 @@ export function createDownloader(deps: DownloaderDeps): Downloader {
       target = location;
     }
     throw new RedirectError(`too many redirects starting at ${url}`);
-  }
-
-  /** Hashes the file AS WRITTEN TO DISK, in pieces, yielding the JS thread between slices. */
-  async function digestOnDisk(path: string): Promise<string> {
-    const hasher = sha256.create();
-    let pieces = 0;
-    for await (const chunk of deps.files.readChunks(path, HASH_CHUNK_BYTES)) {
-      hasher.update(chunk);
-      pieces += 1;
-      if (pieces % YIELD_EVERY_PIECES === 0) await yieldToEventLoop();
-    }
-    return bytesToHex(hasher.digest());
   }
 
   /**
@@ -325,7 +296,7 @@ export function createDownloader(deps: DownloaderDeps): Downloader {
     assertTransition("downloading", "verifying");
     opts.onVerifying?.();
 
-    if ((await digestOnDisk(part)) !== spec.sha256) {
+    if ((await deps.files.sha256(part)) !== spec.sha256) {
       // Back to `absent`, and the partial is DELETED rather than kept for a
       // resume: a file that hashed wrong is not a prefix of a good download,
       // and resuming it would fail forever at the same byte.

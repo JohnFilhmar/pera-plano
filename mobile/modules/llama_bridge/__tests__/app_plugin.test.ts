@@ -345,9 +345,9 @@ describe("llama_bridge config plugin — the ABI filter", () => {
 
 describe("llama_bridge config plugin — registration", () => {
   it("is listed in app.json", () => {
-    // `llama_bridge` has no `expo-module.config.json`, so autolinking does not
-    // pick it up. A plugin that is written and never registered runs never,
-    // silently, and the backup exclusion simply does not happen.
+    // Autolinking builds this module's Kotlin but never runs its config plugin.
+    // A plugin that is written and never registered runs never, silently, and
+    // the backup exclusion simply does not happen.
     expect(readAppJson().expo.plugins).toContain(PLUGIN_PATH);
   });
 });

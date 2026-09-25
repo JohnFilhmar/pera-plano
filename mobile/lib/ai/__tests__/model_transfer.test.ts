@@ -2,12 +2,13 @@
 //
 // DRIVES THE PRODUCTION DEPS, NOT A HAND-BUILT COPY. Every test below runs the
 // real `createDownloader` over the real `createProductionDeps()`: the real
-// `expo/fetch` adapter, the real File API append and bounded read, the real
-// legacy store, and the real `@noble/hashes` digest. Only the two things Jest
-// cannot provide are replaced. The network is a scripted `expo/fetch` that
-// answers the way Hugging Face was measured to answer on 2026-09-24 (302 from
-// huggingface.co, then 206 for a Range from the CDN host). The disk is
-// `test_support/expo_file_system_memory_mock.ts`, which holds real bytes.
+// `expo/fetch` adapter, the real File API append and the real legacy store.
+// Only the three things Jest cannot provide are replaced. The network is a
+// scripted `expo/fetch` that answers the way Hugging Face was measured to
+// answer on 2026-09-24 (302 from huggingface.co, then 206 for a Range from the
+// CDN host). The disk is `test_support/expo_file_system_memory_mock.ts`, which
+// holds real bytes. A real `@noble/hashes` SHA-256 of those bytes stands in
+// for the Kotlin digest, which `FileDigestTest.kt` covers.
 //
 // THE BODY ARRIVES IN 8 KB PIECES because that is what one OkHttp read hands
 // `expo/fetch` on Android, and the adapter's block size only means anything
@@ -15,6 +16,13 @@
 const mockExpoFetch = jest.fn();
 jest.mock("expo/fetch", () => ({
   fetch: (...args: unknown[]) => mockExpoFetch(...args),
+}));
+const mockSha256File = jest.fn(async (uri: string) => {
+  if (!memoryDisk.has(uri)) throw new Error(`no such file: ${uri}`);
+  return digestOnDisk(uri);
+});
+jest.mock("@/modules/llama_bridge/digest", () => ({
+  sha256File: (uri: string) => mockSha256File(uri),
 }));
 jest.mock("expo-file-system", () => require("@/test_support/expo_file_system_memory_mock"));
 jest.mock("expo-file-system/legacy", () => require("@/test_support/expo_file_system_memory_mock"));
@@ -129,6 +137,7 @@ function download(onProgress?: (received: number) => void): Promise<void> {
 beforeEach(() => {
   resetMemoryDisk();
   mockExpoFetch.mockReset();
+  mockSha256File.mockClear();
   signals = [];
 });
 
@@ -176,14 +185,16 @@ test("a server that ignores Range and answers 200 discards the partial and resta
   expect(digestOnDisk(FINAL_PATH)).toBe(SPEC.sha256);
 });
 
-test("verification reads the file back in pieces of at most 1 MiB", async () => {
+test("verification hands the .part to the native digest and reads none of it back into JS", async () => {
+  // Hashing in JS ran at 0.42 MB/s on the A54 and froze navigation while it
+  // ran. A read-back here would be that path coming back.
   serve();
 
   await download();
 
-  expect(readRequests.length).toBeGreaterThan(2);
-  expect(Math.max(...readRequests)).toBeLessThanOrEqual(MIB);
-  expect(openHandleCount()).toBe(0);
+  expect(mockSha256File.mock.calls).toEqual([[PART_PATH]]);
+  expect(readRequests).toEqual([]);
+  expect(digestOnDisk(FINAL_PATH)).toBe(SPEC.sha256);
 });
 
 test("a dropped connection leaves whole blocks on disk, stops the transfer, and a resume completes it", async () => {

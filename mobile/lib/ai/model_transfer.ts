@@ -1,11 +1,11 @@
 // mobile/lib/ai/model_transfer.ts
 //
 // THE BYTE TRANSFER BEHIND `createProductionDeps`: `expo/fetch` for a response
-// body that can be read as it arrives, and the SDK 54 `File` API for the two
-// things `expo-file-system/legacy` cannot do, an append at the end of a file
-// and a read of one piece of it. Everything else the downloader needs stays on
-// the legacy store in `model_files.ts`, the same split
-// `lib/support/attachments.ts` makes.
+// body that can be read as it arrives, and the SDK 54 `File` API for the one
+// thing `expo-file-system/legacy` cannot do, an append at the end of a file.
+// The digest is native (`modules/llama_bridge/digest.ts`), and everything else
+// the downloader needs stays on the legacy store in `model_files.ts`, the same
+// split `lib/support/attachments.ts` makes.
 //
 // `expo/fetch` IS REQUIRED ON FIRST USE, NOT IMPORTED. Its module subclasses a
 // native class while loading, and under jest-expo that class does not exist,
@@ -109,30 +109,6 @@ export async function appendBytes(path: string, chunk: Uint8Array): Promise<void
     handle.writeBytes(chunk);
     if (handle.offset !== end + chunk.length) {
       throw new Error(`short write to ${path}; the disk may be full`);
-    }
-  } finally {
-    handle.close();
-  }
-}
-
-/**
- * Reads the file at `path` from its first byte, at most `chunkSize` bytes at a time.
- *
- * The digest is computed over these pieces, so a 1.1 GB model is never held in
- * memory whole.
- *
- * @param path - A `file://` URI of an existing file.
- * @param chunkSize - The largest piece to read at once.
- * @yields The file's bytes in order, each piece a new array. Stops at end of file.
- * @throws When the file cannot be opened.
- */
-export async function* readChunks(path: string, chunkSize: number): AsyncGenerator<Uint8Array> {
-  const handle = new File(path).open();
-  try {
-    for (;;) {
-      const chunk = handle.readBytes(chunkSize);
-      if (chunk.length === 0) return;
-      yield chunk;
     }
   } finally {
     handle.close();

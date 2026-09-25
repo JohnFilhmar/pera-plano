@@ -4,12 +4,13 @@
 // to `types.ts` instead, which is why `dispatch.ts`, `session.ts` and their
 // tests run with no native artefacts anywhere near them.
 //
-// A BOUNDARY MODULE, NOT AN AUTOLINKED EXPO MODULE. Spec §1.1: `llama.rn`
-// already ships its own JNI layer and decodes on a native thread. A second
-// Kotlin module on top would add a bridge hop per token — at 4-8 tok/s that is
-// pure overhead for pure risk — and duplicate threading logic that already
-// exists. There is deliberately no `expo-module.config.json` here; the config
-// plugin is registered by path in `app.json` instead.
+// GENERATION NEVER GOES THROUGH THIS MODULE'S OWN KOTLIN. Spec §1.1: `llama.rn`
+// already ships its own JNI layer and decodes on a native thread. Wrapping it
+// in a second Kotlin module would add a bridge hop per token, pure overhead for
+// pure risk at 4-8 tok/s, and duplicate threading logic that already exists.
+// The Kotlin this module does have only hashes downloaded models (spec §6 risk
+// 8), and `digest.ts` is its JS side. Autolinking builds that Kotlin but never
+// runs a config plugin, so the plugin is registered by path in `app.json`.
 //
 // WHY THE SYSTEM PROMPT IS IMPORTED HERE AND NOWHERE ELSE. `prompt.ts` builds
 // the TURN and says so: "the system prompt is passed separately by the bridge

@@ -95,9 +95,10 @@ function fakeFileStore(initial: Record<string, number> = {}): FileStore & {
     append: async (path, chunk) => {
       sizes.set(path, (sizes.get(path) ?? 0) + chunk.length);
     },
-    readChunks: async function* () {
+    sha256: async () => {
       // Nothing on this fake disk hashes to a catalogue digest, and no test
       // here pretends otherwise — verification failure is the honest outcome.
+      return "0".repeat(64);
     },
     remove: async (path) => {
       sizes.delete(path);
@@ -212,8 +213,9 @@ test("a fresh download shows its bytes as they land, then the checksum step", as
     ...fakeFileStore(),
     // Nothing here hashes to a catalogue digest, so this ends in the honest
     // checksum refusal once the test lets it finish.
-    readChunks: async function* (): AsyncGenerator<Uint8Array> {
+    sha256: async () => {
       await hashGate;
+      return "0".repeat(64);
     },
   };
   const fetchFake = jest.fn(

@@ -46,7 +46,7 @@ beforeEach(() => {
       exists: async (path) => path === MODEL_PATH,
       size: async () => TIER_ONE.bytes,
       append: async () => undefined,
-      readChunks: async function* () {},
+      sha256: async () => "",
       remove: async () => undefined,
       rename: async () => undefined,
       freeSpace: async () => 50_000_000_000,
