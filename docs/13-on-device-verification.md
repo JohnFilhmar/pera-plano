@@ -1484,8 +1484,74 @@ Assistant plan Tasks 26 and 27, against design spec §5.6. **Gate: everything in
 CI phases must be green before any of this is attempted.** These are the ten things that can never
 be CI. They join this record rather than starting a parallel one.
 
-**Partially run, 2026-09-02.** Gates 1, 4 and 10 are answered; gate 3 is answered in part. The rest
-are still NOT RUN and their blanks are still blanks.
+**Partially run, 2026-09-02.** Gates 1, 4 and 10 are answered; gate 3 is answered in part. **Run
+again 2026-09-25**, with Task 27 and most of the remaining gates: see the next section. Gate 6 is
+still NOT RUN.
+
+### Run 2026-09-25: Task 27, and gates 1, 2, 3, 4, 5, 7, 8, 9, 10
+
+**Read this first.** Both tiers land far below the spec's own bar: tier 1 picked the right tool 8 to
+10 times in 30, tier 2 11 to 12 times. Spec §6 risk 1 says that below roughly 70% strict tool-pick
+this "does not ship as a chat surface; it ships as the fallback in §7.4". That is the owner's call and
+is recorded as open, not made.
+
+| | |
+|---|---|
+| Build | Debug dev-client, `com.filldev.peraplano.dev`, fresh install from a prebuild of the branch after it took master's 233 commits |
+| JS bundle | Tier 1: development. Tier 2: **production** (`expo start --dev-client --no-dev --minify`), because a development bundle crashes at startup on the unlock path (finding 7) |
+| Power | **Battery for every eval run**, `AC powered` and `USB powered` both false, read per run. USB only for the download and the loads |
+| Weights | Tier 1 downloaded **in-app over Wi-Fi**, the first real download. Tier 2 copied from the spike app on-device; `sha256sum` matched `catalogue.ts` in 3 s |
+| Connection | Wireless adb, and Metro over the LAN, because USB dropped out repeatedly |
+
+| Gate | Tier 1, `qwen3-0.6b-q4` | Tier 2, `qwen3-1.7b-q4` |
+|---|---|---|
+| 1, load time from `RNLlama loadModel` timestamps | **3.04 s** | **5.31 s** (spike: 5.26 s) |
+| 2, malformed constrained rounds | **0 of 112** (4 runs) | **0 of 112** (4 runs) |
+| 3, thinking | Suppressed: 0 empty, 0 `<think>` in 4 runs. **Unsuppressed: 28 of 28 model questions declined**, 5 of 30 overall | Unsuppressed NOT RUN: a production bundle has no switch |
+| 4, memory | 1.58 GB TOTAL PSS resident, before warming | **1.84 GB** peak TOTAL PSS during the runs; 0.43 GB swap at the end |
+| 5, sustained load | not run | **12.5 min** of back-to-back runs: 79% to 74%, 34.2 to 35.9 °C, decode 5.5 / 5.8 / 5.5 tok/s, **no fall** |
+| 7, digest | **939,944 ms** in JS for 396,705,472 B (0.42 MB/s), JS thread at 93% CPU, a tab switch took 16 s and another over 60 s. **FAIL** | Not run in JS; native `sha256sum` did 1.1 GB in 3 s |
+| 8, decode off the JS thread | not run | **PASS by measurement**: four native threads at 65 to 108% CPU each, `mqt_v_js` about 3% |
+| 9, streaming reads as alive | **PASS**, owner's judgement: fast, and the "Looking at…" line showed first | informal only (finding 4) |
+| 10, storage and backup | Re-verified on the fresh prebuild and APK (see gate 10) | |
+
+Task 27 scores, strict tool-pick out of 30 (the tier-cut note below repeats them):
+
+| | Run 1 | Run 2 | Run 3 | Run 4 | Spread | p90 TTFT |
+|---|---|---|---|---|---|---|
+| Tier 1 | 10 | 10 | 8 | 9 | 2 | 715 to 935 ms |
+| Tier 2 | 12 | 11 | 12 | 12 | 1 | 1.0 to 1.1 s |
+
+**The speed figures are not comparable with the spike's.** The eval's tok/s window runs from the
+first token to the end of the turn, so it includes the tool round trip and the second round's
+prefill; TTFT includes prefilling a system prompt of roughly 420 tokens. Tier 1 also ran on a
+development bundle and tier 2 on a production one.
+
+**Findings, most consequential first:**
+
+1. **Both tiers are far below the ~70% bar** (above). The spike's 78% for tier 1 came from its own
+   grammar and a 12-question set; this set adds Tagalog, Taglish and two-part questions, and the
+   shipped grammar has a decline branch.
+2. **Tier 1 declines almost every Tagalog or Taglish question**: in run 1, s02, s04, s06, s08, s10,
+   s12, t04, p02 and p04 all ended in `declined`.
+3. **Thinking must be suppressed, not merely preferred.** Unsuppressed, the model's first tokens want
+   `<think>`, the tool grammar forbids it, and it takes the decline branch every time.
+4. **The chat degrades in a way the eval cannot see.** `buildTurnPrompt` (`lib/ai/prompt.ts:81`)
+   sends the whole transcript with every turn, declines included. On tier 2, after one decline,
+   five clean English questions the eval answers correctly were all declined. The eval asks each
+   question with no history, so it never shows this.
+5. **No small talk.** The first round's grammar allows a tool call or a decline and nothing else, so
+   "hello" gets a ledger tool (owner's report: it answered with the wallet contents). The spec's
+   prose branch was measured and dropped on 2026-08-31 (`lib/ai/tools/grammar.ts` header).
+6. **The JS digest is unusable** (gate 7). The spec's named remedy, a native digest (§6 risk 8), is
+   the fix.
+7. **A development bundle crashes at startup after unlock**: "Couldn't find a navigation context",
+   from `react-native-css-interop`'s development-only upgrade warning, whose `stringify` walks a
+   component's props and trips react-navigation's throwing default-context getter. Every call site
+   is guarded by `NODE_ENV !== "production"`, so release builds are unaffected; development on an
+   onboarded install is blocked until it is fixed.
+8. **Observed, not investigated:** the app came back to the foreground after at least 11 minutes in
+   the background without re-locking. GAP-030 expects a re-lock at 5 minutes.
 
 ### Conditions for the 2026-09-02 run, and what they disqualify
 
@@ -1941,22 +2007,27 @@ acceptable to ship, and what specifically was wrong with the answers that were n
 
 ---
 
-## The tier-cut note (assistant plan Task 27). NOT RUN.
+## The tier-cut note (assistant plan Task 27). RUN 2026-09-25, cut decision open.
 
 **Three runs per tier before any cut**, because without repeat runs there is no noise floor and
 "within noise" is a phrase rather than a test.
 
-- Tier 1, three strict tool-pick scores out of 30: `________` / `________` / `________`
-- Tier 2, three strict tool-pick scores out of 30: `________` / `________` / `________`
-- Observed run-to-run spread: `________`
-- Tier 1 / tier 2 p90 time-to-first-token: `________ ms` / `________ ms`
+- Tier 1, three strict tool-pick scores out of 30: **10** / **10** / **8** (a fourth run: 9)
+- Tier 2, three strict tool-pick scores out of 30: **12** / **11** / **12** (a fourth run: 12)
+- Observed run-to-run spread: **2** for tier 1, **1** for tier 2
+- Tier 1 / tier 2 p90 time-to-first-token: **715 to 935 ms** / **1,000 to 1,100 ms**
+- **By the relative rule, no tier is removed**: tier 2 beats tier 1 by about 2.5 questions, more than
+  either tier's spread, and both are far inside the 20 s TTFT limit.
+- **By the absolute bar, neither tier qualifies** (spec §6 risk 1, roughly 70% strict tool-pick). The
+  spec's answer is §7.4: fixed questions choose the tool, the model only narrates. Owner's decision.
 
 **A tier survives only if it beats the tier below it by more than the run-to-run spread of a single
 tier.** Speed is the second criterion, applied after accuracy: a tier whose **p90 TTFT exceeds
 roughly 20 seconds** is not a real tier either, because an answer that slow will not be asked for
 twice. That 20 s is provisional but it is a number, not a blank.
 
-- Tiers removed, and why: `________________`
+- Tiers removed, and why: **none yet**. The relative rule keeps both; the absolute bar is the open
+  owner decision above.
 - **A tier removed from `catalogue.ts` is not deleted from devices that already hold it.** Record
   what happens to a user holding a cut tier's weights. The honest answer is that it keeps working
   and stops being offered; anything else deletes a multi-gigabyte file the user paid mobile data
