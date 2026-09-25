@@ -201,8 +201,57 @@ export async function checkForRulesetUpdate(
     return { updated: false, version: currentVersion };
   }
 
+  // STAGED ROLLOUT (docs/03 §11.2 rule 4, GAP-043), and its position in this
+  // function is the security-relevant part. `rolloutPercent` arrives INSIDE the
+  // bundle, so it is attacker-chosen until the signature has been checked; this
+  // runs after verification, after the schema, and after the version comparison,
+  // which means a percentage can only ever narrow what a bundle the app had
+  // already decided to trust does.
+  //
+  // A DEVICE OUTSIDE THE ROLLOUT IS NOT A FAILURE AND SAYS NOTHING. It keeps the
+  // ruleset it has and records the check like any other answer, so it does not
+  // re-ask before the interval is up. It will install this version the moment the
+  // percentage is raised past its bucket, with no further state needed.
+  if (!isInRollout(parsed.bundle.rolloutPercent, await rolloutBucket())) {
+    return { updated: false, version: currentVersion };
+  }
+
   // The PARSED bundle, not the raw body: the schema strips keys it does not
   // know, so nothing an attacker chose to append is stored verbatim.
   await upsertRuleset(parsed.bundle);
   return { updated: true, version: await getActiveVersion() };
+}
+
+/**
+ * Whether this device is inside a bundle's rollout.
+ *
+ * An ABSENT percentage means everyone, because every bundle published before the
+ * field existed has to keep installing. `bucket < percent` rather than `<=`, so
+ * `rolloutPercent: 10` reaches buckets 0 to 9, which is ten of a hundred rather
+ * than eleven; at 100 every bucket qualifies.
+ *
+ * @param rolloutPercent - 1 to 100, or `undefined` for every device.
+ * @param bucket - This device's stable 0-99 bucket.
+ */
+export function isInRollout(rolloutPercent: number | undefined, bucket: number): boolean {
+  return rolloutPercent === undefined || bucket < rolloutPercent;
+}
+
+/**
+ * This device's rollout bucket, assigning one on first use.
+ *
+ * WRITTEN ONCE AND THEN STABLE. A bucket re-rolled per check would move the
+ * device in and out of a rollout on successive days, which is not a staged
+ * rollout of anything. See `parser_rules_rollout_bucket` in
+ * `lib/db/repos/app_settings_repo.ts` for why this is a stored random number
+ * rather than a hash of a device identifier: this app deliberately holds no such
+ * identifier, and minting one to bucket by would be a worse trade than a random
+ * integer that never leaves the phone.
+ */
+async function rolloutBucket(): Promise<number> {
+  const stored = await getSetting("parser_rules_rollout_bucket");
+  if (stored !== null) return stored;
+  const assigned = Math.floor(Math.random() * 100);
+  await setSetting("parser_rules_rollout_bucket", assigned);
+  return assigned;
 }

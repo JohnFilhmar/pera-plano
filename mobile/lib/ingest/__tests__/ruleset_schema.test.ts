@@ -266,3 +266,48 @@ test("a trait signal with a hostile weight or an unbounded phrase is rejected", 
 test("the schema is reachable on its own for callers that only want the shape", () => {
   expect(rulesetBundleSchema.safeParse(bundle()).success).toBe(true);
 });
+
+// ---------------------------------------------------------------------------
+// Staged rollout — GAP-043 rule 4. The field a producer sets to reach a share
+// of devices instead of all of them.
+// ---------------------------------------------------------------------------
+
+test("rolloutPercent is optional, and its absence means everyone", async () => {
+  // Every bundle published before this field existed has to keep installing
+  // everywhere, so absent cannot mean nobody.
+  const result = parseRulesetBundle(bundle());
+
+  expect(result.ok).toBe(true);
+  if (result.ok) expect(result.bundle.rolloutPercent).toBeUndefined();
+});
+
+test("a rolloutPercent inside 1..100 is accepted and preserved", async () => {
+  for (const percent of [1, 10, 50, 99, 100]) {
+    const result = parseRulesetBundle(bundle({ rolloutPercent: percent }));
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.bundle.rolloutPercent).toBe(percent);
+  }
+});
+
+test("A ROLLOUT OF ZERO IS REJECTED, because a bundle nobody can install is a mistake", async () => {
+  // Not a way to unpublish. Rolling back is publishing a higher version that
+  // carries the old content, since the app installs only versions above its own;
+  // a zero here would look like a rollback and silently do nothing at all.
+  expect(rejectionReason(bundle({ rolloutPercent: 0 }))).not.toBe("ACCEPTED");
+});
+
+test("a rolloutPercent over 100, negative, or fractional is rejected", async () => {
+  for (const percent of [101, -1, 10.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    expect(rejectionReason(bundle({ rolloutPercent: percent }))).not.toBe(
+      "ACCEPTED",
+    );
+  }
+});
+
+test("a rolloutPercent that is not a number at all is rejected", async () => {
+  for (const percent of ["50", null, {}, [], true]) {
+    expect(rejectionReason(bundle({ rolloutPercent: percent }))).not.toBe(
+      "ACCEPTED",
+    );
+  }
+});

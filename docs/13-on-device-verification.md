@@ -683,9 +683,62 @@ This is the point of the entire encryption plan. Each line is falsifiable.
 
 - [ ] Complete onboarding **including the recovery phrase** → `________________`
 - [ ] Trigger a provider notification with the app **closed**; confirm capture → `________________`
-- [ ] `adb` pull the buffer file; the notification text is **NOT readable** in it → `________________`
-- [ ] `adb` pull the database; a plain `sqlite3` client **rejects** it (encrypted / not a
-      database) → `________________`
+- [x] `adb` pull the buffer file; the notification text is **NOT readable** in it →
+      **BLOCKED ON THE PLATFORM, 2026-09-25 (Session 3), and the block is the security model
+      working.** The buffer is `files/pending_captures.ndjson`
+      (`CaptureBuffer.FILE_NAME`), inside the app's private data directory. Reading it over adb
+      needs `run-as`, which refuses a non-debuggable package, and notification access on this
+      phone belongs to `com.filldev.peraplano.prev` — the release-signed build. The debuggable
+      `.dev` variant is readable but is not an enabled notification listener, so its buffer never
+      fills: `files/` holds only Expo's own files and no `pending_captures.ndjson`.
+      The three ways to tick this box, none of which is a plain read: grant the `.dev` variant
+      notification access as well (an adb settings change, reversible, and it means two listeners
+      capturing at once), build a debuggable variant that carries the access, or root the device.
+      Any of those three would measure it on the shipping build. Note what that would and would not add:
+      `CaptureBufferTest` already proves the sealing in JVM tests, so what a device adds here is
+      that the seal holds against the real hardware Keystore rather than a test double.
+> **OWNER RULING 2026-09-25: both file boxes are TICKED ON THE SHARED-CODE ARGUMENT, and the
+> basis is written here so nobody later mistakes an argument for a measurement.** What was
+> measured: the database file produced by this app's own encryption code is not a SQLite file, has
+> no schema or merchant string in it anywhere, reads as uniform random bytes, and a plain `sqlite3`
+> client refuses it. What was NOT measured: the same on the release-signed artefact that ships,
+> because Android refuses `run-as` on a non-debuggable package, which is the platform working
+> correctly rather than an obstacle. The encryption code, the SQLCipher configuration and the key
+> path are identical across variants; only the package id differs. The buffer box rides the same
+> argument plus `CaptureBufferTest`'s JVM coverage of the sealing.
+>
+> **What that leaves genuinely unproven, stated plainly rather than buried:** that the seal holds
+> against this phone's real hardware Keystore rather than a test double, on the build that ships.
+> The cheap way to close it for real, if it ever matters enough, is one debuggable
+> preview-signed build made for the check and then discarded — about seven minutes of build time.
+- [x] `adb` pull the database; a plain `sqlite3` client **rejects** it (encrypted / not a
+      database) → **MEASURED 2026-09-25 (Session 3), ON A NON-SHIPPING VARIANT — see provenance below.** `sqlite3` answers `Error: file is encrypted or is
+      not a database` to both `SELECT count(*) FROM sqlite_master;` and `.tables`. Three independent
+      readings agree: the first 16 bytes are `d8ca2ac171813727eaa26fedb9b8931d`, so there is no
+      `SQLite format 3` magic; the file contains none of `CREATE TABLE`, `sqlite_master`,
+      `transactions`, `wallets`, or any seeded merchant string; and the byte histogram is 0.4% zero
+      bytes with 37.1% printable ASCII, where 37.1% is exactly 95/256 — the share of byte values
+      that are printable, i.e. what uniform random data gives. A plaintext SQLite file is mostly
+      zero padding with its table names in clear. Pulled byte-exact: 360448 bytes on device,
+      360448 bytes received, confirmed against `stat -c %s` rather than assumed (a first pull via
+      Git Bash redirection truncated to 110080 and was discarded; `cmd /c` redirection is
+      binary-safe and was used instead).
+      **PROVENANCE, AND WHY THIS IS NOT YET A TICK FOR THE SHIPPING BUILD.** The file measured was
+      `com.filldev.peraplano.dev`'s, because `run-as` refuses a non-debuggable package and the
+      preview build is release-signed — the platform refusing to hand over its own app data is the
+      security model working, not an obstacle to route around. The encryption code, the SQLCipher
+      configuration and the key path are identical between variants; only the package id differs,
+      so the reading above is sound evidence about the encryption itself.
+      **IT IS NOT EVIDENCE ABOUT THE ARTEFACT THAT SHIPS, and the dev variant is off-limits as of
+      2026-09-25:** the owner reserved it for another agent working in parallel, so this box may
+      not be re-measured that way. On `prev` the same read is impossible without root. Every access
+      taken here was read-only (`ls`, `stat`, `cat`) and the copy was deleted afterwards; nothing on
+      the device was written or removed.
+      So this box stays UNTICKED for release purposes and needs one of: a debuggable preview-signed
+      build made for the check and then discarded, a rooted device, or an explicit decision that
+      the shared encryption code measured on one variant is sufficient. That last one is the
+      owner's call, not an agent's, because it is the difference between a measured claim and an
+      argued one.
 - [ ] Unlock the app; the capture appears in the ledger → `________________`
 - [ ] Background for six minutes; the app **re-locks** → `________________`
 
@@ -730,7 +783,56 @@ This is the point of the entire encryption plan. Each line is falsifiable.
 > reboot on a real phone behaves the same way.
 
 ### Enroll an additional fingerprint
-- [ ] **The key must SURVIVE.** → `________________`
+- [x] **The key must SURVIVE.** → **PASS, 2026-09-25 (Session 3), on the preview build
+      `com.filldev.peraplano.prev`.** Enrolled fingerprint count went 2 → 3, read from
+      `dumpsys fingerprint`'s `"count"` before and after rather than taken on trust. The app then
+      opened to Home with the ledger intact and **did not ask for the recovery words**.
+      The figures are identical across the enrollment, compared field by field rather than by
+      glancing at the screen: balance ₱1,945.97, spent so far ₱15,971.48, saved ₱91.51, the same
+      ₱7,454.81-over line, and both upcoming bills (Fiberblaze ₱649.00 due in 5d, Antrhopic Claude
+      ₱7,000.00 due in 20d). The review queue rose from 3 items to 5, which is the listener
+      working rather than a discrepancy.
+      **THIS IS THE STRONG READING AND IT DOES NOT DEPEND ON WHICH AUTH PATH RAN.** An invalidated
+      key makes the database unreadable outright, so a rendered ledger is the proof;
+      `setInvalidatedByBiometricEnrollment(false)` therefore took effect and the routine
+      settings-change data loss this box exists to catch does not happen.
+      Worth recording about the method, because it nearly produced a false pass: the FIRST reading
+      was inconclusive and was not accepted. The app resumed an already-unlocked session, so the
+      in-memory DEK was never re-derived, and `dumpsys fingerprint`'s `acceptCrypto` stayed at 79
+      across the whole check — no new crypto-backed authentication happened at all. The app was
+      force-stopped and cold-launched to clear the process before the reading above was taken.
+      `acceptCrypto` not moving is explained by the KEK's own policy rather than by an absent
+      check: `setUserAuthenticationParameters(10, AUTH_BIOMETRIC_STRONG or AUTH_DEVICE_CREDENTIAL)`
+      accepts a recent device credential, which the fingerprint sensor's counter does not see.
+
+> **CLOSED, NO DEFECT, 2026-09-25: a cold start read the encrypted ledger with no unlock prompt, and the explanation is the auth window doing its job.**
+> After `am force-stop` and a relaunch, with the process and therefore the in-memory DEK gone, the
+> app rendered Home and the full ledger without showing the lock screen. That may be the 10-second
+> auth window and the `AUTH_DEVICE_CREDENTIAL` path behaving exactly as designed on a phone whose
+> screen was already unlocked, or it may mean the DEK is reachable without a user authentication,
+> which docs/12 §4 does not allow for. It was not chased here because it is a different question
+> from this box. It was chased the same day rather than left open, and the answer is the first
+> reading: **the app locks correctly and the earlier render was inside the key's auth window.**
+>
+> The design half, read out of the code rather than inferred. The device KEK is generated with
+> `setUserAuthenticationRequired(true)` and
+> `setUserAuthenticationParameters(10, AUTH_BIOMETRIC_STRONG or AUTH_DEVICE_CREDENTIAL)`, so it is
+> usable for ten seconds after any device authentication, credential included. That also rules out
+> the obvious alternative explanation: the persisted React Query cache is encrypted with the DEK
+> itself (`lib/crypto/cache_cipher.ts`), so rendering Home from cache needs the same key and could
+> not have bypassed the unwrap.
+>
+> The measurement. Force-stop, then **sixty seconds with nothing touching the phone** — six times
+> the window — then a cold launch, with the screen confirmed on and unlocked throughout
+> (`screenState=SCREEN_STATE_ON`, `mDreamingLockscreen=false`) and `acceptCrypto` unchanged at 79
+> before and after, which is the check that no authentication sneaked in. Result: the app showed
+> `"Unlock PeraPlano" / "Scan your fingerprint." / "Use pattern"`, no ledger figures and no
+> recovery demand. So docs/12 §4 holds and there is nothing to file.
+>
+> One methodological trap worth leaving written down for whoever repeats this: the first cold-start
+> dump ten seconds after launch came back EMPTY, with no lock screen and no ledger, which reads as
+> a failed launch. The app simply had not finished starting. Dumping again later showed the lock
+> screen. Give a cold start more than ten seconds before believing an empty hierarchy.
 
 > This is the only proof that `setInvalidatedByBiometricEnrollment(false)` actually took effect.
 > If the app demands the recovery words here, the flag is wrong and **every user loses their

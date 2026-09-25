@@ -188,7 +188,22 @@ describe("creating wallets", () => {
   test("confirming creates a wallet per included proposal", async () => {
     await renderReady([GCASH]);
 
-    fireEvent.press(screen.getByTestId("onboarding-primary-button"));
+    // GAP-052 INSTRUMENTATION, AND IT BISECTS THE FAILURE RATHER THAN GUESSING
+    // AT IT. This is the test that reproduced under nine workers, with zero
+    // wallets, no submit error, and — now that the swallow logs — no caught
+    // exception either, which rules out the save throwing. What is left is a
+    // press that iterated nothing, or a write that went somewhere this read
+    // cannot see. These two lines tell those apart on the next reproduction:
+    // if the proposals are missing, the readiness gate returned too early; if
+    // they are present and no wallet appears, the fault is past the press.
+    expect(screen.getByTestId(`wallet-proposal-${GCASH}`)).toBeTruthy();
+    expect(screen.getByTestId("wallet-proposal-cash")).toBeTruthy();
+
+    const button = screen.getByTestId("onboarding-primary-button");
+    expect(button.props.accessibilityState?.disabled ?? false).toBe(false);
+    fireEvent.press(button);
+
+    expect(screen.queryByTestId("wallets-step-error")).toBeNull();
 
     await waitFor(async () => expect(await listWallets()).toHaveLength(2));
     const names = (await listWallets()).map((w) => w.name).sort();
@@ -234,7 +249,20 @@ describe("creating wallets", () => {
   test("selecting providers seeds wallet_matchers for each provider-linked wallet, and none for cash", async () => {
     await renderReady([GCASH]);
 
-    fireEvent.press(screen.getByTestId("onboarding-primary-button"));
+    // GAP-052 INSTRUMENTATION. This is the one test in the suite that still
+    // fails under nine workers, and its failure said only "expected 2, received
+    // 0" — which cannot tell a press that did nothing from a save that threw and
+    // was swallowed. These two checks split those apart before the wait, so a
+    // reproduction names its own cause instead of needing another run.
+    const button = screen.getByTestId("onboarding-primary-button");
+    expect(button.props.accessibilityState?.disabled ?? false).toBe(false);
+
+    fireEvent.press(button);
+
+    // A submit that threw renders this, and it renders long before a 15 s wait
+    // gives up. Checking it first turns a timeout into the sentence the screen
+    // actually showed.
+    expect(screen.queryByTestId("wallets-step-error")).toBeNull();
 
     await waitFor(async () => expect(await listWallets()).toHaveLength(2));
     const wallets = await listWallets();

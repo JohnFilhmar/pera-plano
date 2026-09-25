@@ -592,10 +592,24 @@ export default function WalletsScreen({
         }
         runningCount += 1;
       }
-    } catch {
+    } catch (error) {
       // Wallets already created stay created (gate principle 1: never delete
       // on a failure either) — only the ones that did not get created yet are
       // lost, and the user can add them from the Wallets tab afterward.
+      //
+      // SWALLOWING IS CORRECT HERE, SILENCE IS NOT (GAP-052). The message above
+      // is the right thing to show a user mid-setup, and it is also all anyone
+      // ever learned: this catch took the cause with it. That is what made the
+      // one remaining flake in this suite undiagnosable for ten waves — the
+      // test sees zero wallets and cannot tell a press that did nothing from a
+      // save that threw. `DuplicateNameError` from `createWallet` and a
+      // `setMatchers` write racing a closing database look identical from
+      // outside, and they need opposite fixes. Commit 5bad9d2 is the precedent
+      // (two bare catches on the recovery-phrase screen turned a first-run
+      // blocker into an undiagnosable "try again"; one line found the cause on
+      // the next run). `transform-remove-console` strips this from production
+      // bundles, so it costs a shipped user nothing.
+      console.error("[onboarding] a wallet could not be saved during setup", error);
       setSubmitError(
         "Some wallets couldn't be saved. The ones that worked are ready — add any others later from the Wallets tab.",
       );

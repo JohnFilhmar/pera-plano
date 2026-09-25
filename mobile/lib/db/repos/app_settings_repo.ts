@@ -106,6 +106,23 @@ export type AppSettings = {
    */
   parser_rules_checked_at: number | null;
   /**
+   * This device's staged-rollout bucket, 0 to 99 (docs/03 §11.2 rule 4, GAP-043).
+   * `null` until the first ruleset check assigns one.
+   *
+   * A STORED RANDOM NUMBER RATHER THAN A HASH OF SOME DEVICE IDENTIFIER, and the
+   * distinction matters here more than it would in most apps. This one holds no
+   * install id, advertising id or device id, on purpose — the ledger never leaves
+   * the phone and there is nothing to correlate it with. Hashing something into a
+   * bucket would mean MINTING an identifier where none existed, which is a worse
+   * trade than a random integer that is uncorrelated with anything, never sent
+   * anywhere, and stable because it is written once.
+   *
+   * Stable is the requirement: a bucket rolled per check would put the device in
+   * and out of the rollout on successive days, which is neither a staged rollout
+   * nor a stable experience.
+   */
+  parser_rules_rollout_bucket: number | null;
+  /**
    * Income detection's working notes (m2 Task 9). The first OBJECT-valued
    * setting, and it works unchanged because every value here has always been
    * JSON-encoded into `value_json` — the rule at the top of this file exists
@@ -341,6 +358,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   telemetry_enabled: false,
   cash_reconcile_prompt_at: null,
   parser_rules_checked_at: null,
+  parser_rules_rollout_bucket: null,
   income_detection_state: UNKNOWN_INCOME_DETECTION,
   loan_reminder_ids: {},
   bill_reminder_ids: {},

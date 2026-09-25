@@ -362,6 +362,25 @@ export const rulesetBundleSchema = z
     providers: z.array(providerSchema).min(1).max(MAX_PROVIDERS),
     tunables: tunablesSchema.optional(),
     traitSignals: z.array(traitSignalSchema).max(MAX_TRAIT_SIGNALS).optional(),
+    /**
+     * The share of devices this version is for, 1 to 100 (docs/03 §11.2 rule 4,
+     * GAP-043).
+     *
+     * OPTIONAL, AND ABSENT MEANS EVERY DEVICE. Bundles published before this
+     * field existed have to keep installing everywhere, so absent cannot be read
+     * as nobody. `services/parser_rules.ts` compares it against a per-device
+     * bucket AFTER the signature and the schema have both passed, because the
+     * percentage arrives inside the bundle and acting on an unverified number
+     * would let anyone who can serve bytes decide who gets an update.
+     *
+     * ZERO IS REJECTED RATHER THAN TREATED AS "NOBODY". A bundle no device can
+     * install is a mistake every time, and the one thing it looks like from the
+     * outside — a rollback — is not how rollback works here: the app installs
+     * only versions above the one it holds, so reverting means publishing a
+     * HIGHER version carrying the previous content. A zero would read as a
+     * rollback and silently do nothing.
+     */
+    rolloutPercent: z.int().min(1).max(100).optional(),
   })
   .refine(
     (bundle) =>
