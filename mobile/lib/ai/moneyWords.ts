@@ -1,4 +1,4 @@
-// mobile/lib/ai/money_words.ts
+// mobile/lib/ai/moneyWords.ts
 //
 // LEVEL 5 ONLY. Assistant levels spec §3: at level 5 a "should I" question
 // reaches the model unless it is about money, and the advice-wording guard

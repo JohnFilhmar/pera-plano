@@ -1,9 +1,9 @@
-// mobile/lib/ai/__tests__/money_words.test.ts
+// mobile/lib/ai/__tests__/moneyWords.test.ts
 //
 // Assistant levels spec §3. Level 5 lets a "should I" question reach the model
 // unless it is about money; this list decides "about money". Both known error
 // directions are pinned so the accepted behaviour stays visible.
-import { mentionsMoney } from "../money_words";
+import { mentionsMoney } from "../moneyWords";
 
 test.each([
   "Should I buy a new phone?",
