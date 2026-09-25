@@ -79,6 +79,10 @@ export async function answerFreely(message: string, deps: FreeChatDeps): Promise
   });
   if (fitted.kind === "too_long") return { kind: "too_long", language };
 
+  // A lock or Stop can land while the fit awaits the tokenizer; generating after
+  // it would refill the model context the lock just cleared.
+  if (deps.abort?.aborted) return { kind: "cancelled" };
+
   const streamed = await readStream(deps.bridge.generate(fitted.prompt, systemPrompt), deps);
   if (streamed.kind === "cancelled") return { kind: "cancelled" };
   if (streamed.kind === "error") return { kind: "replaced", failure: "unreadable", language };

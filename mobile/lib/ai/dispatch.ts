@@ -167,8 +167,12 @@ export async function readStream(
       }
     }
   } catch {
-    return { kind: "error" };
+    // An abort that lands before a native failure is still an abort: a card
+    // appended after the lock cleared the screen would put figures back on it.
+    return deps.abort?.aborted ? { kind: "cancelled" } : { kind: "error" };
   }
+  // The flag can also land after the last token, while the stream is closing.
+  if (deps.abort?.aborted) return { kind: "cancelled" };
   return { kind: "text", raw };
 }
 

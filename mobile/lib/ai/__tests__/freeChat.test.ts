@@ -149,3 +149,29 @@ test("a raised abort flag stops the turn before any tool runs", async () => {
   expect(await answerFreely("Hi", deps({ abort: { aborted: true } }, calls))).toEqual({ kind: "cancelled" });
   expect(calls).toEqual([]);
 });
+
+test("a lock that lands while the prompt is fitted stops the turn before the model runs", async () => {
+  const abort = { aborted: false };
+  const bridge = {
+    ...fakeLlamaBridge,
+    countTokens: async (text: string) => {
+      abort.aborted = true;
+      return Math.ceil(text.length / 4);
+    },
+  };
+  expect(await answerFreely("Tell me about my money", deps({ bridge, abort }))).toEqual({ kind: "cancelled" });
+  expect(generateCallCount()).toBe(0);
+});
+
+test("a figure from a snapshot tool the budget dropped does not count as grounded", async () => {
+  scriptLlama([{ emit: "You spent ₱2,400.00 on Groceries." }]);
+  // Any prompt that still carries the spending breakdown is over budget, so the fit drops it.
+  const bridge = {
+    ...fakeLlamaBridge,
+    countTokens: async (text: string) => (text.includes("get_spend_by_category") ? 100_000 : 1),
+  };
+  expect(await answerFreely("Where did my money go?", deps({ bridge }))).toMatchObject({
+    kind: "replaced",
+    failure: "ungrounded",
+  });
+});

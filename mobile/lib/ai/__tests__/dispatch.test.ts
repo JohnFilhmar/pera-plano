@@ -9,7 +9,7 @@
 // any other typed text. Each is a code path the model is not on, which is the
 // crisp statement of "the guardrail is structural".
 import { HOSTILE_MERCHANT } from "../eval/fixture_ledger";
-import { answerQuestion, replyToText, type DispatchDeps } from "../dispatch";
+import { answerQuestion, readStream, replyToText, type DispatchDeps } from "../dispatch";
 import { FIXED_QUESTIONS, type FixedQuestion } from "../fixed_questions";
 import { TOOL_CHANNEL_CLOSE, TOOL_CHANNEL_OPEN } from "../prompt";
 import { ok, unavailable, type ToolResult } from "../tools/types";
@@ -379,5 +379,26 @@ describe("cancellation and the lock", () => {
     expect(outcome.kind).toBe("cancelled");
     expect(calls).toEqual([]);
     expect(generateCallCount()).toBe(0);
+  });
+});
+
+describe("readStream honours an abort that lands outside the token loop", () => {
+  test("an abort raised as the stream closes, after the last token, is a cancel", async () => {
+    const abort = { aborted: false };
+    async function* tokens(): AsyncGenerator<string> {
+      yield "You have ₱50.00.";
+      abort.aborted = true;
+    }
+    expect(await readStream({ tokens: tokens(), cancel: () => {} }, { abort })).toEqual({ kind: "cancelled" });
+  });
+
+  test("an abort followed by a native failure is a cancel, not an error", async () => {
+    const abort = { aborted: false };
+    async function* tokens(): AsyncGenerator<string> {
+      yield "You have";
+      abort.aborted = true;
+      throw new Error("native failure after the lock");
+    }
+    expect(await readStream({ tokens: tokens(), cancel: () => {} }, { abort })).toEqual({ kind: "cancelled" });
   });
 });
