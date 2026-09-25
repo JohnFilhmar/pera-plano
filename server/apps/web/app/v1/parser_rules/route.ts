@@ -1,8 +1,13 @@
 // server/apps/web/app/v1/parser_rules/route.ts — the parser-ruleset channel
 // (docs/03-ingest-pipeline.md §11.2, GAP-043).
 //
-// Served on api.peraplano.filhmar.online (docs/nginx/peraplano-api-production.conf)
-// and NOT under /api/, which is the app's own convention for its own routes. The
+// Served on the API subdomain, whose nginx site and hostname live in
+// docs/nginx/peraplano-api-production.conf, and NOT under /api/, which is the
+// app's own convention for its own routes. The host is named there rather than
+// here because `structure.test.ts`'s hostname discipline forbids the literal
+// anywhere under app/, components/ or messages/: a hostname in this tree silently
+// beats PUBLIC_BASE_URL on a staging deploy, and the check is a blunt string
+// match on purpose, so that a comment today cannot become a string tomorrow. The
 // version lives in the path because this is the one endpoint a shipped phone
 // keeps calling forever: every installed copy asks for `/v1/parser_rules` until
 // the user updates, so the path has to outlive whatever serves it.
