@@ -19,6 +19,7 @@
 //
 // SMALL TALK IS CHECKED FIRST, and only a whole message counts (see
 // `small_talk.ts`), so a greeting can never hide an advice question.
+import { normalise } from "./normalise";
 import { matchSmallTalk, type ReplyLanguage, type SmallTalk } from "./small_talk";
 
 export type AdviceClass = "permission" | "affordability" | "worth" | "direction";
@@ -160,22 +161,6 @@ export const ADVICE_ROWS: AdviceRow[] = [
   },
 ];
 
-/**
- * Lowercased, punctuation dropped, whitespace collapsed. Punctuation goes
- * because "Should I... buy this?!" is the same question as "should i buy this",
- * and a table that only matched the tidy form would be trivially evaded by
- * anyone typing normally.
- *
- * The hyphen SURVIVES, because "makaka-ipon" and "mag-ipon" are spelled with
- * one and dropping it would break the Filipino column.
- */
-function normalise(input: string): string {
-  return input
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s-]/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
 
 /**
  * Sorts typed text into small talk, an advice question, or everything else.
