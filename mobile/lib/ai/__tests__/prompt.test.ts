@@ -15,6 +15,7 @@ import {
   TOOL_CHANNEL_CLOSE,
   TOOL_CHANNEL_OPEN,
   buildTurnPrompt,
+  freeChatSystemPrompt,
 } from "../prompt";
 
 const TOOL_RESULTS = [
@@ -122,4 +123,43 @@ describe("the delimited tool channel", () => {
   test("the channel is snapshot-pinned too", () => {
     expect(prompt).toMatchSnapshot();
   });
+});
+
+describe("the free-chat system prompts (levels spec §4.2)", () => {
+  test.each([3, 4, 5] as const)("level %s is pinned", (level) => {
+    expect(freeChatSystemPrompt(level, "April 2025")).toMatchSnapshot();
+  });
+
+  test.each([3, 4, 5] as const)("level %s keeps every rule the guards enforce", (level) => {
+    const prompt = freeChatSystemPrompt(level, "April 2025").toLowerCase();
+    expect(prompt).toContain("never advise");
+    expect(prompt).toContain("never state a peso amount");
+    expect(prompt).toContain("never include a link");
+    expect(prompt).toContain("character for character");
+  });
+
+  test("only level 5 names the model's knowledge limit", () => {
+    expect(freeChatSystemPrompt(5, "April 2025")).toContain("April 2025");
+    expect(freeChatSystemPrompt(3, "April 2025")).not.toContain("April 2025");
+    expect(freeChatSystemPrompt(4, "April 2025")).not.toContain("April 2025");
+  });
+
+  test("contain no user data", () => {
+    for (const level of [3, 4, 5] as const) {
+      const prompt = freeChatSystemPrompt(level, "April 2025");
+      for (const leak of ["₱2,400.00", "Groceries", "How much did I spend"]) {
+        expect(prompt).not.toContain(leak);
+      }
+    }
+  });
+});
+
+test("a free-chat turn gets its own closing line, and a chip keeps the narration one", () => {
+  const free = buildTurnPrompt({ transcript: TRANSCRIPT, toolResults: TOOL_RESULTS, closing: "free_chat" });
+  expect(free).toContain("For anything about the user's money, use only the values above.");
+  expect(free).toMatch(/speak to the user as "you"/i);
+
+  const chip = buildTurnPrompt({ transcript: TRANSCRIPT, toolResults: TOOL_RESULTS });
+  expect(chip).toContain("Answer the last user message using only the values above.");
+  expect(chip).not.toContain("For anything about the user's money");
 });
