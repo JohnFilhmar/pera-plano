@@ -543,6 +543,11 @@ poor carrier.
 
 ### 3.3 Two layers of constraint, doing two different jobs
 
+> **SUPERSEDED 2026-09-25 by §7.4, together with §3.4.** The model no longer chooses a tool, so there
+> is no tool call for a grammar to shape and no dispatch loop. What survives from this section and the
+> next is everything downstream of generation: the grounding check, the output guard, the `{`-fragment
+> rule and card degradation. Read §7.4's amendment for the shape that ships.
+
 **GBNF makes malformed output impossible.** Generation is constrained to either a tool call matching a
 schema or plain prose:
 
@@ -1103,6 +1108,10 @@ instead of parsers.
    surface; it ships as the fallback in §7.4. If only tier 4–5 clear the bar, "free for everyone"
    quietly becomes "free for everyone with 8 GB of RAM and 2.5 GB of storage to spare", which is a
    materially different product claim.
+
+   > **MEASURED AND DECIDED 2026-09-25.** On the A54, on battery, strict tool-pick was 10, 10, 8 and 9
+   > of 30 for tier 1 and 12, 11, 12 and 12 for tier 2 (`docs/13-on-device-verification.md`, "Run
+   > 2026-09-25"). Both are far below the bar, so the owner chose §7.4.
 2. **Memory survival.** Whether a 2.5–3.3 GB resident model survives Android's low-memory killer on a
    6 GB A54 through an app switch. If not, half the target hardware sees a three-tier menu. Compounding
    problem: **the owner's A54 is one variant**, so at most one of the two answers is directly
@@ -1132,6 +1141,10 @@ instead of parsers.
 8. **Streaming SHA-256 of a multi-gigabyte file.** `@noble/hashes` in JS over 3.3 GB read through
    `expo-file-system/legacy` may be unacceptably slow or may not stream at all. If so, the digest needs
    a native helper, and `llama_bridge` grows its first piece of Kotlin (§1.1). Settled by §5.6, gate 7.
+
+   > **SETTLED 2026-09-25.** Gate 7 measured the JS digest at 939,944 ms for a 0.4 GB file, with the JS
+   > thread at 93% CPU and navigation taking 16 to over 60 seconds; native `sha256sum` hashed 1.1 GB in
+   > 3 s on the same phone. The owner approved the native helper in `modules/llama_bridge`.
 9. **Weight hosting and provenance.** A Hugging Face URL can move, and a dead URL is a dead menu entry
    with no recovery path. Mirrors, a version-pinned revision in the URL, and a catalogue served from
    the existing parser-rules endpoint are all options; none is chosen here. Related: §2.4's disclosure
@@ -1202,6 +1215,21 @@ switch on the available A54; tok/s within the estimated bands.
 | Thinking cannot be suppressed on tiers 1–3 | Those three tiers pay a latency tax on every answer. Either accept it and re-measure, or the menu becomes the two 2507 tiers only — which contradicts the free-for-everyone goal, since neither runs on a 6 GB phone comfortably. |
 
 ### 7.4 The named fallback design
+
+> **CHOSEN BY THE OWNER, 2026-09-25**, after §6 risk 1 measured below the bar. As built:
+>
+> - A tapped question (`mobile/lib/ai/fixed_questions.ts`) names its tool and arguments.
+>   `answerQuestion` in `mobile/lib/ai/dispatch.ts` runs that tool, then one narration round with no
+>   grammar, then grounding and the output guard, unchanged.
+> - The narration prompt holds only the tapped question. The earlier design fed the whole transcript
+>   back in, and on the phone one decline in that history made the model decline five valid
+>   questions in a row.
+> - **Typed text never reaches the model**, which goes one step past this section's original wording.
+>   `replyToText` returns the advice redirect (§4.3, unchanged), a fixed small-talk reply for a
+>   whole-message greeting, thanks, "what can you do" or goodbye, or a cannot-answer line that points
+>   back at the questions, in English or Filipino (`mobile/lib/ai/small_talk.ts`,
+>   `mobile/components/ai/chat_copy.ts`). The owner asked for both replies after "hello" was answered
+>   with a list of wallets.
 
 If tool selection is the thing that fails, **the feature survives by moving tool selection out of the
 model and into the UI**: the user taps one of a fixed set of questions ("Where did my money go this
