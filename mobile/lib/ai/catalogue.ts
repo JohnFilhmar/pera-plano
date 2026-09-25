@@ -38,6 +38,12 @@ export type ModelSpec = {
   minRamBytes: number;
   contextTokens: number;
   suppressThinking: boolean;
+  /**
+   * The month the model was released, named by the level-5 notice as the point
+   * its knowledge stops. Qwen publishes no training cutoff for Qwen3, and no
+   * training data can postdate the release. Assistant levels spec §5.3.
+   */
+  knowledgeLimit: string;
   license: string;
 };
 
@@ -72,6 +78,8 @@ export const MODEL_CATALOGUE: readonly ModelSpec[] = [
     contextTokens: CONTEXT_TOKENS,
     // Hybrid-thinking Qwen3: emits <think>…</think> unless suppressed.
     suppressThinking: true,
+    // Hugging Face's API: Qwen/Qwen3-0.6B created 2025-04-27.
+    knowledgeLimit: "April 2025",
     license: "apache-2.0",
   },
   {
@@ -93,6 +101,8 @@ export const MODEL_CATALOGUE: readonly ModelSpec[] = [
     minRamBytes: Math.round(6.5 * GIB),
     contextTokens: CONTEXT_TOKENS,
     suppressThinking: true,
+    // Hugging Face's API: Qwen/Qwen3-1.7B created 2025-04-27.
+    knowledgeLimit: "April 2025",
     license: "apache-2.0",
   },
 ];

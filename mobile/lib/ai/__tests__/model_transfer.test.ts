@@ -60,6 +60,7 @@ const SPEC: ModelSpec = {
   minRamBytes: 1024 * 1024 * 1024,
   contextTokens: 2048,
   suppressThinking: true,
+  knowledgeLimit: "April 2025",
   license: "apache-2.0",
 };
 
