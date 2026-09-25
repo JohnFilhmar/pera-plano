@@ -1,23 +1,27 @@
-// components/ai/__tests__/chat_surface.test.tsx — plan Task 23.
+// components/ai/__tests__/chat_surface.test.tsx — plan Task 23, reshaped for
+// spec §7.4 on 2026-09-25.
 //
 // DRIVEN BY THE SCRIPTED BRIDGE, NOT BY PROPS. The surface runs the real
-// `runTurn` loop over `test_support/llama_bridge_mock.ts`, so every assertion
-// here is about what a user actually sees while a model decodes: a suppressed
-// half-written tool call, a tool line filling the dead air before the first
-// word, a cancel that leaves nothing behind, and a bad sentence collapsing to
-// the card that still carries the true figure.
+// `answerQuestion` over `test_support/llama_bridge_mock.ts`, so every assertion
+// here is about what a user actually sees while a model decodes: a tool line
+// filling the dead air before the first word, JSON that never renders as prose,
+// a cancel that leaves nothing behind, and a bad sentence collapsing to the
+// card that still carries the true figure.
 //
-// A SURFACE THAT TOOK ITS TOKENS AS A PROP WOULD PASS EVERY TEST IN THIS FILE
-// WITHOUT STREAMING ANYTHING. That is why the fake bridge is here and why the
-// incremental test uses fake timers: `perTokenDelayMs` is the only way to stand
-// between two tokens and look at the screen.
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+// UNDER §7.4 A CHIP IS THE ONLY WAY TO THE MODEL. Typed text gets the app's own
+// reply, and `generateCallCount()` staying at zero is how these tests prove it.
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
 import { Text } from "react-native";
 
 import { ChatSurface } from "../chat_surface";
-import { destroySession } from "@/lib/ai/session";
+import { CANNOT_ANSWER_REPLY, SMALL_TALK_REPLY } from "../chat_copy";
 import { ok, type ToolResult } from "@/lib/ai/tools/types";
-import { fakeLlamaBridge, resetLlamaScript, scriptLlama } from "@/test_support/llama_bridge_mock";
+import {
+  fakeLlamaBridge,
+  generateCallCount,
+  resetLlamaScript,
+  scriptLlama,
+} from "@/test_support/llama_bridge_mock";
 
 const NOW = 1_773_000_000_000;
 
@@ -60,8 +64,12 @@ function readySurface(overrides: Overrides = {}) {
   );
 }
 
-function ask(question: string) {
-  fireEvent.changeText(screen.getByTestId("ai-composer-input"), question);
+function tap(questionId: string) {
+  fireEvent.press(screen.getByTestId(`ai-question-chips-${questionId}`));
+}
+
+function type(text: string) {
+  fireEvent.changeText(screen.getByTestId("ai-composer-input"), text);
   fireEvent.press(screen.getByTestId("ai-composer-send"));
 }
 
@@ -78,11 +86,8 @@ function gatedTool(result: ToolResult<unknown>) {
   return { runTool, release: () => release() };
 }
 
-beforeEach(async () => {
+beforeEach(() => {
   resetLlamaScript();
-  // The session is module-scoped and outlives a test. A transcript left behind
-  // would put the previous test's question in this one's prompt.
-  await destroySession();
 });
 
 afterEach(() => {
@@ -106,11 +111,12 @@ describe("the four states", () => {
     expect(screen.getByTestId("model-picker")).toBeTruthy();
     expect(screen.queryByTestId("ai-error")).toBeNull();
     expect(screen.queryByText(/something went wrong|couldn't|failed|unavailable/i)).toBeNull();
-    // No composer: there is nothing to ask yet.
+    // Nothing to ask yet: no chips and no composer.
     expect(screen.queryByTestId("ai-composer-input")).toBeNull();
+    expect(screen.queryByTestId("ai-question-chips")).toBeNull();
   });
 
-  test("waking up is distinguishable from no model — the picker never flashes at someone who has one", () => {
+  test("waking up is distinguishable from no model: the picker never flashes at someone who has one", () => {
     render(
       <ChatSurface
         phase="waking"
@@ -130,8 +136,22 @@ describe("the four states", () => {
   });
 });
 
-describe("generating", () => {
-  test("tokens render incrementally — never spinner-then-dump", async () => {
+describe("a tapped question", () => {
+  test("shows as the user's own message and is answered from its tool", async () => {
+    scriptLlama([{ emit: "Groceries took ₱2,400.00 this month." }]);
+    render(readySurface());
+
+    tap("spend_this_month");
+
+    // Scoped to the transcript: the chip itself carries the same words.
+    expect(within(screen.getByTestId("ai-transcript")).getByText("Where did my money go this month?")).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.getByText("Groceries took ₱2,400.00 this month.")).toBeTruthy();
+    });
+    expect(generateCallCount()).toBe(1);
+  });
+
+  test("tokens render incrementally, never spinner-then-dump", async () => {
     // `setImmediate` and the microtask queue stay REAL. React's async `act` and
     // RNTL's own flush both drain themselves through them, and faking those
     // deadlocks the flush against the very clock this test is holding still.
@@ -139,7 +159,7 @@ describe("generating", () => {
     scriptLlama([{ emit: "Groceries was your biggest category.", perTokenDelayMs: 10 }]);
 
     render(readySurface());
-    ask("how much did I spend on groceries?");
+    tap("spend_this_month");
 
     await act(async () => {
       await jest.advanceTimersByTimeAsync(10);
@@ -151,7 +171,6 @@ describe("generating", () => {
       await jest.advanceTimersByTimeAsync(10);
     });
     expect(screen.getByTestId("ai-stream")).toHaveTextContent(/^Groceries was$/);
-    expect(screen.getByTestId("ai-stream")).not.toHaveTextContent(/biggest/);
 
     await act(async () => {
       await jest.advanceTimersByTimeAsync(100);
@@ -160,46 +179,70 @@ describe("generating", () => {
     expect(screen.queryByTestId("ai-stream")).toBeNull();
   });
 
-  test("the tool-call line appears before the first token, and the half-written call never renders as prose", async () => {
+  test("the tool line fills the wait before the first word", async () => {
     const { runTool, release } = gatedTool(LIMITS_RESULT);
-    scriptLlama([
-      { emitToolCall: { name: "get_limits", args: {} } },
-      { emit: "Your Groceries limit still has room." },
-    ]);
+    scriptLlama([{ emit: "Your Groceries limit has ₱1,100.00 left." }]);
 
     render(readySurface({ runTool }));
-    ask("how much is left in my limit?");
+    tap("limits");
 
     await waitFor(() => {
       expect(screen.getByTestId("ai-activity")).toHaveTextContent(/looking at your limits/i);
     });
-    // The whole first round was a JSON tool call. Not one character of it is
-    // allowed on screen as an answer.
-    expect(screen.queryByTestId("ai-stream")).toBeNull();
-    expect(screen.queryByText(/get_limits/)).toBeNull();
-    expect(screen.queryByText(/\{/)).toBeNull();
 
     await act(async () => {
       release();
     });
 
     await waitFor(() => {
-      expect(screen.getByText("Your Groceries limit still has room.")).toBeTruthy();
+      expect(screen.getByText("Your Groceries limit has ₱1,100.00 left.")).toBeTruthy();
     });
     expect(screen.queryByTestId("ai-activity")).toBeNull();
   });
 
+  test("JSON from the model never renders as prose", async () => {
+    scriptLlama([{ emitRaw: '{"tool":"get_wal' }]);
+    render(readySurface());
+
+    tap("spend_this_month");
+
+    await waitFor(() => {
+      expect(screen.getByTestId("grounded-card")).toBeTruthy();
+    });
+    expect(screen.queryByText(/get_wal/)).toBeNull();
+    expect(screen.queryByText(/\{/)).toBeNull();
+  });
+
+  test("the chips stop being tappable while an answer is being written", async () => {
+    const { runTool, release } = gatedTool(LIMITS_RESULT);
+    scriptLlama([{ emit: "Your Groceries limit has ₱1,100.00 left." }]);
+
+    render(readySurface({ runTool }));
+    tap("limits");
+    await waitFor(() => {
+      expect(screen.getByTestId("ai-cancel")).toBeTruthy();
+    });
+
+    // A second tap mid-answer must not start a second turn.
+    tap("wallets");
+    expect(within(screen.getByTestId("ai-transcript")).queryByText("What wallets do I have?")).toBeNull();
+
+    await act(async () => {
+      release();
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId("ai-cancel")).toBeNull();
+    });
+  });
+
   test("cancel is present only while generating, and leaves no assistant message behind", async () => {
     const { runTool, release } = gatedTool(LIMITS_RESULT);
-    scriptLlama([
-      { emitToolCall: { name: "get_limits", args: {} } },
-      { emit: "Your Groceries limit still has room." },
-    ]);
+    scriptLlama([{ emit: "Your Groceries limit has ₱1,100.00 left." }]);
 
     render(readySurface({ runTool }));
     expect(screen.queryByTestId("ai-cancel")).toBeNull();
 
-    ask("how much is left in my limit?");
+    tap("limits");
     await waitFor(() => {
       expect(screen.getByTestId("ai-cancel")).toBeTruthy();
     });
@@ -212,21 +255,71 @@ describe("generating", () => {
     await waitFor(() => {
       expect(screen.queryByTestId("ai-cancel")).toBeNull();
     });
-    expect(screen.queryByText("Your Groceries limit still has room.")).toBeNull();
+    expect(screen.queryByText("Your Groceries limit has ₱1,100.00 left.")).toBeNull();
     expect(screen.queryByTestId("ai-stream")).toBeNull();
     expect(screen.queryByTestId("ai-activity")).toBeNull();
   });
 });
 
+describe("typed text never reaches the model", () => {
+  test("hello gets a greeting back, not a wallet list", async () => {
+    render(readySurface());
+    type("hello");
+
+    await waitFor(() => {
+      expect(screen.getByText(SMALL_TALK_REPLY.greeting.en)).toBeTruthy();
+    });
+    expect(generateCallCount()).toBe(0);
+  });
+
+  test("a greeting in Filipino is answered in Filipino", async () => {
+    render(readySurface());
+    type("Kumusta po");
+
+    await waitFor(() => {
+      expect(screen.getByText(SMALL_TALK_REPLY.greeting.fil)).toBeTruthy();
+    });
+  });
+
+  test("a typed ledger question points back at the chips instead of guessing", async () => {
+    const runTool = jest.fn(async () => SPEND_RESULT);
+    render(readySurface({ runTool }));
+    type("How much money do I have?");
+
+    await waitFor(() => {
+      expect(screen.getByText(CANNOT_ANSWER_REPLY.en)).toBeTruthy();
+    });
+    expect(runTool).not.toHaveBeenCalled();
+    expect(generateCallCount()).toBe(0);
+  });
+
+  test("the cannot-answer line follows the message's language", async () => {
+    render(readySurface());
+    type("Magkano pera ko?");
+
+    await waitFor(() => {
+      expect(screen.getByText(CANNOT_ANSWER_REPLY.fil)).toBeTruthy();
+    });
+  });
+
+  test("an advice question still gets the redirect with data, and still no model", async () => {
+    render(readySurface());
+    type("Should I buy a new phone?");
+
+    await waitFor(() => {
+      expect(screen.getByTestId("grounded-card")).toBeTruthy();
+    });
+    expect(screen.getByText(/does not tell you what to do with your money/)).toBeTruthy();
+    expect(generateCallCount()).toBe(0);
+  });
+});
+
 describe("degradation", () => {
   test("a grounding failure renders the card with the TRUE figure and none of the prose", async () => {
-    scriptLlama([
-      { emitToolCall: { name: "get_spend_by_category", args: { period: "this_month" } } },
-      { emit: "You spent ₱9,999.00 on Groceries this month." },
-    ]);
+    scriptLlama([{ emit: "You spent ₱9,999.00 on Groceries this month." }]);
 
     render(readySurface());
-    ask("how much did I spend on groceries?");
+    tap("spend_this_month");
 
     await waitFor(() => {
       expect(screen.getByTestId("grounded-card")).toBeTruthy();
@@ -238,10 +331,8 @@ describe("degradation", () => {
     expect(screen.getByTestId("grounded-card")).toHaveTextContent(/₱2,400\.00/);
     expect(screen.getByTestId("grounded-card")).toHaveTextContent(/34%/);
     expect(screen.getByTestId("grounded-card")).toHaveTextContent(/Groceries · this month/);
-    // The fabricated figure and the sentence carrying it are both gone.
     expect(screen.queryByText(/9,999/)).toBeNull();
     expect(screen.queryByText(/You spent/)).toBeNull();
-    // A card is data, not a failure notice.
     expect(screen.queryByText(/something went wrong|error|try again/i)).toBeNull();
   });
 });

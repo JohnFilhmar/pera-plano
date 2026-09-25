@@ -13,13 +13,18 @@
 // that had to keep a `generating` flag in sync with the dispatch loop would
 // drift out of sync exactly when it mattered.
 //
+// SPEC §7.4, CHOSEN 2026-09-25: QUESTIONS ARE TAPPED, NOT TYPED. A chip is
+// the only thing that reaches the model, and its tool is already decided.
+// Typed text gets a reply the app writes itself (`chat_copy.ts`): small talk,
+// the advice redirect, or a pointer back at the chips.
+//
 // THE PREVIEW IS NOT THE ANSWER. `dispatch.ts` says it outright: "the surface
 // must not commit what it renders here... a token stream is a preview, and the
 // returned `TurnOutcome` is the verdict." So streamed text lives in `stream`,
 // is never appended to `messages`, and is discarded wholesale when the verdict
-// is a card, a decline or a cancel. That is what makes the degradation in §4.8
-// possible at all: the fabricated ₱9,999.00 the user watched arrive leaves the
-// screen, and the true ₱2,400.00 replaces it.
+// is a card or a cancel. That is what makes the degradation in §4.8 possible at
+// all: the fabricated ₱9,999.00 the user watched arrive leaves the screen, and
+// the true ₱2,400.00 replaces it.
 //
 // THE JS THREAD IS NEVER THE BOTTLENECK HERE. Decode happens behind
 // `LlamaBridge` on a native thread; per token this component appends to a ref
@@ -31,9 +36,9 @@ import type { ReactNode } from "react";
 import { ActivityIndicator, ScrollView, Text, TextInput, View } from "react-native";
 
 import { Button } from "@/components/ui/button";
-import { runTurn, type AbortFlag } from "@/lib/ai/dispatch";
-import { getSession } from "@/lib/ai/session";
-import { CANNOT_ANSWER } from "@/lib/ai/tools/grammar";
+import { answerQuestion, replyToText, type AbortFlag } from "@/lib/ai/dispatch";
+import type { FixedQuestion } from "@/lib/ai/fixed_questions";
+import type { ReplyLanguage, SmallTalk } from "@/lib/ai/small_talk";
 import type { ToolResult } from "@/lib/ai/tools/types";
 import type { AdviceClass } from "@/lib/ai/triage";
 import { onAppEvent } from "@/lib/events/app_events";
@@ -41,7 +46,9 @@ import { usePlaceholderColor } from "@/lib/ui/placeholder";
 import type { LlamaBridge } from "@/modules/llama_bridge/types";
 import type { EpochMs } from "@/types/domain";
 
+import { CANNOT_ANSWER_REPLY, EMPTY_CHAT, REDIRECT_LINE, SMALL_TALK_REPLY } from "./chat_copy";
 import { GroundedCard } from "./grounded_card";
+import { QuestionChips } from "./question_chips";
 
 export type SurfacePhase =
   /** Nothing downloaded. The surface is the picker; see `picker`. */
@@ -86,7 +93,8 @@ type Message =
   | { id: string; kind: "assistant"; text: string }
   | { id: string; kind: "card"; results: ToolResult<unknown>[] }
   | { id: string; kind: "redirect"; klass: AdviceClass; results: ToolResult<unknown>[] }
-  | { id: string; kind: "declined" };
+  | { id: string; kind: "smalltalk"; talk: SmallTalk; language: ReplyLanguage }
+  | { id: string; kind: "cannot_answer"; language: ReplyLanguage };
 
 /**
  * Filling the dead air, per spec §4.7: at 4–8 tok/s a tool round is seconds of
@@ -134,39 +142,17 @@ const DISCLAIMER_BODY =
   "This runs entirely on your phone and only explains what is already recorded here. It can word things oddly or miss the point of a question, but every peso figure it shows is read straight from your ledger, never written by the model.";
 const DISCLAIMER_MARKER = "On-device · explains your ledger · figures come from your records";
 
-const EMPTY_CHAT =
-  "Ask about your spending, your limits, your wallets or what is safe to spend.";
-
-/** Spec §4.3: a refusal with no data attached is a failed redirect. */
-const REDIRECT_LINE: Record<AdviceClass, string> = {
-  permission: "PeraPlano does not tell you what to do with your money. Here is what it can show you.",
-  affordability: "PeraPlano will not decide this for you. Here are the numbers you would decide on.",
-  worth: "Whether it is worth it is your call. Here is what your ledger says.",
-  direction: "PeraPlano does not give financial advice. Here is what is recorded.",
-};
-
-const DECLINED_LINE = "That one is outside what your ledger can answer.";
-
 /**
  * What may be shown of the raw output SO FAR.
  *
- * Two things must never reach the screen as prose, and both are only
- * recognisable from a partial string:
- *
- *   - A TOOL CALL. `llama_bridge_mock.ts` reproduces the exact bug: a consumer
- *     rendering `{"tool":"get_wal` as an answer before the closing brace
- *     arrives. Tested over RAW output, not a trimmed copy, for the same reason
- *     `dispatch.ts` does — a single leading space is invisible after trimming.
- *   - THE DECLINE SENTINEL. `CANNOT_ANSWER` is a grammar branch, not English,
- *     and flashing it before `dispatch.ts` translates it into a decline is a
- *     wire token on a user's screen.
+ * JSON must never reach the screen as prose, and it is only recognisable from a
+ * partial string: `llama_bridge_mock.ts` reproduces a consumer rendering
+ * `{"tool":"get_wal` as an answer before the closing brace arrives. Tested over
+ * RAW output, not a trimmed copy, for the same reason `dispatch.ts` does: a
+ * single leading space is invisible after trimming.
  */
 function visiblePrefix(raw: string): string {
-  const leading = raw.trimStart();
-  if (leading.startsWith("{")) return "";
-  const settled = leading.trimEnd();
-  if (settled.length > 0 && CANNOT_ANSWER.startsWith(settled)) return "";
-  return raw;
+  return raw.trimStart().startsWith("{") ? "" : raw;
 }
 
 export function ChatSurface({
@@ -227,39 +213,24 @@ export function ChatSurface({
     clearInFlight();
   };
 
-  const handleSend = async () => {
-    const question = draft.trim();
-    if (question.length === 0 || generating || bridge === null) return;
+  // A tapped question: its tool is fixed, so the tool line can show at once.
+  const handleAsk = async (question: FixedQuestion) => {
+    if (generating || bridge === null) return;
 
     const abort: AbortFlag = { aborted: false };
     abortRef.current = abort;
     rawRef.current = "";
-    setDraft("");
     setStream("");
-    setActivity(null);
-    setMessages((prior) => [...prior, { id: nextId(), kind: "user", text: question }]);
+    setActivity(TOOL_ACTIVITY[question.tool] ?? TOOL_ACTIVITY_FALLBACK);
+    setMessages((prior) => [...prior, { id: nextId(), kind: "user", text: question.label }]);
     setGenerating(true);
 
-    const session = getSession();
-
     try {
-      const outcome = await runTurn(question, {
+      const outcome = await answerQuestion(question, {
         bridge,
         now: now(),
-        transcript: session.transcript,
         abort,
-        runTool: async (name, args, at) => {
-          setActivity(TOOL_ACTIVITY[name] ?? TOOL_ACTIVITY_FALLBACK);
-          try {
-            return await runTool(name, args, at);
-          } finally {
-            // The round that produced this call has ended. Its raw output was a
-            // JSON tool call, so leaving the accumulator populated would keep
-            // `visiblePrefix` suppressing the NEXT round's first tokens.
-            rawRef.current = "";
-            setStream("");
-          }
-        },
+        runTool,
         onToken: (token) => {
           rawRef.current += token;
           const visible = visiblePrefix(rawRef.current);
@@ -270,35 +241,46 @@ export function ChatSurface({
         },
       });
 
-      switch (outcome.kind) {
-        case "prose":
-          // Only a surviving answer joins the transcript. A degraded turn is
-          // deliberately not remembered: feeding the model back a sentence that
-          // was rejected for being ungrounded invites it to say it again.
-          session.transcript.push(
-            { role: "user", text: question },
-            { role: "assistant", text: outcome.text },
-          );
-          setMessages((prior) => [...prior, { id: nextId(), kind: "assistant", text: outcome.text }]);
-          break;
-        case "card":
-          setMessages((prior) => [...prior, { id: nextId(), kind: "card", results: outcome.results }]);
-          break;
-        case "redirect":
-          setMessages((prior) => [
-            ...prior,
-            { id: nextId(), kind: "redirect", klass: outcome.klass, results: outcome.results },
-          ]);
-          break;
-        case "declined":
-          setMessages((prior) => [...prior, { id: nextId(), kind: "declined" }]);
-          break;
-        case "cancelled":
-          break;
+      if (outcome.kind === "prose") {
+        setMessages((prior) => [...prior, { id: nextId(), kind: "assistant", text: outcome.text }]);
+      } else if (outcome.kind === "card") {
+        setMessages((prior) => [...prior, { id: nextId(), kind: "card", results: outcome.results }]);
       }
     } finally {
       abortRef.current = null;
       clearInFlight();
+      setGenerating(false);
+    }
+  };
+
+  // Typed text never reaches the model; every reply here is the app's own.
+  const handleSend = async () => {
+    const text = draft.trim();
+    if (text.length === 0 || generating) return;
+
+    setDraft("");
+    setMessages((prior) => [...prior, { id: nextId(), kind: "user", text }]);
+    setGenerating(true);
+
+    try {
+      const reply = await replyToText(text, { runTool, now: now() });
+      if (reply.kind === "redirect") {
+        setMessages((prior) => [
+          ...prior,
+          { id: nextId(), kind: "redirect", klass: reply.klass, results: reply.results },
+        ]);
+      } else if (reply.kind === "smalltalk") {
+        setMessages((prior) => [
+          ...prior,
+          { id: nextId(), kind: "smalltalk", talk: reply.talk, language: reply.language },
+        ]);
+      } else {
+        setMessages((prior) => [
+          ...prior,
+          { id: nextId(), kind: "cannot_answer", language: reply.language },
+        ]);
+      }
+    } finally {
       setGenerating(false);
     }
   };
@@ -389,10 +371,17 @@ export function ChatSurface({
               </Text>
             );
           }
-          if (message.kind === "declined") {
+          if (message.kind === "smalltalk") {
+            return (
+              <Text key={message.id} className="text-body text-fg dark:text-fg-dark">
+                {SMALL_TALK_REPLY[message.talk][message.language]}
+              </Text>
+            );
+          }
+          if (message.kind === "cannot_answer") {
             return (
               <Text key={message.id} className="text-body text-fg-2 dark:text-fg-2-dark">
-                {DECLINED_LINE}
+                {CANNOT_ANSWER_REPLY[message.language]}
               </Text>
             );
           }
@@ -422,27 +411,30 @@ export function ChatSurface({
         )}
       </ScrollView>
 
-      <View className="flex-row items-end gap-2 border-t border-line p-3 dark:border-line-dark">
-        <TextInput
-          testID="ai-composer-input"
-          accessibilityLabel="Ask about your money"
-          className="min-h-[44px] flex-1 rounded-xl bg-chip px-3 py-3 text-fg dark:bg-chip-dark dark:text-fg-dark"
-          multiline
-          onChangeText={setDraft}
-          placeholder="Ask about your money"
-          placeholderTextColor={placeholderColor}
-          value={draft}
-        />
-        {generating ? (
-          <Button testID="ai-cancel" title="Stop" variant="secondary" onPress={handleCancel} />
-        ) : (
-          <Button
-            testID="ai-composer-send"
-            title="Ask"
-            disabled={draft.trim().length === 0}
-            onPress={() => void handleSend()}
+      <View className="border-t border-line dark:border-line-dark">
+        <QuestionChips onAsk={generating ? undefined : (question) => void handleAsk(question)} />
+        <View className="flex-row items-end gap-2 px-3 pb-3">
+          <TextInput
+            testID="ai-composer-input"
+            accessibilityLabel="Message the assistant"
+            className="min-h-[44px] flex-1 rounded-xl bg-chip px-3 py-3 text-fg dark:bg-chip-dark dark:text-fg-dark"
+            multiline
+            onChangeText={setDraft}
+            placeholder="Or type a message"
+            placeholderTextColor={placeholderColor}
+            value={draft}
           />
-        )}
+          {generating ? (
+            <Button testID="ai-cancel" title="Stop" variant="secondary" onPress={handleCancel} />
+          ) : (
+            <Button
+              testID="ai-composer-send"
+              title="Send"
+              disabled={draft.trim().length === 0}
+              onPress={() => void handleSend()}
+            />
+          )}
+        </View>
       </View>
     </View>
   );

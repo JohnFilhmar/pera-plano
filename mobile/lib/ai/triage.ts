@@ -16,6 +16,10 @@
 // word in isolation. "How much should I have left this month?" contains
 // "should I" and is a computation; it must pass through. That is what
 // QUANTITATIVE_OVERRIDES exists for.
+//
+// SMALL TALK IS CHECKED FIRST, and only a whole message counts (see
+// `small_talk.ts`), so a greeting can never hide an advice question.
+import { matchSmallTalk, type ReplyLanguage, type SmallTalk } from "./small_talk";
 
 export type AdviceClass = "permission" | "affordability" | "worth" | "direction";
 
@@ -34,7 +38,8 @@ export type AdviceRow = {
 
 export type TriageVerdict =
   | { kind: "explanatory" }
-  | { kind: "advice"; klass: AdviceClass; redirectTools: string[] };
+  | { kind: "advice"; klass: AdviceClass; redirectTools: string[] }
+  | { kind: "smalltalk"; talk: SmallTalk; language: ReplyLanguage };
 
 /**
  * A question that asks for a QUANTITY about the ledger is a computation, no
@@ -172,9 +177,19 @@ function normalise(input: string): string {
     .trim();
 }
 
+/**
+ * Sorts typed text into small talk, an advice question, or everything else.
+ *
+ * @param input - The message as typed.
+ * @returns `smalltalk` for a whole-message greeting, thanks, help or goodbye;
+ *   `advice` with the tools its redirect shows; otherwise `explanatory`.
+ */
 export function classify(input: string): TriageVerdict {
   const text = normalise(input);
   if (text.length === 0) return { kind: "explanatory" };
+
+  const talk = matchSmallTalk(text);
+  if (talk) return { kind: "smalltalk", talk: talk.talk, language: talk.language };
 
   // Quantities first: a computation stays a computation whatever modal it
   // contains.
