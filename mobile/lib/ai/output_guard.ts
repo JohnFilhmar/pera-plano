@@ -157,9 +157,17 @@ export function guard(prose: string): GuardVerdict {
  * @returns The same verdict shape as `guard`.
  */
 export function guardAtLevel(prose: string, context: { level: AnswerLevel; question: string }): GuardVerdict {
-  if (context.level === 5 && !mentionsMoney(context.question) && !mentionsMoney(prose)) {
-    const contact = matchesAny(prose, URL_PATTERNS) || matchesAny(prose, PHONE_PATTERNS);
-    return contact ? { suppressed: true, reason: "contact" } : { suppressed: false };
+  const verdict = guard(prose);
+  // Level 5 only: advice wording about something other than money survives.
+  // Contact details never do, at any level, because `guard` reports them first.
+  if (
+    verdict.suppressed &&
+    verdict.reason !== "contact" &&
+    context.level === 5 &&
+    !mentionsMoney(context.question) &&
+    !mentionsMoney(prose)
+  ) {
+    return { suppressed: false };
   }
-  return guard(prose);
+  return verdict;
 }
