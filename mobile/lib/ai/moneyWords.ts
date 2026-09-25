@@ -17,16 +17,18 @@ import { normalise } from "./normalise";
 
 const MONEY_WORDS: readonly string[] = [
   "money", "pera", "peso", "pesos", "php",
-  "buy", "bought", "purchase", "bili", "bumili", "bilhin", "afford",
-  "spend", "spent", "gastos", "gumastos", "gastusin",
-  "save", "savings", "ipon", "mag-ipon",
-  "invest", "investment", "stock", "stocks", "crypto", "bitcoin", "fund",
-  "loan", "utang", "borrow", "lend", "pautang", "debt", "credit", "card",
-  "bank", "bangko", "pay", "payment", "bayad", "magbayad",
-  "price", "presyo", "cost", "halaga", "budget",
-  "salary", "sweldo", "sahod", "income", "kita",
-  "rent", "upa", "insurance", "interest", "tax", "buwis", "bill", "bills",
-  "expensive", "mahal", "cheap", "mura", "sale", "discount",
+  "buy", "bought", "buys", "buying", "purchase", "bili", "bumili", "bilhin", "afford",
+  "spend", "spent", "spends", "spending", "gastos", "gumastos", "gastusin",
+  "save", "saves", "saving", "savings", "ipon", "mag-ipon",
+  "invest", "invests", "investing", "invested", "investment", "investments", "stock", "stocks", "crypto", "bitcoin", "fund",
+  "loan", "loans", "utang", "borrow", "lend", "pautang", "debt", "debts", "credit", "card",
+  "bank", "bangko", "pay", "pays", "paying", "paid", "payment", "bayad", "magbayad", "bayaran", "binayaran",
+  "price", "prices", "priced", "presyo", "cost", "costs", "costly", "cheaper", "halaga", "budget", "budgets", "budgeting",
+  "salary", "salaries", "sweldo", "sahod", "income", "kita",
+  "rent", "upa", "insurance", "interest", "tax", "taxes", "buwis", "bill", "bills", "fee", "fees",
+  "expensive", "expense", "expenses", "mahal", "cheap", "mura", "sale", "sales", "discount", "discounts",
+  "wallet", "wallets", "balance", "balances", "account", "accounts", "cash",
+  "transfer", "transfers", "withdraw", "withdrawal", "gcash", "maya",
 ];
 
 const MONEY_PATTERN = new RegExp(`\\b(?:${MONEY_WORDS.join("|")})\\b`);

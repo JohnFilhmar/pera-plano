@@ -34,3 +34,14 @@ test("the accepted false negative: a purchase question with no money word", () =
   // if it mentions a price, buying or affording.
   expect(mentionsMoney("Should I get the new iPhone?")).toBe(false);
 });
+
+test.each([
+  "Should I keep spending on Grab?",
+  "Should I start saving for a house?",
+  "Should I stop paying for Netflix?",
+  "Should I transfer my balance to Maya?",
+  "Should I cut my expenses?",
+  "Should I close my BPI account?",
+])("%s is about money (inflections and the app's own nouns, final review 2026-09-25)", (text) => {
+  expect(mentionsMoney(text)).toBe(true);
+});
