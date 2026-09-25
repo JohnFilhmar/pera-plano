@@ -1553,6 +1553,17 @@ development bundle and tier 2 on a production one.
 8. **Observed, not investigated:** the app came back to the foreground after at least 11 minutes in
    the background without re-locking. GAP-030 expects a re-lock at 5 minutes.
 
+**§7.4 on the device, later the same day** (production bundle, tier 2 resident):
+
+- Typed "hello", "salamat" and "magkano pera ko" got the English greeting, the Filipino thanks and
+  the Filipino cannot-answer line, with no model call.
+- The chip "How much money do I have?" first came back as "I have ₱50.00 in total.": the model echoed
+  the question's first person. The per-turn instruction now says to speak to the user as "you"
+  (`dfde67a`), and the same chip then answered "You have ₱50.00 in total."
+- The chip "Where did my money go this month?" on a ledger with no spending this month degraded to
+  the card, which stated the empty period with its dates. The production bundle does not log the
+  card reason, so why the sentence was rejected is not recorded.
+
 ### Conditions for the 2026-09-02 run, and what they disqualify
 
 | | |
@@ -1849,10 +1860,18 @@ Resume across three interruptions, each a different failure shape:
 
 ## Gate 7 — SHA-256 of the model file on-device
 
-`downloader.ts` digests the bytes on disk with `@noble/hashes`, in JS.
+**SETTLED 2026-09-25: the digest is native now, and passes.** The JS digest measured **939,944 ms**
+for tier 1's 396,705,472 bytes with the JS thread at 93% CPU and navigation taking 16 to over 60
+seconds (FAIL, see "Run 2026-09-25"). The owner approved §6 risk 8's remedy: `modules/llama_bridge`
+now hashes in Kotlin (`FileDigest.kt`, `MessageDigest` over a 1 MiB buffer, on `Dispatchers.IO`), and
+JS never reads the file back. Re-measured the same day by deleting tier 1 and downloading it again
+in-app over Wi-Fi: **`sha256 396705472 bytes in 960 ms`** from `adb logcat -s LlamaBridgeDigest:I`,
+about 980 times faster, and the file verified and was renamed to its final name. The Kotlin unit
+test (`FileDigestTest`, 3 cases including the published "abc" vector) passes on the build machine.
 
-- Time to digest tier 2's 1.06 GB file: `________ s` **in JS — still the open question**
-- Did the UI block, or drop frames, while it ran: `________`
+- Time to digest: **960 ms** for tier 1 natively; tier 2's 1.1 GB is not yet measured through the
+  app (native `sha256sum` did it in 3 s)
+- Did the UI block while it ran: not observable at 960 ms; the hash no longer runs on the JS thread
 
 **A native floor, measured 2026-09-02: 3.3 s for BOTH files (1.46 GB) via toybox `sha256sum`**, and
 both digests matched `catalogue.ts` exactly —
