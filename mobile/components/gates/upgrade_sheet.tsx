@@ -24,7 +24,8 @@ export type PlusCapability =
   | "projection"
   | "amortization"
   | "goals"
-  | "reports";
+  | "reports"
+  | "assistant_levels";
 
 /**
  * NO COUNTS IN THIS TABLE, DELIBERATELY.
@@ -84,6 +85,17 @@ const CAPABILITY_COPY: Record<
     label: "Reports",
     free: "Basic monthly",
     plus: "Full + trends + custom range",
+  },
+  assistant_levels: {
+    // Assistant levels spec §6: the free levels stay free because everything
+    // that reads the user's records is in them; the Plus levels add general
+    // knowledge. No level numbers here, matching this table's own "NO COUNTS"
+    // rule above: the sheet renders every row together regardless of which
+    // capability opened it, so a digit here would show up next to `wallets`,
+    // `goals` and `amortization`'s deliberately count-free copy too.
+    label: "Assistant answer levels",
+    free: "Records only",
+    plus: "Records, plus general knowledge",
   },
 };
 
