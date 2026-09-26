@@ -26,6 +26,7 @@ import {
 } from "../chat_copy";
 import type { AnswerLevel } from "@/lib/ai/levels";
 import { ok, type ToolResult } from "@/lib/ai/tools/types";
+import { emitAppEvent } from "@/lib/events/app_events";
 import {
   fakeLlamaBridge,
   generateCallCount,
@@ -469,6 +470,21 @@ describe("answer levels", () => {
 
     expect(lastPromptGiven()).not.toContain("Tell me about my money");
     expect(lastPromptGiven()).not.toContain("You have ₱18,320.00 in total.");
+  });
+
+  test("the lock clears the chat on screen", async () => {
+    render(readySurface());
+    type("hello");
+    await waitFor(() => {
+      expect(screen.getByText(SMALL_TALK_REPLY.greeting.en)).toBeTruthy();
+    });
+
+    await act(async () => {
+      await emitAppEvent("lock:engaged", {});
+    });
+
+    expect(screen.queryByText(SMALL_TALK_REPLY.greeting.en)).toBeNull();
+    expect(screen.queryByText("hello")).toBeNull();
   });
 
   test("the top line follows the level", () => {

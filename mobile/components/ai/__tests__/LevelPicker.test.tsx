@@ -89,3 +89,13 @@ test("levels above the model's limit cannot be chosen, and say why", () => {
   expect(onChoose).not.toHaveBeenCalled();
   expect(screen.getByTestId("ai-level-3")).toHaveTextContent(/Needs the larger Qwen3 1\.7B model\./);
 });
+
+test("on the free tier, a level the model cannot run says why instead of offering Plus", () => {
+  __setTierForTests("free");
+  const onChoose = picker({ maxLevel: 2 });
+  fireEvent.press(screen.getByTestId("ai-level-4"));
+
+  expect(onChoose).not.toHaveBeenCalled();
+  expect(screen.queryByTestId("upgrade-row-assistant_levels")).toBeNull();
+  expect(screen.getByTestId("ai-level-4")).toHaveTextContent(/Needs the larger Qwen3 1\.7B model\./);
+});

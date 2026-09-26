@@ -94,7 +94,10 @@ export function LevelPicker({
               onPress={tooLarge ? undefined : () => choose(candidate)}
             />
           );
-          return info.gated ? (
+          // The model limit comes first: a row the resident model cannot run at
+          // all gets no Plus treatment, even when the level is also gated,
+          // because upgrading would not make it work.
+          return info.gated && !tooLarge ? (
             <PlusGate key={candidate} capability="assistant_levels">
               {row}
             </PlusGate>

@@ -46,7 +46,7 @@ test("with room to spare, the whole snapshot goes in", async () => {
   });
 });
 
-test("with no room for turns, the spending breakdown goes first", async () => {
+test("with no room for the whole snapshot, the spending breakdown goes first", async () => {
   const withoutSpend = SNAPSHOT.filter((result) => result.tool !== "get_spend_by_category");
   expect(await fit(contextFor(lengthOf(withoutSpend)))).toMatchObject({
     kind: "fits",
