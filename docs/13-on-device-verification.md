@@ -2067,3 +2067,68 @@ git commit --allow-empty -m "test(mobile): record the assistant's on-device gate
 ```
 
 Paste the recorded outcomes into that message.
+
+## Run 2026-09-26: the five answer levels on the A54
+
+Spec: `docs/superpowers/specs/2026-09-25-assistant-levels-design.md` (plan Task 15). Code at `8df0a95`
+(spec amendments `4fc2189`), the dev variant served as a production-mode bundle
+(`expo start --dev-client --no-dev --minify`), wireless adb. Both models ran: the 1.7B first, then the
+0.6B after the 1.7B was deleted through the Privacy centre and the app force-stopped (owner approved;
+the 1.7B was re-downloaded afterwards from the Models screen).
+
+**How it was measured.** Messages were typed over adb and the screen was read with `uiautomator`
+dumps, about one per second. Total time per turn includes roughly 2 s of tap-and-poll overhead.
+**First-word time: NOT MEASURED.** `uiautomator dump` only succeeds once the UI is idle, and a
+streaming answer keeps it busy until the last token, so no dump ever saw the preview. Stop-before-the-
+first-word latency: NOT MEASURED, for the same reason.
+
+### What each level did
+
+| Level | Typed | 1.7B | 0.6B |
+|---|---|---|---|
+| 1 | "hello" / "magkano pera ko" | greeting / Filipino cannot-answer, no model | not run (no model involved) |
+| 2 | "magkano pera ko" | "Answering: How much money do I have?" then "You have ₱50.00 in total." | same label, "You have ₱50.00 in your wallet." |
+| 2 | "What is bitcoin" | cannot-answer, no model | not run |
+| 2 | "Saan napunta ang pera ko" | matched this month's spending, answered with spelled-out dates | not run |
+| 3 | "Tell me about my money" | grounded summary (₱50.00, ₱555.00 a day, limits) | "You have a total balance of ₱50.00." |
+| 3 | "Is that a lot" | restated the previous answer | not run |
+| 3 | "Who was Jose Rizal" | answered from memory with no notice; says he died in 1897 (he was executed on 30 December 1896) | not run |
+| 3 | "How much is rice" | general answer from memory, no peso figure, no notice | repeated the previous answer word for word |
+| 3 | "Kumusta ang gastos ko" | matched this month's spending; narration fell back to the card | not run |
+| 4 | first switch | accept notice shown once, then accepted | notice not shown (already accepted) |
+| 4 | "What is an emergency fund" | replaced: "I can't tell you what to do with your money." (advice wording) | not run |
+| 4 | "What is compound interest" | correct explanation under the general-knowledge notice; says "the user's account" | recited the balance instead, under the general-knowledge notice |
+| 4, 5 | "Should I buy a new phone" / "Should I keep spending on Grab" | redirect card with the numbers, no model | not run |
+| 5 | "Who was Jose Rizal" | short correct answer, memory notice naming April 2025 | "You were Jose Rizal.", memory notice |
+| 5 | "Should I learn Python" | reached the model (non-money should-I), "consider" survived, memory notice | repeated "You were Jose Rizal." |
+| 5 | "How much is a jeepney fare" | repeated the previous (Python) answer word for word | repeated "You were Jose Rizal." |
+| 5 | "How much should I save each month" | replaced by the no-advice line | not run |
+
+The chosen level survived an app restart (stored level 5 was still 5 after the force-stop).
+
+### Total time per free-chat turn (includes about 2 s of script overhead)
+
+| Model | Level 3 | Level 4 | Level 5 |
+|---|---|---|---|
+| 1.7B | 24.6, 29.7, 32.2, 33.3 s (p50 about 31 s) | 25.3, 33.3 s | 29.7, 29.7, 29.9, 33.8 s (p50 about 30 s) |
+| 0.6B | 12.3, 14.0 s | 14.8 s | 11.7, 12.4, 13.0, 14.1 s |
+
+### Findings
+
+1. **The 0.6B cannot do free chat.** It ignored the question, repeated its previous answer, or garbled
+   the prompt's "speak to the user as you" rule into "You were Jose Rizal." Chip narration (levels 1
+   and 2) still works on it.
+2. **The 1.7B's free chat parrots its history.** A follow-up or unrelated question got the previous
+   answer back word for word, the same failure §7.4 recorded for chips before history was removed.
+3. **Level 3 answers off-topic questions from memory without a notice**, and one answer carried a
+   factual error. This is spec risk 1 observed.
+4. **Level 4's explanations often trip the advice guard**, so "What is an emergency fund" was replaced.
+5. **The safety checks held.** No peso amount from memory reached the screen, money advice was
+   redirected or replaced, and "spending" now counts as a money word. Grounding's new suffix rule was not
+   exercised: no answer in this run stated a remembered price.
+6. **Context margin (plan Task 8):** no overflow with up to four prior exchanges in the prompt. A
+   deliberately full 2,048-token prompt: NOT RUN.
+7. Two older defects seen on the way: the redirect card shows raw keys such as `limit_3_limit`, and no
+   screen in the app links to the Models screen (it was opened with `peraplano://more/ai/models`).
+
+The owner's read of answer quality at each level: NOT YET RECORDED.
