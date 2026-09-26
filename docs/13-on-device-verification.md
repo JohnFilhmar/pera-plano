@@ -2132,3 +2132,27 @@ The chosen level survived an app restart (stored level 5 was still 5 after the f
    screen in the app links to the Models screen (it was opened with `peraplano://more/ai/models`).
 
 The owner's read of answer quality at each level: NOT YET RECORDED.
+
+### Re-check 2026-09-26: the four follow-ups on the 1.7B
+
+Code at `17226d8` (follow-ups `183939f`, `a8188d0`, `0f4ed59` and `229bf4d`, fix round `fc2bce7`),
+served and measured as above, Plus active. The 0.6B half was skipped on the owner's call: checking it
+means deleting the 1.7B again, and `components/ai/__tests__/LevelPicker.test.tsx` covers the cap.
+
+| Level | Typed | 1.7B |
+|---|---|---|
+| picker | opened the Answer style sheet | all five rows selectable, no "Needs the larger Qwen3 1.7B model." line, the Plus badge on 4 and 5 |
+| 3 | "Who was Jose Rizal" | short answer in the third person with no dates, under "Written by the model. It can be wrong." |
+| 3 | "My name is Juan" | ignored the name and summarised the records as "you" (₱50.00, ₱555.00 a day, nothing spent), same notice |
+| 3 | "What is my name" | a differently worded money summary, same notice; no "Juan" |
+| 5 | "Who was Jose Rizal" | short answer in the third person, memory notice naming April 2025 |
+| 5 | "My name is Juan" | money summary as "you", memory notice |
+| 5 | "What is my name" | "Your name is not available in the provided records.", memory notice |
+
+Total time per turn: 29.2, 28.5 and 21.3 s at level 3; 27.6, 28.8 and 18.3 s at level 5.
+
+All four follow-ups hold on the 1.7B. No answer repeated or recalled an earlier one, every level-3
+answer carried the notice, and "you" appeared only in answers about money. One new observation: at
+both levels a message that is neither a question nor about money got an unprompted summary of the
+records, and at level 5 that summary sat under "From the model's memory" although its figures came from
+the records.
