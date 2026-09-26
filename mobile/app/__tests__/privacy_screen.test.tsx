@@ -82,6 +82,19 @@ jest.mock("@/contexts/lock_context", () => ({
   }),
 }));
 
+// The assistant's weights live OUTSIDE the encrypted database (spec §2.3 rule
+// 4), so neither the wipe above nor the export below can see them, and the
+// Privacy centre has to reclaim them itself. `lib/ai/model_files.ts` is mocked
+// wholesale for the same reason `data_export` is: it reaches
+// `expo-file-system/legacy` and the real download directory, and its own
+// behaviour is not what these tests are about.
+const mockInstalledModels = jest.fn().mockResolvedValue([]);
+const mockRemoveInstalledModel = jest.fn().mockResolvedValue(undefined);
+jest.mock("@/lib/ai/model_files", () => ({
+  installedModels: (...args: unknown[]) => mockInstalledModels(...args),
+  removeInstalledModel: (...args: unknown[]) => mockRemoveInstalledModel(...args),
+}));
+
 // Nothing in the screen navigates any more — the lock context's status change
 // to "needs_onboarding" is what swaps the whole tree for the lock gate (see
 // handleWipeConfirmed's own doc). The mock stays so that any router use
@@ -108,6 +121,8 @@ import {
 } from "@/lib/db/repos/raw_notifications_repo";
 import { listDataTableNames } from "@/lib/db/table_names";
 import { exportAllData } from "@/lib/privacy/data_export";
+import { MODEL_CATALOGUE } from "@/lib/ai/catalogue";
+import { formatSize } from "@/lib/ai/downloader";
 import { queryClient as appQueryClient } from "@/lib/query_client";
 import { WipeIncompleteError } from "@/lib/security/wipe";
 import { freshDb } from "@/test_support/db";
@@ -167,6 +182,10 @@ const SCOPE_MISMATCH_BODY =
 // wall clock for its countdown and its capture list, so fixtures are
 // positioned RELATIVE to it rather than against a hand-picked constant.
 const NOW = Date.now();
+
+/** The largest tier — the one whose gigabyte is worth a reclaim control at all. */
+const TIER_TWO = MODEL_CATALOGUE[MODEL_CATALOGUE.length - 1];
+const ON_DISK_BYTES = TIER_TWO.bytes;
 
 function makeTestClient(): QueryClient {
   const defaults = appQueryClient.getDefaultOptions();
@@ -1017,4 +1036,78 @@ test("the screen's other headings were widened into the same type-scale fix", as
     expect(classes).toContain("text-section");
     expect(classes).not.toContain("text-base");
   }
+});
+
+// ---------------------------------------------------------------------------
+// Reclaiming the assistant's weights (assistant plan Task 25)
+// ---------------------------------------------------------------------------
+
+test("no reclaim control at all when this phone holds no model", async () => {
+  mockInstalledModels.mockResolvedValueOnce([]);
+
+  await renderPrivacyScreen();
+  await waitFor(() => expect(mockInstalledModels).toHaveBeenCalled());
+
+  // ABSENT, not disabled and not an empty section. A "Delete downloaded model"
+  // control on a phone with no model is an offer to reclaim nothing, and it
+  // implies the app downloaded something the user never asked for.
+  expect(screen.queryByTestId("privacy-models")).toBeNull();
+  expect(screen.queryByTestId(`privacy-delete-model-${TIER_TWO.id}`)).toBeNull();
+});
+
+test("a downloaded model offers a delete that names the space it reclaims", async () => {
+  mockInstalledModels.mockResolvedValueOnce([{ spec: TIER_TWO, bytes: ON_DISK_BYTES }]);
+
+  await renderPrivacyScreen();
+
+  await screen.findByTestId(`privacy-delete-model-${TIER_TWO.id}`);
+  screen.getByText(TIER_TWO.displayName);
+  // The size is formatted by the downloader's own `formatSize`, the same
+  // function the download confirmation uses, so the two can never quote one
+  // file at two different sizes.
+  screen.getByText(new RegExp(formatSize(ON_DISK_BYTES).replace(".", "\\.")));
+});
+
+test("the reclaimed size is the file on disk, not the catalogue's figure", async () => {
+  // A file already on disk can differ from `spec.bytes` if the catalogue is
+  // ever edited without a re-download. Promising to free the catalogue's
+  // number would then free something else.
+  const shortByAGigabyte = ON_DISK_BYTES - 1_000_000_000;
+  mockInstalledModels.mockResolvedValueOnce([{ spec: TIER_TWO, bytes: shortByAGigabyte }]);
+
+  await renderPrivacyScreen();
+  await screen.findByTestId(`privacy-delete-model-${TIER_TWO.id}`);
+
+  screen.getByText(new RegExp(formatSize(shortByAGigabyte).replace(".", "\\.")));
+  expect(screen.queryByText(new RegExp(formatSize(ON_DISK_BYTES).replace(".", "\\.")))).toBeNull();
+});
+
+test("deleting confirms first, and cancelling removes nothing", async () => {
+  mockInstalledModels.mockResolvedValue([{ spec: TIER_TWO, bytes: ON_DISK_BYTES }]);
+
+  await renderPrivacyScreen();
+  fireEvent.press(await screen.findByTestId(`privacy-delete-model-${TIER_TWO.id}`));
+
+  await screen.findByTestId("confirm-dialog");
+  fireEvent.press(screen.getByTestId("confirm-dialog-cancel"));
+
+  // A multi-gigabyte file the user paid mobile data for is not deleted on one
+  // tap, for the same reason the wipe above takes two confirmations.
+  expect(mockRemoveInstalledModel).not.toHaveBeenCalled();
+});
+
+test("confirming the delete removes that model and the control goes with it", async () => {
+  mockInstalledModels
+    .mockResolvedValueOnce([{ spec: TIER_TWO, bytes: ON_DISK_BYTES }])
+    .mockResolvedValue([]);
+
+  await renderPrivacyScreen();
+  fireEvent.press(await screen.findByTestId(`privacy-delete-model-${TIER_TWO.id}`));
+  fireEvent.press(await screen.findByTestId("confirm-dialog-confirm"));
+
+  await waitFor(() => expect(mockRemoveInstalledModel).toHaveBeenCalledWith(TIER_TWO));
+  // The list is re-read rather than patched in place: the delete removes both
+  // `<id>.gguf` and any `.part` beside it, and the disk is the only thing that
+  // knows what actually went.
+  await waitFor(() => expect(screen.queryByTestId("privacy-models")).toBeNull());
 });

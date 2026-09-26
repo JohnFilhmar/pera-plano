@@ -129,6 +129,7 @@ import {
   Repeat,
   Settings as SettingsIcon,
   ShieldCheck,
+  Sparkles,
   Users,
   Wrench,
 } from "lucide-react-native";
@@ -155,6 +156,7 @@ const PermissionsGlyph = registerIcon(KeyRound);
 const ListenerGlyph = registerIcon(Activity);
 const ParserGlyph = registerIcon(Wrench);
 const PrivacyGlyph = registerIcon(ShieldCheck);
+const AssistantGlyph = registerIcon(Sparkles);
 const ReportProblemGlyph = registerIcon(LifeBuoy);
 const AboutGlyph = registerIcon(Info);
 const ChevronGlyph = registerIcon(ChevronRight);
@@ -288,6 +290,33 @@ export default function MoreScreen() {
           />
         </Pressable>
       </SoonGate>
+
+      {/* NO GATE, following Settings rather than Reports. The assistant plan's
+          Task 25 wires this row, and the screen behind it
+          (app/(tabs)/more/ai/index.tsx) ships in the same change — its
+          no-model state IS the model picker, so there is no window in which
+          this row promises a destination that is not there, which is the only
+          thing `SoonGate` would buy. A gate would also swallow the press.
+
+          NOT `PlusGate` either, and that is a product decision rather than an
+          oversight: the assistant is free for everyone (spec §0.3), and the
+          only thing standing between a Free user and an answer is whether
+          their phone has the RAM for a tier (lib/ai/ram_gate.ts). */}
+      <Pressable
+        testID="more-assistant"
+        onPress={() => router.push("/more/ai")}
+        accessibilityRole="button"
+        accessibilityLabel="Assistant"
+      >
+        <ListRow
+          title="Assistant"
+          subtitle="Ask about what's already in your ledger. Runs on this phone only."
+          // 65 chars / 22 — same arithmetic as Subscriptions below.
+          subtitleLines={3}
+          left={<RowIconDisc icon={AssistantGlyph} />}
+          right={<RowChevron />}
+        />
+      </Pressable>
 
       {/* Plan rule 5: a locked door the user can see through converts better
           than a hidden one — Free sees this exact row and its one-line

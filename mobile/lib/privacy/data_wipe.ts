@@ -46,6 +46,8 @@ import { listDataTableNames } from "@/lib/db/table_names";
 import { deleteSupportAttachmentFiles } from "@/lib/support/attachments";
 import { clearCaptureBuffer } from "@/modules/notification_listener";
 import { THEME_STORAGE_KEY } from "@/contexts/theme_context";
+import { AI_DISCLAIMER_STORAGE_KEY } from "@/lib/ai/disclaimer";
+import { AI_ANSWER_LEVEL_STORAGE_KEY, AI_LEVELS_ACCEPTED_STORAGE_KEY } from "@/lib/ai/levels";
 import type { SQLiteDatabase } from "@/lib/db/database";
 
 /**
@@ -141,6 +143,24 @@ export async function wipeAllData(): Promise<void> {
   // already treats as "use the default", so this needs no special-casing on
   // the read side to become true.
   await AsyncStorage.removeItem(THEME_STORAGE_KEY);
+
+  // The assistant's disclaimer acknowledgement, for exactly the same reason as
+  // the theme above: it lives in AsyncStorage rather than `app_settings`, so
+  // `resetSettings()` cannot see it. Leaving it behind means a user who has
+  // erased everything and been handed a fresh recovery phrase is never again
+  // told what the assistant is — and spec §4.7 says they are told once.
+  //
+  // NOTE: this clears the acknowledgement, NOT the weights. Those are public
+  // files outside the database (spec §2.3 rule 4) and are reclaimed from the
+  // Privacy centre's own control, because deleting gigabytes the user paid
+  // mobile data for is their decision to make explicitly.
+  await AsyncStorage.removeItem(AI_DISCLAIMER_STORAGE_KEY);
+
+  // The answer level and its accepted notice, for the disclaimer's reason: both
+  // live in AsyncStorage, where `resetSettings()` cannot see them. A user
+  // starting over reads the level-4/5 notice again before it applies.
+  await AsyncStorage.removeItem(AI_ANSWER_LEVEL_STORAGE_KEY);
+  await AsyncStorage.removeItem(AI_LEVELS_ACCEPTED_STORAGE_KEY);
 
   // The native pending-capture buffer (`pending_captures.ndjson`) lives
   // outside SQLite entirely — sealed ciphertext under the capture keypair,

@@ -126,6 +126,7 @@ test("SUBTITLES DO NOT CLIP TO ONE LINE (branch-review-correctness.md F2)", () =
     "What's parsing per provider, and what's landing in the unknown bin.",
     "Export everything, wipe everything, and see exactly what's tracked.",
     "Appearance, alerts, and what leaves this device.",
+    "Ask about what's already in your ledger. Runs on this phone only.",
   ];
   for (const text of clippableSubtitles) {
     expect(screen.getByText(text).props.numberOfLines).toBeGreaterThan(1);
@@ -149,6 +150,25 @@ test("BOTH ROWS RENDER", () => {
   screen.getByTestId("more-subscriptions");
   screen.getByText("Reports");
   screen.getByText("Subscriptions");
+});
+
+test("THE ASSISTANT ROW RENDERS AND REACHES /more/ai", () => {
+  // The assistant plan's Task 25. Until this row exists the route is
+  // unreachable from the UI — `app/(tabs)/more/ai/index.tsx` ships, and
+  // nothing in the app links to it.
+  //
+  // NO GATE, following the Settings row rather than the Reports row: the
+  // destination is a real screen whose no-model state is the model picker, so
+  // there is no window in which the row promises something that is not there.
+  // A `SoonGate` would also swallow the press, which is the one thing this
+  // row has to do.
+  renderScreen(<MoreScreen />);
+
+  screen.getByTestId("more-assistant");
+  screen.getByText("Assistant");
+
+  fireEvent.press(screen.getByTestId("more-assistant"));
+  expect(mockPush).toHaveBeenCalledWith("/more/ai");
 });
 
 test("EXACTLY ONE ROW IS SOON — Shared budgets, the only key not yet flipped", () => {

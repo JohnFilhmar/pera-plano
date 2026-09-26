@@ -56,7 +56,8 @@
       ],
       "expo-secure-store",
       "expo-local-authentication",
-      "./modules/notification_listener/app.plugin.js"
+      "./modules/notification_listener/app.plugin.js",
+      "./modules/llama_bridge/app.plugin.js"
     ],
     "extra": {
       "router": {},

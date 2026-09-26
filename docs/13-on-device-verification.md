@@ -117,10 +117,12 @@ happened. Never "OK" — the point of the exercise is the value, not the tick.
 | Log hygiene | no key, DEK, phrase, or notification text reachable from any log or exception message |
 | A54 5G RAM variant | `MemTotal` ≈ 7.3 GiB (`free -h` under Termux, 2026-08-21) → **8 GB retail variant**. Resolves AI spec §6 risk 2 and closes spike Task 1. **The 6 GB variant remains UNKNOWN and is never assumed fine** — every peak-RSS result carries the caveat "on 8 GB; 6 GB unmeasured" |
 | A54 idle memory pressure | 4.2 G used, **2.9 G available**, and **1.6 G of 8 G zram already in use at idle** — measured with Termux running and PeraPlano *not* (2026-08-21). Available, not total, is what weights compete for, and the app's own RN + Hermes + SQLCipher footprint still has to come out of that 2.9 G before a tier is sized |
-| Qwen3-0.6B Q4_K_M throughput | **138 t/s prompt (warm), 7.5–10.8 t/s generation** — llama.cpp CLI under Termux, `QuantFactory/Qwen3-0.6B-GGUF:Q4_K_M`, build b10553 (2026-08-21). The first-turn 8.4 t/s prompt reading is cold model load, not the steady rate. `/no_think` moved generation 7.5 → 10.8 |
+| Qwen3-0.6B Q4_K_M throughput | ~~**138 t/s prompt (warm), 7.5–10.8 t/s generation** — llama.cpp CLI under Termux, `QuantFactory/Qwen3-0.6B-GGUF:Q4_K_M`, build b10553 (2026-08-21)~~ → **RETRACTED 2026-08-31. The in-app figure is 32.54 tok/s**, measured on battery through `llama.rn`, three runs, 1.5% spread. See `docs/superpowers/specs/2026-08-31-llama-rn-spike-findings.md`. The Termux reading is roughly 3x pessimistic and also had the 0.6B running *slower* than the 1.7B, which cannot be true on one chip. Most likely cause: `llama.rn` ships fourteen CPU-dispatch variants and selects the dotprod path for this Cortex-A78, while build b10553 was generically compiled. **Do not carry the Termux number, or the "treat every tok/s cell as optimistic by 3x" amendment it produced, into any sizing decision.** |
 
-**The throughput row is a Termux CLI measurement, not an in-app one, and it does not close spike Task 4
-or Task 7.** `llama-cli` had the whole device; inside PeraPlano the model shares RAM with React Native,
+**The throughput row was a Termux CLI measurement, not an in-app one, which is exactly why it was
+wrong.** The spike has since closed the speed question in-app; what it did **not** close is memory
+behaviour under a real app switch, which is Session 3, Gate 4.
+`llama-cli` had the whole device; inside PeraPlano the model shares RAM with React Native,
 Hermes, op-sqlite and SQLCipher, and llama.cpp `mmap`s the GGUF as clean file-backed pages that Android
 evicts under pressure and re-reads from UFS. Nothing here says what happens when the user switches to
 Messenger and back — that is still unmeasured, and it is a low-memory-killer question rather than a
@@ -388,7 +390,8 @@ against the secure element. A plain-JVM benchmark put 500 RSA-2048/OAEP decrypts
 that is a *floor*. It cannot capture Keystore/Binder IPC or StrongBox latency, which is what
 dominates on real hardware.
 
-- Measured: `________ s`
+- Measured: **5.265 s** (10.53 ms/record), 2026-08-10; re-run **4.920 s** (9.84 ms/record),
+  2026-08-15. PASS both times, see the session tables at the top of this file.
 - **Approaching ~8 s means the window is too tight.** Widen it before it becomes an intermittent,
   load-dependent failure that only bites users with a full buffer.
 
@@ -1574,3 +1577,684 @@ git commit --allow-empty -m "test(mobile): record W1 on-device verification resu
 
 Paste the recorded outcomes into that message. An empty commit whose message says nothing is worth
 nothing.
+
+---
+
+# Session 3 — The on-device assistant
+
+Assistant plan Tasks 26 and 27, against design spec §5.6. **Gate: everything in the assistant's
+CI phases must be green before any of this is attempted.** These are the ten things that can never
+be CI. They join this record rather than starting a parallel one.
+
+**Partially run, 2026-09-02.** Gates 1, 4 and 10 are answered; gate 3 is answered in part. **Run
+again 2026-09-25**, with Task 27 and most of the remaining gates: see the next section. Gate 6 is
+still NOT RUN.
+
+### Run 2026-09-25: Task 27, and gates 1, 2, 3, 4, 5, 7, 8, 9, 10
+
+**Read this first.** Both tiers land far below the spec's own bar: tier 1 picked the right tool 8 to
+10 times in 30, tier 2 11 to 12 times. Spec §6 risk 1 says that below roughly 70% strict tool-pick
+this "does not ship as a chat surface; it ships as the fallback in §7.4". That is the owner's call and
+is recorded as open, not made.
+
+| | |
+|---|---|
+| Build | Debug dev-client, `com.filldev.peraplano.dev`, fresh install from a prebuild of the branch after it took master's 233 commits |
+| JS bundle | Tier 1: development. Tier 2: **production** (`expo start --dev-client --no-dev --minify`), because a development bundle crashes at startup on the unlock path (finding 7) |
+| Power | **Battery for every eval run**, `AC powered` and `USB powered` both false, read per run. USB only for the download and the loads |
+| Weights | Tier 1 downloaded **in-app over Wi-Fi**, the first real download. Tier 2 copied from the spike app on-device; `sha256sum` matched `catalogue.ts` in 3 s |
+| Connection | Wireless adb, and Metro over the LAN, because USB dropped out repeatedly |
+
+| Gate | Tier 1, `qwen3-0.6b-q4` | Tier 2, `qwen3-1.7b-q4` |
+|---|---|---|
+| 1, load time from `RNLlama loadModel` timestamps | **3.04 s** | **5.31 s** (spike: 5.26 s) |
+| 2, malformed constrained rounds | **0 of 112** (4 runs) | **0 of 112** (4 runs) |
+| 3, thinking | Suppressed: 0 empty, 0 `<think>` in 4 runs. **Unsuppressed: 28 of 28 model questions declined**, 5 of 30 overall | Unsuppressed NOT RUN: a production bundle has no switch |
+| 4, memory | 1.58 GB TOTAL PSS resident, before warming | **1.84 GB** peak TOTAL PSS during the runs; 0.43 GB swap at the end |
+| 5, sustained load | not run | **12.5 min** of back-to-back runs: 79% to 74%, 34.2 to 35.9 °C, decode 5.5 / 5.8 / 5.5 tok/s, **no fall** |
+| 7, digest | **939,944 ms** in JS for 396,705,472 B (0.42 MB/s), JS thread at 93% CPU, a tab switch took 16 s and another over 60 s. **FAIL** | Not run in JS; native `sha256sum` did 1.1 GB in 3 s |
+| 8, decode off the JS thread | not run | **PASS by measurement**: four native threads at 65 to 108% CPU each, `mqt_v_js` about 3% |
+| 9, streaming reads as alive | **PASS**, owner's judgement: fast, and the "Looking at…" line showed first | informal only (finding 4) |
+| 10, storage and backup | Re-verified on the fresh prebuild and APK (see gate 10) | |
+
+Task 27 scores, strict tool-pick out of 30 (the tier-cut note below repeats them):
+
+| | Run 1 | Run 2 | Run 3 | Run 4 | Spread | p90 TTFT |
+|---|---|---|---|---|---|---|
+| Tier 1 | 10 | 10 | 8 | 9 | 2 | 715 to 935 ms |
+| Tier 2 | 12 | 11 | 12 | 12 | 1 | 1.0 to 1.1 s |
+
+**The speed figures are not comparable with the spike's.** The eval's tok/s window runs from the
+first token to the end of the turn, so it includes the tool round trip and the second round's
+prefill; TTFT includes prefilling a system prompt of roughly 420 tokens. Tier 1 also ran on a
+development bundle and tier 2 on a production one.
+
+**Findings, most consequential first:**
+
+1. **Both tiers are far below the ~70% bar** (above). The spike's 78% for tier 1 came from its own
+   grammar and a 12-question set; this set adds Tagalog, Taglish and two-part questions, and the
+   shipped grammar has a decline branch.
+2. **Tier 1 declines almost every Tagalog or Taglish question**: in run 1, s02, s04, s06, s08, s10,
+   s12, t04, p02 and p04 all ended in `declined`.
+3. **Thinking must be suppressed, not merely preferred.** Unsuppressed, the model's first tokens want
+   `<think>`, the tool grammar forbids it, and it takes the decline branch every time.
+4. **The chat degrades in a way the eval cannot see.** `buildTurnPrompt` (`lib/ai/prompt.ts:81`)
+   sends the whole transcript with every turn, declines included. On tier 2, after one decline,
+   five clean English questions the eval answers correctly were all declined. The eval asks each
+   question with no history, so it never shows this.
+5. **No small talk.** The first round's grammar allows a tool call or a decline and nothing else, so
+   "hello" gets a ledger tool (owner's report: it answered with the wallet contents). The spec's
+   prose branch was measured and dropped on 2026-08-31 (`lib/ai/tools/grammar.ts` header).
+6. **The JS digest is unusable** (gate 7). The spec's named remedy, a native digest (§6 risk 8), is
+   the fix.
+7. **A development bundle crashes at startup after unlock**: "Couldn't find a navigation context",
+   from `react-native-css-interop`'s development-only upgrade warning, whose `stringify` walks a
+   component's props and trips react-navigation's throwing default-context getter. Every call site
+   is guarded by `NODE_ENV !== "production"`, so release builds are unaffected; development on an
+   onboarded install is blocked until it is fixed.
+8. **Observed, not investigated:** the app came back to the foreground after at least 11 minutes in
+   the background without re-locking. GAP-030 expects a re-lock at 5 minutes.
+
+**§7.4 on the device, later the same day** (production bundle, tier 2 resident):
+
+- Typed "hello", "salamat" and "magkano pera ko" got the English greeting, the Filipino thanks and
+  the Filipino cannot-answer line, with no model call.
+- The chip "How much money do I have?" first came back as "I have ₱50.00 in total.": the model echoed
+  the question's first person. The per-turn instruction now says to speak to the user as "you"
+  (`dfde67a`), and the same chip then answered "You have ₱50.00 in total."
+- The chip "Where did my money go this month?" on a ledger with no spending this month degraded to
+  the card, which stated the empty period with its dates. The production bundle does not log the
+  card reason, so why the sentence was rejected is not recorded.
+
+### Conditions for the 2026-09-02 run, and what they disqualify
+
+| | |
+|---|---|
+| Build | **Debug dev-client**, `com.filldev.peraplano.dev`, `APP_VARIANT=development` |
+| Power | **USB powered: true** — plugged in for adb the whole session |
+| Battery / temp | 79%, 31.4 °C at the end (29.6 °C at session start) |
+| Weights | Both tiers **side-loaded** from the spike app with `adb`, not downloaded |
+| Model resident | `qwen3-1.7b-q4` (tier 2), confirmed in `/proc/<pid>/maps` |
+
+**No throughput or TTFT figure was taken, deliberately.** The device was on USB power for the whole
+session, and the spike measured charging as roughly 11% faster. A tok/s number taken here would not
+be comparable with the spike's battery figures and would quietly corrupt the tier cut, which is
+decided on exactly that kind of margin. Task 27 needs the phone **off charge** — use wireless adb
+(`adb tcpip 5555`, `adb connect <ip>:5555`, then unplug) so the run is on battery.
+
+**The prebuild warning below is EXPECTED and is not a fault:**
+
+```
+Expo-secure-store tried to apply Android Auto Backup rules, but other backup rules are already present.
+```
+
+`modules/llama_bridge/app.plugin.js` deliberately claims `android:fullBackupContent` and
+`android:dataExtractionRules`, so `expo-secure-store` backs off. That is why our rules carry its
+`<include domain="sharedpref" path="."/>` and `<exclude domain="sharedpref" path="SecureStore"/>`
+verbatim. **If that warning ever stops appearing, check why** — it most likely means our plugin
+stopped running, and with it the models exclusion.
+
+## What the spike already measured, and what it does not license
+
+The `llama.rn` spike (`docs/superpowers/specs/2026-08-31-llama-rn-spike-findings.md`, 2026-08-31)
+answered several of these questions **for a probe app**, `com.filldev.llamaprobe`, on a debug
+dev-client build. Session 3 re-answers them **for the shipped app**, with the real bridge
+(`mobile/modules/llama_bridge/index.ts`) and the real config plugin. A probe measurement is a
+prediction about the app, not a measurement of it, which is the same lesson the Termux CLI reading
+taught at a cost of one wrong amendment.
+
+The spike's authoritative numbers, which every gate below is checked against:
+
+| | Tier 1, `qwen3-0.6b-q4` | Tier 2, `qwen3-1.7b-q4` |
+|---|---|---|
+| Throughput, on battery | 32.54 tok/s median | 11.45 tok/s median |
+| TTFT median | 55 ms | 138 ms |
+| Model load | 2,174 ms | 5,258 ms |
+| TOTAL PSS, warmed | 1.25 GB | 2.51 GB |
+| Run-to-run spread | 1.5% | 10% |
+
+All of it on the **8 GB** A54 variant. The 6 GB variant remains UNKNOWN and is never assumed fine.
+
+## Reading the eval's numbers off logcat
+
+Gates 3 and 5 read the eval's runs, so the eval screen prints its numbers where adb can collect them.
+**Since 2026-09-25 the eval measures narration, not tool choice** (spec §7.4): it asks the 8 fixed
+questions in `lib/ai/fixed_questions.ts`, whose tools are already decided. These lines need a
+development bundle, and a development bundle currently crashes after unlock (finding 7 above); until
+that is fixed, read each run off the results card instead. On a debug build every finished question writes one console
+line, and every finished or stopped run writes one report line. Each is `[ai_eval]` followed by one
+JSON object. The lines hold metrics only: no prompt, no answer and no tool result. A release build
+writes none, because the logging sits behind `__DEV__`.
+
+**Wired 2026-09-25 (`e214f8b`).** Until then nothing registered the harness, so the screen said "No
+model is loaded" with a model resident. Now `app/(tabs)/more/ai/index.tsx` calls `configureAiEval()`
+(in `lib/ai/eval/harness.ts`) once a model loads, with `runFixtureTool` from
+`lib/ai/eval/fixture_tools.ts`, which answers every tool call from `fixture_ledger.ts` and never from
+the user's ledger. The Assistant screen shows a "Test it on this phone" row whenever a model is ready,
+and the route also opens directly:
+
+```bash
+adb logcat -c
+adb shell am start -a android.intent.action.VIEW -d "peraplano://more/ai/eval" com.filldev.peraplano.dev
+# run the 8 questions, wait for the results card, then:
+adb logcat -d -s ReactNativeJS | grep -o '\[ai_eval\] .*' > ai_eval_tier2_run1.txt
+```
+
+Every line has an `event` of `question` or `report` and names its run. `run` counts fresh runs from 1
+and starts again whenever the JS bundle reloads, `tier` is the catalogue id, and `suppressThinking`
+is the option the model was loaded with. A question line adds `index`, `id`, `ttftMs`,
+`tokensPerSecond`, `wallClockMs`, `residentBytes`, `outcome`, `cardReason`, `empty` and `thinkTag`.
+The report line carries every `EvalReport` field: `completed`, `ttftMedianMs`, `ttftP90Ms`,
+`decodeMedianTps`, `decodeWorstTps`, `cardAnswers`, `ungroundedAnswers`, `emptyAnswers`,
+`thinkTagAnswers`, `peakResidentBytes` and `totalWallClockMs`. A resumed run keeps its `run` number,
+and its last report line covers every segment.
+
+## Gate 1 — Does `llama.rn` load a Qwen3 GGUF and stream tokens, in the shipped app?
+
+Everything else is downstream of this. The spike answered it for the probe; this re-answers it
+through `modules/llama_bridge/index.ts`, which is a different binding: `initLlama` with `n_ctx`
+2048 and `n_parallel` **1**, `completion()` driven by a `messages` array under `jinja: true`, and
+tokens re-published as an `AsyncIterable`.
+
+- Model loads, first token arrives, stream completes: **YES. PASS, 2026-09-02.**
+- Load time, tier 1 / tier 2: **3.04 s** / **5.31 s**, 2026-09-25, from `RNLlama loadModel` log
+  timestamps with the buffer cleared first.
+- **A failure here stops the feature.** Since 2026-09-25 §7.4's button-driven design is what ships
+  (tier-cut note below), and it still needs this gate: the model narrates every answer.
+
+**What was actually observed.** More → Assistant, asked "How much did I spend this month" against an
+empty ledger. The answer rendered as prose:
+
+> The app shows that you spent ₱0.00 this month.
+
+That is a **grounded** answer, not just a generated one: the figure came back from the tool as a
+`display` string and the model reproduced `₱0.00` character for character, so `grounding.ts`
+accepted the prose instead of degrading to a card.
+
+`logcat -s RNLlama` shows the dispatch loop ran **two rounds** against the real decoder:
+
+```
+16:07:36.026 RNLlama: loadPrompt:580 [DEBUG] Input processed: n_past=0,   embd.size=422, num_prompt_tokens=422
+16:07:45.985 RNLlama: loadPrompt:580 [DEBUG] Input processed: n_past=413, embd.size=506, num_prompt_tokens=506
+```
+
+Round 1 produces a tool call, the handler runs, its result goes back through the delimited channel,
+and round 2 (reusing 413 tokens of KV cache) produces the answer. **Three things this proves at
+once**, none of which a unit test can:
+
+1. The bridge in `modules/llama_bridge/index.ts` binds `llama.rn` correctly and streams.
+2. The prompt tokens begin `151644 8948` — `<|im_start|>system` — so `jinja: true` applied the chat
+   template and the system prompt arrived as its **own message**. That is the design decision the
+   bridge rests on: `enable_thinking` is a chat-template argument and is silently ignored when a raw
+   `prompt` string is passed instead of `messages`.
+3. The whole tool → channel → answer loop works on device, not only against the fake bridge.
+
+## Gate 2 — Does llama.cpp accept the compiled GBNF, and does constrained decoding hold?
+
+**RETIRED 2026-09-25 with spec §7.4.** The model no longer emits a tool call, so no grammar is sent
+and `lib/ai/tools/grammar.ts` is deleted. Before it went, the gate passed: **0 malformed in 140
+constrained rounds for tier 1** (five runs, one with thinking on) **and 0 in 112 for tier 2** (four
+runs). The text below is kept as the record of what was measured.
+
+**Target: zero malformed outputs.** Phase 3 proves the grammar *string*, by snapshot. Only the real
+parser proves its *meaning*.
+
+**Answered by counting every constrained round across Task 27's runs.** Each question that reaches
+the model runs its first round under the tool grammar, and `eval_runner.ts` reads that round's raw
+output. The output is malformed when it is neither a tool call `dispatch.ts` can parse nor exactly
+`CANNOT_ANSWER`, which is the rule the dispatch loop itself acts on. Each run reports
+`malformedGenerations` out of `constrainedGenerations`, and the results card shows the same pair as
+"Garbled tool requests". Sum them per tier across every run.
+
+**A deliberate deviation from the plan's "50 generations against one tool's grammar".** The shipped
+app never sends a one-tool grammar. Every constrained round carries the combined grammar
+`dispatch.ts` compiles from all seven tool schemas plus the `CANNOT_ANSWER` branch, so that is the
+string worth proving. The count also beats 50 at no extra device time. A run makes 28 constrained
+rounds, since the two advice questions never reach the model. Task 27's six runs give 168, and the
+two thinking-on runs for Gate 3 add 56 more under the same grammar.
+
+The eval runs the grammar `lib/ai/tools/grammar.ts` generates, never a hand-written one. The spike
+measured 0 malformed in 50 against its own hand-written grammar, so a failure here is a defect in
+the generator, not in llama.cpp.
+
+- Malformed outputs, tier 1: **0** of **140** constrained rounds
+- Malformed outputs, tier 2: **0** of **112** constrained rounds
+- **Non-zero is a blocker for tier 1 specifically.** The spike measured the grammar carrying tier 1
+  from 58% to 78% strict tool-pick; without it, tier 1 does not clear the bar and the menu loses
+  the tier that makes this feature free for everyone.
+
+## Gate 3 — Does `<think>` suppression work in the shipped app?
+
+Spec §5.6 words this as "tiers 1 to 3"; **the catalogue now ships two tiers**, so it is both of
+them. The lever is the chat template's own flag, `enable_thinking: false` under `jinja: true`, not
+a prompt hack and not the stream-level stripper.
+
+- `<think>` visible in output, tier 1 / tier 2: `NOT RUN` / **no**, one generation, 2026-09-02
+- Median wall clock, suppressed / unsuppressed, tier 1: `NOT RUN` / `NOT RUN`
+- Median wall clock, suppressed / unsuppressed, tier 2: `NOT RUN` / `NOT RUN`
+- Empty answers in the suppressed runs, tier 1 / tier 2: `NOT RUN` / `NOT RUN`
+
+**PARTIAL, and do not read it as a pass.** One tier-2 generation produced a single clean sentence
+with no `<think>` block and no empty answer, which is the shape suppression is supposed to give. But
+this gate is a *comparison*: it needs the suppressed and unsuppressed wall clocks side by side, and
+it must fail on an empty answer rather than on a visible tag. One generation shows the happy path
+and cannot distinguish "suppression works" from "this prompt happened not to think".
+
+**How to answer it: one unsuppressed eval run per tier.** Task 27 already makes three suppressed runs
+per tier, and they are the suppressed side. On a debug build the eval screen has a "Let the model
+think" switch, which a release build does not have. Turn it on and run the 30 questions once per
+tier. The eval reloads the model with `suppressThinking: false` for that run, then reloads it the way
+it was before, so the chat never inherits a thinking model. The results card says "Model thinking:
+Left on" and every `[ai_eval]` line of that run says `"suppressThinking":false`, so no screenshot or
+log can pass for a suppressed run. Pair each question's `wallClockMs` with the same `id` in the
+suppressed runs, which gives 28 per-question comparisons per tier. The reload also empties the
+prompt cache, so the first question of the thinking-on run pays a full prefill; compare medians.
+
+The gate FAILS for a tier if a suppressed run has any question line with `"empty":true` (the report
+counts these as `emptyAnswers`) or `"thinkTag":true` (`thinkTagAnswers`). `thinkTag` checks every
+output of the turn, including one that grounding then replaced with a card, because a thinking block
+nobody saw was still decoded and paid for.
+- **Fail on an empty answer, not only on a visible tag.** The spike measured the stripper-only
+  configuration returning `"visible_text": ""` after 11 seconds, because the `<think>` block never
+  closed inside the token budget and stripping it removed the entire output. A gate written against
+  a visible tag would have passed that.
+- **Do not use TTFT as the discriminator.** It sat at 108 to 115 ms across all three spike
+  configurations, because prefill is identical no matter what the model does next. Only wall clock
+  separates them.
+
+## Gate 4 — Peak memory, and survival across an app switch
+
+**The gate most likely to reshape the menu, and no unit test can see it.** Load tier 2, background
+the app, open the camera, come back.
+
+Warm the model with one generation before sampling. Sampling straight after load understates PSS by
+whatever the KV cache is about to grow to, and an understated `minRamBytes` is exactly the bug that
+offers a phone a tier it will be killed for loading.
+
+- TOTAL PSS, tier 1 / tier 2, warmed, via `dumpsys meminfo`: `NOT MEASURED` / **1,821,797 kB
+  (1.82 GB)**, 2026-09-02, debug build, on charge, after one generation
+- Process survived the app switch: **YES. PASS.** PID 32420 before, during the camera, and after
+  returning. The model stayed mapped — `/proc/32420/maps` still showed `qwen3-1.7b-q4.gguf`, so it
+  did not have to be re-read from storage.
+- If it did not: what was resident, and what did Android kill: `n/a, it survived`
+
+**The full reading, and the part that matters more than PSS alone:**
+
+| | Foreground, warmed | After the app switch |
+|---|---|---|
+| TOTAL PSS | 1,821,797 kB | 1,820,468 kB |
+| TOTAL RSS | 1,402,670 kB | **472,126 kB** |
+| TOTAL SWAP PSS | 488,500 kB | **1,418,957 kB** |
+| Native heap | 895,700 kB | — |
+
+**Android compressed the model into zram rather than killing the process.** RSS fell by ~930 MB and
+swap rose by ~930 MB across the switch, and the app came back intact. That is the mechanism by which
+this survives, and it is a far better outcome than the gate feared.
+
+**Exactly one GGUF was mapped at any time**, which is the one-model-resident invariant holding
+against the real bridge rather than against `llama_bridge_mock.ts`.
+
+**Do not relax tier 2's RAM gate on this number yet.** Three reasons: it is a debug build, the phone
+was on charge, and it is a single reading on the **8 GB** variant. The spike's 2.51 GB and this
+1.82 GB + 0.49 GB swap (2.31 GB combined) are close enough that the honest conclusion is "consistent,
+not contradictory". The 6 GB variant remains UNKNOWN and is still never assumed fine.
+- **This is a release-build measurement and the spike's was not.** 1.25 GB and 2.51 GB came from a
+  debug build and are upper bounds. `catalogue.ts` derives `minRamBytes` from them, 3.5 GiB for
+  tier 1 and 6.5 GiB for tier 2, and **that gate currently offers 6 GB phones tier 1 only.** A
+  release-build figure is the one thing that could relax tier 2, so record it even if the switch
+  survives.
+
+## Gate 5 — Thermal and battery behaviour across a sustained ten-minute eval
+
+The project holds itself to under 2% per day attribution for the notification listener. An
+assistant is a different profile and is not held to that number, but **a run that visibly heats the
+phone is a finding** and belongs in the box.
+
+- Battery at start / end of a ten-minute run: `________%` / `________%`
+- Temperature at start / end: `________ °C` / `________ °C`
+- Did throughput fall across the run: `________`
+- The spike's battery retake sat at 34.4 °C rising to 34.6 °C across a 128-token run, which is
+  short enough that it says nothing about ten minutes.
+
+**Recipe: a tier-2 eval run on battery, over wireless adb.** Sample `dumpsys battery` at the start,
+once a minute, and at the end. If the run finishes inside ten minutes, press "Run it again" and keep
+sampling, because the gate asks about ten sustained minutes, not about one run.
+
+```bash
+# Once, with the phone on USB: move adb to Wi-Fi, then unplug the cable.
+adb tcpip 5555
+adb connect <phone-ip>:5555
+
+# Every "powered" line must say false, or this is a charging measurement.
+adb shell dumpsys battery | grep -E "powered|level|temperature"
+
+# Clear the log, start the run on the eval screen, then sample once a minute.
+# Stop the loop with Ctrl-C when the results card appears.
+adb logcat -c
+while true; do
+  echo "$(date +%T) $(adb shell dumpsys battery | grep -E '^ *(level|temperature):' | tr -s ' ' | tr '\n' ' ')"
+  sleep 60
+done | tee gate5_battery.txt
+
+# The end sample, then each question's decode rate in question order.
+adb shell dumpsys battery | grep -E '^ *(level|temperature):'
+adb logcat -d -s ReactNativeJS | grep -o '\[ai_eval\] .*' > gate5_eval.txt
+grep -o '"id":"[a-z0-9_]*"\|"tokensPerSecond":[0-9.]*' gate5_eval.txt | paste - -
+```
+
+`temperature` is in tenths of a degree C, so `314` is 31.4 °C. Throughput drift is the trend in
+`tokensPerSecond` from the first questions to the last. A run is now 8 questions, so a ten-minute
+check means several runs back to back.
+
+## Gate 6 — A real download over a Philippine mobile network
+
+**A simulated `Range` request proves the code, not the network.** `downloader.ts` is tested against
+an injected fetch; this is the only thing that tests the network.
+
+Resume across three interruptions, each a different failure shape:
+
+- A tunnel, meaning signal lost and regained on the same cell: `________`
+- A handover between cells or between Wi-Fi and mobile data: `________`
+- A 30-minute pause with the app backgrounded: `________`
+- Bytes re-downloaded after each resume (should be zero): `________`
+- Metered-connection confirmation appeared, and named the size in the sentence: `________`
+- **A resume that silently restarts from zero is a data-cost incident**, not a slow download.
+
+## Gate 7 — SHA-256 of the model file on-device
+
+**SETTLED 2026-09-25: the digest is native now, and passes.** The JS digest measured **939,944 ms**
+for tier 1's 396,705,472 bytes with the JS thread at 93% CPU and navigation taking 16 to over 60
+seconds (FAIL, see "Run 2026-09-25"). The owner approved §6 risk 8's remedy: `modules/llama_bridge`
+now hashes in Kotlin (`FileDigest.kt`, `MessageDigest` over a 1 MiB buffer, on `Dispatchers.IO`), and
+JS never reads the file back. Re-measured the same day by deleting tier 1 and downloading it again
+in-app over Wi-Fi: **`sha256 396705472 bytes in 960 ms`** from `adb logcat -s LlamaBridgeDigest:I`,
+about 980 times faster, and the file verified and was renamed to its final name. The Kotlin unit
+test (`FileDigestTest`, 3 cases including the published "abc" vector) passes on the build machine.
+
+- Time to digest: **960 ms** for tier 1 natively; tier 2's 1.1 GB is not yet measured through the
+  app (native `sha256sum` did it in 3 s)
+- Did the UI block while it ran: not observable at 960 ms; the hash no longer runs on the JS thread
+
+**A native floor, measured 2026-09-02: 3.3 s for BOTH files (1.46 GB) via toybox `sha256sum`**, and
+both digests matched `catalogue.ts` exactly —
+`ac2d9771…d524a` for tier 1 and `b139949c…81897` for tier 2. That independently confirms the
+catalogue's pinned literals against the real weights.
+
+**This is a floor, not the answer.** The gate asks about `@noble/hashes` running in Hermes over a
+file read through `expo-file-system`, which is a different machine entirely. Use the 3.3 s only to
+frame the JS result: if JS lands within a small multiple of it, the remedy in §6 risk 8 is
+unnecessary; if it is an order of magnitude worse and blocks the UI, that is the argument for the
+native helper.
+- **This is spec §6 risk 8 and it has a named remedy.** If it blocks the UI, the digest moves to a
+  native helper and `llama_bridge` grows its first piece of Kotlin. Record the number even if it
+  passes, because it is what the decision is made on.
+
+## Gate 8 — Is decode genuinely off the JS thread?
+
+Scroll the chat while generating.
+
+- Chat scrolls smoothly during generation: `________`
+- Any dropped frames, and roughly how many: `________`
+- **`llama.rn` decodes on a native thread by design**, which is the reason `modules/llama_bridge`
+  is a boundary module rather than a second Kotlin module. A failure here means that claim is wrong
+  and the architecture argument in §1.1 needs re-opening.
+
+**Recipe: `gfxinfo` frame stats, read twice.** Read them once while scrolling with nothing
+generating, for the floor, and once while scrolling as tokens arrive. Ask three or four questions
+first so the chat is taller than the screen. The swipe coordinates suit the A54's 1080 x 2340
+display.
+
+```bash
+PKG=com.filldev.peraplano.dev
+
+# The floor: scroll the chat while nothing is generating.
+adb shell dumpsys gfxinfo $PKG reset
+for i in 1 2 3 4 5; do
+  adb shell input swipe 540 1700 540 800 300
+  adb shell input swipe 540 800 540 1700 300
+done
+adb shell dumpsys gfxinfo $PKG | grep -E "Total frames rendered|Janky frames"
+
+# The gate: send a question, then run the same loop at once, while its tokens arrive.
+adb shell dumpsys gfxinfo $PKG reset
+for i in 1 2 3 4 5; do
+  adb shell input swipe 540 1700 540 800 300
+  adb shell input swipe 540 800 540 1700 300
+done
+adb shell dumpsys gfxinfo $PKG | grep -E "Total frames rendered|Janky frames"
+```
+
+Use tier 2, whose 11.45 tok/s keeps an answer generating longest. If the answer lands before the
+loop ends, the reading mixes idle frames in and understates the effect, so repeat it. A debug build
+janks more than a release build, so the finding is the difference between the two readings, not
+either number alone.
+
+## Gate 9 — Does streaming read as alive? Eyeball only.
+
+**This one decides real copy, and it is a judgement rather than a measurement.** Is
+"Looking at your limits…" enough, or does the gap before the first token still read as frozen?
+
+- Tier 1, at 55 ms TTFT and 32.54 tok/s: `________`
+- Tier 2, at 138 ms TTFT and 11.45 tok/s: `________`
+- The tool-call line appeared before the first token: `________`
+- Copy that should change as a result: `________`
+- **§4.4 assumed this feature is slow, and for tier 1 that assumption is far too pessimistic.**
+  A sub-second answer may need different copy from the one written for dead air.
+
+## Gate 10 — Storage and backup
+
+- App footprint with two models present: **1,470,312 kB of weights** (`qwen3-0.6b-q4.gguf`
+  396,705,472 B + `qwen3-1.7b-q4.gguf` 1,107,409,472 B), both byte-exact to `catalogue.ts`
+- `files/models/` is genuinely excluded from Android backup: **YES, verified in the generated
+  project. PASS, 2026-09-02.**
+
+**Verified against the real prebuild output**, not against a fixture:
+
+```
+android/app/src/main/AndroidManifest.xml
+  <application ... android:fullBackupContent="@xml/backup_rules"
+                   android:dataExtractionRules="@xml/data_extraction_rules">
+
+android/app/src/main/res/xml/backup_rules.xml
+  <include domain="sharedpref" path="." />
+  <exclude domain="sharedpref" path="SecureStore" />
+  <exclude domain="file" path="models/" />
+
+android/app/src/main/res/xml/data_extraction_rules.xml
+  the same three lines inside BOTH <cloud-backup> and <device-transfer>
+
+android/gradle.properties
+  reactNativeArchitectures=arm64-v8a
+```
+
+**The ABI filter is proven at the APK, not just in a property.** `app-debug.apk` contains
+`lib/arm64-v8a` and no other ABI directory at all, holding all fourteen of `llama.rn`'s
+CPU-dispatch variants (`librnllama_v8.so` through
+`librnllama_v8_2_dotprod_i8mm_hexagon_opencl.so`) plus `assets/ggml-hexagon/`.
+
+**Re-checked 2026-09-25** after the branch took master's 233 commits: a fresh prebuild still prints the
+expected `expo-secure-store` warning, both rule files still carry all three lines, and the 159.5 MB
+`app-debug.apk` still holds `lib/arm64-v8a` alone with all fourteen variants.
+
+**A defect this gate caught that no unit test could.** The first prebuild produced a `backup_rules.xml`
+containing ONLY the `models/` exclusion. `expo-secure-store` had backed off (see the expected warning
+above) and its rules were gone — including
+`<include domain="sharedpref" path="."/>`. Under Android's semantics the presence of any `<include>`
+switches the file from "back up everything except" to "back up ONLY these", so that one line is what
+holds the SQLCipher database, the capture buffer and all of `files/` out of a Google backup, and its
+`<exclude ... path="SecureStore"/>` is what keeps this app's **wrapped key material** out. Fixed in
+`f4fe0a7`, with three regression tests, one of which re-derives the rule from `expo-secure-store`'s
+own shipped resource so it fails if that dependency ever changes what it protects.
+
+**Still open on this gate:** nobody has confirmed on a real Google backup/restore cycle that the
+exclusion is honoured end to end. The manifest and resources are right; the round trip is untested.
+
+Verify the exclusion against the **generated** manifest and resources, the same way Part 7 verifies
+the blocked permissions, because `mobile/android/` is regenerated by every prebuild:
+
+```bash
+cd mobile
+npx expo prebuild --platform android --no-install
+grep -n "dataExtractionRules\|fullBackupContent" android/app/src/main/AndroidManifest.xml
+cat android/app/src/main/res/xml/backup_rules.xml
+cat android/app/src/main/res/xml/data_extraction_rules.xml
+grep -n "reactNativeArchitectures" android/gradle.properties
+```
+
+Expect `@xml/backup_rules` and `@xml/data_extraction_rules` on `<application>`, an
+`<exclude domain="file" path="models/" />` in both rule files (in `data_extraction_rules.xml` it
+must appear in **both** `<cloud-backup>` and `<device-transfer>`), and
+`reactNativeArchitectures=arm64-v8a`.
+
+- **A missing exclusion is not a cosmetic failure.** Since 2026-09-24 `app.json` sets
+  `android:allowBackup="false"`, which stops cloud backup. On Android 12 and later it does not stop
+  a device-to-device transfer, so the `<device-transfer>` exclusion is what keeps 1.5 GB of public
+  weights out of a phone-to-phone migration. The `<cloud-backup>` one holds the line if
+  `allowBackup` is ever turned back on.
+- The unit tests in `modules/llama_bridge/__tests__/app_plugin.test.ts` prove the plugin transforms
+  a fixture correctly. They cannot prove the plugin is **registered and runs**. That is what the
+  prebuild above is for.
+
+---
+
+## The human judgement §5.4 requires. It is a judgement, not a test.
+
+Spec §5.4: *"A human reads all 30 answers once per tier and records a judgement in the tier-cut
+note. That is a judgement, not a test, and it is labelled as one."*
+
+**Prose quality is bounded below by the guardrails and above by nothing.** The eval's tool-pick
+number and grounding-rejection rate bound the failure modes that matter. Nothing bounds whether the
+answer reads well, and nothing cheap can.
+
+Read all 30 answers per tier, then write one paragraph per tier saying whether the prose is
+acceptable to ship, and what specifically was wrong with the answers that were not.
+
+- Tier 1 judgement: `________________`
+- Tier 2 judgement: `________________`
+- **Do not let this row acquire a number it has not earned.** A score here would be a measurement
+  of the reader, presented as a measurement of the model.
+
+---
+
+## The tier-cut note (assistant plan Task 27). RUN 2026-09-25, cut decision open.
+
+**Three runs per tier before any cut**, because without repeat runs there is no noise floor and
+"within noise" is a phrase rather than a test.
+
+- Tier 1, three strict tool-pick scores out of 30: **10** / **10** / **8** (a fourth run: 9)
+- Tier 2, three strict tool-pick scores out of 30: **12** / **11** / **12** (a fourth run: 12)
+- Observed run-to-run spread: **2** for tier 1, **1** for tier 2
+- Tier 1 / tier 2 p90 time-to-first-token: **715 to 935 ms** / **1,000 to 1,100 ms**
+- **By the relative rule, no tier is removed**: tier 2 beats tier 1 by about 2.5 questions, more than
+  either tier's spread, and both are far inside the 20 s TTFT limit.
+- **By the absolute bar, neither tier qualifies** (spec §6 risk 1, roughly 70% strict tool-pick). The
+  spec's answer is §7.4: fixed questions choose the tool, the model only narrates. Owner's decision.
+
+**A tier survives only if it beats the tier below it by more than the run-to-run spread of a single
+tier.** Speed is the second criterion, applied after accuracy: a tier whose **p90 TTFT exceeds
+roughly 20 seconds** is not a real tier either, because an answer that slow will not be asked for
+twice. That 20 s is provisional but it is a number, not a blank.
+
+- Tiers removed, and why: **none yet**. The relative rule keeps both; the absolute bar is the open
+  owner decision above.
+- **A tier removed from `catalogue.ts` is not deleted from devices that already hold it.** Record
+  what happens to a user holding a cut tier's weights. The honest answer is that it keeps working
+  and stops being offered; anything else deletes a multi-gigabyte file the user paid mobile data
+  for.
+
+### Commit the results
+
+```bash
+git commit --allow-empty -m "test(mobile): record the assistant's on-device gate results"
+```
+
+Paste the recorded outcomes into that message.
+
+## Run 2026-09-26: the five answer levels on the A54
+
+Spec: `docs/superpowers/specs/2026-09-25-assistant-levels-design.md` (plan Task 15). Code at `8df0a95`
+(spec amendments `4fc2189`), the dev variant served as a production-mode bundle
+(`expo start --dev-client --no-dev --minify`), wireless adb. Both models ran: the 1.7B first, then the
+0.6B after the 1.7B was deleted through the Privacy centre and the app force-stopped (owner approved;
+the 1.7B was re-downloaded afterwards from the Models screen).
+
+**How it was measured.** Messages were typed over adb and the screen was read with `uiautomator`
+dumps, about one per second. Total time per turn includes roughly 2 s of tap-and-poll overhead.
+**First-word time: NOT MEASURED.** `uiautomator dump` only succeeds once the UI is idle, and a
+streaming answer keeps it busy until the last token, so no dump ever saw the preview. Stop-before-the-
+first-word latency: NOT MEASURED, for the same reason.
+
+### What each level did
+
+| Level | Typed | 1.7B | 0.6B |
+|---|---|---|---|
+| 1 | "hello" / "magkano pera ko" | greeting / Filipino cannot-answer, no model | not run (no model involved) |
+| 2 | "magkano pera ko" | "Answering: How much money do I have?" then "You have ₱50.00 in total." | same label, "You have ₱50.00 in your wallet." |
+| 2 | "What is bitcoin" | cannot-answer, no model | not run |
+| 2 | "Saan napunta ang pera ko" | matched this month's spending, answered with spelled-out dates | not run |
+| 3 | "Tell me about my money" | grounded summary (₱50.00, ₱555.00 a day, limits) | "You have a total balance of ₱50.00." |
+| 3 | "Is that a lot" | restated the previous answer | not run |
+| 3 | "Who was Jose Rizal" | answered from memory with no notice; says he died in 1897 (he was executed on 30 December 1896) | not run |
+| 3 | "How much is rice" | general answer from memory, no peso figure, no notice | repeated the previous answer word for word |
+| 3 | "Kumusta ang gastos ko" | matched this month's spending; narration fell back to the card | not run |
+| 4 | first switch | accept notice shown once, then accepted | notice not shown (already accepted) |
+| 4 | "What is an emergency fund" | replaced: "I can't tell you what to do with your money." (advice wording) | not run |
+| 4 | "What is compound interest" | correct explanation under the general-knowledge notice; says "the user's account" | recited the balance instead, under the general-knowledge notice |
+| 4, 5 | "Should I buy a new phone" / "Should I keep spending on Grab" | redirect card with the numbers, no model | not run |
+| 5 | "Who was Jose Rizal" | short correct answer, memory notice naming April 2025 | "You were Jose Rizal.", memory notice |
+| 5 | "Should I learn Python" | reached the model (non-money should-I), "consider" survived, memory notice | repeated "You were Jose Rizal." |
+| 5 | "How much is a jeepney fare" | repeated the previous (Python) answer word for word | repeated "You were Jose Rizal." |
+| 5 | "How much should I save each month" | replaced by the no-advice line | not run |
+
+The chosen level survived an app restart (stored level 5 was still 5 after the force-stop).
+
+### Total time per free-chat turn (includes about 2 s of script overhead)
+
+| Model | Level 3 | Level 4 | Level 5 |
+|---|---|---|---|
+| 1.7B | 24.6, 29.7, 32.2, 33.3 s (p50 about 31 s) | 25.3, 33.3 s | 29.7, 29.7, 29.9, 33.8 s (p50 about 30 s) |
+| 0.6B | 12.3, 14.0 s | 14.8 s | 11.7, 12.4, 13.0, 14.1 s |
+
+### Findings
+
+1. **The 0.6B cannot do free chat.** It ignored the question, repeated its previous answer, or garbled
+   the prompt's "speak to the user as you" rule into "You were Jose Rizal." Chip narration (levels 1
+   and 2) still works on it.
+2. **The 1.7B's free chat parrots its history.** A follow-up or unrelated question got the previous
+   answer back word for word, the same failure §7.4 recorded for chips before history was removed.
+3. **Level 3 answers off-topic questions from memory without a notice**, and one answer carried a
+   factual error. This is spec risk 1 observed.
+4. **Level 4's explanations often trip the advice guard**, so "What is an emergency fund" was replaced.
+5. **The safety checks held.** No peso amount from memory reached the screen, money advice was
+   redirected or replaced, and "spending" now counts as a money word. Grounding's new suffix rule was not
+   exercised: no answer in this run stated a remembered price.
+6. **Context margin (plan Task 8):** no overflow with up to four prior exchanges in the prompt. A
+   deliberately full 2,048-token prompt: NOT RUN.
+7. Two older defects seen on the way: the redirect card shows raw keys such as `limit_3_limit`, and no
+   screen in the app links to the Models screen (it was opened with `peraplano://more/ai/models`).
+
+The owner's read of answer quality at each level: NOT YET RECORDED.
+
+### Re-check 2026-09-26: the four follow-ups on the 1.7B
+
+Code at `17226d8` (follow-ups `183939f`, `a8188d0`, `0f4ed59` and `229bf4d`, fix round `fc2bce7`),
+served and measured as above, Plus active. The 0.6B half was skipped on the owner's call: checking it
+means deleting the 1.7B again, and `components/ai/__tests__/LevelPicker.test.tsx` covers the cap.
+
+| Level | Typed | 1.7B |
+|---|---|---|
+| picker | opened the Answer style sheet | all five rows selectable, no "Needs the larger Qwen3 1.7B model." line, the Plus badge on 4 and 5 |
+| 3 | "Who was Jose Rizal" | short answer in the third person with no dates, under "Written by the model. It can be wrong." |
+| 3 | "My name is Juan" | ignored the name and summarised the records as "you" (₱50.00, ₱555.00 a day, nothing spent), same notice |
+| 3 | "What is my name" | a differently worded money summary, same notice; no "Juan" |
+| 5 | "Who was Jose Rizal" | short answer in the third person, memory notice naming April 2025 |
+| 5 | "My name is Juan" | money summary as "you", memory notice |
+| 5 | "What is my name" | "Your name is not available in the provided records.", memory notice |
+
+Total time per turn: 29.2, 28.5 and 21.3 s at level 3; 27.6, 28.8 and 18.3 s at level 5.
+
+All four follow-ups hold on the 1.7B. No answer repeated or recalled an earlier one, every level-3
+answer carried the notice, and "you" appeared only in answers about money. One new observation: at
+both levels a message that is neither a question nor about money got an unprompted summary of the
+records, and at level 5 that summary sat under "From the model's memory" although its figures came from
+the records.

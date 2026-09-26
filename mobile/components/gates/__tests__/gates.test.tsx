@@ -390,4 +390,9 @@ describe("UpgradeSheet", () => {
     // than the two assertions it replaces ever had even in principle.
     expect(screen.queryByText(/\d/)).toBeNull();
   });
+
+  test("lists the assistant's answer levels as a Plus capability", () => {
+    render(<UpgradeSheet visible onClose={() => {}} capability="assistant_levels" />);
+    expect(screen.getByTestId("upgrade-row-assistant_levels")).toBeTruthy();
+  });
 });

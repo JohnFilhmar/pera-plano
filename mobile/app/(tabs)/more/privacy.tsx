@@ -24,7 +24,7 @@
 // components/privacy/*.tsx receive already-resolved props and callbacks —
 // which is also what keeps every one of those components free of the
 // `lib/db/repos/**` import the global constraints forbid.
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Smartphone } from "lucide-react-native";
 import { AppState, ScrollView, Text, View } from "react-native";
@@ -35,7 +35,12 @@ import { CapturedList } from "@/components/privacy/captured_list";
 import { ProviderSwitchList } from "@/components/privacy/provider_switch_list";
 import { WipeFlow } from "@/components/privacy/wipe_flow";
 import { Button, registerIcon } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm_dialog";
 import { SectionHeader } from "@/components/ui/section_header";
+import type { ModelSpec } from "@/lib/ai/catalogue";
+import { formatSize } from "@/lib/ai/downloader";
+import { installedModels, removeInstalledModel } from "@/lib/ai/model_files";
+import type { InstalledModel } from "@/lib/ai/model_files";
 import { providerLabel, providerLabelForPackage } from "@/constants/providers";
 import { queryKeys } from "@/constants/query_keys";
 import { useSetCaptureEnabled } from "@/hooks/mutations/use_set_capture_enabled";
@@ -66,6 +71,14 @@ const INTRO_BODY =
 /** docs §04-features/11-settings-privacy.md Flow C step 4's 30-day figure, restated for this list. */
 const CAPTURED_LIST_BODY =
   "Every notification PeraPlano captured from your banks and e-wallets, kept for 30 days, then deleted automatically.";
+
+/**
+ * Says what the weights ARE, because the honest answer is reassuring: they are
+ * public files anyone can fetch, they hold nothing of the user's, and the only
+ * reason they are mentioned on a privacy screen at all is that they are large.
+ */
+const MODELS_BODY =
+  "The assistant's model is a public file stored on this phone. It holds none of your records, and deleting it frees the space straight away.";
 
 /**
  * The two sentences a failed wipe can honestly print, split exactly where
@@ -198,6 +211,53 @@ export default function PrivacyScreen() {
    * be holding would print itself under the Erase button on first mount.
    */
   const [wipeAttempted, setWipeAttempted] = useState(false);
+
+  /**
+   * The assistant's weights, which NEITHER the export NOR the wipe can reach.
+   * Spec §2.3 rule 4 puts them outside the SQLCipher database on purpose, so
+   * `wipeAllData` sweeps tables it does not own and leaves gigabytes behind.
+   * This is the only control in the app that reclaims them from here.
+   */
+  const [models, setModels] = useState<InstalledModel[]>([]);
+  const [pendingDelete, setPendingDelete] = useState<ModelSpec | null>(null);
+  const [deletingModel, setDeletingModel] = useState(false);
+
+  /**
+   * RE-READ FROM DISK rather than patched in place after a delete. `remove`
+   * clears both `<id>.gguf` and any `.part` beside it, and the disk is the
+   * only thing that knows what actually went.
+   */
+  const refreshModels = useCallback(async () => {
+    try {
+      setModels(await installedModels());
+    } catch (error) {
+      // Deliberately silent. A phone with no models directory is the normal
+      // case, not a fault, and an error banner on the Privacy centre for a
+      // feature the user has never opened is noise that undermines the
+      // screen's whole job.
+      console.warn("privacy: could not read installed models", error);
+      setModels([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshModels();
+  }, [refreshModels]);
+
+  const handleDeleteModel = useCallback(async () => {
+    const spec = pendingDelete;
+    if (!spec) return;
+    setDeletingModel(true);
+    try {
+      await removeInstalledModel(spec);
+      await refreshModels();
+    } catch (error) {
+      console.warn("privacy: could not delete model", error);
+    } finally {
+      setDeletingModel(false);
+      setPendingDelete(null);
+    }
+  }, [pendingDelete, refreshModels]);
 
   const providers = useMemo(() => bundle?.providers ?? [], [bundle]);
   const allPackageNames = useMemo(
@@ -501,6 +561,51 @@ export default function PrivacyScreen() {
         already-real proof of what is stored) are what ship instead. Noted
         here as follow-up rather than silently dropped.
       */}
+      {/* ABSENT when no model is installed, rather than an empty section or a
+          disabled button. A "delete the downloaded model" control on a phone
+          that never downloaded one is an offer to reclaim nothing, and it
+          implies the app fetched something the user did not ask for — on the
+          one screen whose entire job is to be checkable. */}
+      {models.length > 0 ? (
+        <View testID="privacy-models" className="gap-2">
+          <Text className="text-section font-semibold text-fg dark:text-fg-dark">
+            On-device assistant
+          </Text>
+          <Text className="text-body text-fg-2 dark:text-fg-2-dark">{MODELS_BODY}</Text>
+          {models.map(({ spec, bytes }) => (
+            <View key={spec.id} className="gap-1">
+              <Text className="text-body font-semibold text-fg dark:text-fg-dark">
+                {spec.displayName}
+              </Text>
+              {/* The size is the file ON DISK and is formatted by the
+                  downloader's own `formatSize`, so this sentence and the
+                  download confirmation can never quote one file at two
+                  different sizes. */}
+              <Button
+                testID={`privacy-delete-model-${spec.id}`}
+                title={`Delete model, frees ${formatSize(bytes)}`}
+                variant="secondary"
+                loading={deletingModel && pendingDelete?.id === spec.id}
+                onPress={() => setPendingDelete(spec)}
+              />
+            </View>
+          ))}
+        </View>
+      ) : null}
+
+      {/* Confirmed, like the wipe above. This is a multi-gigabyte file the
+          user very likely paid mobile data for, and re-downloading it costs
+          them that again. */}
+      <ConfirmDialog
+        visible={pendingDelete !== null}
+        title="Delete this model?"
+        body="The assistant stops working until you download it again, which costs the same data it cost the first time. Nothing in your ledger is touched."
+        confirmLabel="Delete model"
+        destructive
+        onConfirm={() => void handleDeleteModel()}
+        onCancel={() => setPendingDelete(null)}
+      />
+
       <View className="gap-2">
         {/* Same F3 sweep as "Providers"/"What PeraPlano captured" above. */}
         <Text className="text-section font-semibold text-fg dark:text-fg-dark">Your data</Text>

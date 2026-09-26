@@ -116,6 +116,29 @@ export type AppEventMap = {
    * until the screen was left and re-entered.
    */
   "support:outbox_changed": Record<string, never>;
+
+  /**
+   * The app re-locked: the DEK is gone, the database handle is closed, and the
+   * cache encryption key is cleared.
+   *
+   * PAYLOAD-FREE, DELIBERATELY. There is nothing a subscriber could be told
+   * about a lock that is not "it happened", and a payload here would be a
+   * plaintext detail surviving the exact moment everything plaintext is
+   * supposed to stop existing.
+   *
+   * Added for `lib/ai/session.ts`, which is a module-scoped store rather than a
+   * React context (assistant state must never reach react-query, which is
+   * persisted to disk) and therefore cannot learn about a lock by unmounting.
+   * Relying on unmount would also leave the AI spec §4.5 race untestable:
+   * tokens arrive from a native thread, the lock arrives from the UI, and an
+   * event is the only thing a test can fire at a chosen point in a token
+   * stream.
+   *
+   * EMITTED AFTER `closeDatabase()` RESOLVES, so a subscriber that reads the
+   * database on this event finds it already closed rather than racing the
+   * close.
+   */
+  "lock:engaged": Record<string, never>;
 };
 
 type AppEventName = keyof AppEventMap;

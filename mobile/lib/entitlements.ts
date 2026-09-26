@@ -121,3 +121,16 @@ export function hasCsvExport(): boolean {
 export function hasProjection(): boolean {
   return getTier() === "plus";
 }
+
+/**
+ * Whether the assistant may run at an answer level. Levels 1 to 3 are free for
+ * everyone; 4 and 5 are Plus (assistant levels spec §6). Takes a plain number so
+ * this module, the only one that knows about tiers, depends on nothing in
+ * `lib/ai`.
+ *
+ * @param level - An answer level, 1 to 5.
+ * @returns True when the current tier may use that level.
+ */
+export function canUseAssistantLevel(level: number): boolean {
+  return level <= 3 || getTier() === "plus";
+}

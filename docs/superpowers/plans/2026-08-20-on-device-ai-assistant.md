@@ -208,8 +208,19 @@ Three items the spec leaves ownerless. Each blocks a later phase, and each is th
 
 ## Task 1: Resolve weight hosting and compute the digests
 
+> **PARTLY RESOLVED 2026-08-31** — `docs/superpowers/specs/2026-08-31-model-hosting-decision.md` is
+> written and is the file this task names. **Step 1 is done** (all five sub-questions answered:
+> provider-served bytes, `resolve/<commit-sha>/` pinning, served catalogue with binary-pinned digests
+> the server cannot override, and the named failure copy). **Steps 2 and 3 remain blocked** and the
+> reason is recorded in that file's §7 and §8: the digests depend on the still-open conversion-source
+> decision and on a final tier list the spike has not yet cut, and `minRamBytes` depends on the
+> spike's Task 7 PSS table. Do not fill either from estimates.
+>
+> **Step 3's question "who converts to GGUF?" turned out to be the load-bearing one.** Qwen ships
+> `Q8_0` GGUFs only, so four of five tiers have no upstream conversion. That is the open decision.
+
 **Files:**
-- Create: `docs/superpowers/specs/2026-08-2X-model-hosting-decision.md`
+- Create: `docs/superpowers/specs/2026-08-31-model-hosting-decision.md` *(created 2026-08-31)*
 
 **Why this blocks Phase 5 and Phase 6 absolutely.** `ModelSpec` (spec §2.1) requires `url: string` and `sha256: string` as **literal data in the catalogue**. `catalogue.ts` is not a module that can be stubbed and filled in later — spec §5.2/5 requires its ids to be pinned as literals in a test, its `sha256` to be 64 lowercase hex, and its `url` to be `https:`. Until someone chooses a host and computes five digests, that file is unwritable and every test over it is unwritable with it.
 
@@ -246,14 +257,14 @@ Record **the digest, the exact byte count, and the URL you computed them from, t
 - [ ] **Step 4: Commit**
 
 ```bash
-git add docs/superpowers/specs/2026-08-2X-model-hosting-decision.md
+git add docs/superpowers/specs/2026-08-31-model-hosting-decision.md
 git commit -m "docs: choose model weight hosting and record pinned digests"
 ```
 
 ## Task 2: Confirm the licence check was done, and that it is still current
 
 **Files:**
-- Modify: `docs/superpowers/specs/2026-08-2X-model-hosting-decision.md`
+- Modify: `docs/superpowers/specs/2026-08-31-model-hosting-decision.md`
 
 The spike's Task 2 owns the check. This task owns the fact that it **expires**. The spec says *"a licence read in August is not evidence in November"* and repeats the instruction four times without ever assigning it; this is the second half of that assignment.
 
@@ -984,14 +995,42 @@ Spec §4.4's three classes:
 
 **Interfaces:**
 - Consumes: `TOOL_SCHEMAS` from Task 6.
-- Produces: `compileGrammar(tools: readonly ToolDef[]): string`; `compileProseOnlyGrammar(): string`.
+- Produces: `compileGrammar(tools: readonly ToolDef[]): string`; `FORCED_ANSWER_GRAMMAR: string | null`.
+
+> **AMENDED 2026-08-31, after the spike.** This task originally produced a
+> `compileProseOnlyGrammar(): string` and required a `prose` branch at the root. The spike measured
+> both on the real decoder and both fail — see
+> `docs/superpowers/specs/2026-08-31-llama-rn-spike-findings.md` question 2. **GBNF compels a format
+> and cannot forbid one.** `prose ::= [^{] [^\n]*` constrains only the first character and was
+> defeated 3/3 by prefixing `(`, a space, or a ```` ```json ```` fence; forbidding the brace moved the
+> model to bracket-style calls and then to 60+ carriage returns; a strict positive character class
+> produced base64 garbage. So the compiler emits **positive grammars only**: the root is
+> `tool-call | cannot-answer` and nothing else, and the forced-answer round carries **no grammar at
+> all** while `dispatch.ts` refuses to act on a tool call in that round — the spike's own recommended
+> option. The strikethrough requirements below are kept so the reasoning stays legible.
+>
+> **`cannot-answer` is not a prose branch.** It is a single positive literal, `CANNOT_ANSWER`, and it
+> is required: a grammar of tool calls alone would COMPEL a tool call for "who is the president of the
+> Philippines", because no other string would be producible. The spike's own measured tool grammar
+> carried this branch — and note it is necessary, not sufficient: tier 1 still called a ledger tool for
+> out-of-scope questions in 3/3 and 2/3 runs, "the CANNOT_ANSWER branch is available and the model
+> declines to take it".
+>
+> **Round policy, which is where the grammar and the answer are reconciled (Task 17).** The tool
+> grammar can express a call or a decline and *cannot express an answer*, so `dispatch.ts` constrains
+> a round only while no tool result has been collected yet. The first round is constrained — that is
+> the round the spike's 58%→78% tier-1 improvement was measured on — and every round after it runs
+> unconstrained, so the model can actually answer from the data it now holds. A tool call may still
+> arrive unconstrained (a two-tool question needs exactly that) and is dispatched while rounds remain.
 
 **Two complementary assertions, because neither alone is enough** (spec §5.2/3):
 
 - **Golden snapshots**, one per tool, reviewed by a human once. Cheap, and catches drift.
-- **Property assertions on the emitted rule set:** every enum literal in the schema appears as an exact quoted alternative; **no literal appears that is not in the schema** (the failure that lets a model emit a fifth period); `limit` compiles to an explicit 1–20 alternation, **not `[0-9]+`**; **both** the `tool-call` and `prose` branches exist at the root; forced-answer mode emits a prose-only grammar.
+- **Property assertions on the emitted rule set:** every enum literal in the schema appears as an exact quoted alternative; **no literal appears that is not in the schema** (the failure that lets a model emit a fifth period); `limit` compiles to an explicit 1–20 alternation, **not `[0-9]+`**; ~~**both** the `tool-call` and `prose` branches exist at the root; forced-answer mode emits a prose-only grammar~~ → **the root is `tool-call` and nothing else, no negated character class appears anywhere, and `FORCED_ANSWER_GRAMMAR` is `null`.**
 
-**The `prose` branch must exist.** A grammar that only permits tool calls produces a model that can never answer — *"a total failure that a 'does it compile' test happily passes."*
+~~**The `prose` branch must exist.** A grammar that only permits tool calls produces a model that can never answer — *"a total failure that a 'does it compile' test happily passes."*~~
+
+**Corrected:** the concern is real but belongs to `dispatch.ts`, not to the compiler. A model that can never answer is what you get if the tool grammar is applied to *every* round. The fix measured by the spike is to apply the grammar only to tool rounds and run the answer round unconstrained, at 1.4 s and with the exact expected output — not to write a grammar branch describing "not a tool call", which cannot be written.
 
 **What these tests cannot prove** is that llama.cpp's GBNF parser agrees with our reading of the format. That is Phase 11's gate 2, and it is the reason this phase is gated on the spike having already proved the format once by hand.
 

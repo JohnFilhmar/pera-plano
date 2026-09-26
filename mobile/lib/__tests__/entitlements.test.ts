@@ -4,6 +4,7 @@ import {
   canCreateLimit,
   canCreateLoan,
   canCreateWallet,
+  canUseAssistantLevel,
   getTier,
   hasBackup,
   hasCsvExport,
@@ -95,4 +96,18 @@ test("__setTierForTests(null) restores the shipped tier", () => {
   expect(getTier()).toBe("free");
   __setTierForTests(null);
   expect(getTier()).toBe("plus");
+});
+
+describe("assistant answer levels (assistant levels spec §6)", () => {
+  test("levels 1 to 3 are open to everyone", () => {
+    __setTierForTests("free");
+    expect([1, 2, 3].map(canUseAssistantLevel)).toEqual([true, true, true]);
+  });
+
+  test("levels 4 and 5 need Plus", () => {
+    __setTierForTests("free");
+    expect([4, 5].map(canUseAssistantLevel)).toEqual([false, false]);
+    __setTierForTests("plus");
+    expect([4, 5].map(canUseAssistantLevel)).toEqual([true, true]);
+  });
 });

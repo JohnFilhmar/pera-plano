@@ -20,6 +20,23 @@ jest.mock("react-native-safe-area-context", () => {
   return createSafeAreaMock();
 });
 
+// `llama.rn` is mapped to `test_support/llama_rn_mock.ts` (see package.json's
+// `moduleNameMapper`), and that fake holds MODULE-LEVEL state: the ordered call
+// log, the init and completion params, the token scripts. Module state survives
+// between tests in the same file, so without this reset one suite's leftover
+// script decides another suite's tokens and the failure surfaces as a product
+// bug in whichever test happens to run second.
+// `llama_bridge_mock.ts` is reset here for the same reason: a script left
+// unconsumed by one test makes the next test's first `generate()` return a
+// previous test's tokens, which reads as a dispatch bug rather than as bleed.
+beforeEach(() => {
+  // Required lazily so the mapper has already resolved by the time this runs.
+  const { resetLlamaRuntime } = require("./llama_rn_mock") as typeof import("./llama_rn_mock");
+  const { resetLlamaScript } = require("./llama_bridge_mock") as typeof import("./llama_bridge_mock");
+  resetLlamaRuntime();
+  resetLlamaScript();
+});
+
 // RNTL's async utilities default to a ONE SECOND budget, which this suite has
 // outgrown. A screen test here renders a real component tree over a real
 // SQLite database, and under `--ci` parallelism several run at once competing
