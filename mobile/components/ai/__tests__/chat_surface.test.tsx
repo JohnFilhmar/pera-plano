@@ -25,7 +25,6 @@ import {
 } from "../chat_copy";
 import type { AnswerLevel } from "@/lib/ai/levels";
 import { ok, type ToolResult } from "@/lib/ai/tools/types";
-import { emitAppEvent } from "@/lib/events/app_events";
 import {
   fakeLlamaBridge,
   generateCallCount,
@@ -454,7 +453,7 @@ describe("answer levels", () => {
     expect(screen.queryByText(/99,999/)).toBeNull();
   });
 
-  test("a follow-up carries the earlier exchange to the model", async () => {
+  test("free chat sends no earlier exchange to the model", async () => {
     scriptLlama([{ emit: "You have ₱18,320.00 in total." }, { emit: "That is across all your wallets." }]);
     render(readySurface({ level: 3, runTool: byName }));
 
@@ -467,27 +466,8 @@ describe("answer levels", () => {
       expect(screen.getByText("That is across all your wallets.")).toBeTruthy();
     });
 
-    expect(lastPromptGiven()).toContain("User: Tell me about my money");
-    expect(lastPromptGiven()).toContain("Assistant: You have ₱18,320.00 in total.");
-  });
-
-  test("the lock clears what the model would be sent back, not only the screen", async () => {
-    scriptLlama([{ emit: "You have ₱18,320.00 in total." }, { emit: "Nothing earlier is on record here." }]);
-    render(readySurface({ level: 3, runTool: byName }));
-
-    type("Tell me about my money");
-    await waitFor(() => {
-      expect(screen.getByText("You have ₱18,320.00 in total.")).toBeTruthy();
-    });
-    await act(async () => {
-      await emitAppEvent("lock:engaged", {});
-    });
-    type("What did I just ask?");
-    await waitFor(() => {
-      expect(screen.getByText("Nothing earlier is on record here.")).toBeTruthy();
-    });
-
     expect(lastPromptGiven()).not.toContain("Tell me about my money");
+    expect(lastPromptGiven()).not.toContain("You have ₱18,320.00 in total.");
   });
 
   test("the top line follows the level", () => {

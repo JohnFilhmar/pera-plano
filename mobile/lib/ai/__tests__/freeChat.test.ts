@@ -39,7 +39,6 @@ function deps(overrides: Partial<FreeChatDeps> = {}, calls: string[] = []): Free
     },
     level: 3,
     model: MODEL,
-    turns: [],
     ...overrides,
   };
 }
@@ -71,23 +70,6 @@ test("re-reads the whole snapshot on every turn", async () => {
 
   const names = SNAPSHOT_TOOLS.map((tool) => tool.name);
   expect(calls).toEqual([...names, ...names]);
-});
-
-test("carries the exchanges still on screen", async () => {
-  scriptLlama([{ emit: "That is across all your wallets." }]);
-
-  await answerFreely(
-    "Is that a lot?",
-    deps({
-      turns: [
-        { role: "user", text: "How much money do I have?" },
-        { role: "assistant", text: "You have ₱18,320.00 in total." },
-      ],
-    }),
-  );
-
-  expect(lastPromptGiven()).toContain("User: How much money do I have?");
-  expect(lastPromptGiven()).toContain("Assistant: You have ₱18,320.00 in total.");
 });
 
 test("a figure not in the records replaces the answer", async () => {

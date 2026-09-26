@@ -19,9 +19,9 @@
 // text: the app's own replies at every level, the matching chip from level 2,
 // and free chat with the model from level 3.
 //
-// WHAT FREE CHAT MAY SEND BACK is `turnsRef`: the model exchanges still on
-// screen, cleared with the screen on lock. A level switch remounts this
-// component (the screen keys it by level), which clears it too.
+// FREE CHAT SENDS NO HISTORY. Each typed message is answered on its own, from a fresh records
+// snapshot. On the phone the 1.7B repeated earlier answers word for word whenever they were in
+// the prompt (docs/13, "Run 2026-09-26"), so the owner took follow-ups out on 2026-09-26.
 //
 // THE PREVIEW IS NOT THE ANSWER. `dispatch.ts` says it outright: "the surface
 // must not commit what it renders here... a token stream is a preview, and the
@@ -45,7 +45,6 @@ import { answerQuestion, replyToText, type AbortFlag } from "@/lib/ai/dispatch";
 import type { FixedQuestion } from "@/lib/ai/fixed_questions";
 import { answerFreely } from "@/lib/ai/freeChat";
 import { isFreeChatLevel, type AnswerLevel } from "@/lib/ai/levels";
-import type { Turn } from "@/lib/ai/prompt";
 import { guessLanguage } from "@/lib/ai/small_talk";
 import type { ToolResult } from "@/lib/ai/tools/types";
 import { onAppEvent } from "@/lib/events/app_events";
@@ -188,8 +187,6 @@ export function ChatSurface({
   const rawRef = useRef("");
   const abortRef = useRef<AbortFlag | null>(null);
   const idRef = useRef(0);
-  /** The model exchanges on screen, oldest first, for free chat's follow-ups. */
-  const turnsRef = useRef<Turn[]>([]);
 
   const nextId = () => {
     idRef.current += 1;
@@ -212,7 +209,6 @@ export function ChatSurface({
       onAppEvent("lock:engaged", () => {
         if (abortRef.current !== null) abortRef.current.aborted = true;
         setMessages([]);
-        turnsRef.current = [];
         clearInFlight();
       }),
     [clearInFlight],
@@ -244,10 +240,6 @@ export function ChatSurface({
     if (visible.length > 0) setActivity(null);
   };
 
-  const remember = (user: string, assistant: string) => {
-    turnsRef.current = [...turnsRef.current, { role: "user", text: user }, { role: "assistant", text: assistant }];
-  };
-
   // Every model turn starts and ends the same way, whichever path answers it.
   const startTurn = (activityLine: string): AbortFlag => {
     const abort: AbortFlag = { aborted: false };
@@ -277,7 +269,6 @@ export function ChatSurface({
       const outcome = await answerQuestion(question, { bridge, now: now(), abort, runTool, onToken });
       if (outcome.kind === "prose") {
         setMessages((prior) => [...prior, { id: nextId(), kind: "assistant", text: outcome.text, answering }]);
-        remember(typed ?? question.label, outcome.text);
       } else if (outcome.kind === "card") {
         setMessages((prior) => [...prior, { id: nextId(), kind: "card", results: outcome.results, answering }]);
       }
@@ -307,14 +298,12 @@ export function ChatSurface({
         now: now(),
         level: freeLevel,
         model: resident,
-        turns: turnsRef.current,
         abort,
         onToken,
       });
       if (outcome.kind === "prose") {
         const notice = answerNotice(freeLevel, resident.knowledgeLimit);
         setMessages((prior) => [...prior, { id: nextId(), kind: "assistant", text: outcome.text, notice }]);
-        remember(text, outcome.text);
       } else if (outcome.kind === "replaced") {
         setMessages((prior) => [
           ...prior,

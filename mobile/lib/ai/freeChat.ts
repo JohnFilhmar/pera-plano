@@ -10,6 +10,10 @@
 // asked for, so the surface shows a fixed line pointing back at the chips
 // (spec §5.2).
 //
+// EACH TYPED MESSAGE IS ANSWERED ON ITS OWN, WITH NO HISTORY. The 1.7B repeated
+// earlier answers word for word when earlier turns were in the prompt (docs/13,
+// "Run 2026-09-26"), so the owner took follow-ups out on 2026-09-26.
+//
 // THE SNAPSHOT IS RE-READ EVERY TURN, so a transaction added mid-chat is in the
 // next answer's records. Only the tools the fitted prompt actually carried may
 // license a figure.
@@ -17,7 +21,7 @@ import { opensWithBrace, readStream, runToolSafely, type DispatchDeps } from "./
 import { buildCorpus, isGrounded } from "./grounding";
 import type { FreeChatLevel } from "./levels";
 import { guardAtLevel } from "./output_guard";
-import { freeChatSystemPrompt, type Turn } from "./prompt";
+import { freeChatSystemPrompt } from "./prompt";
 import { fitFreeChatPrompt } from "./promptBudget";
 import { guessLanguage, type ReplyLanguage } from "./small_talk";
 import type { ToolResult } from "./tools/types";
@@ -42,18 +46,16 @@ export type FreeChatDeps = Pick<DispatchDeps, "bridge" | "runTool" | "now" | "ab
   level: FreeChatLevel;
   /** The resident model's limits, from its catalogue entry. */
   model: { knowledgeLimit: string; contextTokens: number };
-  /** The model exchanges on screen, oldest first, in user/assistant pairs. */
-  turns: Turn[];
 };
 
 /**
- * Answers typed text at level 3, 4 or 5 from the model, a fresh records
- * snapshot and the recent turns.
+ * Answers typed text at level 3, 4 or 5 from the model and a fresh records
+ * snapshot, with no earlier turns: each message is answered on its own.
  *
  * @param message - The message as typed.
- * @param deps - Bridge, tools, clock, level, model limits, recent turns, and the
- *   optional abort flag and token hook. As with `answerQuestion`, streamed
- *   tokens are a preview; the returned outcome is the verdict.
+ * @param deps - Bridge, tools, clock, level, model limits, and the optional
+ *   abort flag and token hook. As with `answerQuestion`, streamed tokens are a
+ *   preview; the returned outcome is the verdict.
  * @returns Prose that passed every check for its level; `replaced` with the
  *   failure the surface turns into a fixed line; `too_long` when the message
  *   cannot fit the context; or `cancelled` once the abort flag is raised.
@@ -72,7 +74,6 @@ export async function answerFreely(message: string, deps: FreeChatDeps): Promise
   const fitted = await fitFreeChatPrompt({
     systemPrompt,
     snapshot,
-    turns: deps.turns,
     message,
     contextTokens: deps.model.contextTokens,
     countTokens: (text) => deps.bridge.countTokens(text),
