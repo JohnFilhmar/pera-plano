@@ -61,6 +61,8 @@ export const LEVEL_MARKER: Record<AnswerLevel, string> = {
   5: "On-device · answers from memory can be wrong · peso figures come from your records",
 };
 
+export const CHAT_NOTICE = "Written by the model. It can be wrong.";
+
 export const MONEY_TALK_NOTICE = "From the model's general knowledge. It can be wrong.";
 
 /**
@@ -68,12 +70,12 @@ export const MONEY_TALK_NOTICE = "From the model's general knowledge. It can be 
  *
  * @param level - The free-chat level the answer was given at.
  * @param knowledgeLimit - The resident model's release month, named at level 5.
- * @returns The notice, or undefined at level 3.
+ * @returns The notice for that level.
  */
-export function answerNotice(level: FreeChatLevel, knowledgeLimit: string): string | undefined {
+export function answerNotice(level: FreeChatLevel, knowledgeLimit: string): string {
   switch (level) {
     case 3:
-      return undefined;
+      return CHAT_NOTICE;
     case 4:
       return MONEY_TALK_NOTICE;
     case 5:

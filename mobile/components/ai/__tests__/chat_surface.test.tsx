@@ -18,6 +18,7 @@ import { Text } from "react-native";
 import { ChatSurface } from "../chat_surface";
 import {
   CANNOT_ANSWER_REPLY,
+  CHAT_NOTICE,
   FREE_CHAT_REPLACED,
   LEVEL_MARKER,
   MONEY_TALK_NOTICE,
@@ -409,7 +410,7 @@ describe("answer levels", () => {
     expect(generateCallCount()).toBe(0);
   });
 
-  test("level 3: free chat answers from the model, with no notice", async () => {
+  test("level 3: a free-chat answer carries the can-be-wrong notice", async () => {
     scriptLlama([{ emit: "Your records show ₱2,400.00 on Groceries." }]);
     render(readySurface({ level: 3, runTool: byName }));
     type("How was my week?");
@@ -417,7 +418,7 @@ describe("answer levels", () => {
     await waitFor(() => {
       expect(screen.getByText("Your records show ₱2,400.00 on Groceries.")).toBeTruthy();
     });
-    expect(screen.queryByTestId("ai-answer-notice")).toBeNull();
+    expect(screen.getByTestId("ai-answer-notice")).toHaveTextContent(CHAT_NOTICE);
   });
 
   test("level 4: a free-chat answer carries the general-knowledge notice", async () => {

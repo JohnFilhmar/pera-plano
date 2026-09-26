@@ -1,8 +1,8 @@
 // components/ai/__tests__/chat_copy.test.ts
-import { MONEY_TALK_NOTICE, answerNotice } from "../chat_copy";
+import { CHAT_NOTICE, MONEY_TALK_NOTICE, answerNotice } from "../chat_copy";
 
-test("a free-chat answer carries no notice at level 3", () => {
-  expect(answerNotice(3, "April 2025")).toBeUndefined();
+test("a free-chat answer carries the can-be-wrong notice at level 3", () => {
+  expect(answerNotice(3, "April 2025")).toBe(CHAT_NOTICE);
 });
 
 test("level 4 says the answer is general knowledge that can be wrong", () => {
