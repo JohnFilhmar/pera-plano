@@ -54,12 +54,19 @@ test("level 5's description names the model's knowledge limit", () => {
 
 test("on Plus every level runs as stored", () => {
   __setTierForTests("plus");
-  expect(LEVEL_ORDER.map(effectiveAnswerLevel)).toEqual([1, 2, 3, 4, 5]);
+  expect(LEVEL_ORDER.map((level) => effectiveAnswerLevel(level, true))).toEqual([1, 2, 3, 4, 5]);
 });
 
 test("on free, 4 and 5 run as 3", () => {
   __setTierForTests("free");
-  expect(LEVEL_ORDER.map(effectiveAnswerLevel)).toEqual([1, 2, 3, 3, 3]);
+  expect(LEVEL_ORDER.map((level) => effectiveAnswerLevel(level, true))).toEqual([1, 2, 3, 3, 3]);
+});
+
+test("a model that cannot free-chat runs everything above 2 as 2, on either tier", () => {
+  __setTierForTests("plus");
+  expect(LEVEL_ORDER.map((level) => effectiveAnswerLevel(level, false))).toEqual([1, 2, 2, 2, 2]);
+  __setTierForTests("free");
+  expect(LEVEL_ORDER.map((level) => effectiveAnswerLevel(level, false))).toEqual([1, 2, 2, 2, 2]);
 });
 
 test("free chat starts at level 3", () => {

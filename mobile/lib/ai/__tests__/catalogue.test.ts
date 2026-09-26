@@ -55,6 +55,13 @@ describe("the catalogue is pinned data", () => {
     const spec = MODEL_CATALOGUE.find((entry) => entry.id === id);
     expect(spec?.knowledgeLimit).toBe("April 2025");
   });
+
+  test("only the 1.7B runs free chat", () => {
+    expect(MODEL_CATALOGUE.map((spec) => [spec.id, spec.freeChat])).toEqual([
+      ["qwen3-0.6b-q4", false],
+      ["qwen3-1.7b-q4", true],
+    ]);
+  });
 });
 
 describe("every entry", () => {

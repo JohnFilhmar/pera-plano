@@ -129,7 +129,8 @@ export default function AiAssistantScreen() {
   const [pickerOpen, setPickerOpen] = useState(false);
   // Which catalogue entry is resident, for its knowledge-limit month and context size.
   const [residentSpec, setResidentSpec] = useState<ModelSpec | null>(null);
-  const level = effectiveAnswerLevel(storedLevel);
+  const modelCanFreeChat = residentSpec?.freeChat ?? false;
+  const level = effectiveAnswerLevel(storedLevel, modelCanFreeChat);
 
   useEffect(() => {
     void AsyncStorage.getItem(AI_DISCLAIMER_STORAGE_KEY).then((seen) => {
@@ -296,6 +297,7 @@ export default function AiAssistantScreen() {
           level={level}
           accepted={levelsAccepted}
           knowledgeLimit={residentSpec.knowledgeLimit}
+          maxLevel={modelCanFreeChat ? 5 : 2}
           onChoose={chooseLevel}
           onDismiss={() => setPickerOpen(false)}
         />

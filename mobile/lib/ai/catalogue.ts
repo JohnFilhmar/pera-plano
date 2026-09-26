@@ -44,6 +44,12 @@ export type ModelSpec = {
    * training data can postdate the release. Assistant levels spec §5.3.
    */
   knowledgeLimit: string;
+  /**
+   * Whether the model can run free chat (answer levels 3 to 5). The 0.6B cannot:
+   * on the phone it ignored questions and repeated itself (docs/13, "Run
+   * 2026-09-26"). Chips and typed asks work on every model.
+   */
+  freeChat: boolean;
   license: string;
 };
 
@@ -80,6 +86,9 @@ export const MODEL_CATALOGUE: readonly ModelSpec[] = [
     suppressThinking: true,
     // Hugging Face's API: Qwen/Qwen3-0.6B created 2025-04-27.
     knowledgeLimit: "April 2025",
+    // On the phone it ignored questions and repeated itself in free chat
+    // (docs/13, "Run 2026-09-26"). Its chip answers were fine.
+    freeChat: false,
     license: "apache-2.0",
   },
   {
@@ -103,6 +112,7 @@ export const MODEL_CATALOGUE: readonly ModelSpec[] = [
     suppressThinking: true,
     // Hugging Face's API: Qwen/Qwen3-1.7B created 2025-04-27.
     knowledgeLimit: "April 2025",
+    freeChat: true,
     license: "apache-2.0",
   },
 ];

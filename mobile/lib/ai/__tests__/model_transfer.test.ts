@@ -61,6 +61,7 @@ const SPEC: ModelSpec = {
   contextTokens: 2048,
   suppressThinking: true,
   knowledgeLimit: "April 2025",
+  freeChat: true,
   license: "apache-2.0",
 };
 

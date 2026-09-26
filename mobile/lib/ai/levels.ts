@@ -100,14 +100,17 @@ export function parseAnswerLevel(raw: string | null): AnswerLevel {
 }
 
 /**
- * The level the assistant actually runs at. A free user with 4 or 5 stored runs
- * as 3, and the stored value is left alone: a downgrade never deletes anything.
+ * The level the assistant actually runs at. Two ceilings apply and neither
+ * changes the stored value: a free user with 4 or 5 stored runs as 3, and a
+ * model that cannot free-chat runs anything above 2 as 2.
  *
  * @param stored - The level the user chose.
- * @returns The stored level when the tier allows it, otherwise 3.
+ * @param modelCanFreeChat - The resident model's `freeChat` flag.
+ * @returns The level to run at.
  */
-export function effectiveAnswerLevel(stored: AnswerLevel): AnswerLevel {
-  return canUseAssistantLevel(stored) ? stored : 3;
+export function effectiveAnswerLevel(stored: AnswerLevel, modelCanFreeChat: boolean): AnswerLevel {
+  const byTier: AnswerLevel = canUseAssistantLevel(stored) ? stored : 3;
+  return modelCanFreeChat || byTier <= 2 ? byTier : 2;
 }
 
 /**

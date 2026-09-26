@@ -28,10 +28,15 @@ export type LevelPickerProps = {
   accepted: boolean;
   /** The resident model's release month, for level 5's description and the notice. */
   knowledgeLimit: string;
+  /** The highest level the resident model allows; rows above it cannot be chosen. */
+  maxLevel: AnswerLevel;
   /** Called with the chosen level; `acceptedNow` is true when the notice was just accepted. */
   onChoose: (level: AnswerLevel, acceptedNow: boolean) => void;
   onDismiss: () => void;
 };
+
+/** Shown after a level's own description when the resident model cannot run it. */
+export const NEEDS_LARGER_MODEL = "Needs the larger Qwen3 1.7B model.";
 
 /**
  * The notice a user accepts before level 4 or 5 turns on (spec §6).
@@ -48,7 +53,15 @@ export function acceptNotice(knowledgeLimit: string): string {
  *
  * @param props - See `LevelPickerProps`.
  */
-export function LevelPicker({ visible, level, accepted, knowledgeLimit, onChoose, onDismiss }: LevelPickerProps) {
+export function LevelPicker({
+  visible,
+  level,
+  accepted,
+  knowledgeLimit,
+  maxLevel,
+  onChoose,
+  onDismiss,
+}: LevelPickerProps) {
   const [pending, setPending] = useState<AnswerLevel | null>(null);
 
   const choose = (next: AnswerLevel) => {
@@ -64,17 +77,21 @@ export function LevelPicker({ visible, level, accepted, knowledgeLimit, onChoose
       <BottomSheet visible={visible && pending === null} title="Answer style" onDismiss={onDismiss}>
         {LEVEL_ORDER.map((candidate) => {
           const info = ANSWER_LEVELS[candidate];
+          const tooLarge = candidate > maxLevel;
+          const subtitle = tooLarge
+            ? `${describeLevel(candidate, knowledgeLimit)} ${NEEDS_LARGER_MODEL}`
+            : describeLevel(candidate, knowledgeLimit);
           const row = (
             <ListRow
               key={candidate}
               testID={`ai-level-${candidate}`}
               title={`${candidate}. ${info.name}`}
-              subtitle={describeLevel(candidate, knowledgeLimit)}
+              subtitle={subtitle}
               subtitleLines={3}
               right={
                 candidate === level ? <CheckGlyph size={18} className="text-brand dark:text-brand-dark" /> : undefined
               }
-              onPress={() => choose(candidate)}
+              onPress={tooLarge ? undefined : () => choose(candidate)}
             />
           );
           return info.gated ? (

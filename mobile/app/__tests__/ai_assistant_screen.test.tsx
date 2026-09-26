@@ -143,8 +143,14 @@ test("a model that will not load clears the eval and offers no way to it", async
 });
 
 describe("the answer level (assistant levels spec §6)", () => {
+  const TIER_TWO = MODEL_CATALOGUE[1];
+  const TIER_TWO_PATH = `${MODELS_DIR}${TIER_TWO.id}.gguf`;
+
   beforeEach(async () => {
     await AsyncStorage.clear();
+    // Levels 3 and 5 need a model that can free chat.
+    mockDeps.files.exists = async (path) => path === TIER_TWO_PATH;
+    mockDeps.files.size = async () => TIER_TWO.bytes;
   });
 
   afterEach(() => {
@@ -205,4 +211,14 @@ describe("the answer level (assistant levels spec §6)", () => {
       expect(screen.queryByText(CANNOT_ANSWER_REPLY.en)).toBeNull();
     });
   });
+});
+
+test("on a model that cannot free-chat, a stored 5 runs as level 2 and stays stored", async () => {
+  // (0.6B on disk only: the file's default mockDeps)
+  await AsyncStorage.setItem(AI_ANSWER_LEVEL_STORAGE_KEY, "5");
+  render(<AiAssistantScreen />);
+  await waitFor(() => {
+    expect(screen.getByTestId("ai-level-entry")).toHaveTextContent(/Level 2 · Typed asks/);
+  });
+  expect(await AsyncStorage.getItem(AI_ANSWER_LEVEL_STORAGE_KEY)).toBe("5");
 });

@@ -19,6 +19,7 @@ function picker(overrides: Partial<ComponentProps<typeof LevelPicker>> = {}) {
       level={2}
       accepted={false}
       knowledgeLimit={MONTH}
+      maxLevel={5}
       onChoose={onChoose}
       onDismiss={() => {}}
       {...overrides}
@@ -80,4 +81,11 @@ test("on the free tier, level 4 opens the upgrade sheet instead", () => {
 
   expect(onChoose).not.toHaveBeenCalled();
   expect(screen.getByTestId("upgrade-row-assistant_levels")).toBeTruthy();
+});
+
+test("levels above the model's limit cannot be chosen, and say why", () => {
+  const onChoose = picker({ maxLevel: 2 });
+  fireEvent.press(screen.getByTestId("ai-level-3"));
+  expect(onChoose).not.toHaveBeenCalled();
+  expect(screen.getByTestId("ai-level-3")).toHaveTextContent(/Needs the larger Qwen3 1\.7B model\./);
 });
