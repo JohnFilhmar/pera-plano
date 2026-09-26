@@ -156,8 +156,7 @@ describe("the free-chat system prompts (levels spec §4.2)", () => {
 
 test("a free-chat turn gets its own closing line, and a chip keeps the narration one", () => {
   const free = buildTurnPrompt({ transcript: TRANSCRIPT, toolResults: TOOL_RESULTS, closing: "free_chat" });
-  expect(free).toContain("For anything about the user's money, use only the values above.");
-  expect(free).toMatch(/speak to the user as "you"/i);
+  expect(free).toContain(`For anything about the user's money, use only the values above, and speak to the user as "you"`);
 
   const chip = buildTurnPrompt({ transcript: TRANSCRIPT, toolResults: TOOL_RESULTS });
   expect(chip).toContain("Answer the last user message using only the values above.");

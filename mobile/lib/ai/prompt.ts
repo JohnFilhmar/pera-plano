@@ -118,7 +118,7 @@ export function freeChatSystemPrompt(level: FreeChatLevel, knowledgeLimit: strin
 
 const NARRATION_CLOSING = `Answer the last user message using only the values above. Speak to the user as "you": these are their records, not yours.`;
 
-const FREE_CHAT_CLOSING = `Answer the last user message. For anything about the user's money, use only the values above. Speak to the user as "you": these are their records, not yours.`;
+const FREE_CHAT_CLOSING = `Answer the last user message. For anything about the user's money, use only the values above, and speak to the user as "you": these are their records, not yours.`;
 
 const ROLE_LABEL: Record<Turn["role"], string> = {
   user: "User",
