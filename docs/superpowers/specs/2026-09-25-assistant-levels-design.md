@@ -1,8 +1,9 @@
 # Assistant answer levels: design spec
 
-**Status:** Design spec v1, 2026-09-25. Approved section by section by the owner on 2026-09-25. Not an
-implementation plan. Amends `2026-08-18-on-device-ai-assistant-design.md` (the assistant spec) where
-section 9 below says so, and nowhere else.
+**Status:** Design spec v1, 2026-09-25. Approved section by section by the owner on 2026-09-25, and
+amended after the phone check on 2026-09-26 (section 0.1). Not an implementation plan. Amends
+`2026-08-18-on-device-ai-assistant-design.md` (the assistant spec) where section 9 below says so, and
+nowhere else.
 
 **Goal:** Let each user choose how much the on-device assistant may do, on a five-step scale. Level 1 is
 today's strict behaviour. Level 5 answers any topic from the model's own memory, and every answer says
@@ -26,7 +27,7 @@ they never allow money advice.
 2. **Only levels 4 and 5 are gated.** Level 3 is open to everyone. The owner changed this from the
    proposal, which gated 3 to 5.
 3. **The gate is Plus plus a read-and-accept notice.** There is no model-size restriction: both tiers
-   may use every level.
+   may use every level. Narrowed on 2026-09-26: free chat needs a model that can do it (section 0.1).
 4. **Peso amounts come only from the user's records, at every level.** No remembered prices, fees or
    rates, flagged or not.
 5. **No money advice at any level.** At level 5, a non-money "should I" question reaches the model.
@@ -34,6 +35,26 @@ they never allow money advice.
    approach C (the model picks the tool) are rejected in section 10.
 7. **Everyone starts on level 2**, including users of today's build. To be revisited after the phone
    check (section 8.2) measures level 3.
+
+## 0.1 Owner decisions, 2026-09-26, after the phone check
+
+The phone check (`docs/13-on-device-verification.md`, "Run 2026-09-26") found four problems, and the
+owner chose one change for each. The sections they touch are updated to match.
+
+1. **Free chat only on a model that can do it.** The 0.6B ignored questions and repeated its last
+   answer in free chat. Its chip answers were fine. Each catalogue entry now carries a `freeChat` flag
+   (`lib/ai/catalogue.ts`), false on the 0.6B and true on the 1.7B. On a model without it, levels 3 to 5
+   cannot be chosen, and a stored 3, 4 or 5 runs as 2 and stays stored.
+2. **No history in free chat.** With earlier turns in the prompt, the 1.7B repeated earlier answers
+   word for word, the failure §7.4 of the assistant spec recorded for chips. Each typed message is now
+   answered on its own, from a fresh snapshot of the records.
+3. **A notice under level-3 answers too.** The 1.7B answered off-topic questions from memory at level
+   3 with no notice, and said Jose Rizal died in 1897 (he was executed on 30 December 1896).
+4. **The "you" rule covers money answers only.** The 0.6B turned the prompt's "speak to the user as
+   you" into "You were Jose Rizal."
+
+The owner also settled the open question in section 5.1: a bare number and a percentage stay allowed
+at levels 4 and 5.
 
 ---
 
@@ -46,7 +67,7 @@ Typed text runs these steps in order. The first step that applies produces the r
 | 1. Small talk | every level | A whole-message greeting, thanks, "what can you do" or goodbye gets the app's own reply, as today (`lib/ai/small_talk.ts`). |
 | 2. Money advice | every level | A row of the advice table (`lib/ai/triage.ts`) gets the redirect with the user's numbers, as today. At level 5 only, the row counts only when the message also contains a money word (section 3). |
 | 3. One of the eight questions | level 2 and up | A phrase table maps the message to a fixed question, which is answered exactly as if its chip were tapped. |
-| 4. Free chat | level 3 and up | The model answers, using the level's system prompt, a snapshot of the user's records and the recent turns (section 4). |
+| 4. Free chat | level 3 and up | The model answers, using the level's system prompt, a snapshot of the user's records and the new message alone, with no earlier turns (section 4). |
 | 5. Cannot answer | levels 1 and 2 | Today's "I can only answer the questions below" reply, in English or Filipino. |
 
 Tapped chips work exactly as today at every level: one fixed tool, one narration round, no history.
@@ -62,6 +83,7 @@ The five levels, with the one-line description the picker shows:
 | 5 | Anything | Answers any topic from the model's memory. It can be wrong, and it knows nothing after April 2025. | Plus + accept |
 
 The month in level 5's description comes from the resident model's catalogue entry (section 5.3).
+Levels 3 to 5 also need a model whose catalogue entry allows free chat (section 6).
 
 ---
 
@@ -134,11 +156,11 @@ level 5, behind the read-and-accept notice.
   is included: `get_balance_total`, `get_safe_to_spend`, `get_limits`, and `get_spend_by_category`
   for this month. It goes in the existing delimited tool channel (`buildTurnPrompt` in
   `lib/ai/prompt.ts`), serialised exactly as today, refusals included.
-- **The recent turns**: each user message still on screen together with the model's prose answer to
-  it, whether the message was typed or tapped. A message the app answered itself (small talk, a
-  redirect, cannot-answer, a section 5.2 line) or that ended in a card is left out, message and reply
-  both, so the model never sees a question without its answer.
-- **The new message.**
+- **The new message**, and nothing said before it.
+
+Amended after the phone check (2026-09-26): the model no longer receives the recent turns. With them in
+the prompt, the 1.7B repeated earlier answers word for word (section 0.1). The cost is that a follow-up
+such as "is that a lot?" reaches the model without the answer it refers to.
 
 ### 4.2 System prompts
 
@@ -168,33 +190,36 @@ with its worked "not 1234.56 pesos" example and "dates are copied the same way",
 rule scoped to the user's money, so level 5 can still answer a question that needs general arithmetic.
 
 The closing line of `buildTurnPrompt` gets a second form. Chip narration keeps "Answer the last user
-message using only the values above." Free chat reads "Answer the last user message. For anything
-about the user's money, use only the values above." Both keep the "speak to the user as you"
-sentence.
+message using only the values above." and its "speak to the user as you" sentence. Free chat reads
+"Answer the last user message. For anything about the user's money, use only the values above, and
+speak to the user as "you": these are their records, not yours."
+
+Amended after the phone check (2026-09-26): free chat used to keep the "speak to the user as you"
+sentence on its own, for every answer, and the 0.6B answered "Who was Jose Rizal" with "You were Jose
+Rizal." The free-chat form now ties the rule to answers about the user's money.
 
 ### 4.3 The token budget
 
 Both catalogue models run a 2,048-token context (`CONTEXT_TOKENS`, `lib/ai/catalogue.ts`), and an answer
-is capped at 256 tokens (`MAX_RESPONSE_TOKENS`, `modules/llama_bridge/index.ts`). The recent turns get
-whatever is left after the system prompt, the snapshot, the new message and the 256-token reserve.
+is capped at 256 tokens (`MAX_RESPONSE_TOKENS`, `modules/llama_bridge/index.ts`). The system prompt, the
+snapshot and the new message must fit in what is left after the 256-token reserve.
 
 - Tokens are counted with the resident model's own tokenizer: a new `countTokens(text)` on the bridge,
   backed by `tokenize` in llama.rn, plus a fixed margin for the chat template's own tokens.
-- Recent turns are added newest first until the budget is full, so the oldest turns drop first.
-- If the prompt is over budget with no turns at all, the snapshot drops `get_spend_by_category` first,
-  then `get_limits`. The total balance and safe-to-spend always stay.
+- If the prompt is over budget, the snapshot drops `get_spend_by_category` first, then `get_limits`.
+  The total balance and safe-to-spend always stay.
 - A new message too long to fit even then gets a fixed "That message is too long for me. Try a shorter
   question." line and never reaches the model.
 
 ### 4.4 Lifetime
 
-- The recent turns live only in memory, as today's session does (assistant spec §4.6: conversations are
-  never stored).
-- They are cleared on lock, through today's `lock:engaged` handling, on a level switch, and when the
-  Assistant screen unmounts. A navigation that keeps the screen mounted keeps the chat, and what free
-  chat sends back always matches the chat on screen.
-- Switching levels also clears the chat on screen, so an answer given under one level's rules never
-  sits beside or feeds into another level's.
+- Free chat keeps no history (section 0.1), so nothing from the chat is ever sent back to the model.
+  The chat on screen lives only in memory, as today's session does (assistant spec §4.6: conversations
+  are never stored).
+- The chat on screen is cleared on lock, through today's `lock:engaged` handling, on a level switch,
+  and when the Assistant screen unmounts. A navigation that keeps the screen mounted keeps the chat.
+- Switching levels clears the chat so an answer given under one level's rules never sits beside
+  another level's.
 
 ---
 
@@ -219,7 +244,8 @@ Amended after the final review (2026-09-25): the extractor now also sees peso am
 number, with a space, or in lowercase ("13 pesos", "50 piso", "549 PHP", "₱ 549", "php 549"). Before,
 free chat could show "The minimum fare is 13 pesos." under a line promising every peso figure comes from
 the records. Widening the extractor only ever rejects more answers. A bare number with no peso word and a
-percentage rate are still not treated as peso amounts; that is an open question for the owner.
+percentage rate are still not treated as peso amounts, and on 2026-09-26 the owner decided both stay
+allowed.
 
 ### 5.2 What replaces a failed answer
 
@@ -241,6 +267,9 @@ show", because the answer streams on screen as a preview before the checks run.
 
 The app writes every notice. The model never does.
 
+- **Level 3:** under each free-chat answer: "Written by the model. It can be wrong." Added after the
+  phone check (2026-09-26), where level 3 answered off-topic questions from memory with no notice and
+  one answer had a wrong date (section 0.1).
 - **Level 4:** under each free-chat answer, in the muted marker style: "From the model's general
   knowledge. It can be wrong."
 - **Level 5:** under each free-chat answer: "From the model's memory. It can be wrong, and it knows
@@ -271,6 +300,11 @@ The app writes every notice. The model never does.
 - **Where.** A row on the Assistant screen under "Test it on this phone", reading "Answer style ·
   Level 2 · Typed asks". It opens a sheet listing the five levels with their descriptions (section 1)
   and a check on the current one. The row shows only when a model is loaded, like the eval row.
+- **Model limit.** Levels 3 to 5 need a resident model whose catalogue entry has `freeChat: true`,
+  today only the 1.7B (section 0.1). On any other model those rows say "Needs the larger Qwen3 1.7B
+  model." and cannot be chosen. The model limit comes before the Plus gate: a row the model cannot run
+  is not wrapped in `PlusGate`, so nobody is offered Plus for a level that would not work on their
+  phone.
 - **Plus gate.** Levels 4 and 5 sit inside the existing `PlusGate` (`components/gates/plus_gate.tsx`)
   under a new `assistant_levels` capability with its own upgrade-sheet copy. Everyone is on Plus today
   (`MVP_TIER`, `lib/entitlements.ts`), so the gate shows the "PLUS · free in beta" badge and blocks
@@ -278,7 +312,9 @@ The app writes every notice. The model never does.
 - **Entitlement.** `lib/entitlements.ts`, the only file that knows about tiers, gets
   `canUseAssistantLevel(level)`: true for levels 1 to 3, and for 4 and 5 only on Plus. A free user
   with 4 or 5 stored runs as level 3, and the stored value is left alone, following the monetization
-  rule that a downgrade never deletes anything.
+  rule that a downgrade never deletes anything. `effectiveAnswerLevel(stored, modelCanFreeChat)` in
+  `lib/ai/levels.ts` applies that ceiling and the model limit: on a model without free chat, anything
+  above 2 runs as 2 on either tier, and the stored value is again left alone.
 - **Read and accept.** The first time a user picks level 4 or 5, a notice asks for acceptance before the
   level changes: "Levels 4 and 5 answer from the model's memory. It can be wrong, and it knows nothing
   after April 2025. Peso figures still come only from your records, and it still won't advise you on
@@ -311,13 +347,13 @@ first-word limit still applies. Stop works exactly as today.
   I" that reaches the model and a money one that gets the redirect.
 - The guard matrix in section 5.1, cell by cell.
 - Snapshot tests pinning each level's system prompt and both closing lines.
-- The token budget: turns dropped oldest first, then the snapshot's order of drops, then the too-long
-  message line.
+- The token budget: the snapshot's order of drops, then the too-long message line.
 - `canUseAssistantLevel` on both tiers, including a stored 5 running as 3 on free.
 - Storage defaults to 2, and start-over clears both keys.
-- The chat surface: the picker, the accept flow (accept and cancel), the Plus badge on 4 and 5, a level
-  switch clearing the chat, the notices under level 4 and 5 answers, the "Answering:" label, and the
-  top line for each level.
+- The chat surface: the picker, the accept flow (accept and cancel), the Plus badge on 4 and 5, the
+  model limit (rows above it cannot be chosen and are not Plus-gated, and a stored level above it runs
+  as 2), a level switch or a lock clearing the chat, free chat sending no earlier exchange, the notices
+  under level 3, 4 and 5 answers, the "Answering:" label, and the top line for each level.
 
 ### 8.2 The phone check (A54, both models)
 
@@ -364,7 +400,9 @@ The assistant spec's §7.4 gets a one-line pointer to this document.
   fee or rate from a 2025 model is exactly the kind of number a user acts on, and the disclaimer's
   promise would stop being true.
 - **A model-size gate** (levels 4 and 5 only on the 1.7B model). Not chosen, decision 3. The notices
-  and the accept step carry the warning instead.
+  and the accept step carry the warning instead. Partly reversed on 2026-09-26: free chat, levels 3 to
+  5, now needs the 1.7B, because the 0.6B could not do it at all on the phone (section 0.1). That limit
+  follows measured behaviour, applies on both plans, and is not a gate on general knowledge.
 
 ---
 
@@ -372,11 +410,13 @@ The assistant spec's §7.4 gets a one-line pointer to this document.
 
 1. **Answer quality at levels 3 to 5 is unmeasured,** and it is the risk most likely to disappoint. The
    0.6B model measured 27 to 40% on the narrower task of choosing a tool. Answers from its memory will
-   often be wrong, and the notices say so but do not fix it. Level 3 carries no notice, and its prompt
-   asks the model to stay on the user's records, but a small model may still answer an off-topic
-   question from memory there. Grounding checks figures, not claims such as "you spend most on food",
-   which is true of chip narration today as well. The phone check puts numbers and the owner's read on
-   all of this before anything ships.
+   often be wrong, and the notices say so but do not fix it. Level 3's prompt asks the model to stay on
+   the user's records, but a small model may still answer an off-topic question from memory there.
+   Grounding checks figures, not claims such as "you spend most on food", which is true of chip
+   narration today as well. The phone check puts numbers and the owner's read on all of this before
+   anything ships. Measured on 2026-09-26: the 0.6B could not do free chat at all, and the 1.7B at level
+   3 answered an off-topic question from memory with a wrong date, so free chat now needs the 1.7B and
+   level 3 carries a notice (section 0.1). The owner's read of answer quality is not yet recorded.
 2. **Grounding will reject more free-chat answers than chip answers,** because a free answer is more
    likely to retype a figure than copy it. Each rejection shows the section 5.2 line. The phone check
    counts them. If the rate is high, the fix is prompt work, never loosening the check (assistant spec
