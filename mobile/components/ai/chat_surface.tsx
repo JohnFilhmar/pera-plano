@@ -277,8 +277,7 @@ export function ChatSurface({
     }
   };
 
-  // Levels 3 to 5: the model answers typed text from a fresh records snapshot
-  // and the exchanges still on screen.
+  // Levels 3 to 5: the model answers typed text alone, from a fresh records snapshot.
   const runFreeChat = async (text: string) => {
     if (bridge === null || model === null || !isFreeChatLevel(level)) {
       // Unreachable in the app today (the screen sets the model before "ready"),
