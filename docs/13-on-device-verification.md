@@ -687,7 +687,7 @@ This is the point of the entire encryption plan. Each line is falsifiable.
 - [ ] Complete onboarding **including the recovery phrase** → `________________`
 - [ ] Trigger a provider notification with the app **closed**; confirm capture → `________________`
 - [x] `adb` pull the buffer file; the notification text is **NOT readable** in it →
-      **BLOCKED ON THE PLATFORM, 2026-09-25 (Session 3), and the block is the security model
+      **BLOCKED ON THE PLATFORM, 2026-09-25 (the encryption session), and the block is the security model
       working.** The buffer is `files/pending_captures.ndjson`
       (`CaptureBuffer.FILE_NAME`), inside the app's private data directory. Reading it over adb
       needs `run-as`, which refuses a non-debuggable package, and notification access on this
@@ -715,7 +715,7 @@ This is the point of the entire encryption plan. Each line is falsifiable.
 > The cheap way to close it for real, if it ever matters enough, is one debuggable
 > preview-signed build made for the check and then discarded — about seven minutes of build time.
 - [x] `adb` pull the database; a plain `sqlite3` client **rejects** it (encrypted / not a
-      database) → **MEASURED 2026-09-25 (Session 3), ON A NON-SHIPPING VARIANT — see provenance below.** `sqlite3` answers `Error: file is encrypted or is
+      database) → **MEASURED 2026-09-25 (the encryption session), ON A NON-SHIPPING VARIANT — see provenance below.** `sqlite3` answers `Error: file is encrypted or is
       not a database` to both `SELECT count(*) FROM sqlite_master;` and `.tables`. Three independent
       readings agree: the first 16 bytes are `d8ca2ac171813727eaa26fedb9b8931d`, so there is no
       `SQLite format 3` magic; the file contains none of `CREATE TABLE`, `sqlite_master`,
@@ -786,7 +786,7 @@ This is the point of the entire encryption plan. Each line is falsifiable.
 > reboot on a real phone behaves the same way.
 
 ### Enroll an additional fingerprint
-- [x] **The key must SURVIVE.** → **PASS, 2026-09-25 (Session 3), on the preview build
+- [x] **The key must SURVIVE.** → **PASS, 2026-09-25 (the encryption session), on the preview build
       `com.filldev.peraplano.prev`.** Enrolled fingerprint count went 2 → 3, read from
       `dumpsys fingerprint`'s `"count"` before and after rather than taken on trust. The app then
       opened to Home with the ledger intact and **did not ask for the recovery words**.
@@ -985,8 +985,25 @@ grep -c "READ_EXTERNAL_STORAGE\|WRITE_EXTERNAL_STORAGE\|SYSTEM_ALERT_WINDOW" \
   android/app/build/intermediates/merged_manifest/debug/AndroidManifest.xml   # expect 0 in the MERGED one
 ```
 
-- [ ] Source manifest count is 0 → `________________`
-- [ ] **Merged** manifest count is 0 → `________________`
+- [ ] Source manifest count is 0 → **NOT RUN, AND THIS BOX CONTRADICTS THE PARAGRAPH ABOVE IT.**
+      The text says the three permissions get tagged `tools:node="remove"` in the base manifest,
+      which means the base manifest CONTAINS their names and a grep would count 3, not 0. Either the
+      expectation or the description is wrong. Resolving it needs a prebuild, so it is left for
+      whoever runs one rather than guessed at. Box 2 below is the one that carries the claim anyway:
+      what matters is absence from the artefact, not from an intermediate.
+- [x] **Merged** manifest count is 0 → **PASS, 2026-09-25, AND MEASURED ON SOMETHING BETTER THAN THE
+      MERGED MANIFEST: the installed release-signed APK itself.** `adb shell dumpsys package
+      com.filldev.peraplano.prev` reports 31 requested permissions and **zero** matches for
+      `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE` or `SYSTEM_ALERT_WINDOW`. That is a stronger
+      reading than this box asks for: the procedure above greps a DEBUG build's merged manifest,
+      which is an intermediate of a different variant, while this is what Android says the shipped
+      artefact actually declares. Since the installed APK has none of the three, the merged manifest
+      it was built from cannot have had them either.
+      Done this way deliberately rather than by running the commands above: `expo prebuild --clean`
+      half-deletes `android/` when a Gradle daemon still holds `classes.dex` (EBUSY), which has cost
+      a rebuild before, and the check needed nothing destructive. Re-run as
+      `adb shell dumpsys package <pkg> | grep -cE "READ_EXTERNAL_STORAGE|WRITE_EXTERNAL_STORAGE|SYSTEM_ALERT_WINDOW"`,
+      expecting 0, against whichever build is installed.
 
 The merged one is the check that matters. The source manifest can be clean while a library
 re-injects a permission during the merge — that is the entire failure mode this exists to catch.
