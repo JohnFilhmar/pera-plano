@@ -687,7 +687,7 @@ This is the point of the entire encryption plan. Each line is falsifiable.
 - [ ] Complete onboarding **including the recovery phrase** → `________________`
 - [ ] Trigger a provider notification with the app **closed**; confirm capture → `________________`
 - [x] `adb` pull the buffer file; the notification text is **NOT readable** in it →
-      **BLOCKED ON THE PLATFORM, 2026-09-25 (Session 3), and the block is the security model
+      **BLOCKED ON THE PLATFORM, 2026-09-25 (the encryption session), and the block is the security model
       working.** The buffer is `files/pending_captures.ndjson`
       (`CaptureBuffer.FILE_NAME`), inside the app's private data directory. Reading it over adb
       needs `run-as`, which refuses a non-debuggable package, and notification access on this
@@ -715,7 +715,7 @@ This is the point of the entire encryption plan. Each line is falsifiable.
 > The cheap way to close it for real, if it ever matters enough, is one debuggable
 > preview-signed build made for the check and then discarded — about seven minutes of build time.
 - [x] `adb` pull the database; a plain `sqlite3` client **rejects** it (encrypted / not a
-      database) → **MEASURED 2026-09-25 (Session 3), ON A NON-SHIPPING VARIANT — see provenance below.** `sqlite3` answers `Error: file is encrypted or is
+      database) → **MEASURED 2026-09-25 (the encryption session), ON A NON-SHIPPING VARIANT — see provenance below.** `sqlite3` answers `Error: file is encrypted or is
       not a database` to both `SELECT count(*) FROM sqlite_master;` and `.tables`. Three independent
       readings agree: the first 16 bytes are `d8ca2ac171813727eaa26fedb9b8931d`, so there is no
       `SQLite format 3` magic; the file contains none of `CREATE TABLE`, `sqlite_master`,
@@ -786,7 +786,7 @@ This is the point of the entire encryption plan. Each line is falsifiable.
 > reboot on a real phone behaves the same way.
 
 ### Enroll an additional fingerprint
-- [x] **The key must SURVIVE.** → **PASS, 2026-09-25 (Session 3), on the preview build
+- [x] **The key must SURVIVE.** → **PASS, 2026-09-25 (the encryption session), on the preview build
       `com.filldev.peraplano.prev`.** Enrolled fingerprint count went 2 → 3, read from
       `dumpsys fingerprint`'s `"count"` before and after rather than taken on trust. The app then
       opened to Home with the ledger intact and **did not ask for the recovery words**.
