@@ -163,6 +163,6 @@ jobs:
           # History, not just the tip: a value deleted in a later commit was still
           # published if it was ever pushed.
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
